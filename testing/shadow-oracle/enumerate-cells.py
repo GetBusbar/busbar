@@ -8,9 +8,20 @@ against any later binary. Its cell list must be a function of what busbar claims
 new method, dialect or transport becomes a new cell automatically (an uncovered cell is RED), and
 no one can forget one.
 
-Sources (both GENERATED, both already gated):
+Sources (GENERATED or pinned, all already gated):
   qa/method-inventory.json  -- MCP + A2A: method x originator x role x transport (230 cells, 10 N/A)
   qa/field-inventory.json   -- LLM: the dialects + directions + streaming flag
+  tests/migration-corpus/   -- every real config.yaml shipped since v0.10 (config.migrate family)
+  fixtures/openapi-1.5.5.json + fixtures/admin-bodies.json -- the 66 admin operations (admin.ops)
+  fixtures/boot-mutations.json -- one config mutation per inventoried boot refusal/warning
+  the routes inventory (docs/design/inventory/1.5.5-routes-admin.md) -- pinned here as literals for
+    the cross-cutting HTTP surfaces (ops.scrape, http.crosscut) and the CLI (cli)
+
+Cell drivers (record.sh dispatches on `driver`; absent = the LLM wire builder):
+  http   an explicit {method, path, headers, body, auth: ok|broke|noscope|admin|none, listener: data|admin}
+  exec   run the binary: {args, env, config: baseline|<mutation>, mode: validate|boot|cli}
+Cells may carry `compare: [classes]` when part of their output is inherently random (a generated
+signing key) — the differ then judges only those classes; `fresh: true` boots a new busbar first.
 
 Each protocol cell is crossed with the OUTCOME CLASSES the governed path must reproduce
 byte-for-byte: the happy path plus every refusal the core pipeline can emit before/around it.
@@ -103,10 +114,226 @@ def protocol_cells(inv: dict) -> list[dict]:
     return cells
 
 
+MIGRATION_CORPUS = ROOT / "tests" / "migration-corpus" / "from-tags"
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def http(id_: str, family: str, method: str, path: str, *, auth: str = "ok", listener: str = "data",
+         headers: dict | None = None, body: str | None = None, why: str = "", **extra) -> dict:
+    id_ = id_.replace("/", "")  # ids become file names on both sides of the differ
+    c = {"id": id_, "plane": "core", "family": family, "driver": "http", "outcome": "ok",
+         "request": {"method": method, "path": path, "headers": headers or {}, "body": body,
+                     "auth": auth, "listener": listener}, "why": why}
+    c.update(extra)
+    return c
+
+
+def exec_(id_: str, family: str, *, args: list[str], mode: str, config: str = "baseline",
+          env: dict | None = None, why: str = "", **extra) -> dict:
+    id_ = id_.replace("/", "")
+    c = {"id": id_, "plane": "core", "family": family, "driver": "exec", "outcome": "ok",
+         "exec": {"args": args, "mode": mode, "config": config, "env": env or {}}, "why": why}
+    c.update(extra)
+    return c
+
+
+def cli_cells() -> list[dict]:
+    """Every first-argument dispatch of 1.5.5 (ops inventory §2.1): exit code + stdout/stderr bytes."""
+    F = "cli"
+    return [
+        exec_("cli|--version", F, args=["--version"], mode="cli", why="prints `busbar <ver>`; exit 0"),
+        exec_("cli|-V", F, args=["-V"], mode="cli", why="alias of --version"),
+        exec_("cli|--help", F, args=["--help"], mode="cli", why="the verbatim help block; exit 0"),
+        exec_("cli|-h", F, args=["-h"], mode="cli", why="alias of --help"),
+        exec_("cli|--validate|baseline", F, args=["--validate"], mode="validate", why="ok: config valid — N provider(s) …; exit 0"),
+        exec_("cli|--list-plugins", F, args=["--list-plugins"], mode="cli", why="plugins block listing; exit 0"),
+        exec_("cli|--migrate-config|missing-path", F, args=["--migrate-config"], mode="cli", why="missing path; exit 2"),
+        exec_("cli|--migrate-config|unreadable", F, args=["--migrate-config", "/nonexistent/old.yaml"], mode="cli", why="unreadable; exit 1"),
+        exec_("cli|--generate-signing-key", F, args=["--generate-signing-key"], mode="cli",
+              compare=["status"], why="random key: only the exit code is a contract"),
+        exec_("cli|--print-metadata-blocklist", F, args=["--print-metadata-blocklist"], mode="cli", why="built-in denylist ∪ security.blocked_metadata_hosts"),
+        exec_("cli|unknown-flag", F, args=["--definitely-not-a-flag"], mode="cli", why="unrecognized argument; exit 2"),
+        exec_("cli|--safe-mode|first-arg", F, args=["--safe-mode"], mode="cli", why="1.5.5: unrecognized as a FIRST argument; exit 2 (PB-23)"),
+        exec_("cli|env|BUSBAR_CONFIG-missing", F, args=["--validate"], mode="validate", config="missing",
+              why="config path does not exist; [error] …; exit 1"),
+        exec_("cli|env|RUST_LOG-crate-filter", F, args=["--validate"], mode="validate", env={"RUST_LOG": "busbar=debug"},
+              why="bare tracing::Level only — a crate filter silently falls back (PB-51)"),
+    ]
+
+
+def migrate_cells() -> list[dict]:
+    """--migrate-config on every shipped config, then --validate of the migrated result."""
+    cells = []
+    for f in sorted(MIGRATION_CORPUS.glob("*.yaml")):
+        tag = f.name.removesuffix("_config.yaml")
+        rel = str(f.relative_to(ROOT))
+        cells.append(exec_(f"config.migrate|{tag}|migrate", "config.migrate",
+                           args=["--migrate-config", rel], mode="cli", config="none",
+                           why="YAML to stdout, banner to stderr, exit 0/1/2 (PB-50)"))
+        cells.append(exec_(f"config.migrate|{tag}|validate-migrated", "config.migrate",
+                           args=["--validate"], mode="validate", config=f"migrated:{rel}",
+                           why="the migrated document under --validate"))
+    return cells
+
+
+def scrape_cells() -> list[dict]:
+    F = "ops.scrape"
+    return [
+        http("ops.scrape|/metrics|key", F, "GET", "/metrics", why="RouteAuth::Key; text/plain; version=0.0.4 (PB-43/70)"),
+        http("ops.scrape|/metrics|none", F, "GET", "/metrics", auth="none", why="data-plane key auth refused"),
+        http("ops.scrape|/metrics|admin-listener", F, "GET", "/metrics", auth="admin", listener="admin", why="admin router has no /metrics (PB-76)"),
+        http("ops.scrape|/metrics/hooks|key", F, "GET", "/metrics/hooks", why="core axum route; charset=utf-8 (PB-43)"),
+        http("ops.scrape|/stats|key", F, "GET", "/stats", why="20 per-lane fields, 'unbounded', variant names (PB-43)"),
+        http("ops.scrape|/stats|none", F, "GET", "/stats", auth="none", why="auth chain applies"),
+        http("ops.scrape|/healthz|data", F, "GET", "/healthz", auth="none", why="unconditional bypass; 200 ok"),
+        http("ops.scrape|/healthz|admin", F, "GET", "/healthz", auth="none", listener="admin", why="same on the admin listener (RT-003)"),
+        http("ops.scrape|/v1/models|openai-fp", F, "GET", "/v1/models", why="openai envelope by fingerprint (no x-api-key rung, PB-100)"),
+        http("ops.scrape|/v1/models|anthropic-fp", F, "GET", "/v1/models", headers={"anthropic-version": "2023-06-01"}, why="anthropic envelope"),
+        http("ops.scrape|/v1/models|x-api-key", F, "GET", "/v1/models", headers={"x-api-key": "irrelevant"}, why="x-api-key is NOT a rung for /v1/models"),
+        http("ops.scrape|/v1beta/models", F, "GET", "/v1beta/models", why="gemini listing"),
+        http("ops.scrape|/v1/models|none", F, "GET", "/v1/models", auth="none", why="refused"),
+    ]
+
+
+# A body larger than request_body_max_bytes (32 MiB default). Never inlined: the recorder expands the
+# marker at request time so cells.json stays reviewable.
+BIG_BODY = "@oversize:33MiB"
+
+
+def crosscut_cells() -> list[dict]:
+    F = "http.crosscut"
+    return [
+        http("http.crosscut|unknown-path|bare", F, "POST", "/definitely/unknown", body="{}", why="catch-all: path-inferred 404 (PB-30)"),
+        http("http.crosscut|unknown-path|openai-suffix", F, "POST", "/x/v1/chat/completions", body='{"model":"nope","messages":[]}', why="detects openai; unknown model"),
+        http("http.crosscut|unknown-path|anthropic-header", F, "POST", "/whatever", headers={"anthropic-version": "2023-06-01"}, body="{}", why="detects anthropic by header presence"),
+        http("http.crosscut|unknown-path|anthropic-beta", F, "POST", "/whatever", headers={"anthropic-beta": "x"}, body="{}", why="anthropic-beta is rung 2 too (PB-30)"),
+        http("http.crosscut|/api-prefix|data", F, "GET", "/api/v1/admin/nope", why="frozen admin envelope on the data listener (PB-30)"),
+        http("http.crosscut|/api|data", F, "GET", "/api", why="exact /api also forced"),
+        http("http.crosscut|admin-unknown|admin", F, "GET", "/api/v1/admin/nope", auth="admin", listener="admin", why="nested not_found envelope (PB-76)"),
+        http("http.crosscut|admin-outside-prefix|admin", F, "GET", "/nope", auth="admin", listener="admin", why="outer admin router: empty-bodied 404 (PB-76)"),
+        http("http.crosscut|admin-wrong-method|admin", F, "DELETE", "/api/v1/admin/info", auth="admin", listener="admin", why="method_not_allowed envelope"),
+        http("http.crosscut|wrong-method|GET-messages", F, "GET", "/v1/messages", why="405 protocol-native (RT-014)"),
+        http("http.crosscut|OPTIONS|chat", F, "OPTIONS", "/v1/chat/completions", auth="none", why="no CORS layer ever; OPTIONS => None (PB-100)"),
+        http("http.crosscut|HEAD|healthz", F, "HEAD", "/healthz", auth="none", why="HEAD on a GET route"),
+        http("http.crosscut|413|openai", F, "POST", "/v1/chat/completions", body=BIG_BODY, why="oversize after auth, dialect-shaped (PB-60)"),
+        http("http.crosscut|413|openai-unauth", F, "POST", "/v1/chat/completions", auth="none", body=BIG_BODY, why="unauthenticated oversize: 401 first (PB-60)"),
+        http("http.crosscut|413|anthropic", F, "POST", "/v1/messages", headers={"anthropic-version": "2023-06-01"}, body=BIG_BODY, why="anthropic envelope"),
+        http("http.crosscut|413|api-prefix", F, "POST", "/api/v1/admin/keys", auth="admin", listener="admin", body=BIG_BODY, why="admin envelope discards status/kind (PB-60)"),
+        http("http.crosscut|auth-token|GET-none", F, "GET", "/auth/token", auth="none", why="browser exchange bypass (PB-33)"),
+        http("http.crosscut|auth-token|POST-empty", F, "POST", "/auth/token", auth="none", body="{}", why="flat {\"error\":…} envelope (PB-100)"),
+        http("http.crosscut|bearer-and-x-api-key", F, "GET", "/stats", headers={"x-api-key": "not-a-key"}, why="carrier precedence: Bearer wins (PB-35)"),
+        http("http.crosscut|x-api-key-only|bad", F, "GET", "/stats", auth="none", headers={"x-api-key": "not-a-key"}, why="second carrier, invalid"),
+    ]
+
+
+# admin.ops: for each operation of fixtures/admin-bodies.json a happy cell (with its `pre` setup chain),
+# an unauthenticated cell, and where the fixture provides them a bad-body, a not-found, a stale
+# If-Match, a malformed If-Match and an idempotent-replay cell. Every cell boots fresh, so the
+# `order` of the fixture is turned into per-op PREREQUISITES (the earlier ops on the same resource).
+ADMIN_BODIES = FIXTURES / "admin-bodies.json"
+BOOT_MUTATIONS = FIXTURES / "boot-mutations.json"
+# resource → the ops that must precede an op on it within one boot (create before update/delete)
+ADMIN_PRE = {
+    "PutGroupsName": ["PostGroups"], "PatchGroupsName": ["PostGroups"], "DeleteGroupsName": ["PostGroups"],
+    "GetGroupsName": [], "GetGroupsNameUsage": [],
+    "PatchExportNameSettings": ["PutExportName"], "DeleteExportName": ["PutExportName"], "GetExportName": [],
+    "PatchIdentityProvidersNameSettings": ["PutIdentityProvidersName"], "DeleteIdentityProvidersName": ["PutIdentityProvidersName"],
+    "PostConfigRollback": ["PutConfigSettings"], "DeleteOverlaySection": ["PutConfigSettings"],
+    "GetConfigDiff": ["PutConfigSettings"], "GetConfigVersionsV": [],
+}
+
+
+def _req_of(op: dict, variant: dict, *, auth="admin") -> dict:
+    return {"method": op["method"], "path": variant.get("path") or op["path"],
+            "headers": variant.get("headers") or {}, "auth": auth, "listener": "admin",
+            "body": (json.dumps(variant["body"], separators=(",", ":"), sort_keys=True)
+                     if isinstance(variant.get("body"), (dict, list)) else variant.get("body"))}
+
+
+def admin_cells() -> list[dict]:
+    if not ADMIN_BODIES.exists():
+        return []
+    fx = json.loads(ADMIN_BODIES.read_text())
+    ops = fx["ops"]
+    stale = fx.get("stale_if_match", {})
+    cells = []
+    F = "admin.ops"
+
+    def pre_chain(opid: str) -> list[dict]:
+        chain = []
+        for pid in ADMIN_PRE.get(opid, []):
+            pop = ops[pid]
+            if pop.get("ok"):
+                chain.append(_req_of(pop, pop["ok"]))
+        return chain
+
+    for opid, op in sorted(ops.items()):
+        base_path = op["path"]
+        why = op.get("notes", "")[:160]
+        if op.get("restart"):
+            # PostRestart ends the process; recorded as its own cell (fresh boot, expect 202 then exit)
+            pass
+        if op.get("ok"):
+            c = http(f"admin.ops|{opid}|ok", F, op["method"], op["ok"].get("path") or base_path,
+                     auth="admin", listener="admin", headers=op["ok"].get("headers") or {},
+                     body=_req_of(op, op["ok"])["body"], why=why)
+            pre = pre_chain(opid)
+            if pre:
+                c["request"]["pre"] = pre
+            cells.append(c)
+            if op.get("idempotent"):
+                c2 = json.loads(json.dumps(c)); c2["id"] = f"admin.ops|{opid}|idempotent-replay"
+                c2["request"]["repeat"] = 2; c2["why"] = "same Idempotency-Key twice: the replay returns the first response (PB-21)"
+                cells.append(c2)
+            if op.get("if_match") and stale:
+                for kind in ("stale", "malformed"):
+                    c3 = json.loads(json.dumps(c)); c3["id"] = f"admin.ops|{opid}|if-match-{kind}"
+                    c3["request"]["headers"] = {**c3["request"]["headers"], stale.get("header", "If-Match"): stale[kind]}
+                    c3["why"] = f"If-Match {kind}: {stale.get(kind + '_expect')} (PB-100)"
+                    cells.append(c3)
+        else:
+            cells.append(http(f"admin.ops|{opid}|ok", F, op["method"], base_path, auth="admin", listener="admin",
+                              why="needs fixture: " + why, needs_fixture=True))
+        # unauthenticated: same request, no credential
+        v = op.get("ok") or {}
+        cells.append(http(f"admin.ops|{opid}|unauth", F, op["method"], v.get("path") or base_path, auth="none",
+                          listener="admin", headers={k: x for k, x in (v.get("headers") or {}).items() if k.lower() != "authorization"},
+                          body=_req_of(op, v)["body"] if v else None, why="no credential -> 401 envelope"))
+        if op.get("bad_body"):
+            cells.append(http(f"admin.ops|{opid}|bad-body", F, op["method"], op["bad_body"].get("path") or (v.get("path") or base_path),
+                              auth="admin", listener="admin", headers=op["bad_body"].get("headers") or {},
+                              body=_req_of(op, op["bad_body"])["body"], why=f"expect {op['bad_body'].get('expect')}"))
+        if op.get("not_found"):
+            cells.append(http(f"admin.ops|{opid}|not-found", F, op["method"], op["not_found"]["path"], auth="admin",
+                              listener="admin", headers=(v.get("headers") or {}), body=_req_of(op, v)["body"] if v else None,
+                              why=f"expect {op['not_found'].get('expect')}"))
+    return cells
+
+
+def boot_cells() -> list[dict]:
+    """One cell per inventoried boot refusal/warning: the mutated config under --validate (mode both/
+    validate) or a real boot (mode boot). A mutation the fixture could not express (op: null) is still
+    a cell — the recorder records it as a named gap, never a pass."""
+    if not BOOT_MUTATIONS.exists():
+        return []
+    fx = json.loads(BOOT_MUTATIONS.read_text())
+    cells = []
+    for m in fx["mutations"]:
+        fam = m.get("family", "boot.refusal")
+        mode = "boot" if m.get("mode") == "boot" else "validate"
+        args = ["--validate"] if mode == "validate" else []
+        cells.append(exec_(f"{fam}|{m['id']}|{mode}", fam, args=args, mode=mode,
+                           config=f"mutation:{m['id']}",
+                           why=f"expect exit {m.get('expect', {}).get('exit')}; stderr ∋ {str(m.get('expect', {}).get('stderr_contains'))[:80]}",
+                           needs_fixture=(m.get("op") is None)))
+    return cells
+
+
 def main() -> int:
     minv = json.loads(METHOD_INV.read_text())
     finv = json.loads(FIELD_INV.read_text())
-    cells = sorted(llm_cells(finv) + protocol_cells(minv), key=lambda c: c["id"])
+    cells = sorted(llm_cells(finv) + protocol_cells(minv) + cli_cells() + migrate_cells()
+                   + scrape_cells() + crosscut_cells() + admin_cells() + boot_cells(), key=lambda c: c["id"])
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "cell ids must be unique"
     doc = {
@@ -121,6 +348,8 @@ def main() -> int:
         "counts": {
             "total": len(cells),
             "by_plane": {p: sum(1 for c in cells if c["plane"] == p) for p in sorted({c["plane"] for c in cells})},
+            "by_family": {f: sum(1 for c in cells if c.get("family", c["plane"]) == f)
+                          for f in sorted({c.get("family", c["plane"]) for c in cells})},
         },
         "cells": cells,
     }

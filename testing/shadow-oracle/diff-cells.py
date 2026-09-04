@@ -19,6 +19,7 @@ Divergence classes (a cell may carry several; the first names the earliest diver
   effects.usage       ledger delta differs (money)
   effects.metrics     metric delta differs
   effects.audit       audit delta differs
+  effects.stderr      exec cells: the process's stderr (boot refusals, warnings, CLI errors)
   norm.rules          the set of normalizer rules that fired differs (a rule firing on ONE side is
                       itself a finding: something non-deterministic appeared or disappeared)
 
@@ -34,12 +35,12 @@ import re
 import sys
 from collections import Counter, defaultdict
 
-CLASS_ORDER = ["missing.golden", "missing.candidate", "status", "headers", "body",
+CLASS_ORDER = ["missing.golden", "missing.candidate", "status", "headers", "body", "effects.stderr",
                "effects.usage", "effects.metrics", "effects.audit", "norm.rules"]
 # Weight per class; a cell's weight is its family's max class weight over the classes it diverged in.
 # Money and refusal semantics dominate; cosmetics count but cannot outvote them.
 CLASS_WEIGHT = {"missing.golden": 10, "missing.candidate": 10, "status": 10, "effects.usage": 10,
-                "body": 3, "effects.audit": 3, "headers": 1, "effects.metrics": 1, "norm.rules": 1}
+                "body": 3, "effects.stderr": 3, "effects.audit": 3, "headers": 1, "effects.metrics": 1, "norm.rules": 1}
 # Families where BODY bytes are the contract itself (admin responses, boot messages, CLI output).
 BODY_IS_CONTRACT = {"admin.ops", "boot.refusal", "boot.warning", "config.migrate", "cli", "ops.scrape"}
 
@@ -143,10 +144,13 @@ def compare(g: dict, c: dict) -> tuple[list, dict]:
     if bd is not None:
         classes.append("body"); detail["body"] = bd
     ge, ce = g.get("effects", {}), c.get("effects", {})
-    for k in ("usage", "metrics", "audit"):
+    for k in ("usage", "metrics", "audit", "stderr"):
         if ge.get(k) != ce.get(k):
             classes.append(f"effects.{k}")
-            detail[f"effects.{k}"] = {"paths": json_paths_diff(ge.get(k), ce.get(k))}
+            if k == "stderr" and isinstance(ge.get(k), str) and isinstance(ce.get(k), str):
+                detail["effects.stderr"] = {"kind": "text", **(text_diff(ge[k], ce[k]) or {})}
+            else:
+                detail[f"effects.{k}"] = {"paths": json_paths_diff(ge.get(k), ce.get(k))}
     if sorted(g.get("applied", [])) != sorted(c.get("applied", [])):
         classes.append("norm.rules")
         detail["norm.rules"] = {"only_golden": sorted(set(g.get("applied", [])) - set(c.get("applied", []))),
@@ -176,6 +180,8 @@ def first_diff_text(classes, detail) -> str:
         if d.get("kind") == "text":
             return f"body line {d.get('line')}: {d.get('golden','')[:80]!r} -> {d.get('candidate','')[:80]!r}"
         return "body shape differs"
+    if k == "effects.stderr":
+        return f"stderr line {d.get('line')}: {d.get('golden','')[:80]!r} -> {d.get('candidate','')[:80]!r}"
     if k.startswith("effects."):
         ps = d.get("paths") or []
         if ps:
@@ -228,6 +234,10 @@ def main() -> int:
             classes, detail = ["missing.candidate"], {"missing.candidate": cl.get(cid, ("MISSING", "no candidate ledger row"))[1]}
         else:
             classes, detail = compare(g, cc)
+            only = c.get("compare")  # a cell with inherently random output names the classes that ARE its contract
+            if only:
+                classes = [k for k in classes if k in only or k.startswith("missing.")]
+                detail = {k: v for k, v in detail.items() if k in classes}
         wt = c.get("weight")
         if wt is None:
             wt = 10 if fam in BODY_IS_CONTRACT else max([CLASS_WEIGHT[k] for k in classes] or [0])

@@ -29,19 +29,20 @@ source "${repo}/testing/fleet-fixtures/lib.sh"
 # shellcheck source=oracle-config.sh
 source "${here}/oracle-config.sh"
 
-BIN="" OUT="" FILTER="" PLANE="llm"
+BIN="" OUT="" FILTER="" PLANE="llm" FRESH_ALL=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --bin) BIN="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --filter) FILTER="$2"; shift 2 ;;
     --plane) PLANE="$2"; shift 2 ;;
+    --shared-state) FRESH_ALL=0; shift ;;   # cells see each other's state (faster; NOT for goldens)
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 [ -x "$BIN" ] && [ -n "$OUT" ] || { echo "usage: $0 --bin <busbar> --out <dir> [--filter re]" >&2; exit 2; }
 command -v jq >/dev/null || { echo "record.sh needs jq" >&2; exit 2; }
-[ "$PLANE" = llm ] || { echo "record.sh: only the llm plane records natively today; mcp/a2a go through the conformance rigs" >&2; exit 2; }
+case "$PLANE" in llm|core|all) ;; *) echo "record.sh: planes recorded natively: llm, core (cli/config/scrape/crosscut/admin/boot), all; mcp/a2a go through the conformance rigs" >&2; exit 2 ;; esac
 
 LISTEN_PORT="${ORACLE_LISTEN_PORT:-48811}" ADMIN_PORT="${ORACLE_ADMIN_PORT:-48812}" MOCK_PORT="${ORACLE_MOCK_PORT:-48781}"
 assert_port_free "$LISTEN_PORT"; assert_port_free "$ADMIN_PORT"; assert_port_free "$MOCK_PORT"
@@ -98,6 +99,113 @@ snapshot() {  # snapshot <dir> <key-id>
     || rm -f "$d/metrics.txt"
 }
 
+# ── exec cells: CLI flags, --validate, --migrate-config, boot refusals/warnings ──────────────────
+# The process under test is the binary itself; the "response" is exit code + stdout + stderr.
+#   exec.mode     cli       run once with exec.args, capture, done
+#                 validate  run `--validate` (args) under the oracle env against exec.config
+#                 boot      start the process; a refusal exits; a warning boots — wait for /healthz on
+#                           spare ports, then stop; capture the log tail
+#   exec.config   baseline | none | missing | migrated:<corpus-path> | mutation:<id> (fixtures/boot-mutations.json)
+record_exec_cell() {  # <id> <cell-json> <raw-dir> <safe>
+  local id="$1" cell="$2" raw="$3" safe="$4" mode cfg cfgfile envkv rc
+  mode="$(jq -r '.exec.mode' <<<"$cell")"; cfg="$(jq -r '.exec.config // "baseline"' <<<"$cell")"
+  local -a args=() envs=()
+  while IFS= read -r a; do args+=("$a"); done < <(jq -r '.exec.args[]' <<<"$cell")
+  while IFS= read -r envkv; do [ -n "$envkv" ] && envs+=("$envkv"); done < <(jq -r '.exec.env // {} | to_entries[] | "\(.key)=\(.value)"' <<<"$cell")
+  local xwork="$raw/work"; mkdir -p "$xwork"
+  case "$cfg" in
+    baseline) cfgfile="$WORK/config.yaml" ;;
+    none) cfgfile="" ;;
+    missing) cfgfile="$xwork/does-not-exist.yaml" ;;
+    migrated:*) # the corpus file migrated by THIS binary, then validated
+      "$BIN" --migrate-config "${repo}/${cfg#migrated:}" >"$xwork/migrated.yaml" 2>/dev/null
+      cfgfile="$xwork/migrated.yaml" ;;
+    mutation:*) python3 "${here}/apply-mutation.py" --baseline "$WORK/config.yaml" --providers "$WORK/providers.yaml" \
+        --mutation "${cfg#mutation:}" --out "$xwork" >"$xwork/mutation.env" 2>"$xwork/mutation.err" \
+        || { record "$id" SKIP "UNSUPPORTED: $(tr '\n' ' ' <"$xwork/mutation.err" | cut -c1-200)" "mutation could not be applied (named gap)"; return; }
+      cfgfile="$xwork/config.yaml"
+      while IFS= read -r envkv; do [ -n "$envkv" ] && envs+=("$envkv"); done <"$xwork/mutation.env"
+      while IFS= read -r a; do [ -n "$a" ] && args+=("$a"); done < <(jq -r '.args[]? // empty' "$xwork/mutation-args.json" 2>/dev/null) ;;
+    *) record "$id" FAIL "unknown exec.config $cfg" ""; return ;;
+  esac
+  local providers="$WORK/providers.yaml"; [ -f "$xwork/providers.yaml" ] && providers="$xwork/providers.yaml"
+  local -a envcmd=(env BUSBAR_PROVIDERS="$providers" ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ORACLE_ADMIN_TOKEN" RUST_LOG=warn)
+  [ -n "$cfgfile" ] && envcmd+=(BUSBAR_CONFIG="$cfgfile")
+  [ "${#envs[@]}" -eq 0 ] || envcmd+=("${envs[@]}")
+  case "$mode" in
+    cli|validate)
+      "${envcmd[@]}" "$BIN" "${args[@]}" >"$raw/stdout" 2>"$raw/stderr" </dev/null; rc=$? ;;
+    boot)
+      # a boot cell must not collide with the recording busbar: rewrite the listen ports
+      python3 - "$cfgfile" "$xwork/boot.yaml" <<'PY'
+import sys,re
+s=open(sys.argv[1]).read()
+s=re.sub(r'^listen: .*$', 'listen: "127.0.0.1:48821"', s, flags=re.M)
+s=re.sub(r'^admin_listen: .*$', 'admin_listen: "127.0.0.1:48822"', s, flags=re.M)
+open(sys.argv[2],'w').write(s)
+PY
+      envcmd+=(BUSBAR_CONFIG="$xwork/boot.yaml")
+      "${envcmd[@]}" "$BIN" "${args[@]}" >"$raw/stdout" 2>"$raw/stderr" </dev/null &
+      local bpid=$! i=0 alive=1
+      while [ $i -lt 100 ]; do
+        if ! kill -0 "$bpid" 2>/dev/null; then alive=0; break; fi
+        if curl -fsS -m 1 -o /dev/null "http://127.0.0.1:48821/healthz" 2>/dev/null; then break; fi
+        sleep 0.1; i=$((i+1))
+      done
+      if [ "$alive" -eq 1 ]; then kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null; rc=0; else wait "$bpid"; rc=$?; fi ;;
+    *) record "$id" FAIL "unknown exec.mode $mode" ""; return ;;
+  esac
+  printf '%s\n' "$rc" >"$raw/status"
+  python3 "${here}/capture-exec.py" "$rc" "$raw/stdout" "$raw/stderr" --strip-path "$WORK" --strip-path "$xwork" --strip-path "$repo" --strip-path "$BIN" >"$raw/captured.json" 2>"$raw/capture.err" \
+    || { record "$id" FAIL "capture-exec.py failed" "$(tail -c 300 "$raw/capture.err")"; return; }
+  python3 "${here}/normalize.py" "$raw/captured.json" >"$OUT/cells/$safe.json" 2>"$raw/normalize.err" \
+    || { record "$id" FAIL "normalize.py failed" "$(tail -c 300 "$raw/normalize.err")"; return; }
+  record "$id" PASS "exit ${rc}; $(head -c 60 "$raw/stdout" | tr '\n' ' ')" ""
+  n=$((n + 1))
+}
+
+# Metering posts write-behind (usage_flush_interval_ms) and the gauges are scrape-time derived, so an
+# "after" snapshot taken at a fixed delay races the flush. Poll until two consecutive scrapes agree
+# (a fixed point), bounded, then snapshot — deterministic on every binary, never "sleep and hope".
+settle_then_snapshot() {  # <dir> <key-id>
+  local d="$1" kid="$2" i=0 prev="" cur=""
+  while [ $i -lt 20 ]; do
+    cur="$(curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${kid}/usage" 2>/dev/null | jq -c 'del(.as_of)' 2>/dev/null)$(curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_TOKEN_OK}" "http://127.0.0.1:${LISTEN_PORT}/metrics" 2>/dev/null | grep -v '^#' | grep -v '_seconds' | sort | md5 2>/dev/null || true)"
+    [ -n "$prev" ] && [ "$cur" = "$prev" ] && [ $i -ge 2 ] && break
+    prev="$cur"; sleep 0.15; i=$((i+1))
+  done
+  snapshot "$d" "$kid"
+}
+
+# Bind the fixture placeholders to THIS boot: minted key ids, listen addresses, the work dir, the mock.
+subst_placeholders() {  # <cell-json> -> cell-json
+  jq -c --arg ok "$ORACLE_KEY_OK" --arg broke "$ORACLE_KEY_BROKE" --arg noscope "$ORACLE_KEY_NOSCOPE" \
+        --arg tmp "$WORK/tmp" --arg work "$WORK" --arg la "127.0.0.1:${LISTEN_PORT}" --arg aa "127.0.0.1:${ADMIN_PORT}" \
+        --arg mock "http://127.0.0.1:${MOCK_PORT}" '
+    def sub: if type == "string" then
+        gsub("\\{KEY_OK\\}"; $ok) | gsub("\\{KEY_BROKE\\}"; $broke) | gsub("\\{KEY_NOSCOPE\\}"; $noscope)
+        | gsub("\\{TMP\\}"; $tmp) | gsub("\\{WORK\\}"; $work) | gsub("\\{LISTEN_ADDR\\}"; $la)
+        | gsub("\\{ADMIN_LISTEN_ADDR\\}"; $aa) | gsub("\\{MOCK_URL\\}"; $mock)
+      elif type == "array" then map(sub)
+      elif type == "object" then with_entries(.value |= sub)
+      else . end;
+    sub' <<<"$1"
+}
+mkdir -p "$WORK/tmp"
+
+run_pre_request() {  # <request-json {method,path,headers,body,auth,listener}> — unrecorded setup call
+  local rq="$1" m pth lst tok port
+  m="$(jq -r .method <<<"$rq")"; pth="$(jq -r .path <<<"$rq")"; lst="$(jq -r '.listener // "admin"' <<<"$rq")"
+  case "$(jq -r '.auth // "admin"' <<<"$rq")" in admin) tok="$ORACLE_ADMIN_TOKEN" ;; broke) tok="$ORACLE_TOKEN_BROKE" ;; none) tok="" ;; *) tok="$ORACLE_TOKEN_OK" ;; esac
+  port="$LISTEN_PORT"; [ "$lst" = admin ] && port="$ADMIN_PORT"
+  local -a h=()
+  while IFS= read -r kv; do h+=(-H "$kv"); done < <(jq -r '.headers // {} | to_entries[] | "\(.key): \(.value)"' <<<"$rq")
+  [ -z "$tok" ] || h+=(-H "Authorization: Bearer ${tok}")
+  local b; b="$(jq -r '.body // empty' <<<"$rq")"
+  [ -z "$b" ] || h+=(-H "Content-Type: application/json")
+  echo "pre $m $pth -> $(curl -sS -m 30 -o /dev/null -w '%{http_code}' -X "$m" "http://127.0.0.1:${port}${pth}" "${h[@]}" ${b:+--data-binary "$b"} 2>&1)"
+}
+
 # ── the cells ───────────────────────────────────────────────────────────────────────────────────
 n=0
 while IFS= read -r cell; do
@@ -106,12 +214,68 @@ while IFS= read -r cell; do
   outcome="$(jq -r .outcome <<<"$cell")"
   safe="${id//|/__}"
   # `fresh: true` — this cell must not see state (breaker, budgets) left by earlier cells.
-  if [ "$(jq -r '.fresh // false' <<<"$cell")" = true ]; then
+  if [ "$FRESH_ALL" = 1 ] || [ "$(jq -r '.fresh // false' <<<"$cell")" = true ]; then
     stop_busbar
     boot_busbar || { record "$id" FAIL "fresh boot before cell failed" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 300)"; continue; }
   fi
   raw="$OUT/raw/$safe"; mkdir -p "$raw"
 
+  driver="$(jq -r '.driver // "llm"' <<<"$cell")"
+  if [ "$(jq -r '.needs_fixture // false' <<<"$cell")" = true ]; then
+    record "$id" SKIP "UNSUPPORTED: $(jq -r .why <<<"$cell" | cut -c1-140)" "named gap: the fixture this cell needs is not in the tree yet"; continue
+  fi
+  case "$(jq -r .plane <<<"$cell")" in
+    mcp|a2a) record "$id" SKIP "UNSUPPORTED: $(jq -r .plane <<<"$cell") is proven by its conformance rig, not recorded here" "named gap on the golden, never owed"; continue ;;
+  esac
+  if [ "$driver" = exec ]; then
+    record_exec_cell "$id" "$cell" "$raw" "$safe"; continue
+  fi
+
+  if [ "$driver" = http ]; then
+    # An explicit request: {method, path, headers, body, auth: ok|broke|noscope|admin|none, listener,
+    # pre: [requests run UNRECORDED first, same boot], repeat: N (record the LAST response)}.
+    # Placeholders in path/headers/body are bound to this boot's values.
+    cell="$(subst_placeholders "$cell")"
+    while IFS= read -r pre; do
+      [ -n "$pre" ] || continue
+      run_pre_request "$pre" >>"$raw/pre.log" 2>&1
+    done < <(jq -c '.request.pre[]? // empty' <<<"$cell")
+    method="$(jq -r .request.method <<<"$cell")"; path="$(jq -r .request.path <<<"$cell")"
+    listener="$(jq -r '.request.listener // "data"' <<<"$cell")"
+    repeat="$(jq -r '.request.repeat // 1' <<<"$cell")"
+    body_spec="$(jq -r '.request.body // empty' <<<"$cell")"
+    case "$body_spec" in
+      @oversize:*) python3 - "${body_spec#@oversize:}" >"$raw/request.body" <<'PY'
+import sys
+spec = sys.argv[1]
+n = int(spec[:-3]) * 1024 * 1024 if spec.endswith("MiB") else int(spec)
+sys.stdout.write('{"model":"m-openai-chat","messages":[{"role":"user","content":"' + "x" * n + '"}]}')
+PY
+        ;;
+      "") : >"$raw/request.body" ;;
+      *) printf '%s' "$body_spec" >"$raw/request.body" ;;
+    esac
+    case "$(jq -r '.request.auth // "ok"' <<<"$cell")" in
+      broke) token="$ORACLE_TOKEN_BROKE"; kid="$ORACLE_KEY_BROKE" ;;
+      noscope) token="$ORACLE_TOKEN_NOSCOPE"; kid="$ORACLE_KEY_NOSCOPE" ;;
+      admin) token="$ORACLE_ADMIN_TOKEN"; kid="$ORACLE_KEY_OK" ;;
+      none) token=""; kid="$ORACLE_KEY_OK" ;;
+      *) token="$ORACLE_TOKEN_OK"; kid="$ORACLE_KEY_OK" ;;
+    esac
+    hdr_args=()
+    while IFS= read -r kv; do hdr_args+=(-H "$kv"); done < <(jq -r '.request.headers // {} | to_entries[] | "\(.key): \(.value)"' <<<"$cell")
+    [ -z "$token" ] || hdr_args+=(-H "Authorization: Bearer ${token}")
+    [ -s "$raw/request.body" ] && hdr_args+=(-H "Content-Type: application/json")
+    port="$LISTEN_PORT"; [ "$listener" = admin ] && port="$ADMIN_PORT"
+    local_m=(-X "$method"); [ "$method" = HEAD ] && local_m=(--head)
+    snapshot "$raw/before" "$kid"
+    k=1
+    while [ "$k" -le "$repeat" ]; do
+      status="$(curl -sS -m 30 -N "${local_m[@]}" "http://127.0.0.1:${port}${path}" "${hdr_args[@]}" \
+        --data-binary @"$raw/request.body" -D "$raw/headers" -o "$raw/body" -w '%{http_code}' 2>"$raw/curl.err")" || status="000"
+      k=$((k+1))
+    done
+  else
   req="$(python3 "${here}/build-request.py" --cell "$cell")" || { record "$id" FAIL "build-request failed" "$req"; continue; }
   auth="$(jq -r .auth <<<"$req")"
   if [ "$auth" != bearer ]; then
@@ -136,9 +300,8 @@ while IFS= read -r cell; do
   snapshot "$raw/before" "$kid"
   status="$(curl -sS -m 20 -N -X POST "http://127.0.0.1:${LISTEN_PORT}${path}" "${hdr_args[@]}" \
     --data-binary @"$raw/request.body" -D "$raw/headers" -o "$raw/body" -w '%{http_code}' 2>"$raw/curl.err")" || status="000"
-  # Metering may post after the response bytes are flushed; give the ledger a beat before reading it.
-  sleep 0.3
-  snapshot "$raw/after" "$kid"
+  fi
+  settle_then_snapshot "$raw/after" "$kid"
   rm -f "$CONTROL"
   printf '%s\n' "$status" >"$raw/status"
   printf '%s\n' "$kid" >"$raw/key-id"
@@ -155,7 +318,7 @@ while IFS= read -r cell; do
   usage_note="$(jq -c '.effects.usage' "$OUT/cells/$safe.json")"
   record "$id" PASS "HTTP ${status}; usage Δ ${usage_note}" ""
   n=$((n + 1))
-done < <(jq -c --arg p "$PLANE" '.cells[] | select(.plane == $p)' "${here}/cells.json")
+done < <(jq -c --arg p "$PLANE" '.cells[] | select($p == "all" or .plane == $p)' "${here}/cells.json")
 
 jq -n --arg ver "$VER" --arg bin "$BIN" --argjson recorded "$n" \
   '{binary: $bin, version: $ver, recorded: $recorded, at: (now | todate)}' >"$OUT/meta.json"

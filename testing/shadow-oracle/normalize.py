@@ -71,7 +71,9 @@ def norm_scalar_str(s: str, applied: set) -> str:
     return s
 
 
-METRIC_TIMING = re.compile(r"(_seconds_sum(\{|$))|(_seconds\{[^}]*quantile=)|(_bucket\{)|(_seconds$)")
+METRIC_TIMING = re.compile(r"(_seconds_sum(\{|$))|(_seconds\{[^}]*quantile=)|(_bucket\{)|(_seconds$)|(recovery_hint_ms)|(cooldown)")
+# JSON keys whose VALUE is a per-request synthesized id with no recognisable prefix (gemini responseId).
+ID_KEYS = {"responseId", "request_id", "requestId"}
 
 
 def norm_json(v, applied: set, key_id: str | None, parent_key: str = ""):
@@ -84,6 +86,15 @@ def norm_json(v, applied: set, key_id: str | None, parent_key: str = ""):
                 # a latency SUM / quantile sample is a measurement, never a contract, and a summary
                 # emits its quantiles only once its window has samples — DROP the key; the COUNT stays
                 applied.add("metrics.timing"); continue
+            if parent_key == "metrics":
+                # metric LABELS carry the minted key id (bucket="vk_…") and other per-run ids
+                nk = k
+                if key_id and key_id in nk:
+                    applied.add("key.id"); nk = nk.replace(key_id, "<KEY>")
+                nk = norm_scalar_str(nk, applied)
+                out[nk] = norm_json(x, applied, key_id, k); continue
+            if k in ID_KEYS and isinstance(x, str):
+                applied.add("id.wire"); out[k] = "<ID>"; continue
             out[k] = norm_json(x, applied, key_id, k)
         return dict(sorted(out.items()))
     if isinstance(v, list):
