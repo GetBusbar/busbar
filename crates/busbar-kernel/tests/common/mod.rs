@@ -149,21 +149,16 @@ impl Drop for Never<'_> {
 }
 
 impl busbar_kernel::teller::RouteAwait for NeverRoutes<'_> {
-    type Leg<'a>
-        = Never<'a>
-    where
-        Self: 'a;
-
     fn route_leg<'a>(
         &'a self,
         _token: &'a UnitToken<Route>,
         _ctx: &'a UnitCtx,
         _meter: &'a AccrualMeter,
-    ) -> Never<'a> {
+    ) -> busbar_kernel::teller::RouteLeg<'a> {
         self.units.note(StepName::Route);
-        Never {
+        Box::pin(Never {
             dropped: self.dropped,
-        }
+        })
     }
 }
 

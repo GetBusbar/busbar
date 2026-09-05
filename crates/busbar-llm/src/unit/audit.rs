@@ -255,11 +255,7 @@ pub fn audit(
 /// bytes agreed and the record did not. A caller that genuinely has no destination yet — a refusal
 /// taken before the model was ever read — passes [`crate::engine::POOL_LABEL_UNRESOLVED`], which
 /// the bound maps to itself because no deployment may configure a pool by that name.
-pub fn audit_refused(
-    unit_token: &UnitToken<Audit>,
-    ctx: &AuditCtx<'_>,
-    resp: Response,
-) -> Audited {
+pub fn audit_refused(unit_token: &UnitToken<Audit>, ctx: &AuditCtx<'_>, resp: Response) -> Audited {
     // A refusal is never a completion, whatever status it wears.
     let facts = AuditFacts {
         op_class: ctx.op_class,

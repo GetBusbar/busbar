@@ -57,17 +57,14 @@
 //! the pair resolves to is the decode arm's (`unit::decode::decode_path_model`, whose single-sentence
 //! 404 is the path surface's own and not the body surface's two).
 //!
-//! ## What the switch costs while the loop is synchronous, and why it is off by default
+//! ## What the switch costs
 //!
-//! `run_unit` is a synchronous function and the walk it drives is an upstream call, so a unit on
-//! this path occupies one blocking-pool thread for as long as the upstream takes to answer. On the
-//! admin surface that is nothing — a handful of short operations. On the DATA surface it is a real
-//! bound: the in-flight ceiling becomes the runtime's blocking-pool size, each in-flight request
-//! costs a thread stack, and a `spawn_blocking` task cannot be cancelled, so a client that goes away
-//! mid-request no longer drops the future it was waiting on. None of that changes a byte the client
-//! is answered with, which is why the oracle is silent about it and why this note is here instead.
-//! It is the one thing standing between this feature and being on by default, and closing it is the
-//! loop's business — an asynchronous step seam — not this file's.
+//! Nothing a thread pool can run out of. The loop's Route step is a future it awaits on the caller's
+//! own runtime, so a unit on this path occupies its in-flight slot and no thread at all while the
+//! upstream thinks: the node's ceiling is the in-flight table's, an in-flight request costs no thread
+//! stack, and a client that goes away drops the loop, which drops the walk, which drops the upstream
+//! leg. The unit still ends exactly once — through the charged audit door and the one exit, named for
+//! what happened — and the slot it held is free before the next arrival asks for one.
 //!
 //! ## What is deliberately not here
 //!
@@ -168,8 +165,13 @@ impl LlmNode {
     /// The whole of the kernel's ten steps, two audit doors and one exit, for a request that used to
     /// reach the plane's own shell directly. What comes back is what the AUDIT step posted: this
     /// function chooses the PATH, never the bytes.
+    ///
+    /// Awaited on the runtime the request arrived on. Drop this future — which is what axum does
+    /// when the client hangs up — and the loop's own future goes with it: the unit ends at its one
+    /// terminal, the hold leaves the cell, and [`Occupied`] hands the table its slot back on the way
+    /// out. Nothing is spawned here, so there is no detached task left holding either.
     #[must_use]
-    pub fn answer(&self, arrival: WalkArrival, model_hint: Option<String>) -> Response {
+    pub async fn answer(&self, arrival: WalkArrival, model_hint: Option<String>) -> Response {
         let proto = arrival.proto;
         let op_class = OpClassId::new(arrival.operation.name());
         let key = UnitKey::new(self.next_key.fetch_add(1, Ordering::Relaxed));
@@ -205,6 +207,14 @@ impl LlmNode {
             // reason that is not capacity. It is still an answer rather than a panic.
             Err(_refused) => unavailable(proto),
             Ok(slot) => {
+                // THE SLOT, from here to whichever way this unit leaves. The table is what bounds
+                // how many units this node has in flight, so the one thing that must not depend on
+                // the unit finishing is giving the slot back — and a client that hangs up is exactly
+                // the case where it does not finish.
+                let _occupied = Occupied {
+                    table: &self.inflight,
+                    key,
+                };
                 let ctx = UnitCtx {
                     key,
                     origin: OriginKind::Client,
@@ -215,7 +225,7 @@ impl LlmNode {
                 };
                 let mut leases = busbar_kernel::slice::LeaseSet::new();
                 let meter = AccrualMeter::new();
-                let _ended = busbar_kernel::teller::run_unit(
+                let _ended = busbar_kernel::teller::run_unit_async(
                     &self.kernel,
                     &unit,
                     &ctx,
@@ -227,8 +237,9 @@ impl LlmNode {
                         canary: &self.canary,
                         meter: &meter,
                     },
-                );
-                self.inflight.remove(key);
+                    &unit,
+                )
+                .await;
                 // The loop ran; the answer is whatever the terminal posted. There is no unit that
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
@@ -287,6 +298,23 @@ fn hold_path_facts(facts: PathFacts) -> HeldPathFacts {
 /// surface on this plane.
 fn with_path_facts<R>(read: impl FnOnce(&PathFacts) -> R) -> Option<R> {
     PATH_FACTS.with(|slot| slot.borrow().as_ref().map(read))
+}
+
+/// THE IN-FLIGHT SLOT, for the length of one unit.
+///
+/// The table is what bounds how many units this node has in flight, so the slot has to come back on
+/// every way out of the unit — the answer, a panic, and the one this seam exists for: the client
+/// hanging up mid-request, which drops the whole of `answer` where it stands. A `remove` written at
+/// the end of that function comes back on one of those three.
+struct Occupied<'n> {
+    table: &'n busbar_kernel::inflight::InFlight,
+    key: UnitKey,
+}
+
+impl Drop for Occupied<'_> {
+    fn drop(&mut self) {
+        self.table.remove(self.key);
+    }
 }
 
 /// What a node that cannot take the unit at all answers with, in the caller's own dialect.
@@ -601,14 +629,12 @@ impl Units for LlmUnit<'_> {
         _ctx: &UnitCtx,
         _meter: &AccrualMeter,
     ) -> Decision<Route> {
-        // The destination the charge actually LANDED on — post-downgrade, never the requested one.
-        // Dispatching through the pool the client asked for after charging a different one is the
-        // bug this ordering makes impossible.
-        let destination = self.walk.effective_pool(&self.model());
-        // The kernel's accrual meter is left at zero deliberately. What this unit spends is spent on
-        // the governance ledger, by the walk's own tap, in the window the arrival epoch pinned — and
-        // it is settled there. Accruing a second copy of it here would put one spend on two ledgers.
-        self.walk.route(token, &destination)
+        // THIS PLANE'S ROUTE AWAITS, so it is answered by the `RouteAwait` arm below and this one is
+        // not a path any unit on this plane takes: `LlmNode::answer` drives the loop's asynchronous
+        // entry point and there is no other caller. Answered rather than unwrapped — an arm that
+        // cannot be taken is still an arm that must say something — and answered with the reason a
+        // synchronous driver would truly have: there is no task here to run the leg on.
+        Decision::refuse(token, Refusal::new(ReasonCode::TaskLost))
     }
 
     fn meter(
@@ -716,6 +742,30 @@ impl Units for LlmUnit<'_> {
     }
 }
 
+/// STEP 5, ROUTE — the one step of this plane's ten that waits on anything.
+///
+/// The leg is the walk's own future, boxed because it is an `async` block and handed straight to the
+/// loop, which awaits it on the runtime serving this request. Nothing spawns it and nothing joins
+/// it: it is polled where the request already is, so no thread is parked for the length of the
+/// upstream call and dropping the unit drops the leg.
+impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
+    fn route_leg<'a>(
+        &'a self,
+        token: &'a UnitToken<Route>,
+        _ctx: &'a UnitCtx,
+        _meter: &'a AccrualMeter,
+    ) -> busbar_kernel::teller::RouteLeg<'a> {
+        // The destination the charge actually LANDED on — post-downgrade, never the requested one.
+        // Dispatching through the pool the client asked for after charging a different one is the
+        // bug this ordering makes impossible.
+        let destination = self.walk.effective_pool(&self.model());
+        // The kernel's accrual meter is left at zero deliberately. What this unit spends is spent on
+        // the governance ledger, by the walk's own tap, in the window the arrival epoch pinned — and
+        // it is settled there. Accruing a second copy of it here would put one spend on two ledgers.
+        Box::pin(async move { self.walk.route(token, &destination).await })
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // The mount
 // ---------------------------------------------------------------------------------------------
@@ -771,15 +821,11 @@ async fn body_arrival(proto: &'static str, a: ArrivalRequest) -> Response {
         headers,
         body,
         lanes: NODE.lanes(),
-        runtime: tokio::runtime::Handle::current(),
     };
-    // THE LOOP IS SYNCHRONOUS and the walk it drives is not, so the loop runs on a blocking worker
-    // and the one await inside it — the walk's own — is driven back on this runtime through the
-    // channel the plane's carry owns. That is the honest ordering: the loop drives the steps, the
-    // route step drives the walk, and the answer comes back through the steps that are still to run.
-    tokio::task::spawn_blocking(move || NODE.answer(arrival, model_hint))
-        .await
-        .unwrap_or_else(|_| unavailable(proto))
+    // THE LOOP AWAITS, so it is awaited: right here, on the task and the runtime this request
+    // already arrived on. Nothing is spawned, so nothing outlives the client — a connection that
+    // goes away drops this future, and with it the loop, the walk and the upstream leg.
+    NODE.answer(arrival, model_hint).await
 }
 
 /// Generate one `BodyIngress` fn-pointer target per dialect. The seam is a bare `fn` that cannot
@@ -1356,7 +1402,7 @@ mod tests {
         observed
     }
 
-    /// One request, through the real loop, on a blocking worker — exactly as the mount drives it.
+    /// One request, through the real loop, awaited on this task — exactly as the mount drives it.
     async fn drive(rig: &Rig, fixture: Fixture) -> Response {
         let node = LlmNode::new();
         let arrival = WalkArrival {
@@ -1368,11 +1414,8 @@ mod tests {
             headers: json_headers(),
             body: fixture.body(),
             lanes: node.lanes(),
-            runtime: tokio::runtime::Handle::current(),
         };
-        tokio::task::spawn_blocking(move || node.answer(arrival, None))
-            .await
-            .expect("the loop's blocking worker joins")
+        node.answer(arrival, None).await
     }
 
     const CASES: [Fixture; 6] = [

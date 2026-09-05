@@ -513,24 +513,24 @@ pub trait Units {
 /// drives is the same one. A plane whose Route awaits an upstream implements it and is reached
 /// through [`run_unit_async`], which parks no thread and drops the leg when the caller goes away.
 pub trait RouteAwait {
-    /// The leg, borrowed for the length of one unit's Route step.
-    ///
-    /// Deliberately an associated type rather than a boxed future: the synchronous entry point's leg
-    /// is a `Ready`, which is a value and not an allocation, so keeping the old callers costs them
-    /// nothing at all. A plane whose leg is an `async` block boxes its own.
-    type Leg<'a>: std::future::Future<Output = Decision<Route>>
-    where
-        Self: 'a;
-
     /// Dial, send, relay — all under the hold, with the meter running, as a future the loop awaits
     /// on the caller's own runtime.
+    ///
+    /// Boxed, and deliberately: a plane's unit borrows its node, so the `async` block its Route step
+    /// is written as has a type that mentions that borrow, and carrying that type through an
+    /// associated type turns every caller of the loop into a higher-ranked lifetime puzzle. One
+    /// allocation, on the one step that is about to dial an upstream, buys a seam a plane implements
+    /// by writing `async move` and the loop reads as a single await.
     fn route_leg<'a>(
         &'a self,
         token: &'a UnitToken<Route>,
         ctx: &'a UnitCtx,
         meter: &'a AccrualMeter,
-    ) -> Self::Leg<'a>;
+    ) -> RouteLeg<'a>;
 }
+
+/// The Route step's future, as the loop holds it while it waits.
+pub type RouteLeg<'a> = std::pin::Pin<Box<dyn Future<Output = Decision<Route>> + Send + 'a>>;
 
 /// A plane whose Route answers in place, as the one loop reaches it.
 ///
@@ -540,18 +540,13 @@ pub trait RouteAwait {
 struct Blocking<'u, U>(&'u U);
 
 impl<U: Units> RouteAwait for Blocking<'_, U> {
-    type Leg<'a>
-        = std::future::Ready<Decision<Route>>
-    where
-        Self: 'a;
-
     fn route_leg<'a>(
         &'a self,
         token: &'a UnitToken<Route>,
         ctx: &'a UnitCtx,
         meter: &'a AccrualMeter,
-    ) -> Self::Leg<'a> {
-        std::future::ready(self.0.route(token, ctx, meter))
+    ) -> RouteLeg<'a> {
+        Box::pin(std::future::ready(self.0.route(token, ctx, meter)))
     }
 }
 

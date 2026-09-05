@@ -15,12 +15,11 @@
 //! exists to prevent. So the carry lives HERE, beside the steps, and the root drives those two
 //! through a value it holds and never looks inside.
 //!
-//! THE OTHER THING THIS FILE OWNS is the runtime seam. The loop is synchronous; the walk the Route
-//! step performs is not. The loop therefore runs on a blocking worker and the walk runs as an
-//! ordinary task on the runtime the node was built with, with the two joined by a channel — the same
-//! crossing, and for the same reason, the admin plane's surface seam is crossed by: blocking on a
-//! runtime handle from inside a blocking worker is legal on some runtime flavours and a panic on
-//! others, and this node's data plane is configured with the flavour where it panics.
+//! THE OTHER THING THIS FILE OWNS is the runtime seam, and it is now a seam with nothing in it. The
+//! loop's Route step is a future the loop awaits on the caller's own runtime, so the walk IS that
+//! future: it is polled by whichever task is serving this request, on the thread that task is
+//! already running on. Nothing is spawned, nothing is joined, no thread is parked for the length of
+//! an upstream call, and a client that goes away drops this future exactly as it drops the loop's.
 //!
 //! WHAT THIS FILE IS NOT. It decides nothing. Every judgement below belongs to the step file it is
 //! delegated to; what is here is the carry between them and the thread the walk runs on.
@@ -38,7 +37,7 @@ use busbar_substrate::plane_host::{EngineHost, EngineTablesView};
 use crate::unit::admit::Admitted;
 use crate::unit::arrival::BodyArrival;
 use crate::unit::meter::{MeterCtx, MeterFacts};
-use crate::unit::route::{RouteInput, RouteParts};
+use crate::unit::route::RouteInput;
 
 /// Everything one request arrives with, as the composition root hands it over.
 ///
@@ -63,8 +62,6 @@ pub struct WalkArrival {
     /// configured lane's name is a runtime `String` and a `LaneId` is a borrowed static one; this is
     /// the bridge, and it is the root's because leaking is the root's decision to make.
     pub lanes: Arc<Mutex<Registration>>,
-    /// The runtime the walk's own task runs on.
-    pub runtime: tokio::runtime::Handle,
 }
 
 /// What the walk has established so far.
@@ -110,7 +107,6 @@ pub struct Walk {
     headers: HeaderMap,
     body: Bytes,
     lanes: Arc<Mutex<Registration>>,
-    runtime: tokio::runtime::Handle,
     carry: Mutex<Carry>,
 }
 
@@ -141,7 +137,6 @@ impl Walk {
             headers,
             body,
             lanes,
-            runtime,
         } = arrival;
         let rt = crate::engine::native_runtime_arc(host.as_ref());
         Walk {
@@ -154,7 +149,6 @@ impl Walk {
             headers,
             body,
             lanes,
-            runtime,
             carry: Mutex::new(Carry::default()),
         }
     }
@@ -361,18 +355,14 @@ impl Walk {
     // The two steps the root drives through this file
     // ---------------------------------------------------------------------------------------------
 
-    /// STEP 5, ROUTE — the walk, run on the runtime and sealed with the loop's own token.
+    /// STEP 5, ROUTE — the walk, awaited by the loop and sealed with the loop's own token.
     ///
-    /// The loop is on a blocking worker and the walk is a task; the two are joined by a channel, so
-    /// the crossing does not depend on which runtime flavour this node was configured with. What
-    /// travels back is what the walk SAW; the sealing happens here, where the token is.
-    pub fn route(&self, token: &UnitToken<Route>, destination: &str) -> Decision<Route> {
-        let (host, rt, proto) = (self.host.clone(), self.rt.clone(), self.proto);
-        let lanes = Arc::clone(&self.lanes);
-        let headers = self.headers.clone();
-        let caller_token = self.caller_token.clone();
-        let gov_key = self.gov.key.clone();
-        let destination = destination.to_string();
+    /// The walk IS the loop's one await: it is polled by the task serving this request, so no thread
+    /// is parked for the length of the upstream call and the node's in-flight ceiling is the
+    /// in-flight table's rather than a thread pool's. Dropping this future is what a client going
+    /// away does to the upstream leg, and it is what the loop does to it when the caller drops the
+    /// unit. What the walk SEES travels back here; the sealing happens here, where the token is.
+    pub async fn route(&self, token: &UnitToken<Route>, destination: &str) -> Decision<Route> {
         let (arrived, sink) = {
             let mut carry = self.lock();
             (carry.arrived.take(), carry.sink.take())
@@ -390,11 +380,11 @@ impl Walk {
             busbar_substrate::transport::Transport::Http,
             self.operation,
             // The handler the Decode step resolved is looked up again here rather than carried,
-            // because the lookup is a table read against a `&'static` registry and carrying a
-            // borrowed vtable through a channel is not a thing a value can do. Same protocol, same
-            // operation, same table: the same handler, or none — and none is unreachable, because
-            // the Decode step already refused a unit whose pair has no handler.
-            match busbar_substrate::handlers::request_handler(proto)
+            // because the lookup is a table read against a `&'static` registry and a borrowed vtable
+            // is not a thing the carry holds. Same protocol, same operation, same table: the same
+            // handler, or none — and none is unreachable, because the Decode step already refused a
+            // unit whose pair has no handler.
+            match busbar_substrate::handlers::request_handler(self.proto)
                 .and_then(|rh| rh.operation_handler(self.operation))
             {
                 Some(h) => h,
@@ -407,54 +397,28 @@ impl Walk {
             },
         );
 
-        let (reply, answer) = std::sync::mpsc::sync_channel::<RouteParts>(1);
-        self.runtime.spawn(async move {
-            let BodyArrival { body, parsed, .. } = arrived;
-            let parts = crate::unit::route::route_parts(RouteInput {
-                host: &host,
-                rt: &rt,
-                proto,
-                op,
-                destination: &destination,
-                headers: &headers,
-                body,
-                parsed,
-                caller_token: caller_token.as_deref(),
-                resolved_gov_key: gov_key.as_ref(),
-                usage_sink: sink,
-                // The body-model arrivals carry no dialect-shaped miss copy; the two that do keep
-                // their own entry point.
-                model_not_found_message: None,
-                lanes: &lanes,
-            })
-            .await;
-            let _ = reply.send(parts);
-        });
-
-        let parts = match answer.recv() {
-            Ok(parts) => parts,
-            // The task is gone, which happens only as the node itself does. Nothing was dispatched
-            // and nothing can be, and saying so is the only answer left.
-            Err(_) => RouteParts {
-                refusal: Some(busbar_caps::Refusal::new(busbar_caps::ReasonCode::TaskLost)),
-                plan: None,
-                response: busbar_substrate::proxy::ingress_error(
-                    proto,
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                    crate::engine::KIND_OVERLOADED,
-                    "The service is temporarily overloaded. Please retry shortly.",
-                ),
-                facts: MeterFacts {
-                    lane: None,
-                    usage: None,
-                    status: axum::http::StatusCode::SERVICE_UNAVAILABLE.as_u16(),
-                    billing_failed: false,
-                    upstream_leg: false,
-                    accrued: false,
-                },
-                meter_sink: None,
-            },
-        };
+        let BodyArrival { body, parsed, .. } = arrived;
+        // THE AWAIT. Everything the walk needs is borrowed straight off the carry — there is no task
+        // to move it into and no channel to carry it back — so a cancelled request drops this future
+        // and, with it, the upstream leg it was in the middle of.
+        let parts = crate::unit::route::route_parts(RouteInput {
+            host: &self.host,
+            rt: &self.rt,
+            proto: self.proto,
+            op,
+            destination,
+            headers: &self.headers,
+            body,
+            parsed,
+            caller_token: self.caller_token.as_deref(),
+            resolved_gov_key: self.gov.key.as_ref(),
+            usage_sink: sink,
+            // The body-model arrivals carry no dialect-shaped miss copy; the two that do keep their
+            // own entry point.
+            model_not_found_message: None,
+            lanes: &self.lanes,
+        })
+        .await;
         let routed = crate::unit::route::seal(token, parts);
         {
             let mut carry = self.lock();
