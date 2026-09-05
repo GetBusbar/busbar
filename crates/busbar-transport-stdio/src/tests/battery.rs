@@ -410,3 +410,54 @@ async fn an_unterminated_final_line_is_a_framing_error() {
         .expect_err("a half-written line is not a frame");
     assert_eq!(err, TransportError::Framing);
 }
+
+/// A peer that never writes a newline must not be able to exhaust this process's memory. The child
+/// is operator-launched, so it sits nearer the trusted side than a client does, but it is still a
+/// process this transport does not control and no layer above caps what it sends.
+#[tokio::test]
+async fn a_line_past_the_maximum_is_a_framing_error() {
+    let t = StdioTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    let (_ar, mut aw) = split(end_a);
+
+    let over = vec![b'x'; crate::transport::MAX_LINE_BYTES + 1];
+    let flood = tokio::spawn(async move {
+        // Never a newline: without a bound the reader would keep growing instead of answering.
+        let _ = aw.write_all(&over).await;
+        futures::future::pending::<()>().await;
+    });
+
+    let mut frames = t.frames(b);
+    let err = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("an over-long line must be answered, not read forever")
+        .expect("the stream must report it")
+        .expect_err("a line past the maximum is not a frame");
+    assert_eq!(err, TransportError::Framing);
+    flood.abort();
+}
+
+/// The bound does not touch ordinary traffic: a line just under the maximum is still a frame,
+/// byte-exact.
+#[tokio::test]
+async fn a_line_within_the_maximum_is_still_a_frame() {
+    let t = Arc::new(StdioTransport::new());
+    let (a, b) = pair(&t, 64 * 1024);
+    let payload = vec![b'y'; crate::transport::MAX_LINE_BYTES - 1];
+    let writer = tokio::spawn({
+        let t = t.clone();
+        let payload = payload.clone();
+        async move {
+            t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(&payload))
+                .await
+                .unwrap()
+        }
+    });
+    let mut frames = t.frames(b);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.len(), payload.len());
+    assert!(frame.bytes.as_slice().iter().all(|&c| c == b'y'));
+    writer.await.unwrap();
+}
