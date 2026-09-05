@@ -188,6 +188,7 @@ impl Units for ProductionUnits {
     fn verify(
         &self,
         _token: &UnitToken<Verify>,
+        _trust: &busbar_caps::TrustToken,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
     ) -> Decision<Verify> {

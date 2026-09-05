@@ -106,8 +106,8 @@ use std::sync::Mutex;
 use busbar_caps::{
     Admission, Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate,
     Decision, Decode, Encode, Meter, MeterClassId, OpClassId, Outcome, PrincipalId, QuantitySource,
-    ReasonCode, Refusal, Route, RoutePlan, ScopeFacts, UnitToken, Usage, UsageLine, UsageToken,
-    VerifiedDestination, Verify,
+    ReasonCode, Refusal, Route, RoutePlan, ScopeFacts, TrustToken, UnitToken, Usage, UsageLine,
+    UsageToken, VerifiedDestination, Verify,
 };
 use busbar_contract::ids::LaneId;
 use busbar_contract::ClaimKey;
@@ -794,22 +794,24 @@ impl Units for VoiceUnit<'_> {
     fn verify(
         &self,
         token: &UnitToken<Verify>,
+        trust: &TrustToken,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
     ) -> Decision<Verify> {
-        // **The seam this step cannot close, named rather than worked around.** The trust unit's
-        // answer is a set of SEALED destinations, and sealing one takes the trust token, which is
-        // minted from the kernel's seal. This trait lends this step its own unit token and nothing
-        // else — unlike `admit`, which is lent the admit token, and `meter`, which is lent the usage
-        // token — so a composition root cannot produce a sealed destination at all. The signature
-        // change that closes it is the same shape as the two that are already there: lend the trust
-        // token beside the unit token.
+        // The trust unit's answer is a set of SEALED destinations, and sealing takes the trust token
+        // the loop lends this step beside its own — the same shape admit and meter are lent. So the
+        // destination this session's dialect resolves to is sealed HERE, once, and the route step
+        // dials what this says rather than re-resolving the upstream on its own.
         //
-        // Until then this step answers with the empty verified set, which is a legitimate answer and
-        // not a silent failure: a pool with every lane excluded proceeds through admit exactly this
-        // way, the door draws and retains its slot, and the unit ends at the pool's exhaustion
-        // terminal. What is lost is the destination, not the accounting.
-        Decision::proceed(token, Vec::<VerifiedDestination>::new())
+        // The empty set is still the honest answer when configuration named no upstream at all: a
+        // unit with nowhere to go proceeds, the door draws and retains its slot, and the unit ends
+        // at the plane's no-destination terminal. What is no longer true is that a CONFIGURED
+        // upstream is answered the same way as an absent one.
+        let destinations: Vec<VerifiedDestination> = self
+            .upstream()
+            .map(|upstream| vec![VerifiedDestination::seal(trust, upstream.lane)])
+            .unwrap_or_default();
+        Decision::proceed(token, destinations)
     }
 
     fn approve(

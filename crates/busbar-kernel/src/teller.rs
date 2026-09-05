@@ -39,8 +39,8 @@ use busbar_caps::{
     Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Authenticated, Canary,
     Decision, Decode, DurabilityLost, Encode, ExitToken, Hold, HoldCell, KernelSeal, LedgerToken,
     Meter, MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags, PrincipalId,
-    QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName, TransportKeyToken, UnitEnd,
-    UnitKey, UnitToken, Usage, UsageLine, UsageToken, VerifiedDestination, Verify,
+    QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName, TransportKeyToken, TrustToken,
+    UnitEnd, UnitKey, UnitToken, Usage, UsageLine, UsageToken, VerifiedDestination, Verify,
 };
 
 use crate::registry::Generation;
@@ -368,9 +368,17 @@ pub trait Units {
     ) -> Decision<Authenticate>;
 
     /// Where the unit may go.
+    ///
+    /// Lent TWO tokens, for the same reason admit and meter are: the step's answer is a set of
+    /// SEALED destinations, and sealing one takes the trust token. A step lent only its unit token
+    /// could decide where a unit may go but could not say so, so every implementor would have to
+    /// answer with the empty set — which is a legitimate answer for a pool with every lane excluded
+    /// and a silent one for everything else. The trust token is lent for the length of this call and
+    /// nowhere else, so no other step can seal a destination.
     fn verify(
         &self,
         token: &UnitToken<Verify>,
+        trust: &TrustToken,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify>;
@@ -501,7 +509,12 @@ pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_
         .and_then(|authenticated| match authenticated {
             Authenticated::Challenge(_) => Ok(Admission::ZeroHold),
             Authenticated::Principal(principal) => units
-                .verify(&UnitToken::<Verify>::mint(seal), ctx, &principal)
+                .verify(
+                    &UnitToken::<Verify>::mint(seal),
+                    &TrustToken::mint(seal),
+                    ctx,
+                    &principal,
+                )
                 .into_result(seal)
                 .map(|destinations| (principal, destinations))
                 .and_then(
