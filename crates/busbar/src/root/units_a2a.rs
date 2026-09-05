@@ -965,6 +965,20 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // metering step. The meter is the kernel's running total and the hold is applied to it at
         // the exit, which is why this is an accrual and not a posting.
         meter.accrue(self.draft.request_bytes);
+        // How far this unit's reservation may still grow, read off the same chain the door was
+        // judged against. Offered here rather than at the door because it is a reading of the window
+        // as it is NOW, and the exit is where it is spent. Zero is a top-up that does not happen,
+        // never a unit that does not run.
+        meter.offer_headroom({
+            let chain = busbar_unit_admission::BucketChain::unchecked(Vec::new(), Vec::new());
+            AdmissionUnit::new(
+                self.bindings.door,
+                self.bindings.pricer,
+                self.bindings.pool,
+                self.bindings.now,
+            )
+            .headroom_nanos(&chain)
+        });
 
         // A plan with no leg at all is an operation this plane does not carry: a refusal at the
         // routing step, not a panic and not a guess.

@@ -788,6 +788,23 @@ impl<'n> VoiceUnit<'n> {
         }
     }
 
+    /// How far this unit's reservation may still be grown, in nano-units.
+    ///
+    /// The door's own read of what the principal's slice has left in the window. It is not a
+    /// decision and cannot become one: zero means the reservation does not grow and the rest of the
+    /// turn is carried as an overdraft, which is a turn that still runs.
+    fn headroom_nanos(&self) -> u64 {
+        let chain = busbar_unit_admission::BucketChain::unchecked(Vec::new(), Vec::new());
+        let door = self.node.door.lock().unwrap_or_else(|e| e.into_inner());
+        busbar_unit_admission::AdmissionUnit::new(
+            &door,
+            &self.node.pricer,
+            self.dialect.name(),
+            self.epoch,
+        )
+        .headroom_nanos(&chain)
+    }
+
     /// The session's coarse opening reservation, in nano-units: what unit zero takes the lease for
     /// and every later frame is allowed against.
     fn session_opening_nanos(&self) -> u64 {
@@ -971,6 +988,10 @@ impl Units for VoiceUnit<'_> {
             let spent = self.usage.audio_ms_in;
             self.accrued.fetch_add(spent, Ordering::AcqRel);
             meter.accrue(spent);
+            // How far this turn's reservation may still grow, read off the same chain the door was
+            // judged against. Offered here rather than at the door because it is a reading of the
+            // window as it is NOW, and the exit is where it is spent.
+            meter.offer_headroom(self.headroom_nanos());
             return Decision::proceed(token, RoutePlan::default());
         }
 
@@ -1832,6 +1853,39 @@ mod tests {
             1,
             "one posting, one record — and no overdraft record beside it"
         );
+    }
+
+    /// A turn that outruns the coarse estimate tops the reservation up out of the headroom its own
+    /// leg offered while it ran, rather than carrying the excess. The overdraft is the last resort,
+    /// not the ordinary answer to a guess that was low.
+    #[test]
+    fn a_turn_past_its_estimate_grows_the_reservation_out_of_the_offered_headroom() {
+        let node = priced_node(serviceable());
+        let reserved = TURN_OPENING_TOKENS * 5_000;
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
+            audio_tokens_out: 3,
+            // Far past what the door sized for, and the chain this node runs caps nothing.
+            audio_ms_in: reserved + 12_345,
+            ..TurnUsage::default()
+        });
+        assert_eq!(
+            unit.headroom_nanos(),
+            u64::MAX,
+            "an unconfigured chain caps no spend, so there is no ceiling to grow into"
+        );
+        let Ended::Settled { end, .. } = run(&Kernel::new(), &unit) else {
+            panic!("the exit path settles it");
+        };
+        let posted = end.into_posted().expect("the report fits the record");
+        assert_eq!(
+            posted.reserved(),
+            reserved + 12_345,
+            "the reservation grew to cover the spend"
+        );
+        assert_eq!(posted.overdraft(), 0, "so nothing had to be carried");
+        assert!(!posted
+            .flags()
+            .contains(busbar_caps::PostingFlags::OVERDRAFT));
     }
 
     /// The other end of the same lifecycle: a turn that ran far past what the door sized for it.

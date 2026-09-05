@@ -153,23 +153,46 @@ pub struct UnitCtx {
 /// the cell and owned. An accrual is never lost by this: the total is atomic and the exit reads it
 /// after the compare-and-set that took the hold.
 #[derive(Debug, Default)]
-pub struct AccrualMeter(std::sync::atomic::AtomicU64);
+pub struct AccrualMeter {
+    spent: std::sync::atomic::AtomicU64,
+    headroom: std::sync::atomic::AtomicU64,
+}
 
 impl AccrualMeter {
-    /// A meter reading zero.
+    /// A meter reading zero, with no headroom offered.
     pub fn new() -> Self {
         AccrualMeter::default()
     }
 
     /// Add a spend.
     pub fn accrue(&self, amount: u64) {
-        self.0
+        self.spent
             .fetch_add(amount, std::sync::atomic::Ordering::AcqRel);
     }
 
     /// What the unit has spent so far.
     pub fn total(&self) -> u64 {
-        self.0.load(std::sync::atomic::Ordering::Acquire)
+        self.spent.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Say how far the unit's reservation may still be grown, in nano-units.
+    ///
+    /// The loop cannot work this out: it is what the principal's slice has left in the window, and
+    /// only the plane's own leg holds the chain that answers. So the leg offers it here, while it is
+    /// running, and the exit reads it when it applies the accrual to the hold. A leg that offers
+    /// nothing gets the safe answer — the reservation does not grow and the excess is carried —
+    /// which is a unit that still runs and still posts, never one that is refused.
+    ///
+    /// Offered rather than added: the last word wins, because the figure is a reading of the window
+    /// and not a quantity that accumulates.
+    pub fn offer_headroom(&self, nanos: u64) {
+        self.headroom
+            .store(nanos, std::sync::atomic::Ordering::Release);
+    }
+
+    /// What the leg said the reservation may still grow by.
+    pub fn headroom(&self) -> u64 {
+        self.headroom.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -722,14 +745,11 @@ pub fn exit<U: Units>(
                 requests_drawn(ctx.origin, evidence.upstream_candidate),
             );
             // What the unit spent while it ran is applied to the hold here, where the hold is
-            // owned. Running past the reservation does not refuse anything: value was delivered, so
-            // the full amount posts and the excess is carried.
-            let spent = run.meter.total();
-            let overshoot = spent.saturating_sub(hold.remaining());
-            hold.accrue(spent.min(hold.remaining()));
-            if overshoot > 0 {
-                hold.record_overdraft(overshoot);
-            }
+            // owned. The spend lands in full: past the end of the reservation it grows out of
+            // whatever headroom the leg offered while it ran, and whatever nothing can back is
+            // carried out as an overdraft. There is no arm on this path that refuses — value was
+            // delivered, so the only question left is which column it lands in.
+            let _spend = hold.spend(run.meter.total(), run.meter.headroom());
             let class = evidence
                 .class
                 .unwrap_or_else(|| MeterClassId::new("nano_units"));
