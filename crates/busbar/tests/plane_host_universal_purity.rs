@@ -102,6 +102,7 @@ const PLANE_ROOTS: &[(&str, &str)] = &[
 /// genuinely-neutral capabilities that happen to have exactly one consumer today (generic signature, no
 /// foreign-plane vocabulary) — flagged by the mechanical caller-count, cleared by the written reason.
 const SINGLE_PLANE_ALLOWLIST: &[(&str, &str, &str)] = &[
+    ("admission_check", "llm", "Neutral single-consumer capability: the door's check-and-charge without the finishing record, so the Audit step can be the one terminal; generic signature, no foreign-plane vocabulary. Sole current caller is the LLM plane's admit step; admission_door collapses into it when the plane flips onto the step files. Re-review if a second plane consumes it."),
     ("admission_door", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
     ("any_content_hook", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
     ("approval_redeem", "mcp", "F3/F6 tracked debt: MCP durable trust/audit engine state (drift-quarantine / one-time-approval ledger / ask-state sealer), owner-ruled core-resident today; pending extraction to a narrowed McpTrustHost slice that is NOT a supertrait of EngineHost."),
