@@ -93,6 +93,10 @@ busbar-transport-sse = { path = "../busbar-transport-sse" }
 busbar-transport-ws = { path = "../busbar-transport-ws" }
 busbar-transport-grpc = { path = "../busbar-transport-grpc" }
 busbar-transport-stdio = { path = "../busbar-transport-stdio" }
+# Named directly because provisioning a listener means handing the transport-key unit a resolved
+# `rustls` config: the root builds the dial-side trust store, and the deployment's trust roots are
+# its own statement rather than a unit's.
+rustls = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 axum = { workspace = true }
 tracing = { workspace = true }
@@ -174,6 +178,9 @@ busbar-store-example-plugin = { path = "../store-example-plugin" }
 # tests/cli_validate.rs builds signed plugin tarball fixtures.
 busbar-plugin-sign = { path = "../plugin-sign" }
 hex = { workspace = true }
+# `root/transports.rs` provisions a listener against a real self-signed pair rather than a fixture
+# shaped to fit: the point of that test is that the material actually parses.
+rcgen = { workspace = true }
 # THE ADDED-LATENCY INSTRUMENT (`benches/hook_path.rs`) — black-box, boots the shipped binary.
 criterion = { workspace = true }
 

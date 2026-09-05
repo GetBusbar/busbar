@@ -39,8 +39,8 @@ use busbar_caps::{
     Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Authenticated, Canary,
     Decision, Decode, DurabilityLost, Encode, ExitToken, Hold, HoldCell, KernelSeal, LedgerToken,
     Meter, MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags, PrincipalId,
-    QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName, UnitEnd, UnitKey, UnitToken,
-    Usage, UsageLine, UsageToken, VerifiedDestination, Verify,
+    QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName, TransportKeyToken, UnitEnd,
+    UnitKey, UnitToken, Usage, UsageLine, UsageToken, VerifiedDestination, Verify,
 };
 
 use crate::registry::Generation;
@@ -88,6 +88,20 @@ impl Kernel {
     /// batteries name it too, to drive the door directly and prove what the cell does under a race.
     pub fn admit_token(&self) -> AdmitToken<Admit> {
         AdmitToken::<Admit>::mint(&self.seal)
+    }
+
+    /// The transport-key unit's token, as the composition root lends it.
+    ///
+    /// The one token minted OUTSIDE the loop. Keys are resolved at listen, dial and upgrade, none
+    /// of which is a step of a unit, so there is no step whose token could stand in — and without
+    /// this the unit's `provision_server` and `provision_client` have a parameter no caller in the
+    /// tree can supply, which is why the only thing that ever registered a listener's TLS config
+    /// was the transport's own tests.
+    ///
+    /// Kept beside `admit_token` and named the same way, so the source scan that accounts for every
+    /// mint sees this one too.
+    pub fn transport_key_token(&self) -> TransportKeyToken {
+        TransportKeyToken::mint(&self.seal)
     }
 
     /// The seal itself, for the other two places in the kernel that mint tokens: the recovery
