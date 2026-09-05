@@ -658,7 +658,9 @@ pub struct Overflow {
 }
 
 impl Overflow {
-    /// The `ChainBreak` body: the four numbers, in the order they are named above.
+    /// The `ChainBreak` body: how many went, then the two identities that bracket them — five
+    /// fixed-width numbers, in the order the fields are named above. The break record's own sequence
+    /// number is not in the body because the record already carries it in its header.
     #[must_use]
     pub fn body(&self) -> Vec<u8> {
         let mut body = Vec::with_capacity(40);
