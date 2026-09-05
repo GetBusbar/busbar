@@ -125,7 +125,13 @@ const MIN_NA_REASON: usize = 60;
 /// THE FIVE ROOT LEGS, verbatim — one per `root-*` feature the composition root carries. Pinned
 /// here for the same reason [`PLANES`] is: a leg that quietly left the list would take its whole
 /// column of root verdicts with it.
-const ROOT_LEGS: [&str; 5] = ["root-a2a", "root-admin", "root-llm", "root-mcp", "root-voice"];
+const ROOT_LEGS: [&str; 5] = [
+    "root-a2a",
+    "root-admin",
+    "root-llm",
+    "root-mcp",
+    "root-voice",
+];
 
 /// Every root leg's file lives here, and evidence for a leg that lived anywhere else would not be
 /// that leg's evidence.
@@ -702,13 +708,17 @@ fn the_gates_own_constants_are_the_doctrines() {
     }
     assert_eq!(
         ROOT_LEGS,
-        ["root-a2a", "root-admin", "root-llm", "root-mcp", "root-voice"],
+        [
+            "root-a2a",
+            "root-admin",
+            "root-llm",
+            "root-mcp",
+            "root-voice"
+        ],
         "the five root legs are the composition root's own; changing the list is a doctrine change"
     );
     const {
-        assert!(
-            MIN_ROOT_REASON >= 60 && MIN_ROOT_PROVEN >= 25 && MIN_ZERO_COLUMN_ARGUMENT >= 120
-        );
+        assert!(MIN_ROOT_REASON >= 60 && MIN_ROOT_PROVEN >= 25 && MIN_ZERO_COLUMN_ARGUMENT >= 120);
     }
 }
 
@@ -966,7 +976,8 @@ fn selftest_c_na_cell_without_an_argument_is_red() {
 
 const ARG: &str =
     "a fixture argument long enough to be an argument a reviewer could actually disagree with here";
-const LONG_ARG: &str = "a fixture argument for a leg that answers to zero ledger columns, which is a \
+const LONG_ARG: &str =
+    "a fixture argument for a leg that answers to zero ledger columns, which is a \
                         real claim about the plane rather than an omission, and therefore costs a \
                         longer sentence than an ordinary gap does";
 
@@ -1050,7 +1061,8 @@ fn selftest_a_missing_root_verdict_or_an_unargued_gap_is_red() {
     let root = scratch("root-absent");
     let mut doc = root_fixture(&root);
     doc["cells"][0].as_object_mut().unwrap().remove("root");
-    let err = verify_root(&doc, &root, &FIXTURE_LEGS, 1).expect_err("an absent root verdict is red");
+    let err =
+        verify_root(&doc, &root, &FIXTURE_LEGS, 1).expect_err("an absent root verdict is red");
     assert!(err.contains("carries no `root` verdict"), "got: {err}");
 
     let root2 = scratch("root-token");
@@ -1084,14 +1096,15 @@ fn selftest_root_verdict_disagreeing_with_the_cell_or_an_unowned_column_is_red()
     let mut doc2 = root_fixture(&root2);
     doc2["root_legs"]["leg-b"]["columns"] = serde_json::json!([]);
     doc2["root_legs"]["leg-b"]["note"] = LONG_ARG.into();
-    let err2 =
-        verify_root(&doc2, &root2, &FIXTURE_LEGS, 1).expect_err("a column no leg answers to is red");
+    let err2 = verify_root(&doc2, &root2, &FIXTURE_LEGS, 1)
+        .expect_err("a column no leg answers to is red");
     assert!(err2.contains("answered by NO root leg"), "got: {err2}");
 
     // A leg that answers to a column and proves nothing on it.
     let root3 = scratch("root-undriven");
     let mut doc3 = root_fixture(&root3);
-    doc3["cells"][1]["root"] = serde_json::json!({ "state": "none", "leg": "leg-b", "reason": ARG });
+    doc3["cells"][1]["root"] =
+        serde_json::json!({ "state": "none", "leg": "leg-b", "reason": ARG });
     let err3 = verify_root(&doc3, &root3, &FIXTURE_LEGS, 1)
         .expect_err("a leg with no watched cell is red");
     assert!(err3.contains("nobody drove"), "got: {err3}");
