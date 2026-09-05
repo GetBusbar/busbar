@@ -25,7 +25,9 @@ use busbar_voice::runtime::{
     build_runtime_hosted, Carrier, EchoToolExecutor, HostMeteringPort, LeaseState,
     LocalMeteringPort, MeteringPort, SessionCore, VoiceRuntime,
 };
-use busbar_voice::topology::{begin_session, dial_provider, DialProviderError, SessionBudget, StartError};
+use busbar_voice::topology::{
+    begin_session, dial_provider, DialProviderError, SessionBudget, StartError,
+};
 use bytes::Bytes;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -1408,7 +1410,10 @@ fn probe_gemini_live_route() -> (&'static str, String) {
         );
     };
     if !admission.audience.ends_with("/v1/realtime") {
-        return ("FAIL", format!("unexpected audience: {}", admission.audience));
+        return (
+            "FAIL",
+            format!("unexpected audience: {}", admission.audience),
+        );
     }
 
     let arrivals = busbar_voice::mount::voice_ws_arrivals();
@@ -1677,7 +1682,12 @@ fn probe_admit_refusal() -> (&'static str, String) {
     ) {
         Err(StartError::BudgetRefused) => {}
         Ok(_) => return ("FAIL", "a spent budget was admitted a session".into()),
-        Err(e) => return ("FAIL", format!("wrong refusal reason for a spent budget: {e}")),
+        Err(e) => {
+            return (
+                "FAIL",
+                format!("wrong refusal reason for a spent budget: {e}"),
+            )
+        }
     }
     if fixture.leases_opened() != leases_before {
         return (
@@ -1756,7 +1766,12 @@ fn probe_route_failover() -> (&'static str, String) {
         // and the guard refusal's canonical signal (Auth-class => HardDown) trips the cell.
         match dial_provider(&host, pool, 0, "ws://127.0.0.1:1/", policy).await {
             Err(DialProviderError::Dial(_)) => {}
-            Ok(_) => return ("FAIL", "the guard-refused target dialed successfully".into()),
+            Ok(_) => {
+                return (
+                    "FAIL",
+                    "the guard-refused target dialed successfully".into(),
+                )
+            }
             Err(e) => return ("FAIL", format!("expected a real dial failure, got: {e}")),
         }
         if !matches!(
@@ -1823,7 +1838,10 @@ fn probe_audit_record() -> (&'static str, String) {
     if log.len() != 1 {
         return (
             "FAIL",
-            format!("expected exactly one admin-audit row after one session, got {}", log.len()),
+            format!(
+                "expected exactly one admin-audit row after one session, got {}",
+                log.len()
+            ),
         );
     }
     let row = &log[0];
@@ -1831,7 +1849,10 @@ fn probe_audit_record() -> (&'static str, String) {
         return ("FAIL", format!("wrong audit row shape: {row:?}"));
     }
     if row.resource != "voice:call-audit-1" {
-        return ("FAIL", format!("the audit row does not name this session: {row:?}"));
+        return (
+            "FAIL",
+            format!("the audit row does not name this session: {row:?}"),
+        );
     }
 
     // A second, INDEPENDENT session must add exactly one MORE row.
@@ -1857,7 +1878,10 @@ fn probe_audit_record() -> (&'static str, String) {
     if log2.len() != 2 {
         return (
             "FAIL",
-            format!("expected exactly two admin-audit rows after two sessions, got {}", log2.len()),
+            format!(
+                "expected exactly two admin-audit rows after two sessions, got {}",
+                log2.len()
+            ),
         );
     }
 

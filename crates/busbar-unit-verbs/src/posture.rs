@@ -108,15 +108,17 @@ pub fn check_dual_control(
     }
     match approval {
         ApprovalState::Approved => Ok(()),
-        ApprovalState::NotYetApproved => {
-            Err(Refusal::new(RefusalStep::Admit, ReasonCode::ApprovalPending))
-        }
+        ApprovalState::NotYetApproved => Err(Refusal::new(
+            RefusalStep::Admit,
+            ReasonCode::ApprovalPending,
+        )),
         ApprovalState::SelfApproved => {
             Err(Refusal::new(RefusalStep::Approve, ReasonCode::SelfApproval))
         }
-        ApprovalState::PayloadMismatch => {
-            Err(Refusal::new(RefusalStep::Approve, ReasonCode::PayloadMismatch))
-        }
+        ApprovalState::PayloadMismatch => Err(Refusal::new(
+            RefusalStep::Approve,
+            ReasonCode::PayloadMismatch,
+        )),
     }
 }
 

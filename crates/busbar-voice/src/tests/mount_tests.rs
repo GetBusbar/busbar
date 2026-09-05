@@ -178,10 +178,7 @@ fn build_binds_the_audience_from_public_url_and_none_without() {
         claims,
         vec![
             (MOUNT_PATH.to_string(), crate::OPENAI_REALTIME),
-            (
-                "/v1/realtime/gemini".to_string(),
-                crate::GEMINI_LIVE
-            ),
+            ("/v1/realtime/gemini".to_string(), crate::GEMINI_LIVE),
         ],
         "the plane claims one audience-checked base per dialect route"
     );

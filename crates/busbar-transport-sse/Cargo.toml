@@ -11,6 +11,7 @@ license = "Apache-2.0"
 # `busbar-transport-http` for the request/response byte stream it composes over.
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
+busbar-contract-transport = { path = "../busbar-contract-transport" }
 busbar-transport-http = { path = "../busbar-transport-http" }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }

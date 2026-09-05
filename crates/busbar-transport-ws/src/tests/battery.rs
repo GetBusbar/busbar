@@ -9,8 +9,10 @@ use std::time::Duration;
 
 use futures::StreamExt;
 
-use busbar_contract::wire::{CloseReason, Direction, TransportError};
 use busbar_contract::{ArenaBytes, StreamId, Transport};
+use busbar_contract_transport::wire::CloseReason;
+use busbar_contract_transport::wire::Direction;
+use busbar_contract_transport::wire::TransportError;
 
 use crate::WsTransport;
 
@@ -18,7 +20,13 @@ use crate::WsTransport;
 /// server handshake role, the other the client role, exactly as `accept`/`dial` would over a real
 /// socket. This is the exact seam a real `tcp`/`tls`/`http` transport would hand this crate a
 /// connection through once composed (see the crate's own report).
-async fn pair(t: &WsTransport, cap: usize) -> (busbar_contract::wire::Conn, busbar_contract::wire::Conn) {
+async fn pair(
+    t: &WsTransport,
+    cap: usize,
+) -> (
+    busbar_contract_transport::wire::Conn,
+    busbar_contract_transport::wire::Conn,
+) {
     let (end_a, end_b) = tokio::io::duplex(cap);
     let server = t.handshake_over(end_a, true, "peer-a");
     let client = t.handshake_over(end_b, false, "peer-b");
@@ -34,7 +42,10 @@ async fn upgrade_then_round_trip_byte_exact() {
     let (a, b) = pair(&t, 64 * 1024).await;
 
     let payload = b"the quick brown fox \xE2\x9C\x93".to_vec();
-    let n = t.write(&a, StreamId(0), ArenaBytes::new(&payload)).await.unwrap();
+    let n = t
+        .write(&a, StreamId(0), ArenaBytes::new(&payload))
+        .await
+        .unwrap();
     assert_eq!(n, payload.len());
 
     let mut frames = t.frames(b);
@@ -92,9 +103,13 @@ async fn an_in_band_upgrade_over_http_with_cleared_facts() {
 
     // And the adopted connection carries frames, which is what makes the upgrade real rather than
     // a shape that only type-checks.
-    ws.write(&upgraded, StreamId(0), ArenaBytes::new(b"after the upgrade"))
-        .await
-        .unwrap();
+    ws.write(
+        &upgraded,
+        StreamId(0),
+        ArenaBytes::new(b"after the upgrade"),
+    )
+    .await
+    .unwrap();
     let mut frames = client_t.frames(client_conn);
     let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), b"after the upgrade");
@@ -138,7 +153,11 @@ async fn a_composed_round_trip_over_the_layers_below() {
     );
 
     client_t
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"hello over the layers below"))
+        .write(
+            &client_conn,
+            StreamId(0),
+            ArenaBytes::new(b"hello over the layers below"),
+        )
         .await
         .unwrap();
     let mut frames = server_t.frames(server_conn);
@@ -213,7 +232,9 @@ impl busbar_contract::TransportConfigView for HttpCfg {
 async fn half_close_is_the_ws_closing_handshake() {
     let t = WsTransport::new();
     let (a, b) = pair(&t, 64 * 1024).await;
-    t.write(&a, StreamId(0), ArenaBytes::new(b"last words")).await.unwrap();
+    t.write(&a, StreamId(0), ArenaBytes::new(b"last words"))
+        .await
+        .unwrap();
     // `close` sends the WS Close control frame — the initiator's half of the closing handshake.
     t.close(a, CloseReason::Normal);
 
@@ -247,11 +268,13 @@ async fn backpressure_is_bidirectional() {
     let payload = vec![b'y'; 65536];
     let t2 = t.clone();
     let payload2 = payload.clone();
-    let writer = tokio::spawn(async move {
-        t2.write(&a, StreamId(0), ArenaBytes::new(&payload2)).await
-    });
+    let writer =
+        tokio::spawn(async move { t2.write(&a, StreamId(0), ArenaBytes::new(&payload2)).await });
     tokio::time::sleep(Duration::from_millis(20)).await;
-    assert!(!writer.is_finished(), "an oversized write must block on a full duplex");
+    assert!(
+        !writer.is_finished(),
+        "an oversized write must block on a full duplex"
+    );
     let mut frames = t.frames(b);
     let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.len(), payload.len());
@@ -269,7 +292,9 @@ async fn k_writers_serialise_without_interleaving() {
         let a = a.clone();
         handles.push(tokio::spawn(async move {
             let line = format!("writer-{i:02}");
-            t.write(&a, StreamId(0), ArenaBytes::new(line.as_bytes())).await.unwrap();
+            t.write(&a, StreamId(0), ArenaBytes::new(line.as_bytes()))
+                .await
+                .unwrap();
         }));
     }
     for h in handles {
@@ -309,7 +334,9 @@ async fn unit0_refusal_writes_then_closes() {
         stream: None,
         correlates: None,
     };
-    t.unit0_refusal(a, None, &refusal, ArenaBytes::new(b"refused")).await.unwrap();
+    t.unit0_refusal(a, None, &refusal, ArenaBytes::new(b"refused"))
+        .await
+        .unwrap();
     let mut frames = t.frames(b);
     let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), b"refused");
@@ -318,8 +345,8 @@ async fn unit0_refusal_writes_then_closes() {
 #[allow(clippy::assertions_on_constants)]
 #[tokio::test]
 async fn transport_meta_matches_the_architecture_row() {
-    use busbar_contract::wire::Unit0Trigger;
     use busbar_contract::TransportMeta;
+    use busbar_contract_transport::wire::Unit0Trigger;
     assert_eq!(<WsTransport as TransportMeta>::KEY, "ws");
     assert!(<WsTransport as TransportMeta>::SESSION);
     assert!(<WsTransport as TransportMeta>::SESSION_BOUND);
@@ -357,7 +384,7 @@ fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "ws",
-            address: busbar_contract::UpstreamAddress::socket(host),
+            address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test-lane"),
         },
         "ws",

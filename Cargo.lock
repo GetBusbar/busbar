@@ -476,7 +476,16 @@ dependencies = [
 name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
+ "busbar-contract-transport",
  "busbar-grammar",
+ "futures",
+ "serde",
+]
+
+[[package]]
+name = "busbar-contract-transport"
+version = "1.6.0"
+dependencies = [
  "futures",
  "serde",
 ]
@@ -945,6 +954,7 @@ name = "busbar-transport-grpc"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-contract-transport",
  "busbar-transport-http",
  "busbar-transport-tcp",
  "bytes",
@@ -964,6 +974,7 @@ name = "busbar-transport-http"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-contract-transport",
  "busbar-transport-tcp",
  "busbar-transport-tls",
  "bytes",
@@ -986,6 +997,7 @@ name = "busbar-transport-sse"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-contract-transport",
  "busbar-transport-http",
  "futures",
  "tokio",
@@ -996,6 +1008,7 @@ name = "busbar-transport-stdio"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-contract-transport",
  "futures",
  "tokio",
 ]
@@ -1005,6 +1018,7 @@ name = "busbar-transport-tcp"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-contract-transport",
  "futures",
  "tokio",
  "tokio-util",
@@ -1016,6 +1030,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
+ "busbar-contract-transport",
  "busbar-transport-tcp",
  "busbar-unit-transport-key",
  "futures",
@@ -1033,6 +1048,7 @@ name = "busbar-transport-ws"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-contract-transport",
  "busbar-transport-http",
  "busbar-transport-tcp",
  "futures",
@@ -1095,6 +1111,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
+ "busbar-contract-transport",
  "busbar-unit-breaker",
  "futures",
 ]
@@ -1131,6 +1148,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
+ "busbar-contract-transport",
  "rcgen",
  "rustls",
 ]
@@ -1141,6 +1159,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
+ "busbar-contract-transport",
 ]
 
 [[package]]

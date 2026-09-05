@@ -91,7 +91,8 @@ const fn scope_for(method: &str, path: &str) -> VerbScope {
     if str_eq(method, "GET") || str_eq(method, "HEAD") {
         return VerbScope::ReadOnly;
     }
-    if str_eq(path, "/api/v1/admin/config/validate") || str_eq(path, "/api/v1/admin/plugins/inspect")
+    if str_eq(path, "/api/v1/admin/config/validate")
+        || str_eq(path, "/api/v1/admin/plugins/inspect")
     {
         return VerbScope::ReadOnly;
     }
@@ -344,8 +345,18 @@ pub enum KernelVerb {
 /// `tests/table_matches_openapi.rs` compares against). Editing a row here without updating the
 /// fixture, or vice versa, is exactly what the conformance test exists to catch.
 pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
-    legacy_row!(GetAdminAuth, "GET", "/api/v1/admin/admin-auth", "GetAdminAuth"),
-    legacy_row!(PutAdminAuth, "PUT", "/api/v1/admin/admin-auth", "PutAdminAuth"),
+    legacy_row!(
+        GetAdminAuth,
+        "GET",
+        "/api/v1/admin/admin-auth",
+        "GetAdminAuth"
+    ),
+    legacy_row!(
+        PutAdminAuth,
+        "PUT",
+        "/api/v1/admin/admin-auth",
+        "PutAdminAuth"
+    ),
     legacy_row!(GetAudit, "GET", "/api/v1/admin/audit", "GetAudit"),
     legacy_row!(GetAuth, "GET", "/api/v1/admin/auth", "GetAuth"),
     legacy_row!(
@@ -626,14 +637,14 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
         "/api/v1/admin/pools/{name}",
         "GetPoolsName"
     ),
-    legacy_row!(GetProviders, "GET", "/api/v1/admin/providers", "GetProviders"),
-    legacy_row!(PostRestart, "POST", "/api/v1/admin/restart", "PostRestart"),
     legacy_row!(
-        GetUsage,
+        GetProviders,
         "GET",
-        "/api/v1/admin/usage",
-        "GetUsage"
+        "/api/v1/admin/providers",
+        "GetProviders"
     ),
+    legacy_row!(PostRestart, "POST", "/api/v1/admin/restart", "PostRestart"),
+    legacy_row!(GetUsage, "GET", "/api/v1/admin/usage", "GetUsage"),
     legacy_row!(
         PostSigningKeyRotate,
         "POST",
@@ -697,4 +708,5 @@ pub const IRREDUCIBLE_VERBS: &[KernelVerb] = &[
 
 /// The two verbs admitted under `operator: unset` (every other irreducible verb is refused until
 /// the ceremony completes).
-pub const ADMITTED_UNDER_UNSET: &[KernelVerb] = &[KernelVerb::SetOperatorKey, KernelVerb::ExportKeyset];
+pub const ADMITTED_UNDER_UNSET: &[KernelVerb] =
+    &[KernelVerb::SetOperatorKey, KernelVerb::ExportKeyset];

@@ -466,7 +466,7 @@ fn test_all_protocols_nonstream_write_read_roundtrip_preserves_text() {
             id: Some("resp_x".to_string()),
             created: Some(1_700_000_000),
             system_fingerprint: None,
-        
+
             request_echo: None,
         };
         let body = proto.writer().write_response(&resp);
@@ -1399,9 +1399,9 @@ fn redacted_reasoning_drops_on_writers_without_a_native_form() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
 
     // Bind each writer to a local (interior-mutable per-stream state).
     let (gw, rw, cw) = (GeminiWriter, ResponsesWriter, CohereWriter);

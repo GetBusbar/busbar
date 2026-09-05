@@ -624,7 +624,11 @@ fn the_introspection_verb_answers_only_what_is_declared() {
         Some(busbar_contract::bounded::FactValue::Int(0))
     );
     assert!(plane
-        .plane_facts(busbar_contract::ids::AdminVerbId::new("secrets"), None, &ctx)
+        .plane_facts(
+            busbar_contract::ids::AdminVerbId::new("secrets"),
+            None,
+            &ctx
+        )
         .is_err());
 }
 

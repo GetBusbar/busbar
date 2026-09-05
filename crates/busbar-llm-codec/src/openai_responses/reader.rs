@@ -1655,7 +1655,7 @@ impl ProtocolReader for ResponsesReader {
             created,
             system_fingerprint: None,
             stop_sequence: None,
-        
+
             request_echo: None,
         })
     }

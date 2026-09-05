@@ -9,21 +9,27 @@ use std::sync::{Arc, Mutex as SyncMutex};
 
 use futures::Stream;
 
-use busbar_contract::transport::facts as tfacts;
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::unit::Refusal;
-use busbar_contract::wire::{
-    ArrivalRecord, CloseReason, Conn, Frame, Listener, TransportError, Unit0Trigger,
-};
+use busbar_contract::wire::Frame;
 use busbar_contract::{
-    grammar::SelectorForm, AbiVersion, ArenaBytes, Fut, Kind, Plugin, StreamId, Transport,
-    TransportConfigView, TransportKeyHandle, TransportMeta,
+    grammar::SelectorForm, ArenaBytes, Fut, Kind, Plugin, StreamId, Transport, TransportConfigView,
+    TransportKeyHandle, TransportMeta,
 };
+use busbar_contract_transport::registry::facts as tfacts;
+use busbar_contract_transport::wire::ArrivalRecord;
+use busbar_contract_transport::wire::CloseReason;
+use busbar_contract_transport::wire::Conn;
+use busbar_contract_transport::wire::Listener;
+use busbar_contract_transport::wire::TransportError;
+use busbar_contract_transport::wire::Unit0Trigger;
+use busbar_contract_transport::AbiVersion;
 
 use crate::client;
 use crate::conn::{ConnState, GrpcConnHandle};
 
-type FrameStream = std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
+type FrameStream =
+    std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
 
 /// The gRPC transport: unary and multiplexed streams over HTTP/2, byte-blind. In-tree, inside the
 /// trusted computing base — see the architecture doc's transport and transports-table sections.
@@ -100,7 +106,7 @@ impl Plugin for GrpcTransport {
         Kind::Transport
     }
     fn abi(&self) -> AbiVersion {
-        busbar_contract::TRANSPORT_ABI
+        busbar_contract_transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -124,19 +130,20 @@ impl TransportMeta for GrpcTransport {
     // The layers this one is actually built over, and the Cargo edges say the same: `http`
     // carries an inbound connection, `tcp` carries a dialled one.
     const COMPOSES_OVER: &'static [&'static str] = &["http", "tcp"];
-    const HANDOFF: Option<busbar_contract::wire::Handoff> = None;
-    const FRAMING: busbar_contract::Framing = busbar_contract::Framing::Stream;
+    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract_transport::wire::Framing =
+        busbar_contract_transport::wire::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = true;
     const UNIT0_TRIGGER: Option<Unit0Trigger> = Some(Unit0Trigger::FirstMessage);
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract::wire::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
     const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::PATH, tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;
     // "carries the per-frame StatusClass at Terminal (the grpc-status trailer)" — the transports
     // table's own words for this row.
-    const STATUS_CLASS: Option<busbar_contract::wire::StatusAt> =
-        Some(busbar_contract::wire::StatusAt::Terminal);
+    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> =
+        Some(busbar_contract_transport::wire::StatusAt::Terminal);
 }
 
 impl Transport for GrpcTransport {
@@ -187,9 +194,7 @@ impl Transport for GrpcTransport {
             let DestinationFacts::Upstream { address, .. } = dest.facts() else {
                 return Err(TransportError::AddressRefused);
             };
-            let authority = address
-                .authority()
-                .ok_or(TransportError::AddressRefused)?;
+            let authority = address.authority().ok_or(TransportError::AddressRefused)?;
             // The method the destination names is the `:path` every call this connection opens is
             // dialled against. A destination that names none falls back to this crate's own frame
             // method, which is the only path a byte-blind transport can serve on its own.
@@ -201,7 +206,7 @@ impl Transport for GrpcTransport {
             let beneath = dest
                 .beneath(
                     lower.key(),
-                    busbar_contract::UpstreamAddress::Socket {
+                    busbar_contract_transport::dest::UpstreamAddress::Socket {
                         authority,
                         sni: address.sni(),
                     },
@@ -286,10 +291,10 @@ impl Transport for GrpcTransport {
         _fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
     }
 
     fn adopt<'a>(
@@ -363,5 +368,3 @@ impl Transport for GrpcTransport {
         })
     }
 }
-
-

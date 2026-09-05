@@ -1081,22 +1081,14 @@ impl ToolIdRemap {
     }
 
     /// Rewrite every tool id in a non-stream `IrResponse` to the ingress-native form (in place).
-    pub fn remap_response(
-        &mut self,
-        ingress_protocol: &str,
-        ir: &mut crate::ir::IrResponse,
-    ) {
+    pub fn remap_response(&mut self, ingress_protocol: &str, ir: &mut crate::ir::IrResponse) {
         for block in &mut ir.content {
             self.remap_block(ingress_protocol, block);
         }
     }
 
     /// Rewrite every tool id in a streaming `IrStreamEvent` to the ingress-native form (in place).
-    pub fn remap_event(
-        &mut self,
-        ingress_protocol: &str,
-        event: &mut crate::ir::IrStreamEvent,
-    ) {
+    pub fn remap_event(&mut self, ingress_protocol: &str, event: &mut crate::ir::IrStreamEvent) {
         if let crate::ir::IrStreamEvent::BlockStart {
             block: crate::ir::IrBlockMeta::ToolUse { id, .. },
             ..
@@ -1176,10 +1168,7 @@ pub fn decode_native_tool_id(ingress_protocol: &str, id: &str) -> Option<String>
 /// cross-protocol response references the id the egress backend actually issued. A no-op for ids that
 /// carry no busbar marker (client-authored / same-protocol). Applied at the request seam (ingress !=
 /// egress) AFTER `read_request`, BEFORE the egress `write_request`.
-pub fn decode_request_tool_ids(
-    ingress_protocol: &str,
-    messages: &mut [crate::ir::IrMessage],
-) {
+pub fn decode_request_tool_ids(ingress_protocol: &str, messages: &mut [crate::ir::IrMessage]) {
     fn walk(ingress_protocol: &str, block: &mut crate::ir::IrBlock) {
         match block {
             crate::ir::IrBlock::ToolUse { id, .. } => {

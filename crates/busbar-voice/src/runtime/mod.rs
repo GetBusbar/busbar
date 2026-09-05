@@ -143,7 +143,13 @@ impl VoiceRuntime {
     /// deployment resolving no key has nothing to attribute the row to; callers pass a real principal
     /// only when one was resolved). `outcome` is a fixed vocabulary literal, matching every other
     /// plane's `audit_record` call shape.
-    pub(crate) fn audit_session(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
+    pub(crate) fn audit_session(
+        &self,
+        action: &str,
+        resource: &str,
+        outcome: &'static str,
+        principal: &str,
+    ) {
         if let Some(host) = &self.host {
             host.audit_record(action, resource, outcome, principal);
         }
@@ -203,8 +209,9 @@ pub fn build_runtime_hosted(
 ) -> VoiceRuntime {
     VoiceRuntime {
         engine: Arc::clone(&base.engine),
-        metering: Arc::new(metering::HostMeteringPort::new(Arc::clone(&host)
-            as Arc<dyn busbar_substrate::plane_host::MeteringHost>)),
+        metering: Arc::new(metering::HostMeteringPort::new(
+            Arc::clone(&host) as Arc<dyn busbar_substrate::plane_host::MeteringHost>
+        )),
         tools: Arc::clone(&base.tools),
         denied_destinations: base.denied_destinations.clone(),
         session_defaults: base.session_defaults.clone(),

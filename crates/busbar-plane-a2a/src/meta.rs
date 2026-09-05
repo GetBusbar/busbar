@@ -117,7 +117,7 @@ impl PlaneMeta for A2aPlane {
 
 #[cfg(test)]
 mod tests {
-    use super::{INTROSPECTION_VERBS, CONFIG_SCHEMA, METER_CLASSES};
+    use super::{CONFIG_SCHEMA, INTROSPECTION_VERBS, METER_CLASSES};
     use crate::A2aPlane;
     use busbar_contract::ids::MeterClassId;
     use busbar_contract::plane::PlaneMeta;

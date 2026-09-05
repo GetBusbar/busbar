@@ -19,10 +19,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use busbar_contract::{
-    ArenaBytes, ArrivalRecord, CloseReason, Conn, Direction, Fut, Frame, FrameMeta, Kind, Listener,
-    Plugin, Refusal, SlabBytes, StreamId, Transport, TransportConfigView, TransportError,
-    TransportKeyHandle, TransportMeta,
+    ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
+    TransportConfigView, TransportKeyHandle, TransportMeta,
 };
+use busbar_contract_transport::wire::ArrivalRecord;
+use busbar_contract_transport::wire::CloseReason;
+use busbar_contract_transport::wire::Conn;
+use busbar_contract_transport::wire::Direction;
+use busbar_contract_transport::wire::FrameMeta;
+use busbar_contract_transport::wire::Listener;
+use busbar_contract_transport::wire::TransportError;
 use busbar_transport_http::HttpTransport;
 use futures::{Stream, StreamExt};
 
@@ -54,8 +60,8 @@ impl Plugin for SseTransport {
     fn kind(&self) -> Kind {
         Kind::Transport
     }
-    fn abi(&self) -> busbar_contract::AbiVersion {
-        busbar_contract::AbiVersion(1)
+    fn abi(&self) -> busbar_contract_transport::AbiVersion {
+        busbar_contract_transport::AbiVersion(1)
     }
 }
 
@@ -64,17 +70,18 @@ impl TransportMeta for SseTransport {
     const SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &["http"];
-    const HANDOFF: Option<busbar_contract::Handoff> = None;
-    const FRAMING: busbar_contract::Framing = busbar_contract::Framing::Stream;
+    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract_transport::wire::Framing =
+        busbar_contract_transport::wire::Framing::Stream;
     const SESSION: bool = false;
     const SESSION_BOUND: bool = false;
-    const UNIT0_TRIGGER: Option<busbar_contract::Unit0Trigger> = None;
+    const UNIT0_TRIGGER: Option<busbar_contract_transport::wire::Unit0Trigger> = None;
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
     const TRANSPORT_FACTS: &'static [&'static str] = &[];
     const DECODES_PAYLOAD: bool = false;
-    const STATUS_CLASS: Option<busbar_contract::StatusAt> =
-        Some(busbar_contract::StatusAt::FirstFrame);
+    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> =
+        Some(busbar_contract_transport::wire::StatusAt::FirstFrame);
 }
 
 impl Transport for SseTransport {
@@ -118,8 +125,11 @@ impl Transport for SseTransport {
         struct State {
             inner: FrameStream,
             buf: Vec<u8>,
-            pending: VecDeque<(Vec<u8>, Option<busbar_contract::StatusClass>)>,
-            status: Option<busbar_contract::StatusClass>,
+            pending: VecDeque<(
+                Vec<u8>,
+                Option<busbar_contract_transport::wire::StatusClass>,
+            )>,
+            status: Option<busbar_contract_transport::wire::StatusClass>,
             status_attached: bool,
             done: bool,
         }
@@ -206,7 +216,7 @@ impl Transport for SseTransport {
         fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract::Encode> {
+    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
         // `sse` is a reading of an `http` response, and an outbound request on it is an HTTP one.
         self.http.encode_envelope(fields, body, arena)
     }
@@ -220,7 +230,7 @@ impl Transport for SseTransport {
         self.http.adopt(from, conn, keys)
     }
 
-    fn detach(&self, conn: &Conn) -> Option<busbar_contract::RawStream> {
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
         self.http.detach(conn)
     }
 

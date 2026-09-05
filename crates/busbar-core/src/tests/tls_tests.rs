@@ -928,9 +928,11 @@ async fn server_posture_matches_the_1_5_5_defaults() {
         key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
         client_ca: None,
     };
-    let server_config =
-        super::build_server_config(&tls, &crate::config::secret::SecretResolver::builtins_only())
-            .expect("valid test TLS config");
+    let server_config = super::build_server_config(
+        &tls,
+        &crate::config::secret::SecretResolver::builtins_only(),
+    )
+    .expect("valid test TLS config");
     assert_eq!(
         server_config.alpn_protocols,
         vec![b"http/1.1".to_vec()],

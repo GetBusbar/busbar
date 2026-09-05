@@ -91,12 +91,21 @@ pub trait Governance {
     /// Provision a new leaf group under `parent` (already known to exist), inheriting limits from
     /// the nearest-ancestor `child_default`. `// contract:` — the integrator's
     /// `build_with_group`-shaped validate-then-swap.
-    fn provision_group(&self, admin: &AdminToken, group: &str, parent: &str) -> Result<(), GovernanceError>;
+    fn provision_group(
+        &self,
+        admin: &AdminToken,
+        group: &str,
+        parent: &str,
+    ) -> Result<(), GovernanceError>;
 
     /// Mint a fresh virtual key, optionally bound to `group` (already planned to exist by the time
     /// this is called — see [`crate::mint::plan_mint_group`]). `// contract:` — the integrator's
     /// key-cap check plus the actual credential mint.
-    fn mint_key(&self, admin: &AdminToken, group: Option<&str>) -> Result<MintedKey, GovernanceError>;
+    fn mint_key(
+        &self,
+        admin: &AdminToken,
+        group: Option<&str>,
+    ) -> Result<MintedKey, GovernanceError>;
 
     /// Rotate an existing key's credential in place (same id, budgets, usage; the previous
     /// credential stops authenticating immediately). `// contract:` — the integrator's

@@ -49,7 +49,9 @@ fn a_unit_carries_the_drafts_facts() {
     }
 
     let mut facts = Facts::new();
-    facts.set("verb", FactValue::Str("get_status")).expect("set");
+    facts
+        .set("verb", FactValue::Str("get_status"))
+        .expect("set");
     facts.set("stream", FactValue::Bool(true)).expect("set");
 
     let unit = busbar_contract::unit::Unit::new(
@@ -71,7 +73,10 @@ fn a_unit_carries_the_drafts_facts() {
         unit.draft_facts().get("verb"),
         Some(FactValue::Str("get_status"))
     );
-    assert_eq!(unit.draft_facts().get("stream"), Some(FactValue::Bool(true)));
+    assert_eq!(
+        unit.draft_facts().get("stream"),
+        Some(FactValue::Bool(true))
+    );
     assert_eq!(unit.draft_facts().get("absent"), None);
 }
 
@@ -239,7 +244,10 @@ fn the_first_response_ceiling_pointer_that_resolves_is_the_one() {
 
     // Only the newer spelling arrived: the older misses, the newer answers.
     let only_newer = br#"{"max_completion_tokens":256}"#;
-    let ir = Ir::new(only_newer, &[("/max_completion_tokens", Span { start: 25, end: 28 })]);
+    let ir = Ir::new(
+        only_newer,
+        &[("/max_completion_tokens", Span { start: 25, end: 28 })],
+    );
     assert_eq!(facts.max_response_bytes(&ir), Some(&b"256"[..]));
 
     // Both arrived: the first declared wins.

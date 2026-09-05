@@ -2007,9 +2007,9 @@ fn eventstream_emits_reasoning_content_for_thinking_block() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let text = String::from_utf8_lossy(&bytes);
     assert!(
@@ -2062,9 +2062,9 @@ fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
     // A text block emits NO `contentBlockStart` (the ConverseStream union has no text member); it
@@ -2153,9 +2153,9 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
 
@@ -2235,9 +2235,9 @@ fn test_write_response_total_tokens_saturates() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let body = writer.write_response(&resp);
     assert_eq!(
         body.pointer("/usage/totalTokens").and_then(|v| v.as_u64()),
@@ -2299,9 +2299,9 @@ fn test_write_response_projects_image_block() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let body = writer.write_response(&resp);
     let content = body
         .pointer("/output/message/content")
@@ -2361,9 +2361,9 @@ fn test_write_response_empty_content_emits_placeholder() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let body = writer.write_response(&resp);
     let content = body
         .pointer("/output/message/content")
@@ -3711,9 +3711,9 @@ fn test_write_response_omits_absent_cache_tokens() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let written = writer.write_response(&resp);
     assert!(
         written.pointer("/usage/cacheReadInputTokens").is_none(),
@@ -6485,9 +6485,9 @@ fn buffered_to_eventstream_metadata_carries_metrics_even_without_timing() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let mut bytes = bedrock_response_to_eventstream(&ir, None);
     let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
     let (_, payload) = frames

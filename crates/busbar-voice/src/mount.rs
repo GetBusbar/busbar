@@ -43,12 +43,12 @@ use crate::topology::{
     begin_session, dial_provider, open_admitted_session, stream_breaker_key, SessionBudget,
     SessionGauntlet, StartError,
 };
-use busbar_substrate::net_guard::GuardPolicy;
 use busbar_substrate::egress::engine::{send_bounded, EngineClient};
 use busbar_substrate::ingress::byte_duplex::serve_messages;
 use busbar_substrate::ingress::duplex_ws::{
     accept_gauntlet, WsAcceptFuture, WsArrival, WsArrivalSpec,
 };
+use busbar_substrate::net_guard::GuardPolicy;
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
 use busbar_substrate::plane::observe::Counted;
 use busbar_substrate::plane::registry::{BuildCtx, PlaneBootCtx};
@@ -1281,8 +1281,14 @@ where
                         Ok(proxy) => {
                             let pool = stream_breaker_key(dialect);
                             let url = provider_ws_url(&p.base_url, dialect, &p.api_key);
-                            match dial_provider(host.as_ref(), &pool, 0, &url, GuardPolicy::default())
-                                .await
+                            match dial_provider(
+                                host.as_ref(),
+                                &pool,
+                                0,
+                                &url,
+                                GuardPolicy::default(),
+                            )
+                            .await
                             {
                                 Ok((provider_in, provider_out)) => {
                                     proxy.run(provider_in, provider_out, stream, sink).await;

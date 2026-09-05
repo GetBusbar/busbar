@@ -235,18 +235,18 @@ pub mod trust;
 // `router`) plus the boot seam (`boot`); these re-exports keep every existing `crate::X` /
 // `busbar_core::X` path resolving unchanged, and each item's crate-root VISIBILITY is exactly what
 // the lib/bin seam demanded — nothing widened for convenience.
+#[cfg(test)]
+#[path = "tests/alarm_silence_tests.rs"]
+mod alarm_silence_tests;
 pub mod appbuild;
+#[cfg(test)]
+#[path = "tests/key_revoke_tombstone_tests.rs"]
+mod key_revoke_tombstone_tests;
 pub mod preflight;
 pub mod router;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
-#[cfg(test)]
-#[path = "tests/alarm_silence_tests.rs"]
-mod alarm_silence_tests;
-#[cfg(test)]
-#[path = "tests/key_revoke_tombstone_tests.rs"]
-mod key_revoke_tombstone_tests;
 
 pub use appbuild::{
     build_app_from_config, inert_durable_keys_banner, load_config_from_disk, open_relay_banner,

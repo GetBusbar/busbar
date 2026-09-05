@@ -1248,8 +1248,6 @@ pub fn ssrf_blocked_host(
     is_blocked.then(|| host.to_string())
 }
 
-
-
 // =================================================================================================
 //   THE CHECK OVER A SEALED DESTINATION, run once, before anything is dialled.
 // =================================================================================================
@@ -1342,8 +1340,8 @@ pub fn check_destination(
     };
 
     // The denylist, over the base and over every path it is joined with.
-    for candidate in std::iter::once(authority.to_string())
-        .chain(paths.iter().map(|p| join_path(authority, p)))
+    for candidate in
+        std::iter::once(authority.to_string()).chain(paths.iter().map(|p| join_path(authority, p)))
     {
         if let Some(host) = ssrf_blocked_host(
             &candidate,
@@ -1363,8 +1361,9 @@ pub fn check_destination(
             (https, host, port)
         }
         Err(AddressRefusal::Scheme { .. }) => {
-            let (host, port) = split_authority(authority)
-                .ok_or_else(|| NetworkRefusal::Guard(AddressRefusal::NoHost(authority.to_string())))?;
+            let (host, port) = split_authority(authority).ok_or_else(|| {
+                NetworkRefusal::Guard(AddressRefusal::NoHost(authority.to_string()))
+            })?;
             (true, host, port)
         }
         Err(other) => return Err(NetworkRefusal::Guard(other)),

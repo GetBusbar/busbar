@@ -69,7 +69,7 @@ fn a_deadline_that_expires_between_hops_stops_the_walk() {
     node.timeout_secs = 1;
     node.transport.script(
         "a",
-        Script::DialError(busbar_contract::TransportError::Refused),
+        Script::DialError(busbar_contract_transport::wire::TransportError::Refused),
     );
     node.transport
         .script("b", Script::Frames(super::harness::ok_frames()));

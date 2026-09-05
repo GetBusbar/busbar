@@ -556,10 +556,7 @@ impl StreamTranslate {
     /// would have produced for the equivalent stream. The SSE-framed dialects all take this path; a
     /// native binary-eventstream ingress (Bedrock) keeps its own writer-side synthesizer and gets
     /// `None` here. `None` also for an unknown ingress.
-    pub fn synthesize_from_response(
-        ingress: &str,
-        ir: &crate::ir::IrResponse,
-    ) -> Option<Vec<u8>> {
+    pub fn synthesize_from_response(ingress: &str, ir: &crate::ir::IrResponse) -> Option<Vec<u8>> {
         // Built with the ingress on both sides: the egress reader is never consulted (the events come
         // from the IR, not from wire frames), and `same_proto = false` keeps the writer path live —
         // the verbatim re-emit needs original bytes this path does not have.

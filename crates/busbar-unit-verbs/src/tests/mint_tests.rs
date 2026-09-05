@@ -75,7 +75,8 @@ fn missing_group_with_no_parent_is_refused() {
 #[test]
 fn missing_group_with_a_dangling_parent_is_refused() {
     let tree = FakeTree(HashMap::new());
-    let err = plan_mint_group(&tree, Some("leaf"), Some("nonexistent-parent"), MAX_LEN).unwrap_err();
+    let err =
+        plan_mint_group(&tree, Some("leaf"), Some("nonexistent-parent"), MAX_LEN).unwrap_err();
     assert_eq!(err.reason, ReasonCode::Validation);
 }
 
@@ -88,8 +89,13 @@ fn missing_group_under_any_existing_parent_is_provisioned_existence_only() {
     m.insert("completely-unrelated-team", None);
     let tree = FakeTree(m);
     assert_eq!(
-        plan_mint_group(&tree, Some("brand-new-leaf"), Some("completely-unrelated-team"), MAX_LEN)
-            .unwrap(),
+        plan_mint_group(
+            &tree,
+            Some("brand-new-leaf"),
+            Some("completely-unrelated-team"),
+            MAX_LEN
+        )
+        .unwrap(),
         MintPlan::ProvisionLeaf {
             parent: "completely-unrelated-team".to_string()
         }

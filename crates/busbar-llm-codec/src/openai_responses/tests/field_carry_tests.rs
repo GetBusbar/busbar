@@ -562,7 +562,10 @@ fn responses_response_identity_fields_emitted() {
 /// cross-protocol seam populates from the ORIGINAL ingress wire body before this writer ever runs.
 #[test]
 fn responses_response_request_echo_members_mirror_the_client_request_buffered() {
-    let mut resp = mk_response(vec![text_block("hi")], Some(crate::ir::IrStopReason::EndTurn));
+    let mut resp = mk_response(
+        vec![text_block("hi")],
+        Some(crate::ir::IrStopReason::EndTurn),
+    );
     resp.request_echo = Some(serde_json::json!({
         "model": "gpt-carry",
         "input": "hi",
@@ -576,8 +579,14 @@ fn responses_response_request_echo_members_mirror_the_client_request_buffered() 
     }));
     let out = write_response(&resp);
 
-    assert_eq!(out["temperature"], 0.31, "temperature must echo the client's value: {out}");
-    assert_eq!(out["top_p"], 0.42, "top_p must echo the client's value: {out}");
+    assert_eq!(
+        out["temperature"], 0.31,
+        "temperature must echo the client's value: {out}"
+    );
+    assert_eq!(
+        out["top_p"], 0.42,
+        "top_p must echo the client's value: {out}"
+    );
     assert_eq!(
         out["instructions"], "be terse",
         "instructions must echo the client's value: {out}"
@@ -613,10 +622,21 @@ fn responses_response_request_echo_absent_falls_back_to_spec_defaults() {
     ));
     assert_eq!(out["temperature"], 1.0, "default temperature: {out}");
     assert_eq!(out["top_p"], 1.0, "default top_p: {out}");
-    assert_eq!(out["instructions"], serde_json::Value::Null, "default instructions: {out}");
-    assert_eq!(out["metadata"], serde_json::json!({}), "default metadata: {out}");
+    assert_eq!(
+        out["instructions"],
+        serde_json::Value::Null,
+        "default instructions: {out}"
+    );
+    assert_eq!(
+        out["metadata"],
+        serde_json::json!({}),
+        "default metadata: {out}"
+    );
     assert_eq!(out["tool_choice"], "auto", "default tool_choice: {out}");
-    assert_eq!(out["parallel_tool_calls"], true, "default parallel_tool_calls: {out}");
+    assert_eq!(
+        out["parallel_tool_calls"], true,
+        "default parallel_tool_calls: {out}"
+    );
     assert_eq!(out["tools"], serde_json::json!([]), "default tools: {out}");
 }
 
@@ -626,10 +646,16 @@ fn responses_response_request_echo_absent_falls_back_to_spec_defaults() {
 /// schema.
 #[test]
 fn responses_response_request_echo_null_member_falls_back_to_default() {
-    let mut resp = mk_response(vec![text_block("hi")], Some(crate::ir::IrStopReason::EndTurn));
+    let mut resp = mk_response(
+        vec![text_block("hi")],
+        Some(crate::ir::IrStopReason::EndTurn),
+    );
     resp.request_echo = Some(serde_json::json!({"temperature": null, "top_p": null}));
     let out = write_response(&resp);
-    assert_eq!(out["temperature"], 1.0, "null echo falls back to default: {out}");
+    assert_eq!(
+        out["temperature"], 1.0,
+        "null echo falls back to default: {out}"
+    );
     assert_eq!(out["top_p"], 1.0, "null echo falls back to default: {out}");
 }
 
@@ -663,7 +689,10 @@ fn responses_response_request_echo_members_mirror_the_client_request_streaming()
         response["temperature"], 0.55,
         "streaming response.created must echo temperature: {data}"
     );
-    assert_eq!(response["top_p"], 0.9, "streaming response.created must echo top_p: {data}");
+    assert_eq!(
+        response["top_p"], 0.9,
+        "streaming response.created must echo top_p: {data}"
+    );
     assert_eq!(
         response["instructions"], "streaming instructions",
         "streaming response.created must echo instructions: {data}"

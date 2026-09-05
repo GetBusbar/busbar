@@ -22,6 +22,7 @@ path = "src/lib.rs"
 [dependencies]
 busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
+busbar-contract-transport = { path = "../busbar-contract-transport" }
 rustls = { workspace = true }
 
 [dev-dependencies]

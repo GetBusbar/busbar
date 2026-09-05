@@ -10,12 +10,12 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::Stream;
+use http::uri::PathAndQuery;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::sync::mpsc;
-use http::uri::PathAndQuery;
 
-use busbar_contract::wire::TransportError;
 use busbar_contract::StreamId;
+use busbar_contract_transport::wire::TransportError;
 
 use crate::codec::RawCodec;
 use crate::conn::ConnState;
@@ -29,7 +29,8 @@ pub(crate) struct Dialer(hyper::client::conn::http2::SendRequest<tonic::body::Bo
 impl tower::Service<http::Request<tonic::body::Body>> for Dialer {
     type Response = http::Response<hyper::body::Incoming>;
     type Error = hyper::Error;
-    type Future = Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future =
+        Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.0.poll_ready(cx)
@@ -91,7 +92,9 @@ pub(crate) async fn open_stream(
         .await
         .map_err(|_| TransportError::Refused)?;
     let stream = response.into_inner();
-    tokio::spawn(crate::server::forward_inbound(state, stream_id, stream, true));
+    tokio::spawn(crate::server::forward_inbound(
+        state, stream_id, stream, true,
+    ));
     Ok(out_tx)
 }
 

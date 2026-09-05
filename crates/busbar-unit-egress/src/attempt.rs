@@ -23,7 +23,8 @@
 //! 7. the plane's response decode, per frame, relayed under the hold.
 
 use busbar_caps::{Route, UnitToken};
-use busbar_contract::{Conn, Ctx, EgressBody, Frame, Plane, StatusClass, Transport, Unit};
+use busbar_contract::{Ctx, EgressBody, Frame, Plane, Transport, Unit};
+use busbar_contract_transport::wire::{Conn, StatusClass};
 use futures::StreamExt;
 
 use crate::ports::{
@@ -137,7 +138,7 @@ pub enum AttemptOutcome {
 /// The three ways a send can end, so the cap and the deadline compose without nesting error types.
 enum SendOutcome {
     /// An answer, or a transport failure.
-    Sent(Result<FirstFrame, busbar_contract::TransportError>),
+    Sent(Result<FirstFrame, busbar_contract_transport::wire::TransportError>),
     /// The per-attempt cap fired before any answer arrived.
     AttemptTimeout(u64),
     /// The walk's own deadline expired.
@@ -268,7 +269,7 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
         SendOutcome::Sent(Err(e)) => {
             hop.journal.abandoned(&record);
             drop(permit);
-            let label = if matches!(e, busbar_contract::TransportError::Timeout) {
+            let label = if matches!(e, busbar_contract_transport::wire::TransportError::Timeout) {
                 net::TIMEOUT
             } else {
                 net::CONNECT
@@ -421,7 +422,7 @@ async fn send(hop: &Hop<'_>, wire: &Wire, deadline_ms: u64, cap_ms: Option<u64>)
                 frames,
             })),
             Some(Err(e)) => SendOutcome::Sent(Err(e)),
-            None => SendOutcome::Sent(Err(busbar_contract::TransportError::Closed)),
+            None => SendOutcome::Sent(Err(busbar_contract_transport::wire::TransportError::Closed)),
         }
     };
     match race::with_deadline(work, hop.clock.sleep(deadline_ms)).await {
@@ -623,7 +624,7 @@ async fn deliver(
     }
 
     hop.transport
-        .close(conn, busbar_contract::CloseReason::Normal);
+        .close(conn, busbar_contract_transport::wire::CloseReason::Normal);
     drop(permit);
 
     if clean {

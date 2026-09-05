@@ -1451,7 +1451,7 @@ fn foreign_stop_reason_maps_to_other_not_verbatim() {
             created: None,
             system_fingerprint: None,
             stop_sequence: None,
-        
+
             request_echo: None,
         };
         let wire = writer.write_response(&ir);
@@ -1510,9 +1510,9 @@ fn test_response_identity_cross_protocol_emits_foreign_id() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let wire = writer.write_response(&ir);
     assert_eq!(
         wire[FIELD_RESPONSE_ID],
@@ -1549,9 +1549,9 @@ fn test_response_identity_none_id_is_omitted_not_fabricated() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let wire = writer.write_response(&ir);
     assert!(
         wire.get(FIELD_RESPONSE_ID).is_none(),
@@ -2192,9 +2192,9 @@ fn test_response_identity_cross_protocol_synthesizes_id_when_created_set() {
         created: Some(1_700_000_000),
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let wire = writer.write_response(&ir);
     let synth = wire
         .get(FIELD_RESPONSE_ID)
@@ -3028,9 +3028,9 @@ fn test_write_response_includes_total_token_count_cross_protocol() {
         created: Some(1_700_000_000), // cross-protocol boundary signal
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let wire = writer.write_response(&ir);
     assert_eq!(
         wire.pointer("/usageMetadata/totalTokenCount"),
@@ -3076,9 +3076,9 @@ fn test_write_response_omits_total_token_count_same_protocol() {
         created: None, // same-protocol: no boundary signal
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let wire = writer.write_response(&ir);
     assert!(
         wire.pointer("/usageMetadata/totalTokenCount").is_none(),
@@ -3107,9 +3107,9 @@ fn test_write_response_total_token_count_saturates() {
         created: Some(1_700_000_000), // cross-protocol
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let wire = writer.write_response(&ir);
     assert_eq!(
         wire.pointer("/usageMetadata/totalTokenCount"),
@@ -3152,9 +3152,9 @@ fn test_write_response_includes_total_token_count_when_only_model_present() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let wire = writer.write_response(&ir);
     assert_eq!(
         wire.pointer("/usageMetadata/totalTokenCount"),
@@ -3193,9 +3193,9 @@ fn test_write_response_model_only_total_token_count_saturates() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let wire = writer.write_response(&ir);
     assert_eq!(
         wire.pointer("/usageMetadata/totalTokenCount"),
@@ -3296,9 +3296,9 @@ fn test_write_response_tool_use_maps_to_stop() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let wire = writer.write_response(&ir);
     assert_eq!(
         wire.pointer("/candidates/0/finishReason")
@@ -4431,9 +4431,9 @@ fn test_tool_use_array_input_coerced_to_object_args() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let rwire = writer.write_response(&resp);
     let rargs = rwire
         .pointer("/candidates/0/content/parts/0/functionCall/args")
@@ -4477,9 +4477,9 @@ fn test_tool_use_object_input_passes_through_unchanged() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let rwire = writer.write_response(&resp);
     let rargs = rwire
         .pointer("/candidates/0/content/parts/0/functionCall/args")
@@ -6072,9 +6072,9 @@ fn write_response_reconstructs_prompt_token_count_with_cached() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let out = {
         let w = GeminiWriter;
         w.write_response(&resp)
@@ -6531,9 +6531,9 @@ fn test_write_response_emits_real_signature_never_sentinel() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let wire = writer.write_response(&with_sig);
     assert_eq!(
         wire.pointer("/candidates/0/content/parts/0/thoughtSignature")

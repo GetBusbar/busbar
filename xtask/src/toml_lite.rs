@@ -18,7 +18,10 @@ pub struct Table {
 
 impl Table {
     pub fn get_one(&self, key: &str) -> Option<&str> {
-        self.values.get(key).and_then(|v| v.first()).map(|s| s.as_str())
+        self.values
+            .get(key)
+            .and_then(|v| v.first())
+            .map(|s| s.as_str())
     }
 
     pub fn get_list(&self, key: &str) -> Vec<String> {
@@ -113,7 +116,9 @@ pub fn parse(path: &Path) -> Document {
             if trimmed.contains(']') {
                 // `pending_buf` already excludes the opening `[` (sliced off when the array was
                 // first opened), so only the closing `]` needs trimming here.
-                let body = pending_buf.rsplit_once(']').map_or("", |(before, _)| before);
+                let body = pending_buf
+                    .rsplit_once(']')
+                    .map_or("", |(before, _)| before);
                 flush_pending(&mut cur_table, &pending_key, body);
                 pending_key = None;
                 pending_buf.clear();
@@ -126,13 +131,23 @@ pub fn parse(path: &Path) -> Document {
         }
 
         if trimmed.starts_with("[[") && trimmed.ends_with("]]") {
-            commit_table(&mut doc, &cur_path, cur_is_array, std::mem::take(&mut cur_table));
+            commit_table(
+                &mut doc,
+                &cur_path,
+                cur_is_array,
+                std::mem::take(&mut cur_table),
+            );
             cur_path = Some(trimmed[2..trimmed.len() - 2].trim().to_string());
             cur_is_array = true;
             continue;
         }
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            commit_table(&mut doc, &cur_path, cur_is_array, std::mem::take(&mut cur_table));
+            commit_table(
+                &mut doc,
+                &cur_path,
+                cur_is_array,
+                std::mem::take(&mut cur_table),
+            );
             cur_path = Some(trimmed[1..trimmed.len() - 1].trim().to_string());
             cur_is_array = false;
             continue;

@@ -13,20 +13,28 @@ use tokio::io::AsyncWriteExt;
 
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::unit::Refusal;
-use busbar_contract::wire::{
-    ArrivalRecord, CloseReason, Conn, Direction, Frame, FrameMeta, Listener, ListenerHandle,
-    TransportError, Unit0Trigger,
-};
+use busbar_contract::wire::Frame;
 use busbar_contract::{
-    grammar::SelectorForm, AbiVersion, ArenaBytes, Fut, Kind, Plugin, SlabBytes, StreamId,
-    Transport, TransportConfigView, TransportKeyHandle, TransportMeta,
+    grammar::SelectorForm, ArenaBytes, Fut, Kind, Plugin, SlabBytes, StreamId, Transport,
+    TransportConfigView, TransportKeyHandle, TransportMeta,
 };
+use busbar_contract_transport::wire::ArrivalRecord;
+use busbar_contract_transport::wire::CloseReason;
+use busbar_contract_transport::wire::Conn;
+use busbar_contract_transport::wire::Direction;
+use busbar_contract_transport::wire::FrameMeta;
+use busbar_contract_transport::wire::Listener;
+use busbar_contract_transport::wire::ListenerHandle;
+use busbar_contract_transport::wire::TransportError;
+use busbar_contract_transport::wire::Unit0Trigger;
+use busbar_contract_transport::AbiVersion;
 
 use crate::conn::{ConnState, StdioConnHandle};
 
 /// stdio's own frame stream: bytes split one line at a time, exactly the "duplex framed" shape the
 /// architecture's stdio row names.
-type FrameStream = std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
+type FrameStream =
+    std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
 
 /// Poisons a connection unless disarmed — the "cancel mid-frame" fence. A write that never reaches
 /// its clean-completion disarm, for ANY reason (an I/O error via the early-return `?`, or this
@@ -159,7 +167,7 @@ impl Plugin for StdioTransport {
         Kind::Transport
     }
     fn abi(&self) -> AbiVersion {
-        busbar_contract::TRANSPORT_ABI
+        busbar_contract_transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -170,19 +178,20 @@ impl TransportMeta for StdioTransport {
     const SELECTOR_FORMS: &'static [SelectorForm] = &[];
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &[];
-    const HANDOFF: Option<busbar_contract::wire::Handoff> = None;
-    const FRAMING: busbar_contract::Framing = busbar_contract::Framing::Stream;
+    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract_transport::wire::Framing =
+        busbar_contract_transport::wire::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = true;
     const UNIT0_TRIGGER: Option<Unit0Trigger> = Some(Unit0Trigger::FirstMessage);
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract::wire::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
     // No transport-level fact this carrier writes beyond the arrival record itself.
     const TRANSPORT_FACTS: &'static [&'static str] = &[];
     const DECODES_PAYLOAD: bool = false;
     // The transports table names no status leg for stdio; the plane's own `finish` class is the fee's sole
     // source here.
-    const STATUS_CLASS: Option<busbar_contract::wire::StatusAt> = None;
+    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
 }
 
 impl Transport for StdioTransport {
@@ -336,7 +345,9 @@ impl Transport for StdioTransport {
             w.write_all(&payload)
                 .await
                 .map_err(|_| TransportError::Reset)?;
-            w.write_all(b"\n").await.map_err(|_| TransportError::Reset)?;
+            w.write_all(b"\n")
+                .await
+                .map_err(|_| TransportError::Reset)?;
             w.flush().await.map_err(|_| TransportError::Reset)?;
             drop(w);
             guard.armed = false;
@@ -351,10 +362,10 @@ impl Transport for StdioTransport {
         _fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
     }
 
     fn adopt<'a>(

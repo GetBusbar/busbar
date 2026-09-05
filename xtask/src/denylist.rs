@@ -63,7 +63,6 @@ pub(crate) struct BannedLists {
     std_paths: Vec<String>,
 }
 
-
 pub(crate) fn load_banned_lists(root: &Path) -> BannedLists {
     let doc = toml_lite::parse(&root.join("qa/construction.toml"));
     let rule = doc.table("rules.source-denylist");
@@ -80,7 +79,10 @@ pub(crate) fn load_banned_lists(root: &Path) -> BannedLists {
     for extra in EXTRA_BANNED_CRATE_NAMES {
         crate_names.insert((*extra).to_string());
     }
-    BannedLists { crate_names, std_paths }
+    BannedLists {
+        crate_names,
+        std_paths,
+    }
 }
 
 /// A single-`*`-wildcard glob, matching exactly the shapes `qa/construction.toml`'s
@@ -211,11 +213,24 @@ fn parse_metadata(v: &Value) -> Metadata {
     let mut manifest_paths = BTreeMap::new();
     for pkg in v["packages"].as_array().cloned().unwrap_or_default() {
         let id = pkg["id"].as_str().unwrap_or_default().to_string();
-        names.insert(id.clone(), pkg["name"].as_str().unwrap_or_default().to_string());
-        manifest_paths.insert(id, pkg["manifest_path"].as_str().unwrap_or_default().to_string());
+        names.insert(
+            id.clone(),
+            pkg["name"].as_str().unwrap_or_default().to_string(),
+        );
+        manifest_paths.insert(
+            id,
+            pkg["manifest_path"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        );
     }
     let mut nodes = BTreeMap::new();
-    for node in v["resolve"]["nodes"].as_array().cloned().unwrap_or_default() {
+    for node in v["resolve"]["nodes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+    {
         let id = node["id"].as_str().unwrap_or_default().to_string();
         let mut deps = Vec::new();
         for d in node["deps"].as_array().cloned().unwrap_or_default() {
@@ -236,7 +251,11 @@ fn parse_metadata(v: &Value) -> Metadata {
             .collect();
         nodes.insert(id, (deps, features));
     }
-    Metadata { names, manifest_paths, nodes }
+    Metadata {
+        names,
+        manifest_paths,
+        nodes,
+    }
 }
 
 fn find_package_id(meta: &Metadata, crate_dir: &Path, crate_name: &str) -> Option<String> {
@@ -268,7 +287,9 @@ fn closure_hits(meta: &Metadata, root_id: &str, root_name: &str, banned: &Banned
     queue.push_back((root_id.to_string(), vec![root_name.to_string()]));
 
     while let Some((id, path)) = queue.pop_front() {
-        let Some((deps, _features)) = meta.nodes.get(&id) else { continue };
+        let Some((deps, _features)) = meta.nodes.get(&id) else {
+            continue;
+        };
         for (dep_name, dep_pkg, is_normal) in deps {
             if !is_normal || dep_pkg.is_empty() {
                 continue;
@@ -330,7 +351,11 @@ fn production_lines(src: &str) -> Vec<(usize, String)> {
             }
         }
 
-        if !this_line_is_test && pending_test_attr && trimmed.contains("mod ") && trimmed.contains('{') {
+        if !this_line_is_test
+            && pending_test_attr
+            && trimmed.contains("mod ")
+            && trimmed.contains('{')
+        {
             test_mod_depth = Some(depth);
             pending_test_attr = false;
         }
@@ -408,7 +433,9 @@ fn is_test_path(rel: &str, fragments: &[String]) -> bool {
 }
 
 fn walk_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in rd.filter_map(|e| e.ok()) {
         let p = e.path();
         if p.is_dir() {
@@ -424,19 +451,30 @@ fn load_test_fragments(config_root: &Path) -> Vec<String> {
     doc.table("gate").get_list("test_path_fragments")
 }
 
-fn own_src_hits(scan_root: &Path, pc: &PureCrate, banned: &BannedLists, fragments: &[String]) -> Vec<Hit> {
+fn own_src_hits(
+    scan_root: &Path,
+    pc: &PureCrate,
+    banned: &BannedLists,
+    fragments: &[String],
+) -> Vec<Hit> {
     let root = scan_root;
     let mut files = Vec::new();
     walk_rs_files(&pc.dir.join("src"), &mut files);
     files.sort();
     let mut hits = Vec::new();
     for f in files {
-        let rel = f.strip_prefix(root).unwrap_or(&f).to_string_lossy().replace('\\', "/");
+        let rel = f
+            .strip_prefix(root)
+            .unwrap_or(&f)
+            .to_string_lossy()
+            .replace('\\', "/");
         let rel_with_slashes = format!("/{rel}");
         if is_test_path(&rel_with_slashes, fragments) {
             continue;
         }
-        let Ok(src) = std::fs::read_to_string(&f) else { continue };
+        let Ok(src) = std::fs::read_to_string(&f) else {
+            continue;
+        };
         for (lineno, code) in production_lines(&src) {
             for pat in &banned.std_paths {
                 if code.contains(pat.as_str()) {
@@ -497,7 +535,11 @@ fn load_allowlist(root: &Path) -> Vec<AllowEntry> {
                  not a waiver. Fix the entry or remove it."
             );
         }
-        let via = entry.get_one("via").map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+        let via = entry
+            .get_one("via")
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
         if let Some(v) = &via {
             if !is_dep_entry {
                 panic!(
@@ -516,7 +558,11 @@ fn load_allowlist(root: &Path) -> Vec<AllowEntry> {
                 );
             }
         }
-        allowed.push(AllowEntry { crate_name, offender, via });
+        allowed.push(AllowEntry {
+            crate_name,
+            offender,
+            via,
+        });
     }
     allowed
 }
@@ -545,7 +591,9 @@ fn find_bypass_path(
     queue.push_back((root_id.to_string(), vec![root_name.to_string()]));
 
     while let Some((id, path)) = queue.pop_front() {
-        let Some((deps, _features)) = meta.nodes.get(&id) else { continue };
+        let Some((deps, _features)) = meta.nodes.get(&id) else {
+            continue;
+        };
         for (dep_name, dep_pkg, is_normal) in deps {
             if !is_normal || dep_pkg.is_empty() || dep_name == &via_name {
                 // `via_name` nodes are never entered and never traversed past — a path is only a
@@ -585,8 +633,12 @@ fn fully_waived_pairs(
                 let Some(pc) = crates.iter().find(|c| c.report_name == entry.crate_name) else {
                     continue;
                 };
-                let Some(root_id) = find_package_id(meta, &pc.dir, &pc.name) else { continue };
-                if find_bypass_path(meta, &root_id, &pc.report_name, via_name, &entry.offender).is_none() {
+                let Some(root_id) = find_package_id(meta, &pc.dir, &pc.name) else {
+                    continue;
+                };
+                if find_bypass_path(meta, &root_id, &pc.report_name, via_name, &entry.offender)
+                    .is_none()
+                {
                     out.insert((entry.crate_name.clone(), entry.offender.clone()));
                 }
                 // else: a bypass exists — the hit(s) stay red, and the bypassing path is already
@@ -622,7 +674,10 @@ pub fn run(root: &Path) -> Report {
     let waived = fully_waived_pairs(&meta, &crates, &allowed);
     hits.retain(|h| !waived.contains(&(h.crate_name.clone(), h.offender.clone())));
 
-    Report { hits, crates_scanned: crates.len() }
+    Report {
+        hits,
+        crates_scanned: crates.len(),
+    }
 }
 
 /// Test-only entry point: like [`run_on`], but also applies a synthetic allow-list (never read
@@ -723,7 +778,10 @@ pub fn print_report(report: &Report) -> bool {
     // what a reviewer reads first.
     let mut by_crate: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for h in &report.hits {
-        by_crate.entry(h.crate_name.as_str()).or_default().insert(h.offender.as_str());
+        by_crate
+            .entry(h.crate_name.as_str())
+            .or_default()
+            .insert(h.offender.as_str());
     }
     println!("summary:");
     for (crate_name, offenders) in &by_crate {
@@ -733,11 +791,36 @@ pub fn print_report(report: &Report) -> bool {
     }
     println!();
 
-    let w_crate = report.hits.iter().map(|h| h.crate_name.len()).max().unwrap_or(5).max(5);
-    let w_off = report.hits.iter().map(|h| h.offender.len()).max().unwrap_or(9).max(9);
-    println!("{:w_crate$}  {:w_off$}  via", "crate", "offender", w_crate = w_crate, w_off = w_off);
+    let w_crate = report
+        .hits
+        .iter()
+        .map(|h| h.crate_name.len())
+        .max()
+        .unwrap_or(5)
+        .max(5);
+    let w_off = report
+        .hits
+        .iter()
+        .map(|h| h.offender.len())
+        .max()
+        .unwrap_or(9)
+        .max(9);
+    println!(
+        "{:w_crate$}  {:w_off$}  via",
+        "crate",
+        "offender",
+        w_crate = w_crate,
+        w_off = w_off
+    );
     for h in &report.hits {
-        println!("{:w_crate$}  {:w_off$}  {}", h.crate_name, h.offender, h.via, w_crate = w_crate, w_off = w_off);
+        println!(
+            "{:w_crate$}  {:w_off$}  {}",
+            h.crate_name,
+            h.offender,
+            h.via,
+            w_crate = w_crate,
+            w_off = w_off
+        );
     }
     false
 }

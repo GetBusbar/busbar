@@ -1278,7 +1278,7 @@ impl ProtocolReader for CohereReader {
             created: None,
             system_fingerprint: None,
             stop_sequence: None,
-        
+
             request_echo: None,
         })
     }

@@ -150,7 +150,7 @@ fn a_failed_attempt_records_before_the_guard_can_release() {
     );
     node.transport.script(
         "a",
-        Script::DialError(busbar_contract::TransportError::Refused),
+        Script::DialError(busbar_contract_transport::wire::TransportError::Refused),
     );
 
     assert!(node.route("primary").shed().is_some());

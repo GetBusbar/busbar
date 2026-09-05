@@ -531,9 +531,7 @@ pub fn read_rerank_request(
 /// Wire -> concrete `RerankResp` parse, extracted from the `OperationHandler::read_response`
 /// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
 /// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
-pub fn read_rerank_response(
-    wire: &[u8],
-) -> Result<crate::ir::rerank::RerankResp, CodecError> {
+pub fn read_rerank_response(wire: &[u8]) -> Result<crate::ir::rerank::RerankResp, CodecError> {
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     Ok(crate::ir::rerank::RerankResp {

@@ -797,9 +797,9 @@ fn write_response_joins_text_blocks_and_keeps_tool_calls() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let out = OpenAiWriter.write_response(&resp);
     let msg = &out["choices"][0]["message"];
     assert_eq!(msg["content"], serde_json::json!("Hello world"));
@@ -835,9 +835,9 @@ fn write_response_content_null_when_no_text() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let out = OpenAiWriter.write_response(&resp);
     assert_eq!(
         out["choices"][0]["message"]["content"],
@@ -966,9 +966,9 @@ fn cross_protocol_write_synthesizes_valid_id() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let out = OpenAiWriter.write_response(&resp);
     let id = out["id"].as_str().expect("synthesized id is a string");
     assert!(
@@ -1012,9 +1012,9 @@ fn cross_protocol_write_response_emits_fallback_model() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let out = OpenAiWriter.write_response(&resp);
     let obj = out.as_object().expect("response object");
     assert!(
@@ -1046,9 +1046,9 @@ fn write_response_preserves_upstream_model_over_fallback() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let out = OpenAiWriter.write_response(&resp);
     assert_eq!(out["model"], serde_json::json!("gpt-4o-mini"));
 }
@@ -1318,9 +1318,9 @@ fn write_response_total_tokens_saturates_on_overflow() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     // Must not panic (debug) or wrap (release); saturates at u64::MAX.
     let out = OpenAiWriter.write_response(&resp);
     assert_eq!(out["usage"]["total_tokens"], serde_json::json!(u64::MAX));
@@ -2199,9 +2199,9 @@ fn write_response_emits_null_finish_reason_when_stop_reason_none() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let out = OpenAiWriter.write_response(&resp);
     let choice = out["choices"][0].as_object().expect("choice object");
     assert!(
@@ -2245,7 +2245,7 @@ fn write_response_maps_finish_reason_enum_values() {
             created: None,
             system_fingerprint: None,
             stop_sequence: None,
-        
+
             request_echo: None,
         };
         let out = OpenAiWriter.write_response(&resp);
@@ -3240,9 +3240,9 @@ fn write_response_safety_round_trips_to_content_filter() {
         created: Some(1),
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let out = OpenAiWriter.write_response(&resp);
     assert_eq!(
         out["choices"][0]["finish_reason"],
@@ -3495,9 +3495,9 @@ fn write_response_string_tool_arguments_emitted_verbatim() {
         created: Some(1),
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let out = OpenAiWriter.write_response(&resp);
     let args = &out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"];
     assert_eq!(
@@ -4504,9 +4504,9 @@ fn write_response_reconstructs_prompt_tokens_total_with_cached_details() {
         created: Some(1_700_000_000),
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let out = OpenAiWriter.write_response(&resp);
     assert_eq!(
         out["usage"]["prompt_tokens"],
@@ -4542,9 +4542,9 @@ fn write_response_omits_cached_details_when_no_cache_read() {
         created: Some(1),
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let out = OpenAiWriter.write_response(&resp);
     assert_eq!(out["usage"]["prompt_tokens"], serde_json::json!(7));
     assert!(
@@ -4835,9 +4835,9 @@ fn write_response_carries_citations_with_join_relative_offsets() {
             detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
 
     let v = OpenAiWriter.write_response(&resp);
     let anns = v["choices"][0]["message"]["annotations"]
@@ -4927,9 +4927,9 @@ fn url_annotation_base_accumulates_in_characters() {
             detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let v = OpenAiWriter.write_response(&resp);
     let anns = v["choices"][0]["message"]["annotations"]
         .as_array()
@@ -4997,9 +4997,9 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
             detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let v = OpenAiWriter.write_response(&resp);
     assert!(v["choices"][0]["message"].get("annotations").is_none());
 }
@@ -5299,9 +5299,9 @@ fn openai_write_drops_thinking_observably() {
         system_fingerprint: None,
         stop_sequence: None,
         logprobs: Vec::new(),
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
 
     let cap = WarnCapture::default();
     let sub = tracing_subscriber::registry().with(cap.clone());

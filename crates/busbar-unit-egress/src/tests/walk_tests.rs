@@ -10,7 +10,8 @@
 //! not an attempt cap; and the request budget is spent once, after the success, and given back
 //! when the answer does not arrive whole.
 
-use busbar_contract::{StatusClass, TransportError};
+use busbar_contract_transport::wire::StatusClass;
+use busbar_contract_transport::wire::TransportError;
 
 use super::harness::{frame, ok_frames, Health, Script};
 use super::{member, Node};

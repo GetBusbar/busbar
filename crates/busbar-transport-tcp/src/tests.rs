@@ -3,7 +3,8 @@
 //! deflating fixture must fail it — the "must turn red" cell from the design's transport battery).
 
 use super::*;
-use busbar_contract::{ConfigView, Frame, FrameMeta};
+use busbar_contract::{ConfigView, Frame};
+use busbar_contract_transport::wire::FrameMeta;
 use futures::StreamExt;
 use std::sync::Arc as StdArc;
 
@@ -58,7 +59,7 @@ fn upstream_dest(addr: &str) -> busbar_contract::VerifiedDestination {
         &FixtureSeal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "tcp",
-            address: busbar_contract::UpstreamAddress::socket(host),
+            address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test"),
         },
         "tcp",
@@ -76,7 +77,10 @@ async fn byte_exact_round_trip_inbound_and_outbound() {
         async move { server.accept(&listener).await.unwrap() }
     });
 
-    let client_conn = client.dial(&upstream_dest(&addr), &fixture_key()).await.unwrap();
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key())
+        .await
+        .unwrap();
     let server_conn = accept_fut.await.unwrap();
 
     let payload = b"the quick brown fox jumps over the lazy dog";
@@ -100,7 +104,10 @@ async fn byte_exact_round_trip_the_outbound_leg_too() {
         let server = server.clone();
         async move { server.accept(&listener).await.unwrap() }
     });
-    let client_conn = client.dial(&upstream_dest(&addr), &fixture_key()).await.unwrap();
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key())
+        .await
+        .unwrap();
     let server_conn = accept_fut.await.unwrap();
 
     let reply = b"woof";
@@ -122,7 +129,10 @@ async fn half_close_lets_the_other_side_keep_writing() {
         let server = server.clone();
         async move { server.accept(&listener).await.unwrap() }
     });
-    let client_conn = client.dial(&upstream_dest(&addr), &fixture_key()).await.unwrap();
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key())
+        .await
+        .unwrap();
     let server_conn = accept_fut.await.unwrap();
 
     // The client closes (drops its write half via `close`); the server still sees the bytes the
@@ -149,7 +159,10 @@ async fn cancel_mid_frame_leaves_the_connection_usable() {
         let server = server.clone();
         async move { server.accept(&listener).await.unwrap() }
     });
-    let client_conn = client.dial(&upstream_dest(&addr), &fixture_key()).await.unwrap();
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key())
+        .await
+        .unwrap();
     let server_conn = accept_fut.await.unwrap();
 
     // Start a read and cancel it before any bytes arrive (dropping the future mid-poll).
@@ -214,7 +227,10 @@ async fn backpressure_bounds_the_per_unit_frame_buffer() {
         let server = server.clone();
         async move { server.accept(&listener).await.unwrap() }
     });
-    let client_conn = client.dial(&upstream_dest(&addr), &fixture_key()).await.unwrap();
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key())
+        .await
+        .unwrap();
     let server_conn = accept_fut.await.unwrap();
 
     // Write far more than one read chunk's worth; the frame pump never buffers more than
@@ -274,7 +290,10 @@ fn inflating_and_deflating_fixtures_are_red() {
         },
         ..honest.clone()
     };
-    assert!(!frame_is_honest(&inflated), "an inflating fixture must fail the honesty check");
+    assert!(
+        !frame_is_honest(&inflated),
+        "an inflating fixture must fail the honesty check"
+    );
 
     let deflated = Frame {
         meta: FrameMeta {
@@ -283,5 +302,8 @@ fn inflating_and_deflating_fixtures_are_red() {
         },
         ..honest
     };
-    assert!(!frame_is_honest(&deflated), "a deflating fixture must fail the honesty check");
+    assert!(
+        !frame_is_honest(&deflated),
+        "a deflating fixture must fail the honesty check"
+    );
 }

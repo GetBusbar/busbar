@@ -24,6 +24,7 @@ license = "Apache-2.0"
 # re-exported here as `busbar_contract::spans` so that a plane resolving a declared pointer and the
 # kernel resolving the same pointer are one reading of one grammar rather than two.
 [dependencies]
+busbar-contract-transport = { path = "../busbar-contract-transport" }
 busbar-grammar = { path = "../busbar-grammar" }
 serde = { workspace = true }
 futures = { workspace = true }

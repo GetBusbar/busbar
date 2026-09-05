@@ -299,11 +299,7 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
 }
 
 /// Chat cross-protocol INGRESS preparation (verbatim from the former `IrResp::Chat` arm).
-pub fn chat_prepare_for_ingress(
-    ir: &mut IrResponse,
-    ingress_protocol: &str,
-    now_epoch: u64,
-) {
+pub fn chat_prepare_for_ingress(ir: &mut IrResponse, ingress_protocol: &str, now_epoch: u64) {
     ir.id = None;
     ir.system_fingerprint = None;
     ir.stop_sequence = None;

@@ -256,7 +256,14 @@ fn month_from_abbrev(m: &str) -> Option<u64> {
 
 /// Days-from-civil algorithm (Howard Hinnant's public-domain `civil_from_days` inverse), giving a
 /// UTC Unix timestamp for a UTC calendar date and time with no external date/time dependency.
-fn civil_to_epoch_secs(year: u64, month: u64, day: u64, hour: u64, minute: u64, second: u64) -> Option<u64> {
+fn civil_to_epoch_secs(
+    year: u64,
+    month: u64,
+    day: u64,
+    hour: u64,
+    minute: u64,
+    second: u64,
+) -> Option<u64> {
     let y = year as i64 - i64::from(month <= 2);
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400; // [0, 399]
@@ -297,7 +304,9 @@ pub fn normalize_raw_error(
         // The built-in canonical context-length code, recognized ONLY on the precise
         // oversized-request statuses (400 Bad Request / 413 Payload Too Large) — never a 5xx (an
         // upstream server failure) or any other status that happens to carry the code.
-        if code == PROVIDER_CODE_CONTEXT_LENGTH && (raw.http_status == 400 || raw.http_status == 413) {
+        if code == PROVIDER_CODE_CONTEXT_LENGTH
+            && (raw.http_status == 400 || raw.http_status == 413)
+        {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
                 provider_signal: Some(code.clone()),

@@ -655,7 +655,6 @@ fn the_pin_carries_the_first_admissible_address_and_the_scheme_it_was_judged_und
     );
 }
 
-
 // =================================================================================================
 //   THE CHECK OVER A SEALED DESTINATION: the precedence rule, the denylist, the base+path re-check.
 // =================================================================================================
@@ -672,7 +671,7 @@ fn dest(authority: &'static str) -> busbar_contract::VerifiedDestination {
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "https",
-            address: busbar_contract::UpstreamAddress::socket(authority),
+            address: busbar_contract_transport::dest::UpstreamAddress::socket(authority),
             lane: busbar_contract::LaneId::new("test"),
         },
         "https",
@@ -693,7 +692,9 @@ fn the_denylist_precedence_is_allow_all_then_allow_override_then_block() {
     // On the denylist, nothing overriding it: blocked.
     assert_eq!(
         check_destination(&dest(base), &[], &NeverAsked, strict(), &none),
-        Err(NetworkRefusal::MetadataDenied("169.254.169.254".to_string()))
+        Err(NetworkRefusal::MetadataDenied(
+            "169.254.169.254".to_string()
+        ))
     );
 
     // A surgical carve-out and the nuclear override both get the destination PAST the denylist —
@@ -720,7 +721,9 @@ fn the_denylist_precedence_is_allow_all_then_allow_override_then_block() {
                     private_ok(),
                     &past_the_denylist
                 ),
-                Err(NetworkRefusal::Guard(AddressRefusal::CloudMetadataAddress { .. }))
+                Err(NetworkRefusal::Guard(
+                    AddressRefusal::CloudMetadataAddress { .. }
+                ))
             ),
             "the denylist is not the only thing standing between a caller and IMDS"
         );
@@ -819,7 +822,9 @@ fn the_base_and_path_are_re_checked_together() {
             strict(),
             &none
         ),
-        Err(NetworkRefusal::MetadataDenied("169.254.169.254".to_string()))
+        Err(NetworkRefusal::MetadataDenied(
+            "169.254.169.254".to_string()
+        ))
     );
 }
 
@@ -837,7 +842,10 @@ fn a_bare_authority_is_judged_as_a_secure_one() {
     .expect("a public literal passes")
     .expect("a socket target is pinned");
     assert_eq!(pinned.port(), 8443);
-    assert!(pinned.is_https(), "an authority naming no scheme fails closed");
+    assert!(
+        pinned.is_https(),
+        "an authority naming no scheme fails closed"
+    );
     assert_eq!(pinned.addr(), ip(PUBLIC));
 }
 
@@ -855,7 +863,7 @@ fn a_program_destination_has_no_address_to_judge() {
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "stdio",
-            address: busbar_contract::UpstreamAddress::Program {
+            address: busbar_contract_transport::dest::UpstreamAddress::Program {
                 path: "/usr/local/bin/server",
                 args: &[],
                 env: &[],
@@ -866,13 +874,7 @@ fn a_program_destination_has_no_address_to_judge() {
         None,
     );
     assert_eq!(
-        check_destination(
-            &program,
-            &[],
-            &NeverAsked,
-            strict(),
-            &Denylist::default()
-        ),
+        check_destination(&program, &[], &NeverAsked, strict(), &Denylist::default()),
         Ok(None)
     );
 }
@@ -881,7 +883,8 @@ fn a_program_destination_has_no_address_to_judge() {
 /// and the address handed on is the one that was judged.
 #[test]
 fn a_destination_is_resolved_exactly_once_and_the_pin_is_what_was_judged() {
-    let resolver = ScriptedResolver::new(vec![Ok(vec![ip(PUBLIC)]), Ok(vec![ip("169.254.169.254")])]);
+    let resolver =
+        ScriptedResolver::new(vec![Ok(vec![ip(PUBLIC)]), Ok(vec![ip("169.254.169.254")])]);
     let pinned = check_destination(
         &dest("https://rebind.example/"),
         &[],

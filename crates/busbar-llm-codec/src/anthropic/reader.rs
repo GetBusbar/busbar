@@ -755,7 +755,7 @@ impl ProtocolReader for AnthropicReader {
             created: None,
             system_fingerprint: None,
             stop_sequence,
-        
+
             request_echo: None,
         })
     }

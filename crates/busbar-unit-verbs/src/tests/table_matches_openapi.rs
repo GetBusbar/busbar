@@ -24,7 +24,9 @@ struct FixtureOp {
 
 fn fixture_ops() -> Vec<FixtureOp> {
     let doc: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture is valid JSON");
-    let paths = doc["paths"].as_object().expect("fixture has a paths object");
+    let paths = doc["paths"]
+        .as_object()
+        .expect("fixture has a paths object");
     let mut ops = Vec::new();
     for (path, methods) in paths {
         let methods = methods.as_object().expect("each path is a method map");
@@ -38,7 +40,11 @@ fn fixture_ops() -> Vec<FixtureOp> {
             let is_read = m == "GET" || m == "HEAD";
             let is_dry_run_post =
                 path == "/api/v1/admin/config/validate" || path == "/api/v1/admin/plugins/inspect";
-            let scope = if is_read || is_dry_run_post { "read-only" } else { "full" };
+            let scope = if is_read || is_dry_run_post {
+                "read-only"
+            } else {
+                "full"
+            };
             ops.push(FixtureOp {
                 method: m,
                 path: path.clone(),
@@ -105,7 +111,11 @@ fn no_duplicate_operation_ids_in_the_table() {
     let before = ids.len();
     ids.sort_unstable();
     ids.dedup();
-    assert_eq!(before, ids.len(), "every legacy operation id must be unique");
+    assert_eq!(
+        before,
+        ids.len(),
+        "every legacy operation id must be unique"
+    );
 }
 
 #[test]
@@ -114,7 +124,16 @@ fn scope_split_is_34_read_only_32_full() {
         .iter()
         .filter(|r| r.scope == VerbScope::ReadOnly)
         .count();
-    let full = LEGACY_VERBS.iter().filter(|r| r.scope == VerbScope::Full).count();
-    assert_eq!(read_only, 34, "34 read-only operations, per the architecture document");
-    assert_eq!(full, 32, "32 full operations, per the architecture document");
+    let full = LEGACY_VERBS
+        .iter()
+        .filter(|r| r.scope == VerbScope::Full)
+        .count();
+    assert_eq!(
+        read_only, 34,
+        "34 read-only operations, per the architecture document"
+    );
+    assert_eq!(
+        full, 32,
+        "32 full operations, per the architecture document"
+    );
 }

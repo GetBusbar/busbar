@@ -27,8 +27,11 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::sync::mpsc;
 use tonic::{Request, Response, Status};
 
-use busbar_contract::wire::{Direction, Frame, FrameMeta, TransportError};
+use busbar_contract::wire::Frame;
 use busbar_contract::{SlabBytes, StreamId};
+use busbar_contract_transport::wire::Direction;
+use busbar_contract_transport::wire::FrameMeta;
+use busbar_contract_transport::wire::TransportError;
 
 use crate::codec::RawCodec;
 use crate::conn::ConnState;
@@ -102,7 +105,12 @@ impl tower::Service<Request<tonic::Streaming<Vec<u8>>>> for RpcHandler {
         Box::pin(async move {
             // `is_response = false`: this is the REQUEST body, which carries no `grpc-status`
             // trailer — only a gRPC response does. See `forward_inbound`'s own note.
-            tokio::spawn(forward_inbound(state, stream_id, request.into_inner(), false));
+            tokio::spawn(forward_inbound(
+                state,
+                stream_id,
+                request.into_inner(),
+                false,
+            ));
             Ok(Response::new(OutStream(out_rx)))
         })
     }
@@ -148,9 +156,10 @@ pub(crate) async fn forward_inbound(
         }
     };
     if is_response {
-        let status = final_status
-            .as_ref()
-            .map_or(busbar_contract::wire::StatusClass::Success, map_status);
+        let status = final_status.as_ref().map_or(
+            busbar_contract_transport::wire::StatusClass::Success,
+            map_status,
+        );
         let meta = FrameMeta {
             bytes: 0,
             transport_units: None,
@@ -169,9 +178,9 @@ pub(crate) async fn forward_inbound(
 }
 
 /// The transport's own honest reading of the `grpc-status` trailer, into the closed
-/// [`busbar_contract::wire::StatusClass`] — never a judgement about what the RPC's bytes meant.
-fn map_status(status: &Status) -> busbar_contract::wire::StatusClass {
-    use busbar_contract::wire::StatusClass;
+/// [`busbar_contract_transport::wire::StatusClass`] — never a judgement about what the RPC's bytes meant.
+fn map_status(status: &Status) -> busbar_contract_transport::wire::StatusClass {
+    use busbar_contract_transport::wire::StatusClass;
     use tonic::Code;
     match status.code() {
         Code::Ok => StatusClass::Success,

@@ -70,11 +70,11 @@ pub use guard::{
     destination_guard, fallback_pools_authorized, pool_authorized, priced, GuardRefusal, PoolView,
     RefusalKind,
 };
+pub use lane::{survives_prewalk_filter, BreakerView, LaneCandidate, LaneTable, Unavailable};
 pub use net::{
     check_destination, AddressRefusal, Denylist, GuardPolicy, NetworkRefusal, PinnedTarget,
     Resolver,
 };
-pub use lane::{survives_prewalk_filter, BreakerView, LaneCandidate, LaneTable, Unavailable};
 pub use order::{
     pick, reconcile_order, sticky_position, OrderVerdict, OrderingHook, Pick, PickOutcome,
 };

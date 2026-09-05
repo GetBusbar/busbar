@@ -91,7 +91,8 @@ fn host_for(dialect: &str) -> &'static str {
 
 /// Where the codec crate keeps its frozen outputs.
 fn golden_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../busbar-llm-codec/src/tests/proto/golden")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../busbar-llm-codec/src/tests/proto/golden")
 }
 
 /// One request, taken in through the plane's decode step and back out through its egress step.
@@ -384,11 +385,7 @@ fn placehold_id(
 
 /// Substitute whichever id(s) the given client dialect's writer mints, taking each placeholder from
 /// the frozen answer at the same position. Bedrock mints none.
-fn placehold_minted_ids(
-    ingress: &str,
-    out: &mut serde_json::Value,
-    frozen: &serde_json::Value,
-) {
+fn placehold_minted_ids(ingress: &str, out: &mut serde_json::Value, frozen: &serde_json::Value) {
     let frozen_obj = frozen.as_object();
     let Some(obj) = out.as_object_mut() else {
         return;

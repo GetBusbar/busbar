@@ -9,7 +9,9 @@
 //! booted. A declaration nothing checks is the frame-honesty problem one layer up — the stack a
 //! node reports is the stack its declarations describe, so the description has to be true.
 
-use busbar_contract::{check_composition, CompositionError, Listener, ListenerHandle, Registered};
+use busbar_contract_transport::{
+    check_composition, CompositionError, Listener, ListenerHandle, Registered,
+};
 use std::sync::Arc;
 
 fn declared(
@@ -93,8 +95,8 @@ fn the_transport_kind_has_one_abi_generation() {
     // needs something to compare against, and every transport naming the same constant is what
     // makes "one generation" a fact rather than a coincidence between six crates.
     assert_eq!(
-        busbar_contract::TRANSPORT_ABI,
-        busbar_contract::AbiVersion(1)
+        busbar_contract_transport::TRANSPORT_ABI,
+        busbar_contract_transport::AbiVersion(1)
     );
 }
 
@@ -120,6 +122,10 @@ fn two_listeners_on_one_address_are_still_two_listeners() {
 fn a_listener_keeps_its_identity_across_clones() {
     let listener = Listener::new(Arc::new(Bound("127.0.0.1:0")));
     let held = listener.clone();
-    assert_eq!(listener.id(), held.id(), "cloning a handle is not a new listener");
+    assert_eq!(
+        listener.id(),
+        held.id(),
+        "cloning a handle is not a new listener"
+    );
     assert!(format!("{listener:?}").contains(&listener.id().to_string()));
 }

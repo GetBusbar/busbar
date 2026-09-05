@@ -1283,7 +1283,7 @@ impl ProtocolReader for OpenAiReader {
             created,
             system_fingerprint,
             stop_sequence: None,
-        
+
             request_echo: None,
         })
     }

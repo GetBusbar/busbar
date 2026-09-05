@@ -43,12 +43,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use busbar_contract::transport::facts as tfacts;
 use busbar_contract::{
-    ArenaBytes, ArrivalRecord, CloseReason, Conn, ConnHandle, Direction, Fut, Frame, FrameMeta,
-    Kind, Listener, ListenerHandle, Plugin, Refusal, SlabBytes, StatusClass, StreamId, Transport,
-    TransportConfigView, TransportError, TransportKeyHandle, TransportMeta,
+    ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
+    TransportConfigView, TransportKeyHandle, TransportMeta,
 };
+use busbar_contract_transport::registry::facts as tfacts;
+use busbar_contract_transport::wire::ArrivalRecord;
+use busbar_contract_transport::wire::CloseReason;
+use busbar_contract_transport::wire::Conn;
+use busbar_contract_transport::wire::ConnHandle;
+use busbar_contract_transport::wire::Direction;
+use busbar_contract_transport::wire::FrameMeta;
+use busbar_contract_transport::wire::Listener;
+use busbar_contract_transport::wire::ListenerHandle;
+use busbar_contract_transport::wire::StatusClass;
+use busbar_contract_transport::wire::TransportError;
 use bytes::Bytes;
 use futures::Stream;
 use http_body_util::{BodyExt, Full};
@@ -256,8 +265,8 @@ impl Plugin for HttpTransport {
     fn kind(&self) -> Kind {
         Kind::Transport
     }
-    fn abi(&self) -> busbar_contract::AbiVersion {
-        busbar_contract::TRANSPORT_ABI
+    fn abi(&self) -> busbar_contract_transport::AbiVersion {
+        busbar_contract_transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -275,18 +284,23 @@ impl TransportMeta for HttpTransport {
     ];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &["tcp", "tls"];
-    const HANDOFF: Option<busbar_contract::Handoff> = None;
-    const FRAMING: busbar_contract::Framing = busbar_contract::Framing::Stream;
+    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract_transport::wire::Framing =
+        busbar_contract_transport::wire::Framing::Stream;
     const SESSION: bool = false;
     const SESSION_BOUND: bool = false;
-    const UNIT0_TRIGGER: Option<busbar_contract::Unit0Trigger> = None;
+    const UNIT0_TRIGGER: Option<busbar_contract_transport::wire::Unit0Trigger> = None;
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract::HandshakeTrigger> = None;
-    const TRANSPORT_FACTS: &'static [&'static str] =
-        &[tfacts::PATH, tfacts::METHOD, tfacts::AUTHORITY, tfacts::PEER];
+    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const TRANSPORT_FACTS: &'static [&'static str] = &[
+        tfacts::PATH,
+        tfacts::METHOD,
+        tfacts::AUTHORITY,
+        tfacts::PEER,
+    ];
     const DECODES_PAYLOAD: bool = false;
-    const STATUS_CLASS: Option<busbar_contract::StatusAt> =
-        Some(busbar_contract::StatusAt::FirstFrame);
+    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> =
+        Some(busbar_contract_transport::wire::StatusAt::FirstFrame);
 }
 
 impl Transport for HttpTransport {
@@ -333,7 +347,10 @@ impl Transport for HttpTransport {
                 .get(&addr)
                 .cloned()
                 .ok_or(TransportError::Closed)?;
-            let (stream, peer) = listener.accept().await.map_err(|_| TransportError::Closed)?;
+            let (stream, peer) = listener
+                .accept()
+                .await
+                .map_err(|_| TransportError::Closed)?;
             stream.set_nodelay(true).ok();
             let (read, write) = stream.into_split();
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -357,9 +374,9 @@ impl Transport for HttpTransport {
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
             let host = match dest.facts() {
-                busbar_contract::DestinationFacts::Upstream { address, .. } => address
-                    .authority()
-                    .ok_or(TransportError::AddressRefused)?,
+                busbar_contract::DestinationFacts::Upstream { address, .. } => {
+                    address.authority().ok_or(TransportError::AddressRefused)?
+                }
                 _ => return Err(TransportError::AddressRefused),
             };
             let uri: http::Uri = host.parse().map_err(|_| TransportError::AddressRefused)?;
@@ -390,39 +407,42 @@ impl Transport for HttpTransport {
         // queue is what lets one read (ingress: HEAD + one body chunk; egress: nothing buffered,
         // the channel already serialises them) become more than one `Stream` item.
         let state = (inner, std::collections::VecDeque::new());
-        Box::pin(futures::stream::unfold(state, move |(inner, mut queue)| async move {
-            if let Some(item) = queue.pop_front() {
-                return Some((item, (inner, queue)));
-            }
-            let inner = inner?;
-            let is_egress = matches!(&*inner, Inner::Egress { .. });
-            match is_egress {
-                true => {
-                    let item = {
-                        let Inner::Egress { resp_rx, .. } = &*inner else {
-                            unreachable!("checked above")
-                        };
-                        let mut rx = resp_rx.lock().await;
-                        rx.recv().await
-                    };
-                    item.map(|item| (item, (Some(inner), queue)))
+        Box::pin(futures::stream::unfold(
+            state,
+            move |(inner, mut queue)| async move {
+                if let Some(item) = queue.pop_front() {
+                    return Some((item, (inner, queue)));
                 }
-                false => match read_ingress_message(&inner).await {
-                    Ok(Some(mut frames)) => {
-                        if frames.is_empty() {
-                            return None;
-                        }
-                        let first = frames.remove(0);
-                        queue.extend(frames.into_iter().map(Ok));
-                        // One request per connection in this delivery: the connection is not
-                        // reused for a second read.
-                        Some((Ok(first), (None, queue)))
+                let inner = inner?;
+                let is_egress = matches!(&*inner, Inner::Egress { .. });
+                match is_egress {
+                    true => {
+                        let item = {
+                            let Inner::Egress { resp_rx, .. } = &*inner else {
+                                unreachable!("checked above")
+                            };
+                            let mut rx = resp_rx.lock().await;
+                            rx.recv().await
+                        };
+                        item.map(|item| (item, (Some(inner), queue)))
                     }
-                    Ok(None) => None,
-                    Err(e) => Some((Err(e), (None, queue))),
-                },
-            }
-        }))
+                    false => match read_ingress_message(&inner).await {
+                        Ok(Some(mut frames)) => {
+                            if frames.is_empty() {
+                                return None;
+                            }
+                            let first = frames.remove(0);
+                            queue.extend(frames.into_iter().map(Ok));
+                            // One request per connection in this delivery: the connection is not
+                            // reused for a second read.
+                            Some((Ok(first), (None, queue)))
+                        }
+                        Ok(None) => None,
+                        Err(e) => Some((Err(e), (None, queue))),
+                    },
+                }
+            },
+        ))
     }
 
     fn write<'a>(
@@ -483,7 +503,11 @@ impl Transport for HttpTransport {
                         .await
                         .map_err(|_| TransportError::Refused)?;
                     let status = resp.status().as_u16();
-                    let mut head = format!("HTTP/1.1 {} {}\r\n", status, resp.status().canonical_reason().unwrap_or(""));
+                    let mut head = format!(
+                        "HTTP/1.1 {} {}\r\n",
+                        status,
+                        resp.status().canonical_reason().unwrap_or("")
+                    );
                     for (name, value) in resp.headers() {
                         head.push_str(name.as_str());
                         head.push_str(": ");
@@ -547,7 +571,7 @@ impl Transport for HttpTransport {
         fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
         let field = |name: &str| {
             fields
                 .iter()
@@ -578,7 +602,7 @@ impl Transport for HttpTransport {
         out.extend_from_slice(body);
         arena
             .alloc_bytes(&out)
-            .map_err(|_| busbar_contract::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
     }
 
     fn adopt<'a>(
@@ -599,7 +623,7 @@ impl Transport for HttpTransport {
     /// layer adopting the stream is the one that speaks the upgrade and answers it. An egress
     /// connection has no socket to give — it dials through a pooled client, and a pooled connection
     /// is not one caller's to take.
-    fn detach(&self, conn: &Conn) -> Option<busbar_contract::RawStream> {
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
         let inner = self.conns.lock().expect("poisoned").remove(&conn.id())?;
         let peer = conn.peer();
         let inner = Arc::try_unwrap(inner).ok()?;
@@ -607,7 +631,7 @@ impl Transport for HttpTransport {
             return None;
         };
         let stream = read.into_inner().reunite(write.into_inner()).ok()?;
-        Some(busbar_contract::RawStream::new(
+        Some(busbar_contract_transport::wire::RawStream::new(
             Self::KEY,
             peer,
             Box::new(TokioAsyncReadCompatExt::compat(stream)),
@@ -651,15 +675,12 @@ fn complete_message(buffered: &[u8]) -> Result<Option<raw::RawMessage>, Transpor
     let Some(header_end) = find_header_end(buffered) else {
         return Ok(None);
     };
-    let mut message =
-        raw::parse_message(&buffered[..header_end]).ok_or(TransportError::Framing)?;
+    let mut message = raw::parse_message(&buffered[..header_end]).ok_or(TransportError::Framing)?;
     let rest = &buffered[header_end..];
 
     if raw::is_chunked(&message.headers) {
         let mut decoder = raw::ChunkedDecoder::default();
-        decoder
-            .feed(rest)
-            .map_err(|_| TransportError::Framing)?;
+        decoder.feed(rest).map_err(|_| TransportError::Framing)?;
         if !decoder.is_done() {
             return Ok(None);
         }
@@ -687,7 +708,9 @@ fn complete_message(buffered: &[u8]) -> Result<Option<raw::RawMessage>, Transpor
 /// own framing, kept rather than flattened, so a megabyte body arrives as the chunks it was sent as
 /// however the reads happened to fall. A trailer section becomes one final frame carrying it in
 /// wire form, which is where a reader that folded it into the body would have lost it.
-async fn read_ingress_message(inner: &Inner) -> Result<Option<Vec<(StreamId, Frame)>>, TransportError> {
+async fn read_ingress_message(
+    inner: &Inner,
+) -> Result<Option<Vec<(StreamId, Frame)>>, TransportError> {
     let Inner::Ingress { read, leftover, .. } = inner else {
         return Err(TransportError::Framing);
     };
@@ -721,9 +744,7 @@ async fn read_ingress_message(inner: &Inner) -> Result<Option<Vec<(StreamId, Fra
 
     let (bodies, trailers) = if raw::is_chunked(&headers) {
         let mut decoder = raw::ChunkedDecoder::default();
-        decoder
-            .feed(&rest)
-            .map_err(|_| TransportError::Framing)?;
+        decoder.feed(&rest).map_err(|_| TransportError::Framing)?;
         while !decoder.is_done() {
             let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
             let n = r
@@ -754,7 +775,14 @@ async fn read_ingress_message(inner: &Inner) -> Result<Option<Vec<(StreamId, Fra
             rest.extend_from_slice(&chunk[..n]);
         }
         rest.truncate(declared);
-        (if rest.is_empty() { Vec::new() } else { vec![rest] }, Vec::new())
+        (
+            if rest.is_empty() {
+                Vec::new()
+            } else {
+                vec![rest]
+            },
+            Vec::new(),
+        )
     };
 
     let mut frames = vec![body_frame(header_bytes)];

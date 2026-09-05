@@ -40,6 +40,7 @@ path = "src/lib.rs"
 [dependencies]
 busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
+busbar-contract-transport = { path = "../busbar-contract-transport" }
 futures = { workspace = true }
 
 # Test-only. `busbar-unit-breaker` is never named by this crate's library code — the breaker seam

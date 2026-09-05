@@ -1318,9 +1318,9 @@ impl ProtocolReader for GeminiReader {
                     created: None,
                     system_fingerprint: None,
                     stop_sequence: None,
-                
-            request_echo: None,
-        });
+
+                    request_echo: None,
+                });
             }
         }
 
@@ -1550,7 +1550,7 @@ impl ProtocolReader for GeminiReader {
             created: None,
             system_fingerprint: None,
             stop_sequence: None,
-        
+
             request_echo: None,
         })
     }

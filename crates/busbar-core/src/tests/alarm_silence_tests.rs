@@ -121,17 +121,35 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
                         .api_key("up"),
                 )
                 .lane(
-                    LaneSpec::new("m-dead", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1")
-                        .api_key("up"),
+                    LaneSpec::new(
+                        "m-dead",
+                        crate::proto::PROTO_ANTHROPIC,
+                        "http://127.0.0.1:1",
+                    )
+                    .api_key("up"),
                 )
                 .pool("pa", &[(0, 1)])
                 .pool("pb", &[(1, 1)])
                 .build();
             let router = crate::build_router(app);
 
-            let (ok, _) = drain(router.clone().oneshot(post("/pa/v1/messages", "pa")).await.unwrap()).await;
+            let (ok, _) = drain(
+                router
+                    .clone()
+                    .oneshot(post("/pa/v1/messages", "pa"))
+                    .await
+                    .unwrap(),
+            )
+            .await;
             statuses.push(("ok request", ok));
-            let (failed, _) = drain(router.clone().oneshot(post("/pb/v1/messages", "pb")).await.unwrap()).await;
+            let (failed, _) = drain(
+                router
+                    .clone()
+                    .oneshot(post("/pb/v1/messages", "pb"))
+                    .await
+                    .unwrap(),
+            )
+            .await;
             statuses.push(("failed-upstream request", failed));
             let (healthz, _) = drain(router.clone().oneshot(get("/healthz")).await.unwrap()).await;
             statuses.push(("healthz", healthz));
@@ -144,9 +162,19 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
 
     // The lifecycle really happened: the successful request reached the mock and came back 200,
     // the dead-lane request did NOT succeed, and the probe answered.
-    let status_of = |what: &str| statuses.iter().find(|(w, _)| *w == what).map(|(_, s)| *s).unwrap();
+    let status_of = |what: &str| {
+        statuses
+            .iter()
+            .find(|(w, _)| *w == what)
+            .map(|(_, s)| *s)
+            .unwrap()
+    };
     assert_eq!(status_of("ok request"), 200, "statuses: {statuses:?}");
-    assert_ne!(status_of("failed-upstream request"), 200, "statuses: {statuses:?}");
+    assert_ne!(
+        status_of("failed-upstream request"),
+        200,
+        "statuses: {statuses:?}"
+    );
     assert_eq!(status_of("healthz"), 200, "statuses: {statuses:?}");
 
     // No event at DEBUG or above mentions an alarm or a dispute, in its message or in any field.
@@ -156,7 +184,10 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
         hits.is_empty(),
         "no tracing event may carry an alarm/dispute message or field on a 1.5.5-shaped \
          deployment; found:\n{}",
-        hits.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")
+        hits.iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 
     // No metric name carries either word.
@@ -176,8 +207,14 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
 /// The name extractor reads sample, summary and comment lines the way the assertion needs.
 #[test]
 fn metric_name_reads_every_exposition_line_shape() {
-    assert_eq!(metric_name("busbar_requests_total{a=\"b\"} 1"), Some("busbar_requests_total"));
-    assert_eq!(metric_name("busbar_billing_truncated_total 0"), Some("busbar_billing_truncated_total"));
+    assert_eq!(
+        metric_name("busbar_requests_total{a=\"b\"} 1"),
+        Some("busbar_requests_total")
+    );
+    assert_eq!(
+        metric_name("busbar_billing_truncated_total 0"),
+        Some("busbar_billing_truncated_total")
+    );
     assert_eq!(
         metric_name("busbar_request_duration_seconds_count{pool=\"p\"} 3"),
         Some("busbar_request_duration_seconds_count")

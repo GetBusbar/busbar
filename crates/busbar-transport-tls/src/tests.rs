@@ -77,7 +77,7 @@ fn upstream_dest(addr: &str) -> busbar_contract::VerifiedDestination {
         &FixtureSeal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "tls",
-            address: busbar_contract::UpstreamAddress::socket(host),
+            address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test"),
         },
         "tls",
@@ -134,7 +134,10 @@ async fn half_close_and_cancel_mid_frame() {
         let server = server.clone();
         async move { server.accept(&listener).await.unwrap() }
     });
-    let client_conn = client.dial(&upstream_dest(&addr), &fixture_key(0)).await.unwrap();
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
     let server_conn = accept_fut.await.unwrap();
 
     client
@@ -163,7 +166,10 @@ async fn half_close_and_cancel_mid_frame() {
         let server2 = server2.clone();
         async move { server2.accept(&listener2).await.unwrap() }
     });
-    let client_conn2 = client2.dial(&upstream_dest(&addr2), &fixture_key(0)).await.unwrap();
+    let client_conn2 = client2
+        .dial(&upstream_dest(&addr2), &fixture_key(0))
+        .await
+        .unwrap();
     let server_conn2 = accept2.await.unwrap();
     {
         let mut frames = server2.frames(server_conn2.clone());
@@ -248,7 +254,11 @@ async fn an_in_band_upgrade_adopts_the_lower_layers_stream() {
     assert_eq!(tcp.arrival(&tcp_conn).port, 0, "the source kept nothing");
     let record = tls.arrival(&upgraded);
     assert_eq!(record.transport_chain, vec!["tcp", "tls"]);
-    assert_eq!(record.sni.as_deref(), Some("localhost"), "re-resolved at the new layer");
+    assert_eq!(
+        record.sni.as_deref(),
+        Some("localhost"),
+        "re-resolved at the new layer"
+    );
     // Keep the client's TLS stream alive across the write below: dropping it right after the
     // handshake closes the socket (FIN/RST) and races the server's write, which is exactly the
     // flake this ordering avoids.
@@ -282,7 +292,10 @@ async fn a_handoff_from_an_undeclared_layer_is_a_mismatch() {
         let server = server.clone();
         async move { server.accept(&listener).await.unwrap() }
     });
-    let client_conn = client.dial(&upstream_dest(&addr), &fixture_key(0)).await.unwrap();
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
     let server_conn = accept_fut.await.unwrap();
 
     // `tls` composes over `tcp` and nothing else; a `tls` source names no declared handoff.
@@ -443,7 +456,7 @@ async fn a_declared_certificate_name_is_what_the_handshake_offers() {
         &FixtureSeal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "tls",
-            address: busbar_contract::UpstreamAddress::Socket {
+            address: busbar_contract_transport::dest::UpstreamAddress::Socket {
                 authority: leaked,
                 sni: Some("localhost"),
             },
@@ -455,7 +468,10 @@ async fn a_declared_certificate_name_is_what_the_handshake_offers() {
     let client_conn = client.dial(&dest, &fixture_key(0)).await.unwrap();
     let server_conn = accept_fut.await.unwrap();
 
-    assert_eq!(server.arrival(&server_conn).sni.as_deref(), Some("localhost"));
+    assert_eq!(
+        server.arrival(&server_conn).sni.as_deref(),
+        Some("localhost")
+    );
     client.close(client_conn, CloseReason::Normal);
 }
 
@@ -470,7 +486,10 @@ async fn with_no_declared_name_the_address_itself_stands_in() {
         async move { server.accept(&listener).await.unwrap() }
     });
 
-    let client_conn = client.dial(&upstream_dest(&addr), &fixture_key(0)).await.unwrap();
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
     let server_conn = accept_fut.await.unwrap();
 
     // A dial to an IP literal offers no SNI at all on the wire, which is the correct reading of
@@ -487,7 +506,7 @@ async fn with_no_declared_name_the_address_itself_stands_in() {
 /// fails here instead of in a deployment.
 #[tokio::test]
 async fn every_reserved_key_this_transport_publishes_is_declared() {
-    use busbar_contract::transport::facts;
+    use busbar_contract_transport::registry::facts;
 
     let (server, listener, client) = bound_pair().await;
     let addr = listener.local_addr();
@@ -500,10 +519,7 @@ async fn every_reserved_key_this_transport_publishes_is_declared() {
     let accepted = accept_fut.await.unwrap().unwrap();
 
     let mut published: Vec<&'static str> = Vec::new();
-    for (transport, conn) in [
-        (server.as_ref(), &accepted),
-        (client.as_ref(), &dialled),
-    ] {
+    for (transport, conn) in [(server.as_ref(), &accepted), (client.as_ref(), &dialled)] {
         let record = transport.arrival(conn);
         if record.sni.is_some() {
             published.push(facts::SNI);

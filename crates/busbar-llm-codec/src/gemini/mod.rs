@@ -4,7 +4,6 @@
 //! Gemini protocol reader/writer implementation.
 
 use crate::ir::IrStreamEvent;
-use http::StatusCode;
 #[cfg(test)]
 use busbar_substrate_values::breaker::CanonicalSignal;
 use busbar_substrate_values::breaker::StatusClass;
@@ -13,6 +12,7 @@ use busbar_substrate_values::proto::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION,
     ERR_TYPE_RATE_LIMIT,
 };
+use http::StatusCode;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
@@ -175,10 +175,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // `test_egress_ua_versions_are_pinned_and_present` guards drift.
     egress_user_agent: "google-genai-sdk/0.8.0 gl-python/3.11",
     has_model_in_url: true,
-    auth_failure_status_and_kind: (
-        http::StatusCode::BAD_REQUEST,
-        ERR_TYPE_INVALID_REQUEST,
-    ),
+    auth_failure_status_and_kind: (http::StatusCode::BAD_REQUEST, ERR_TYPE_INVALID_REQUEST),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[],
     auth_failure_message: GEMINI_BAD_KEY_MESSAGE,

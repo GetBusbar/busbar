@@ -423,16 +423,25 @@ fn the_oracle_cooldown_pool_draws_a_whole_second_in_one_to_three() {
         // the trip armed (`until - now`), so this measures the shipped record path, not a bare
         // arithmetic helper.
         let now = 1_000;
-        assert!(cell.record_failure(now, &cfg, None, 86_400), "consecutive_n=1 must trip");
+        assert!(
+            cell.record_failure(now, &cfg, None, 86_400),
+            "consecutive_n=1 must trip"
+        );
         let BreakerState::Open { until } = cell.state() else {
             panic!("expected Open immediately after the trip");
         };
         let draw = until - now;
-        assert!((1..=3).contains(&draw), "oracle-cd cooldown draw out of band: {draw}");
+        assert!(
+            (1..=3).contains(&draw),
+            "oracle-cd cooldown draw out of band: {draw}"
+        );
         seen.insert(draw);
     }
     // The band is genuinely sampled — otherwise "in [1, 3]" would also pass for a constant.
-    assert!(seen.len() > 1, "jitter never varied across 256 cells: {seen:?}");
+    assert!(
+        seen.len() > 1,
+        "jitter never varied across 256 cells: {seen:?}"
+    );
 }
 
 #[test]

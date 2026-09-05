@@ -10,6 +10,7 @@ license = "Apache-2.0"
 [dependencies]
 tokio-util = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
+busbar-contract-transport = { path = "../busbar-contract-transport" }
 busbar-transport-tcp = { path = "../busbar-transport-tcp" }
 busbar-transport-tls = { path = "../busbar-transport-tls" }
 futures = { workspace = true }

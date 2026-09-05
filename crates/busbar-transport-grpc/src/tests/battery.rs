@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use futures::StreamExt;
 
-use busbar_contract::wire::TransportError;
 use busbar_contract::{ArenaBytes, StreamId, Transport};
+use busbar_contract_transport::wire::TransportError;
 
 use crate::GrpcTransport;
 
@@ -68,7 +68,7 @@ fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "grpc",
-            address: busbar_contract::UpstreamAddress::socket(host),
+            address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test-lane"),
         },
         "grpc",
@@ -145,7 +145,10 @@ async fn terminal_status_is_read_from_the_grpc_status_trailer() {
         .write(&server_conn, server_stream, ArenaBytes::new(b"world"))
         .await
         .unwrap();
-    server_t.close(server_conn, busbar_contract::wire::CloseReason::Normal);
+    server_t.close(
+        server_conn,
+        busbar_contract_transport::wire::CloseReason::Normal,
+    );
 
     let mut client_frames = client_t.frames(client_conn);
     let (_s, data_frame) = client_frames.next().await.unwrap().unwrap();
@@ -191,12 +194,18 @@ async fn multiplexed_streams_without_cross_talk() {
     let mut seen = std::collections::BTreeMap::new();
     for _ in 0..2 {
         let (stream, frame) = server_frames.next().await.unwrap().unwrap();
-        seen.insert(stream, String::from_utf8(frame.bytes.as_slice().to_vec()).unwrap());
+        seen.insert(
+            stream,
+            String::from_utf8(frame.bytes.as_slice().to_vec()).unwrap(),
+        );
     }
     assert_eq!(seen.len(), 2, "two distinct streams, not merged");
     let mut values: Vec<_> = seen.values().cloned().collect();
     values.sort();
-    assert_eq!(values, vec!["stream-one".to_string(), "stream-two".to_string()]);
+    assert_eq!(
+        values,
+        vec!["stream-one".to_string(), "stream-two".to_string()]
+    );
 }
 
 #[tokio::test]
@@ -381,7 +390,11 @@ async fn refusing_one_call_leaves_its_neighbours_completing() {
     bodies.sort();
     assert_eq!(
         bodies,
-        vec!["one".to_string(), "refused".to_string(), "three".to_string()],
+        vec![
+            "one".to_string(),
+            "refused".to_string(),
+            "three".to_string()
+        ],
         "the refused call got the refusal and its neighbours completed"
     );
 }
@@ -403,7 +416,10 @@ async fn a_handoff_onto_grpc_is_a_mismatch() {
         tokio::spawn(async move { server_t.accept(&listener).await })
     };
     let host: &'static str = Box::leak(addr.into_boxed_str());
-    let conn = client_t.dial(&verified_upstream(host), &keys).await.unwrap();
+    let conn = client_t
+        .dial(&verified_upstream(host), &keys)
+        .await
+        .unwrap();
     let _ = tokio::time::timeout(Duration::from_millis(200), accept_task).await;
     let err = client_t.adopt(&client_t, conn, &keys).await.unwrap_err();
     assert_eq!(err, TransportError::HandoffMismatch);
@@ -437,7 +453,7 @@ async fn the_destinations_method_is_the_path_the_call_opens_against() {
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "grpc",
-            address: busbar_contract::UpstreamAddress::Grpc {
+            address: busbar_contract_transport::dest::UpstreamAddress::Grpc {
                 authority: host,
                 sni: None,
                 method: "/vendor.Inference/Chat",
@@ -505,8 +521,9 @@ async fn a_transport_with_no_lower_layer_cannot_listen_or_dial() {
 #[allow(clippy::assertions_on_constants)]
 #[tokio::test]
 async fn transport_meta_matches_the_architecture_row() {
-    use busbar_contract::wire::{StatusAt, Unit0Trigger};
     use busbar_contract::TransportMeta;
+    use busbar_contract_transport::wire::StatusAt;
+    use busbar_contract_transport::wire::Unit0Trigger;
     assert_eq!(<GrpcTransport as TransportMeta>::KEY, "grpc");
     assert!(<GrpcTransport as TransportMeta>::SESSION);
     assert!(<GrpcTransport as TransportMeta>::SESSION_BOUND);

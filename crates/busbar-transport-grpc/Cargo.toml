@@ -14,6 +14,7 @@ path = "src/lib.rs"
 [dependencies]
 tokio-util = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
+busbar-contract-transport = { path = "../busbar-contract-transport" }
 # The layers this one composes over: `grpc` drives HTTP/2 over a stream one of them gives up, and
 # opens no socket of its own.
 busbar-transport-http = { path = "../busbar-transport-http" }

@@ -163,4 +163,3 @@ pub fn requires_max_response(name: &str) -> bool {
         .find(|d| d.name == name)
         .is_some_and(|d| d.requires_max_tokens)
 }
-

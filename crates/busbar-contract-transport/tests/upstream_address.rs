@@ -8,13 +8,17 @@
 //! an address a gRPC method had nowhere to sit beside. These assert that each family now asks for
 //! exactly what it dials with, and gets nothing that belongs to another family.
 
-use busbar_contract::UpstreamAddress;
+use busbar_contract_transport::UpstreamAddress;
 
 #[test]
 fn a_socket_target_carries_an_authority_and_an_optional_certificate_name() {
     let plain = UpstreamAddress::socket("10.0.0.1:443");
     assert_eq!(plain.authority(), Some("10.0.0.1:443"));
-    assert_eq!(plain.sni(), None, "no name is declared unless one is written");
+    assert_eq!(
+        plain.sni(),
+        None,
+        "no name is declared unless one is written"
+    );
 
     let named = UpstreamAddress::Socket {
         authority: "10.0.0.1:443",

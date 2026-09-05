@@ -89,7 +89,9 @@ fn a_new_window_resets_the_budget() {
 #[test]
 fn forbidden_class_has_zero_budget() {
     let limiter = MutationLimiter::new();
-    assert!(!limiter.check("alice", MutationClass::Forbidden, 0).admitted());
+    assert!(!limiter
+        .check("alice", MutationClass::Forbidden, 0)
+        .admitted());
 }
 
 /// CG-38: `MutationClass::for_verb` classifies every 1.5.5 mutating admin operation exactly the

@@ -1367,7 +1367,7 @@ impl ProtocolReader for BedrockReader {
             created: None,
             system_fingerprint: None,
             stop_sequence: None,
-        
+
             request_echo: None,
         })
     }

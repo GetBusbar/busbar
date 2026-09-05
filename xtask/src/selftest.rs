@@ -32,7 +32,10 @@ fn fixtures_dir() -> PathBuf {
 }
 
 fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 fn check(
@@ -48,7 +51,10 @@ fn check(
     let dir = fixtures_dir().join(fixture_name);
     let manifest = dir.join("Cargo.toml");
     if !manifest.exists() {
-        fails.push(format!("{label}: fixture manifest missing at {}", manifest.display()));
+        fails.push(format!(
+            "{label}: fixture manifest missing at {}",
+            manifest.display()
+        ));
         return;
     }
     let pc = PureCrate {
@@ -64,7 +70,11 @@ fn check(
             println!("  GREEN  {label}: 0 hits, as expected");
         } else {
             let names: Vec<_> = hits.iter().map(|h| h.offender.clone()).collect();
-            fails.push(format!("{label}: expected 0 hits, got {}: {}", hits.len(), names.join(", ")));
+            fails.push(format!(
+                "{label}: expected 0 hits, got {}: {}",
+                hits.len(),
+                names.join(", ")
+            ));
         }
         return;
     }
@@ -77,13 +87,20 @@ fn check(
     }
     if missing.is_empty() {
         let names: Vec<_> = hits.iter().map(|h| h.offender.clone()).collect();
-        println!("  RED    {label}: hit(s) [{}] include every expected offender {:?}", names.join(", "), expect_offenders);
+        println!(
+            "  RED    {label}: hit(s) [{}] include every expected offender {:?}",
+            names.join(", "),
+            expect_offenders
+        );
     } else {
         fails.push(format!(
             "{label}: expected offender(s) {:?} among the hits, missing {:?} (got: {})",
             expect_offenders,
             missing,
-            hits.iter().map(|h| h.offender.clone()).collect::<Vec<_>>().join(", ")
+            hits.iter()
+                .map(|h| h.offender.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
 }
@@ -92,8 +109,20 @@ pub fn run() -> bool {
     println!("xtask denylist --selftest");
     let mut fails = Vec::new();
 
-    check("clean pure crate", "clean-pure", "xtask-fixture-clean", &[], &mut fails);
-    check("pure crate with a banned direct dependency", "dirty-dep", "xtask-fixture-dirty-dep", &["libc"], &mut fails);
+    check(
+        "clean pure crate",
+        "clean-pure",
+        "xtask-fixture-clean",
+        &[],
+        &mut fails,
+    );
+    check(
+        "pure crate with a banned direct dependency",
+        "dirty-dep",
+        "xtask-fixture-dirty-dep",
+        &["libc"],
+        &mut fails,
+    );
     check(
         "pure crate with a banned own-src path",
         "dirty-src",
@@ -153,7 +182,10 @@ fn check_via_only(fails: &mut Vec<String>) {
     let dir = fixtures_dir().join("via-only");
     let manifest = dir.join("Cargo.toml");
     if !manifest.exists() {
-        fails.push(format!("via-only: fixture manifest missing at {}", manifest.display()));
+        fails.push(format!(
+            "via-only: fixture manifest missing at {}",
+            manifest.display()
+        ));
         return;
     }
     let pc = || PureCrate {
@@ -167,19 +199,30 @@ fn check_via_only(fails: &mut Vec<String>) {
     if !red_hits.iter().any(|h| h.offender == "libc") {
         fails.push(format!(
             "via-only: expected a `libc` hit with no allow-list entry, got: {}",
-            red_hits.iter().map(|h| h.offender.clone()).collect::<Vec<_>>().join(", ")
+            red_hits
+                .iter()
+                .map(|h| h.offender.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
         return;
     }
     println!("  RED    via-only: `libc` hit with no allow-list entry, as expected");
 
-    let allow = vec![("xtask-fixture-via-only", "libc", Some("xtask-fixture-via-mid"))];
-    let green_hits =
-        denylist::run_on_with_allow(&manifest, vec![pc()], &banned, &fragments, allow);
+    let allow = vec![(
+        "xtask-fixture-via-only",
+        "libc",
+        Some("xtask-fixture-via-mid"),
+    )];
+    let green_hits = denylist::run_on_with_allow(&manifest, vec![pc()], &banned, &fragments, allow);
     if green_hits.iter().any(|h| h.offender == "libc") {
         fails.push(format!(
             "via-only: expected 0 `libc` hits with the via-narrowed waiver applied, got: {}",
-            green_hits.iter().map(|h| h.offender.clone()).collect::<Vec<_>>().join(", ")
+            green_hits
+                .iter()
+                .map(|h| h.offender.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     } else {
         println!("  GREEN  via-only: `libc` fully waived by `via = \"xtask-fixture-via-mid\"`");
@@ -195,7 +238,10 @@ fn check_via_bypass(fails: &mut Vec<String>) {
     let dir = fixtures_dir().join("via-bypass");
     let manifest = dir.join("Cargo.toml");
     if !manifest.exists() {
-        fails.push(format!("via-bypass: fixture manifest missing at {}", manifest.display()));
+        fails.push(format!(
+            "via-bypass: fixture manifest missing at {}",
+            manifest.display()
+        ));
         return;
     }
     let pc = PureCrate {
@@ -205,7 +251,11 @@ fn check_via_bypass(fails: &mut Vec<String>) {
         report_name: "xtask-fixture-via-bypass".to_string(),
     };
 
-    let allow = vec![("xtask-fixture-via-bypass", "libc", Some("xtask-fixture-via-mid"))];
+    let allow = vec![(
+        "xtask-fixture-via-bypass",
+        "libc",
+        Some("xtask-fixture-via-mid"),
+    )];
     let hits = denylist::run_on_with_allow(&manifest, vec![pc], &banned, &fragments, allow);
     if hits.iter().any(|h| h.offender == "libc") {
         println!(

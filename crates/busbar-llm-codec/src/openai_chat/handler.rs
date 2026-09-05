@@ -1028,9 +1028,7 @@ pub fn read_speech_request(
 /// Wire -> concrete `SpeechResp` parse, extracted from the `OperationHandler::read_response`
 /// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
 /// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
-pub fn read_speech_response(
-    wire: &[u8],
-) -> Result<crate::ir::audio::SpeechResp, CodecError> {
+pub fn read_speech_response(wire: &[u8]) -> Result<crate::ir::audio::SpeechResp, CodecError> {
     // OpenAI speech is raw binary audio whose container is whatever the request's `response_format`
     // asked for (`mp3`|`opus`|`aac`|`flac`|`wav`|`pcm`, default `mp3` — openai-openapi
     // `CreateSpeechRequest.response_format`). This reader is the EGRESS codec reading the upstream

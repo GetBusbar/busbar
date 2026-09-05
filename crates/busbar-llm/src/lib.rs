@@ -272,7 +272,6 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
 /// admin swap path re-attaches probers to each new generation. No-op when every lane is `mode: none`.
 pub use crate::engine::health::spawn_probers;
 
-
 /// THE PATH-MODEL ARRIVALS THIS PLUGIN REGISTERS, protocol-name-keyed.
 ///
 /// When `ProtocolDecl` relocated to `busbar-substrate` (Batch C-6) its `path_ingress` field could not

@@ -442,9 +442,9 @@ fn test_write_response_preserves_parallel_tool_calls() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
 
     let writer = CohereWriter;
     let json = writer.write_response(&resp);
@@ -916,9 +916,9 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
 
     let writer = CohereWriter;
     let out = writer.write_response(&resp);
@@ -1114,9 +1114,9 @@ fn test_safety_finish_reason_writes_error_non_stream() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let writer = CohereWriter;
     let body = writer.write_response(&resp);
     assert_eq!(
@@ -1219,9 +1219,9 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let err_out = writer.write_response(&err_resp);
     assert_eq!(
         err_out.get("finish_reason").and_then(|v| v.as_str()),
@@ -1553,9 +1553,9 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
 
     let writer = CohereWriter;
     let body = writer.write_response(&resp);
@@ -3889,9 +3889,9 @@ fn test_write_response_stop_sequence_maps_to_stop_sequence() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let writer = CohereWriter;
     let out = writer.write_response(&resp);
     assert_eq!(
@@ -3926,9 +3926,9 @@ fn test_write_response_end_turn_maps_to_complete() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let writer = CohereWriter;
     let out = writer.write_response(&resp);
     assert_eq!(
@@ -4900,9 +4900,9 @@ fn test_write_response_reemits_folded_tool_plan_as_content_not_tool_plan() {
         system_fingerprint: None,
         stop_sequence: None,
         logprobs: Vec::new(),
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let out = writer.write_response(&resp);
     let message = out.get("message").expect("message");
     assert!(

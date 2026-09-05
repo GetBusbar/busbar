@@ -117,4 +117,3 @@ fn asking_the_arena_for_more_than_it_has_is_an_answer_not_a_panic() {
     assert_eq!(refused.remaining, 0);
     assert_eq!(refused.reason(), busbar_caps::ReasonCode::ArenaBudget);
 }
-

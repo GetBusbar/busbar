@@ -43,7 +43,7 @@ fn upstream_dest(uri: &str) -> busbar_contract::VerifiedDestination {
         &FixtureSeal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "http",
-            address: busbar_contract::UpstreamAddress::socket(host),
+            address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test"),
         },
         "http",
@@ -60,7 +60,9 @@ async fn fixed_response_server(response: &'static [u8]) -> String {
         let mut buf = [0_u8; 4096];
         // Drain the request (don't care about its shape for this fixture).
         let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
-        tokio::io::AsyncWriteExt::write_all(&mut stream, response).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut stream, response)
+            .await
+            .unwrap();
     });
     format!("http://{addr}/")
 }
@@ -82,7 +84,9 @@ async fn egress_round_trip_reports_status_class_on_the_first_frame() {
     let mut frames = transport.frames(conn);
     let (_s, head) = frames.next().await.unwrap().unwrap();
     assert_eq!(head.meta.status, Some(StatusClass::Success));
-    assert!(std::str::from_utf8(head.bytes.as_slice()).unwrap().starts_with("HTTP/1.1 200"));
+    assert!(std::str::from_utf8(head.bytes.as_slice())
+        .unwrap()
+        .starts_with("HTTP/1.1 200"));
 
     let (_s, body) = frames.next().await.unwrap().unwrap();
     assert_eq!(body.bytes.as_slice(), b"hello");
@@ -91,9 +95,14 @@ async fn egress_round_trip_reports_status_class_on_the_first_frame() {
 
 #[tokio::test]
 async fn egress_maps_4xx_and_5xx_status_classes() {
-    for (status, class) in [(404_u16, StatusClass::ClientError), (500, StatusClass::ServerError)] {
+    for (status, class) in [
+        (404_u16, StatusClass::ClientError),
+        (500, StatusClass::ServerError),
+    ] {
         let resp: &'static [u8] = Box::leak(
-            format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\n\r\n").into_bytes().into_boxed_slice(),
+            format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\n\r\n")
+                .into_bytes()
+                .into_boxed_slice(),
         );
         let uri = fixed_response_server(resp).await;
         let transport = HttpTransport::new(ClientSettings::default());
@@ -102,7 +111,11 @@ async fn egress_maps_4xx_and_5xx_status_classes() {
             .await
             .unwrap();
         transport
-            .write(&conn, StreamId(0), ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+            .write(
+                &conn,
+                StreamId(0),
+                ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+            )
             .await
             .unwrap();
         let mut frames = transport.frames(conn);
@@ -281,11 +294,12 @@ async fn an_egress_body_accumulates_across_calls_until_the_declared_length() {
     }
 
     let mut frames = transport.frames(conn);
-    let (_s, response_head) = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
-        .await
-        .expect("the exchange ran once the message was whole")
-        .unwrap()
-        .unwrap();
+    let (_s, response_head) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+            .await
+            .expect("the exchange ran once the message was whole")
+            .unwrap()
+            .unwrap();
     assert_eq!(response_head.meta.status, Some(StatusClass::Success));
 
     let bodies = seen.lock().unwrap().clone();
@@ -388,12 +402,18 @@ fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
     };
     assert!(honest(&base));
     let inflated = Frame {
-        meta: FrameMeta { bytes: 40, ..base.meta },
+        meta: FrameMeta {
+            bytes: 40,
+            ..base.meta
+        },
         ..base.clone()
     };
     assert!(!honest(&inflated));
     let deflated = Frame {
-        meta: FrameMeta { bytes: 1, ..base.meta },
+        meta: FrameMeta {
+            bytes: 1,
+            ..base.meta
+        },
         ..base
     };
     assert!(!honest(&deflated));

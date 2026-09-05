@@ -9,22 +9,29 @@ use std::sync::{Arc, Mutex as SyncMutex};
 
 use futures::{Stream, StreamExt};
 
-use busbar_contract::transport::facts as tfacts;
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::unit::Refusal;
-use busbar_contract::wire::{
-    ArrivalRecord, CloseReason, Conn, Direction, Frame, FrameMeta, Listener, TransportError,
-    Unit0Trigger,
-};
+use busbar_contract::wire::Frame;
 use busbar_contract::{
-    grammar::SelectorForm, AbiVersion, ArenaBytes, Fut, Kind, Plugin, SlabBytes, StreamId,
-    Transport, TransportConfigView, TransportKeyHandle, TransportMeta,
+    grammar::SelectorForm, ArenaBytes, Fut, Kind, Plugin, SlabBytes, StreamId, Transport,
+    TransportConfigView, TransportKeyHandle, TransportMeta,
 };
+use busbar_contract_transport::registry::facts as tfacts;
+use busbar_contract_transport::wire::ArrivalRecord;
+use busbar_contract_transport::wire::CloseReason;
+use busbar_contract_transport::wire::Conn;
+use busbar_contract_transport::wire::Direction;
+use busbar_contract_transport::wire::FrameMeta;
+use busbar_contract_transport::wire::Listener;
+use busbar_contract_transport::wire::TransportError;
+use busbar_contract_transport::wire::Unit0Trigger;
+use busbar_contract_transport::AbiVersion;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::conn::{ConnState, LowerIo, Sock, WsConnHandle};
 
-type FrameStream = std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
+type FrameStream =
+    std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
 
 /// One `ws://`/`wss://` URL, hand-parsed into `(secure, host, port, path)`. Deliberately strict
 /// rather than permissive: this is an operator/runtime target, not free text.
@@ -154,8 +161,14 @@ impl WsTransport {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
     {
-        self.handshake(Box::new(stream), is_server, "ws://localhost/", peer, vec!["ws"])
-            .await
+        self.handshake(
+            Box::new(stream),
+            is_server,
+            "ws://localhost/",
+            peer,
+            vec!["ws"],
+        )
+        .await
     }
 
     /// The one place a WebSocket connection is made, whichever direction it came from.
@@ -189,7 +202,7 @@ impl Plugin for WsTransport {
         Kind::Transport
     }
     fn abi(&self) -> AbiVersion {
-        busbar_contract::TRANSPORT_ABI
+        busbar_contract_transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -218,18 +231,19 @@ impl TransportMeta for WsTransport {
     // upgrade arrives on `http`, an outbound one is dialled through `tcp`. `tls` sits under those
     // two rather than under this one, which is why it is not named here.
     const COMPOSES_OVER: &'static [&'static str] = &["http", "tcp"];
-    const HANDOFF: Option<busbar_contract::wire::Handoff> = None;
-    const FRAMING: busbar_contract::Framing = busbar_contract::Framing::Stream;
+    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract_transport::wire::Framing =
+        busbar_contract_transport::wire::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = true;
     const UNIT0_TRIGGER: Option<Unit0Trigger> = Some(Unit0Trigger::Upgrade);
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract::wire::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
     const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::PATH, tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;
     // "frames after the upgrade carry no status leg" — the transports table's own words for this
     // row.
-    const STATUS_CLASS: Option<busbar_contract::wire::StatusAt> = None;
+    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
 }
 
 impl Transport for WsTransport {
@@ -277,9 +291,7 @@ impl Transport for WsTransport {
             let DestinationFacts::Upstream { address, .. } = dest.facts() else {
                 return Err(TransportError::AddressRefused);
             };
-            let url = address
-                .authority()
-                .ok_or(TransportError::AddressRefused)?;
+            let url = address.authority().ok_or(TransportError::AddressRefused)?;
             let (secure, host_name, port, path) = split_ws_url(url)?;
             let authority: &'static str = Box::leak(format!("{host_name}:{port}").into_boxed_str());
 
@@ -291,7 +303,7 @@ impl Transport for WsTransport {
             let beneath = dest
                 .beneath(
                     lower.key(),
-                    busbar_contract::UpstreamAddress::Socket {
+                    busbar_contract_transport::dest::UpstreamAddress::Socket {
                         authority,
                         sni: address.sni().or(if secure {
                             Some(Box::leak(host_name.clone().into_boxed_str()) as &'static str)
@@ -432,10 +444,10 @@ impl Transport for WsTransport {
         _fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
     }
 
     /// The `http` → `ws` upgrade, from the side that owns what comes out.
@@ -459,7 +471,8 @@ impl Transport for WsTransport {
             chain.push(<Self as TransportMeta>::KEY);
             let peer = raw.peer().to_string();
             let stream = tokio_util::compat::FuturesAsyncReadCompatExt::compat(raw.into_io());
-            self.handshake(Box::new(stream), true, "", &peer, chain).await
+            self.handshake(Box::new(stream), true, "", &peer, chain)
+                .await
         })
     }
 

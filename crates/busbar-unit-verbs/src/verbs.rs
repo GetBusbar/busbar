@@ -195,7 +195,9 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         }
         match self.limiter.check(actor, class, now) {
             RateCheck::Admitted => Ok(class),
-            RateCheck::Denied { .. } => Err(Refusal::new(RefusalStep::Admit, ReasonCode::RateLimited)),
+            RateCheck::Denied { .. } => {
+                Err(Refusal::new(RefusalStep::Admit, ReasonCode::RateLimited))
+            }
         }
     }
 
@@ -262,7 +264,12 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             },
         };
 
-        let plan = plan_mint_group(&GovernanceGroupLookup(&self.governance), group, parent, MAX_GROUP_NAME_LEN);
+        let plan = plan_mint_group(
+            &GovernanceGroupLookup(&self.governance),
+            group,
+            parent,
+            MAX_GROUP_NAME_LEN,
+        );
         let plan = match plan {
             Ok(p) => p,
             Err(e) => {
@@ -273,7 +280,10 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             }
         };
         if let MintPlan::ProvisionLeaf { parent } = &plan {
-            if let Err(e) = self.governance.provision_group(admin, group.unwrap(), parent) {
+            if let Err(e) = self
+                .governance
+                .provision_group(admin, group.unwrap(), parent)
+            {
                 if let Some(r) = reservation {
                     r.clear();
                 }

@@ -873,9 +873,9 @@ fn gemini_writer_reemits_char_indices_as_bytes_for_foreign_citations() {
         id: None,
         created: None,
         system_fingerprint: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let gemini_writer = GeminiWriter;
     let out = gemini_writer.write_response(&resp);
     let src = &out["candidates"][0]["citationMetadata"]["citationSources"][0];

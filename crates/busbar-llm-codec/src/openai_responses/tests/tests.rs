@@ -660,9 +660,9 @@ fn test_write_response_function_call_item_has_native_id() {
             detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let writer = ResponsesWriter;
     let out = writer.write_response(&resp);
     let fc = out["output"]
@@ -807,9 +807,9 @@ fn test_write_response_preserves_text_after_tool_order() {
             detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let writer = ResponsesWriter;
     let out = writer.write_response(&resp);
     let arr = out["output"].as_array().expect("output is an array");
@@ -988,9 +988,9 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
 
     let out1 = writer.write_response(&make_ir());
     let id1 = out1
@@ -2202,9 +2202,9 @@ fn test_unknown_stop_reason_maps_to_completed() {
         created: Some(1),
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let out = writer.write_response(&resp);
     assert_eq!(
         out.get("status").and_then(|s| s.as_str()),
@@ -4795,9 +4795,9 @@ fn test_write_response_emits_model_fallback() {
         created: Some(1),
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
 
     // Cross-protocol: no model in the IR → DEFAULT_MODEL, never an absent key.
     let writer = ResponsesWriter;
@@ -4917,9 +4917,9 @@ fn test_write_response_emits_error_null_for_completed_and_incomplete() {
         created: Some(1),
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let writer = ResponsesWriter;
 
     // Completed: error key present and explicitly null.
@@ -6178,9 +6178,9 @@ fn write_response_reconstructs_input_tokens_total_with_cached_details() {
         created: Some(1_700_000_000),
         system_fingerprint: None,
         stop_sequence: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
     let writer = ResponsesWriter;
     let out = writer.write_response(&resp);
     assert_eq!(
@@ -6671,9 +6671,9 @@ fn responses_spec_required_members_present_on_every_response_shape() {
         system_fingerprint: None,
         stop_sequence: None,
         logprobs: Vec::new(),
-    
-            request_echo: None,
-        });
+
+        request_echo: None,
+    });
     assert_required(&body, "non-stream body");
     assert_eq!(body["incomplete_details"], serde_json::Value::Null);
 
@@ -6689,9 +6689,9 @@ fn responses_spec_required_members_present_on_every_response_shape() {
         system_fingerprint: None,
         stop_sequence: None,
         logprobs: Vec::new(),
-    
-            request_echo: None,
-        });
+
+        request_echo: None,
+    });
     assert_required(&truncated, "non-stream incomplete body");
     assert_eq!(
         truncated["incomplete_details"]["reason"],
@@ -6897,9 +6897,9 @@ fn write_response_emits_url_citations_without_inventing_fields() {
             detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
-    
-            request_echo: None,
-        };
+
+        request_echo: None,
+    };
 
     let writer = ResponsesWriter;
     let v = writer.write_response(&resp);

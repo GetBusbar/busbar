@@ -295,8 +295,8 @@ impl Plane for LlmPlane {
         // The codec's own reader is what says whether these bytes are this dialect's shape. A
         // second opinion here would be a second dialect.
         let value = parse(bytes)?;
-        let protocol =
-            busbar_llm_codec::proto_codec::protocol_for(d.name).ok_or(Decode::UnsupportedOperation)?;
+        let protocol = busbar_llm_codec::proto_codec::protocol_for(d.name)
+            .ok_or(Decode::UnsupportedOperation)?;
         let request = protocol
             .reader()
             .read_request(&value)
@@ -357,8 +357,8 @@ impl Plane for LlmPlane {
         let egress = dialect::dialect(upstream.dialect).ok_or(Encode::Unrepresentable)?;
         let ingress = unit_dialect(u).ok_or(Encode::Unrepresentable)?;
 
-        let egress_protocol =
-            busbar_llm_codec::proto_codec::protocol_for(egress.name).ok_or(Encode::Unrepresentable)?;
+        let egress_protocol = busbar_llm_codec::proto_codec::protocol_for(egress.name)
+            .ok_or(Encode::Unrepresentable)?;
         let bytes = u.body().body();
         let mut value: serde_json::Value =
             sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
@@ -545,8 +545,8 @@ impl Plane for LlmPlane {
         };
         let source_protocol =
             busbar_llm_codec::proto_codec::protocol_for(source).ok_or(Encode::Unrepresentable)?;
-        let ingress_protocol =
-            busbar_llm_codec::proto_codec::protocol_for(ingress.name).ok_or(Encode::Unrepresentable)?;
+        let ingress_protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
+            .ok_or(Encode::Unrepresentable)?;
         let bytes = r.ir.body();
 
         let is_event = matches!(
@@ -648,8 +648,8 @@ impl Plane for LlmPlane {
             return Ok(None);
         };
         let ingress = unit_dialect(u).ok_or(Encode::Unrepresentable)?;
-        let protocol =
-            busbar_llm_codec::proto_codec::protocol_for(ingress.name).ok_or(Encode::Unrepresentable)?;
+        let protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
+            .ok_or(Encode::Unrepresentable)?;
         let envelope = protocol.writer().write_error(
             500,
             KIND_API_ERROR,

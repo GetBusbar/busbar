@@ -8,8 +8,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as SyncMutex};
 
-use busbar_contract::wire::{ConnHandle, Frame, TransportError};
+use busbar_contract::wire::Frame;
 use busbar_contract::StreamId;
+use busbar_contract_transport::wire::ConnHandle;
+use busbar_contract_transport::wire::TransportError;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
 /// The opaque handle the kernel is given. Carries identity only — see `busbar-transport-stdio`'s
@@ -87,4 +89,3 @@ impl ConnState {
         })
     }
 }
-

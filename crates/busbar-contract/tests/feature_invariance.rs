@@ -63,7 +63,7 @@ fn the_crate_forbids_unsafe_and_undocumented_items() {
 /// Both are the contract's own surface split out under its own ceiling rather than a dependency in
 /// the ordinary sense: each names nothing itself, each is re-exported here, and a plugin that
 /// reaches one reaches it through this crate. Anything else is a layering violation.
-const BELOW_THE_CONTRACT: [&str; 1] = ["busbar-grammar"];
+const BELOW_THE_CONTRACT: [&str; 2] = ["busbar-contract-transport", "busbar-grammar"];
 
 /// The crate names no other crate of the workspace except the ones below it.
 ///

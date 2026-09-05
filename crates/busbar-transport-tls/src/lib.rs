@@ -33,12 +33,21 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::transport::facts as tfacts;
 use busbar_contract::{
-    ArenaBytes, ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Direction, Fut, Frame,
-    FrameMeta, Kind, Listener, ListenerHandle, Plugin, Refusal, SlabBytes, StreamId, Transport,
-    TransportConfigView, TransportError, TransportKeyHandle, TransportMeta,
+    ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
+    TransportConfigView, TransportKeyHandle, TransportMeta,
 };
+use busbar_contract_transport::registry::facts as tfacts;
+use busbar_contract_transport::wire::ArrivalRecord;
+use busbar_contract_transport::wire::CertFacts;
+use busbar_contract_transport::wire::CloseReason;
+use busbar_contract_transport::wire::Conn;
+use busbar_contract_transport::wire::ConnHandle;
+use busbar_contract_transport::wire::Direction;
+use busbar_contract_transport::wire::FrameMeta;
+use busbar_contract_transport::wire::Listener;
+use busbar_contract_transport::wire::ListenerHandle;
+use busbar_contract_transport::wire::TransportError;
 use futures::Stream;
 use rustls_pki_types::ServerName;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
@@ -153,12 +162,18 @@ impl TlsTransport {
     /// at the moment it resolves the material and journals the access. Nothing here reads a secret;
     /// this end of the seam only ever sees an already-built config and a slot number.
     pub fn register_server_config(&self, slot: u64, cfg: Arc<rustls::ServerConfig>) {
-        self.server_configs.lock().expect("poisoned").insert(slot, cfg);
+        self.server_configs
+            .lock()
+            .expect("poisoned")
+            .insert(slot, cfg);
     }
 
     /// Register the client-side rustls config a [`TransportKeyHandle`]'s slot resolves to.
     pub fn register_client_config(&self, slot: u64, cfg: Arc<rustls::ClientConfig>) {
-        self.client_configs.lock().expect("poisoned").insert(slot, cfg);
+        self.client_configs
+            .lock()
+            .expect("poisoned")
+            .insert(slot, cfg);
     }
 
     fn inner(&self, id: u64) -> Option<Arc<Inner>> {
@@ -278,8 +293,8 @@ impl Plugin for TlsTransport {
     fn kind(&self) -> Kind {
         Kind::Transport
     }
-    fn abi(&self) -> busbar_contract::AbiVersion {
-        busbar_contract::TRANSPORT_ABI
+    fn abi(&self) -> busbar_contract_transport::AbiVersion {
+        busbar_contract_transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -292,18 +307,18 @@ impl TransportMeta for TlsTransport {
     ];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &["tcp"];
-    const HANDOFF: Option<busbar_contract::Handoff> = None;
-    const FRAMING: busbar_contract::Framing = busbar_contract::Framing::Stream;
+    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract_transport::wire::Framing =
+        busbar_contract_transport::wire::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = true;
-    const UNIT0_TRIGGER: Option<busbar_contract::Unit0Trigger> =
-        Some(busbar_contract::Unit0Trigger::FirstBytes);
+    const UNIT0_TRIGGER: Option<busbar_contract_transport::wire::Unit0Trigger> =
+        Some(busbar_contract_transport::wire::Unit0Trigger::FirstBytes);
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract::HandshakeTrigger> = None;
-    const TRANSPORT_FACTS: &'static [&'static str] =
-        &[tfacts::SNI, tfacts::ALPN, tfacts::PEER];
+    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::SNI, tfacts::ALPN, tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;
-    const STATUS_CLASS: Option<busbar_contract::StatusAt> = None;
+    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
 }
 
 impl Transport for TlsTransport {
@@ -361,7 +376,10 @@ impl Transport for TlsTransport {
                 .get(&addr)
                 .cloned()
                 .ok_or(TransportError::Closed)?;
-            let (stream, peer) = listener.accept().await.map_err(|_| TransportError::Closed)?;
+            let (stream, peer) = listener
+                .accept()
+                .await
+                .map_err(|_| TransportError::Closed)?;
             stream.set_nodelay(true).ok();
             // Every accepted connection on this listener uses the config registered for the slot
             // this listener was provisioned with in `listen` — not a fixed slot of accept's own —
@@ -468,11 +486,15 @@ impl Transport for TlsTransport {
             let mut guard = inner.write.lock().await;
             match &mut *guard {
                 InnerWrite::Server(w) => {
-                    w.write_all(bytes.as_slice()).await.map_err(|e| Self::map_io_err(&e))?;
+                    w.write_all(bytes.as_slice())
+                        .await
+                        .map_err(|e| Self::map_io_err(&e))?;
                     w.flush().await.map_err(|e| Self::map_io_err(&e))?;
                 }
                 InnerWrite::Client(w) => {
-                    w.write_all(bytes.as_slice()).await.map_err(|e| Self::map_io_err(&e))?;
+                    w.write_all(bytes.as_slice())
+                        .await
+                        .map_err(|e| Self::map_io_err(&e))?;
                     w.flush().await.map_err(|e| Self::map_io_err(&e))?;
                 }
             }
@@ -488,10 +510,10 @@ impl Transport for TlsTransport {
         _fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
     }
 
     /// The in-band upgrade, from this side: the STARTTLS-shaped handoff the transports table names.
@@ -534,7 +556,7 @@ impl Transport for TlsTransport {
         })
     }
 
-    fn detach(&self, conn: &Conn) -> Option<busbar_contract::RawStream> {
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
         let inner = self.conns.lock().expect("poisoned").remove(&conn.id())?;
         let peer = conn.peer();
         let inner = Arc::try_unwrap(inner).ok()?;
@@ -545,7 +567,7 @@ impl Transport for TlsTransport {
             // registry had been torn, and there is no stream to hand up in that case.
             _ => return None,
         };
-        Some(busbar_contract::RawStream::new(
+        Some(busbar_contract_transport::wire::RawStream::new(
             Self::KEY,
             peer,
             Box::new(TokioAsyncReadCompatExt::compat(stream)),
@@ -589,11 +611,9 @@ impl Transport for TlsTransport {
 /// offer. Nothing is leaked per dial: both halves are already `'static`, which is what the closed
 /// address shape bought.
 fn split_address(
-    address: &busbar_contract::UpstreamAddress,
+    address: &busbar_contract_transport::dest::UpstreamAddress,
 ) -> Result<(&'static str, SocketAddr), TransportError> {
-    let authority = address
-        .authority()
-        .ok_or(TransportError::AddressRefused)?;
+    let authority = address.authority().ok_or(TransportError::AddressRefused)?;
     let addr: SocketAddr = authority
         .parse()
         .map_err(|_| TransportError::AddressRefused)?;

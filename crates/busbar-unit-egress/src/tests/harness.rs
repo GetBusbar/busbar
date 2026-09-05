@@ -19,12 +19,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::{
-    AdmitFacts, ArenaBytes, ArrivalRecord, AuditFacts, Conn, ConnHandle, ContentFacts,
-    CredentialLocator, Ctx, Decode, DestinationFacts, Direction, EgressBody, Encode, Frame,
-    FrameMeta, Ingress, Ir, KernelSeal, Kind, Labels, LaneId, PlaneFacts, Plugin, Progress,
-    Refusal, RoutePlan, ScopeFacts, SlabBytes, StatusClass, StreamId, TransportEnvelope,
-    TransportError, TransportKeyHandle, Unit, UnitEnd, UsageLocators, VerifiedDestination,
+    AdmitFacts, ArenaBytes, AuditFacts, ContentFacts, CredentialLocator, Ctx, DestinationFacts,
+    EgressBody, Frame, Ingress, Ir, KernelSeal, Kind, Labels, LaneId, PlaneFacts, Plugin, Progress,
+    Refusal, RoutePlan, ScopeFacts, SlabBytes, StreamId, TransportEnvelope, TransportKeyHandle,
+    Unit, UnitEnd, UsageLocators, VerifiedDestination,
 };
+use busbar_contract_transport::wire::ArrivalRecord;
+use busbar_contract_transport::wire::Conn;
+use busbar_contract_transport::wire::ConnHandle;
+use busbar_contract_transport::wire::Decode;
+use busbar_contract_transport::wire::Direction;
+use busbar_contract_transport::wire::Encode;
+use busbar_contract_transport::wire::FrameMeta;
+use busbar_contract_transport::wire::StatusClass;
+use busbar_contract_transport::wire::TransportError;
 
 use crate::ports::{
     disposition, Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
@@ -660,8 +668,8 @@ impl Plugin for TestTransport {
         Kind::Transport
     }
 
-    fn abi(&self) -> busbar_contract::AbiVersion {
-        busbar_contract::AbiVersion(1)
+    fn abi(&self) -> busbar_contract_transport::AbiVersion {
+        busbar_contract_transport::AbiVersion(1)
     }
 }
 
@@ -681,11 +689,14 @@ impl busbar_contract::Transport for TestTransport {
         &'a self,
         _cfg: &'a dyn busbar_contract::TransportConfigView,
         _keys: &'a TransportKeyHandle,
-    ) -> busbar_contract::Fut<'a, busbar_contract::Listener> {
+    ) -> busbar_contract::Fut<'a, busbar_contract_transport::wire::Listener> {
         Box::pin(async { Err(TransportError::Refused) })
     }
 
-    fn accept<'a>(&'a self, _l: &'a busbar_contract::Listener) -> busbar_contract::Fut<'a, Conn> {
+    fn accept<'a>(
+        &'a self,
+        _l: &'a busbar_contract_transport::wire::Listener,
+    ) -> busbar_contract::Fut<'a, Conn> {
         Box::pin(async { Err(TransportError::Refused) })
     }
 
@@ -750,7 +761,7 @@ impl busbar_contract::Transport for TestTransport {
         fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract::Encode> {
+    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
         // The fixture's own wire shape, standing in for a real transport's: every field, then the
         // body. What the tests assert is that the cross-check and the write see the SAME bytes,
         // and one buffer is what makes that true whatever the layout is.
@@ -765,7 +776,7 @@ impl busbar_contract::Transport for TestTransport {
         out.extend_from_slice(body);
         arena
             .alloc_bytes(&out)
-            .map_err(|_| busbar_contract::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
     }
 
     fn adopt<'a>(
@@ -777,7 +788,7 @@ impl busbar_contract::Transport for TestTransport {
         Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
-    fn close(&self, _conn: Conn, _reason: busbar_contract::CloseReason) {
+    fn close(&self, _conn: Conn, _reason: busbar_contract_transport::wire::CloseReason) {
         *self.closed.lock().unwrap_or_else(|e| e.into_inner()) += 1;
     }
 
@@ -823,8 +834,8 @@ impl Plugin for TestPlane {
         Kind::Plane
     }
 
-    fn abi(&self) -> busbar_contract::AbiVersion {
-        busbar_contract::AbiVersion(1)
+    fn abi(&self) -> busbar_contract_transport::AbiVersion {
+        busbar_contract_transport::AbiVersion(1)
     }
 }
 
@@ -960,7 +971,7 @@ impl busbar_contract::Plane for TestPlane {
     fn verify<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> DestinationFacts {
         DestinationFacts::Upstream {
             transport: "test-transport",
-            address: busbar_contract::UpstreamAddress::socket("test-host"),
+            address: busbar_contract_transport::dest::UpstreamAddress::socket("test-host"),
             lane: LaneId::new("test-lane"),
         }
     }
@@ -1135,7 +1146,7 @@ pub fn sealed(lane: &'static str) -> VerifiedDestination {
         &TestSeal,
         DestinationFacts::Upstream {
             transport: "test-transport",
-            address: busbar_contract::UpstreamAddress::socket("test-host"),
+            address: busbar_contract_transport::dest::UpstreamAddress::socket("test-host"),
             lane: LaneId::new(lane),
         },
         "test-transport",

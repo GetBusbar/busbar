@@ -119,8 +119,10 @@ pub fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str
 /// rather than a body, which is why this is a question asked of the headers and not of the bytes.
 #[must_use]
 pub fn is_chunked(headers: &[(String, String)]) -> bool {
-    header(headers, "transfer-encoding")
-        .is_some_and(|v| v.split(',').any(|c| c.trim().eq_ignore_ascii_case("chunked")))
+    header(headers, "transfer-encoding").is_some_and(|v| {
+        v.split(',')
+            .any(|c| c.trim().eq_ignore_ascii_case("chunked"))
+    })
 }
 
 /// The declared body length, where the message declares one.
@@ -317,7 +319,10 @@ mod tests {
         ];
         assert_eq!(content_length(&headers), Some(12));
         assert!(is_chunked(&headers));
-        assert!(!is_chunked(&[("Transfer-Encoding".to_string(), "gzip".to_string())]));
+        assert!(!is_chunked(&[(
+            "Transfer-Encoding".to_string(),
+            "gzip".to_string()
+        )]));
     }
 
     #[test]

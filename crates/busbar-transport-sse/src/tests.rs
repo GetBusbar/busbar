@@ -23,7 +23,7 @@ fn upstream_dest(uri: &str) -> busbar_contract::VerifiedDestination {
         &FixtureSeal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "sse",
-            address: busbar_contract::UpstreamAddress::socket(host),
+            address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test"),
         },
         "sse",
@@ -47,7 +47,9 @@ async fn sse_server() -> String {
         tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes())
             .await
             .unwrap();
-        tokio::io::AsyncWriteExt::write_all(&mut stream, body).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut stream, body)
+            .await
+            .unwrap();
     });
     format!("http://{addr}/")
 }
@@ -58,7 +60,10 @@ async fn request_plus_n_response_frames_over_a_real_stream() {
     let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
     let sse = SseTransport::new(http);
 
-    let conn = sse.dial(&upstream_dest(&uri), &fixture_key()).await.unwrap();
+    let conn = sse
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
     sse.write(
         &conn,
         StreamId(0),
@@ -69,7 +74,10 @@ async fn request_plus_n_response_frames_over_a_real_stream() {
 
     let mut frames = sse.frames(conn);
     let (_s, first) = frames.next().await.unwrap().unwrap();
-    assert_eq!(first.meta.status, Some(busbar_contract::StatusClass::Success));
+    assert_eq!(
+        first.meta.status,
+        Some(busbar_contract_transport::wire::StatusClass::Success)
+    );
     let (event, data) = proto::parse_sse_frame(first.bytes.as_slice()).unwrap();
     assert_eq!(event, "message");
     assert_eq!(data, "{\"a\":1}");

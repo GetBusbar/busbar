@@ -229,5 +229,4 @@ mod tests {
         assert_eq!(c.fact_key, FACT_RPC_ID);
         assert_eq!(c.value, CorrelationValue::Num(7));
     }
-
 }

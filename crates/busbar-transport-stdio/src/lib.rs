@@ -12,13 +12,13 @@
 //!
 //! ## What "Unit 0" is here
 //!
-//! [`busbar_contract::Unit0Trigger::FirstMessage`]: the first framed line on the channel opens the
+//! [`busbar_contract_transport::wire::Unit0Trigger::FirstMessage`]: the first framed line on the channel opens the
 //! session's first unit, exactly as the architecture's stdio row states (`SESSION` / `SESSION_BOUND`
 //! / Unit 0 = true / true / first message).
 //!
 //! ## The connection side-table, and why `Conn` cannot hold the reader directly
 //!
-//! [`busbar_contract::wire::Conn`] is a sealed, opaque handle: a plugin (and a transport crate,
+//! [`busbar_contract_transport::wire::Conn`] is a sealed, opaque handle: a plugin (and a transport crate,
 //! which is reviewed in-tree but still built against the same contract surface) can only read its
 //! `id()` and `peer()`. The actual reader/writer/child-process state therefore lives in this
 //! transport's own side table, keyed by `Conn::id()` — never inside the `Conn` itself. Every method
@@ -28,7 +28,7 @@
 //!
 //! stdio composes over nothing (`COMPOSES_OVER` is empty): it is either the process's own
 //! stdin/stdout, or a spawned child's pipes. A dial target reaches it as
-//! [`busbar_contract::UpstreamAddress::Program`], which spells the three things a spawn needs and a
+//! [`busbar_contract_transport::dest::UpstreamAddress::Program`], which spells the three things a spawn needs and a
 //! single opaque string could not: the absolute path, the argument vector, and the environment. The
 //! security posture of the 1.5.5-era MCP stdio client is kept exactly — no shell, an absolute path
 //! only, `env_clear()` before anything the destination declared is set — so a child inherits

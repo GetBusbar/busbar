@@ -136,7 +136,11 @@ fn prompt_projection_keeps_empty_entries_aligned() {
         "the system turn is not a turn any more"
     );
     assert_eq!(p.messages[0].0, "user");
-    assert_eq!(f.shape().turn_count, 2, "the folded system turn still counts on the wire");
+    assert_eq!(
+        f.shape().turn_count,
+        2,
+        "the folded system turn still counts on the wire"
+    );
 
     // A role no reader recognises is a 400, not a `role: ""` a guardrail is asked to screen.
     let v: Value = serde_json::json!({"messages": [{"role": "wizard", "content": "hi"}]});

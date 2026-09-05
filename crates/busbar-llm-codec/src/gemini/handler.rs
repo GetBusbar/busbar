@@ -723,9 +723,7 @@ pub fn read_speech_request(
 /// Wire -> concrete `SpeechResp` parse, extracted from the `OperationHandler::read_response`
 /// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
 /// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
-pub fn read_speech_response(
-    wire: &[u8],
-) -> Result<crate::ir::audio::SpeechResp, CodecError> {
+pub fn read_speech_response(wire: &[u8]) -> Result<crate::ir::audio::SpeechResp, CodecError> {
     // Real Gemini → JSON with inline base64 audio; mock/raw → binary body. Try JSON, fall back.
     if let Ok(v) = serde_json::from_slice::<Value>(wire) {
         if let Some(data) = v

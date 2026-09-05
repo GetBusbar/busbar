@@ -26,8 +26,7 @@ pub mod wire;
 pub use bounded::{
     Arena, ArenaBudget, ArenaBytes, BoundedVec, FactValue, Facts, Ir, IrPatch, Labels, SlabBytes,
     Span, ARENA_BYTES, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS, MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES,
-    MAX_RESPONSE_PTRS,
-    MAX_RECORD_BYTES, MAX_SESSION_UPSTREAMS, MAX_STEPS, MAX_USAGE_LINES,
+    MAX_RECORD_BYTES, MAX_RESPONSE_PTRS, MAX_SESSION_UPSTREAMS, MAX_STEPS, MAX_USAGE_LINES,
 };
 pub use dest::{
     AuthDecoration, CandidateIdx, CandidateSet, ClientMode, DestinationFacts, DestinationId,
