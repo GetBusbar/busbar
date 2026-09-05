@@ -294,6 +294,16 @@ else
 fi
 end_group
 
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+begin_group "TELLER-STEPS — H2: one conformance cell per Teller step per plane (qa/teller-steps.json)"
+if [ -f scripts/teller-steps-check.py ] && [ -f qa/teller-steps.json ]; then
+  step "teller-steps-check self-test"  python3 scripts/teller-steps-check.py --selftest
+  step "teller-steps-check --check"    python3 scripts/teller-steps-check.py --check
+else
+  absent_step "teller-steps-check" "scripts/teller-steps-check.py / qa/teller-steps.json"
+fi
+end_group
+
 # ── THE ONE VERDICT ─────────────────────────────────────────────────────────────────────────────
 hdr "1.6.0 DONE-ORACLE READOUT"
 fail=0; green=0; total=0

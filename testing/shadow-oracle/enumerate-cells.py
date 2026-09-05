@@ -505,8 +505,42 @@ def hooks_cells() -> list[dict]:
         http("hooks|hooked-pool|ok_stream", F, "POST", "/v1/chat/completions", body=body(True), why="streamed through the gate", config_variant=V),
         http("hooks|hooked-pool|unauth", F, "POST", "/v1/chat/completions", auth="none", body=body(), why="refused before any hook", config_variant=V),
         http("hooks|metrics-hooks", F, "GET", "/metrics/hooks", why="the hook's own scrape exposition (PB-43)", config_variant=V),
-        http("hooks|admin-list", F, "GET", "/api/v1/admin/hooks", auth="admin", listener="admin", why="registry with the loaded hook", config_variant=V),
+        http("hooks|admin-list", F, "GET", "/api/v1/admin/hooks", auth="admin", listener="admin", why="registry with the loaded hook, incl. the 1.5.5 legacy `at` field alongside `phase`/`fires_at` (A15)", config_variant=V),
         http("hooks|unhooked-pool|ok", F, "POST", "/v1/chat/completions", body=json.dumps({"model": "m-openai-chat", "messages": [{"role": "user", "content": "ping"}]}), why="a pool without the hook is untouched", config_variant=V),
+        # A15 — 1.5.5 spellings HEAD 1.6.0 dropped and the owner rule restored: a hook def's
+        # `plugin:` alias for `module:` (read-only back-compat), and the settings PUT `persist:`
+        # control key (boolean-validated, accepted, then ignored). Both must round-trip on the
+        # golden 1.5.5 binary AND on HEAD post-fix.
+        # POST /hooks returns 201 with the registered hook VIEW itself (the same `HookView` GET
+        # serves) — a single self-contained cell proves both the `plugin:` alias is accepted AND
+        # that it resolves to `module: busbar-webrequest` on readback, with no cross-cell ordering
+        # dependency.
+        http("hooks|register|plugin-alias", F, "POST", "/api/v1/admin/hooks", auth="admin", listener="admin",
+             headers={"Content-Type": "application/json"},
+             body=json.dumps({"name": "oracle-plugin-alias", "config": {"kind": "tap", "plugin": "busbar-webrequest"}}, separators=(",", ":"), sort_keys=True),
+             why="1.5.5 `hooks.<h>.plugin` back-compat alias for `module:` — must still register, and the 201 body's `module` must resolve to `busbar-webrequest` (A15)", config_variant=V),
+        http("hooks|config-settings-put|persist-true", F, "PUT", "/api/v1/admin/config/settings", auth="admin", listener="admin",
+             headers={"Content-Type": "application/json"},
+             body=json.dumps({"persist": True}, separators=(",", ":"), sort_keys=True),
+             why="1.5.5 `persist:` boolean control key — accepted (boolean-validated) then ignored, never an unknown-field 400 (A15)", config_variant=V),
+        http("hooks|config-settings-put|persist-non-boolean", F, "PUT", "/api/v1/admin/config/settings", auth="admin", listener="admin",
+             headers={"Content-Type": "application/json"},
+             body=json.dumps({"persist": "yes"}, separators=(",", ":"), sort_keys=True),
+             why="a non-boolean `persist:` is refused naming `persist`+`boolean`, not `unknown field` (A15)", config_variant=V),
+        # A16 — the hook payload's `message_count` on the normalized IR: an OpenAI chat body may embed
+        # a `system`-role turn inside `messages`. 1.5.5 counted the raw wire array length (including
+        # that turn); the IR folds it out of `messages` into `system`. This cell exercises the hooked
+        # pool end to end with such a body so a `message_count` regression that changes the hook's
+        # decide/rewrite outcome (and therefore the response byte shape) surfaces as a diff — the
+        # literal wire integer busbar sends the plugin is not independently observable through this
+        # black-box published plugin, so the numeric parity is additionally pinned at the unit level
+        # (`cargo test -p busbar-core hooks::wire`, `IrFacts::shape().turn_count`).
+        http("hooks|hooked-pool|embedded-system-turn", F, "POST", "/v1/chat/completions",
+             body=json.dumps({"model": "oracle-hooked", "messages": [
+                 {"role": "system", "content": "be terse"},
+                 {"role": "user", "content": "ping " * 40},
+             ]}, separators=(",", ":"), sort_keys=True),
+             why="an embedded system-role turn folded out of `messages` by the IR — message_count parity (A16)", config_variant=V),
     ]
 
 
@@ -680,6 +714,48 @@ def auth_lifecycle_cells() -> list[dict]:
     ]
 
 
+def teller_cells() -> list[dict]:
+    """`teller`: H2 -- one named cell per Teller step (ARCHITECTURE.md #2.2), llm plane, each its own
+    self-contained boot (script driver, mirrors auth.lifecycle's own-boot shape) so a step's cell can
+    assert the ORDER around it (what happened before/after) rather than just one response's shape.
+    1.5.5 carries no "Teller" vocabulary, but it already realises the order these cells name -- every
+    cell here is recorded against, and must PASS on, the published 1.5.5 golden."""
+    F = "teller"
+    return [
+        {"id": "teller|authenticate-refusal", "plane": "llm", "family": F, "driver": "script",
+         "script": {"name": "teller-authenticate-refusal.sh"}, "outcome": "ok", "weight": 10,
+         "why": "step 1 AUTHENTICATE: a bad credential is refused before step 2 VERIFY is ever "
+                "reached -- native 401, zero upstream egress recorded, zero usage drawn"},
+        {"id": "teller|verify-refusal", "plane": "llm", "family": F, "driver": "script",
+         "script": {"name": "teller-verify-refusal.sh"}, "outcome": "ok", "weight": 10,
+         "why": "step 2 VERIFY: a credential whose allowed_pools excludes the target pool is refused "
+                "before step 4 ADMIT ever draws a bucket -- native 403, zero egress, zero usage delta"},
+        {"id": "teller|admit-refusal", "plane": "llm", "family": F, "driver": "script",
+         "script": {"name": "teller-admit-refusal.sh"}, "outcome": "ok", "weight": 10,
+         "why": "step 4 ADMIT: a principal already past authenticate/verify/approve but over budget "
+                "is refused before step 5 ROUTE ever dials -- native 429, zero further egress, zero "
+                "further usage/spend delta on the refused call"},
+        {"id": "teller|route-failover", "plane": "llm", "family": F, "driver": "script",
+         "script": {"name": "teller-route-failover.sh"}, "outcome": "ok", "weight": 10,
+         "why": "step 5 ROUTE: the first lane in a pool is down, the walk fails over to the next "
+                "verified destination within the same unit -- one served terminal, one egress on the "
+                "live lane, exactly one usage posting even though two lanes were attempted"},
+        {"id": "teller|meter-row", "plane": "llm", "family": F, "driver": "script",
+         "script": {"name": "teller-meter-row.sh"}, "outcome": "ok", "weight": 10,
+         "why": "step 6 METER: a single served request settles to a usage delta of exactly one "
+                "request, with the priced token/spend figures matching the mock's fixed response, "
+                "never a partial or doubled posting"},
+        {"id": "teller|audit-record", "plane": "llm", "family": F, "driver": "script",
+         "script": {"name": "teller-audit-record.sh"}, "outcome": "ok", "weight": 10,
+         "why": "step 7 AUDIT: a governed mutation seals its own audit record -- the chain gains "
+                "exactly one entry naming the right action and outcome, first entry's prev_hash empty"},
+        {"id": "teller|exit-terminal", "plane": "llm", "family": F, "driver": "script",
+         "script": {"name": "teller-exit-terminal.sh"}, "outcome": "ok", "weight": 10,
+         "why": "exit: a unit relaying multiple response frames (a streamed answer) still settles to "
+                "exactly one terminal and one usage posting -- no post per frame, no late double-post"},
+    ]
+
+
 def neutrality_cells() -> list[dict]:
     """`neutrality`: the oracle's own baseline config is already 1.5.5-shaped (no mcp:/agents:/
     streams: section — see oracle-config.sh), so these cells pin the operator-visible surfaces that
@@ -754,7 +830,7 @@ def main() -> int:
                    + scrape_cells() + crosscut_cells() + admin_cells() + boot_cells() + failover_cells()
                    + plugin_cells() + billing_cells() + hooks_cells()
                    + concurrency_cells() + queue_cells() + cooldown_cells()
-                   + crosscut_traps_cells() + auth_lifecycle_cells() + neutrality_cells(),
+                   + crosscut_traps_cells() + auth_lifecycle_cells() + teller_cells() + neutrality_cells(),
                    key=lambda c: c["id"])
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "cell ids must be unique"

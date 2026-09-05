@@ -43,11 +43,11 @@
     }
   ],
   "counts": {
-    "total": 2239,
+    "total": 2250,
     "by_plane": {
       "a2a": 468,
-      "core": 732,
-      "llm": 127,
+      "core": 736,
+      "llm": 134,
       "mcp": 912
     },
     "by_family": {
@@ -62,7 +62,7 @@
       "config.migrate": 138,
       "cooldown": 1,
       "crosscut.traps": 5,
-      "hooks": 6,
+      "hooks": 10,
       "http.crosscut": 20,
       "llm.wire": 127,
       "mcp": 912,
@@ -70,7 +70,8 @@
       "ops.scrape": 14,
       "plugins": 14,
       "queue": 2,
-      "route.failover": 16
+      "route.failover": 16,
+      "teller": 7
     }
   },
   "cells": [
@@ -16891,7 +16892,62 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "registry with the loaded hook",
+      "why": "registry with the loaded hook, incl. the 1.5.5 legacy `at` field alongside `phase`/`fires_at` (A15)",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "hooks|config-settings-put|persist-non-boolean",
+      "plane": "core",
+      "family": "hooks",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PUT",
+        "path": "/api/v1/admin/config/settings",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"persist\":\"yes\"}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "a non-boolean `persist:` is refused naming `persist`+`boolean`, not `unknown field` (A15)",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "hooks|config-settings-put|persist-true",
+      "plane": "core",
+      "family": "hooks",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PUT",
+        "path": "/api/v1/admin/config/settings",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"persist\":true}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "1.5.5 `persist:` boolean control key \u2014 accepted (boolean-validated) then ignored, never an unknown-field 400 (A15)",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "hooks|hooked-pool|embedded-system-turn",
+      "plane": "core",
+      "family": "hooks",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"be terse\",\"role\":\"system\"},{\"content\":\"ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping \",\"role\":\"user\"}],\"model\":\"oracle-hooked\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "an embedded system-role turn folded out of `messages` by the IR \u2014 message_count parity (A16)",
       "config_variant": "hooks"
     },
     {
@@ -16960,6 +17016,25 @@
         "listener": "data"
       },
       "why": "the hook's own scrape exposition (PB-43)",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "hooks|register|plugin-alias",
+      "plane": "core",
+      "family": "hooks",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/hooks",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"config\":{\"kind\":\"tap\",\"plugin\":\"busbar-webrequest\"},\"name\":\"oracle-plugin-alias\"}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "1.5.5 `hooks.<h>.plugin` back-compat alias for `module:` \u2014 must still register, and the 201 body's `module` must resolve to `busbar-webrequest` (A15)",
       "config_variant": "hooks"
     },
     {
@@ -29993,6 +30068,90 @@
       },
       "why": "least_bad pool healthy",
       "mock_control": {}
+    },
+    {
+      "id": "teller|admit-refusal",
+      "plane": "llm",
+      "family": "teller",
+      "driver": "script",
+      "script": {
+        "name": "teller-admit-refusal.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "step 4 ADMIT: a principal already past authenticate/verify/approve but over budget is refused before step 5 ROUTE ever dials -- native 429, zero further egress, zero further usage/spend delta on the refused call"
+    },
+    {
+      "id": "teller|audit-record",
+      "plane": "llm",
+      "family": "teller",
+      "driver": "script",
+      "script": {
+        "name": "teller-audit-record.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "step 7 AUDIT: a governed mutation seals its own audit record -- the chain gains exactly one entry naming the right action and outcome, first entry's prev_hash empty"
+    },
+    {
+      "id": "teller|authenticate-refusal",
+      "plane": "llm",
+      "family": "teller",
+      "driver": "script",
+      "script": {
+        "name": "teller-authenticate-refusal.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "step 1 AUTHENTICATE: a bad credential is refused before step 2 VERIFY is ever reached -- native 401, zero upstream egress recorded, zero usage drawn"
+    },
+    {
+      "id": "teller|exit-terminal",
+      "plane": "llm",
+      "family": "teller",
+      "driver": "script",
+      "script": {
+        "name": "teller-exit-terminal.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "exit: a unit relaying multiple response frames (a streamed answer) still settles to exactly one terminal and one usage posting -- no post per frame, no late double-post"
+    },
+    {
+      "id": "teller|meter-row",
+      "plane": "llm",
+      "family": "teller",
+      "driver": "script",
+      "script": {
+        "name": "teller-meter-row.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "step 6 METER: a single served request settles to a usage delta of exactly one request, with the priced token/spend figures matching the mock's fixed response, never a partial or doubled posting"
+    },
+    {
+      "id": "teller|route-failover",
+      "plane": "llm",
+      "family": "teller",
+      "driver": "script",
+      "script": {
+        "name": "teller-route-failover.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "step 5 ROUTE: the first lane in a pool is down, the walk fails over to the next verified destination within the same unit -- one served terminal, one egress on the live lane, exactly one usage posting even though two lanes were attempted"
+    },
+    {
+      "id": "teller|verify-refusal",
+      "plane": "llm",
+      "family": "teller",
+      "driver": "script",
+      "script": {
+        "name": "teller-verify-refusal.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "step 2 VERIFY: a credential whose allowed_pools excludes the target pool is refused before step 4 ADMIT ever draws a bucket -- native 403, zero egress, zero usage delta"
     }
   ]
 }
