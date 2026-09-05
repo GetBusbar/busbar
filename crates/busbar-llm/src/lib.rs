@@ -104,31 +104,29 @@ mod alloc_gate_instrument {
     }
 }
 
-/// **G6 A4b relocation.** The concrete chat IR + leaf-op IR, moved here from busbar-core. Core keeps
-/// the neutral `ir::facts` trait / `ir::handle` / `ir::invoke` / `ir::subscribe` and re-includes this
-/// module via `#[path]` for its test build so `crate::ir::IrRequest` still resolves there.
-pub mod ir;
+/// THE CODECS, RE-EXPORTED FROM `busbar-llm-codec`.
+///
+/// The six dialect modules, the concrete IR, the chat/leaf handles, the wire-codec surface, the
+/// stream translator and the answer-normalization helpers all live in `busbar-llm-codec` now — the
+/// pure half of this plugin, split out so `busbar-plane-llm` can name the codecs without linking
+/// this crate's HTTP stack and async runtime. They are re-exported HERE, under their old names, so
+/// every caller that spells `busbar_llm::proto_codec::…`, `busbar_llm::anthropic::…`,
+/// `busbar_llm::ir::…` resolves exactly what it always did. The split is a MOVE: no item changed
+/// shape crossing it.
+pub use busbar_llm_codec::{
+    anthropic, bedrock, chat_handle, cohere, gemini, ir, ir_encode, leaf_codec, leaf_handles,
+    openai_annotations, openai_chat, openai_responses, proto_codec, proto_stream, synth_rng,
+    usage_tail, wire_shim, DECLS,
+};
 
 /// THE RELOCATED LLM MONEY-PATH ENGINE (1.6.0 money-path Phase 3-4 C). Routing tables, egress
 /// pipeline, health probe loop and native fallback plane — see [`engine`].
 pub mod engine;
 
-/// **G6 A4b dissolve.** The chat `IrHandle` (`ChatReqHandle`/`ChatRespHandle`) + its
-/// `prepare_for_egress`/`_ingress`/`usage` bodies, lifted from the dissolved `IrReq::Chat`/`IrResp::Chat`
-/// arms; the handle writes itself onto the egress dialect by protocol string.
-pub mod chat_handle;
-
-/// **G6 A4b dissolve.** The six leaf-op `IrHandle`s (embeddings/image/rerank/moderation/
-/// transcription/speech), writing themselves onto the peer dialect via the `leaf_codec` `(op,proto)`
-/// dispatchers.
-pub mod leaf_handles;
-
-pub mod anthropic;
-pub mod bedrock;
-pub mod cohere;
-pub mod gemini;
-pub mod openai_chat;
-pub mod openai_responses;
+/// THE INBOUND OPENAI RESPONSES WEBHOOK RECEIVER (T3). It parses and HMAC-verifies a signed inbound
+/// webhook and mounts a live HTTP route behind the OFF-by-default `webhook-receiver` feature, so it
+/// is ingress, not codec — it stays on this side of the split.
+pub mod openai_responses_webhook;
 
 /// THE PATH-MODEL DIALECT ARRIVALS (gemini/bedrock URL-model ingress), RELOCATED here from
 /// `busbar-core` — the last piece of core→plane entanglement. They parse their own model out of the
@@ -169,37 +167,6 @@ pub mod test_support {
     );
 }
 
-/// Thread-local OS-entropy pool shared by every writer's synthesized-wire-id path — amortises the
-/// per-id `getrandom` syscall (the whole `rb_finish` cost on the anthropic-ingress hot path).
-pub(crate) mod synth_rng;
-
-/// The dialect-neutral tail-usage isolation helper shared by every reader's
-/// `recover_truncated_usage` override.
-pub(crate) mod usage_tail;
-
-/// The OpenAI-family citation `annotations` mapping shared by the Chat and Responses codecs.
-pub(crate) mod openai_annotations;
-
-/// IR → wire encode helpers (image source, tool-result detection, strict-drop warn) shared by the
-/// dialect writers.
-pub(crate) mod ir_encode;
-
-/// **G6 A4b option-a prep.** The per-`(operation, egress-protocol)` leaf-op writer dispatch — the
-/// non-chat twin of chat's `protocol_for(proto).writer()`, so a dissolved leaf-op handle can write
-/// itself by egress-protocol string without a downcast.
-pub(crate) mod leaf_codec;
-
-/// **G6 A4b relocation.** The concrete wire-codec surface (`ProtocolReader`/`ProtocolWriter`/
-/// `StreamFraming`/`Protocol`/`protocol_for`/`DialectRef`/`ToolIdRemap`), moved out of busbar-core so
-/// core names zero concrete LLM IR; core re-includes it under `crate::proto::proto_codec` for its test
-/// build.
-pub mod proto_codec;
-
-/// **G6 A4b relocation.** The concrete streaming byte-translator (`StreamTranslate`) behind the neutral
-/// `busbar_substrate::proto::StreamTranslator`; core re-includes it under `crate::proto::stream` for tests
-/// and reaches it in production via the installed factory.
-pub mod proto_stream;
-
 /// THE LLM PLUGIN'S TEST-KIT — the composition-root-shaped install seams a test uses to bring the LLM
 /// protocol (and plane) into the process registries WITHOUT the deleted `#[path]` witness re-includes.
 /// Named beside the plane crates' testkits (`busbar_mcp::testkit`, `busbar_a2a::testkit`).
@@ -221,10 +188,7 @@ pub mod testkit;
 /// the first call — off any allocation-gated path. In a build with a real composition root (or
 /// `busbar-core`'s own `cfg(test)` publish) the set is already present and the fold dedupes by name.
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) fn ensure_test_protocols_registered() {
-    static REGISTER: std::sync::Once = std::sync::Once::new();
-    REGISTER.call_once(|| busbar_substrate::proto::register_test_protocols(DECLS));
-}
+pub(crate) use busbar_llm_codec::ensure_test_protocols_registered;
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
@@ -276,11 +240,11 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // `None` so its boot is byte-identical. The OFF-by-default `webhook-receiver` feature flips it
         // to the inbound OpenAI Responses webhook receiver's route builder (which itself mounts nothing
         // unless `BUSBAR_LLM_WEBHOOK_SECRET` is configured). Gated so the money-path default build is
-        // untouched; see `openai_responses/webhook.rs` for the deferred secret-config seam.
+        // untouched; see `openai_responses_webhook.rs` for the deferred secret-config seam.
         #[cfg(not(feature = "webhook-receiver"))]
         routes: None,
         #[cfg(feature = "webhook-receiver")]
-        routes: Some(crate::openai_responses::webhook::webhook_routes),
+        routes: Some(crate::openai_responses_webhook::webhook_routes),
         admin_routes: None,
         openapi: None,
         hydrate: None,
@@ -319,14 +283,6 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
 /// admin swap path re-attaches probers to each new generation. No-op when every lane is `mode: none`.
 pub use crate::engine::health::spawn_probers;
 
-pub static DECLS: &[&busbar_substrate::proto::ProtocolDecl] = &[
-    &anthropic::DECL,
-    &gemini::DECL,
-    &openai_chat::DECL,
-    &bedrock::DECL,
-    &openai_responses::DECL,
-    &cohere::DECL,
-];
 
 /// THE PATH-MODEL ARRIVALS THIS PLUGIN REGISTERS, protocol-name-keyed.
 ///

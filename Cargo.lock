@@ -568,6 +568,7 @@ dependencies = [
  "base64 0.23.1",
  "busbar-api",
  "busbar-core",
+ "busbar-llm-codec",
  "busbar-mcp",
  "busbar-plugin",
  "busbar-store-memory",
@@ -598,6 +599,23 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "busbar-llm-codec"
+version = "1.6.0"
+dependencies = [
+ "busbar-api",
+ "busbar-core",
+ "busbar-substrate",
+ "busbar-timing",
+ "bytes",
+ "getrandom 0.3.4",
+ "hex",
+ "http",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

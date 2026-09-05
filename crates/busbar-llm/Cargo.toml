@@ -36,12 +36,12 @@ path = "src/lib.rs"
 # shape `busbar-mcp` exposes. Forwards ONLY to the substrate's test seams (`register_test_protocols`
 # and friends): this plane has NO production dependency on busbar-core, so there is nothing of core's
 # to forward. The G6 A4b leaf-op read/write free fns are `#[cfg(any(test, feature = "test-support"))]`.
-test-support = ["busbar-substrate/test-support"]
+test-support = ["busbar-substrate/test-support", "busbar-llm-codec/test-support"]
 # Passthrough to `busbar-timing`'s debug-only per-method micro-timing (DEFAULT OFF), mirroring
 # `busbar-core`'s `timing` feature: the relocated engine's `#[cfg(feature = "timing")]` profiling
 # guards (in `engine/pipeline.rs`) resolve against this, so the flag exists in lock-step with the
 # `busbar-timing/timing` it forwards. Off ⇒ those guards are zero-sized no-ops.
-timing = ["busbar-timing/timing"]
+timing = ["busbar-timing/timing", "busbar-llm-codec/timing"]
 # Mirrors `busbar-core`'s admin-tokens feature: a relocated money-path test
 # (`forward_pool_integration_tests`) gates an admin-token assertion on
 # `#[cfg(feature = "auth-admin-tokens")]`. Nothing in this plane's production build reaches that
@@ -54,7 +54,7 @@ auth-admin-tokens = []
 # to `busbar-substrate/openapi-schema` — the plugin carries no `schemars` derive of its own (the LLM
 # plane contributes `openapi_schemas: None`), it only needs the field-site `#[cfg]` to agree with
 # substrate's. The binary's `openapi-schema` forwards `busbar-llm?/openapi-schema`.
-openapi-schema = ["busbar-substrate/openapi-schema"]
+openapi-schema = ["busbar-substrate/openapi-schema", "busbar-llm-codec/openapi-schema"]
 # T3 — inbound OpenAI Responses async/background WEBHOOK RECEIVER, LIVE HTTP-ROUTE MOUNT. DEFAULT OFF.
 # The parse+verify+surface HANDLER (`openai_responses::webhook`) compiles and is tested
 # UNCONDITIONALLY; only MOUNTING it as a live `/v1/llm/webhooks/openai` route is gated here, because
@@ -83,6 +83,11 @@ webhook-receiver = ["dep:busbar-plugin"]
 # `busbar_api::X` was by-identity (the very same type/const), i.e. byte-identical behaviour.
 busbar-substrate = { path = "../busbar-substrate", default-features = false }
 busbar-api = { path = "../api" }
+# THE CODECS. The pure half of this plugin, split out so `busbar-plane-llm` can name the dialect
+# readers/writers, the IR, the stream translator and the answer-normalization pass without pulling
+# this crate's HTTP stack and async runtime into a pure kind's closure. Every module that moved is
+# re-exported from this crate's `lib.rs` under its old name.
+busbar-llm-codec = { path = "../busbar-llm-codec" }
 # Debug-only per-method micro-timing (DEFAULT OFF, zero cost). Instruments the per-dialect
 # reader/writer translate entry points (bedrock/cohere — the heavy cells). Enable the registry via
 # `--features busbar-timing/timing`.

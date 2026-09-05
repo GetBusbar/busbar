@@ -1,0 +1,77 @@
+# busbar-llm-codec — THE LLM WIRE CODECS, with nothing that opens anything.
+#
+# WHY THIS CRATE EXISTS. `busbar-llm` was two things wearing one name: the six dialect codecs (the
+# readers, the writers, the neutral IR, the stream translator, the answer-normalization pass) and
+# the money-path engine that carries those codecs over the network (attempt, exhaustion, select,
+# native ingress). The LLM PLANE adapts the first and must never link the second — a plane is a pure
+# kind, and the engine's HTTP stack put `hyper`, an async runtime and a socket-capable `tokio` in the
+# plane's transitive closure. This crate is the first half, so `busbar-plane-llm` can name the codecs
+# without naming the engine.
+#
+# THE RULE THIS CRATE KEEPS. No `hyper`, no `reqwest`, no `hyper-util`, no `tokio`, no `axum`, and no
+# `std::{net,fs,process,env}` in its own dependencies or its own source. The `http` crate (types
+# only — `StatusCode`, `HeaderMap`, `HeaderName`, `HeaderValue`) replaces what used to be reached as
+# `axum::http::*`: the same types, from the crate that defines them, without axum's server.
+#
+# WHAT STAYED BEHIND in `busbar-llm`: the engine, the native ingress, the path-model arrivals, the
+# plane declaration, the testkit and the inbound webhook receiver — everything that reads a socket,
+# a clock or a process. `busbar-llm` depends on this crate and re-exports every module that moved,
+# so a caller that named `busbar_llm::proto_codec::…` still resolves it.
+[package]
+name = "busbar-llm-codec"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+rust-version = "1.97"
+description = "The LLM wire codecs for busbar: the anthropic, openai-chat, gemini, bedrock, openai-responses and cohere readers/writers, the neutral IR, the stream translator and the answer-normalization pass — the pure half of the LLM protocol, with no I/O in its closure."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_llm_codec"
+path = "src/lib.rs"
+
+[features]
+# Pass-through so a dependent (busbar-llm, and busbar-core's own test binary) can ask for the test
+# surface — the same shape `busbar-llm` exposed. Forwards ONLY to the substrate's test seams.
+test-support = ["busbar-substrate/test-support"]
+# Mirrors `busbar-llm`'s `timing` feature: the per-dialect reader/writer translate entry points carry
+# `busbar_timing::timeit!` guards, so the flag exists in lock-step with the `busbar-timing/timing` it
+# forwards. Off ⇒ those guards are zero-sized no-ops.
+timing = ["busbar-timing/timing"]
+# The CI-only OpenAPI schema derive, forwarded so the field-site `#[cfg]`s in substrate's declaration
+# structs resolve in lock-step with the struct definitions.
+openapi-schema = ["busbar-substrate/openapi-schema"]
+
+[dependencies]
+# The NEUTRAL ABI. Every value family a codec speaks — the protocol declaration and registry, the IR
+# facts, the billing usage carrier, the wire body types, the operation enum — is named at its
+# canonical `busbar_substrate::` / `busbar_api::` home.
+busbar-substrate = { path = "../busbar-substrate", default-features = false }
+busbar-api = { path = "../api" }
+# Debug-only per-method micro-timing (DEFAULT OFF, zero cost) on the heavy translate cells.
+busbar-timing = { path = "../busbar-timing" }
+# HTTP VOCABULARY ONLY — `StatusCode`, `HeaderMap`, `HeaderName`, `HeaderValue`. This is the crate
+# axum re-exports as `axum::http`; naming it directly is what lets this crate drop axum (and with it
+# hyper, tower and a socket-capable tokio) out of the plane's closure. The `http` crate itself is
+# types and no I/O.
+http = { workspace = true }
+bytes = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+# Synthesized wire ids hex-encode their bytes (the tool-id remap marker, the cohere uuid).
+hex = { workspace = true }
+# The thread-local OS-entropy pool behind the synthesized wire ids the five non-error paths mint
+# (`msg_`, `resp_`, the cohere uuid, the gemini/bedrock request ids). The ANTHROPIC ERROR ENVELOPE's
+# request id does NOT draw from here: its entropy is a caller-supplied input (see
+# `anthropic::error_envelope_with_request_id`), which is what makes a plane-built refusal
+# deterministic over its inputs.
+getrandom = { workspace = true }
+
+[dev-dependencies]
+busbar-substrate = { path = "../busbar-substrate", features = ["test-support"] }
+# ONE relocated suite reads core's neutral detection fold and its built-in declaration table through
+# core's public surface; a DEV edge only, so no shipped target links core.
+busbar-core = { path = "../busbar-core", features = ["test-support"] }
+serde_json = { workspace = true }
+tracing-subscriber = { workspace = true }

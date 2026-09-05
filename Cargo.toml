@@ -5,6 +5,7 @@ members = [
     "crates/busbar-core",
     "crates/busbar-timing",
     "crates/busbar-llm",
+    "crates/busbar-llm-codec",
     "crates/busbar-mcp",
     "crates/busbar-a2a",
     "crates/busbar-voice",
