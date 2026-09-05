@@ -67,7 +67,8 @@ pub use price::{Pricer, RateNanos};
 pub use window::{budget_window, window_end};
 
 use busbar_caps::{
-    step::Admit, AdmitToken, Decision, Hold, HoldCell, PrincipalId, ReasonCode, Refusal, UnitToken,
+    step::Admit, AdmitToken, Decision, Hold, HoldCell, PostingFlags, PrincipalId, ReasonCode,
+    Refusal, UnitToken,
 };
 
 /// The sealed step-4 shape: the door, asked.
@@ -120,6 +121,7 @@ pub struct AdmissionUnit<'r, S: CellStore> {
     parent: Option<&'r HoldCell>,
     grant: Option<AdmitGrant>,
     blocked: Option<Blocked>,
+    downgraded_from: Option<&'r str>,
 }
 
 impl<'r, S: CellStore> AdmissionUnit<'r, S> {
@@ -133,6 +135,7 @@ impl<'r, S: CellStore> AdmissionUnit<'r, S> {
             parent: None,
             grant: None,
             blocked: None,
+            downgraded_from: None,
         }
     }
 
@@ -142,6 +145,41 @@ impl<'r, S: CellStore> AdmissionUnit<'r, S> {
     pub fn with_parent(mut self, parent: &'r HoldCell) -> Self {
         self.parent = Some(parent);
         self
+    }
+
+    /// Mark this admission as the far end of a downgrade: the pool named here blocked on a budget
+    /// limit that declared a downgrade, and this unit is the re-admission through the pool it
+    /// pointed at.
+    ///
+    /// The caller drives the cascade, because only the caller knows which pools it walked. What it
+    /// hands back here is the one thing the ledger cannot re-derive later: by the time a posting is
+    /// written, a downgraded unit looks like any other unit on this pool, and the fact that it is
+    /// here only because a narrower pool ran out of budget is gone unless the door says so.
+    #[must_use]
+    pub fn after_downgrade(mut self, from: &'r str) -> Self {
+        self.downgraded_from = Some(from);
+        self
+    }
+
+    /// The pool this unit was downgraded from, where it was.
+    #[must_use]
+    pub fn downgraded_from(&self) -> Option<&str> {
+        self.downgraded_from
+    }
+
+    /// The flags the door decided this unit's posting carries.
+    ///
+    /// The cascade is the only one of them: everything else about a posting is decided by the hold,
+    /// the usage report or the ledger. A unit served through a pool it was downgraded into is
+    /// journaled as downgraded, which is what the design's own cell for the exhaustion behaviour
+    /// asserts.
+    #[must_use]
+    pub fn posting_flags(&self) -> PostingFlags {
+        if self.downgraded_from.is_some() {
+            PostingFlags::DOWNGRADED
+        } else {
+            PostingFlags::NONE
+        }
     }
 
     /// The in-flight grant the admission took, once it has been taken. Holding it is what keeps a

@@ -654,3 +654,81 @@ fn the_door_opens_the_arrival_hold_and_it_reserves_nothing() {
         &busbar_caps::LedgerToken::mint(&seal),
     );
 }
+
+/// A unit served through a pool it was downgraded into is journaled as downgraded.
+///
+/// The flag was declared and never set: it was reachable only through the generic posting flag,
+/// which meant nothing in the tree ever put it on a posting. The cascade is the one thing the
+/// ledger cannot re-derive — by settlement time a downgraded unit looks like any other unit on the
+/// pool it landed on — so the door is what has to say it.
+#[test]
+fn a_unit_the_cascade_narrowed_is_posted_as_downgraded() {
+    let d = door();
+    let p = no_card(10);
+    let mut frontier = pooled(LimitMetric::Budget, 25, DAY, "frontier");
+    frontier.downgrade_to = Some("value".to_string());
+    let t = table(&[(
+        "team",
+        group_cfg(
+            None,
+            true,
+            vec![frontier, pooled(LimitMetric::Budget, 1_000, DAY, "value")],
+        ),
+    )]);
+    let c = chain(&t, "vk_flag", Some("team"));
+    let now = 1_700_000_000;
+    d.try_admit(&p, &c, "frontier", now).expect("1st");
+    d.try_admit(&p, &c, "frontier", now).expect("2nd");
+
+    let seal = KernelSeal::acquire_for_kernel();
+    let admit_token: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let unit_token: UnitToken<Admit> = UnitToken::mint(&seal);
+
+    // The frontier pool blocks and names where to go.
+    let mut blocked_unit = AdmissionUnit::new(&d, &p, "frontier", now);
+    let refused = blocked_unit.admit(
+        &Estimate::default(),
+        &PrincipalId::new("acct-1"),
+        &c,
+        &admit_token,
+        &unit_token,
+    );
+    assert!(refused.into_result(&seal).is_err(), "the frontier is full");
+    let to = match blocked_unit.blocked() {
+        Some(Blocked::Limit {
+            downgrade_to: Some(to),
+            ..
+        }) => to.clone(),
+        other => panic!("expected a budget block naming a downgrade, got {other:?}"),
+    };
+    assert_eq!(to, "value");
+
+    // The re-admission through the pool it named carries the mark; nothing else about the unit
+    // says it was ever anywhere else.
+    let unit_token: UnitToken<Admit> = UnitToken::mint(&seal);
+    let mut downgraded = AdmissionUnit::new(&d, &p, &to, now).after_downgrade("frontier");
+    let admitted = downgraded.admit(
+        &Estimate::default(),
+        &PrincipalId::new("acct-1"),
+        &c,
+        &admit_token,
+        &unit_token,
+    );
+    assert!(admitted.into_result(&seal).is_ok(), "the value pool admits");
+    assert_eq!(downgraded.downgraded_from(), Some("frontier"));
+    assert!(downgraded
+        .posting_flags()
+        .contains(busbar_caps::PostingFlags::DOWNGRADED));
+
+    // A unit that was never downgraded carries nothing.
+    let unit_token: UnitToken<Admit> = UnitToken::mint(&seal);
+    let mut plain = AdmissionUnit::new(&d, &p, "value", now);
+    let _ = plain.admit(
+        &Estimate::default(),
+        &PrincipalId::new("acct-1"),
+        &c,
+        &admit_token,
+        &unit_token,
+    );
+    assert!(plain.posting_flags().is_clean());
+}
