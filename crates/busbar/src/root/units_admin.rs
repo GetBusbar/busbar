@@ -311,6 +311,28 @@ impl LedgerView for UnopenedLedger {
     }
 }
 
+/// The read half of the dual write.
+///
+/// [`busbar_unit_ledger::legacy::LegacyRows`] is a WRITE trait and deliberately so — the unit's job
+/// is to say what was posted and hand it over, never to read a shape it does not own. But the
+/// reconciliation identity needs both sides, and the previous release's side of it is exactly what
+/// that write produced. So the root asks for the read half separately, as its own seam, and a
+/// binding that can only be written to simply does not offer one.
+///
+/// Keeping the two halves apart is what stops the views acquiring a way to write: nothing behind
+/// this trait can move a row, and the value the node dual-writes through is reached from here only
+/// as a list of what it already took.
+pub trait LegacyRowsRead: Send + Sync {
+    /// Every posting the dual write put onto the previous release's rows, in the order it made them.
+    fn postings(&self) -> Vec<busbar_unit_ledger::legacy::LegacyPosting>;
+}
+
+impl LegacyRowsRead for busbar_unit_ledger::legacy::RecordingRows {
+    fn postings(&self) -> Vec<busbar_unit_ledger::legacy::LegacyPosting> {
+        self.written()
+    }
+}
+
 /// The verbs unit's governance seam, bound to whatever executes an admin operation.
 ///
 /// Every one of the trait's methods is a delegation. `execute_legacy` is the one that carries the
@@ -2675,6 +2697,213 @@ mod tests {
             (-i128::from(SeededLedger::SHORT_BY_MICROS)).to_string()
         );
         assert_eq!(rows[0]["lane"], SeededLedger::SHORT_ROW.1);
+    }
+
+    // ── the views over the node's OWN ledger ─────────────────────────────────────────────────────
+
+    /// The two buckets the settling fixture posts against, and what each settles in nano-units.
+    #[cfg(feature = "root-admin")]
+    const KEPT: (&str, u64) = ("vk_kept", 7_000_000);
+    #[cfg(feature = "root-admin")]
+    const LOST: (&str, u64) = ("vk_lost", 1_000_000);
+
+    /// A dual-write binding that drops the postings for one named bucket on the floor.
+    ///
+    /// The failure it stands in for is real and is the one the identity exists to catch: the books
+    /// moved, value was delivered, and the previous release's rows never heard about it. The ledger
+    /// is unaffected — this is a binding the ledger writes THROUGH, so a node built over it settles
+    /// exactly as any other node does and only the parity obligation is broken.
+    #[cfg(feature = "root-admin")]
+    #[derive(Clone)]
+    struct RowsThatLose {
+        drop_bucket: &'static str,
+        kept: Arc<Mutex<Vec<busbar_unit_ledger::legacy::LegacyPosting>>>,
+    }
+
+    #[cfg(feature = "root-admin")]
+    impl RowsThatLose {
+        fn new(drop_bucket: &'static str) -> Self {
+            RowsThatLose {
+                drop_bucket,
+                kept: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    #[cfg(feature = "root-admin")]
+    impl busbar_unit_ledger::legacy::LegacyRows for RowsThatLose {
+        fn write(
+            &mut self,
+            posting: &busbar_unit_ledger::legacy::LegacyPosting,
+        ) -> Result<(), busbar_unit_ledger::legacy::LegacyWriteError> {
+            if posting.bucket != self.drop_bucket {
+                self.kept
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push(posting.clone());
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "root-admin")]
+    impl LegacyRowsRead for RowsThatLose {
+        fn postings(&self) -> Vec<busbar_unit_ledger::legacy::LegacyPosting> {
+            self.kept.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        }
+    }
+
+    /// Settle one unit against the node's own durability, through the same function the loop's exit
+    /// path settles through — so what the views read is what a served request would have left.
+    #[cfg(feature = "root-admin")]
+    fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: u64) {
+        use busbar_caps::{
+            step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
+            QuantitySource, Usage, UsageLine, UsageToken,
+        };
+        use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
+
+        let seal = KernelSeal::acquire_for_kernel();
+        let key = TotalsKey::new(
+            BucketId::new(bucket),
+            CapDimension::NanoUnits,
+            BucketScope::All,
+        );
+        let usage = Usage::report(
+            &UsageToken::mint(&seal),
+            vec![UsageLine {
+                class: MeterClassId::new("nano_units"),
+                quantity: nanos,
+                source: QuantitySource::Count,
+                estimated: false,
+            }],
+        )
+        .expect("one line");
+
+        let token = busbar_caps::DurabilityToken::mint(&seal);
+        let mut durability = units.durability.lock().unwrap_or_else(|p| p.into_inner());
+        durability.ledger.record_hold_opened(&key, A_DAY, nanos);
+        durability
+            .settle(
+                &crate::root::durability::Settling {
+                    key: &key,
+                    window: A_DAY,
+                    durability: &token,
+                    step: busbar_caps::StepName::Meter,
+                    stamp: crate::root::durability::PostingStamp {
+                        rate_card_version: 3,
+                        wall: 1_700_000_000,
+                        mono: 42,
+                    },
+                },
+                Hold::open(
+                    &AdmitToken::<Admit>::mint(&seal),
+                    PrincipalId::new(bucket),
+                    nanos,
+                ),
+                &usage,
+                &LedgerToken::mint(&seal),
+            )
+            .expect("the memory-buffered journal takes it");
+    }
+
+    /// A node that has settled both fixture units, over a dual write that may have lost one of them.
+    #[cfg(feature = "root-admin")]
+    fn a_node_that_settled(lose: Option<&'static str>) -> crate::root::kernel::ProductionUnits {
+        let units = match lose {
+            None => {
+                let rows = busbar_unit_ledger::legacy::RecordingRows::new();
+                crate::root::kernel::ProductionUnits::admin_only_over(
+                    Arc::new(AnsweringDispatch),
+                    Box::new(rows.clone()),
+                    Arc::new(rows),
+                )
+            }
+            Some(bucket) => {
+                let rows = RowsThatLose::new(bucket);
+                crate::root::kernel::ProductionUnits::admin_only_over(
+                    Arc::new(AnsweringDispatch),
+                    Box::new(rows.clone()),
+                    Arc::new(rows),
+                )
+            }
+        };
+        settle_on(&units, KEPT.0, KEPT.1);
+        settle_on(&units, LOST.0, LOST.1);
+        units
+    }
+
+    /// THE ONE THAT MATTERS FOR A LIVE NODE: a settlement this node made is in the figures it
+    /// serves.
+    ///
+    /// Not a fixture bound behind the seam — the node's own durability, settled through the same
+    /// function the loop settles through, read back through the served endpoint. A view bound to
+    /// anything other than this node's ledger answers an empty table here, which is exactly what the
+    /// unbound default answers and exactly what this test refuses.
+    ///
+    /// Both halves are asserted because they fail separately. `totals` says the posting reached the
+    /// books; `reconciliation` says the identity was computed over the rows the node actually holds,
+    /// and it is asserted against a node whose dual write LOST one of the two settlements — so a
+    /// reconciliation rendered over two empty snapshots, which balances trivially, cannot pass it.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn a_settled_posting_is_in_the_figures_this_node_serves() {
+        let units = a_node_that_settled(None);
+        let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+        let body = |path: &str| -> serde_json::Value {
+            let answer = node.answer(a_ledger_request(path));
+            assert_eq!(answer.status, 200, "{path}");
+            serde_json::from_slice(&answer.body).expect("valid JSON")
+        };
+
+        let rows = body("/api/v1/admin/ledger/totals");
+        let rows = rows["rows"].as_array().expect("rows");
+        assert_eq!(
+            rows.len(),
+            2,
+            "the two settlements this node made are not in the totals it serves"
+        );
+        let row = rows
+            .iter()
+            .find(|r| r["bucket"] == KEPT.0)
+            .expect("the settled bucket is named");
+        assert_eq!(row["day"], A_DAY);
+        assert_eq!(row["priced_nanos"], KEPT.1.to_string());
+        assert_eq!(row["priced_micros"], (KEPT.1 / 1_000).to_string());
+
+        // The dual write kept both, so the identity holds — over two rows rather than over nothing,
+        // which the totals beside it just established.
+        assert_eq!(body("/api/v1/admin/ledger/reconciliation")["holds"], true);
+    }
+
+    /// And the reconciliation names the row the dual write lost, by the amount it lost.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn the_reconciliation_names_a_row_this_nodes_dual_write_lost() {
+        let units = a_node_that_settled(Some(LOST.0));
+        let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+        let served: serde_json::Value = serde_json::from_slice(
+            &node
+                .answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"))
+                .body,
+        )
+        .expect("valid JSON");
+
+        assert_eq!(
+            served["holds"], false,
+            "a settlement the previous release's rows never saw reconciled anyway"
+        );
+        let out = served["discrepancies"].as_array().expect("discrepancies");
+        assert_eq!(out.len(), 1, "exactly the lost row must be named: {served}");
+        assert_eq!(out[0]["bucket"], LOST.0);
+        assert_eq!(out[0]["day"], A_DAY);
+        // The ledger accounted for the whole posting against nothing drawn, so the residual is the
+        // posting, in micro-units, positive.
+        assert_eq!(
+            out[0]["residual"]["amount"],
+            (LOST.1 / 1_000).to_string(),
+            "the residual is not the settlement that went missing"
+        );
     }
 
     /// A caller the node will not authenticate gets from a ledger view exactly what it gets from

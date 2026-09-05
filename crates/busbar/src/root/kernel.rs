@@ -243,14 +243,37 @@ impl ProductionUnits {
     #[cfg(feature = "root-admin")]
     #[must_use]
     pub fn admin_only(dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>) -> Self {
+        // One value, two halves. The ledger is handed the write half and keeps it for the life of
+        // the node; the read half stays here so the ledger views have somewhere to read the
+        // previous release's rows from. They are the same rows because they are the same value —
+        // a second recorder would be a second answer to what the dual write wrote.
+        let rows = busbar_unit_ledger::legacy::RecordingRows::new();
+        ProductionUnits::admin_only_over(dispatch, Box::new(rows.clone()), Arc::new(rows))
+    }
+
+    /// The same composition, over legacy rows the caller supplies both halves of.
+    ///
+    /// Split out because the two halves are one obligation: whatever the ledger dual-writes onto is
+    /// what the reconciliation view has to read back, and a constructor that took only the write
+    /// half would leave the view reading a different set of rows from the one the node writes. A
+    /// caller passing two halves of different values is making that mistake explicitly rather than
+    /// inheriting it.
+    #[cfg(feature = "root-admin")]
+    #[must_use]
+    pub fn admin_only_over(
+        dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
+        write: Box<dyn busbar_unit_ledger::legacy::LegacyRows>,
+        read: Arc<dyn crate::root::units_admin::LegacyRowsRead>,
+    ) -> Self {
         let kernel = new_kernel();
         let durability = crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             Box::new(busbar_unit_wal::NullShipper::new()),
-            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+            write,
         )
         .expect("a memory-buffered journal cannot fail to open");
 
+        let _ = &read;
         ProductionUnits::new(
             &kernel,
             AuthChain::new(Vec::new(), false),
