@@ -14,6 +14,7 @@ use crate::exhaustion::AT_CAPACITY_RETRY_AFTER_SECS;
 use crate::pool::OnExhausted;
 use crate::ports::Clock;
 use crate::wire::{RouteOutcome, DETAIL_OVERLOADED, KIND_OVERLOADED, STATUS_SERVICE_UNAVAILABLE};
+use busbar_contract::DestinationId;
 
 /// A pool of `n` members whose every member is suppressed, so the walk finds nowhere to send.
 fn exhausted_pool(n: usize, cooldowns: &[u64]) -> Node {
@@ -21,11 +22,13 @@ fn exhausted_pool(n: usize, cooldowns: &[u64]) -> Node {
     let mut node = Node::with_lanes(&lanes);
     node.pool(
         "primary",
-        (0..n).map(|d| member(d, ["a", "b", "c", "d"][d])).collect(),
+        (0..n)
+            .map(|d| member(DestinationId::new(d as u64), ["a", "b", "c", "d"][d]))
+            .collect(),
     );
     for (d, cooldown) in cooldowns.iter().enumerate() {
         node.breaker.set(
-            d,
+            DestinationId::new(d as u64),
             Health {
                 cooldown: *cooldown,
                 ..Health::default()
@@ -62,8 +65,8 @@ fn a_member_that_is_merely_busy_does_not_mask_a_sibling_in_a_long_cooldown() {
     let mut node = exhausted_pool(2, &[600, 0]);
     // The second member reports no cooldown because it is at capacity, not benched. Its zero must
     // not become the minimum.
-    node.capacity.set_ceiling(1, 1);
-    let held = node.capacity.saturate(1);
+    node.capacity.set_ceiling(DestinationId::new(1), 1);
+    let held = node.capacity.saturate(DestinationId::new(1));
     node.pools.insert({
         let mut pool = node.pools.get("primary").unwrap().clone();
         pool.on_exhausted = OnExhausted::Status503;
@@ -81,10 +84,18 @@ fn a_member_that_is_merely_busy_does_not_mask_a_sibling_in_a_long_cooldown() {
 #[test]
 fn a_purely_saturated_pool_gets_the_floor_and_never_the_bare_one_second() {
     let mut node = Node::with_lanes(&["a", "b"]);
-    node.pool("primary", vec![member(0, "a"), member(1, "b")]);
-    node.capacity.set_ceiling(0, 1);
-    node.capacity.set_ceiling(1, 1);
-    let held: Vec<_> = (0..2).map(|d| node.capacity.saturate(d)).collect();
+    node.pool(
+        "primary",
+        vec![
+            member(DestinationId::new(0), "a"),
+            member(DestinationId::new(1), "b"),
+        ],
+    );
+    node.capacity.set_ceiling(DestinationId::new(0), 1);
+    node.capacity.set_ceiling(DestinationId::new(1), 1);
+    let held: Vec<_> = (0..2)
+        .map(|d| node.capacity.saturate(DestinationId::new(d as u64)))
+        .collect();
 
     let outcome = node.route("primary");
     assert_eq!(
@@ -125,13 +136,13 @@ fn a_pool_with_no_members_at_all_refuses() {
 
 fn spill_node() -> Node {
     let mut node = Node::with_lanes(&["a", "b"]);
-    node.pool("primary", vec![member(0, "a")]);
-    node.pool("overflow", vec![member(1, "b")]);
+    node.pool("primary", vec![member(DestinationId::new(0), "a")]);
+    node.pool("overflow", vec![member(DestinationId::new(1), "b")]);
     node.tune("primary", |p| {
         p.on_exhausted = OnExhausted::FallbackPool("overflow".to_string());
     });
     node.breaker.set(
-        0,
+        DestinationId::new(0),
         Health {
             cooldown: 60,
             ..Health::default()
@@ -147,7 +158,7 @@ fn a_spill_reaches_the_other_pools_healthy_member() {
     let outcome = node.route("primary");
     match outcome {
         RouteOutcome::Delivered(delivered) => {
-            assert_eq!(delivered.destination, 1);
+            assert_eq!(delivered.destination, DestinationId::new(1));
             assert_eq!(
                 delivered.pool, "overflow",
                 "the outcome is recorded against the pool that actually served it"
@@ -167,7 +178,7 @@ fn a_spill_that_comes_back_round_terminates() {
         p.on_exhausted = OnExhausted::FallbackPool("primary".to_string());
     });
     node.breaker.set(
-        1,
+        DestinationId::new(1),
         Health {
             cooldown: 90,
             ..Health::default()
@@ -196,8 +207,14 @@ fn a_spill_at_an_unconfigured_pool_refuses_with_the_floor() {
 #[test]
 fn a_spill_applies_the_target_pools_own_blocklist() {
     let mut node = Node::with_lanes(&["a", "b", "c"]);
-    node.pool("primary", vec![member(0, "a")]);
-    node.pool("overflow", vec![member(1, "b"), member(2, "c")]);
+    node.pool("primary", vec![member(DestinationId::new(0), "a")]);
+    node.pool(
+        "overflow",
+        vec![
+            member(DestinationId::new(1), "b"),
+            member(DestinationId::new(2), "c"),
+        ],
+    );
     node.tune("primary", |p| {
         p.on_exhausted = OnExhausted::FallbackPool("overflow".to_string());
     });
@@ -207,7 +224,7 @@ fn a_spill_applies_the_target_pools_own_blocklist() {
         p.failover.exclusions = vec!["b".to_string()];
     });
     node.breaker.set(
-        0,
+        DestinationId::new(0),
         Health {
             cooldown: 60,
             ..Health::default()
@@ -218,7 +235,7 @@ fn a_spill_applies_the_target_pools_own_blocklist() {
 
     let outcome = node.route("primary");
     assert!(
-        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == 2),
+        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == DestinationId::new(2)),
         "the blocklisted member must be unreachable through the spill: {outcome:?}"
     );
 }
@@ -242,7 +259,11 @@ fn least_bad_node() -> Node {
     let mut node = Node::with_lanes(&["a", "b", "c"]);
     node.pool(
         "primary",
-        vec![member(0, "a"), member(1, "b"), member(2, "c")],
+        vec![
+            member(DestinationId::new(0), "a"),
+            member(DestinationId::new(1), "b"),
+            member(DestinationId::new(2), "c"),
+        ],
     );
     node.tune("primary", |p| p.on_exhausted = OnExhausted::LeastBad);
     for lane in ["a", "b", "c"] {
@@ -255,21 +276,21 @@ fn least_bad_node() -> Node {
 fn the_last_resort_takes_the_soonest_cooldown() {
     let node = least_bad_node();
     node.breaker.set(
-        0,
+        DestinationId::new(0),
         Health {
             cooldown: 300,
             ..Health::default()
         },
     );
     node.breaker.set(
-        1,
+        DestinationId::new(1),
         Health {
             cooldown: 10,
             ..Health::default()
         },
     );
     node.breaker.set(
-        2,
+        DestinationId::new(2),
         Health {
             cooldown: 120,
             ..Health::default()
@@ -278,7 +299,7 @@ fn the_last_resort_takes_the_soonest_cooldown() {
 
     let outcome = node.route("primary");
     assert!(
-        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == 1),
+        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == DestinationId::new(1)),
         "{outcome:?}"
     );
 }
@@ -289,21 +310,21 @@ fn the_last_resort_ranks_only_usable_members() {
     // A dead member reports no cooldown at all; without the usability filter its zero would sort
     // it to the front of the last-resort order.
     node.breaker.set(
-        0,
+        DestinationId::new(0),
         Health {
             dead: true,
             ..Health::default()
         },
     );
     node.breaker.set(
-        1,
+        DestinationId::new(1),
         Health {
             cooldown: 10,
             ..Health::default()
         },
     );
     node.breaker.set(
-        2,
+        DestinationId::new(2),
         Health {
             cooldown: 120,
             ..Health::default()
@@ -312,7 +333,7 @@ fn the_last_resort_ranks_only_usable_members() {
 
     let outcome = node.route("primary");
     assert!(
-        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == 1),
+        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == DestinationId::new(1)),
         "{outcome:?}"
     );
 }
@@ -321,32 +342,32 @@ fn the_last_resort_ranks_only_usable_members() {
 fn the_last_resort_skips_a_saturated_best_member_for_a_free_sibling() {
     let node = least_bad_node();
     node.breaker.set(
-        0,
+        DestinationId::new(0),
         Health {
             cooldown: 10,
             ..Health::default()
         },
     );
     node.breaker.set(
-        1,
+        DestinationId::new(1),
         Health {
             cooldown: 20,
             ..Health::default()
         },
     );
     node.breaker.set(
-        2,
+        DestinationId::new(2),
         Health {
             cooldown: 30,
             ..Health::default()
         },
     );
-    node.capacity.set_ceiling(0, 1);
-    let held = node.capacity.saturate(0);
+    node.capacity.set_ceiling(DestinationId::new(0), 1);
+    let held = node.capacity.saturate(DestinationId::new(0));
 
     let outcome = node.route("primary");
     assert!(
-        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == 1),
+        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == DestinationId::new(1)),
         "refusing because the single best member is momentarily busy defeats the whole point"
     );
     drop(held);
@@ -357,21 +378,21 @@ fn the_last_resort_never_reaches_a_blocklisted_member() {
     let mut node = least_bad_node();
     node.tune("primary", |p| p.failover.exclusions = vec!["b".to_string()]);
     node.breaker.set(
-        0,
+        DestinationId::new(0),
         Health {
             cooldown: 300,
             ..Health::default()
         },
     );
     node.breaker.set(
-        1,
+        DestinationId::new(1),
         Health {
             cooldown: 10,
             ..Health::default()
         },
     );
     node.breaker.set(
-        2,
+        DestinationId::new(2),
         Health {
             cooldown: 120,
             ..Health::default()
@@ -380,7 +401,7 @@ fn the_last_resort_never_reaches_a_blocklisted_member() {
 
     let outcome = node.route("primary");
     assert!(
-        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == 2),
+        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == DestinationId::new(2)),
         "the blocklist is applied before anything reads the membership: {outcome:?}"
     );
 }
@@ -392,7 +413,7 @@ fn the_last_resort_owns_no_probe() {
     // must neither win nor release one — releasing a probe a peer won would revert the peer's.
     for d in 0..3 {
         node.breaker.set(
-            d,
+            DestinationId::new(d as u64),
             Health {
                 cooldown: 10,
                 offers_probe: Some(7),
@@ -412,15 +433,17 @@ fn the_last_resort_sheds_when_every_member_is_saturated() {
     let node = least_bad_node();
     for d in 0..3 {
         node.breaker.set(
-            d,
+            DestinationId::new(d as u64),
             Health {
                 cooldown: 10,
                 ..Health::default()
             },
         );
-        node.capacity.set_ceiling(d, 1);
+        node.capacity.set_ceiling(DestinationId::new(d as u64), 1);
     }
-    let held: Vec<_> = (0..3).map(|d| node.capacity.saturate(d)).collect();
+    let held: Vec<_> = (0..3)
+        .map(|d| node.capacity.saturate(DestinationId::new(d as u64)))
+        .collect();
 
     let outcome = node.route("primary");
     let shed = outcome.shed().expect("a refusal");
@@ -433,7 +456,13 @@ fn the_last_resort_sheds_when_every_member_is_saturated() {
 
 fn queue_node(max_ms: u64) -> Node {
     let mut node = Node::with_lanes(&["a", "b"]);
-    node.pool("primary", vec![member(0, "a"), member(1, "b")]);
+    node.pool(
+        "primary",
+        vec![
+            member(DestinationId::new(0), "a"),
+            member(DestinationId::new(1), "b"),
+        ],
+    );
     node.tune("primary", |p| {
         p.on_exhausted = OnExhausted::Queue { max_ms };
     });
@@ -448,14 +477,14 @@ fn the_wait_sheds_at_once_when_nothing_it_could_wait_for_is_busy() {
     let node = queue_node(250);
     // Every member is suppressed, not busy. No slot will free, so waiting is pointless.
     node.breaker.set(
-        0,
+        DestinationId::new(0),
         Health {
             cooldown: 60,
             ..Health::default()
         },
     );
     node.breaker.set(
-        1,
+        DestinationId::new(1),
         Health {
             cooldown: 60,
             ..Health::default()
@@ -477,10 +506,10 @@ fn the_wait_sheds_at_once_when_nothing_it_could_wait_for_is_busy() {
 #[test]
 fn the_wait_dispatches_on_the_member_that_freed_a_slot() {
     let node = queue_node(250);
-    node.capacity.set_ceiling(0, 1);
-    node.capacity.set_ceiling(1, 1);
-    let held_a = node.capacity.saturate(0);
-    let held_b = node.capacity.saturate(1);
+    node.capacity.set_ceiling(DestinationId::new(0), 1);
+    node.capacity.set_ceiling(DestinationId::new(1), 1);
+    let held_a = node.capacity.saturate(DestinationId::new(0));
+    let held_b = node.capacity.saturate(DestinationId::new(1));
 
     // Both members are at capacity when the pick runs; one frees while the request is parked.
     let mut ctx = node.request_ctx();
@@ -496,9 +525,11 @@ fn the_wait_dispatches_on_the_member_that_freed_a_slot() {
 #[test]
 fn the_wait_sheds_when_no_slot_frees_and_the_gauge_balances() {
     let node = queue_node(250);
-    node.capacity.set_ceiling(0, 1);
-    node.capacity.set_ceiling(1, 1);
-    let held: Vec<_> = (0..2).map(|d| node.capacity.saturate(d)).collect();
+    node.capacity.set_ceiling(DestinationId::new(0), 1);
+    node.capacity.set_ceiling(DestinationId::new(1), 1);
+    let held: Vec<_> = (0..2)
+        .map(|d| node.capacity.saturate(DestinationId::new(d as u64)))
+        .collect();
 
     let outcome = node.route("primary");
     let shed = outcome.shed().expect("a refusal");
@@ -516,9 +547,11 @@ fn the_wait_sheds_when_no_slot_frees_and_the_gauge_balances() {
 #[test]
 fn the_wait_is_bounded_by_what_is_left_of_the_walk_and_not_only_by_its_own_setting() {
     let node = queue_node(u64::MAX);
-    node.capacity.set_ceiling(0, 1);
-    node.capacity.set_ceiling(1, 1);
-    let held: Vec<_> = (0..2).map(|d| node.capacity.saturate(d)).collect();
+    node.capacity.set_ceiling(DestinationId::new(0), 1);
+    node.capacity.set_ceiling(DestinationId::new(1), 1);
+    let held: Vec<_> = (0..2)
+        .map(|d| node.capacity.saturate(DestinationId::new(d as u64)))
+        .collect();
 
     // The wait would run forever on its own setting; the walk's remaining budget is the real
     // bound, and the shed proves the wait ended.

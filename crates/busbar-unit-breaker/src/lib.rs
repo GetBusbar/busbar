@@ -144,7 +144,14 @@ pub trait Breaker: sealed::Sealed {
     /// `HardDown` fan-out counts only the DEFAULT cell's freshness, and a sub-threshold or
     /// already-Open failure all return `false`) — the one signal a trip-count metric should
     /// increment on.
-    fn observe(&self, pool: &str, destination: DestinationId, outcome: Outcome, cfg: &BreakerCfg, now: u64) -> bool;
+    fn observe(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        outcome: Outcome,
+        cfg: &BreakerCfg,
+        now: u64,
+    ) -> bool;
 
     /// Side-effect-free: this `(pool, destination)` cell's current [`LaneState`], folding in the
     /// destination's lifetime budget (`BudgetExhausted` takes precedence — an exhausted destination
@@ -204,7 +211,11 @@ impl<J: JournalSink> BreakerUnit<J> {
 
     /// Override the hard-down sticky cooldown and the absolute Retry-After honoring ceiling
     /// (1.5.5's `limits.hard_down_cooldown_secs` / `limits.max_honored_retry_after_secs`).
-    pub fn with_limits(mut self, hard_down_cooldown_secs: u64, max_honored_retry_after_secs: u64) -> Self {
+    pub fn with_limits(
+        mut self,
+        hard_down_cooldown_secs: u64,
+        max_honored_retry_after_secs: u64,
+    ) -> Self {
         self.hard_down_cooldown_secs = hard_down_cooldown_secs;
         self.max_honored_retry_after_secs = max_honored_retry_after_secs;
         self
@@ -243,7 +254,12 @@ impl<J: JournalSink> BreakerUnit<J> {
     /// unlimited/undeclared); `false` if it was already exhausted.
     #[must_use]
     pub fn spend_budget(&self, destination: DestinationId) -> bool {
-        match self.budgets.read().unwrap_or_else(|e| e.into_inner()).get(&destination) {
+        match self
+            .budgets
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&destination)
+        {
             Some(b) => b.spend(),
             None => true,
         }
@@ -251,7 +267,12 @@ impl<J: JournalSink> BreakerUnit<J> {
 
     /// Compensating refund of one unit previously spent (see [`budget::LifetimeBudget::refund`]).
     pub fn refund_budget(&self, destination: DestinationId) {
-        if let Some(b) = self.budgets.read().unwrap_or_else(|e| e.into_inner()).get(&destination) {
+        if let Some(b) = self
+            .budgets
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&destination)
+        {
             b.refund();
         }
     }
@@ -272,7 +293,11 @@ impl<J: JournalSink> BreakerUnit<J> {
     /// method [`port::classify_upstream`] is implemented over — this is the one the egress unit's
     /// `Breaker::classify` port is bound to.
     #[must_use]
-    pub fn classify(&self, destination: DestinationId, status: port::UpstreamStatus) -> port::Classified {
+    pub fn classify(
+        &self,
+        destination: DestinationId,
+        status: port::UpstreamStatus,
+    ) -> port::Classified {
         let error_map = self
             .error_maps
             .read()
@@ -285,11 +310,18 @@ impl<J: JournalSink> BreakerUnit<J> {
 
     fn cell(&self, pool: &str, destination: DestinationId) -> Arc<BreakerCell> {
         let key = (pool.to_string(), destination);
-        if let Some(c) = self.cells.read().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        if let Some(c) = self
+            .cells
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+        {
             return c.clone();
         }
         let mut cells = self.cells.write().unwrap_or_else(|e| e.into_inner());
-        let cell = cells.entry(key).or_insert_with(|| Arc::new(BreakerCell::new()));
+        let cell = cells
+            .entry(key)
+            .or_insert_with(|| Arc::new(BreakerCell::new()));
         let cell = cell.clone();
         drop(cells);
         let mut pools = self
@@ -333,7 +365,12 @@ impl<J: JournalSink> BreakerUnit<J> {
     /// lifetime budget first (an exhausted destination is excluded before the breaker is even
     /// consulted, matching 1.5.5's `classify` reading `dead`/budget separately from the breaker).
     /// On success, journals a won probe.
-    pub fn try_admit(&self, pool: &str, destination: DestinationId, now: u64) -> Result<Admit, LaneState> {
+    pub fn try_admit(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+    ) -> Result<Admit, LaneState> {
         if self.budget_exhausted(destination) {
             return Err(LaneState::BudgetExhausted);
         }
@@ -358,7 +395,13 @@ impl<J: JournalSink> BreakerUnit<J> {
     /// Release a probe won by [`Self::try_admit`] but never dispatched (owner-checked: a stale,
     /// late release cannot revert a newer probe a different caller has since won). Journals the
     /// release.
-    pub fn release_probe(&self, pool: &str, destination: DestinationId, owned_epoch: u64, now: u64) {
+    pub fn release_probe(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        owned_epoch: u64,
+        now: u64,
+    ) {
         let cell = self.cell(pool, destination);
         cell.release_probe_owned(owned_epoch);
         self.journal.record(ProbeEvent::Released {
@@ -392,7 +435,14 @@ impl<J: JournalSink> BreakerUnit<J> {
 impl<J: JournalSink> sealed::Sealed for BreakerUnit<J> {}
 
 impl<J: JournalSink> Breaker for BreakerUnit<J> {
-    fn observe(&self, pool: &str, destination: DestinationId, outcome: Outcome, cfg: &BreakerCfg, now: u64) -> bool {
+    fn observe(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        outcome: Outcome,
+        cfg: &BreakerCfg,
+        now: u64,
+    ) -> bool {
         match outcome {
             Outcome::RecordNothing => false,
             Outcome::HardDown => self.hard_down_all(destination, now),

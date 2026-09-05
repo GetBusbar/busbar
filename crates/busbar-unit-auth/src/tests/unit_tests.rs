@@ -83,7 +83,9 @@ fn a_plane_may_only_narrow_within_the_claims_alternatives() {
     let Resolved::Decided(d) = auth.resolve(&req, None, None, None, None, &token) else {
         panic!("expected a decision");
     };
-    let refusal = d.into_result(&seal).expect_err("an undeclared scheme is refused");
+    let refusal = d
+        .into_result(&seal)
+        .expect_err("an undeclared scheme is refused");
     assert_eq!(refusal.reason(), ReasonCode::SchemeNotDeclared);
 
     // Narrowing WITHIN the alternatives is fine and the chain runs normally.
@@ -203,12 +205,15 @@ fn revocation_gates_a_new_unit_and_not_one_in_flight() {
     ));
 
     let (seal, token) = seal_and_token();
-    let Resolved::Decided(d) = auth.resolve(&request(), None, None, Some(&AllRevoked), None, &token)
+    let Resolved::Decided(d) =
+        auth.resolve(&request(), None, None, Some(&AllRevoked), None, &token)
     else {
         panic!("expected a decision");
     };
     assert_eq!(
-        d.into_result(&seal).expect_err("a new unit is gated").reason(),
+        d.into_result(&seal)
+            .expect_err("a new unit is gated")
+            .reason(),
         ReasonCode::Revoked
     );
 

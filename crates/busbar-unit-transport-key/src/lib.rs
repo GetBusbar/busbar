@@ -150,7 +150,9 @@ fn load_cert_chain(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot parse TLS cert: {e}"))?;
     if certs.is_empty() {
-        return Err("TLS cert contains no certificates (expected a PEM chain, leaf first)".to_string());
+        return Err(
+            "TLS cert contains no certificates (expected a PEM chain, leaf first)".to_string(),
+        );
     }
     Ok(certs)
 }
@@ -203,7 +205,9 @@ pub fn build_server_config(material: &TlsMaterial) -> Result<ServerConfig, Strin
             let roots = load_client_roots(ca_pem)?;
             let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
                 .build()
-                .map_err(|e| format!("cannot build client-cert verifier from TLS client_ca: {e}"))?;
+                .map_err(|e| {
+                    format!("cannot build client-cert verifier from TLS client_ca: {e}")
+                })?;
             builder.with_client_cert_verifier(verifier)
         }
         None => builder.with_no_client_auth(),

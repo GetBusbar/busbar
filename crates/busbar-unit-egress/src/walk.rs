@@ -84,8 +84,11 @@ pub struct RouteRequest<'a> {
 
 impl<'a> RouteRequest<'a> {
     /// The sealed destination for one member.
-    pub(crate) fn destination(&self, id: usize) -> Option<&'a VerifiedDestination> {
-        self.verified.get(id)
+    pub(crate) fn destination(
+        &self,
+        id: crate::ports::DestinationId,
+    ) -> Option<&'a VerifiedDestination> {
+        self.verified.get(id.get() as usize)
     }
 
     /// The metric label for one hop. On a named pool it is the pool; on the default cell it is the

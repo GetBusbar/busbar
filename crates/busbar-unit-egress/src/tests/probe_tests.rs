@@ -12,16 +12,23 @@
 use super::harness::{ok_frames, Health, Script};
 use super::{member, Node};
 use crate::select::ProbeGuard;
+use busbar_contract::DestinationId;
 
 #[test]
 fn an_armed_guard_gives_the_probe_back_when_it_is_dropped() {
     let node = Node::with_lanes(&["a"]);
     {
-        let _guard = ProbeGuard::new(node.breaker.as_ref(), "primary", 0, 7, 1_000);
+        let _guard = ProbeGuard::new(
+            node.breaker.as_ref(),
+            "primary",
+            DestinationId::new(0),
+            7,
+            1_000,
+        );
     }
     assert_eq!(
         node.breaker.probe_releases(),
-        vec![("primary".to_string(), 0, 7)]
+        vec![("primary".to_string(), DestinationId::new(0), 7)]
     );
 }
 
@@ -29,7 +36,13 @@ fn an_armed_guard_gives_the_probe_back_when_it_is_dropped() {
 fn a_disarmed_guard_gives_nothing_back() {
     let node = Node::with_lanes(&["a"]);
     {
-        let mut guard = ProbeGuard::new(node.breaker.as_ref(), "primary", 0, 7, 1_000);
+        let mut guard = ProbeGuard::new(
+            node.breaker.as_ref(),
+            "primary",
+            DestinationId::new(0),
+            7,
+            1_000,
+        );
         guard.disarm();
         assert!(!guard.is_armed());
     }
@@ -40,7 +53,13 @@ fn a_disarmed_guard_gives_nothing_back() {
 fn a_late_guard_releases_only_its_own_epoch() {
     let node = Node::with_lanes(&["a"]);
     {
-        let _stale = ProbeGuard::new(node.breaker.as_ref(), "primary", 0, 7, 1_000);
+        let _stale = ProbeGuard::new(
+            node.breaker.as_ref(),
+            "primary",
+            DestinationId::new(0),
+            7,
+            1_000,
+        );
     }
     // The release names the epoch this guard won, not whatever is live now, so the owner check on
     // the other side can refuse it. That the epoch travels is the property; the refusal itself is
@@ -51,9 +70,9 @@ fn a_late_guard_releases_only_its_own_epoch() {
 #[test]
 fn a_delivered_answer_hands_the_probe_to_the_outcome_it_recorded() {
     let mut node = Node::with_lanes(&["a"]);
-    node.pool("primary", vec![member(0, "a")]);
+    node.pool("primary", vec![member(DestinationId::new(0), "a")]);
     node.breaker.set(
-        0,
+        DestinationId::new(0),
         Health {
             cooldown: 30,
             offers_probe: Some(11),
@@ -72,9 +91,9 @@ fn a_delivered_answer_hands_the_probe_to_the_outcome_it_recorded() {
 #[test]
 fn an_attempt_that_never_dispatched_gives_the_probe_back() {
     let mut node = Node::with_lanes(&["a"]);
-    node.pool("primary", vec![member(0, "a")]);
+    node.pool("primary", vec![member(DestinationId::new(0), "a")]);
     node.breaker.set(
-        0,
+        DestinationId::new(0),
         Health {
             cooldown: 30,
             offers_probe: Some(11),
@@ -87,7 +106,7 @@ fn an_attempt_that_never_dispatched_gives_the_probe_back() {
     assert!(node.route("primary").shed().is_some());
     assert_eq!(
         node.breaker.probe_releases(),
-        vec![("primary".to_string(), 0, 11)],
+        vec![("primary".to_string(), DestinationId::new(0), 11)],
         "a cell must never wedge half-open on a path that dispatched nothing"
     );
 }
@@ -95,23 +114,23 @@ fn an_attempt_that_never_dispatched_gives_the_probe_back() {
 #[test]
 fn a_probe_won_with_no_slot_to_use_it_is_given_back_at_once() {
     let node = Node::with_lanes(&["a"]);
-    let members = vec![member(0, "a")];
+    let members = vec![member(DestinationId::new(0), "a")];
     node.breaker.set(
-        0,
+        DestinationId::new(0),
         Health {
             cooldown: 30,
             offers_probe: Some(5),
             ..Health::default()
         },
     );
-    node.capacity.set_ceiling(0, 1);
-    let held = node.capacity.saturate(0);
+    node.capacity.set_ceiling(DestinationId::new(0), 1);
+    let held = node.capacity.saturate(DestinationId::new(0));
 
     let mut ctx = node.request_ctx();
     assert!(node.pick("primary", &members, &mut ctx).is_none());
     assert_eq!(
         node.breaker.probe_releases(),
-        vec![("primary".to_string(), 0, 5)],
+        vec![("primary".to_string(), DestinationId::new(0), 5)],
         "the admission that won the probe is the one that has to give it back when it cannot use it"
     );
     drop(held);
@@ -120,9 +139,9 @@ fn a_probe_won_with_no_slot_to_use_it_is_given_back_at_once() {
 #[test]
 fn a_failed_attempt_records_before_the_guard_can_release() {
     let mut node = Node::with_lanes(&["a"]);
-    node.pool("primary", vec![member(0, "a")]);
+    node.pool("primary", vec![member(DestinationId::new(0), "a")]);
     node.breaker.set(
-        0,
+        DestinationId::new(0),
         Health {
             cooldown: 30,
             offers_probe: Some(3),

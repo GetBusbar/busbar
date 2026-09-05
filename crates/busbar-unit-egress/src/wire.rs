@@ -178,7 +178,7 @@ impl RouteOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delivered {
     /// Which member of the verified set served the request.
-    pub destination: usize,
+    pub destination: crate::ports::DestinationId,
     /// Which pool cell the attempt was recorded against.
     pub pool: String,
     /// The transport's own reading of the first relayed frame, where it carries one.

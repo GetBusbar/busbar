@@ -86,7 +86,9 @@ pub fn kind_permitted(origin: OriginKind, kind: &DestinationKind) -> bool {
     use DestinationKind::*;
     match origin {
         OriginKind::Client => !matches!(kind, Peer | SessionAccrual),
-        OriginKind::Provider => matches!(kind, Client | SessionUpstream | NestedPlane | PlaneRecord),
+        OriginKind::Provider => {
+            matches!(kind, Client | SessionUpstream | NestedPlane | PlaneRecord)
+        }
         OriginKind::Arrival => false,
         OriginKind::Bootstrap => matches!(kind, KernelVerb),
         OriginKind::Handshake => matches!(kind, Upgrade | Client),

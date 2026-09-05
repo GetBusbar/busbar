@@ -3,10 +3,12 @@
 
 //! The sealed answer: the unit the loop calls at the verify step.
 
-use busbar_caps::{Decision, ReasonCode, Refusal, TrustToken, UnitToken, Verify};
 use busbar_caps::VerifiedDestination;
+use busbar_caps::{Decision, ReasonCode, Refusal, TrustToken, UnitToken, Verify};
 
-use crate::destination::{kind_permitted, kind_rule_passes, DestinationFacts, KindFacts, OriginKind};
+use crate::destination::{
+    kind_permitted, kind_rule_passes, DestinationFacts, KindFacts, OriginKind,
+};
 use crate::guard::{destination_guard, PoolView, RefusalKind};
 
 /// Everything the unit is given about one verification.

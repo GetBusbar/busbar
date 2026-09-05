@@ -74,14 +74,20 @@ pub mod label {
 /// metric label a caller records the failure under. A pure function: no destination, no lock, no
 /// clock.
 #[must_use]
-pub fn outcome_and_label(disposition: Disposition, retry_after: Option<u64>) -> (Outcome, &'static str) {
+pub fn outcome_and_label(
+    disposition: Disposition,
+    retry_after: Option<u64>,
+) -> (Outcome, &'static str) {
     match disposition {
         // The caller's bad input: the destination is healthy either way, so nothing is recorded —
         // folded together with `ContextLength` below, per `Outcome`'s own doc comment.
         Disposition::ClientFault => (Outcome::RecordNothing, label::CLIENT_FAULT),
         // A transient failure: the upstream's own Retry-After (if any) threads through as the
         // cooldown floor `BreakerCell::compute_cooldown_with_retry_after` reads.
-        Disposition::TransientUpstream => (Outcome::Transient { retry_after }, label::TRANSIENT_UPSTREAM),
+        Disposition::TransientUpstream => (
+            Outcome::Transient { retry_after },
+            label::TRANSIENT_UPSTREAM,
+        ),
         // A definitive signal about the shared destination: every pool cell trips, not just this
         // one — see `BreakerUnit::hard_down_all`, which `BreakerUnit::observe` dispatches
         // `Outcome::HardDown` to.
@@ -109,7 +115,11 @@ pub fn classify_upstream(
     let sig = classify::normalize_raw_error(&raw, error_map, &classify::NoopDiagnostics);
     let disposition = classify::classify(&sig);
     let (outcome, label) = outcome_and_label(disposition, sig.retry_after);
-    Classified { disposition, outcome, label }
+    Classified {
+        disposition,
+        outcome,
+        label,
+    }
 }
 
 #[cfg(test)]
@@ -120,7 +130,10 @@ mod tests {
     use std::collections::HashMap;
 
     fn err_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     // ── outcome_and_label: the four-way fold, ported from `classify_error`'s match arms ─────────
@@ -142,7 +155,12 @@ mod tests {
     #[test]
     fn transient_upstream_threads_retry_after_through() {
         let (outcome, label) = outcome_and_label(Disposition::TransientUpstream, Some(42));
-        assert_eq!(outcome, Outcome::Transient { retry_after: Some(42) });
+        assert_eq!(
+            outcome,
+            Outcome::Transient {
+                retry_after: Some(42)
+            }
+        );
         assert_eq!(label, label::TRANSIENT_UPSTREAM);
     }
 
@@ -168,7 +186,13 @@ mod tests {
         // Bedrock-shaped: code "1113" carries no intrinsic meaning in the HTTP-status table; the
         // operator's error_map is what turns it into a hard-down billing signal.
         let map = err_map(&[("1113", "billing")]);
-        let out = classify_upstream(&map, UpstreamStatus { code: Some(1113), retry_after: None });
+        let out = classify_upstream(
+            &map,
+            UpstreamStatus {
+                code: Some(1113),
+                retry_after: None,
+            },
+        );
         assert_eq!(out.disposition, Disposition::HardDown);
         assert_eq!(out.outcome, Outcome::HardDown);
     }
@@ -176,29 +200,58 @@ mod tests {
     #[test]
     fn unmapped_code_falls_through_to_http_status() {
         let map = err_map(&[("1113", "billing")]);
-        let out = classify_upstream(&map, UpstreamStatus { code: Some(500), retry_after: None });
+        let out = classify_upstream(
+            &map,
+            UpstreamStatus {
+                code: Some(500),
+                retry_after: None,
+            },
+        );
         assert_eq!(out.disposition, Disposition::TransientUpstream);
         assert_eq!(out.outcome, Outcome::Transient { retry_after: None });
     }
 
     #[test]
     fn empty_error_map_still_classifies_by_http_status() {
-        let out = classify_upstream(&HashMap::new(), UpstreamStatus { code: Some(429), retry_after: Some(7) });
+        let out = classify_upstream(
+            &HashMap::new(),
+            UpstreamStatus {
+                code: Some(429),
+                retry_after: Some(7),
+            },
+        );
         assert_eq!(out.disposition, Disposition::TransientUpstream);
-        assert_eq!(out.outcome, Outcome::Transient { retry_after: Some(7) });
+        assert_eq!(
+            out.outcome,
+            Outcome::Transient {
+                retry_after: Some(7)
+            }
+        );
         assert_eq!(out.label, label::TRANSIENT_UPSTREAM);
     }
 
     #[test]
     fn auth_status_is_hard_down() {
-        let out = classify_upstream(&HashMap::new(), UpstreamStatus { code: Some(401), retry_after: None });
+        let out = classify_upstream(
+            &HashMap::new(),
+            UpstreamStatus {
+                code: Some(401),
+                retry_after: None,
+            },
+        );
         assert_eq!(out.disposition, Disposition::HardDown);
         assert_eq!(out.outcome, Outcome::HardDown);
     }
 
     #[test]
     fn client_error_status_is_client_fault_with_no_penalty() {
-        let out = classify_upstream(&HashMap::new(), UpstreamStatus { code: Some(422), retry_after: None });
+        let out = classify_upstream(
+            &HashMap::new(),
+            UpstreamStatus {
+                code: Some(422),
+                retry_after: None,
+            },
+        );
         assert_eq!(out.disposition, Disposition::ClientFault);
         assert_eq!(out.outcome, Outcome::RecordNothing);
     }
@@ -208,7 +261,13 @@ mod tests {
         // A caller with no numeric status to report (`status.code: None`) — the same "unexpected
         // non-error status reaching the error path" fallback 1.5.5 took for a 2xx/3xx: no penalty,
         // relay as-is.
-        let out = classify_upstream(&HashMap::new(), UpstreamStatus { code: None, retry_after: None });
+        let out = classify_upstream(
+            &HashMap::new(),
+            UpstreamStatus {
+                code: None,
+                retry_after: None,
+            },
+        );
         assert_eq!(out.disposition, Disposition::ClientFault);
         assert_eq!(out.outcome, Outcome::RecordNothing);
     }
@@ -220,12 +279,24 @@ mod tests {
         let unit: BreakerUnit = BreakerUnit::new();
         unit.set_error_map(DestinationId::new(7), err_map(&[("1113", "billing")]));
 
-        let out = unit.classify(DestinationId::new(7), UpstreamStatus { code: Some(1113), retry_after: None });
+        let out = unit.classify(
+            DestinationId::new(7),
+            UpstreamStatus {
+                code: Some(1113),
+                retry_after: None,
+            },
+        );
         assert_eq!(out.disposition, Disposition::HardDown);
 
         // A different destination with no declared map falls back to plain HTTP-status
         // classification for the SAME numeric code.
-        let out2 = unit.classify(DestinationId::new(8), UpstreamStatus { code: Some(1113), retry_after: None });
+        let out2 = unit.classify(
+            DestinationId::new(8),
+            UpstreamStatus {
+                code: Some(1113),
+                retry_after: None,
+            },
+        );
         assert_eq!(out2.disposition, Disposition::ClientFault);
     }
 
@@ -237,11 +308,32 @@ mod tests {
         let _ = unit.try_admit("pool-a", DestinationId::new(7), 0);
         let _ = unit.try_admit("pool-b", DestinationId::new(7), 0);
 
-        let out = unit.classify(DestinationId::new(7), UpstreamStatus { code: Some(1113), retry_after: None });
-        let tripped = unit.observe("pool-a", DestinationId::new(7), out.outcome, &BreakerCfg::default(), 0);
-        assert!(tripped, "the first hard-down observation must be a fresh trip");
+        let out = unit.classify(
+            DestinationId::new(7),
+            UpstreamStatus {
+                code: Some(1113),
+                retry_after: None,
+            },
+        );
+        let tripped = unit.observe(
+            "pool-a",
+            DestinationId::new(7),
+            out.outcome,
+            &BreakerCfg::default(),
+            0,
+        );
+        assert!(
+            tripped,
+            "the first hard-down observation must be a fresh trip"
+        );
 
-        assert_eq!(unit.state("pool-a", DestinationId::new(7), 100), crate::LaneState::Suppressed { until: 1800 });
-        assert_eq!(unit.state("pool-b", DestinationId::new(7), 100), crate::LaneState::Suppressed { until: 1800 });
+        assert_eq!(
+            unit.state("pool-a", DestinationId::new(7), 100),
+            crate::LaneState::Suppressed { until: 1800 }
+        );
+        assert_eq!(
+            unit.state("pool-b", DestinationId::new(7), 100),
+            crate::LaneState::Suppressed { until: 1800 }
+        );
     }
 }

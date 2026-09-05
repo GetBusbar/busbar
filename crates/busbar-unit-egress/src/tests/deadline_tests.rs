@@ -13,10 +13,11 @@
 use super::harness::Script;
 use super::{member, Node};
 use crate::ports::disposition;
+use busbar_contract::DestinationId;
 
 fn one_lane_pool(stream: bool) -> Node {
     let mut node = Node::with_lanes(&["a"]);
-    node.pool("primary", vec![member(0, "a")]);
+    node.pool("primary", vec![member(DestinationId::new(0), "a")]);
     node.wants_stream = stream;
     node
 }
@@ -57,8 +58,14 @@ fn a_spent_deadline_refuses_before_a_streaming_attempt_too() {
 fn a_deadline_that_expires_between_hops_stops_the_walk() {
     // With budget in hand the sibling serves.
     let mut node = Node::with_lanes(&["a", "b"]);
-    node.pool("primary", vec![member(0, "a"), member(1, "b")]);
-    node.preference = Some(vec![0, 1]);
+    node.pool(
+        "primary",
+        vec![
+            member(DestinationId::new(0), "a"),
+            member(DestinationId::new(1), "b"),
+        ],
+    );
+    node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
     node.timeout_secs = 1;
     node.transport.script(
         "a",
@@ -70,8 +77,14 @@ fn a_deadline_that_expires_between_hops_stops_the_walk() {
 
     // With the budget spent between the hops the walk stops instead, and says so.
     let mut node = Node::with_lanes(&["a", "b"]);
-    node.pool("primary", vec![member(0, "a"), member(1, "b")]);
-    node.preference = Some(vec![0, 1]);
+    node.pool(
+        "primary",
+        vec![
+            member(DestinationId::new(0), "a"),
+            member(DestinationId::new(1), "b"),
+        ],
+    );
+    node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
     node.timeout_secs = 1;
     let mut ctx = node.request_ctx();
     node.clock.advance_secs(2);
@@ -87,20 +100,29 @@ fn a_deadline_that_expires_between_hops_stops_the_walk() {
 #[test]
 fn an_upstream_that_says_nothing_is_cut_by_the_per_attempt_cap() {
     let mut node = Node::with_lanes(&["a", "b"]);
-    let mut members = vec![member(0, "a"), member(1, "b")];
+    let mut members = vec![
+        member(DestinationId::new(0), "a"),
+        member(DestinationId::new(1), "b"),
+    ];
     members[0].attempt_timeout_ms = Some(500);
     node.pool("primary", members);
-    node.preference = Some(vec![0, 1]);
+    node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
     node.transport.script("a", Script::Hang);
     node.transport
         .script("b", Script::Frames(super::harness::ok_frames()));
 
     let outcome = node.route("primary");
-    assert!(matches!(&outcome, crate::wire::RouteOutcome::Delivered(d) if d.destination == 1));
+    assert!(
+        matches!(&outcome, crate::wire::RouteOutcome::Delivered(d) if d.destination == DestinationId::new(1))
+    );
     let failures = node.telemetry.failures.lock().unwrap();
     assert_eq!(
         failures.as_slice(),
-        &[("primary".to_string(), 0, disposition::ATTEMPT_TIMEOUT)],
+        &[(
+            "primary".to_string(),
+            DestinationId::new(0),
+            disposition::ATTEMPT_TIMEOUT
+        )],
         "a hang is counted under its own label, not lumped in with a refusal"
     );
     assert!(
@@ -109,7 +131,7 @@ fn an_upstream_that_says_nothing_is_cut_by_the_per_attempt_cap() {
             .lock()
             .unwrap()
             .iter()
-            .any(|r| r.destination == 0),
+            .any(|r| r.destination == DestinationId::new(0)),
         "the attempt that hung is explicitly abandoned"
     );
 }
@@ -117,7 +139,7 @@ fn an_upstream_that_says_nothing_is_cut_by_the_per_attempt_cap() {
 #[test]
 fn an_upstream_that_says_nothing_and_has_no_cap_is_cut_by_the_walk_budget() {
     let mut node = Node::with_lanes(&["a"]);
-    node.pool("primary", vec![member(0, "a")]);
+    node.pool("primary", vec![member(DestinationId::new(0), "a")]);
     node.transport.script("a", Script::Hang);
 
     let outcome = node.route("primary");

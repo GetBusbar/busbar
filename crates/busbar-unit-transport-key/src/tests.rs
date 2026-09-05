@@ -29,7 +29,7 @@ fn gen_self_signed() -> (String, String) {
 }
 
 fn gen_ca_and_leaf(cn_sans: Vec<String>) -> (String, String, String) {
-    use rcgen::{CertificateParams, Issuer, IsCa, KeyPair};
+    use rcgen::{CertificateParams, IsCa, Issuer, KeyPair};
     let ca_kp = KeyPair::generate().unwrap();
     let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
     ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -69,9 +69,12 @@ fn resolves_and_builds_server_only_config_for_valid_pair() {
     install_crypto_provider();
     let (cert_pem, key_pem) = gen_self_signed();
     let source = MapSource(
-        [("cert", cert_pem.into_bytes()), ("key", key_pem.into_bytes())]
-            .into_iter()
-            .collect(),
+        [
+            ("cert", cert_pem.into_bytes()),
+            ("key", key_pem.into_bytes()),
+        ]
+        .into_iter()
+        .collect(),
     );
     let journal = RecordingJournal::default();
 

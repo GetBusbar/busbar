@@ -23,8 +23,8 @@
 //! truncated there. A torn tail is normal. A torn record in the MIDDLE is not, and says so.
 
 use busbar_caps::{
-    Canary, Hold, LedgerToken, MeterClassId, Outcome, Posted, PrincipalId, ReasonCode, RecoveryToken,
-    StepName, UnitKey, Usage, UsageLine, UsageToken,
+    Canary, Hold, LedgerToken, MeterClassId, Outcome, Posted, PrincipalId, ReasonCode,
+    RecoveryToken, StepName, UnitKey, Usage, UsageLine, UsageToken,
 };
 
 use crate::slice::Epoch;

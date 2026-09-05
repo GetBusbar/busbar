@@ -178,13 +178,7 @@ macro_rules! step {
 
 impl Units for TestUnits {
     fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
-        step!(
-            self,
-            token,
-            Arrival,
-            StepName::Arrival,
-            arrival_record()
-        )
+        step!(self, token, Arrival, StepName::Arrival, arrival_record())
     }
 
     fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {

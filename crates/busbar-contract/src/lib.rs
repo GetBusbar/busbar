@@ -28,8 +28,7 @@ pub use bounded::{
 };
 pub use dest::{
     AuthDecoration, CandidateIdx, CandidateSet, ClientMode, DestinationFacts, DestinationId,
-    EgressBody, Leg,
-    OnEmpty, Permutation, RoutePlan, SecretOnce, SecretSlot, TransportKeyHandle,
+    EgressBody, Leg, OnEmpty, Permutation, RoutePlan, SecretOnce, SecretSlot, TransportKeyHandle,
     VerifiedDestination, VetoCode,
 };
 pub use grammar::{

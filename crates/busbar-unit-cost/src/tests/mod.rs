@@ -69,7 +69,12 @@ pub(crate) fn lines(entries: &[(&'static str, u64)]) -> Vec<UsageLine> {
 
 /// A card over one lane, priced in micro-units per token for the two reserved classes the older
 /// release's tests used.
-pub(crate) fn card(lane: &'static str, input_micro: f64, output_micro: f64, fee_cents: i64) -> RateCard {
+pub(crate) fn card(
+    lane: &'static str,
+    input_micro: f64,
+    output_micro: f64,
+    fee_cents: i64,
+) -> RateCard {
     RateCard::from_micro_rates(
         RateCardVersion::new("v1"),
         [
