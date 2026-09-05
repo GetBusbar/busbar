@@ -1024,6 +1024,35 @@ def documented_cells() -> list[dict]:
                          "(ops-observability §2.3) — the golden names the env-set file, pinning the "
                          "code's actual precedence as the parity target."})
     return cells
+def hazard_cells() -> list[dict]:
+    """`hazard`: what a 1.6.0 binary must NOT do to a config that names no data directory and no
+    peers — which is every config a 1.5.5 operator ever wrote.
+
+    The durable-ledger design says an unset data directory means no probe and no files: the journal
+    is memory-buffered, the keyset is sealed in the store, the WAL and the local keyset exist ONLY
+    when a data directory is written, and the record-rate / keyset-reference warnings fire only when
+    a data directory or peers is written. Every one of those is an ABSENCE, and an absence is the
+    one thing a passing unit test proves least: the code path that would create the file simply is
+    not reached, so nothing is asserted about it.
+
+    So these are RECORDED, not asserted. Both cells run the same script — boot on such a config,
+    send ONE chat request, shut down cleanly — and report state the binary could only have changed
+    by doing something the config never asked for. Recorded on the published 1.5.5 FIRST: that run
+    is what defines the exact file set, so the cell says "no MORE and no FEWER files than 1.5.5
+    leaves", not "the file set someone wrote down once"."""
+    F = "hazard"
+    return [
+        {"id": "hazard|no-data-dir|files", "plane": "core", "family": F, "driver": "script",
+         "script": {"name": "hazard-no-data-dir.sh", "args": ["files"]}, "outcome": "ok", "weight": 10,
+         "why": "boot on a config with no data directory and no peers, serve one chat request, shut "
+                "down: the process's working directory and the config's OWN directory must hold "
+                "exactly the files 1.5.5 leaves — no WAL, no keyset, no journal, no probe file"},
+        {"id": "hazard|no-data-dir|logs", "plane": "core", "family": F, "driver": "script",
+         "script": {"name": "hazard-no-data-dir.sh", "args": ["logs"]}, "outcome": "ok", "weight": 10,
+         "why": "the same boot's whole log carries NO line naming a data directory, a WAL, peers or "
+                "a fleet: the golden is an empty line set, so any such line on a later binary is a "
+                "diff rather than a judgement call about whether the wording is alarming"},
+    ]
 
 
 def main() -> int:
@@ -1035,6 +1064,7 @@ def main() -> int:
                    + concurrency_cells() + queue_cells() + cooldown_cells()
                    + crosscut_traps_cells() + auth_lifecycle_cells() + teller_cells() + neutrality_cells()
                    + documented_cells(),
+                   + hazard_cells(),
                    key=lambda c: c["id"])
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "cell ids must be unique"
