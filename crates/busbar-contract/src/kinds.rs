@@ -11,9 +11,9 @@ use crate::dest::{
     AuthDecoration, CandidateSet, EgressBody, Permutation, VerifiedDestination, VetoCode,
 };
 use crate::grammar::ArrivalLocation;
-use crate::ids::{LaneId, PrincipalId, RecordSchemaId, SchemeAlt, SessionId, StreamId};
+use crate::ids::{LaneId, PrincipalId, RecordSchemaId, SchemeAlt, SessionId};
 use crate::plugin::Plugin;
-use crate::unit::{Clock, ConfigView, Ctx, Step, Unit};
+use crate::unit::{Clock, ConfigView, Step, Unit};
 use crate::wire::{ArrivalRecord, Frame};
 use core::fmt;
 
@@ -118,6 +118,7 @@ impl fmt::Debug for KeyMaterial {
 ///
 /// The kernel has already copied the span out of the read cursor and masked what remains, so the
 /// bytes here are the credential and the wire no longer holds it.
+///
 /// Its `Debug` says where the credential arrived and how long it was, never what it was — the same
 /// shape [`SecretValue`] uses, for the same reason. Every scheme across the ABI is handed one of
 /// these, so the code that might format it is code this tree cannot read.
@@ -668,20 +669,6 @@ pub struct KernelCounts {
     pub elapsed_nanos: u128,
 }
 
-/// The facts a hook or a plane may attach to one stream of a session.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct StreamFacts<'u> {
-    /// Which stream.
-    pub stream: Option<StreamId>,
-    /// The facts.
-    pub facts: Facts<'u>,
-}
-
-/// A bounded list of envelope fields, for the kinds that build one.
+/// A bounded list of envelope fields: the one spelling of the bound, for every shape that carries
+/// one.
 pub type EnvelopeFields<'u> = BoundedVec<crate::wire::EnvelopeField<'u>, MAX_KEYS>;
-
-/// Everything the kernel hands a plugin call that is not the call's own arguments.
-///
-/// Re-exported here so a plugin crate can name the context without reaching for the module it
-/// lives in.
-pub type CallCtx<'u> = Ctx<'u>;
