@@ -922,7 +922,7 @@ pub struct IrUsage {
 /// It exists because the totals were already right and the ATTRIBUTION was not, and attribution is
 /// what a customer reconciles a bill against.
 ///
-/// THE ONE EXCEPTION (1.6.0 M1, §8 of `billing-unified.md`): the Cohere `billed_*` trio
+/// THE ONE EXCEPTION (1.6.0 M1, `billing-unified.md`): the Cohere `billed_*` trio
 /// (`billed_input_tokens`/`billed_output_tokens`/`billed_classifications`) is NOT a slice of the raw
 /// totals — it is Cohere's SEPARATELY-METERED billed bucket, the counts an operator is actually
 /// invoiced on. [`IrUsage::to_token_usage`] lets `billed_input`/`billed_output` WIN over the raw
@@ -1037,7 +1037,7 @@ impl IrUsage {
     /// with `IrUsage`, so it follows it to busbar-llm at the cutover, where it becomes an
     /// `impl From<&IrUsage> for busbar_substrate_values::billing::TokenUsage`.
     ///
-    /// COHERE `billed_units` (1.6.0 M1, §8 of `billing-unified.md`): Cohere reports usage TWICE — a
+    /// COHERE `billed_units` (1.6.0 M1, `billing-unified.md`): Cohere reports usage TWICE — a
     /// raw `tokens` bucket and a separately-metered `billed_units` bucket, and it is the BILLED
     /// counts an operator is invoiced on. So `billed_input_tokens`/`billed_output_tokens`, when
     /// present, WIN over the raw totals for the reserved input/output tiers — a DELIBERATE,

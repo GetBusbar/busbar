@@ -319,7 +319,7 @@ fn readable_blocks_are_not_opaque() {
     }
 }
 
-/// COHERE `billed_units` (1.6.0 M1, `billing-unified.md` §8): when Cohere reports a separately-metered billed bucket,
+/// COHERE `billed_units` (1.6.0 M1, `billing-unified.md`): when Cohere reports a separately-metered billed bucket,
 /// `to_token_usage` must ledger the BILLED input/output, NOT the raw `tokens` totals — the reserved
 /// tiers (via `engine::usage::tier_tokens`) follow. This is the deliberate per-dialect ledgered-count
 /// change; every dialect that leaves `billed_*` as `None` still projects the raw totals unchanged.

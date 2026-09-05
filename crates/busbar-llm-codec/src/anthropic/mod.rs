@@ -4,7 +4,7 @@
 //! The Anthropic (Messages API) dialect — one module of the `busbar-llm` protocol crate.
 //!
 //! THE FIRST EXTRACTED PROTOCOL, and the control experiment for the plugin seam
-//! (`design/1.6.0-llm-extraction-plan.md` §3.2): the five files here are exactly the per-dialect
+//! (`design/1.6.0-llm-extraction-plan.md`): the five files here are exactly the per-dialect
 //! template `one-core-mcp-a2a-as-protocols.md` bars — this file (the declaration), `reader.rs`
 //! (wire → IR), `writer.rs` (IR → wire), `handler.rs` (which operations it serves), and `tests/`
 //! (its own tests, nobody else's). Everything it consumes from the engine comes through

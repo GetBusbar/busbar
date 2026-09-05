@@ -234,7 +234,7 @@ fn two_declarations_of_one_name_are_refused() {
 /// table for six things rather than a seam.
 ///
 /// It lands on an EXISTING `Operation` shape, and that is the design's prediction rather than a
-/// limitation of the fixture: `design/protocol-plugin-abi.md` §4.2 tests seven candidate protocols
+/// limitation of the fixture: `design/protocol-plugin-abi.md` tests seven candidate protocols
 /// and none of them needs a new variant, because the six are SHAPES. Telex registering interest in
 /// a named target is the `Subscribe` shape whoever sends it.
 struct TelexHandler;
