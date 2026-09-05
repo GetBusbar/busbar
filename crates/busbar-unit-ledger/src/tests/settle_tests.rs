@@ -155,3 +155,91 @@ fn a_legacy_head_with_balances_opens_one_entry_per_bucket_at_the_named_card() {
     assert_eq!(opened[1].amount, 12_345);
     assert!(opened.iter().all(|o| o.rate_card_version == 3));
 }
+
+#[test]
+fn an_underspent_reservation_reports_the_residual_it_releases_and_no_overdraft() {
+    let mut ledger = Ledger::new();
+    let token = ledger_token();
+    let k = key("b");
+    ledger.record_draw(&k, 1, 1_000);
+    ledger.record_hold_opened(&k, 1, 600);
+    ledger.record_slice_spent(&k, 1, 600);
+
+    let settlement =
+        ledger.settle_recording(&k, 1, hold("alice", 600), &usage("tokens", 450), &token);
+    assert_eq!(settlement.released, 150);
+    assert!(
+        settlement.overdraft.is_none(),
+        "a unit inside its reservation leaves no note"
+    );
+    assert_eq!(settlement.posted.settled(), 450);
+}
+
+#[test]
+fn a_unit_that_ran_past_everything_reservable_leaves_a_note_naming_who_and_how_much() {
+    let mut ledger = Ledger::new();
+    let token = ledger_token();
+    let k = key("b");
+    ledger.record_hold_opened(&k, 1, 100);
+
+    // The hold ran past its reservation with nothing left to grow it into: the spend lands in full
+    // and the excess is carried.
+    let mut h = hold("alice", 100);
+    let spend = h.spend(400, 0);
+    assert_eq!(spend.overdraft, 300);
+
+    let settlement = ledger.settle_recording(&k, 1, h, &usage("tokens", 400), &token);
+    let note = settlement
+        .overdraft
+        .expect("running past everything reservable is what a note is for");
+    assert_eq!(note.principal, "alice");
+    assert_eq!(note.key, k);
+    assert_eq!(note.window, 1);
+    assert_eq!(note.amount, 300);
+    assert_eq!(settlement.released, 0, "nothing was reserved and not used");
+
+    let figures = ledger.book().get(&k, 1);
+    assert_eq!(figures.settled, 400);
+    assert_eq!(figures.overdraft_carried_out, 300);
+    assert_eq!(figures.open_holds, 0);
+}
+
+#[test]
+fn a_reservation_that_grew_to_cover_the_spend_leaves_no_note_at_all() {
+    let mut ledger = Ledger::new();
+    let token = ledger_token();
+    let k = key("b");
+    let mut h = hold("alice", 100);
+    // The slice had room; the reservation grew rather than the unit carrying anything.
+    assert_eq!(h.spend(400, 1_000).topped_up, 300);
+    ledger.record_hold_opened(&k, 1, 400);
+
+    let settlement = ledger.settle_recording(&k, 1, h, &usage("tokens", 400), &token);
+    assert!(settlement.overdraft.is_none());
+    assert_eq!(ledger.book().get(&k, 1).overdraft_carried_out, 0);
+    assert_eq!(ledger.book().get(&k, 1).open_holds, 0);
+}
+
+#[test]
+fn posting_an_already_built_settlement_moves_the_same_books_as_settling_a_hold() {
+    // The exit path owns the hold and consumes it there, so the root can only hand over a posting.
+    // Both doors have to leave the books in the same place, or a unit's figures would depend on
+    // which one it came through.
+    let token = ledger_token();
+    let k = key("b");
+
+    let mut through_hold = Ledger::new();
+    through_hold.record_hold_opened(&k, 1, 600);
+    through_hold.settle(&k, 1, hold("alice", 600), &usage("tokens", 450), &token);
+
+    let mut through_posting = Ledger::new();
+    through_posting.record_hold_opened(&k, 1, 600);
+    let posted = busbar_caps::Posted::settle(hold("alice", 600), &usage("tokens", 450), &token);
+    let settlement = through_posting.post(&k, 1, posted);
+    assert_eq!(settlement.released, 150);
+
+    assert_eq!(
+        through_hold.book().get(&k, 1),
+        through_posting.book().get(&k, 1)
+    );
+}
