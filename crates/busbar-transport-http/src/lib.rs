@@ -153,6 +153,8 @@ enum Inner {
         /// calls as the plane chose to write it in, and the exchange runs when the message is
         /// whole — never on a prefix of one.
         pending: AsyncMutex<Vec<u8>>,
+        /// The parsed header block of that pending message, once its terminator has arrived.
+        head: AsyncMutex<Option<CachedHead>>,
     },
 }
 
@@ -409,6 +411,7 @@ impl Transport for HttpTransport {
                 resp_tx: Mutex::new(Some(tx)),
                 resp_rx: AsyncMutex::new(rx),
                 pending: AsyncMutex::new(Vec::new()),
+                head: AsyncMutex::new(None),
             });
             self.conns.lock().expect("poisoned").insert(id, inner);
             Ok(Conn::new(Arc::new(HttpConnHandle {
@@ -489,23 +492,28 @@ impl Transport for HttpTransport {
                     client,
                     resp_tx,
                     pending,
+                    head,
                     ..
                 } => {
                     let queued = bytes.len();
                     let mut buffered = pending.lock().await;
+                    let mut cached = head.lock().await;
                     buffered.extend_from_slice(bytes.as_slice());
                     if buffered.len() > self.max_body_bytes {
                         // The operator's cap, applied to the accumulator itself: an unsent message
                         // that outgrows what this gateway accepts is refused here rather than held.
                         buffered.clear();
+                        *cached = None;
                         return Err(TransportError::Framing);
                     }
-                    let Some(raw) = complete_message(&buffered, self.max_body_bytes)? else {
+                    let Some(raw) = complete_message(&buffered, &mut cached, self.max_body_bytes)?
+                    else {
                         // A prefix of a message. Nothing goes on the wire until the declared length
                         // or the terminal chunk says the message is whole.
                         return Ok(queued);
                     };
                     buffered.clear();
+                    drop(cached);
                     drop(buffered);
                     // From here to the send, every await is a point the caller can drop us at.
                     let mut guard = ExchangeGuard {
@@ -737,42 +745,69 @@ impl Drop for ExchangeGuard<'_> {
 /// than a framing of it.
 fn complete_message(
     buffered: &[u8],
+    cache: &mut Option<CachedHead>,
     max_body_bytes: usize,
 ) -> Result<Option<raw::RawMessage>, TransportError> {
-    let Some(header_end) = find_header_end(buffered) else {
-        return Ok(None);
-    };
-    let mut message = raw::parse_message(&buffered[..header_end]).ok_or(TransportError::Framing)?;
-    let rest = &buffered[header_end..];
-
-    if raw::has_transfer_encoding(&message.headers) && !raw::is_chunked(&message.headers) {
-        // A declared coding this transport cannot frame. Falling through to `Content-Length` would
-        // be answering a question the sender did not ask.
-        return Err(TransportError::Framing);
+    if cache.is_none() {
+        let Some(header_end) = find_header_end(buffered) else {
+            return Ok(None);
+        };
+        let message = raw::parse_message(&buffered[..header_end]).ok_or(TransportError::Framing)?;
+        if raw::has_transfer_encoding(&message.headers) && !raw::is_chunked(&message.headers) {
+            // A declared coding this transport cannot frame. Falling through to `Content-Length`
+            // would be answering a question the sender did not ask.
+            return Err(TransportError::Framing);
+        }
+        *cache = Some(CachedHead {
+            end: header_end,
+            start: message.start,
+            headers: message.headers,
+        });
     }
-    if raw::is_chunked(&message.headers) {
+    let head = cache.as_ref().expect("set just above");
+    let rest = &buffered[head.end..];
+
+    let (body, trailers) = if raw::is_chunked(&head.headers) {
         let mut decoder = raw::ChunkedDecoder::default();
         decoder.feed(rest).map_err(|_| TransportError::Framing)?;
         if !decoder.is_done() {
             return Ok(None);
         }
         let (chunks, trailers) = decoder.take();
-        message.body = chunks.concat();
-        // A trailer is a header that arrived late; it goes where every other header went, so
-        // nothing downstream has to know which side of the body it was written on.
-        message.headers.extend(trailers);
-        return Ok(Some(message));
-    }
+        (chunks.concat(), trailers)
+    } else {
+        let declared = raw::content_length(&head.headers).unwrap_or(0);
+        if declared > max_body_bytes {
+            return Err(TransportError::Framing);
+        }
+        if rest.len() < declared {
+            return Ok(None);
+        }
+        (rest[..declared].to_vec(), Vec::new())
+    };
 
-    let declared = raw::content_length(&message.headers).unwrap_or(0);
-    if declared > max_body_bytes {
-        return Err(TransportError::Framing);
-    }
-    if rest.len() < declared {
-        return Ok(None);
-    }
-    message.body = rest[..declared].to_vec();
-    Ok(Some(message))
+    // Whole: the head is spent with the message it belonged to, so the next one parses its own.
+    let mut head = cache.take().expect("set just above");
+    // A trailer is a header that arrived late; it goes where every other header went, so
+    // nothing downstream has to know which side of the body it was written on.
+    head.headers.extend(trailers);
+    Ok(Some(raw::RawMessage {
+        start: head.start,
+        headers: head.headers,
+        body,
+    }))
+}
+
+/// The parsed header block of the message `write` is still accumulating.
+///
+/// `write` asks whether the message is whole on EVERY chunk, and the header prefix does not change
+/// between those asks. Parsing it each time allocates a fresh vector and two strings per header and
+/// throws them away — the same waste the chunked decoder was written incrementally to avoid. Held
+/// beside the pending bytes, and taken when the message completes so it can never outlive it.
+struct CachedHead {
+    end: usize,
+    start: raw::RawStartLine,
+    headers: Vec<(String, String)>,
 }
 
 /// Read one HTTP/1.1 request off an ingress connection.

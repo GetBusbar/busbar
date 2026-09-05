@@ -48,12 +48,20 @@ pub struct RawMessage {
     pub body: Vec<u8>,
 }
 
+/// How many times a header block has been parsed, for the cell that pins the egress side to one
+/// parse per message rather than one per `write` call.
+#[cfg(test)]
+pub(crate) static PARSE_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Split `bytes` into a start line, headers and body. `bytes` may end exactly at the header
 /// terminator (body empty) or carry the body already appended. Returns `None` on anything that
 /// does not look like an HTTP/1.x message (no CRLF-terminated start line, a header line with no
 /// colon, or whitespace between a field name and its colon — which the wire forbids outright).
 #[must_use]
 pub fn parse_message(bytes: &[u8]) -> Option<RawMessage> {
+    #[cfg(test)]
+    PARSE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let text_end = bytes
         .windows(4)
         .position(|w| w == b"\r\n\r\n")

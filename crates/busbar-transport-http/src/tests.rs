@@ -784,6 +784,37 @@ fn the_header_scan_costs_one_pass_over_the_header_not_one_per_read() {
     );
 }
 
+/// The egress header block is parsed once per message, not once per `write` call.
+///
+/// `write` accumulates, and it asks "is this message whole yet?" on every chunk. Answering that
+/// used to re-run the whole header parse over the same unchanged prefix each time — a fresh Vec and
+/// two Strings per header, allocated and dropped, for every chunk of the body. Same standard the
+/// crate holds its chunked decoding to, now applied here.
+#[test]
+fn the_egress_header_block_is_parsed_once_across_many_write_calls() {
+    let mut buffered = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n".to_vec();
+    let mut cache = None;
+    raw::PARSE_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
+
+    for i in 0..100 {
+        buffered.push(b'a');
+        let done = complete_message(&buffered, &mut cache, usize::MAX).unwrap();
+        assert_eq!(
+            done.is_some(),
+            i == 99,
+            "the exchange runs at the declared length and not one call before it"
+        );
+    }
+    assert_eq!(
+        raw::PARSE_CALLS.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "one header block, one parse, however many calls the body arrived in"
+    );
+
+    // And the cache is spent with the message: the next one parses its own headers.
+    assert!(cache.is_none(), "a completed message leaves no stale head");
+}
+
 #[test]
 fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
     fn honest(frame: &Frame) -> bool {
