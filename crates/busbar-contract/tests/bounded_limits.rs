@@ -139,6 +139,61 @@ fn a_bounded_list_refuses_past_its_capacity() {
     assert_eq!(legs.len(), MAX_LEGS);
 }
 
+/// A unit refuses the leg reply past its ceiling and hands it back rather than dropping it.
+///
+/// The hand-back is the point: a refused reply is recoverable — the caller still holds the facts it
+/// read off the wire and can decide what to do with them — where a dropped one would be evidence
+/// the unit silently lost. The other four ceilings in this file are asserted this way; this one was
+/// asserted only as a number.
+#[test]
+fn a_unit_refuses_the_leg_reply_past_its_ceiling_and_hands_it_back() {
+    struct Seal;
+    impl busbar_contract::plugin::KernelSeal for Seal {
+        fn seal_origin(&self) -> &'static str {
+            "busbar-contract::tests"
+        }
+    }
+
+    let mut unit = busbar_contract::unit::Unit::new(
+        &Seal,
+        busbar_contract::UnitKey::new(1),
+        busbar_contract::unit::Origin::Client,
+        None,
+        None,
+        busbar_contract::wire::Direction::Inbound,
+        None,
+        busbar_contract::ids::OpClassId::new("op"),
+        busbar_contract::bounded::Ir::new(b"{}", &[]),
+        Facts::new(),
+        None,
+    );
+
+    let reply = |leg: u8| busbar_contract::unit::LegResult {
+        leg,
+        body: None,
+        facts: Facts::new(),
+    };
+
+    for leg in 0..MAX_LEG_REPLIES {
+        unit.push_leg_result(&Seal, reply(u8::try_from(leg).expect("small")))
+            .expect("under the ceiling");
+    }
+    assert_eq!(unit.leg_results().len(), MAX_LEG_REPLIES);
+
+    let handed_back = unit
+        .push_leg_result(&Seal, reply(99))
+        .expect_err("the unit accepted a reply past its ceiling");
+    assert_eq!(
+        handed_back.leg, 99,
+        "the reply handed back is the one passed in, not a default"
+    );
+    assert_eq!(
+        unit.leg_results().len(),
+        MAX_LEG_REPLIES,
+        "the replies it already held are untouched"
+    );
+}
+
 /// A journal record refuses past the record ceiling and hands back the length it was given.
 #[test]
 fn a_journal_record_refuses_past_the_record_ceiling() {
