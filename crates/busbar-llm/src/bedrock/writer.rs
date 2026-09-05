@@ -1225,18 +1225,22 @@ impl ProtocolWriter for BedrockWriter {
 
     fn inject_response_metrics(&self, value: &mut serde_json::Value, elapsed_ms: Option<u64>) {
         // A native AWS Bedrock Converse (non-stream) response ALWAYS populates `metrics.latencyMs`
-        // (the SDK surfaces it via `ConverseOutput::metrics().latency_ms()`). The bedrock writer's
-        // `write_response` deliberately omits it (timing is unknown at that layer); inject the real
-        // request elapsed wall-clock here, and OMIT rather than fabricate a tell-tale `0` if timing
-        // is unavailable — the same policy the streaming path applies on the `metadata` frame.
-        if let (Some(ms), Some(obj)) = (elapsed_ms, value.as_object_mut()) {
-            let mut metrics = serde_json::Map::new();
-            metrics.insert(FIELD_LATENCY_MS.to_string(), serde_json::Value::from(ms));
-            obj.insert(
-                FIELD_METRICS.to_string(),
-                serde_json::Value::Object(metrics),
-            );
-        }
+        // (the SDK surfaces it via `ConverseOutput::metrics().latency_ms()`, and the service model
+        // marks the member required). The bedrock writer's `write_response` deliberately omits it
+        // (timing is unknown at that layer); inject the real request elapsed wall-clock here. A
+        // body that already carries a well-formed `metrics` keeps it, and the member is emitted
+        // even when timing is unavailable — the same policy as the streaming `metadata` frame.
+        super::ensure_metrics(value, elapsed_ms);
+    }
+
+    fn same_protocol_buffered_response_translator(
+        &self,
+    ) -> Option<Box<dyn busbar_substrate::proto::StreamTranslator>> {
+        // A Bedrock -> Bedrock non-stream response used to relay verbatim, so a Converse body whose
+        // upstream omitted `metrics` reached the client without its required member (the only
+        // Converse response busbar served that way; every cross-protocol lane injects it above).
+        // The translator buffers the body and completes it at end-of-stream.
+        Some(Box::new(super::BedrockConverseBodyTranslator::new()))
     }
 
     fn ingress_response_request_id(

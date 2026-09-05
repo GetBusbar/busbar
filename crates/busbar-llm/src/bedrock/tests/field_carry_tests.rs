@@ -726,12 +726,22 @@ fn bedrock_carry_response_metrics_latency_ms() {
         Some(137),
         "metrics.latencyMs must be emitted from the measured elapsed time; got {value}"
     );
-    // And the never-fabricate-a-tell rule: absent timing omits the field rather than emitting 0.
+    // `metrics` is a REQUIRED member of the Converse response: with no timing at all it is still
+    // emitted (as 0) rather than dropped, since a missing required member is the larger deviation.
     let mut value2 = serde_json::json!({"output": {}});
     writer.inject_response_metrics(&mut value2, None);
-    assert!(
-        value2.pointer("/metrics/latencyMs").is_none(),
-        "metrics.latencyMs must be OMITTED (not fabricated as 0) when timing is unavailable; got {value2}"
+    assert_eq!(
+        value2.pointer("/metrics/latencyMs").and_then(|v| v.as_u64()),
+        Some(0),
+        "metrics.latencyMs must still be present when timing is unavailable; got {value2}"
+    );
+    // An upstream-supplied `metrics` is passed through, never overwritten by busbar's clock.
+    let mut value3 = serde_json::json!({"output": {}, "metrics": {"latencyMs": 42}});
+    writer.inject_response_metrics(&mut value3, Some(137));
+    assert_eq!(
+        value3.pointer("/metrics/latencyMs").and_then(|v| v.as_u64()),
+        Some(42),
+        "an upstream metrics.latencyMs must survive injection untouched; got {value3}"
     );
 }
 

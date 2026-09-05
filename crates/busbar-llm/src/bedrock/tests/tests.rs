@@ -6229,3 +6229,223 @@ fn bedrock_orphan_content_block_delta_before_start_is_dropped() {
         "a toolUse delta before its block opened must not emit an orphan BlockDelta: {evs2:?}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Same-protocol non-stream Converse body: the required `metrics.latencyMs`
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The mock-shaped Converse body the same-protocol relay used to forward untouched.
+const CONVERSE_BODY_NO_METRICS: &str = r#"{"output":{"message":{"role":"assistant","content":[{"text":"oracle-marker"}]}},"stopReason":"end_turn","usage":{"inputTokens":11,"outputTokens":7,"totalTokens":18}}"#;
+
+fn same_proto_translator(cap: usize) -> BedrockConverseBodyTranslator {
+    BedrockConverseBodyTranslator::with_cap(cap)
+}
+
+#[test]
+fn complete_converse_body_splices_metrics_and_preserves_every_other_byte() {
+    // Deliberate non-canonical spacing so a re-serialization would be detectable.
+    let body = b"{ \"stopReason\" : \"end_turn\",\n  \"usage\": {\"inputTokens\":1,\"outputTokens\":2,\"totalTokens\":3} }\n";
+    let parsed: serde_json::Value = serde_json::from_slice(body).unwrap();
+    let out = complete_converse_body(body, &parsed, Some(57)).expect("member added");
+    let text = String::from_utf8(out.clone()).unwrap();
+    assert!(
+        text.starts_with("{ \"stopReason\" : \"end_turn\",\n  \"usage\""),
+        "the upstream bytes ahead of the splice must be untouched: {text}"
+    );
+    assert!(text.ends_with("}\n"), "trailing bytes must survive: {text:?}");
+    let reparsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        reparsed.pointer("/metrics/latencyMs").and_then(|v| v.as_u64()),
+        Some(57)
+    );
+    assert_eq!(reparsed["stopReason"], "end_turn");
+    assert_eq!(reparsed["usage"]["totalTokens"], 3);
+}
+
+#[test]
+fn complete_converse_body_passes_an_upstream_metrics_through_untouched() {
+    let body = br#"{"stopReason":"end_turn","metrics":{"latencyMs":905}}"#;
+    let parsed: serde_json::Value = serde_json::from_slice(body).unwrap();
+    assert!(
+        complete_converse_body(body, &parsed, Some(3)).is_none(),
+        "a body that already carries metrics.latencyMs is relayed as-is"
+    );
+}
+
+#[test]
+fn complete_converse_body_replaces_a_malformed_metrics_instead_of_duplicating_the_key() {
+    let body = br#"{"stopReason":"end_turn","metrics":{}}"#;
+    let parsed: serde_json::Value = serde_json::from_slice(body).unwrap();
+    let out = complete_converse_body(body, &parsed, Some(9)).expect("replaced");
+    let reparsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        reparsed.pointer("/metrics/latencyMs").and_then(|v| v.as_u64()),
+        Some(9)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out).matches("\"metrics\"").count(),
+        1,
+        "exactly one metrics key: {}",
+        String::from_utf8_lossy(&out)
+    );
+}
+
+#[test]
+fn complete_converse_body_handles_an_empty_object_and_missing_timing() {
+    let body = b"{}";
+    let parsed: serde_json::Value = serde_json::from_slice(body).unwrap();
+    let out = complete_converse_body(body, &parsed, None).expect("member added");
+    assert_eq!(out, br#"{"metrics":{"latencyMs":0}}"#);
+    // A JSON array is not a Converse body; nothing to complete.
+    let arr = b"[1]";
+    let parsed: serde_json::Value = serde_json::from_slice(arr).unwrap();
+    assert!(complete_converse_body(arr, &parsed, Some(1)).is_none());
+}
+
+#[test]
+fn same_proto_translator_completes_a_converse_body_and_reports_its_usage() {
+    use busbar_substrate::proto::StreamTranslator as _;
+    let mut t = same_proto_translator(1 << 20);
+    // Chunked arrival: nothing is released until the whole body is held.
+    let (a, b) = CONVERSE_BODY_NO_METRICS.as_bytes().split_at(40);
+    assert!(t.feed(a).is_empty());
+    assert!(t.feed(b).is_empty());
+    assert!(t.usage().is_none(), "usage is known only at end-of-stream");
+    let out = t.finish();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+    assert!(
+        v.pointer("/metrics/latencyMs").and_then(|m| m.as_u64()).is_some(),
+        "the completed body must carry metrics.latencyMs: {v}"
+    );
+    assert_eq!(v["output"]["message"]["content"][0]["text"], "oracle-marker");
+    let usage = t.usage().expect("billing usage from the Converse reader");
+    assert_eq!((usage.input, usage.output), (11, 7));
+    assert!(!t.aborted());
+    assert!(t.terminal_error().is_none());
+}
+
+#[test]
+fn same_proto_translator_keeps_an_upstream_metrics_byte_for_byte() {
+    use busbar_substrate::proto::StreamTranslator as _;
+    let body = br#"{"output":{"message":{"role":"assistant","content":[{"text":"x"}]}},"stopReason":"end_turn","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"metrics":{"latencyMs":777}}"#;
+    let mut t = same_proto_translator(1 << 20);
+    assert!(t.feed(body).is_empty());
+    assert_eq!(t.finish(), body.to_vec());
+}
+
+#[test]
+fn same_proto_translator_leaves_a_non_converse_body_alone_but_still_bills_it() {
+    use busbar_substrate::proto::StreamTranslator as _;
+    // A Titan embeddings body (InvokeModel): no `metrics` member exists on that shape.
+    let body = br#"{"embedding":[0.1,0.2],"inputTextTokenCount":6}"#;
+    let mut t = same_proto_translator(1 << 20);
+    assert!(t.feed(body).is_empty());
+    assert_eq!(t.finish(), body.to_vec(), "an embeddings body relays verbatim");
+    let usage = t.usage().expect("the embeddings tap still bills");
+    assert_eq!(usage.input, 6);
+    // Non-JSON: verbatim, and nothing to bill.
+    let mut t = same_proto_translator(1 << 20);
+    assert!(t.feed(b"not json").is_empty());
+    assert_eq!(t.finish(), b"not json".to_vec());
+}
+
+#[test]
+fn same_proto_translator_relays_past_the_cap_and_recovers_usage_from_the_tail() {
+    use busbar_substrate::proto::StreamTranslator as _;
+    let body = CONVERSE_BODY_NO_METRICS.as_bytes();
+    let mut t = same_proto_translator(64);
+    let (a, b) = body.split_at(60);
+    assert!(t.feed(a).is_empty(), "under the cap: still withheld");
+    // Crossing the cap releases everything withheld plus this chunk, verbatim.
+    let released = t.feed(b);
+    assert_eq!(released, body.to_vec());
+    let (c, d) = (b"", b"");
+    assert!(t.feed(c).is_empty());
+    assert!(t.feed(d).is_empty());
+    assert!(t.finish().is_empty(), "nothing is held back once relaying");
+    let usage = t.usage().expect("usage recovered from the trailing usage object");
+    assert_eq!((usage.input, usage.output), (11, 7));
+}
+
+#[test]
+fn same_proto_translator_over_cap_without_a_usage_object_bills_a_floor_not_zero() {
+    use busbar_substrate::proto::StreamTranslator as _;
+    let mut t = same_proto_translator(16);
+    let out = t.feed(&[b'x'; 100]);
+    assert_eq!(out.len(), 100);
+    assert!(t.finish().is_empty());
+    let usage = t.usage().expect("an over-cap body is never metered at zero");
+    assert!(usage.output >= 1);
+}
+
+#[test]
+fn stream_translator_factory_installs_the_converse_body_translator_for_bedrock_only() {
+    // Same-protocol non-stream: Bedrock gets the completing translator, every other dialect keeps
+    // the verbatim relay (None). Cross-protocol non-stream never builds one.
+    assert!(crate::proto_stream::new_stream_translator("bedrock", "bedrock", false).is_some());
+    assert!(crate::proto_stream::new_stream_translator("anthropic", "anthropic", false).is_none());
+    assert!(crate::proto_stream::new_stream_translator("openai", "openai", false).is_none());
+    assert!(crate::proto_stream::new_stream_translator("bedrock", "anthropic", false).is_none());
+}
+
+#[test]
+fn streaming_metadata_metrics_is_always_present_and_never_overwrites_upstream() {
+    let framing = BedrockStreamFraming::default();
+    // Timing unavailable: still emitted (required member), as 0.
+    let mut data = serde_json::json!({"usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}});
+    framing.inject_streaming_metrics(ET_METADATA, &mut data, None);
+    assert_eq!(
+        data.pointer("/metrics/latencyMs").and_then(|v| v.as_u64()),
+        Some(0)
+    );
+    // Upstream-supplied: kept.
+    let mut data = serde_json::json!({"usage": {}, "metrics": {"latencyMs": 31}});
+    framing.inject_streaming_metrics(
+        ET_METADATA,
+        &mut data,
+        Some(std::time::Instant::now()),
+    );
+    assert_eq!(
+        data.pointer("/metrics/latencyMs").and_then(|v| v.as_u64()),
+        Some(31)
+    );
+    // Only the metadata frame is touched.
+    let mut other = serde_json::json!({"stopReason": "end_turn"});
+    framing.inject_streaming_metrics(ET_MESSAGE_STOP, &mut other, Some(std::time::Instant::now()));
+    assert!(other.get("metrics").is_none());
+}
+
+#[test]
+fn buffered_to_eventstream_metadata_carries_metrics_even_without_timing() {
+    let ir = crate::ir::IrResponse {
+        logprobs: Vec::new(),
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
+            text: "hi".into(),
+            cache_control: None,
+            citations: Vec::new(),
+        }],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: IrUsage {
+            input_tokens: 3,
+            output_tokens: 4,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
+        },
+        model: None,
+        id: None,
+        created: None,
+        system_fingerprint: None,
+        stop_sequence: None,
+    };
+    let mut bytes = bedrock_response_to_eventstream(&ir, None);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut bytes);
+    let (_, payload) = frames
+        .iter()
+        .find(|(et, _)| et == ET_METADATA)
+        .expect("a metadata frame");
+    let v: serde_json::Value = serde_json::from_slice(payload).unwrap();
+    assert_eq!(v.pointer("/metrics/latencyMs").and_then(|m| m.as_u64()), Some(0));
+    assert_eq!(v["usage"]["totalTokens"], 7);
+}

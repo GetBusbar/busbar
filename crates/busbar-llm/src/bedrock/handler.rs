@@ -31,6 +31,47 @@ static CELLS: &[busbar_substrate::handlers::Cell] = &[
     (Operation::RERANK, &RERANK),
 ];
 
+/// Billable usage for a complete same-protocol (Bedrock -> Bedrock) non-stream 2xx body, keyed by
+/// the body's SHAPE rather than by the operation. The buffered Converse translator
+/// (`BedrockConverseBodyTranslator`) sits in for the verbatim relay on every Bedrock same-protocol
+/// non-stream response, and the forward path then reads billing usage from the translator instead
+/// of asking the operation. The translator does not know which operation it serves, so this picks
+/// the same `extract_usage` the operation would have run, from the response shape:
+///   - `output` / `stopReason` (a Converse body)     -> the chat tap (the Converse reader's usage)
+///   - `images`                                        -> the image cell's tap
+///   - `embedding` / `inputTextTokenCount`             -> the embeddings cell's tap
+///   - `results` (a Rerank body)                       -> nothing (rerank does not tap usage)
+///   - anything else                                   -> the chat tap (the decode-failure warn it
+///     raises is the one the relay raised too)
+///
+/// `parsed` is the body already decoded by the caller (`None` when it is not JSON), so the shape
+/// probe costs no second parse.
+pub(crate) fn same_protocol_usage(
+    body: &[u8],
+    parsed: Option<&Value>,
+) -> Option<busbar_substrate::billing::TokenUsage> {
+    let has = |k: &str| parsed.is_some_and(|v| v.get(k).is_some());
+    if has("output") || has("stopReason") {
+        CHAT.extract_usage("bedrock", body)
+    } else if has("images") {
+        IMG.extract_usage("bedrock", body)
+    } else if has("embedding") || has("inputTextTokenCount") {
+        EMB.extract_usage("bedrock", body)
+    } else if has("results") {
+        None
+    } else {
+        CHAT.extract_usage("bedrock", body)
+    }
+}
+
+/// True when a same-protocol non-stream 2xx body is a Converse response (the shape that must carry
+/// `metrics.latencyMs`), as opposed to an InvokeModel embeddings / image / rerank body, which has no
+/// such member.
+pub(crate) fn is_converse_response(v: &Value) -> bool {
+    v.as_object()
+        .is_some_and(|o| o.contains_key("output") || o.contains_key("stopReason"))
+}
+
 impl RequestHandler for BedrockRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "bedrock"
