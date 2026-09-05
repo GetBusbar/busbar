@@ -383,3 +383,30 @@ fn program_dest(
         None,
     )
 }
+
+/// A child that dies mid-line has not sent a frame. `read_until` returns what it has when the peer
+/// hits EOF without a newline, and handing that fragment up as a well-formed frame is the same
+/// "guess where the body ended" this transport already refuses on the write side. The unterminated
+/// tail is a framing error, and the clean EOF on a line boundary stays a clean end of stream.
+#[tokio::test]
+async fn an_unterminated_final_line_is_a_framing_error() {
+    let t = StdioTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    let (_ar, mut aw) = split(end_a);
+
+    // One whole line, then half of another, then the peer goes away.
+    aw.write_all(b"{\"id\":1}\n{\"jsonr").await.unwrap();
+    aw.shutdown().await.unwrap();
+
+    let mut frames = t.frames(b);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"{\"id\":1}");
+    let err = frames
+        .next()
+        .await
+        .expect("the fragment must be reported, not swallowed")
+        .expect_err("a half-written line is not a frame");
+    assert_eq!(err, TransportError::Framing);
+}

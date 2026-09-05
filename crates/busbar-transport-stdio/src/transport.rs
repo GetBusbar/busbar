@@ -312,8 +312,12 @@ impl Transport for StdioTransport {
                 let slot = held.slot.as_mut().expect("held for the guard's lifetime");
                 let item = loop {
                     match read_line(&mut slot.reader, &mut slot.partial).await {
-                        Ok(0) => break None, // EOF: the session ends
-                        Ok(_) => {
+                        Ok((0, _)) => break None, // EOF: the session ends
+                        // The peer stopped partway through a line. Where that line ended is the one
+                        // thing this transport must not guess, so the tail is a framing error and
+                        // not a frame — the read-side answer to what the write side already fences.
+                        Ok((_, false)) => break Some(Err(TransportError::Framing)),
+                        Ok((_, true)) => {
                             if slot.partial.iter().all(u8::is_ascii_whitespace) {
                                 slot.partial.clear();
                                 continue; // a blank line carries no frame
@@ -465,17 +469,23 @@ impl Transport for StdioTransport {
 
 /// `read_until('\n', ...)` with the terminator stripped, and any trailing `\r` stripped too so a
 /// peer that writes CRLF line endings is not handed a frame with a dangling carriage return.
+///
+/// Returns how many bytes this call read and whether the delimiter was among them. The second half
+/// is what the caller cannot otherwise know: `read_until` also returns a non-zero count when the
+/// peer reaches EOF partway through a line, and a caller that could not tell the two apart would
+/// hand a half-written line up as a whole frame.
 async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
     buf: &mut Vec<u8>,
-) -> std::io::Result<usize> {
+) -> std::io::Result<(usize, bool)> {
     use tokio::io::AsyncBufReadExt;
     let n = reader.read_until(b'\n', buf).await?;
-    if buf.last() == Some(&b'\n') {
+    let terminated = buf.last() == Some(&b'\n');
+    if terminated {
         buf.pop();
         if buf.last() == Some(&b'\r') {
             buf.pop();
         }
     }
-    Ok(n)
+    Ok((n, terminated))
 }
