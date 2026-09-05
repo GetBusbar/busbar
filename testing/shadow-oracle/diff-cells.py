@@ -212,6 +212,13 @@ def main() -> int:
         for e in json.load(open(a.accepted, encoding="utf-8")).get("accepted", []):
             base = {"rx": re.compile(e.get("cells", ".")), "classes": set(e.get("classes", [])), "kind": e.get("kind", "improvement"),
                     "id": e.get("id", e.get("cells", "?")), "rationale": e.get("rationale", ""), "by": e.get("by", "")}
+            # The register may never quietly forgive a status or a billing figure: only a `breaking` entry
+            # that names its CHANGELOG line may accept those classes, and no entry may be a total blanket.
+            money = base["classes"] & {"status", "effects.usage", "missing.candidate"}
+            if money and not (base["kind"] == "breaking" and e.get("changelog")):
+                sys.exit(f"accepted-differences: entry {base['id']!r} accepts {sorted(money)} but is not kind=breaking with a changelog line")
+            if "cells" not in e and not base["classes"] and "transform" not in e:
+                sys.exit(f"accepted-differences: entry {base['id']!r} has neither cells nor classes (a total blanket)")
             if "transform" in e:
                 # a LINE-PRECISE acceptance: the candidate's text is rewritten by these regexes before the
                 # diff, so ONLY the accepted token (a diagnostic code, a renamed line) is forgiven and any
@@ -299,7 +306,8 @@ def main() -> int:
         acc = pre_acc if classes and detail.get("accepted.transform") else None
         if classes and acc is None:
             for e in accepted:
-                if e["rx"].search(cid) and (not e["classes"] or set(classes) <= e["classes"]):
+                allowed = e["classes"] or (set(CLASS_ORDER) - {"status", "effects.usage", "missing.candidate", "missing.golden"} if e["kind"] != "breaking" else set(CLASS_ORDER))
+                if e["rx"].search(cid) and set(classes) <= allowed:
                     acc = e; break
         wt = c.get("weight")
         if wt is None:

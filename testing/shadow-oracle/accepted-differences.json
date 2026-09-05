@@ -2,12 +2,13 @@
   "_comment": [
     "Differences from the published 1.5.5 that the OWNER has accepted, each with a rationale and a kind:",
     "  improvement  additive or strictly better; a 1.5.5 client/operator keeps working unchanged",
-    "  breaking     a deliberate change that MUST be named in the 1.6.0 CHANGELOG with a migration note",
     "A matching cell reports as ACCEPTED in its own column — never as a silent pass — so a later change",
     "to the same surface still shows. `cells` are id regexes; `classes` limits the acceptance to those",
     "divergence classes (a status or usage change on an 'improvement' entry is still red).",
     "Zero UNACCEPTED divergences is the ship gate.",
-    "An entry with `transform: {candidate: [[regex, replacement], ...]}` is line-precise: the candidate's stderr/body text is rewritten before the diff, so only that token is forgiven; the cell reports ACCEPTED, never PASS."
+    "An entry with `transform: {candidate: [[regex, replacement], ...]}` is line-precise: the candidate's stderr/body text is rewritten before the diff, so only that token is forgiven; the cell reports ACCEPTED, never PASS.",
+    "  breaking     a deliberate change named in the 1.6.0 CHANGELOG (`changelog` field required) — the ONLY kind that may accept a `status` or `effects.usage` class",
+    "The differ refuses any entry that accepts `status` or `effects.usage` without kind=breaking and a `changelog` field, and any entry with neither `cells` nor `classes` (a total blanket)."
   ],
   "accepted": [
     {
@@ -61,7 +62,7 @@
       "id": "F-011 additive admin views",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^admin\\.ops\\|(GetHooksName|GetHooks|GetOpenapiJson)\\|ok$|^hooks\\|admin-list$|^admin\\.ops\\|DeleteOverlaySection\\|not-found$",
+      "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^admin\\.ops\\|DeleteOverlaySection\\|not-found$",
       "classes": [
         "body",
         "headers"
@@ -133,7 +134,7 @@
     },
     {
       "id": "PR2-D2 degraded hard-down recorded",
-      "kind": "improvement",
+      "kind": "breaking",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-401$",
       "classes": [
@@ -142,13 +143,14 @@
         "headers",
         "effects.metrics"
       ],
-      "rationale": "An auth/billing hard-down on a fallback/least-bad/queue hop now trips the lane in every breaker cell and, for busbar's own lane credential, answers with the ingress-native auth-failure envelope — the same rule the primary hop applies. Previously the degraded hop relayed the upstream 401 body verbatim and recorded nothing, leaving the dead lane Closed."
+      "rationale": "An auth/billing hard-down on a fallback/least-bad/queue hop now trips the lane in every breaker cell and, for busbar's own lane credential, answers with the ingress-native auth-failure envelope — the same rule the primary hop applies. Previously the degraded hop relayed the upstream 401 body verbatim and recorded nothing, leaving the dead lane Closed.",
+      "changelog": "1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native auth-failure envelope and recorded on the breaker"
     },
     {
       "id": "PR2-D3 degraded client-fault counter",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
-      "cells": "^route\\.failover\\|(fb|lb)\\|",
+      "cells": "^route\\.failover\\|fb\\|member-4[0-9][0-9]$",
       "classes": [
         "effects.metrics"
       ],
@@ -156,21 +158,22 @@
     },
     {
       "id": "PR2-D4 fallback stream billed",
-      "kind": "improvement",
+      "kind": "breaking",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
-      "cells": "^route\\.failover\\|fb\\|member-down-stream-openai$|^billing\\|key-usage\\|after-",
+      "cells": "^route\\.failover\\|fb\\|member-down-stream-openai$",
       "classes": [
         "effects.usage",
         "effects.metrics",
         "body"
       ],
-      "rationale": "OWNER DECISION: bill them. A streaming request served through a fallback/least-bad/queue hop to an OpenAI Chat Completions lane now has stream_options.include_usage injected upstream exactly as a primary hop does, so the trailing usage chunk arrives and the key is billed its real tokens (previously zero). The client-facing stream is unchanged for a client that did not opt in (the injected chunk is stripped at the framing seam); an opted-in client now receives its usage chunk on the fallback hop too. CHANGELOG 1.6.0: 'Fallback-pool and least-bad streams to OpenAI Chat Completions lanes are now metered (previously billed zero tokens).'"
+      "rationale": "OWNER DECISION: bill them. A streaming request served through a fallback/least-bad/queue hop to an OpenAI Chat Completions lane now has stream_options.include_usage injected upstream exactly as a primary hop does, so the trailing usage chunk arrives and the key is billed its real tokens (previously zero). The client-facing stream is unchanged for a client that did not opt in (the injected chunk is stripped at the framing seam); an opted-in client now receives its usage chunk on the fallback hop too. CHANGELOG 1.6.0: 'Fallback-pool and least-bad streams to OpenAI Chat Completions lanes are now metered (previously billed zero tokens).'",
+      "changelog": "1.6.0 Improvements: fallback-lane streams are now billed"
     },
     {
       "id": "PR2-D5 degraded attempt-timeout member override",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
-      "cells": "^route\\.failover\\|(fb|lb)\\|",
+      "cells": "^route\\.failover\\|fb\\|member-slow$",
       "classes": [
         "effects.metrics"
       ],
@@ -229,6 +232,17 @@
         "headers"
       ],
       "rationale": "The Response object's required members (created_at, error, incomplete_details, instructions, tools, tool_choice, parallel_tool_calls, metadata, temperature, top_p, part logprobs, usage details) are emitted with spec defaults or carried values."
+    },
+    {
+      "id": "F-011b openapi.json additive endpoints",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
+      "cells": "^admin\\.ops\\|GetOpenapiJson\\|ok$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "openapi.json adds the mcp/a2a endpoints; every 1.5.5 path and schema is unchanged (a dedicated cell pins info.version)."
     }
   ]
 }
