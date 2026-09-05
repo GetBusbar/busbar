@@ -624,9 +624,16 @@ pub(crate) fn decode(
 /// declares, over the chain the deployment configured. The unit is handed the pinned arrival clock
 /// rather than a fresh reading, and it is told this is a new unit, which is what makes the
 /// revocation set apply.
+///
+/// The three seams the step needs — the credential cache, the key verifier and the revocation view —
+/// come as the node's ONE set rather than three arguments a caller has to remember to fill in. That
+/// distinction is the whole of it: `new_unit: true` says "the revocation set applies to this one",
+/// and a set nothing supplies revokes nothing, so an absence here would be a revoked credential that
+/// still opens the administrative surface.
 pub(crate) fn authenticate(
     auth: &busbar_unit_auth::Auth,
     binding: &AdminBinding,
+    bindings: &crate::root::auth_bindings::AuthBindings,
     token: &UnitToken<Authenticate>,
     ctx: &UnitCtx,
 ) -> Decision<Authenticate> {
@@ -643,9 +650,11 @@ pub(crate) fn authenticate(
             now: request.at,
             new_unit: true,
         },
-        None,
-        None,
-        None,
+        bindings.cache(),
+        bindings.keys(),
+        bindings.revocations(),
+        // No challenge is ever pending on this plane: the administrative claim declares no
+        // handshake, so there is no earlier round for one to have come from.
         None,
         token,
     )
@@ -768,18 +777,11 @@ pub(crate) fn route(
             busbar_unit_scope::admin_required_scope(&request.method, &request.path),
         ));
 
-    // THE UNIT'S OWN BOUNDARY, HONOURED. The verbs unit asserts that the two credential-MINTING
-    // verbs never come through its general execution path: they have dedicated methods, with their
-    // own idempotency handling, that mint through the governance seam and render through the replay
-    // encoder. This root does not mint — the surface that owns those operations mints and renders
-    // the one-time secret itself, and it has already done so by the time the answer comes back — so
-    // asking the unit to mint a second identity for an answer that already carries one would be two
-    // mints for one request, which is exactly what its dedicated methods exist to prevent.
-    //
-    // So for those two the seam is reached directly. The verb is still the closed table's, the step
-    // is still Route, and the body still lives where it lived; what is skipped is a minting path
-    // this composition has no use for.
-    if verb == KernelVerb::PostKeys || verb == KernelVerb::PostKeysIdRotate {
+    // THE ONE PLACE THE CHOICE IS MADE. Route is this plane's destination, and a destination is
+    // where a composition says which of the unit's entry points an operation reaches. Written as a
+    // named question rather than an inline pair so that "these two verbs and no others" is a fact
+    // with a test on it instead of a condition to re-read.
+    if mints_its_own_identity(verb) {
         let answer = binding.dispatch.execute(verb, &request);
         binding.units.set_answer(ctx.key, answer);
         return Decision::proceed(token, busbar_contract::RoutePlan::default());
@@ -817,6 +819,23 @@ pub(crate) fn route(
         },
         Err(refusal) => Decision::refuse(token, Refusal::new(verbs_reason(refusal.reason))),
     }
+}
+
+/// Whether the operation's own surface has already minted the identity this answer carries.
+///
+/// True for exactly the two credential-MINTING verbs, and the verbs unit's own debug assertion says
+/// the same thing from the other side: they must never come through its general execution path,
+/// because they have dedicated methods with their own idempotency handling that mint through the
+/// governance seam and render through the replay encoder.
+///
+/// This root does not mint. The surface that owns those operations mints and renders the one-time
+/// secret itself, and it has already done so by the time the answer comes back, so asking the unit
+/// to mint a second identity for an answer that already carries one would be two mints for one
+/// request — exactly what the dedicated methods exist to prevent. For those two the seam is reached
+/// directly: the verb is still the closed table's, the step is still Route and the body still lives
+/// where it lived; what is skipped is a minting path this composition has no use for.
+fn mints_its_own_identity(verb: KernelVerb) -> bool {
+    matches!(verb, KernelVerb::PostKeys | KernelVerb::PostKeysIdRotate)
 }
 
 /// The verbs unit's refusal vocabulary, said in the kernel's.
@@ -1069,11 +1088,21 @@ impl busbar_unit_verbs::NonceSource for ArrivalNonce {
     fn fill(&self, buf: &mut [u8; 16]) {
         let mut material = [0u8; 16];
         getrandom_into(&mut material);
-        buf.copy_from_slice(&material);
-        for (slot, byte) in buf.iter_mut().zip(self.0.to_be_bytes().iter()) {
-            *slot ^= *byte;
-        }
+        *buf = mix_arrival(material, self.0);
     }
+}
+
+/// The epoch half of the draw, separated from the source so it can be stated rather than sampled.
+///
+/// Unpredictability comes from the material and cannot be asserted about a random draw; DISTINCTNESS
+/// comes from the arrival epoch and can be, which is why the two are split here: two units that
+/// arrived at different moments cannot collide even if the source handed them the same bytes twice.
+fn mix_arrival(material: [u8; 16], at: u64) -> [u8; 16] {
+    let mut out = material;
+    for (slot, byte) in out.iter_mut().zip(at.to_be_bytes().iter()) {
+        *slot ^= *byte;
+    }
+    out
 }
 
 /// Draw unpredictable bytes from the node's own source.
@@ -1660,5 +1689,220 @@ mod tests {
         source.fill(&mut second);
         assert_ne!(first, second);
         assert_ne!(first, [0u8; 16]);
+    }
+
+    /// The other half of the nonce, and the half a random draw cannot be asserted about: the arrival
+    /// epoch is what makes two units' nonces distinct, so a source that handed two units the same
+    /// bytes still cannot make them collide. It touches the first eight bytes and leaves the rest of
+    /// the material alone, which is what keeps the entropy the entropy.
+    #[test]
+    fn the_arrival_epoch_is_what_makes_two_units_nonces_distinct() {
+        let material = [7u8; 16];
+        assert_ne!(
+            mix_arrival(material, 1_700_000_000),
+            mix_arrival(material, 1_700_000_001)
+        );
+        assert_ne!(mix_arrival(material, 1_700_000_000), material);
+        assert_eq!(mix_arrival(material, 0), material);
+        assert_eq!(mix_arrival(material, u64::MAX)[8..], material[8..]);
+    }
+
+    /// Route is the one place that chooses between the unit's general execution path and its two
+    /// dedicated minting methods, and the choice is exactly the two credential-minting verbs. Every
+    /// other verb on the keys surface — reading them, revoking one, listing a key's usage — goes
+    /// through the general path, because none of them mints an identity.
+    #[test]
+    fn only_the_two_minting_verbs_are_reached_through_the_seam_directly() {
+        assert!(mints_its_own_identity(KernelVerb::PostKeys));
+        assert!(mints_its_own_identity(KernelVerb::PostKeysIdRotate));
+        for verb in [
+            KernelVerb::GetKeys,
+            KernelVerb::GetKeysId,
+            KernelVerb::PatchKeysId,
+            KernelVerb::DeleteKeysId,
+            KernelVerb::PostKeysIdRevoke,
+            KernelVerb::GetKeysIdUsage,
+            KernelVerb::PostSigningKeyRotate,
+            KernelVerb::GetAudit,
+        ] {
+            assert!(
+                !mints_its_own_identity(verb),
+                "{verb:?} mints nothing and belongs on the general path"
+            );
+        }
+    }
+
+    /// A store that holds one replay slot, so the root's own adapter can be driven over it.
+    #[derive(Default)]
+    struct ReplaySlots(Mutex<HashMap<(String, String), Vec<u8>>>);
+
+    impl busbar_unit_verbs::store::Store for ReplaySlots {
+        fn chain_break(
+            &self,
+            _admin: &busbar_caps::AdminToken,
+        ) -> Result<(), busbar_unit_verbs::StoreError> {
+            Ok(())
+        }
+
+        fn store_restore(
+            &self,
+            _admin: &busbar_caps::AdminToken,
+            _backup_ref: &str,
+        ) -> Result<(), busbar_unit_verbs::StoreError> {
+            Ok(())
+        }
+
+        fn reseal_epoch_floor(
+            &self,
+            _admin: &busbar_caps::AdminToken,
+        ) -> Result<(), busbar_unit_verbs::StoreError> {
+            Ok(())
+        }
+
+        fn replay_new_verb(
+            &self,
+            key: &(String, String),
+        ) -> Result<Option<Vec<u8>>, busbar_unit_verbs::StoreError> {
+            Ok(self
+                .0
+                .lock()
+                .expect("no test panics under this lock")
+                .get(key)
+                .cloned())
+        }
+
+        fn commit_new_verb_replay(
+            &self,
+            key: &(String, String),
+            response: &[u8],
+        ) -> Result<(), busbar_unit_verbs::StoreError> {
+            self.0
+                .lock()
+                .expect("no test panics under this lock")
+                .insert(key.clone(), response.to_vec());
+            Ok(())
+        }
+    }
+
+    /// A replayed idempotency key answers with the FIRST answer's bytes, through the root's own
+    /// store adapter and its own packing. Byte-identical is the property: a re-render would mint a
+    /// second one-time secret over one identity, and the whole reason the answer travels as opaque
+    /// bytes is that there is no decode step here that could.
+    #[test]
+    fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
+        use busbar_unit_verbs::store::Store;
+
+        let answer = AdminAnswer {
+            status: 201,
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body: br#"{"id":"vk_1","secret":"once"}"#.to_vec(),
+        };
+        let first = answer.pack();
+        let key = ("idem-1".to_string(), "POST /api/v1/admin/keys".to_string());
+
+        let store = StoreRef(Arc::new(ReplaySlots::default()));
+        assert_eq!(
+            store.replay_new_verb(&key).expect("the slot reads"),
+            None,
+            "a key never seen has nothing to replay"
+        );
+        store
+            .commit_new_verb_replay(&key, &first)
+            .expect("the slot commits");
+
+        let replayed = store
+            .replay_new_verb(&key)
+            .expect("the slot reads")
+            .expect("a committed key replays");
+        assert_eq!(replayed, first);
+        assert_eq!(AdminAnswer::unpack(&replayed), Some(answer));
+    }
+
+    /// What the replay encoder writes: an identity, and never the secret beside it. The identity is
+    /// enough to key a slot and carries nothing a second holder could present.
+    #[test]
+    fn the_replay_encoder_carries_an_identity_and_never_a_secret() {
+        use busbar_unit_verbs::ReplayEncoder;
+
+        let admin = crate::root::kernel::new_kernel().admin_token();
+        let outcome = busbar_unit_verbs::MintedKeyOutcome {
+            id: "vk_1".to_string(),
+            secret: busbar_caps::SecretOnce::mint(&admin, 42, UnitKey::new(1), "body.secret"),
+            expires_at: None,
+        };
+        let bytes = PackedReplay.encode(&outcome);
+        assert_eq!(bytes, b"vk_1");
+        assert_eq!(
+            PackedReplay.encode(&outcome),
+            bytes,
+            "two encodings of one outcome are one answer"
+        );
+    }
+
+    /// The dispatch a test drives the loop against: it answers, and its answer is recognisable, so a
+    /// step that refused before Route is told apart from one that reached it.
+    #[cfg(feature = "root-admin")]
+    struct AnsweringDispatch;
+
+    #[cfg(feature = "root-admin")]
+    impl AdminDispatch for AnsweringDispatch {
+        fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
+            AdminAnswer {
+                status: 200,
+                headers: vec![("content-type".to_string(), "application/json".to_string())],
+                body: br#"{"entries":[]}"#.to_vec(),
+            }
+        }
+    }
+
+    /// A directory whose whole opinion is the denylist.
+    #[cfg(feature = "root-admin")]
+    struct Denylist(bool);
+
+    #[cfg(feature = "root-admin")]
+    impl crate::root::auth_bindings::VirtualKeyDirectory for Denylist {
+        fn verify(
+            &self,
+            _credential: &str,
+            _now: u64,
+            _expected_aud: Option<&str>,
+        ) -> Option<crate::root::auth_bindings::KeyFacts> {
+            None
+        }
+
+        fn revoked(&self, _credential: &str) -> bool {
+            self.0
+        }
+    }
+
+    /// Walk one request through the whole loop against a node whose directory revokes everything, or
+    /// nothing.
+    #[cfg(feature = "root-admin")]
+    fn answer_under_denylist(revoked: bool) -> AdminAnswer {
+        let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
+            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                Denylist(revoked),
+            )));
+        AdminNode::new(crate::root::kernel::new_kernel(), units).answer(a_request())
+    }
+
+    /// A revoked credential is refused on the root leg, and refused BEFORE the operation runs.
+    ///
+    /// This is the seam the step was handed three absences for: revocation gates new units, an admin
+    /// unit is always a new unit, and a set nothing supplies revokes nothing — so an unbound step
+    /// would have let a revoked credential through the front door of the administrative surface. The
+    /// control is the same request over a directory that revokes nobody, which reaches the operation
+    /// and comes back with its answer.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn a_revoked_credential_is_refused_before_the_operation_runs() {
+        assert_eq!(
+            answer_under_denylist(false).status,
+            200,
+            "a credential on nobody's denylist reaches the operation"
+        );
+        let refused = answer_under_denylist(true);
+        assert_eq!(refused.status, 403);
+        assert_eq!(refused, refused_answer());
     }
 }

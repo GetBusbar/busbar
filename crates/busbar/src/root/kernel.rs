@@ -323,7 +323,13 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
         if self.is_admin(ctx) {
-            return crate::root::units_admin::authenticate(&self.auth, &self.admin, token, ctx);
+            return crate::root::units_admin::authenticate(
+                &self.auth,
+                &self.admin,
+                &self.auth_bindings,
+                token,
+                ctx,
+            );
         }
         Decision::refuse(
             token,
