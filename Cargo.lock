@@ -333,6 +333,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "busbar-a2a",
+ "busbar-api",
  "busbar-caps",
  "busbar-contract",
  "busbar-core",

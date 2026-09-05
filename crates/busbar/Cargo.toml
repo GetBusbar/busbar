@@ -59,6 +59,11 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-kernel = { path = "../busbar-kernel" }
 busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
+# THE PUBLISHED STORE PROTOCOL. A plane's durable records reach the node through record legs on its
+# route plan, and the eight kind-tagged operations those legs run are declared here. Named by the
+# root and by nothing else on this path: a plane may not hold a store and a unit may not know a
+# schema, so the mapping from one to the other belongs to the composition and lives in `src/root/`.
+busbar-api = { path = "../api" }
 # The fourteen units. Eight are facades reached as free functions; six carry a long-lived object the
 # root owns and holds in `ProductionUnits`.
 busbar-unit-admission = { path = "../busbar-unit-admission" }
@@ -162,6 +167,13 @@ plane-voice = ["dep:busbar-voice", "busbar-voice?/runtime", "busbar-core/plane-v
 # the neutrality cells answering the same on both legs. It forwards to `plane-voice` because the
 # thing it mounts needs the plane's own crate edge to exist.
 root-voice = ["plane-voice"]
+# THE A2A PLANE ON THE KERNEL. Default OFF, and off is the point: the root is BUILT before any
+# plane is SWITCHED onto it, so this feature installs the composition and diverts no byte. With it
+# on, `main()` assembles the A2A plane's scope entries and its record-leg binding at boot and holds
+# them; the serving path is still the one the A2A plugin mounts, which is why the conformance
+# battery, the TCK and the neutrality cells read identically with the feature on and with it off.
+# It carries no config key, no environment variable and no boot line, for the same reason.
+root-a2a = []
 auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]
 openapi-schema = ["busbar-core/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]

@@ -60,5 +60,6 @@ pub mod migration;
 pub mod policy;
 pub mod registry;
 pub mod transports;
+pub mod units_a2a;
 pub mod units_voice;
 pub mod vocabulary;

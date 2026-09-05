@@ -825,6 +825,22 @@ fn main() {
     busbar_substrate::admin_verbs::install_plane_admin_envelope(
         &busbar_core::admin::planeverbs::CorePlaneAdminEnvelope,
     );
+    // THE A2A PLANE'S KERNEL COMPOSITION, behind `root-a2a` and default off. The root is built
+    // before any plane is switched onto it, so what this installs is the scope entries the approve
+    // step reads for this plane's twelve operation classes — every one of them, because the scope
+    // unit reads silence as a refusal and a partly-declared policy leaves the rest unreachable. It
+    // diverts no byte: the serving path is still the one `register_planes` mounted, which is why
+    // the conformance battery and the neutrality cells read identically with this on and with it
+    // off. No config key, no environment variable, no boot line.
+    #[cfg(feature = "root-a2a")]
+    {
+        let policy = root::units_a2a::scope_policy(root::policy::ScopePolicy::new());
+        debug_assert_eq!(
+            policy.len(),
+            busbar_plane_a2a::ops::OP_CLASSES.len(),
+            "every A2A operation class needs a scope entry before the plane is switched over"
+        );
+    }
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
     if let Some(code) = handle_cli_flags() {
