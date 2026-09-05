@@ -1,6 +1,6 @@
 //! The `Plane`/`SessionPlane` implementation.
 //!
-//! Every method here is a thin adapter over `busbar_voice::ir`'s shared duplex codec
+//! Every method here is a thin adapter over `busbar_voice_codec::ir`'s shared duplex codec
 //! ([`OpenAiRealtimeCodec`], [`GeminiLiveCodec`]), this crate's own Twilio reader/writer
 //! ([`crate::twilio`]) and its own µ-law transform ([`crate::ulaw`]). None of the three inputs the
 //! design brief names is skipped: a turn is the unit (opened on the first audio frame of a session,
@@ -68,11 +68,11 @@ use busbar_contract::unit::{
 };
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 
-use busbar_voice::ir::control::IrDuplexControl;
-use busbar_voice::ir::event::{IrClientEvent, IrServerEvent};
-use busbar_voice::ir::media::{AudioFormat, IrAudioFrame, UpDown};
-use busbar_voice::ir::tool::IrDuplexTool;
-use busbar_voice::ir::{
+use busbar_voice_codec::ir::control::IrDuplexControl;
+use busbar_voice_codec::ir::event::{IrClientEvent, IrServerEvent};
+use busbar_voice_codec::ir::media::{AudioFormat, IrAudioFrame, UpDown};
+use busbar_voice_codec::ir::tool::IrDuplexTool;
+use busbar_voice_codec::ir::{
     DuplexReader, DuplexWriter, GeminiLiveCodec, OpenAiRealtimeCodec, WireEvent,
 };
 

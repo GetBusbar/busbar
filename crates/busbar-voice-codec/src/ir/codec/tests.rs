@@ -22,7 +22,7 @@ fn as_value(w: &WireEvent) -> Value {
 }
 
 fn b64(bytes: &[u8]) -> String {
-    busbar_substrate::media::base64_encode(bytes)
+    busbar_substrate_values::media::base64_encode(bytes)
 }
 
 /// Decode one client wire event, re-encode it, and assert the JSON is stable.

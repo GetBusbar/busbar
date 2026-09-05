@@ -11,6 +11,7 @@ members = [
     "crates/busbar-a2a",
     "crates/busbar-a2a-codec",
     "crates/busbar-voice",
+    "crates/busbar-voice-codec",
     "crates/busbar-substrate",
     "crates/busbar-substrate-values",
     "crates/busbar-caps",

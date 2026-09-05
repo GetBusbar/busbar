@@ -52,6 +52,11 @@ required-features = ["runtime", "test-support"]
 # and protocol registry descriptors (`PlaneDecl`, `ProtocolDecl`), the diagnostics namespace, the
 # proxy/egress constants the `ProtocolDecl` fields carry.
 busbar-substrate = { path = "../busbar-substrate" }
+# THE CODECS. The pure half of this plugin, split out so `busbar-plane-voice` can name the duplex IR
+# and the dialect grammars without pulling this crate's axum mount, WebSocket accept, tokio session
+# tasks and telephony dial into a pure kind's closure. Every module that moved is re-exported from
+# this crate under its old name.
+busbar-voice-codec = { path = "../busbar-voice-codec" }
 # The plugin contracts crate, named ahead of use (the `ProtocolDecl::verbs` field is a
 # `busbar_api::operation::Operation` slice), exactly as busbar-mcp names it.
 busbar-api = { path = "../api" }
@@ -125,7 +130,7 @@ metrics = { workspace = true, optional = true }
 # net-guard-pinned egress dialer): the plane SELECTS `Transport::WebSocket` and lets the substrate open
 # the socket, so the provider sideband WSS dials THROUGH `net_guard` and the plane holds no socket
 # plumbing of its own. Turned on in lock-step with the plane's own async runtime.
-runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "dep:tokio-tungstenite", "dep:busbar-plugin", "dep:url", "dep:tracing", "dep:http", "dep:http-body-util", "dep:hyper", "dep:metrics", "busbar-substrate/runtime"]
+runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "dep:tokio-tungstenite", "dep:busbar-plugin", "dep:url", "dep:tracing", "dep:http", "dep:http-body-util", "dep:hyper", "dep:metrics", "busbar-substrate/runtime", "busbar-voice-codec/runtime"]
 # THE OPENAPI-SCHEMA EDGE, mirroring busbar-mcp/busbar-a2a: `PlaneDecl::openapi_schemas` is a field the
 # substrate struct gates on its own `openapi-schema` feature, so this forwards to substrate to keep the
 # `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step. The plane

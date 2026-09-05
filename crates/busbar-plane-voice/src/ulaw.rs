@@ -3,7 +3,7 @@
 //! `busbar-voice` does not implement this transform: its own `AudioFormat` enum carries only the
 //! byte-rate bookkeeping (`bytes_per_ms`) the barge-in truncate arithmetic needs, and its doc
 //! comments name the actual sample transcode an unimplemented "seam...armed only when a lane
-//! declares it" (`busbar_voice::ir::media`). The `twilio-media-streams` dialect is that lane: Twilio
+//! declares it" (`busbar_voice_codec::ir::media`). The `twilio-media-streams` dialect is that lane: Twilio
 //! carries 8 kHz G.711 µ-law, and every upstream this plane can dial (OpenAI Realtime, Gemini Live)
 //! speaks PCM16. This module is the transform, written independently against the standard, with its
 //! own unit tests against known reference values.

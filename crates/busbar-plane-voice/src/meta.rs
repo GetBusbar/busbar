@@ -28,7 +28,7 @@ const COUNT_FAMILY: &str = "count";
 ///
 /// This exists so a class cap works with no rate card configured at all — the same reasoning
 /// `busbar-plane-llm` states for its own default. It sizes a HOLD; the metering step settles
-/// against what [`busbar_voice::ir::IrDuplexUsage`] actually reports.
+/// against what [`busbar_voice_codec::ir::IrDuplexUsage`] actually reports.
 const BYTES_PER_TOKEN: u32 = 4;
 
 /// Milliseconds per unit for the duration class's default divisor: one, because this plane's own
@@ -135,7 +135,7 @@ pub const FACT_ERROR_MESSAGE: &str = "error_message";
 pub const FACT_INTERRUPT_AUDIO_PLAYED_MS: &str = "voice.interrupt.audio_played_ms";
 
 /// The fact key this plane's `EGRESS_PACING_FACT` names — written on every downlink audio frame
-/// this plane relays, carrying [`busbar_voice::ir::codec::DecodeState::played_ms`]'s running total
+/// this plane relays, carrying [`busbar_voice_codec::ir::codec::DecodeState::played_ms`]'s running total
 /// at the moment the frame was relayed. The kernel's outbound write path uses this to pace delivery
 /// against how much the client has actually played out, the same bookkeeping the barge-in truncate
 /// arithmetic reads. See `crate::plane`'s `decode_response`.

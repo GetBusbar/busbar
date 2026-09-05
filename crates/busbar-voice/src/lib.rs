@@ -25,7 +25,15 @@
 //! that superset as its OWN shared IR types ([`ir`]), not the LLM-style `DialectCodec` facade, so
 //! [`DECLS`] stays `codec: None` exactly as MCP / A2A do.
 
-pub mod ir;
+/// THE DUPLEX IR AND THE DIALECT CODECS, RE-EXPORTED FROM `busbar-voice-codec`.
+///
+/// The plane-4 session intermediate representation (media, control, events, tools, session config,
+/// usage), the shared duplex reader/writer and the Gemini Live dialect live in `busbar-voice-codec`
+/// now — the pure half of this plugin, split out so `busbar-plane-voice` can name the IR without
+/// linking this crate's axum mount, WebSocket accept, tokio session tasks and telephony dial. They
+/// are re-exported HERE, under their old name, so every caller that spells `busbar_voice::ir::…`
+/// resolves exactly what it always did. The split is a MOVE: no item changed shape crossing it.
+pub use busbar_voice_codec::ir;
 
 /// THE `streams:` CONFIG SECTION — the voice plane's owned config grammar ([`config::StreamsCfg`]) and
 /// its `parse_section` / `default_section` seam hooks. UNCONDITIONAL (outside the `runtime` gate):

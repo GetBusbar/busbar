@@ -181,12 +181,12 @@ fn u64_at(v: &Value, key: &str) -> u64 {
 
 /// base64-decode a wire audio string to opaque media bytes (the identity IR is the decoded bytes).
 fn decode_audio(b64: &str) -> Bytes {
-    busbar_substrate::media::base64_decode(b64).unwrap_or_default()
+    busbar_substrate_values::media::base64_decode(b64).unwrap_or_default()
 }
 
 /// base64-encode opaque media bytes back to a wire audio string.
 fn encode_audio(media: &Bytes) -> String {
-    busbar_substrate::media::base64_encode(media)
+    busbar_substrate_values::media::base64_encode(media)
 }
 
 // ── reader ──────────────────────────────────────────────────────────────────────────────────────
