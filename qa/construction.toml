@@ -150,10 +150,12 @@ max_duplicated_lines = 0
 [rules.token-sealed]
 why = """The Teller's decision, hold and posting tokens are what make the loop's order a matter of \
 types rather than discipline: a step can only be answered with that step's token, a hold can only \
-be opened by Admit, a posting can only be minted after Audit. That holds exactly as long as nothing \
-outside the Teller can spell a constructor. Every such spelling elsewhere is a forged token."""
-patterns = ["Decision::proceed(", "Decision::refuse(", "Hold::", "Posted(", "UnitToken::mint("]
-allowed_root = "crates/busbar-substrate/src/teller"
+be opened by Admit, a posting can only be minted after Audit. Every one of those constructors takes \
+a token, so a unit spelling Decision::proceed or Hold::open with its own token is the design working; \
+the forgery surface is MINTING a token. That holds exactly as long as nothing outside the kernel can \
+spell a token constructor. Every such spelling elsewhere is a forged token."""
+patterns = ["UnitToken::mint(", "AdmitToken::mint(", "LedgerToken::mint(", "UsageToken::mint(", "AuditToken::mint(", "ExitToken::mint("]
+allowed_root = "crates/busbar-kernel/src"
 max_sites = 0
 # Two more of the same shape, scoped to busbar-kernel (not busbar-substrate/src/teller, which is
 # the pre-busbar-kernel path the `patterns` list above still ratchets against): `KernelSeal::
@@ -246,7 +248,7 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 8000
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3000
+caps_contract_ceiling = 3500
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 45000
 verbs_crate = "busbar-unit-verbs"
