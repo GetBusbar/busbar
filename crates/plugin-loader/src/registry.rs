@@ -204,7 +204,15 @@ impl PluginRegistry {
                 p.manifest.name, p.manifest.kind
             ));
         }
-        crate::load_store_from_bytes(&p.lib_bytes, cfg_json, &p.manifest.name, &p.manifest.kind)
+        // Hand the manifest's payload schema to the loader: a store built against an older schema
+        // is spoken to in the shape it can decode (the usage-ledger ops changed shape in 1.6.0).
+        crate::load_store_from_bytes_at_abi(
+            &p.lib_bytes,
+            cfg_json,
+            &p.manifest.name,
+            &p.manifest.kind,
+            p.manifest.abi_version,
+        )
     }
 
     /// Open an AUTH plugin resolved by name or alias: verifies the resolved plugin's `kind` is `auth`,

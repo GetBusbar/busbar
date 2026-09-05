@@ -159,22 +159,30 @@ fn every_1_6_0_only_store_op_on_an_abi_2_store_defaults_with_no_error_and_no_log
         answer_unsupported();
         match store.list_plane_records("event", &PlaneSelector::Parent("t-1".into())) {
             Ok(v) if v.is_empty() => {}
-            other => failures.push(format!("list_plane_records must default to empty: {other:?}")),
+            other => failures.push(format!(
+                "list_plane_records must default to empty: {other:?}"
+            )),
         }
         answer_unsupported();
         match store.list_plane_records("task", &PlaneSelector::All) {
             Ok(v) if v.is_empty() => {}
-            other => failures.push(format!("list_plane_records(All) must default to empty: {other:?}")),
+            other => failures.push(format!(
+                "list_plane_records(All) must default to empty: {other:?}"
+            )),
         }
         answer_unsupported();
         match store.list_plane_record_parents("event") {
             Ok(v) if v.is_empty() => {}
-            other => failures.push(format!("list_plane_record_parents must default to empty: {other:?}")),
+            other => failures.push(format!(
+                "list_plane_record_parents must default to empty: {other:?}"
+            )),
         }
         answer_unsupported();
         match store.purge_plane_records_before("task", u64::MAX) {
             Ok(0) => {}
-            other => failures.push(format!("purge_plane_records_before must default to 0: {other:?}")),
+            other => failures.push(format!(
+                "purge_plane_records_before must default to 0: {other:?}"
+            )),
         }
         answer_unsupported();
         match store.delete_plane_record("task", "t-1") {

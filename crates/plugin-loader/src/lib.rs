@@ -37,6 +37,7 @@ pub mod fetch;
 mod ffi_thread;
 pub mod hook;
 mod hostlog;
+mod legacy_usage;
 pub mod registry;
 mod stage;
 pub mod tarball;
@@ -605,11 +606,32 @@ fn read_plugin_kind(lib: &Library, display: &str) -> Result<String, String> {
 
 /// A `Store` backend loaded from a dynamic library over the kind-neutral ABI. Wraps a [`RawPlugin`]
 /// whose kind was bound to `store` at load, so every `Store` method is a typed `transport_call`.
+///
+/// It is also the per-kind ADAPTER: `abi_version` is the payload schema the loaded plugin was built
+/// against (its signed manifest's), and the usage-ledger ops encode/decode at THAT schema. The
+/// engine keeps one internal row shape; a published 1.5.x store keeps seeing the shape it can
+/// decode. See [`legacy_usage`].
 pub struct DynStore {
     raw: RawPlugin,
+    /// The loaded plugin's manifest `abi_version`. A bare path load has no manifest to read it
+    /// from, so it assumes the current schema — the trust-verified registry load, which is how a
+    /// real deployment loads a store, passes the manifest's value.
+    abi_version: u32,
+    /// Latch so the "this store has no column for that unit" notice is said ONCE per store, not
+    /// once per flush tick.
+    dropped_units_warned: std::sync::atomic::AtomicBool,
 }
 
 impl DynStore {
+    /// Bind a loaded plugin to the payload schema its manifest declares.
+    fn new(raw: RawPlugin, abi_version: u32) -> Self {
+        Self {
+            raw,
+            abi_version,
+            dropped_units_warned: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
     /// TEST-ONLY: the private staging file backing THIS instance, or `None` when the load touched no
     /// disk (Linux memfd, or a path load with no staging at all). Lets the staging-lifecycle tests
     /// assert on their own artifact instead of counting process-wide staging entries — see
@@ -645,6 +667,43 @@ impl DynStore {
     /// function instead of four hand-written `match` arms — a fifth op cannot re-introduce the class by
     /// writing `Err(_) => <default>` (which would swallow a real backend error, a caught PANIC, and a
     /// caller-protocol violation, hydrating an empty denylist and re-accepting revoked tokens).
+    /// Does this store need the 1.5.5 four-tier usage shape instead of the unit map?
+    fn legacy_usage_wire(&self) -> bool {
+        legacy_usage::needs_legacy_usage_wire(self.abi_version)
+    }
+
+    /// Ship one usage request already encoded at the 1.5.5 schema.
+    fn call_legacy_usage(
+        &self,
+        req: legacy_usage::LegacyStoreRequest,
+    ) -> StoreResult<legacy_usage::LegacyStoreResponse> {
+        self.raw
+            .transport_call_status::<_, legacy_usage::LegacyStoreResponse>(&req)
+            .map_err(|e| StoreError(e.message))
+    }
+
+    /// Say ONCE that this store has no column for some unit names, so the drop is never silent and
+    /// never a per-tick log flood. Only ever called with a non-empty list.
+    fn note_dropped_units(&self, dropped: &[String]) {
+        if dropped.is_empty()
+            || self
+                .dropped_units_warned
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let mut names: Vec<&str> = dropped.iter().map(String::as_str).collect();
+        names.sort_unstable();
+        names.dedup();
+        tracing::warn!(
+            store = %self.raw.path,
+            units = %names.join(","),
+            "this store plugin predates open usage units and has no column for them; those counts \
+             are not persisted (the four priced token tiers are). Upgrade the store plugin to \
+             persist them."
+        );
+    }
+
     fn call_with_legacy_default<T>(
         &self,
         req: StoreRequest,
@@ -730,6 +789,28 @@ impl Store for DynStore {
     }
 
     fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
+        if self.legacy_usage_wire() {
+            // The REQUEST side of `GetUsage` never changed shape, only the ledger coming back, so
+            // the current request rides the wire and only the response is decoded at the older
+            // schema. Decoding it as the current shape would silently yield an empty unit map — a
+            // restart would hydrate zero tokens from a store holding the real counts.
+            let req = StoreRequest::GetUsage {
+                bucket_id: bucket_id.to_string(),
+                window_start,
+            };
+            return match self
+                .raw
+                .transport_call_status::<_, legacy_usage::LegacyStoreResponse>(&req)
+                .map_err(|e| StoreError(e.message))?
+            {
+                legacy_usage::LegacyStoreResponse::Usage(l) => {
+                    Ok(legacy_usage::ledger_from_legacy(l))
+                }
+                legacy_usage::LegacyStoreResponse::Unit => Err(StoreError(
+                    "plugin returned an unexpected response: Unit".to_string(),
+                )),
+            };
+        }
         match self.call_raw(StoreRequest::GetUsage {
             bucket_id: bucket_id.to_string(),
             window_start,
@@ -745,6 +826,20 @@ impl Store for DynStore {
         window_start: u64,
         ledger: &UsageLedger,
     ) -> StoreResult<()> {
+        if self.legacy_usage_wire() {
+            let (legacy, dropped) = legacy_usage::ledger_to_legacy(ledger);
+            self.note_dropped_units(&dropped);
+            return match self.call_legacy_usage(legacy_usage::LegacyStoreRequest::PutUsage {
+                bucket_id: bucket_id.to_string(),
+                window_start,
+                ledger: legacy,
+            })? {
+                legacy_usage::LegacyStoreResponse::Unit => Ok(()),
+                legacy_usage::LegacyStoreResponse::Usage(_) => Err(StoreError(
+                    "plugin returned an unexpected response: Usage".to_string(),
+                )),
+            };
+        }
         match self.call_raw(StoreRequest::PutUsage {
             bucket_id: bucket_id.to_string(),
             window_start,
@@ -761,6 +856,23 @@ impl Store for DynStore {
         // and propagates: silently degrading the fleet-additive accumulate to a read-modify-write
         // against a live shared backend would be a correctness downgrade (lost updates), not a
         // compatibility bridge.
+        if self.legacy_usage_wire() {
+            // THE MONEY PATH on a published 1.5.x store: sending the unit map here is what made the
+            // flush fail with `missing field 'tokens'` on every tick, so no usage was persisted at
+            // all. Encode the four priced tiers the way that plugin was built to read them.
+            let (legacy, dropped) = legacy_usage::delta_to_legacy(delta);
+            self.note_dropped_units(&dropped);
+            return match self.call_legacy_usage(legacy_usage::LegacyStoreRequest::AddUsage {
+                bucket_id: bucket_id.to_string(),
+                window_start,
+                delta: legacy,
+            })? {
+                legacy_usage::LegacyStoreResponse::Unit => Ok(()),
+                legacy_usage::LegacyStoreResponse::Usage(_) => Err(StoreError(
+                    "plugin returned an unexpected response: Usage".to_string(),
+                )),
+            };
+        }
         match self.call_raw(StoreRequest::AddUsage {
             bucket_id: bucket_id.to_string(),
             window_start,
@@ -1195,7 +1307,10 @@ pub fn load_store(lib_path: &Path, cfg_json: &str) -> Result<Box<dyn Store>, Str
         abi_kind::STORE,
         None,
     )?;
-    Ok(Box::new(DynStore { raw }))
+    Ok(Box::new(DynStore::new(
+        raw,
+        busbar_plugin::cold::ABI_VERSION,
+    )))
 }
 
 /// Load a store backend from EXACTLY the library `bytes` supplied — the TOCTOU-safe entrypoint.
@@ -1225,17 +1340,55 @@ pub fn load_store_from_bytes(
     display: &str,
     manifest_kind: &str,
 ) -> Result<Box<dyn Store>, String> {
-    load_dyn_store_from_bytes(bytes, cfg_json, display, manifest_kind).map(|s| Box::new(s) as _)
+    load_store_from_bytes_at_abi(
+        bytes,
+        cfg_json,
+        display,
+        manifest_kind,
+        busbar_plugin::cold::ABI_VERSION,
+    )
+}
+
+/// [`load_store_from_bytes`] told which PAYLOAD schema the plugin's signed manifest declares, so
+/// the returned store adapts the ops whose shape changed since (see [`legacy_usage`]). This is the
+/// entry point the registry uses — it is the only caller that has read the manifest.
+pub fn load_store_from_bytes_at_abi(
+    bytes: &[u8],
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+    abi_version: u32,
+) -> Result<Box<dyn Store>, String> {
+    load_dyn_store_from_bytes_at_abi(bytes, cfg_json, display, manifest_kind, abi_version)
+        .map(|s| Box::new(s) as _)
 }
 
 /// [`load_store_from_bytes`] before the trait object boxes it away. Split out so the staging
 /// lifecycle tests can reach `DynStore::staged_path` and assert on their OWN artifact; the public
 /// entry point is this plus a `Box`.
+#[cfg(test)]
 fn load_dyn_store_from_bytes(
     bytes: &[u8],
     cfg_json: &str,
     display: &str,
     manifest_kind: &str,
+) -> Result<DynStore, String> {
+    load_dyn_store_from_bytes_at_abi(
+        bytes,
+        cfg_json,
+        display,
+        manifest_kind,
+        busbar_plugin::cold::ABI_VERSION,
+    )
+}
+
+/// [`load_dyn_store_from_bytes`] at a named payload schema.
+fn load_dyn_store_from_bytes_at_abi(
+    bytes: &[u8],
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+    abi_version: u32,
 ) -> Result<DynStore, String> {
     let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
     let raw = wire_up_raw(
@@ -1246,7 +1399,7 @@ fn load_dyn_store_from_bytes(
         manifest_kind,
         Some(staged),
     )?;
-    Ok(DynStore { raw })
+    Ok(DynStore::new(raw, abi_version))
 }
 
 /// The platform-native filename for a store plugin built from `crate_name` (e.g. `store_sqlite_plugin`

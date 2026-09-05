@@ -869,7 +869,7 @@ fn dyn_store_with_fake_call() -> Option<DynStore> {
     // Override the call + free seam so responses come from `fake_call` (freed by `fake_free`).
     raw.call = fake_call;
     raw.free = fake_free;
-    Some(DynStore { raw })
+    Some(DynStore::new(raw, busbar_plugin::cold::ABI_VERSION))
 }
 
 /// (1) A GENUINE unsupported-variant signal — the (rebuilt) SDK returns the crisp
@@ -1853,7 +1853,7 @@ fn dyn_example_store_with_fake_call() -> Option<DynStore> {
     .expect("wire up raw");
     raw.call = fake_call;
     raw.free = fake_free;
-    Some(DynStore { raw })
+    Some(DynStore::new(raw, busbar_plugin::cold::ABI_VERSION))
 }
 
 /// Run `op` against a store whose seam returns `(status, body)`, once per shape.
@@ -2096,7 +2096,9 @@ fn event_free_probe() -> SampleEvent {
     }
 }
 
-#[path = "legacy_default_tests.rs"]
-mod legacy_default_tests;
 #[path = "abi2_store_ops_tests.rs"]
 mod abi2_store_ops_tests;
+#[path = "legacy_default_tests.rs"]
+mod legacy_default_tests;
+#[path = "legacy_usage_tests.rs"]
+mod legacy_usage_tests;

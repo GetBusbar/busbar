@@ -7,7 +7,11 @@
 #   2. boot, mint a key, spend through the mock, read /usage
 #   3. KILL, boot again against the SAME store, read the key and its usage back (persistence)
 # Writes $RAW/captured.json: status = 0 (all steps ran) else the failing step number; body = the
-# usage view after restart; effects = every intermediate status and the survived/reset verdict.
+# usage view after restart; effects = every intermediate status and the survived/reset verdict,
+# plus `usage_after_restart` (the whole /usage JSON read back on the second boot — the money the
+# store was supposed to keep) and `store_errors` (how many `store error` lines the two boots
+# logged). Those two are the ones that catch a binary whose store calls are the wrong SHAPE: every
+# request still answers 200 and nothing else in this cell moves.
 #
 # Env from the recorder: BUSBAR_BIN RAW WORK ORACLE_ADMIN_TOKEN; args: <plugin-name> [<settings-json>]
 set -uo pipefail
@@ -96,4 +100,9 @@ step chat_after_restart "$st2"
 step survived "$([ "$k2" = 200 ] && [ "$(jq -r .requests <<<"$u2")" = "$(jq -r .requests <<<"$u1")" ] && echo yes || echo no)"
 kill $pid; wait $pid 2>/dev/null
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
+# Every `store error` line across BOTH boots. A store the binary cannot actually write to still
+# serves 200s and still answers /usage from whatever it holds in memory, so the request statuses
+# alone can look healthy while nothing is being persisted — this is the count that says so. It is a
+# COUNT, not the text: the message wording is the plugin's, but "more than zero" is the finding.
+step store_errors "$(( $(grep -c 'store error' "$W/busbar1.log") + $(grep -c 'store error' "$W/busbar2.log") ))"
 jq -n --argjson eff "$eff" --arg body "$u2" '{status:0, headers:{}, body:$body, effects:($eff | . + {warnings_boot1: $w1})}' --arg w1 "$(grep -ci 'warn' "$W/busbar1.log")" >"$RAW/captured.json"
