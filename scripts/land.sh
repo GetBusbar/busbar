@@ -46,7 +46,7 @@ if [ -n "$tests" ]; then
   args=""; for p in $tests; do args="$args -p $p"; done
   echo "land.sh: cargo test $args"
   # shellcheck disable=SC2086
-  (cd "$here" && cargo test $args 2>&1 | grep -E '^test result|^error(\[|:)|FAILED|panicked' | grep -vE '^test result: ok') && {
+  (cd "$here" && cargo test $args 2>&1 | grep -E '^test result:.* [1-9][0-9]* failed|^error(\[|:)') && {
     echo "land.sh: RED — tests failed in: $tests" >&2; exit 1; }
   # shellcheck disable=SC2086
   (cd "$here" && cargo clippy $args --all-targets -- -D warnings 2>&1 | grep -E '^(warning|error)' | head -5) && {
