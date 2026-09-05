@@ -111,6 +111,24 @@ snapshot() {  # snapshot <dir> <key-id>
     || rm -f "$d/metrics.txt"
 }
 
+# The providers catalog a migrated corpus config should be validated against — mirrors `providers_for`
+# in crates/busbar/tests/migration_corpus.rs so a corpus config is judged against the catalog it
+# actually shipped beside: `bench/latency/config.mock.yaml` names a `mock` provider that exists only
+# in `bench/latency/providers.mock.yaml`, and the oracle's own synthetic six-dialect catalog (see
+# oracle-config.sh) knows no such name — validating against it would report a true statement about the
+# wrong pairing, not a migration defect. Prints an absolute path, or nothing if no sibling exists (the
+# caller then falls back to the oracle's own catalog, which is correct for a plain `config.yaml`).
+corpus_providers_for() {  # <repo-relative corpus config path>
+  local relpath="$1" name tag rest sibling dir candidate f
+  name="$(basename "$relpath")"
+  tag="${name%%_*}"; rest="${name#*_}"
+  dir="${repo}/tests/migration-corpus/providers"
+  sibling="${rest/config/providers}"  # first occurrence only, keeps a `.mock`/`.anthropic` suffix
+  candidate="${dir}/${tag}_${sibling}"
+  if [ -f "$candidate" ]; then echo "$candidate"; return; fi
+  for f in "$dir"/*"$sibling"; do [ -f "$f" ] && { echo "$f"; return; }; done
+}
+
 # ── exec cells: CLI flags, --validate, --migrate-config, boot refusals/warnings ──────────────────
 # The process under test is the binary itself; the "response" is exit code + stdout + stderr.
 #   exec.mode     cli       run once with exec.args, capture, done
@@ -119,7 +137,7 @@ snapshot() {  # snapshot <dir> <key-id>
 #                           spare ports, then stop; capture the log tail
 #   exec.config   baseline | none | missing | migrated:<corpus-path> | mutation:<id> (fixtures/boot-mutations.json)
 record_exec_cell() {  # <id> <cell-json> <raw-dir> <safe>
-  local id="$1" cell="$2" raw="$3" safe="$4" mode cfg cfgfile envkv rc
+  local id="$1" cell="$2" raw="$3" safe="$4" mode cfg cfgfile envkv rc corpus_prov
   mode="$(jq -r '.exec.mode' <<<"$cell")"; cfg="$(jq -r '.exec.config // "baseline"' <<<"$cell")"
   local -a args=() envs=()
   while IFS= read -r a; do args+=("$a"); done < <(jq -r '.exec.args[]' <<<"$cell")
@@ -129,9 +147,11 @@ record_exec_cell() {  # <id> <cell-json> <raw-dir> <safe>
     baseline) cfgfile="$WORK/config.yaml" ;;
     none) cfgfile="" ;;
     missing) cfgfile="$xwork/does-not-exist.yaml" ;;
-    migrated:*) # the corpus file migrated by THIS binary, then validated
+    migrated:*) # the corpus file migrated by THIS binary, then validated against ITS OWN catalog
       "$BIN" --migrate-config "${repo}/${cfg#migrated:}" >"$xwork/migrated.yaml" 2>/dev/null
-      cfgfile="$xwork/migrated.yaml" ;;
+      cfgfile="$xwork/migrated.yaml"
+      corpus_prov="$(corpus_providers_for "${cfg#migrated:}")"
+      [ -n "$corpus_prov" ] && cp "$corpus_prov" "$xwork/providers.yaml" ;;
     mutation:*) python3 "${here}/apply-mutation.py" --baseline "$WORK/config.yaml" --providers "$WORK/providers.yaml" \
         --mutation "${cfg#mutation:}" --out "$xwork" >"$xwork/mutation.env" 2>"$xwork/mutation.err" \
         || { record "$id" SKIP "UNSUPPORTED: $(tr '\n' ' ' <"$xwork/mutation.err" | cut -c1-200)" "mutation could not be applied (named gap)"; return; }
@@ -236,6 +256,8 @@ while IFS= read -r cell; do
   safe="${id//|/__}"
   raw="$OUT/raw/$safe"; mkdir -p "$raw"
   driver="$(jq -r '.driver // "llm"' <<<"$cell")"
+  # `body_lines`: the cell's contract is the ABSENCE of matching lines; the normalizer keeps only those
+  keep_lines="$(jq -r '.body_lines // empty' <<<"$cell")"
   if [ "$(jq -r '.needs_fixture // false' <<<"$cell")" = true ]; then
     record "$id" SKIP "UNSUPPORTED: $(jq -r .why <<<"$cell" | cut -c1-140)" "named gap: the fixture this cell needs is not in the tree yet"; continue
   fi
@@ -360,7 +382,7 @@ PY
   if ! python3 "${here}/capture.py" "$raw/headers" "$status" "$raw/body" "$raw/before" "$raw/after" >"$raw/captured.json" 2>"$raw/capture.err"; then
     record "$id" FAIL "capture.py failed" "$(tail -c 300 "$raw/capture.err")"; continue
   fi
-  if ! python3 "${here}/normalize.py" "$raw/captured.json" --key-id "$kid" >"$OUT/cells/$safe.json" 2>"$raw/normalize.err"; then
+  if ! python3 "${here}/normalize.py" "$raw/captured.json" --key-id "$kid" ${keep_lines:+--keep-body-lines "$keep_lines"} >"$OUT/cells/$safe.json" 2>"$raw/normalize.err"; then
     record "$id" FAIL "normalize.py failed" "$(tail -c 300 "$raw/normalize.err")"; continue
   fi
   usage_note="$(jq -c '.effects.usage' "$OUT/cells/$safe.json")"
