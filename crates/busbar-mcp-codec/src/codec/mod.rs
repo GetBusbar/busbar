@@ -10,8 +10,8 @@
 //! Everything it consumes from the engine comes through `busbar-core`'s public surface; nothing in
 //! `busbar-core` names this crate in production (`git grep busbar_mcp crates/busbar-core/src` is
 //! pinned at zero) — the `busbar` BINARY, the composition root, links `busbar-mcp` and hands
-//! [`crate::PROTO_DECL`] (this module's [`DECL`]) to
-//! the substrate's protocol registry (`busbar_substrate::proto::install_protocols`) at boot. Delete the dependency edge and busbar
+//! [`DECL`] (which `busbar-mcp` re-exports as its `PROTO_DECL`) to
+//! the substrate's protocol registry (`busbar_substrate_values::proto::install_protocols`) at boot. Delete the dependency edge and busbar
 //! still builds, boots, refuses `protocol: mcp` config with the unknown-protocol refusal, and
 //! serves the remaining dialects — that build is a gate, not a thought experiment.
 //!
@@ -21,7 +21,7 @@
 //! operation cells (`tools/call` and the subscription pair) that core resolves through the support
 //! matrix. That is the whole of what `handlers/mcp.rs` was, and it moved here intact.
 //!
-//! It is distinct from the `mcp` PLANE — the sibling [`crate::mcp`] module in THIS crate (~18k lines:
+//! It is distinct from the `mcp` PLANE — the sibling `mcp` module of `busbar-mcp` (~18k lines:
 //! the catalogue, the call log, the client pool and its transports, the config sections, the
 //! ask/approval state, the admin projections). That surface once wired into core through `AppState`
 //! fields, the `tools:` config section, boot hydration, the router mount and the admin API — call
@@ -44,7 +44,7 @@
 //! builds compile these same sources back in as `handlers::mcp` (via `extern crate self as
 //! busbar_core`), so the pre-extraction fixture surface keeps proving what it always proved without
 //! core's PRODUCTION build knowing this dialect exists. That is why every core reference in these
-//! files is spelled through the neutral crates (`busbar_substrate::` / `busbar_api::`) and every self
+//! files is spelled through the neutral crates (`busbar_substrate_values::` / `busbar_api::`) and every self
 //! reference is relative.
 
 pub mod handler;
@@ -63,6 +63,19 @@ use bytes::Bytes;
 /// opposite of OpenAI, and the reason [`handler::McpRequestHandler::resolve_operation`] reads the
 /// body.
 pub(crate) const PATH_MCP: &str = "/mcp";
+
+/// The single MCP protocol revision busbar implements.
+///
+/// ONE revision, deliberately. The conformance suite runs each scenario per revision and one run
+/// does not cover another, so supporting two revisions is two test legs and two wire formats, not a
+/// compatibility shim. `2025-11-25` and earlier are stateful: they have an `initialize` handshake,
+/// protocol sessions and a GET stream, all of which this revision deleted, and building them means
+/// building session machinery this release can otherwise skip entirely.
+///
+/// It lives on the CODEC side of the split because it is protocol vocabulary — the plane's envelope
+/// layer (`busbar_mcp::mcp::envelope`) re-exports it under its historical path, and the conformance
+/// suite of `busbar-plane-mcp`, which may not name the server half, reads it here.
+pub const PROTOCOL_VERSION: &str = "2026-07-28";
 
 /// The JSON-RPC method names this dialect serves, each read off `rmcp`'s own const-string type
 /// rather than spelled again here. `ConstString::VALUE` is a `const`, so these are compile-time
@@ -83,14 +96,14 @@ pub(crate) const METHOD_NOTIFY_RESOURCES_UPDATED: &str = ResourceUpdatedNotifica
 /// MCP'S DECLARATION — and the asymmetry in it is the point. MCP declares a HANDLER and NO CODEC:
 /// its IR is its own, there is no cross-dialect translation into or out of it, and it point-reads no
 /// top-level body key on the pre-materialized path (its method lives in the JSON-RPC envelope, which
-/// `busbar_substrate::ingress::jsonrpc` parses). A registry that could only hold six-of-a-kind would have
+/// `busbar_substrate_values::ingress::jsonrpc` parses). A registry that could only hold six-of-a-kind would have
 /// had to grow a special case for it; this one holds a declaration that says `None` four times.
 ///
 /// Handed to `install_protocols` by the composition root (the `busbar` binary); in `busbar-core`'s
 /// test/`test-support` builds it is instead the cfg-gated built-in row, so the fixture registry the
 /// tests see matches the registry a shipped binary has.
-pub const DECL: busbar_substrate::proto::ProtocolDecl = busbar_substrate::proto::ProtocolDecl {
-    name: "mcp",
+pub const DECL: busbar_substrate_values::proto::ProtocolDecl = busbar_substrate_values::proto::ProtocolDecl {
+    name: crate::PLANE_KEY,
     codec: None,
     handler: Some(&handler::McpRequestHandler),
     verbs: &[
@@ -101,7 +114,7 @@ pub const DECL: busbar_substrate::proto::ProtocolDecl = busbar_substrate::proto:
     streaming_content_type: None,
     array_stream_shim_key: None,
     native_tool_id_prefix: None,
-    ingress_auth: busbar_substrate::proto::IngressAuth::Bearer,
+    ingress_auth: busbar_substrate_values::proto::IngressAuth::Bearer,
     // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve`: MCP presents no
     // dialect-specific egress credential shaping of its own, so it declares no builder — unlike
     // Anthropic, whose api-key/Bearer disambiguation retired its arm in core.
@@ -122,15 +135,15 @@ pub const DECL: busbar_substrate::proto::ProtocolDecl = busbar_substrate::proto:
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: axum::http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
-    egress_user_agent: busbar_substrate::proxy::EGRESS_UA_DEFAULT,
+    egress_user_agent: busbar_substrate_values::proxy::EGRESS_UA_DEFAULT,
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        axum::http::StatusCode::UNAUTHORIZED,
-        busbar_substrate::proto::ERR_TYPE_AUTHENTICATION,
+        http::StatusCode::UNAUTHORIZED,
+        busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[],
@@ -139,7 +152,7 @@ pub const DECL: busbar_substrate::proto::ProtocolDecl = busbar_substrate::proto:
     has_native_path_not_found: false,
     // MCP ships no cross-dialect codec, so this is never consulted for a translated egress; it
     // carries the neutral SSE default the by-name `egress_accept` fallback would have returned.
-    egress_stream_accept: busbar_substrate::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_substrate_values::proxy::TEXT_EVENT_STREAM,
     // MCP is not an LLM chat dialect and serves no `/v1/models` discovery surface.
     models_list_envelope: None,
     // MCP is identified by its EXPLICIT mount (`/mcp`), never by a wire fingerprint — so it claims
@@ -204,7 +217,7 @@ impl McpNotification {
     }
 
     /// Read a notification that has ALREADY been established as a JSON-RPC notification envelope by
-    /// `busbar_substrate::ingress::jsonrpc`. `None` means "a notification this protocol does not carry",
+    /// `busbar_substrate_values::ingress::jsonrpc`. `None` means "a notification this protocol does not carry",
     /// which is the correct answer to give and the correct thing to do nothing about: section 4.1
     /// forbids replying, so an unknown notification is dropped rather than refused.
     pub fn read(method: &str, params: Option<&serde_json::Value>) -> Option<Self> {

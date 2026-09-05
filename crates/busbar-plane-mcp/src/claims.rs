@@ -124,7 +124,7 @@ mod tests {
     /// nothing is served at.
     #[test]
     fn the_default_mount_is_the_codecs_own() {
-        let codec = include_str!("../../busbar-mcp/src/codec/mod.rs");
+        let codec = include_str!("../../busbar-mcp-codec/src/codec/mod.rs");
         assert!(
             codec.contains(&format!(r#"PATH_MCP: &str = "{DEFAULT_MOUNT}""#)),
             "the codec no longer names {DEFAULT_MOUNT} as its path"
@@ -165,11 +165,11 @@ mod tests {
     fn the_plane_key_is_the_codecs_own() {
         assert_eq!(
             <crate::McpPlane as busbar_contract::plane::PlaneMeta>::KEY,
-            busbar_mcp::PLANE_DECL.key
+            busbar_mcp_codec::PLANE_KEY
         );
         // And the protocol declaration names the same thing, so the two halves of the codec agree
         // with the plane and with each other.
-        assert_eq!(busbar_mcp::PROTO_DECL.name, busbar_mcp::PLANE_DECL.key);
+        assert_eq!(busbar_mcp_codec::PROTO_DECL.name, busbar_mcp_codec::PLANE_KEY);
     }
 
     /// Every claim names one of the three declared transports and nothing else.

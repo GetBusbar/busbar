@@ -9,12 +9,12 @@
 #[cfg(any(test, feature = "test-support"))]
 use bytes::Bytes;
 
-use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler};
-use busbar_substrate::ir::handle::IrHandle;
-use busbar_substrate::ir::invoke::{InvokeReq, InvokeResp};
-use busbar_substrate::ir::neutral_handles::{InvokeReqHandle, InvokeRespHandle};
+use busbar_substrate_values::handlers::{CodecError, IngressReject, OperationHandler};
+use busbar_substrate_values::ir::handle::IrHandle;
+use busbar_substrate_values::ir::invoke::{InvokeReq, InvokeResp};
+use busbar_substrate_values::ir::neutral_handles::{InvokeReqHandle, InvokeRespHandle};
 #[cfg(any(test, feature = "test-support"))]
-use busbar_substrate::wire::WireBody;
+use busbar_substrate_values::wire::WireBody;
 
 #[cfg(any(test, feature = "test-support"))]
 use super::METHOD_TOOLS_CALL;

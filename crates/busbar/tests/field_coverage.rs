@@ -220,13 +220,19 @@ fn every_carried_claim_names_a_real_test() {
     // dialect's instruments move out with its codec, and a claim carried by a moved test is still
     // carried. The LLM protocol is TWO crates now — the engine kept `busbar-llm` and the six
     // dialect codecs (with the great majority of these instruments) moved to `busbar-llm-codec` —
-    // so both roots are read.
+    // so both roots are read. The SAME split was then repeated for MCP, A2A and voice, so each of
+    // those protocols is two roots here for the same reason: an instrument that travelled with its
+    // codec is still an instrument, and a scanner that read only the half left behind would call it
+    // a ghost.
     let mut haystack = String::new();
     let mut stack = vec![
         repo_root().join("crates/busbar-core/src"),
         repo_root().join("crates/busbar/src"),
         repo_root().join("crates/busbar-llm/src"),
         repo_root().join("crates/busbar-llm-codec/src"),
+        repo_root().join("crates/busbar-mcp-codec/src"),
+        repo_root().join("crates/busbar-a2a-codec/src"),
+        repo_root().join("crates/busbar-voice-codec/src"),
     ];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {

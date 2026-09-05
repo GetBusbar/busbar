@@ -100,11 +100,15 @@ DIALECTS="openai gemini anthropic bedrock cohere responses"
 . "$(dirname "$0")/plane-keys.sh"
 NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/busbar-substrate-values/src crates/api/src"
 NEUTRAL_NEEDLES="$DIALECTS $PLANE_KEYS_PROTOCOL"
-MCP_ROOT="crates/busbar-mcp/src"
+# TWO ROOTS PER PLANE since the codec split: each protocol plugin kept its I/O half under the
+# historical crate name and shed its pure half into a `-codec` crate a PURE kind may name. The gate
+# scans sources, not manifests, so both halves are named or the moved files stop being scanned —
+# which is the failure mode a split invites and the reason these are lists.
+MCP_ROOT="crates/busbar-mcp/src crates/busbar-mcp-codec/src"
 MCP_NEEDLES="$DIALECTS $(plane_keys_other mcp)"
-A2A_ROOT="crates/busbar-a2a/src"
+A2A_ROOT="crates/busbar-a2a/src crates/busbar-a2a-codec/src"
 A2A_NEEDLES="$DIALECTS $(plane_keys_other a2a)"
-VOICE_ROOT="crates/busbar-voice/src"
+VOICE_ROOT="crates/busbar-voice/src crates/busbar-voice-codec/src"
 VOICE_NEEDLES="$DIALECTS $(plane_keys_other voice)"
 
 # The neutral Operation enum — generic op vocabulary, explicitly in-scope-neutral. Excluded whole.
@@ -125,7 +129,9 @@ OPERATION_EXCLUDE="crates/api/src/operation.rs"
 #               the unrelated `mcp` import at the top of the file is NOT covered and still trips.
 ALLOWLIST="responses|crates/busbar-core/src/admin/|
 responses|crates/busbar-mcp/src/|
+responses|crates/busbar-mcp-codec/src/|
 responses|crates/busbar-a2a/src/|
+responses|crates/busbar-a2a-codec/src/|
 anthropic|crates/busbar-core/src/config/mod.rs|1291
 mcp|crates/busbar-core/src/config/mod.rs|2974
 mcp|crates/busbar-core/src/config/mod.rs|5017"

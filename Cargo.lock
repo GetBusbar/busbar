@@ -678,6 +678,7 @@ dependencies = [
  "busbar-api",
  "busbar-core",
  "busbar-llm",
+ "busbar-mcp-codec",
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
@@ -705,6 +706,19 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "busbar-mcp-codec"
+version = "1.6.0"
+dependencies = [
+ "busbar-api",
+ "busbar-substrate-values",
+ "bytes",
+ "http",
+ "rmcp",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -739,7 +753,7 @@ name = "busbar-plane-mcp"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-mcp",
+ "busbar-mcp-codec",
  "serde_json",
 ]
 

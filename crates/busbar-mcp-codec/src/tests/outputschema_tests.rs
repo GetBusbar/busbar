@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for [`crate::mcp::outputschema`] — the check that keeps the promise `outputSchema` makes.
+//! Tests for [`crate::outputschema`] — the check that keeps the promise `outputSchema` makes.
 //!
 //! The suite is arranged around this module's ONE-SIDED rule, because that rule is the whole of its
 //! safety argument: a missed violation lets a lie through, but a FALSE violation turns a working
@@ -9,7 +9,7 @@
 //! DOES model there is a test that it catches a violation, and for the keywords it does NOT model
 //! there is a test that it stays silent rather than guessing.
 
-use crate::mcp::outputschema::check;
+use crate::outputschema::check;
 use serde_json::json;
 
 #[test]

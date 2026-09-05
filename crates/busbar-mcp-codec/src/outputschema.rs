@@ -62,7 +62,7 @@ const MAX_ERRORS: usize = 8;
 /// `Ok(())` means "no violation this validator can see" — which, given the one-sided rule above, is
 /// weaker than "conforms" and is documented as such at the call site. `Err` carries a short,
 /// operator-readable list of the violations found.
-pub(crate) fn check(value: &Value, schema: &Value) -> Result<(), String> {
+pub fn check(value: &Value, schema: &Value) -> Result<(), String> {
     let mut errors = Vec::new();
     walk(value, schema, "$", 0, &mut errors);
     if errors.is_empty() {

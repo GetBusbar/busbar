@@ -11,12 +11,12 @@ use bytes::Bytes;
 
 use rmcp::model::{SubscribeRequestParams, UnsubscribeRequestParams};
 
-use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler};
-use busbar_substrate::ir::handle::IrHandle;
-use busbar_substrate::ir::neutral_handles::{SubscribeReqHandle, SubscribeRespHandle};
-use busbar_substrate::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
+use busbar_substrate_values::handlers::{CodecError, IngressReject, OperationHandler};
+use busbar_substrate_values::ir::handle::IrHandle;
+use busbar_substrate_values::ir::neutral_handles::{SubscribeReqHandle, SubscribeRespHandle};
+use busbar_substrate_values::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
 #[cfg(any(test, feature = "test-support"))]
-use busbar_substrate::wire::WireBody;
+use busbar_substrate_values::wire::WireBody;
 
 use super::{METHOD_RESOURCES_SUBSCRIBE, METHOD_RESOURCES_UNSUBSCRIBE};
 

@@ -43,6 +43,12 @@ plane_src_roots() {   # echo "crates/busbar-<k>/src …" for every plane key, ca
   # have to be named here or the bulk of the LLM plane would stop being scanned — which is the
   # failure mode a split invites and the reason this line exists.
   out="${out} crates/busbar-llm-codec/src"
+  # The SAME split, repeated for the other three planes: `busbar-mcp`, `busbar-a2a` and
+  # `busbar-voice` each kept their I/O half (the axum routes, the stdio serve loop, the tokio
+  # transports, the telephony dial and the WS accept) and shed their pure half — the codecs, the
+  # record vocabularies, the duplex IR and the dialect grammars — into a `-codec` crate a PURE kind
+  # may name. Same reason as the line above: the gate scans sources, not manifests.
+  out="${out} crates/busbar-mcp-codec/src crates/busbar-a2a-codec/src crates/busbar-voice-codec/src"
   printf '%s' "$out"
 }
 

@@ -41,8 +41,10 @@ path = "src/lib.rs"
 # THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
 busbar-contract = { path = "../busbar-contract" }
 # THE CODEC. Read-only from here: this crate calls the JSON-RPC envelope vocabulary, the method
-# names and the notification codec, and edits none of them.
-busbar-mcp = { path = "../busbar-mcp" }
+# names and the notification codec, and edits none of them. `busbar-mcp-codec`, NOT `busbar-mcp`:
+# the codec split out of the plugin so a PURE kind can name it; the axum routes, the stdio serve
+# loop and the tokio client transports stayed in `busbar-mcp`, and this edge names only the codec.
+busbar-mcp-codec = { path = "../busbar-mcp-codec" }
 # The object notation the codec speaks. The adapter hands values across the seam and never invents
 # a second parser.
 serde_json = { workspace = true }

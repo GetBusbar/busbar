@@ -24,7 +24,7 @@
 //! exactly as `{"messages": [...]}` is OpenAI's and `{"contents": [...]}` is Gemini's, and it is the
 //! codec's whole job. It is NOT a reason for the engine to know MCP exists.
 //!
-//! **The envelope is read by `busbar_substrate::ingress::jsonrpc`, not re-implemented here.** That module
+//! **The envelope is read by `busbar_substrate_values::ingress::jsonrpc`, not re-implemented here.** That module
 //! exists because the envelope had previously been parsed in two places that disagreed — the A2A
 //! reader checked no `jsonrpc` member at all, and a malformed envelope was relayed to a backend
 //! agent. One reader, two protocols.
@@ -44,7 +44,7 @@
 //! cells already read — not so that the surface can be claimed before it exists.
 
 use busbar_api::operation::Operation;
-use busbar_substrate::handlers::{Cell, OperationHandler, RequestHandler};
+use busbar_substrate_values::handlers::{Cell, OperationHandler, RequestHandler};
 
 use super::invoke::InvokeOperation;
 use super::subscribe::SubscribeOperation;
@@ -91,10 +91,10 @@ impl RequestHandler for McpRequestHandler {
     }
 
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        busbar_substrate::handlers::cell_of(CELLS, op)
+        busbar_substrate_values::handlers::cell_of(CELLS, op)
     }
 
-    fn upstream_path(&self, _ctx: &busbar_substrate::wire::EgressCtx) -> String {
+    fn upstream_path(&self, _ctx: &busbar_substrate_values::wire::EgressCtx) -> String {
         PATH_MCP.into()
     }
 

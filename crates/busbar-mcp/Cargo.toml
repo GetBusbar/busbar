@@ -44,6 +44,11 @@ busbar-core = { path = "../busbar-core", default-features = false, features = ["
 # `plane-mcp` so the plane-gated items (the `HostlessEgress` seam, the relocated leaves) are present
 # in this crate's own default build.
 busbar-substrate = { path = "../busbar-substrate", features = ["plane-mcp"] }
+# THE CODEC. The pure half of this plugin, split out so `busbar-plane-mcp` can name the protocol
+# declaration, the JSON-RPC dialect, the two operation cells and the record vocabulary without
+# pulling this crate's axum routes, stdio serve loop and tokio transports into a pure kind's
+# closure. Every module that moved is re-exported from this crate's `lib.rs` under its old name.
+busbar-mcp-codec = { path = "../busbar-mcp-codec" }
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
 # The specification authors' own crate, pinned narrow (see busbar-core/Cargo.toml's rationale): the

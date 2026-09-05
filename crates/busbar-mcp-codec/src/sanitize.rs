@@ -63,7 +63,7 @@
 /// formatting run BEFORE it at every call site), so nothing is concatenated onto a normalised value
 /// and re-served; within the one string being normalised, an unterminated `<letter` provably has no
 /// `>` after it and stays inert.
-pub(crate) fn normalise(input: &str) -> String {
+pub fn normalise(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out = String::with_capacity(input.len());
     let mut i = 0usize;
@@ -89,7 +89,7 @@ pub(crate) fn normalise(input: &str) -> String {
 }
 
 /// [`normalise`] applied to an optional string, which is the shape every catalogue field has.
-pub(crate) fn normalise_opt(input: Option<&str>) -> Option<String> {
+pub fn normalise_opt(input: Option<&str>) -> Option<String> {
     input.map(normalise)
 }
 
@@ -100,7 +100,7 @@ pub(crate) fn normalise_opt(input: Option<&str>) -> Option<String> {
 /// deliberately: a key is a schema element the caller's own code indexes by, and rewriting one turns
 /// a sanitiser into a data-corruption bug — whereas a key containing markup is not a channel into a
 /// model's instruction stream in the way a value is.
-pub(crate) fn normalise_json(value: &serde_json::Value) -> serde_json::Value {
+pub fn normalise_json(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::String(s) => serde_json::Value::String(normalise(s)),
         serde_json::Value::Array(items) => {

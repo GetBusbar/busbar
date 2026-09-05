@@ -24,15 +24,26 @@
 //! composition root — links it and hands [`PROTO_DECL`] to
 //! the substrate's protocol registry (`busbar_substrate::proto::install_protocols`) at boot.
 
-pub mod codec;
+/// THE CODEC, THE RECORD VOCABULARY AND THE TWO PURE CONTENT PASSES, RE-EXPORTED FROM
+/// `busbar-mcp-codec`.
+///
+/// The protocol declaration, the JSON-RPC dialect and notification pair, the `tools/call` and
+/// subscription operation cells, the durable record types, the content sanitizer and the
+/// structured-output schema check all live in `busbar-mcp-codec` now — the pure half of this
+/// plugin, split out so `busbar-plane-mcp` can name the codec without linking this crate's axum
+/// routes, stdio serve loop and tokio transports. They are re-exported HERE, under their old names,
+/// so every caller that spells `busbar_mcp::codec::…` or `busbar_mcp::record::…` resolves exactly
+/// what it always did. The split is a MOVE: no item changed shape crossing it.
+pub use busbar_mcp_codec::{codec, outputschema, record, sanitize};
+
 pub mod diagnostics;
 pub mod mcp;
-pub mod record;
 
 /// THE MCP PLANE'S OWN DURABLE RECORD TYPES — relocated here from `busbar-api` (1.7.0 plane
-/// extraction), re-exported at the crate root so `busbar_mcp::McpCallRecord` /
-/// `busbar_mcp::McpDemotionRow` resolve. The neutral crates name neither.
-pub use record::{McpCallRecord, McpDemotionRow};
+/// extraction), then out again with the codec, re-exported at the crate root so
+/// `busbar_mcp::McpCallRecord` / `busbar_mcp::McpDemotionRow` resolve. The neutral crates name
+/// neither.
+pub use busbar_mcp_codec::{McpCallRecord, McpDemotionRow};
 
 /// THE MCP PLANE'S TEST-KIT (feature `test-support` only): the fixture builders that name MCP plane
 /// types, kept on the plane so busbar-core's neutral `test_support::TestApp` names none of them. This
@@ -52,4 +63,4 @@ pub use diagnostics::DIAGNOSTICS;
 /// MCP'S PROTOCOL DECLARATION — the `&'static ProtocolDecl` the composition root installs. Re-exported
 /// at the crate root so the `busbar` binary names one stable path (`busbar_mcp::PROTO_DECL`) and does
 /// not reach into the `codec` module for it. See [`codec::DECL`] for the declaration itself.
-pub use codec::DECL as PROTO_DECL;
+pub use busbar_mcp_codec::PROTO_DECL;

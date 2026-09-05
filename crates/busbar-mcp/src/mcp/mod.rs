@@ -121,7 +121,9 @@
 /// transport is not a wire format, so this list has one entry and the plane earns no superset IR.
 pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
     busbar_substrate::plane::registry::PlaneDecl {
-        key: "mcp",
+        // THE KEY IS THE CODEC'S OWN, named once on the pure side of the split so this declaration,
+        // the protocol declaration and the contract plane in `busbar-plane-mcp` cannot drift apart.
+        key: busbar_mcp_codec::PLANE_KEY,
         // A MOUNTED plane, not the fallback catch-all.
         fallback: false,
         config_section: "tools",
@@ -872,14 +874,20 @@ pub mod method;
 /// The check that keeps the promise `outputSchema` makes. Publishing a schema makes conforming
 /// structured results a MUST for the server that published it, and on this plane that server is
 /// busbar — while the value itself comes from an upstream that can return whatever it likes.
-pub(crate) mod outputschema;
+/// MOVED to `busbar-mcp-codec` (it is a total function of a schema and a value, so it travelled
+/// with the codec); re-exported here under its old in-crate path so `super::outputschema::check`
+/// and `crate::mcp::outputschema::check` resolve unchanged.
+pub(crate) use busbar_mcp_codec::outputschema;
 pub(crate) mod reroute;
 pub(crate) mod resource;
 pub(crate) mod roots;
 /// The `sampling/createMessage` SATISFIER and the per-upstream budget it spends — the other
 /// operator-declared answer to an upstream's ask, beside `roots`.
 pub(crate) mod sampling;
-pub(crate) mod sanitize;
+/// MOVED to `busbar-mcp-codec` (it is a total function of a string, so it travelled with the
+/// codec); re-exported here under its old in-crate path so `super::sanitize::…` and
+/// `crate::mcp::sanitize::…` resolve unchanged.
+pub(crate) use busbar_mcp_codec::sanitize;
 /// THE POST's SSE RESPONSE FRAMING and the `notifications/message` records that ride it. This
 /// revision removed the GET stream, not Server-Sent Events — see the module header.
 pub(crate) mod sse;

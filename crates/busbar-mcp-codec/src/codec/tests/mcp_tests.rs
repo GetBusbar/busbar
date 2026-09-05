@@ -10,9 +10,9 @@ use super::handler::McpRequestHandler;
 use super::invoke::InvokeOperation;
 use super::*;
 use busbar_api::operation::Operation;
-use busbar_substrate::handlers::{OperationHandler, RequestHandler};
-use busbar_substrate::ir::invoke::InvokeResp;
-use busbar_substrate::ir::subscribe::SubscribeIntent;
+use busbar_substrate_values::handlers::{OperationHandler, RequestHandler};
+use busbar_substrate_values::ir::invoke::InvokeResp;
+use busbar_substrate_values::ir::subscribe::SubscribeIntent;
 
 fn call_wire(params: serde_json::Value) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
@@ -347,16 +347,16 @@ fn a_registration_record_is_carried_through_untouched() {
 /// otherwise see it.
 #[test]
 fn a_subscription_is_flat_metered_rather_than_free() {
-    let ir = busbar_substrate::ir::subscribe::SubscribeResp {
+    let ir = busbar_substrate_values::ir::subscribe::SubscribeResp {
         registration: None,
         extra: Default::default(),
     };
     assert!(
         matches!(
-            busbar_substrate::ir::handle::IrHandle::billing(
-                &busbar_substrate::ir::neutral_handles::SubscribeRespHandle(ir)
+            busbar_substrate_values::ir::handle::IrHandle::billing(
+                &busbar_substrate_values::ir::neutral_handles::SubscribeRespHandle(ir)
             ),
-            Some(busbar_substrate::billing::Billing::Flat)
+            Some(busbar_substrate_values::billing::Billing::Flat)
         ),
         "a registration bills one unit, so it lands on the same budget tree as every other call"
     );

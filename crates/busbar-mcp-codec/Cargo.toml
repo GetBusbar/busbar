@@ -1,0 +1,65 @@
+# busbar-mcp-codec — THE MCP WIRE CODEC, with nothing that opens anything.
+#
+# WHY THIS CRATE EXISTS. `busbar-mcp` was two things wearing one name: the MCP protocol codec (the
+# `ProtocolDecl`, the JSON-RPC dialect, the `tools/call` and subscription operation cells, the
+# content sanitizer and the structured-output schema check) and the MCP PLANE that carries those
+# over the network (the axum route mount, the stdio serve loop, the client pool and its tokio
+# transports, the upstream token exchange). The MCP PLANE CRATE (`busbar-plane-mcp`) adapts the
+# first and must never link the second — a plane is a pure kind, and the plane's HTTP stack put
+# `hyper`, `reqwest`, `axum` and a socket-capable `tokio` in the pure kind's transitive closure.
+# This crate is the first half, so `busbar-plane-mcp` can name the codec without naming the server.
+#
+# THE RULE THIS CRATE KEEPS. No `hyper`, no `reqwest`, no `axum`, no `tokio`, and no
+# `std::{net,fs,process,env}` in its own dependencies or its own source. The `http` crate (types
+# only — `StatusCode`) replaces what used to be reached as `axum::http::*`: the same types, from the
+# crate that defines them, without axum's server.
+#
+# WHAT STAYED BEHIND in `busbar-mcp`: the plane — the catalogue, the call log, the client pool and
+# its transports, the config sections, boot hydration, the router mount, the stdio serve loop and
+# the admin API. `busbar-mcp` depends on this crate and re-exports every module that moved, so a
+# caller that named `busbar_mcp::codec::…` or `busbar_mcp::record::…` still resolves it.
+[package]
+name = "busbar-mcp-codec"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+rust-version = "1.97"
+description = "The MCP wire codec for busbar: the protocol declaration, the JSON-RPC dialect and notification codec, the tools/call and subscription operation cells, the durable record vocabulary, the content sanitizer and the structured-output schema check — the pure half of the MCP protocol, with no I/O in its closure."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_mcp_codec"
+path = "src/lib.rs"
+
+[dependencies]
+# The NEUTRAL ABI, PURE HALF, NAMED DIRECTLY. Every value family the codec speaks — the protocol
+# declaration and registry, the IR handles, the handler matrix, the wire body types, the billing
+# carrier — is named at its canonical `busbar_substrate_values::` / `busbar_api::` home.
+#
+# `busbar-substrate-values` and NOT `busbar-substrate`: the parent crate also carries the egress
+# engine (hyper, hyper-util, hyper-rustls, reqwest, a socket-capable tokio), and a plane is a PURE
+# kind whose ENTIRE transitive closure is scanned — with one whole-workspace metadata resolve
+# unifying features, so no gate could have kept the engine out of this crate's closure while the
+# values lived beside it. Nothing here may take a `busbar-substrate` edge back.
+busbar-substrate-values = { path = "../busbar-substrate-values", default-features = false }
+busbar-api = { path = "../api" }
+# The specification authors' own crate, pinned narrow (see busbar-core/Cargo.toml's rationale): the
+# codec takes the protocol VOCABULARY — MCP method names and parameter shapes — from it and nothing
+# else, so a name the SDK retires stops compiling here instead of being served.
+rmcp = { workspace = true }
+# HTTP VOCABULARY ONLY — `StatusCode`, for the declaration's quota/auth-failure status fields. This
+# is the crate axum re-exports as `axum::http`; naming it directly is what lets this crate drop axum
+# (and with it hyper, tower and a socket-capable tokio) out of the plane's closure.
+http = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+# Pass-through so a dependent (`busbar-mcp`) can ask for the neutral test surface — the same shape
+# `busbar-llm-codec` exposes. Forwards ONLY to the values crate's test seams.
+test-support = ["busbar-substrate-values/test-support"]
+
+[dev-dependencies]
+serde_json = { workspace = true }

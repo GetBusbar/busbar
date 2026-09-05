@@ -149,7 +149,7 @@ mod tests {
     /// The registry key is the codec's own.
     #[test]
     fn the_key_is_the_codecs_own() {
-        assert_eq!(McpPlane::KEY, busbar_mcp::PLANE_DECL.key);
+        assert_eq!(McpPlane::KEY, busbar_mcp_codec::PLANE_KEY);
     }
 
     /// The design's plane table gives this protocol exactly these two classes.
