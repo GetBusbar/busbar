@@ -178,7 +178,11 @@ fn blank_volatile(line: &str) -> String {
     if let Some(pos) = line.find("diag=BUSBAR-") {
         let after = &line[pos + "diag=BUSBAR-".len()..];
         let digits = after.chars().take_while(char::is_ascii_digit).count();
-        let start = if line[..pos].ends_with(' ') { pos - 1 } else { pos };
+        let start = if line[..pos].ends_with(' ') {
+            pos - 1
+        } else {
+            pos
+        };
         line.replace_range(start..pos + "diag=BUSBAR-".len() + digits, "");
     }
     line
@@ -307,7 +311,9 @@ fn boot_lines_match_1_5_5_shape() {
     // Same treatment as `lines`: the two "busbar listening" lines' relative order is a thread race,
     // not a contract — sort both sides the same way so the assertion pins the SET, not a coin flip.
     let mut expected = expected;
-    sort_consecutive_runs(&mut expected, |l| l.contains("INFO busbar listening listen="));
+    sort_consecutive_runs(&mut expected, |l| {
+        l.contains("INFO busbar listening listen=")
+    });
 
     assert_eq!(
         lines, expected,

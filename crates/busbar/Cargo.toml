@@ -75,6 +75,24 @@ busbar-unit-trust = { path = "../busbar-unit-trust" }
 busbar-unit-usage = { path = "../busbar-unit-usage" }
 busbar-unit-verbs = { path = "../busbar-unit-verbs" }
 busbar-unit-wal = { path = "../busbar-unit-wal" }
+# The five planes. The root is the only thing that knows both a plane's type (and therefore its
+# `PlaneMeta` associated constants, which a `dyn Plugin` cannot read) and its registry key, so the
+# root is what pairs them into the claim slice the boot check reads.
+busbar-plane-llm = { path = "../busbar-plane-llm" }
+busbar-plane-mcp = { path = "../busbar-plane-mcp" }
+busbar-plane-a2a = { path = "../busbar-plane-a2a" }
+busbar-plane-voice = { path = "../busbar-plane-voice" }
+busbar-plane-admin = { path = "../busbar-plane-admin" }
+# The seven transports. Composition is an edge that does not exist as a Cargo dependency — a
+# transport may not name the layer beneath it — so the root supplies each composing transport its
+# lower layer as a constructor argument, which is why every one of them is named here.
+busbar-transport-tcp = { path = "../busbar-transport-tcp" }
+busbar-transport-tls = { path = "../busbar-transport-tls" }
+busbar-transport-http = { path = "../busbar-transport-http" }
+busbar-transport-sse = { path = "../busbar-transport-sse" }
+busbar-transport-ws = { path = "../busbar-transport-ws" }
+busbar-transport-grpc = { path = "../busbar-transport-grpc" }
+busbar-transport-stdio = { path = "../busbar-transport-stdio" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 axum = { workspace = true }
 tracing = { workspace = true }

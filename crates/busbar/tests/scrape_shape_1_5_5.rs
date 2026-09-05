@@ -166,7 +166,9 @@ fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() 
         &format!("127.0.0.1:{data_port}"),
         "POST",
         "/v1/messages",
-        Some(r#"{"model":"test-model","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}"#),
+        Some(
+            r#"{"model":"test-model","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}"#,
+        ),
         Some(&token),
     );
     // The scrape (key-authenticated on the data listener in 1.5.5). Until the recorder is installed

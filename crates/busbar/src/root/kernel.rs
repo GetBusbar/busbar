@@ -44,8 +44,9 @@
 //! been switched over.
 
 use busbar_caps::{
-    Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode, Hold, Meter,
-    Outcome, PrincipalId, Refusal, Route, UnitToken, UsageToken, VerifiedDestination, Verify,
+    Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode, Hold,
+    Meter, Outcome, PrincipalId, Refusal, Route, UnitToken, UsageToken, VerifiedDestination,
+    Verify,
 };
 use busbar_kernel::inflight::ArrivalDoor;
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
