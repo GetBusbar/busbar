@@ -361,13 +361,12 @@ fn now_unix_secs() -> u64 {
 /// and an `input_tokens_details` gated on a cache hit, so a client on the official SDK got a
 /// `ValidationError` and the missing-detail-objects shape was a distinguishability tell.
 ///
-/// SCHEMA FIDELITY: the REAL Responses usage schema defines EXACTLY
-/// `input_tokens_details.cached_tokens` and `output_tokens_details.reasoning_tokens` - there is NO
-/// `cache_write_tokens` field (unlike the Chat Completions `prompt_tokens_details`, the Responses
-/// detail objects carry only `cached_tokens`). An earlier revision fabricated a non-native
-/// `cache_write_tokens` inside `input_tokens_details`, an EXTRA key a native Responses body never
-/// emits - itself a distinguishability tell and a decode surprise for a strict `extra="forbid"`
-/// model. It is removed here; cache-creation tokens still fold into the `input_tokens` TOTAL below.
+/// SCHEMA FIDELITY: the pinned OpenAI OpenAPI spec (`ResponseUsage`) requires BOTH
+/// `input_tokens_details.cached_tokens` AND `input_tokens_details.cache_write_tokens`, plus
+/// `output_tokens_details.reasoning_tokens`. An earlier revision dropped `cache_write_tokens` on
+/// the belief that the schema did not define it; the current published schema lists it as a
+/// required member, so it is emitted again here (the cache-creation count when the source reported
+/// one, `0` otherwise) and cache-creation tokens ALSO still fold into the `input_tokens` TOTAL below.
 ///
 /// The IR stores UNCACHED input, but the Responses `input_tokens` is a TOTAL that includes the cached
 /// prefix, so `cache_read` (+ `cache_creation`) are added back. `cached_tokens` mirrors the cache-read
@@ -388,6 +387,7 @@ fn build_responses_usage(usage: &crate::ir::IrUsage) -> serde_json::Value {
         "input_tokens": input_total,
         "input_tokens_details": {
             "cached_tokens": cache_read,
+            "cache_write_tokens": cache_write,
         },
         "output_tokens": usage.output_tokens,
         "output_tokens_details": {
@@ -395,6 +395,81 @@ fn build_responses_usage(usage: &crate::ir::IrUsage) -> serde_json::Value {
         },
         "total_tokens": total,
     })
+}
+
+/// The Responses `usage` object for a response that has counted nothing yet (the opening
+/// `response.created` skeleton). The spec types `Response.usage` as a non-nullable `ResponseUsage`,
+/// so when the key is present it must be an object with every required member: all zeros here.
+fn zero_responses_usage() -> serde_json::Value {
+    build_responses_usage(&crate::ir::IrUsage {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail::default(),
+    })
+}
+
+/// Fill in the members the pinned spec marks REQUIRED on every `Response` object that the writer
+/// cannot derive from the IR: the request-echo fields (`instructions`, `tools`, `tool_choice`,
+/// `parallel_tool_calls`, `metadata`, `temperature`, `top_p`) and the nullable
+/// `incomplete_details`. Each is inserted ONLY when absent, so an arm that already set a real value
+/// (an `incomplete_details` object on a truncated response) keeps it.
+///
+/// The IR response carries no echo of the request it answered, so the values are the spec's own
+/// defaults: `instructions: null`, `tools: []`, `tool_choice: "auto"`, `parallel_tool_calls: true`,
+/// `metadata: {}`, `temperature: 1`, `top_p: 1`. A same-protocol passthrough never reaches this
+/// writer (the upstream body is forwarded verbatim), so a real echo is preserved wherever one exists.
+fn fill_required_response_members(obj: &mut serde_json::Map<String, serde_json::Value>) {
+    let defaults: [(&str, serde_json::Value); 8] = [
+        ("incomplete_details", serde_json::Value::Null),
+        ("instructions", serde_json::Value::Null),
+        ("tools", serde_json::json!([])),
+        ("tool_choice", serde_json::json!("auto")),
+        ("parallel_tool_calls", serde_json::json!(true)),
+        ("metadata", serde_json::json!({})),
+        ("temperature", serde_json::json!(1.0)),
+        ("top_p", serde_json::json!(1.0)),
+    ];
+    for (key, value) in defaults {
+        obj.entry(key.to_string()).or_insert(value);
+    }
+}
+
+/// Neutral IR logprobs in the Responses `LogProb` shape carried on an `output_text` content part
+/// (`token`, `logprob`, `bytes`, `top_logprobs[{token, logprob, bytes}]`). This is the same
+/// per-token entry the Chat Completions writer emits, so the Chat encoder builds it and the
+/// `content` array is lifted out. Empty input yields `[]`, the spec-required present-but-empty form.
+fn write_responses_part_logprobs(lps: &[crate::ir::IrTokenLogprob]) -> serde_json::Value {
+    if lps.is_empty() {
+        return serde_json::json!([]);
+    }
+    super::openai_chat::write_openai_logprobs(lps)
+        .get_mut("content")
+        .map(serde_json::Value::take)
+        .unwrap_or_else(|| serde_json::json!([]))
+}
+
+/// Neutral IR logprobs in the Responses `ResponseLogProb` shape carried on the streaming
+/// `output_text.delta` / `output_text.done` events (`token`, `logprob`,
+/// `top_logprobs[{token, logprob}]` — no `bytes`). Empty input yields `[]`.
+fn write_responses_event_logprobs(lps: &[crate::ir::IrTokenLogprob]) -> serde_json::Value {
+    let entries: Vec<serde_json::Value> = lps
+        .iter()
+        .map(|lp| {
+            let top: Vec<serde_json::Value> = lp
+                .top
+                .iter()
+                .map(|t| serde_json::json!({ "token": t.token, "logprob": t.logprob }))
+                .collect();
+            serde_json::json!({
+                "token": lp.token,
+                "logprob": lp.logprob,
+                "top_logprobs": top,
+            })
+        })
+        .collect();
+    serde_json::Value::Array(entries)
 }
 
 /// Synthesize a protocol-correct Responses id (`resp_<opaque base62>`) for cross-protocol responses
@@ -1097,6 +1172,13 @@ pub struct ResponsesWriter {
     /// is accumulated here until `BlockStop` builds that part. Dropping it, as the writer used to,
     /// lost every grounding source on any cross-protocol stream into Responses.
     citation_accum: std::sync::Mutex<std::collections::BTreeMap<usize, Vec<crate::ir::IrCitation>>>,
+    /// Per-stream buffer of the token logprobs delivered for the message item at each
+    /// `output_index`. The IR streams them as a standalone `LogprobsDelta` (separate from the text
+    /// fragment they score), while a native Responses stream carries them on the `output_text.done`
+    /// event and on the finalized `output_text` part, so they are buffered here until `BlockStop`
+    /// builds those frames. A poisoned lock degrades to an empty list rather than panicking.
+    logprob_accum:
+        std::sync::Mutex<std::collections::BTreeMap<usize, Vec<crate::ir::IrTokenLogprob>>>,
     /// Per-stream buffer of FINALIZED `output[]` items, keyed by `output_index` so the terminal
     /// event emits them in stable index order. A native /v1/responses `response.completed`/
     /// `response.incomplete` event's inner `response.output` is the fully assembled array (each
@@ -1160,6 +1242,7 @@ pub const ResponsesWriter: ResponsesWriter = ResponsesWriter {
     tool_calls: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     text_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     citation_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+    logprob_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     output_items: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     open_reasoning_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
     reasoning_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -1225,6 +1308,13 @@ impl Clone for ResponsesWriter {
             // Carry the citation accumulator across the same clone, for the same reason.
             citation_accum: std::sync::Mutex::new(
                 self.citation_accum
+                    .lock()
+                    .map(|m| m.clone())
+                    .unwrap_or_default(),
+            ),
+            // Carry the logprob accumulator across the same clone, for the same reason.
+            logprob_accum: std::sync::Mutex::new(
+                self.logprob_accum
                     .lock()
                     .map(|m| m.clone())
                     .unwrap_or_default(),
@@ -1469,6 +1559,27 @@ impl ResponsesWriter {
     /// Remove and return the accumulated citations for the message item at `index`.
     fn take_citation_accum(&self, index: usize) -> Vec<crate::ir::IrCitation> {
         self.citation_accum
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&index))
+            .unwrap_or_default()
+    }
+
+    /// Buffer streamed token logprobs for the message item at `index` until `BlockStop` builds the
+    /// `output_text.done` event and the finalized part that carry them. Lock poisoning degrades to
+    /// a no-op.
+    fn append_logprobs(&self, index: usize, lps: &[crate::ir::IrTokenLogprob]) {
+        if lps.is_empty() {
+            return;
+        }
+        if let Ok(mut map) = self.logprob_accum.lock() {
+            map.entry(index).or_default().extend_from_slice(lps);
+        }
+    }
+
+    /// Remove and return the accumulated token logprobs for the message item at `index`.
+    fn take_logprob_accum(&self, index: usize) -> Vec<crate::ir::IrTokenLogprob> {
+        self.logprob_accum
             .lock()
             .ok()
             .and_then(|mut map| map.remove(&index))

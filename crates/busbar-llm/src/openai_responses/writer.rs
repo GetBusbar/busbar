@@ -678,7 +678,11 @@ impl ProtocolWriter for ResponsesWriter {
         // `(event_type, data)` cannot carry. Each frame is then numbered below.
         let frames: Vec<(String, serde_json::Value)> = match ev {
             IrStreamEvent::MessageStart {
-                id, created, model, ..
+                id,
+                created,
+                model,
+                usage,
+                ..
             } => {
                 // The official OpenAI Responses SDK reads `response.id`/`created_at`/`model` from the
                 // opening `response.created` event to construct its Response object; a stub omitting
@@ -711,13 +715,25 @@ impl ProtocolWriter for ResponsesWriter {
                 resp_obj.insert("model".to_string(), serde_json::json!(model_name));
                 // The native `response.created` carries the FULL Response skeleton, not just its
                 // identity: an official SDK constructs a `Response` object from this event and reads
-                // `usage`/`output`/`error` unconditionally. At stream start there are no tokens yet
-                // and no failure, so emit `usage: null`, an empty `output` array, and `error: null`
-                // — present-but-empty, NOT omitted. Omitting `usage` left the SDK's `Response.usage`
-                // unpopulated (or crashed strict decoders) on the opening chunk.
+                // `usage`/`output`/`error` unconditionally. At stream start there is no output yet
+                // and no failure, so emit an empty `output` array and `error: null` —
+                // present-but-empty, NOT omitted. `usage` is typed as a non-nullable object by the
+                // pinned spec, so it is a zeroed usage object here (the opening event's own count
+                // when the source stream carried one, e.g. an Anthropic `message_start`), never
+                // `null`; a strict decoder rejects `usage: null` against `ResponseUsage`.
                 resp_obj.insert("output".to_string(), serde_json::json!([]));
                 resp_obj.insert("error".to_string(), serde_json::Value::Null);
-                resp_obj.insert("usage".to_string(), serde_json::Value::Null);
+                resp_obj.insert(
+                    "usage".to_string(),
+                    usage
+                        .as_ref()
+                        .map(build_responses_usage)
+                        .unwrap_or_else(zero_responses_usage),
+                );
+                // The spec requires the request-echo members (`instructions`, `tools`,
+                // `tool_choice`, `parallel_tool_calls`, `metadata`, `temperature`, `top_p`) and a
+                // nullable `incomplete_details` on EVERY Response object, including this skeleton.
+                fill_required_response_members(&mut resp_obj);
                 vec![(
                     EVT_RESPONSE_CREATED.to_string(),
                     serde_json::json!({ "type": EVT_RESPONSE_CREATED, "response": resp_obj }),
@@ -775,11 +791,13 @@ impl ProtocolWriter for ResponsesWriter {
                                 // A native `content_part.added` opens an EMPTY `output_text` part —
                                 // the text arrives via the deltas and is assembled onto the part at
                                 // `content_part.done`. Shape matches the closing part exactly
-                                // (`type`/`text`/`annotations`).
+                                // (`type`/`text`/`annotations`/`logprobs` — the spec requires all
+                                // four on an `output_text` part, so the empty part carries `[]`).
                                 "part": {
                                     "type": CONTENT_TYPE_OUTPUT_TEXT,
                                     "text": "",
-                                    "annotations": []
+                                    "annotations": [],
+                                    "logprobs": []
                                 }
                             }),
                         ),
@@ -859,6 +877,10 @@ impl ProtocolWriter for ResponsesWriter {
                     // Accumulate the fragment so the matching `BlockStop` can assemble the message
                     // item with its COMPLETE `output_text` for the terminal `response.output` array.
                     self.append_text(*index, text);
+                    // The spec requires `logprobs` on every `output_text.delta`. The IR delivers
+                    // token logprobs as a SEPARATE `LogprobsDelta` (buffered below and emitted on
+                    // `output_text.done` and the finalized part), so a text delta carries the
+                    // present-but-empty `[]` rather than omitting the member.
                     vec![(
                         EVT_OUTPUT_TEXT_DELTA.to_string(),
                         serde_json::json!({
@@ -866,7 +888,8 @@ impl ProtocolWriter for ResponsesWriter {
                             "output_index": index,
                             "item_id": self.item_id_for(ITEM_ID_PREFIX_MSG, *index),
                             "content_index": 0,
-                            "delta": text
+                            "delta": text,
+                            "logprobs": []
                         }),
                     )]
                 }
@@ -918,9 +941,14 @@ impl ProtocolWriter for ResponsesWriter {
                     self.append_citations(*index, cits);
                     Vec::new()
                 }
-                // Responses streaming logprobs (inside `output_text` events) are out of the 1.2
-                // OpenAI<->Gemini scope; dropped rather than emitted in a non-native shape.
-                crate::ir::IrDelta::LogprobsDelta(_) => Vec::new(),
+                // Responses carries streamed token logprobs on the `output_text.done` event and on
+                // the finalized `output_text` part (both built at `BlockStop`), not as a standalone
+                // frame — so nothing is emitted HERE, but the logprobs are buffered so they reach
+                // those frames instead of being dropped.
+                crate::ir::IrDelta::LogprobsDelta(lps) => {
+                    self.append_logprobs(*index, lps);
+                    Vec::new()
+                }
             },
 
             IrStreamEvent::BlockStop { index } => {
@@ -1037,6 +1065,13 @@ impl ProtocolWriter for ResponsesWriter {
                         0,
                         &self.take_citation_accum(*index),
                     );
+                    // The buffered token logprobs (if the source stream carried any) ride the
+                    // `output_text.done` event in the event shape and the finalized part in the
+                    // part shape; the spec requires the member on both, so an absent source yields
+                    // `[]` rather than an omitted key.
+                    let logprobs = self.take_logprob_accum(*index);
+                    let part_logprobs = write_responses_part_logprobs(&logprobs);
+                    let event_logprobs = write_responses_event_logprobs(&logprobs);
                     let item = serde_json::json!({
                         "type": ITEM_TYPE_MESSAGE,
                         "id": item_id,
@@ -1047,6 +1082,7 @@ impl ProtocolWriter for ResponsesWriter {
                                 "type": CONTENT_TYPE_OUTPUT_TEXT,
                                 "text": text,
                                 "annotations": annotations,
+                                "logprobs": part_logprobs,
                             }
                         ]
                     });
@@ -1062,6 +1098,7 @@ impl ProtocolWriter for ResponsesWriter {
                                 "item_id": item_id,
                                 "content_index": 0,
                                 "text": text,
+                                "logprobs": event_logprobs,
                             }),
                         ),
                         (
@@ -1072,11 +1109,12 @@ impl ProtocolWriter for ResponsesWriter {
                                 "item_id": item_id,
                                 "content_index": 0,
                                 // The finalized `output_text` part: SAME shape as the message item's
-                                // single content part (assembled text + annotations).
+                                // single content part (assembled text + annotations + logprobs).
                                 "part": {
                                     "type": CONTENT_TYPE_OUTPUT_TEXT,
                                     "text": text,
                                     "annotations": annotations,
+                                    "logprobs": part_logprobs,
                                 }
                             }),
                         ),
@@ -1182,6 +1220,9 @@ impl ProtocolWriter for ResponsesWriter {
                     serde_json::Value::Array(self.drain_output_items()),
                 );
                 resp_obj.insert("error".to_string(), serde_json::Value::Null);
+                // Spec-required request-echo members plus `incomplete_details: null` on a completed
+                // response (the incomplete arm above already set the real object, which is kept).
+                fill_required_response_members(&mut resp_obj);
 
                 // The terminal event's NAME and inner `type` MUST agree with the inner
                 // `response.status`: a native /v1/responses stream emits `response.completed` for a
@@ -1241,34 +1282,34 @@ impl ProtocolWriter for ResponsesWriter {
                 let response_id = self
                     .carried_response_id()
                     .unwrap_or_else(synthesize_response_id);
+                let mut resp_obj = serde_json::Map::new();
+                resp_obj.insert("id".to_string(), serde_json::json!(response_id));
+                resp_obj.insert("object".to_string(), serde_json::json!(OBJ_RESPONSE));
+                // Replay the captured `created_at` so `response.failed` carries the SAME timestamp
+                // as `response.created` (a native stream never changes it mid-flight); falls back
+                // to the current time only if the failure preceded any `MessageStart`.
+                resp_obj.insert(
+                    "created_at".to_string(),
+                    serde_json::json!(self.carried_created_at()),
+                );
+                // Replay the captured `model` so `response.failed`'s inner `response` carries the
+                // SAME required non-nullable `model` as `response.created`; falls back to
+                // DEFAULT_MODEL only if the failure preceded any `MessageStart`.
+                resp_obj.insert("model".to_string(), serde_json::json!(self.carried_model()));
+                resp_obj.insert("status".to_string(), serde_json::json!(STATUS_FAILED));
+                // A native terminal event's inner `response` always carries `output` (REQUIRED by
+                // the SDK's typed `Response`); a failed response produced no assistant items, so
+                // emit a present-but-empty array — never omit it.
+                resp_obj.insert("output".to_string(), serde_json::json!([]));
+                resp_obj.insert(
+                    "error".to_string(),
+                    serde_json::json!({ "code": code, "message": message }),
+                );
+                // The same spec-required members every Response object carries.
+                fill_required_response_members(&mut resp_obj);
                 vec![(
                     EVT_RESPONSE_FAILED.to_string(),
-                    serde_json::json!({
-                        "type": EVT_RESPONSE_FAILED,
-                        "response": {
-                            "id": response_id,
-                            "object": OBJ_RESPONSE,
-                            // Replay the captured `created_at` so `response.failed` carries the
-                            // SAME timestamp as `response.created` (a native stream never changes
-                            // it mid-flight); falls back to the current time only if the failure
-                            // preceded any `MessageStart`.
-                            "created_at": self.carried_created_at(),
-                            // Replay the captured `model` so `response.failed`'s inner `response`
-                            // carries the SAME required non-nullable `model` as `response.created`;
-                            // falls back to DEFAULT_MODEL only if the failure preceded any
-                            // `MessageStart`.
-                            "model": self.carried_model(),
-                            "status": STATUS_FAILED,
-                            // A native terminal event's inner `response` always carries `output`
-                            // (REQUIRED by the SDK's typed `Response`); a failed response produced
-                            // no assistant items, so emit a present-but-empty array — never omit it.
-                            "output": [],
-                            "error": {
-                                "code": code,
-                                "message": message,
-                            }
-                        }
-                    }),
+                    serde_json::json!({ "type": EVT_RESPONSE_FAILED, "response": resp_obj }),
                 )]
             }
         };
@@ -1319,6 +1360,11 @@ impl ProtocolWriter for ResponsesWriter {
         // body disagreed with the stream a client reassembling `response.output[]` would observe.
         // Process in order with no hardcoded index: each block appends to `output_arr` where it occurs.
         let mut output_arr: Vec<serde_json::Value> = Vec::new();
+        // The IR carries the response's token logprobs once, for the generated text as a whole
+        // (the Chat writer attaches them to the single choice). Responses carries them PER
+        // `output_text` part, so they are attached to the FIRST text part and every later part
+        // carries the spec-required present-but-empty `[]`.
+        let mut pending_logprobs: Option<&[crate::ir::IrTokenLogprob]> = Some(&resp.logprobs);
         for block in &resp.content {
             match block {
                 crate::ir::IrBlock::Text {
@@ -1329,12 +1375,16 @@ impl ProtocolWriter for ResponsesWriter {
                     }
                     let annotations =
                         super::super::openai_annotations::url_annotations(text, 0, citations);
+                    let logprobs = write_responses_part_logprobs(
+                        pending_logprobs.take().unwrap_or(&[]),
+                    );
                     // Match the native message-item shape the STREAMING `output_item.done` emits: an
                     // item-level `id` (`msg_…`), a `status`, and `annotations: []` on the `output_text`
                     // content part. Omitting them is a proxy tell — a typed SDK reading `item.id` /
                     // `item.status` / `content[0].annotations` sees missing fields on the non-stream
                     // path. Each non-empty text block becomes its OWN message item at its encounter
-                    // position (mirroring the per-index message items the stream emits).
+                    // position (mirroring the per-index message items the stream emits). The
+                    // spec requires `logprobs` on every `output_text` part.
                     output_arr.push(serde_json::json!({
                         "type": ITEM_TYPE_MESSAGE,
                         "id": synthesize_item_id(ITEM_ID_PREFIX_MSG),
@@ -1343,7 +1393,8 @@ impl ProtocolWriter for ResponsesWriter {
                         "content": [{
                             "type": CONTENT_TYPE_OUTPUT_TEXT,
                             "text": text,
-                            "annotations": annotations
+                            "annotations": annotations,
+                            "logprobs": logprobs
                         }]
                     }));
                 }
@@ -1473,6 +1524,9 @@ impl ProtocolWriter for ResponsesWriter {
                 serde_json::Value::Object(incomplete_details),
             );
         }
+        // Spec-required request-echo members plus `incomplete_details: null` on a completed
+        // response (the incomplete branch above already set the real object, which is kept).
+        fill_required_response_members(&mut obj);
 
         serde_json::Value::Object(obj)
     }

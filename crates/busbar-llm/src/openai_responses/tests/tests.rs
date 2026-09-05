@@ -2704,14 +2704,22 @@ fn test_message_start_skeleton_carries_usage_output_error() {
     assert_eq!(etype, "response.created"); // golden wire-contract literal (kept bare on purpose)
     let resp = payload.get("response").expect("response object present");
 
-    // usage key MUST be present (null at stream start), not omitted.
+    // usage key MUST be present and, per the spec's non-nullable `ResponseUsage`, an OBJECT with
+    // every required member zeroed at stream start — never null, never omitted.
     assert!(
         resp.get("usage").is_some(),
         "usage key must be present on the opening chunk: {resp}"
     );
-    assert!(
-        resp.get("usage").unwrap().is_null(),
-        "usage must be null (no tokens yet) at stream start"
+    assert_eq!(
+        resp["usage"],
+        serde_json::json!({
+            "input_tokens": 0,
+            "input_tokens_details": { "cached_tokens": 0, "cache_write_tokens": 0 },
+            "output_tokens": 0,
+            "output_tokens_details": { "reasoning_tokens": 0 },
+            "total_tokens": 0,
+        }),
+        "usage must be a zeroed ResponseUsage object (no tokens yet) at stream start: {resp}"
     );
     // output array present-but-empty; error present-but-null.
     assert_eq!(
@@ -4153,7 +4161,12 @@ fn test_terminal_completed_unchanged_for_end_turn() {
     assert_eq!(etype, "response.completed"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(body["type"].as_str(), Some("response.completed")); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(body["response"]["status"].as_str(), Some("completed")); // golden wire-contract literal (kept bare on purpose)
-    assert!(body["response"].get("incomplete_details").is_none());
+    // `incomplete_details` is a spec-REQUIRED nullable member: present and null on a completed
+    // response (an object only on an incomplete one).
+    assert_eq!(
+        body["response"].get("incomplete_details"),
+        Some(&serde_json::Value::Null)
+    );
     assert_eq!(body["response"]["id"].as_str(), Some(created_id.as_str()));
 }
 
@@ -6546,14 +6559,226 @@ fn test_responses_usage_carries_all_required_fields() {
         uc["total_tokens"], 25,
         "total = input_total(20) + output(5)"
     );
-    // The native Responses usage schema defines NO `cache_write_tokens` - an earlier writer
-    // fabricated it. Assert it is absent (an extra key is a decode surprise + a distinguishability
-    // tell); cache-creation tokens still fold into the `input_tokens` total (20 above).
-    assert!(
-        uc["input_tokens_details"]
-            .get("cache_write_tokens")
-            .is_none(),
-        "cache_write_tokens is not a native Responses usage field and must not be emitted: {uc}"
+    // The pinned Responses usage schema REQUIRES `input_tokens_details.cache_write_tokens`
+    // alongside `cached_tokens`. It carries the cache-creation count (3 here), which ALSO still
+    // folds into the `input_tokens` total (20 above).
+    assert_eq!(
+        uc["input_tokens_details"]["cache_write_tokens"], 3,
+        "cache_write_tokens is a required Responses usage member carrying the cache-creation count: {uc}"
+    );
+}
+
+/// EVERY member the pinned OpenAI spec marks REQUIRED on a `Response` object — including the
+/// request-echo members the IR cannot carry (`instructions`, `tools`, `tool_choice`,
+/// `parallel_tool_calls`, `metadata`, `temperature`, `top_p`) and the nullable
+/// `incomplete_details` — must be PRESENT on the non-stream body and on the inner `response` of
+/// every lifecycle event (`response.created`, `response.completed`, `response.failed`), with the
+/// spec's default values where the IR carries nothing; and every `output_text` part (and the
+/// streaming `output_text.delta`/`.done` events) must carry `logprobs`.
+#[test]
+fn responses_spec_required_members_present_on_every_response_shape() {
+    fn assert_required(resp: &serde_json::Value, ctx: &str) {
+        for key in [
+            "id",
+            "object",
+            "created_at",
+            "error",
+            "incomplete_details",
+            "instructions",
+            "model",
+            "tools",
+            "output",
+            "parallel_tool_calls",
+            "metadata",
+            "tool_choice",
+            "temperature",
+            "top_p",
+        ] {
+            assert!(
+                resp.get(key).is_some(),
+                "{ctx}: spec-required member `{key}` missing: {resp}"
+            );
+        }
+        assert_eq!(resp["instructions"], serde_json::Value::Null, "{ctx}");
+        assert_eq!(resp["tools"], serde_json::json!([]), "{ctx}");
+        assert_eq!(resp["tool_choice"], "auto", "{ctx}");
+        assert_eq!(resp["parallel_tool_calls"], true, "{ctx}");
+        assert_eq!(resp["metadata"], serde_json::json!({}), "{ctx}");
+        assert_eq!(resp["temperature"], 1.0, "{ctx}");
+        assert_eq!(resp["top_p"], 1.0, "{ctx}");
+        if let Some(usage) = resp.get("usage") {
+            assert!(usage.is_object(), "{ctx}: usage must be an object: {usage}");
+            assert!(
+                usage["input_tokens_details"]
+                    .get("cache_write_tokens")
+                    .is_some(),
+                "{ctx}: usage.input_tokens_details.cache_write_tokens required: {usage}"
+            );
+        }
+        for item in resp["output"].as_array().unwrap() {
+            if item["type"] == "message" {
+                for part in item["content"].as_array().unwrap() {
+                    assert_eq!(
+                        part["logprobs"],
+                        serde_json::json!([]),
+                        "{ctx}: output_text part must carry logprobs: {part}"
+                    );
+                }
+            }
+        }
+    }
+
+    // Non-stream body (completed).
+    let non_stream = ResponsesWriter;
+    let body = non_stream.write_response(&crate::ir::IrResponse {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
+            text: "hi".into(),
+            cache_control: None,
+            citations: Vec::new(),
+        }],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: usage_fixture(),
+        model: None,
+        id: None,
+        created: None,
+        system_fingerprint: None,
+        stop_sequence: None,
+        logprobs: Vec::new(),
+    });
+    assert_required(&body, "non-stream body");
+    assert_eq!(body["incomplete_details"], serde_json::Value::Null);
+
+    // Non-stream body (incomplete keeps its real incomplete_details object).
+    let truncated = non_stream.write_response(&crate::ir::IrResponse {
+        role: crate::ir::IrRole::Assistant,
+        content: Vec::new(),
+        stop_reason: Some(crate::ir::IrStopReason::MaxTokens),
+        usage: usage_fixture(),
+        model: None,
+        id: None,
+        created: None,
+        system_fingerprint: None,
+        stop_sequence: None,
+        logprobs: Vec::new(),
+    });
+    assert_required(&truncated, "non-stream incomplete body");
+    assert_eq!(
+        truncated["incomplete_details"]["reason"],
+        "max_output_tokens"
+    );
+
+    // Streaming lifecycle: created -> text bracket -> completed, then a failed event.
+    let writer = ResponsesWriter;
+    let created = writer
+        .write_response_event(&IrStreamEvent::MessageStart {
+            role: crate::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        })
+        .expect("created");
+    assert_required(&created.1["response"], "response.created");
+
+    let opened = writer.write_response_events(&IrStreamEvent::BlockStart {
+        index: 0,
+        block: crate::ir::IrBlockMeta::Text,
+    });
+    assert_eq!(opened[1].0, "response.content_part.added");
+    assert_eq!(opened[1].1["part"]["logprobs"], serde_json::json!([]));
+    let delta = writer
+        .write_response_event(&IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::ir::IrDelta::TextDelta("hi".into()),
+        })
+        .expect("delta");
+    assert_eq!(delta.1["logprobs"], serde_json::json!([]));
+    let closed = writer.write_response_events(&IrStreamEvent::BlockStop { index: 0 });
+    assert_eq!(closed[0].0, "response.output_text.done");
+    assert_eq!(closed[0].1["logprobs"], serde_json::json!([]));
+    assert_eq!(closed[1].0, "response.content_part.done");
+    assert_eq!(closed[1].1["part"]["logprobs"], serde_json::json!([]));
+    assert_eq!(closed[2].0, "response.output_item.done");
+    assert_eq!(
+        closed[2].1["item"]["content"][0]["logprobs"],
+        serde_json::json!([])
+    );
+
+    let completed = writer
+        .write_response_event(&IrStreamEvent::MessageDelta {
+            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_sequence: None,
+            usage: usage_fixture(),
+        })
+        .expect("completed");
+    assert_required(&completed.1["response"], "response.completed");
+
+    let failed = writer
+        .write_response_event(&IrStreamEvent::Error(IrError {
+            class: StatusClass::ServerError,
+            provider_signal: Some("boom".to_string()),
+            retry_after: None,
+        }))
+        .expect("failed");
+    assert_required(&failed.1["response"], "response.failed");
+}
+
+/// Streamed token logprobs (an IR `LogprobsDelta`) are buffered and emitted on the
+/// `output_text.done` event (event shape: token/logprob/top_logprobs) and on the finalized
+/// `output_text` part (part shape: token/logprob/bytes/top_logprobs), instead of being dropped.
+#[test]
+fn responses_stream_logprobs_ride_text_done_and_finalized_part() {
+    let writer = ResponsesWriter;
+    writer
+        .write_response_event(&IrStreamEvent::MessageStart {
+            role: crate::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        })
+        .expect("created");
+    writer.write_response_events(&IrStreamEvent::BlockStart {
+        index: 0,
+        block: crate::ir::IrBlockMeta::Text,
+    });
+    writer.write_response_events(&IrStreamEvent::BlockDelta {
+        index: 0,
+        delta: crate::ir::IrDelta::TextDelta("Hi".into()),
+    });
+    writer.write_response_events(&IrStreamEvent::BlockDelta {
+        index: 0,
+        delta: crate::ir::IrDelta::LogprobsDelta(vec![crate::ir::IrTokenLogprob {
+            token: "Hi".into(),
+            logprob: -0.25,
+            bytes: None,
+            top: vec![crate::ir::IrTopLogprob {
+                token: "Hello".into(),
+                logprob: -1.5,
+                bytes: None,
+            }],
+        }]),
+    });
+    let closed = writer.write_response_events(&IrStreamEvent::BlockStop { index: 0 });
+    assert_eq!(
+        closed[0].1["logprobs"],
+        serde_json::json!([{
+            "token": "Hi",
+            "logprob": -0.25,
+            "top_logprobs": [{ "token": "Hello", "logprob": -1.5 }]
+        }]),
+        "output_text.done carries the event-shape logprobs"
+    );
+    let part = &closed[1].1["part"]["logprobs"];
+    assert_eq!(part[0]["token"], "Hi");
+    assert_eq!(part[0]["logprob"], -0.25);
+    assert_eq!(part[0]["bytes"], serde_json::json!([72, 105]));
+    assert_eq!(part[0]["top_logprobs"][0]["token"], "Hello");
+    assert_eq!(
+        closed[2].1["item"]["content"][0]["logprobs"],
+        *part,
+        "the finalized item part carries the same logprobs as content_part.done"
     );
 }
 
