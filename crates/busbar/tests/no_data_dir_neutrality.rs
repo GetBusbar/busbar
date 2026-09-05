@@ -155,11 +155,14 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
         read_to_string(&log_path)
     );
     // The boot log line lands the instant ANY of the per-core SO_REUSEPORT workers starts listening,
-    // not when every worker (and its metrics registry) is warm: the kernel can hand an early
-    // connection to a worker that answers 200 with a genuinely empty body before its exposition is
-    // wired up. `/healthz` bypassing auth only proves ONE of the N workers is up, not all of them
-    // (a later request can still land on a cold one), so the real gate is the scrape itself: retry it
-    // until it comes back non-empty before trusting its content one way or the other.
+    // not when every worker (and the process-wide metrics recorder behind them) is warm: the kernel
+    // can hand an early connection to a worker whose accept loop is live before the recorder install
+    // (a background thread's one-time clock calibration, started at config load) has completed.
+    // `crate::export::prometheus`'s contract is that such a scrape is REFUSED (non-`200`, retriable),
+    // never a `200` with an empty body — so unlike the pre-fix version of this test, we do not need
+    // to retry PAST an untrustworthy early response to reach a trustworthy one: any `200` this test
+    // sees is required to already be the full exposition, and a scrape that lands on a cold worker
+    // answers non-`200` instead, which the retry below simply waits out.
 
     // Mint one virtual key through the admin API, exactly as an operator would.
     let (_, minted) = http_request(
@@ -185,23 +188,29 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
         Some(r#"{"model":"test-model","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}"#),
         Some(&token),
     );
-    // The scrape (key-authenticated on the data listener in 1.5.5). Retry past the cold-worker
-    // window described above: keep scraping until a non-empty body proves the worker that answered
-    // is actually warm, rather than trusting the first (possibly cold) 200.
+    // The scrape (key-authenticated on the data listener in 1.5.5). A scrape landing on a cold
+    // worker (see the boot-window note above) is REFUSED, not answered empty, so we retry only to
+    // wait out that refusal — every `200` collected along the way is checked below, never trusted
+    // blindly just because the status line said 200.
     let data_addr = format!("127.0.0.1:{data_port}");
     let mut status = 0u16;
     let mut body = String::new();
     let ready = wait_for(Duration::from_secs(10), || {
         let (s, b) = http_request(&data_addr, "GET", "/metrics", None, Some(&token));
         status = s;
-        let non_empty = !b.is_empty();
         body = b;
-        s == 200 && non_empty
+        s == 200
     });
     assert!(
         ready,
-        "GET /metrics never answered 200 with a non-empty body within 10s (last status {status}); \
-         chat answered {chat:?}; mint answered {minted}; last exposition:\n{body}"
+        "GET /metrics never answered 200 within 10s (last status {status}); chat answered {chat:?}; \
+         mint answered {minted}; last exposition:\n{body}"
+    );
+    assert!(
+        !body.is_empty() && body.contains("# HELP"),
+        "a 200 /metrics response must never be empty or partial — a cold-worker scrape must be \
+         REFUSED (non-200), not answered 200 with nothing to show; got an empty/HELP-less body \
+         instead: {body:?}"
     );
     let body = body.as_str();
     assert!(

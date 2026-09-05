@@ -58,8 +58,16 @@ fn metrics_served_via_endpoint_registration() {
 
 /// The exporter's `handle_http` renders the recorder registry as a `200` Prometheus text exposition
 /// with the canonical content type — the DISTRIBUTION half lifted out of `metrics::handler`.
+///
+/// Calls `metrics::init()` explicitly rather than relying on some OTHER test in this shared process
+/// having already installed the recorder: `init()` installs SYNCHRONOUSLY in tests (unlike
+/// production's background-thread `configure()`), so this makes `recorder_installed()` true before
+/// the assertion runs regardless of test execution order — otherwise `handle_http` would correctly
+/// (see `render_or_refuse`) answer `503`, not `200`, on a test worker that races ahead of every test
+/// that calls `init()`.
 #[test]
 fn dispatch_renders_prometheus_exposition() {
+    crate::metrics::init();
     let req = HttpEndpointRequest {
         method: "GET".into(),
         path: "/metrics".into(),
