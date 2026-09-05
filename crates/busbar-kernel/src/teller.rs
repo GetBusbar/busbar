@@ -594,8 +594,7 @@ pub enum Ended {
 /// The same loop body as [`run_unit_async`], driven here rather than on a runtime: the leg it awaits
 /// is this plane's own [`Units::route`] wrapped in a `Ready`, so the one await answers on its first
 /// poll and the whole unit runs to its end on the calling thread, exactly as it always has. Nothing
-/// is spawned, nothing is allocated for the leg, and no caller that was synchronous yesterday has to
-/// change.
+/// is spawned, nothing is scheduled, and no caller that was synchronous yesterday has to change.
 pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_>) -> Ended {
     let blocking = Blocking(units);
     let mut loop_ = std::pin::pin!(run_unit_async(kernel, units, ctx, run, &blocking));
