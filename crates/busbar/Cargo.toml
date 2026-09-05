@@ -174,6 +174,13 @@ root-voice = ["plane-voice"]
 # battery, the TCK and the neutrality cells read identically with the feature on and with it off.
 # It carries no config key, no environment variable and no boot line, for the same reason.
 root-a2a = []
+# THE MCP PLANE'S KERNEL BINDINGS, default OFF. Not a second MCP switch: `plane-mcp` above still
+# decides whether this binary speaks the protocol at all. This one decides whether the MCP plane's
+# bindings to the fourteen units are compiled and sealed at boot, which is the step BEFORE any byte
+# is served through them. Default-off is the whole point of the ordering — the bindings are built and
+# checked against the real unit traits while the serving path is untouched — so a build with it on
+# and a build with it off answer identically on the wire, and the rigs prove that both ways.
+root-mcp = []
 auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]
 openapi-schema = ["busbar-core/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]

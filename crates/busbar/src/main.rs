@@ -692,6 +692,20 @@ fn register_planes() {
     #[cfg(feature = "plane-voice")]
     installed.push(&busbar_voice::PLANE_DECL);
     busbar_core::plane::registry::install_planes(installed.leak());
+
+    // THE MCP PLANE'S KERNEL BINDINGS, SEALED. Behind `root-mcp`, which is default-OFF: the bindings
+    // are built and checked against the real unit traits before any byte is served through them, so
+    // this reads the plane's own declarations and compares them against each other and against
+    // nothing else. It binds no listener, opens no store, reads no configuration and writes no line —
+    // a build with the feature on and a build with it off answer identically on the wire, which is
+    // what the plane rigs are run both ways to prove. A refusal here is a boot refusal for the same
+    // reason a claim overlap is: a plane whose own declarations disagree cannot serve, and finding
+    // that out on the first request would be finding it out from a customer.
+    #[cfg(feature = "root-mcp")]
+    if let Err(refusal) = root::units_mcp::seal(&busbar_plane_mcp::McpPlane::EMPTY) {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
+    }
 }
 
 /// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics

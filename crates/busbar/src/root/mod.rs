@@ -61,5 +61,7 @@ pub mod policy;
 pub mod registry;
 pub mod transports;
 pub mod units_a2a;
+#[cfg(feature = "root-mcp")]
+pub mod units_mcp;
 pub mod units_voice;
 pub mod vocabulary;
