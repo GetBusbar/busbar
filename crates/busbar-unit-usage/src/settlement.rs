@@ -10,6 +10,7 @@
 use std::collections::BTreeSet;
 
 use busbar_caps::{Usage, UsageLine};
+use busbar_contract::DestinationFacts;
 
 /// How a unit ended, as far as the settlement is concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,8 +224,11 @@ pub struct FeeInputs {
     /// Whether this is a client-originated unit that opens or one-shots, rather than a tick, a
     /// handshake, a nested call, a delivery or a push from a provider.
     pub client_open_or_oneshot: bool,
-    /// Whether the route actually selected an upstream leg.
-    pub upstream_leg_selected: bool,
+    /// The destination the route selected, where it selected one.
+    ///
+    /// Whether it is an upstream is the CONTRACT's answer, not this crate's: the fee follows the
+    /// destination kind, and a rule that moves money has one spelling.
+    pub selected_destination: Option<DestinationFacts>,
     /// Whether the kernel relayed the first response frame to the client. A status-and-headers
     /// frame with an empty body counts: an empty success is still a served request.
     pub first_response_frame_relayed: bool,
@@ -241,8 +245,11 @@ pub struct FeeInputs {
 /// plane's own reading is a SECOND source for the same fact — if it contradicts the transport's
 /// status, the LOWER answer posts and the unit is disputed.
 pub fn fee_count(inputs: &FeeInputs) -> (u64, bool) {
+    let upstream_leg_selected = inputs
+        .selected_destination
+        .is_some_and(|d| d.is_upstream_kind());
     if !inputs.client_open_or_oneshot
-        || !inputs.upstream_leg_selected
+        || !upstream_leg_selected
         || !inputs.first_response_frame_relayed
     {
         return (0, false);
