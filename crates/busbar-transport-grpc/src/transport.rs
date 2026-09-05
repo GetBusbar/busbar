@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex as SyncMutex};
 
 use futures::Stream;
 
+use busbar_contract::transport::facts as tfacts;
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::unit::Refusal;
 use busbar_contract::wire::{
@@ -130,7 +131,7 @@ impl TransportMeta for GrpcTransport {
     const UNIT0_TRIGGER: Option<Unit0Trigger> = Some(Unit0Trigger::FirstMessage);
     const UPGRADES_TO: &'static [&'static str] = &[];
     const HANDSHAKE_TRIGGER: Option<busbar_contract::wire::HandshakeTrigger> = None;
-    const TRANSPORT_FACTS: &'static [&'static str] = &[];
+    const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::PATH, tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;
     // "carries the per-frame StatusClass at Terminal (the grpc-status trailer)" — the transports
     // table's own words for this row.

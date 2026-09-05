@@ -10,10 +10,10 @@
 //!
 //! # Assumptions and simplifications, stated once
 //!
-//! - **HTTP/WS path arrives as a transport fact.** The same assumption `busbar-plane-admin` states
-//!   for the same reason: nothing in `busbar-contract` pins the `http`/`ws` transports' fact key
-//!   names, so `FACT_PATH` is this crate's own guess (`"path"`), used to resolve which one-shot
-//!   operation or which duplex dialect a session's Unit 0 is.
+//! - **HTTP/WS path arrives as a transport fact**, under the kernel's own reserved key
+//!   (`busbar_contract::transport::facts::PATH`), used to resolve which one-shot operation or which
+//!   duplex dialect a session's Unit 0 is. This used to be a guess, and both transports now declare
+//!   the key they publish it under.
 //! - **Only the first decoded IR event per wire frame is acted on.** Both `read_up`/`read_down`
 //!   return `Vec<..Event>` (one wire message can map to 0..n IR events); this plane surfaces the
 //!   first and drops the rest. A wire frame that genuinely carries more than one IR event (not
@@ -81,10 +81,11 @@ use crate::meta;
 use crate::session::{Pending, VoiceSessionState};
 use crate::{twilio, ulaw, VoicePlane};
 
-/// The transport fact key this plane assumes `http`/`ws` carry the request path under.
+/// The transport fact key the request path is published under.
 ///
-/// See the module doc comment's first assumption.
-const FACT_PATH: &str = "path";
+/// The kernel's own reserved key, named rather than assumed. It used to be this crate's guess, and
+/// the module header said so; the header's first assumption is retired with it.
+const FACT_PATH: &str = busbar_contract::transport::facts::PATH;
 
 /// The fact key a tool call's provider-origin `OneShot` correlates on.
 const FACT_TOOL_CORRELATION: &str = "call_id";

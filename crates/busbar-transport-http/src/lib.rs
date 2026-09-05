@@ -43,6 +43,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use busbar_contract::transport::facts as tfacts;
 use busbar_contract::{
     ArenaBytes, ArrivalRecord, CloseReason, Conn, ConnHandle, Direction, Fut, Frame, FrameMeta,
     Kind, Listener, ListenerHandle, Plugin, Refusal, SlabBytes, StatusClass, StreamId, Transport,
@@ -281,7 +282,8 @@ impl TransportMeta for HttpTransport {
     const UNIT0_TRIGGER: Option<busbar_contract::Unit0Trigger> = None;
     const UPGRADES_TO: &'static [&'static str] = &[];
     const HANDSHAKE_TRIGGER: Option<busbar_contract::HandshakeTrigger> = None;
-    const TRANSPORT_FACTS: &'static [&'static str] = &[];
+    const TRANSPORT_FACTS: &'static [&'static str] =
+        &[tfacts::PATH, tfacts::METHOD, tfacts::AUTHORITY, tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;
     const STATUS_CLASS: Option<busbar_contract::StatusAt> =
         Some(busbar_contract::StatusAt::FirstFrame);

@@ -38,6 +38,54 @@ pub type FrameStream =
 /// beside the store's for the same reason: a kind's ABI is the kind's, not a plugin's.
 pub const TRANSPORT_ABI: crate::plugin::AbiVersion = crate::plugin::AbiVersion(1);
 
+/// The transport fact keys the kernel reserves, spelled once.
+///
+/// Transport facts are open vocabulary, which is right for a transport's own facts. These six are
+/// not a transport's own: they are the structural values the arrival grammar already resolves
+/// against, and a plane cannot see a connection, so the request target reaches it as one of these
+/// or not at all. With nothing pinning the spelling, three planes each guessed `"path"` and said so
+/// in a comment, and the boot check that would have caught a fourth guessing something else had
+/// nothing to compare.
+///
+/// A transport that publishes one of these names the constant. A transport that publishes something
+/// of its own names it whatever it likes, and none of this applies.
+pub mod facts {
+    /// The request target's path.
+    pub const PATH: &str = "path";
+    /// The request method, where the transport has one.
+    pub const METHOD: &str = "method";
+    /// The authority the request named.
+    pub const AUTHORITY: &str = "authority";
+    /// The protocol negotiated during the handshake.
+    pub const ALPN: &str = "alpn";
+    /// The server name offered during the handshake.
+    pub const SNI: &str = "sni";
+    /// The peer's source address as the bottom layer saw it.
+    pub const PEER: &str = "peer";
+
+    /// Every reserved key, for the registration check and the boot cell that walks them.
+    pub const RESERVED: &[&str] = &[PATH, METHOD, AUTHORITY, ALPN, SNI, PEER];
+
+    /// Whether a key is one the kernel reserves.
+    #[must_use]
+    pub fn is_reserved(key: &str) -> bool {
+        RESERVED.contains(&key)
+    }
+
+    /// The first reserved key a transport publishes without having declared it.
+    ///
+    /// Run at registration, over the transport's own `TRANSPORT_FACTS` and the keys it actually
+    /// writes. A reserved key published but not declared is a value a plane reads and no boot check
+    /// knows about, which is the failure this module exists to make impossible.
+    #[must_use]
+    pub fn undeclared<'a>(declared: &[&'a str], published: &[&'a str]) -> Option<&'a str> {
+        published
+            .iter()
+            .copied()
+            .find(|key| is_reserved(key) && !declared.contains(key))
+    }
+}
+
 /// Everything a transport declares about itself.
 pub trait TransportMeta {
     /// The transport's registry key.

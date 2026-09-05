@@ -47,10 +47,10 @@ const KIND_API_ERROR: &str = "api_error";
 
 /// The transport fact the request target is published under.
 ///
-/// A plane cannot see a connection, so the request target reaches it as a transport fact. This is
-/// the key the transport writes it under; a transport that writes none leaves this plane unable to
-/// name a dialect, and the decode step says so rather than guessing.
-const FACT_PATH: &str = "path";
+/// A plane cannot see a connection, so the request target reaches it as a transport fact. The key
+/// is the kernel's, not this plane's guess at one: a transport that writes none leaves this plane
+/// unable to name a dialect, and the decode step says so rather than inventing a target.
+const FACT_PATH: &str = busbar_contract::transport::facts::PATH;
 
 /// How long the upstream took, in milliseconds, if the transport published the figure.
 ///

@@ -477,4 +477,50 @@ async fn with_no_declared_name_the_address_itself_stands_in() {
     // "the address is the name": rustls does not send a server_name extension for an IP.
     assert_eq!(server.arrival(&server_conn).sni, None);
     client.close(client_conn, CloseReason::Normal);
+
+/// The registration check: every reserved key this transport publishes is one it declares.
+///
+/// The declaration is what a boot compares a plane's expectations against, so a key written and not
+/// declared is a value a plane reads that no boot check knows about. The published set is read off
+/// a REAL arrival record rather than restated, so a handshake that starts carrying something new
+/// fails here instead of in a deployment.
+#[tokio::test]
+async fn every_reserved_key_this_transport_publishes_is_declared() {
+    use busbar_contract::transport::facts;
+
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let key0 = fixture_key(0);
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await }
+    });
+    let dialled = client.dial(&upstream_dest(&addr), &key0).await.unwrap();
+    let accepted = accept_fut.await.unwrap().unwrap();
+
+    let mut published: Vec<&'static str> = Vec::new();
+    for (transport, conn) in [
+        (server.as_ref(), &accepted),
+        (client.as_ref(), &dialled),
+    ] {
+        let record = transport.arrival(conn);
+        if record.sni.is_some() {
+            published.push(facts::SNI);
+        }
+        if record.alpn.is_some() {
+            published.push(facts::ALPN);
+        }
+        if record.peer_cert.is_some() {
+            published.push(facts::PEER);
+        }
+        // A source address is always known, so the peer key is always published.
+        assert!(!record.source.is_empty());
+        published.push(facts::PEER);
+    }
+
+    assert_eq!(
+        facts::undeclared(<TlsTransport as TransportMeta>::TRANSPORT_FACTS, &published),
+        None,
+        "this transport publishes a reserved key it does not declare"
+    );
 }

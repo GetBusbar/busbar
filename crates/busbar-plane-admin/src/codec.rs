@@ -32,9 +32,12 @@ struct Decoded<'u> {
 /// Identify which of the 66+17 verbs a decoded body names, by re-scanning its `method`/`path`
 /// fields. See the module doc comment for why this is a fresh scan rather than a cached fact.
 fn identify<'u>(bytes: &'u [u8]) -> Option<Decoded<'u>> {
+    // The envelope's two members are the request line's two structural values, so they are named
+    // with the kernel's own reserved keys rather than with this crate's guess at their spelling.
+    use busbar_contract::transport::facts as tfacts;
     let whole = scan::whole(bytes);
-    let method_span = scan::object_field(bytes, whole, "method")?;
-    let path_span = scan::object_field(bytes, whole, "path")?;
+    let method_span = scan::object_field(bytes, whole, tfacts::METHOD)?;
+    let path_span = scan::object_field(bytes, whole, tfacts::PATH)?;
     let method = core::str::from_utf8(&bytes[method_span.start..method_span.end]).ok()?;
     let path = core::str::from_utf8(&bytes[path_span.start..path_span.end]).ok()?;
     let (entry, params) = verbs::find_verb(method, path)?;
