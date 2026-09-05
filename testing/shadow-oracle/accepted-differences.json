@@ -2,12 +2,12 @@
   "_comment": [
     "Differences from the published 1.5.5 that the OWNER has accepted, each with a rationale and a kind:",
     "  improvement  additive or strictly better; a 1.5.5 client/operator keeps working unchanged",
-    "A matching cell reports as ACCEPTED in its own column — never as a silent pass — so a later change",
+    "A matching cell reports as ACCEPTED in its own column \u2014 never as a silent pass \u2014 so a later change",
     "to the same surface still shows. `cells` are id regexes; `classes` limits the acceptance to those",
     "divergence classes (a status or usage change on an 'improvement' entry is still red).",
     "Zero UNACCEPTED divergences is the ship gate.",
     "An entry with `transform: {candidate: [[regex, replacement], ...]}` is line-precise: the candidate's stderr/body text is rewritten before the diff, so only that token is forgiven; the cell reports ACCEPTED, never PASS.",
-    "  breaking     a deliberate change named in the 1.6.0 CHANGELOG (`changelog` field required) — the ONLY kind that may accept a `status` or `effects.usage` class",
+    "  breaking     a deliberate change named in the 1.6.0 CHANGELOG (`changelog` field required) \u2014 the ONLY kind that may accept a `status` or `effects.usage` class",
     "The differ refuses any entry that accepts `status` or `effects.usage` without kind=breaking and a `changelog` field, and any entry with neither `cells` nor `classes` (a total blanket)."
   ],
   "accepted": [
@@ -37,7 +37,7 @@
       "transform": {
         "candidate": [
           [
-            "^\\[info\\] jemalloc background purge thread unavailable on this target \\((.*?)\\) — EXPECTED on macOS, which has no background-thread mallctl; busbar's idle-purge fallback keeps RSS returning to idle after a load burst$",
+            "^\\[info\\] jemalloc background purge thread unavailable on this target \\((.*?)\\) \u2014 EXPECTED on macOS, which has no background-thread mallctl; busbar's idle-purge fallback keeps RSS returning to idle after a load burst$",
             "[warn] could not enable jemalloc background purge thread (\\1); enabling busbar's idle purge fallback so RSS still returns to idle after a load burst"
           ]
         ]
@@ -47,7 +47,7 @@
       "id": "O-1 new metering series",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^ops\\.scrape\\|metrics\\|",
+      "cells": "^ops\\.scrape\\|metrics\\||^neutrality\\|metrics-series$|^crosscut\\.traps\\|request-duration-quantiles$",
       "rationale": "One additive /metrics series on a 1.5.5 config: busbar_metering_pending_coalesced_total (write-behind overflow sentinel). No 1.5.5 series changed.",
       "transform": {
         "candidate": [
@@ -62,12 +62,13 @@
       "id": "F-011 additive admin views",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^hooks\\|register\\|plugin-alias$|^admin\\.ops\\|DeleteOverlaySection\\|not-found$",
+      "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^hooks\\|register\\|plugin-alias$|^admin\\.ops\\|DeleteOverlaySection\\|not-found$|^admin\\.ops\\|(DeleteHooksName|PatchHooksNameSettings|PutHooksName|PostHooks)\\|ok$|^admin\\.ops\\|PostHooks\\|if-match-stale$",
       "classes": [
         "body",
+        "effects.readback",
         "headers"
       ],
-      "rationale": "Hook views gain fires_at/groups/phase; the overlay-section 404 lists the new sections; openapi.json adds the mcp/a2a endpoints. Every 1.5.5 field is unchanged."
+      "rationale": "Hook views gain fires_at/groups/phase; the overlay-section 404 lists the new sections; openapi.json adds the mcp/a2a endpoints. Every 1.5.5 field is unchanged. The same fields appear in the readback of a hook write."
     },
     {
       "id": "F-013 validation wording",
@@ -83,7 +84,7 @@
       "id": "F-013 download error wording",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^boot\\.refusal\\|BOOT-141\\|boot$",
+      "cells": "^boot\\.refusal\\|BOOT-141\\|boot$|^neutrality\\|NEUT-U-(auth|top)\\|validate$",
       "classes": [
         "body",
         "effects.stderr"
@@ -143,7 +144,7 @@
         "headers",
         "effects.metrics"
       ],
-      "rationale": "An auth/billing hard-down on a fallback/least-bad/queue hop now trips the lane in every breaker cell and, for busbar's own lane credential, answers with the ingress-native auth-failure envelope — the same rule the primary hop applies. Previously the degraded hop relayed the upstream 401 body verbatim and recorded nothing, leaving the dead lane Closed.",
+      "rationale": "An auth/billing hard-down on a fallback/least-bad/queue hop now trips the lane in every breaker cell and, for busbar's own lane credential, answers with the ingress-native auth-failure envelope \u2014 the same rule the primary hop applies. Previously the degraded hop relayed the upstream 401 body verbatim and recorded nothing, leaving the dead lane Closed.",
       "changelog": "1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native auth-failure envelope and recorded on the breaker"
     },
     {
@@ -162,11 +163,12 @@
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-down-stream-openai$",
       "classes": [
-        "effects.usage",
+        "body",
+        "effects.egress",
         "effects.metrics",
-        "body"
+        "effects.usage"
       ],
-      "rationale": "OWNER DECISION: bill them. A streaming request served through a fallback/least-bad/queue hop to an OpenAI Chat Completions lane now has stream_options.include_usage injected upstream exactly as a primary hop does, so the trailing usage chunk arrives and the key is billed its real tokens (previously zero). The client-facing stream is unchanged for a client that did not opt in (the injected chunk is stripped at the framing seam); an opted-in client now receives its usage chunk on the fallback hop too. CHANGELOG 1.6.0: 'Fallback-pool and least-bad streams to OpenAI Chat Completions lanes are now metered (previously billed zero tokens).'",
+      "rationale": "OWNER DECISION: bill them. A streaming request served through a fallback/least-bad/queue hop to an OpenAI Chat Completions lane now has stream_options.include_usage injected upstream exactly as a primary hop does, so the trailing usage chunk arrives and the key is billed its real tokens (previously zero). The client-facing stream is unchanged for a client that did not opt in (the injected chunk is stripped at the framing seam); an opted-in client now receives its usage chunk on the fallback hop too. CHANGELOG 1.6.0: 'Fallback-pool and least-bad streams to OpenAI Chat Completions lanes are now metered (previously billed zero tokens).' The egress record shows the injected stream_options.include_usage on the fallback hop.",
       "changelog": "1.6.0 Improvements: fallback-lane streams are now billed"
     },
     {
@@ -237,12 +239,12 @@
       "id": "F-011b openapi.json additive endpoints",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^admin\\.ops\\|GetOpenapiJson\\|ok$",
+      "cells": "^admin\\.ops\\|GetOpenapiJson\\|ok$|^crosscut\\.traps\\|openapi-info-version$|^neutrality\\|routes\\|admin-openapi-paths$",
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "openapi.json adds the mcp/a2a endpoints; every 1.5.5 path and schema is unchanged (a dedicated cell pins info.version)."
+      "rationale": "openapi.json adds the mcp/a2a endpoints; every 1.5.5 path and schema is unchanged (a dedicated cell pins info.version). The document also gains a Vary header and reports the binary's true version in info.version (1.5.5 shipped a stale 1.5.4)."
     },
     {
       "id": "S-7 responses-door streams stream",

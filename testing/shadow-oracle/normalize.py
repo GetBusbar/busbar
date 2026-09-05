@@ -61,6 +61,8 @@ What is normalized (each rule is a named entry in `applied`):
                       about the egress request, is deliberately left byte-exact so this cell can
                       catch a dropped tool list, a mangled system prompt, an injected max_tokens, or
                       a client header that leaked upstream when it should not have)
+  text.port           127.0.0.1:<port> in any text body or stderr line: listen, admin and mock ports are the harness's
+  egress.host         effects.egress[].headers.host: the mock's port becomes <PORT> (chosen per recording)
   egress.body         effects.egress[].body is parsed as JSON and re-serialized canonically (same
                       technique as a response body) so key order/whitespace cannot masquerade as a
                       diff; a non-JSON body is left untouched. No id/timestamp scrubbing rule from
@@ -227,6 +229,9 @@ def norm_egress_entry(entry, applied: set):
             lk = k.lower()
             if lk in CRED_HEADERS or (isinstance(v, str) and SIGV4_RX.match(v)):
                 applied.add("egress.cred"); new_headers[lk] = "<CRED>"
+            elif lk == "host" and isinstance(v, str) and re.search(r":\d+$", v):
+                # the mock upstream's port is the harness's choice per recording, not busbar's
+                applied.add("egress.host"); new_headers[lk] = re.sub(r":\d+$", ":<PORT>", v)
             else:
                 new_headers[lk] = v
         out["headers"] = new_headers
@@ -267,7 +272,17 @@ def sort_pool_lines(lines: list, applied: set) -> list:
     return sort_runs(sort_runs(lines, POOL_LINE, "boot.pool-order", applied), ERROR_BULLET, "boot.error-order", applied)
 
 
+VERSION_KV = re.compile(r'version="(\d+\.\d+\.\d+)(?:-[0-9A-Za-z.]+)?"')
+LOOPBACK_PORT = re.compile(r"127\.0\.0\.1:\d{2,5}\b")
+
+
 def norm_text(text: str, applied: set, keep_regex=None) -> str:
+    # the binary's own version in key=value form (boot line) and every loopback port the harness
+    # chose per recording (listen, admin, mock) are the harness's, not busbar's
+    if VERSION_KV.search(text):
+        applied.add("ver.string"); text = VERSION_KV.sub('version="<VERSION>"', text)
+    if LOOPBACK_PORT.search(text):
+        applied.add("text.port"); text = LOOPBACK_PORT.sub("127.0.0.1:<PORT>", text)
     if PAIR.search(text):
         def _sort_pair(m):
             a, b = sorted((int(m.group(1)), int(m.group(2))))

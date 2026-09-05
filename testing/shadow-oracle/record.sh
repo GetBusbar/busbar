@@ -312,6 +312,8 @@ run_readback() {  # <request-json {path,headers,auth,listener}> <write-response-
   normd="$(printf '%s' "$cap" | python3 "${here}/normalize.py" --key-id "$kid" 2>/dev/null)"
   [ -n "$normd" ] || normd='{"status":0,"body":{"text":""}}'
   rm -f "$rbody"
+  # the path names the minted key by id, which differs per boot: normalize it as bodies are
+  pth="$(sed -E 's/vk_[0-9a-f]+/vk_<KEY>/g' <<<"$pth")"
   jq -c --arg p "$pth" '{path: $p, status: .status, body: .body}' <<<"$normd"
 }
 
