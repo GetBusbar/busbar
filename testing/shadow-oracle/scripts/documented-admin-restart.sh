@@ -11,6 +11,11 @@
 # process launched against the same config+overlay picks it up — the "without shell access" half
 # of the claim, not just the 202 response shape.
 #
+# Each boot's stdout/stderr are captured separately (never merged with `2>&1`); the two boots' raw
+# stderr are concatenated (labeled) into ONE combined `effects.stderr` — the standard path
+# accepted-differences.json's D-1/D-2 transforms already reach (MULTILINE regexes, so both boots'
+# lines are still individually matched inside the one blob).
+#
 #   documented-admin-restart.sh
 #
 # Writes $RAW/captured.json. Env from the recorder: BUSBAR_BIN RAW WORK ORACLE_ADMIN_TOKEN.
@@ -61,15 +66,15 @@ eff='{}'
 step() { eff="$(jq -c --arg k "$1" --arg v "$2" '. + {($k): $v}' <<<"$eff")"; }
 fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"; exit 0; }
 
-boot() {
+boot() {  # <stdout-file> <stderr-file>
   ( exec env BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" \
       ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ADMIN" RUST_LOG=warn "$BIN" ) \
-    >"$W/busbar.log" 2>&1 &
+    >"$1" 2>"$2" &
   echo $!
 }
 
-pid="$(boot)"; track_pid "$pid"
-wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 1 "$(tail -c 800 "$W/busbar.log")"
+pid="$(boot "$W/boot1.stdout" "$W/boot1.stderr")"; track_pid "$pid"
+wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 1 "$(tail -c 800 "$W/boot1.stdout")$(tail -c 800 "$W/boot1.stderr")"
 step booted "true"
 
 # advanced.response_headers.server_timing (PB-73): RESTART-scoped, default false — the config
@@ -92,7 +97,7 @@ step process_exited "$(assert_port_free "$LP" && echo true || echo false)"
 # a fresh launch against the SAME config + overlay (the "supervisor" restarting it) must come back
 # up clean AND now emit the Server-Timing header the pre-restart PUT staged — proving the setting
 # survived the restart it required, without any shell access to the box in between.
-pid2="$(boot)"; track_pid "$pid2"
+pid2="$(boot "$W/boot2.stdout" "$W/boot2.stderr")"; track_pid "$pid2"
 relaunch_ok="false"
 wait_for_http "http://127.0.0.1:${LP}/healthz" 30 && relaunch_ok="true"
 step relaunch_after_restart_healthy "$relaunch_ok"
@@ -103,4 +108,10 @@ fi
 kill "$pid2" 2>/dev/null; wait "$pid2" 2>/dev/null
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
 
-jq -n --argjson eff "$eff" --arg body "$(jq -c . <<<"$eff")" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"
+combined_stderr="--- boot1 ---
+$(cat "$W/boot1.stderr" 2>/dev/null)
+--- boot2 ---
+$(cat "$W/boot2.stderr" 2>/dev/null)
+"
+eff="$(jq -c --arg v "$combined_stderr" '. + {stderr: $v}' <<<"$eff")"
+jq -n --argjson eff "$eff" --arg body "$(jq -c 'del(.stderr)' <<<"$eff")" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"

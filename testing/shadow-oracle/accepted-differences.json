@@ -95,11 +95,11 @@
       "id": "F-003 CLI text",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^cli\\|(--help|-h|--version|-V)$",
+      "cells": "^(cli\\|(--help|-h|--version|-V)|documented\\|readme\\|env-launch)$",
       "classes": [
         "body"
       ],
-      "rationale": "--help documents the new -c/--providers flags; --version prints a second build-profile line."
+      "rationale": "--help documents the new -c/--providers flags; --version prints a second build-profile line. documented|readme|env-launch (PB-71) drives the same --version path under BUSBAR_CONFIG and hits the identical second line."
     },
     {
       "id": "S-1 bedrock text blocks carry no contentBlockStart",

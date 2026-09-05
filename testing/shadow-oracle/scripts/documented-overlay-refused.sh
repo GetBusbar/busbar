@@ -10,8 +10,17 @@
 # One arg selects which config shape is under test; both land on the SAME `overlay_path == None`
 # code path (config/overlay.rs; main.rs:1053-1073 in the 1.5.5 tag), so the observable facts —
 # boots to /healthz, then refuses a PUT /api/v1/admin/config/settings with the fixed
-# NO_WRITABLE_OVERLAY_MSG — are identical for both variants; only the boot-time WARN/INFO line text
-# differs, which the harvested log tail preserves for the differ to compare byte-for-byte.
+# NO_WRITABLE_OVERLAY_MSG — are identical for both variants; only the boot-time WARN/INFO line
+# differs (checked as a boolean, since its exact wording is the CONTRADICTED/CONFIRMED claim text
+# already quoted in the cell's `why`, not a second thing to pin here).
+#
+# busbar's own stdout/stderr are captured SEPARATELY (never merged with `2>&1`) and land under the
+# STANDARD paths every other driver in this suite uses: raw stderr under `effects.stderr` (a plain
+# string), so the shared accepted-differences.json transforms (D-1 diagnostic codes, D-2 jemalloc
+# line) reach it exactly as they reach an exec cell's capture-exec.py output. Everything else this
+# cell asserts is a fact DERIVED from a stream (a boolean, a status code), never raw log text under
+# a custom key — the same discipline documented-docker-defaults.sh already used for its own
+# `open_relay_warn_present` boolean.
 #
 #   documented-overlay-refused.sh <locked|overlay-unwritable>
 #
@@ -78,16 +87,25 @@ stepbool() { eff="$(jq -c --arg k "$1" --argjson v "$2" '. + {($k): $v}' <<<"$ef
 fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"; exit 0; }
 
 ( exec env BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" \
-    ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ADMIN" RUST_LOG=warn "$BIN" ) >"$W/busbar.log" 2>&1 &
+    ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ADMIN" RUST_LOG=warn "$BIN" ) \
+  >"$W/stdout.log" 2>"$W/stderr.log" &
 pid=$!; track_pid $pid
 if wait_for_http "http://127.0.0.1:${LP}/healthz" 30; then
   stepbool booted true
 else
   stepbool booted false
-  fail 1 "$(tail -c 800 "$W/busbar.log")"
+  fail 1 "$(tail -c 800 "$W/stdout.log")$(tail -c 800 "$W/stderr.log")"
 fi
 
-step boot_log_tail "$(tail -c 1200 "$W/busbar.log" | tr -d '\000')"
+# the boot-posture line (README:272 / CHANGELOG:40-46's "config is READ-ONLY …", or the `locked`
+# variant's "config is LOCKED …") is a tracing::warn!/info! line, which this binary's subscriber
+# writes to STDOUT — checked as a presence boolean, its exact wording already quoted in the why.
+case "$VARIANT" in
+  locked) warn_marker="config is LOCKED" ;;
+  overlay-unwritable) warn_marker="config is READ-ONLY" ;;
+esac
+stepbool posture_line_present "$(grep -q "$warn_marker" "$W/stdout.log" && echo true || echo false)"
+eff="$(jq -c --arg v "$(cat "$W/stderr.log" 2>/dev/null)" '. + {stderr: $v}' <<<"$eff")"
 
 mut_status="$(curl -sS -m 10 -o "$W/mut.body" -w '%{http_code}' -X PUT "http://127.0.0.1:${AP}/api/v1/admin/config/settings" \
   -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
@@ -99,4 +117,4 @@ eff="$(jq -c --arg v "$stepjson_body" '. + {mutation_body: ($v | try fromjson ca
 kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
 
-jq -n --argjson eff "$eff" --arg body "$(jq -c . <<<"$eff")" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"
+jq -n --argjson eff "$eff" --arg body "$(jq -c 'del(.stderr)' <<<"$eff")" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"

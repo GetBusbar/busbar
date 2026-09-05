@@ -9,6 +9,10 @@
 # (config/tests/tests.rs test_tls_typo_and_removed_keys_rejected_at_parse and friends); this cell
 # proves the plain-TLS half of the claim actually serves traffic, not just that the config parses.
 #
+# busbar's stdout/stderr are captured separately (never merged with `2>&1`); raw stderr lands under
+# the standard `effects.stderr` so accepted-differences.json's D-1/D-2 transforms reach it exactly
+# as they reach an exec cell's capture-exec.py output.
+#
 #   documented-tls.sh
 #
 # Writes $RAW/captured.json. Env from the recorder: BUSBAR_BIN RAW WORK.
@@ -73,7 +77,7 @@ YAML
 
 ( exec env BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" \
     ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN=shadow-oracle-admin RUST_LOG=warn "$BIN" ) \
-  >"$W/busbar.log" 2>&1 &
+  >"$W/stdout.log" 2>"$W/stderr.log" &
 pid=$!; track_pid $pid
 i=0; healthy=0
 while [ $i -lt 100 ]; do
@@ -84,15 +88,16 @@ done
 step booted_https "$([ "$healthy" -eq 1 ] && echo true || echo false)"
 if [ "$healthy" -ne 1 ]; then
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-  fail 2 "$(tail -c 800 "$W/busbar.log")"
+  fail 2 "$(tail -c 800 "$W/stdout.log")$(tail -c 800 "$W/stderr.log")"
 fi
 step healthz_https_status "$(curl -k -sS -m 5 -o /dev/null -w '%{http_code}' "https://127.0.0.1:${LP}/healthz")"
 # confirm PLAIN http on the same port is refused (busbar is TLS-only once configured, no fallback)
 plain_rc=0
 curl -fsS -m 2 -o /dev/null "http://127.0.0.1:${LP}/healthz" 2>/dev/null || plain_rc=$?
 step plain_http_refused "$([ "$plain_rc" -ne 0 ] && echo true || echo false)"
+eff="$(jq -c --arg v "$(cat "$W/stderr.log" 2>/dev/null)" '. + {stderr: $v}' <<<"$eff")"
 
 kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
 
-jq -n --argjson eff "$eff" --arg body "$(jq -c . <<<"$eff")" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"
+jq -n --argjson eff "$eff" --arg body "$(jq -c 'del(.stderr)' <<<"$eff")" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"
