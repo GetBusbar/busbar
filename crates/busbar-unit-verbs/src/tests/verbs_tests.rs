@@ -67,6 +67,12 @@ struct FakeGovernance {
     keys: Mutex<HashMap<String, bool>>, // id -> tombstoned
     next_id: AtomicU64,
     new_verb_calls: Mutex<Vec<KernelVerb>>,
+    /// What every mutating governance call should fail with, if anything.
+    ///
+    /// Without this the fail-closed arm of `GovernanceError::into_refusal` is unreachable from any
+    /// test: a double that can only succeed proves the happy path and nothing else, and a store that
+    /// went away is the case the mapping exists for.
+    fails_with: Mutex<Option<GovernanceError>>,
 }
 
 impl FakeGovernance {
@@ -76,6 +82,24 @@ impl FakeGovernance {
             keys: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             new_verb_calls: Mutex::new(Vec::new()),
+            fails_with: Mutex::new(None),
+        }
+    }
+
+    /// Every mutating call refuses with this error until it is cleared.
+    fn failing_with(self, error: GovernanceError) -> Self {
+        *self.fails_with.lock().unwrap() = Some(error);
+        self
+    }
+
+    /// The injected failure, taken fresh for each call so a double can refuse more than once.
+    fn injected(&self) -> Option<GovernanceError> {
+        match *self.fails_with.lock().unwrap() {
+            None => None,
+            Some(GovernanceError::NotFound) => Some(GovernanceError::NotFound),
+            Some(GovernanceError::Conflict) => Some(GovernanceError::Conflict),
+            Some(GovernanceError::Validation) => Some(GovernanceError::Validation),
+            Some(GovernanceError::Store) => Some(GovernanceError::Store),
         }
     }
 
@@ -106,6 +130,9 @@ impl Governance for FakeGovernance {
         group: &str,
         parent: &str,
     ) -> Result<(), GovernanceError> {
+        if let Some(e) = self.injected() {
+            return Err(e);
+        }
         self.groups
             .lock()
             .unwrap()
@@ -117,6 +144,9 @@ impl Governance for FakeGovernance {
         _admin: &AdminToken,
         _group: Option<&str>,
     ) -> Result<MintedKey, GovernanceError> {
+        if let Some(e) = self.injected() {
+            return Err(e);
+        }
         let id = format!("key-{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         self.keys.lock().unwrap().insert(id.clone(), false);
         Ok(MintedKey {
@@ -126,6 +156,9 @@ impl Governance for FakeGovernance {
         })
     }
     fn rotate_key(&self, _admin: &AdminToken, id: &str) -> Result<RotateOutcome, GovernanceError> {
+        if let Some(e) = self.injected() {
+            return Err(e);
+        }
         let keys = self.keys.lock().unwrap();
         match keys.get(id) {
             None => Ok(RotateOutcome::NotFound),
@@ -143,6 +176,9 @@ impl Governance for FakeGovernance {
         _admin: &AdminToken,
         _request: &[u8],
     ) -> Result<Vec<u8>, GovernanceError> {
+        if let Some(e) = self.injected() {
+            return Err(e);
+        }
         Ok(b"ok".to_vec())
     }
     fn execute_new_verb(
@@ -151,6 +187,9 @@ impl Governance for FakeGovernance {
         _admin: &AdminToken,
         _request: &[u8],
     ) -> Result<Vec<u8>, GovernanceError> {
+        if let Some(e) = self.injected() {
+            return Err(e);
+        }
         self.new_verb_calls.lock().unwrap().push(verb);
         Ok(b"ok".to_vec())
     }
@@ -747,6 +786,149 @@ fn a_rotate_that_arrives_while_the_first_is_in_flight_is_refused() {
     assert_eq!(err.step, crate::refusal::RefusalStep::Admit);
     assert_eq!(err.reason, crate::refusal::ReasonCode::IdempotencyInFlight);
     first.expect("the rotate succeeds once it is let go");
+}
+
+/// A store that has gone away refuses, on every governance call, with the reason the mapping names.
+///
+/// This is the fail-closed arm: it never echoes the cause (several of these calls carry secrets)
+/// and it never proceeds as if the call had succeeded. Nothing exercised it end to end before,
+/// because the only governance double in this crate could not fail.
+#[test]
+fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
+    let admin = admin();
+
+    // Mint: the group plan is fine, the store underneath is not.
+    let verbs = make_verbs(FakeGovernance::new().failing_with(GovernanceError::Store));
+    let err = verbs
+        .create_key(&admin, "alice", VerbScope::Full, 0, UnitKey::new(1), None, None, None)
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
+    assert_eq!(err.step, crate::refusal::RefusalStep::Verify);
+
+    // Provisioning a leaf group on the way to a mint fails the same way.
+    let verbs = make_verbs(
+        FakeGovernance::new()
+            .with_group("team", None)
+            .failing_with(GovernanceError::Store),
+    );
+    let err = verbs
+        .create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            UnitKey::new(1),
+            None,
+            Some("leaf"),
+            Some("team"),
+        )
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
+
+    // Rotate.
+    let verbs = make_verbs(
+        FakeGovernance::new()
+            .with_key("k1", false)
+            .failing_with(GovernanceError::Store),
+    );
+    let err = verbs
+        .rotate_key(&admin, "alice", VerbScope::Full, 0, UnitKey::new(1), None, "k1")
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
+
+    // A legacy verb, through the catch-all.
+    let verbs = make_verbs(FakeGovernance::new().failing_with(GovernanceError::Store));
+    let err = verbs
+        .execute(
+            KernelVerb::PostGroups,
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            None,
+            ApprovalState::NotYetApproved,
+            b"{}",
+        )
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
+
+    // And a new 1.6.0 verb, once posture has already admitted it.
+    let verbs = make_verbs(FakeGovernance::new().failing_with(GovernanceError::Store));
+    let err = verbs
+        .execute(
+            KernelVerb::SetOverdraftCeiling,
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            Some(PostureCtx {
+                operator: OperatorState::Set,
+                dual_control: DualControl::Single,
+            }),
+            ApprovalState::NotYetApproved,
+            b"{}",
+        )
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
+}
+
+/// A refused mint leaves nothing behind: no key, and no idempotency entry that would make the
+/// client's retry replay a failure it never got an answer for.
+#[test]
+fn a_store_failure_mid_mint_clears_the_reservation_rather_than_committing_it() {
+    let admin = admin();
+    let verbs = make_verbs(FakeGovernance::new().failing_with(GovernanceError::Store));
+
+    let err = verbs
+        .create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            1_000,
+            UnitKey::new(1),
+            Some("dedupe-me"),
+            None,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
+
+    // The store comes back; the same idempotency key is a FRESH attempt, not a replayed refusal.
+    let verbs = make_verbs(FakeGovernance::new());
+    let out = verbs
+        .create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            1_010,
+            UnitKey::new(1),
+            Some("dedupe-me"),
+            None,
+            None,
+        )
+        .expect("a retry after the store recovers mints");
+    assert!(out.minted_outcome().is_some());
+}
+
+/// The other three governance errors map to their own reasons, so `StoreError` is not a catch-all
+/// that would hide a validation mistake behind an infrastructure one.
+#[test]
+fn the_other_governance_errors_keep_their_own_reasons() {
+    let admin = admin();
+    for (error, expected) in [
+        (GovernanceError::NotFound, crate::refusal::ReasonCode::NotFound),
+        (GovernanceError::Conflict, crate::refusal::ReasonCode::Conflict),
+        (
+            GovernanceError::Validation,
+            crate::refusal::ReasonCode::Validation,
+        ),
+    ] {
+        let verbs = make_verbs(FakeGovernance::new().failing_with(error));
+        let err = verbs
+            .create_key(&admin, "alice", VerbScope::Full, 0, UnitKey::new(1), None, None, None)
+            .unwrap_err();
+        assert_eq!(err.reason, expected);
+    }
 }
 
 #[test]
