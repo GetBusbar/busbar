@@ -63,9 +63,7 @@ use std::sync::Arc;
 use busbar_contract::plane::PlaneMeta;
 use busbar_contract::transport::TransportMeta;
 use busbar_contract::{check_composition, CompositionError, Plugin, Registered, Transport};
-use busbar_kernel::registry::{
-    seal_claims, ClaimConflict, ConflictReason, PlaneClaim, Registry, ResolvedOverlap,
-};
+use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
 use busbar_plane_a2a::A2aPlane;
 use busbar_plane_admin::AdminPlane;
 use busbar_plane_llm::LlmPlane;
@@ -364,7 +362,7 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
 mod tests {
     use super::*;
     use busbar_contract::grammar::{Claim, Selector};
-    use busbar_kernel::registry::{check_claims, claims_overlap, PluginKind};
+    use busbar_kernel::registry::{check_claims, claims_overlap, ConflictReason, PluginKind};
 
     /// The sealed walk over the forty-nine declared claims, most specific first.
     ///
