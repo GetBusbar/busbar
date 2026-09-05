@@ -51,6 +51,17 @@
 #   provider-dial      (K5) a session actually DIALS the composed provider through a real (loopback)
 #                      socket via `topology::dial_provider`, and its D2 metering lease settles the
 #                      usage that arrived over it — the WS legs' upstream dial is no longer uncomposed.
+#   admit-refusal      a key whose budget is already spent is refused AT THE DOOR
+#                      (`StartError::BudgetRefused`) before any host-side lease is opened and before
+#                      any ledger posting — no provider dial has anything left to reach.
+#   route-failover     a hard-down provider dial trips the breaker cell on its first strike, and the
+#                      tripped cell refuses every FURTHER dial before any socket/URL work — the
+#                      documented terminal outcome, with no repeated egress once the cell is open.
+#   audit-record       one governed session lands EXACTLY ONE new admin-audit entry, carrying the
+#                      plane's own action literal (`voice.session.open`) and outcome (`applied`).
+#   exit-terminal      one session ends ONCE: a metering lease settles exactly once under a double
+#                      close, and a session's one admin-audit row survives being torn down before it
+#                      ever runs a frame.
 #   governance         the 5 vision checkpoints (incl. D2 hard-close-on-exhaustion). GOVERNANCE IS
 #                      NOT A CONFORMANCE RESULT — it can never move the conformance verdict, exactly
 #                      as `testing/a2a-governance/` can never contribute to the A2A verdict.
@@ -89,8 +100,9 @@ VOICE_LEGS_DIR="${VOICE_LEGS_DIR:-$HERE/legs}"
 
 # A FLOOR on the declared-leg count, for the same reason the python verdict linter has one: every
 # equality below would hold for a battery that had been gutted to a single leg, so the count is
-# checked first. Nine legs ship today (spec-per-dialect, replay, cross-parity, provider-credential,
-# metering-lease, session-scope, gemini-live-route, provider-dial, plus governance).
+# checked first. Thirteen legs ship today (spec-per-dialect, replay, cross-parity,
+# provider-credential, metering-lease, session-scope, gemini-live-route, provider-dial,
+# admit-refusal, route-failover, audit-record, exit-terminal, plus governance).
 MIN_LEGS="${VOICE_MIN_LEGS:-3}"
 
 say()  { printf '%s\n' "$*"; }

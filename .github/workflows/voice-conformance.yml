@@ -205,7 +205,7 @@ jobs:
           if-no-files-found: warn
 
   composition:
-    name: "composition · provider credential, per-key lease, session scope, gemini route"
+    name: "composition · provider credential, per-key lease, session scope, gemini route, admit/route/audit/exit"
     needs: gate-selftest
     runs-on: ubuntu-latest
     env:
@@ -218,13 +218,18 @@ jobs:
         run: cargo build -p busbar-voice --features runtime,test-support --bin voice-conform
       # The seams that decide whether a MOUNTED door can serve, meter and authorize a session on a
       # real deployment, PLUS the Gemini Live route's own mount shape (K4: claim/admission/arrival and
-      # the wire handshake, over the plane's public functions). Each is its own leg because each fails
-      # on its own; they run in one job because they share a build and none of them touches the
-      # network (K5's `provider-dial`, which DOES open a loopback socket, is its own job below).
+      # the wire handshake, over the plane's public functions), PLUS the last four gating cells (a
+      # spent-budget refusal at Admit, a tripped breaker's terminal Route outcome, the Audit admin-trail
+      # row, and the Exit settle-once/audit-once guarantee — each driven against the substrate's
+      # `FixtureHost`, a full `EngineHost` double). Each is its own leg because each fails on its own;
+      # they run in one job because they share a build and none of them touches the network (K5's
+      # `provider-dial`, which DOES open a loopback socket, is its own job below; `route-failover`'s
+      # breaker-tripped dial is refused by the net-guard before any socket, so it opens none either).
       - name: Run the composition legs
         run: |
           set -euo pipefail
-          for leg in provider-credential metering-lease session-scope gemini-live-route; do
+          for leg in provider-credential metering-lease session-scope gemini-live-route \
+                     admit-refusal route-failover audit-record exit-terminal; do
             bash testing/voice-conformance/voice-conformance.sh --leg "$leg"
           done | tee voice-composition.log
       - uses: actions/upload-artifact@v7
