@@ -768,6 +768,23 @@ pub(crate) fn route(
             busbar_unit_scope::admin_required_scope(&request.method, &request.path),
         ));
 
+    // THE UNIT'S OWN BOUNDARY, HONOURED. The verbs unit asserts that the two credential-MINTING
+    // verbs never come through its general execution path: they have dedicated methods, with their
+    // own idempotency handling, that mint through the governance seam and render through the replay
+    // encoder. This root does not mint — the surface that owns those operations mints and renders
+    // the one-time secret itself, and it has already done so by the time the answer comes back — so
+    // asking the unit to mint a second identity for an answer that already carries one would be two
+    // mints for one request, which is exactly what its dedicated methods exist to prevent.
+    //
+    // So for those two the seam is reached directly. The verb is still the closed table's, the step
+    // is still Route, and the body still lives where it lived; what is skipped is a minting path
+    // this composition has no use for.
+    if verb == KernelVerb::PostKeys || verb == KernelVerb::PostKeysIdRotate {
+        let answer = binding.dispatch.execute(verb, &request);
+        binding.units.set_answer(ctx.key, answer);
+        return Decision::proceed(token, busbar_contract::RoutePlan::default());
+    }
+
     let verbs = busbar_unit_verbs::Verbs::new(
         CoreGovernance::new(Arc::clone(&binding.dispatch), verb, request.clone()),
         StoreRef(store),
@@ -1236,53 +1253,88 @@ fn unavailable_answer() -> AdminAnswer {
 /// request the caller sent, hands it to the router the operation is mounted on, and returns that
 /// router's whole response. No status is computed here, no header is added and no body is touched —
 /// and that is the property the oracle measures.
+/// One operation, handed across the boundary between the loop and the runtime.
+///
+/// The request goes one way and the answer comes back the other, on a channel the caller owns. The
+/// pair travels together so the async side never has to know which of several outstanding calls it
+/// is answering.
+#[cfg(feature = "root-admin")]
+type Errand = (AdminRequest, std::sync::mpsc::SyncSender<AdminAnswer>);
+
 #[cfg(feature = "root-admin")]
 pub struct RouterDispatch {
-    inner: axum::Router,
-    runtime: tokio::runtime::Handle,
+    errands: tokio::sync::mpsc::UnboundedSender<Errand>,
 }
 
 #[cfg(feature = "root-admin")]
 impl RouterDispatch {
-    /// Bind the seam to a mounted router.
+    /// Bind the seam to a mounted router, and start the task that drives it.
+    ///
+    /// **Why a channel and not `Handle::block_on`.** The loop is synchronous and runs on a blocking
+    /// worker; the router is asynchronous. Blocking on a runtime handle from inside a blocking
+    /// worker is legal on some runtime flavours and a panic on others, which makes it a thing that
+    /// works until the deployment's shape changes — a single-worker node panicked on the exact call
+    /// a multi-worker node served. A channel is flavour-independent: the blocking side waits on a
+    /// standard-library receiver, which knows nothing about runtimes, and the async side is an
+    /// ordinary task. The seam is the same seam; only the way it is crossed stopped depending on
+    /// how the node was configured.
     #[must_use]
-    pub fn new(inner: axum::Router, runtime: tokio::runtime::Handle) -> Self {
-        RouterDispatch { inner, runtime }
+    pub fn new(inner: axum::Router, runtime: &tokio::runtime::Handle) -> Self {
+        let (errands, mut inbox) = tokio::sync::mpsc::unbounded_channel::<Errand>();
+        runtime.spawn(async move {
+            while let Some((request, reply)) = inbox.recv().await {
+                let inner = inner.clone();
+                // One task per operation, so a slow verb cannot hold up the one behind it — the
+                // surface was concurrent before the switch and stays concurrent through it.
+                tokio::spawn(async move {
+                    let _ = reply.send(call(inner, &request).await);
+                });
+            }
+        });
+        RouterDispatch { errands }
+    }
+}
+
+/// Hand one request to the router and take its whole answer.
+#[cfg(feature = "root-admin")]
+async fn call(inner: axum::Router, request: &AdminRequest) -> AdminAnswer {
+    use tower::ServiceExt;
+
+    let mut builder = axum::http::Request::builder()
+        .method(request.method.as_str())
+        .uri(request.path.as_str());
+    for (name, value) in &request.headers {
+        builder = builder.header(name.as_str(), value.as_str());
+    }
+    let Ok(http) = builder.body(axum::body::Body::from(request.body.clone())) else {
+        return refused_answer();
+    };
+
+    // The router's own error type is uninhabited: a mounted axum router answers, and failing is not
+    // among the things it can do. So there is no error arm to write here, and writing one anyway
+    // would be a branch that can never be taken pretending to be a fallback that could be.
+    let response = inner.oneshot(http).await.unwrap_or_else(|e| match e {});
+    let (parts, body) = response.into_parts();
+    let bytes = axum::body::to_bytes(body, usize::MAX)
+        .await
+        .unwrap_or_default();
+    AdminAnswer {
+        status: parts.status.as_u16(),
+        headers: header_pairs(&parts.headers),
+        body: bytes.to_vec(),
     }
 }
 
 #[cfg(feature = "root-admin")]
 impl AdminDispatch for RouterDispatch {
     fn execute(&self, _verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
-        use tower::ServiceExt;
-
-        let mut builder = axum::http::Request::builder()
-            .method(request.method.as_str())
-            .uri(request.path.as_str());
-        for (name, value) in &request.headers {
-            builder = builder.header(name.as_str(), value.as_str());
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        if self.errands.send((request.clone(), reply)).is_err() {
+            // The driving task is gone, which happens only as the node itself goes away. There is
+            // no surface left to ask, and saying so is the only answer left.
+            return unavailable_answer();
         }
-        let Ok(http) = builder.body(axum::body::Body::from(request.body.clone())) else {
-            return refused_answer();
-        };
-
-        let inner = self.inner.clone();
-        self.runtime.block_on(async move {
-            // The router's own error type is uninhabited: a mounted axum router answers, and
-            // failing is not among the things it can do. So there is no error arm to write here,
-            // and writing one anyway would be a branch that can never be taken pretending to be a
-            // fallback that could be.
-            let response = inner.oneshot(http).await.unwrap_or_else(|e| match e {});
-            let (parts, body) = response.into_parts();
-            let bytes = axum::body::to_bytes(body, usize::MAX)
-                .await
-                .unwrap_or_default();
-            AdminAnswer {
-                status: parts.status.as_u16(),
-                headers: header_pairs(&parts.headers),
-                body: bytes.to_vec(),
-            }
-        })
+        answer.recv().unwrap_or_else(|_| unavailable_answer())
     }
 }
 
@@ -1322,7 +1374,7 @@ pub fn mount(
     build_units: impl FnOnce(Arc<dyn AdminDispatch>) -> crate::root::kernel::ProductionUnits,
 ) -> axum::Router {
     let runtime = tokio::runtime::Handle::current();
-    let dispatch: Arc<dyn AdminDispatch> = Arc::new(RouterDispatch::new(inner.clone(), runtime));
+    let dispatch: Arc<dyn AdminDispatch> = Arc::new(RouterDispatch::new(inner.clone(), &runtime));
     let node = Arc::new(AdminNode::new(kernel, build_units(dispatch)));
 
     axum::Router::new().fallback(axum::routing::any(
