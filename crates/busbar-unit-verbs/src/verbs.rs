@@ -17,7 +17,11 @@
 //! 2. **Rate limit.** [`crate::rate::MutationClass::for_verb`] then
 //!    [`crate::rate::MutationLimiter::check`] — refused `RateLimited` otherwise. Reads never reach
 //!    the limiter at all (their class is `Forbidden`, i.e. never checked).
-//! 3. **Posture** (new verbs only). [`crate::posture::check_new_verb_admission`].
+//! 3. **Posture** (new verbs only). [`crate::posture::check_new_verb_admission`]. The five ledger
+//!    views ([`crate::verb::LEDGER_VERBS`]) are answered BEFORE this step and never reach it: a view
+//!    reads figures the ledger already holds, so there is no mutation for dual control to check and
+//!    no ceremony for it to wait on. They reach [`crate::governance::Governance::execute_ledger_read`]
+//!    instead, having passed exactly the same scope and rate checks as everything above.
 //! 4. **Idempotency** (the two legacy replayable mutations only, `create_key`/`rotate_key`,
 //!    reached through their own dedicated methods rather than the generic [`Verbs::execute`] — see
 //!    their doc comments for why they are not folded into the generic dispatch).
@@ -117,9 +121,10 @@ impl MintOutcome {
     }
 }
 
-/// Resolve the scope a [`KernelVerb`] requires. Legacy verbs read [`LEGACY_VERBS`]; the 17 new
-/// verbs are `Full` (every one of them mutates state or reads privileged material — there is no
-/// read-only new verb); the named surfaces split by their own nature (`Get*` reads, the two
+/// Resolve the scope a [`KernelVerb`] requires. Legacy verbs read [`LEGACY_VERBS`]; the 17
+/// money-governance verbs are `Full` (every one of them mutates state or reads privileged
+/// material); the five ledger views are `ReadOnly` (they are the one group of 1.6.0 additions that
+/// only looks); the named surfaces split by their own nature (`Get*` reads, the two
 /// `/auth/token` methods are their own thing and never checked against this two-rung scope model at
 /// all — see the module doc on why `Verbs::execute` is not the caller for them).
 pub fn required_scope(verb: KernelVerb) -> VerbScope {
@@ -160,7 +165,9 @@ pub struct Verbs<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<Minte
     limiter: MutationLimiter,
 }
 
-impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>> Verbs<G, S, N, E> {
+impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>>
+    Verbs<G, S, N, E>
+{
     /// Build a fresh executor over the four bound seams. `config_class_rules` is the composition
     /// root's sealed CG-38 table (see [`crate::rate::CONFIG_CLASS_RULES`] for the 1.5.5-parity
     /// default); `nonce_source` and `replay_encoder` are mandatory — there is no `Default` for

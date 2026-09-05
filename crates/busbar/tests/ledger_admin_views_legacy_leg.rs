@@ -82,7 +82,8 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_ledger_path() {
     let app = busbar_core::test_support::TestApp::new()
         .admin_chain(vec![])
         .build();
-    let (_data, admin, _handle) = busbar_core::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    let (_data, admin, _handle) =
+        busbar_core::build_split_routers_with_limits(app, 1 << 20, 0, false);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -128,7 +129,8 @@ async fn the_pinned_document_gained_no_ledger_path() {
     let app = busbar_core::test_support::TestApp::new()
         .admin_chain(vec![])
         .build();
-    let (_data, admin, _handle) = busbar_core::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    let (_data, admin, _handle) =
+        busbar_core::build_split_routers_with_limits(app, 1 << 20, 0, false);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

@@ -662,7 +662,10 @@ fn render_totals_cell(
         json_amount(amount, out);
     }
     for (name, count) in [
-        ("oldest_open_hold_age_secs", totals.oldest_open_hold_age_secs),
+        (
+            "oldest_open_hold_age_secs",
+            totals.oldest_open_hold_age_secs,
+        ),
         ("open_dispute_count", totals.open_dispute_count),
         ("oldest_dispute_age_secs", totals.oldest_dispute_age_secs),
     ] {
@@ -2492,9 +2495,10 @@ mod tests {
     /// Walk one request through the whole loop against a node whose ledger holds the fixture.
     #[cfg(feature = "root-admin")]
     fn answer_over_seeded_ledger(request: AdminRequest) -> AdminAnswer {
-        let mut units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
-        units.admin = AdminBinding::new(Arc::new(AnsweringDispatch))
-            .with_ledger_view(Arc::new(SeededLedger));
+        let mut units =
+            crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+        units.admin =
+            AdminBinding::new(Arc::new(AnsweringDispatch)).with_ledger_view(Arc::new(SeededLedger));
         AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
     }
 
@@ -2588,7 +2592,8 @@ mod tests {
         assert_eq!(migration["marker"]["cells_read"], 11);
         assert_eq!(migration["marker"]["rate_card_version"], 5);
         assert_eq!(
-            migration["marker"]["body_hash"], "0707070707070707070707070707070707070707070707070707070707070707"
+            migration["marker"]["body_hash"],
+            "0707070707070707070707070707070707070707070707070707070707070707"
         );
 
         let document = body("/api/v1/admin/ledger/openapi.json");
@@ -2606,7 +2611,10 @@ mod tests {
             assert_eq!(answer.status, 200, "{path}");
             serde_json::from_slice(&answer.body).expect("valid JSON")
         };
-        assert_eq!(body("/api/v1/admin/ledger/totals")["rows"], serde_json::json!([]));
+        assert_eq!(
+            body("/api/v1/admin/ledger/totals")["rows"],
+            serde_json::json!([])
+        );
         assert_eq!(
             body("/api/v1/admin/ledger/checkpoints")["checkpoints"],
             serde_json::json!([])
@@ -2640,7 +2648,8 @@ mod tests {
         );
 
         let served: serde_json::Value = serde_json::from_slice(
-            &answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/reconciliation")).body,
+            &answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/reconciliation"))
+                .body,
         )
         .expect("valid JSON");
 
@@ -2785,8 +2794,14 @@ mod tests {
         for path in LEDGER_PATHS {
             let row = busbar_plane_admin::verbs::resolve("GET", path)
                 .unwrap_or_else(|| panic!("{path} is not in the plane's table"));
-            assert!(row.read_only, "{path} is not read-only in the plane's table");
-            assert_eq!(row.op_class(), busbar_contract::ids::OpClassId::new("admin_read"));
+            assert!(
+                row.read_only,
+                "{path} is not read-only in the plane's table"
+            );
+            assert_eq!(
+                row.op_class(),
+                busbar_contract::ids::OpClassId::new("admin_read")
+            );
 
             let verb = kernel_verb(&row).unwrap_or_else(|| panic!("{path} names no kernel verb"));
             assert!(LEDGER_VERBS.contains(&verb), "{path} is not a ledger verb");
@@ -2820,7 +2835,14 @@ mod tests {
         impl AdminDispatch for CountingDispatch {
             fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
                 self.0.fetch_add(1, Ordering::Relaxed);
-                refused_answer()
+                // A recognisable answer rather than a realistic one: if a view ever reached the
+                // dispatch, the count below is what says so, and the body only has to be something
+                // no view would produce.
+                AdminAnswer {
+                    status: 599,
+                    headers: Vec::new(),
+                    body: b"the dispatch was reached".to_vec(),
+                }
             }
         }
 
