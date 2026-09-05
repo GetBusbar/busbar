@@ -218,6 +218,30 @@ pub fn authenticate(
     auth.resolve(&request, cache, keys, revocations, None, token)
 }
 
+/// Ask the auth unit who is calling, over the node's own bindings.
+///
+/// The form above takes the three seams one at a time because that is the shape the unit's own
+/// signature has, and a test that wants to state exactly one of them says so by handing two
+/// `None`s. This is the form a dispatch uses, and it is the one that closes the gap: the seams are
+/// not three arguments a caller has to remember to fill in, they are the node's one set, reached
+/// through the value that holds them. A dispatch calling [`authenticate`] directly could pass
+/// `None` three times and compile; calling this one cannot.
+pub fn authenticate_bound(
+    auth: &Auth,
+    arriving: &Arriving<'_>,
+    bindings: &crate::root::kernel::auth_bindings::AuthBindings,
+    token: &UnitToken<Authenticate>,
+) -> Decision<Authenticate> {
+    authenticate(
+        auth,
+        arriving,
+        bindings.cache(),
+        bindings.keys(),
+        bindings.revocations(),
+        token,
+    )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Step 2 — verify, against the catalogue the plane's records describe
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1279,6 +1303,70 @@ mod tests {
     #[test]
     fn the_declared_schemes_are_the_claims_own() {
         assert_eq!(declared_schemes(), vec!["bearer", "environment"]);
+    }
+
+    /// The bound form reaches the node's own seams, and the signed key it resolves is the one the
+    /// directory holds.
+    ///
+    /// The gap this closes is not that the seams could not be passed — the form above always took
+    /// them — but that nothing passed them: a dispatch could hand three `None`s and get a chain that
+    /// verified no signed key at all, which on a plane whose every credentialed claim carries an
+    /// audience means the audience was declared and never checked. So what is asserted is the
+    /// composition: a chain that names the signed-key arm, a directory that holds one key, and a
+    /// principal that came back carrying that key's id.
+    #[test]
+    fn the_bound_form_authenticates_through_the_nodes_own_seams() {
+        use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
+        use busbar_caps::{Authenticated, KernelSeal};
+        use busbar_unit_auth::{AuthChain, ChainVerdict};
+
+        struct OneKey;
+
+        impl VirtualKeyDirectory for OneKey {
+            fn verify(
+                &self,
+                credential: &str,
+                _now: u64,
+                expected_aud: Option<&str>,
+            ) -> Option<KeyFacts> {
+                // The audience is the plane boundary, and the verifier is where it is enforced.
+                (credential == "tok" && expected_aud == Some(<McpPlane as PlaneMeta>::KEY)).then(
+                    || KeyFacts {
+                        id: "key-mcp-1".to_string(),
+                        name: "an approved key".to_string(),
+                    },
+                )
+            }
+
+            fn revoked(&self, _credential: &str) -> bool {
+                false
+            }
+        }
+
+        // A chain naming the signed-key arm and no boxed module: the door stays shut and the arm is
+        // the one thing that can open it, which is what makes this test about the arm.
+        let auth = Auth::new(AuthChain::new(Vec::new(), true));
+        assert!(!auth.chain().is_open());
+        assert!(matches!(
+            auth.chain().run_chain(Some("tok")),
+            ChainVerdict::Denied
+        ));
+
+        let bindings = AuthBindings::new(std::sync::Arc::new(OneKey));
+        let arriving = Arriving {
+            presented: Some("tok"),
+            transport: claims::TRANSPORT_HTTP,
+            under_scheme: true,
+            now: 100,
+            new_unit: true,
+        };
+        let seal = KernelSeal::acquire_for_kernel();
+        let decision = authenticate_bound(&auth, &arriving, &bindings, &UnitToken::mint(&seal));
+
+        match decision.into_result(&seal) {
+            Ok(Authenticated::Principal(p)) => assert_eq!(p.as_str(), "key-mcp-1"),
+            other => panic!("the bound seams did not reach the arm: {other:?}"),
+        }
     }
 
     /// A locally launched server is narrowed to the credential it was handed at start; everything on

@@ -49,6 +49,16 @@
 //! could never have been answered. A refusal at the first step costs nothing and says exactly what
 //! happened, which is what makes the coexistence window safe to be in.
 
+// The authenticate step's three seams, declared from here for the length of one window.
+//
+// The declaration belongs beside its siblings in the root's own module list, and the source file is
+// already exactly where that list will name it — the `#[path]` is what lets the file sit in its
+// final place while the list is being written by another hand. When the list gains
+// `pub mod auth_bindings;`, these two lines become `pub use super::auth_bindings;` and every call
+// site is unchanged, because the name they reach it by is the same one either way.
+#[path = "auth_bindings.rs"]
+pub mod auth_bindings;
+
 use std::sync::{Arc, Mutex};
 
 use busbar_caps::{
@@ -127,6 +137,14 @@ pub struct ProductionUnits {
     pub breaker: crate::root::adapters::BreakerAdapter,
     /// The authentication chain, resolved from configuration at boot.
     pub auth: Auth,
+    /// The three seams the authenticate step is handed beside the request: the credential cache, the
+    /// signed-key verifier and the revocation view.
+    ///
+    /// One per node rather than one per plane, for the reason the cache's own documentation gives
+    /// about a flush: two caches would be two answers to "has this credential been seen", and an
+    /// operator who flushed one would leave the other serving a verdict the flush was meant to have
+    /// killed.
+    pub auth_bindings: auth_bindings::AuthBindings,
     /// The trust unit. Stateless: it is handed the pool view and the kind facts per call.
     pub trust: Trust,
     /// The arrival door, bound to the admission unit and to nothing else.
@@ -197,6 +215,11 @@ impl ProductionUnits {
             ),
             egress: EgressUnit::new(),
             auth: Auth::new(auth_chain),
+            // The unbound posture, which is the one a node has until it is handed a directory:
+            // the cache is real, and the two authorities are absent rather than permissive. A
+            // deployment whose keys are busbar's own binds them through
+            // `ProductionUnits::with_auth_bindings` at boot, where the governance state exists.
+            auth_bindings: auth_bindings::AuthBindings::without_directory(),
             trust: Trust,
             arrival_door: AdmissionDoor,
             durability: Mutex::new(durability),
@@ -244,6 +267,18 @@ impl ProductionUnits {
             crate::root::units_admin::AdminBinding::new(dispatch),
             Arc::new(crate::root::units_admin::RefusingStore),
         )
+    }
+
+    /// Bind the authenticate step's three seams to a node's virtual-key directory.
+    ///
+    /// Separate from [`ProductionUnits::new`] because the directory is not a value configuration
+    /// decided — it is a live handle on the governance state, which exists only after the store is
+    /// open and the keys are hydrated, and threading it through the constructor would make every
+    /// caller that has no directory pass an absence.
+    #[must_use]
+    pub fn with_auth_bindings(mut self, bindings: auth_bindings::AuthBindings) -> Self {
+        self.auth_bindings = bindings;
+        self
     }
 
     /// The scope an admin credential carries.

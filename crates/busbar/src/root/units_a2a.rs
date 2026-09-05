@@ -425,6 +425,10 @@ pub fn scope_policy(base: crate::root::policy::ScopePolicy) -> crate::root::poli
 pub struct A2aBindings<'r, S: CellStore> {
     /// The authentication chain, as configuration resolved it.
     pub auth: &'r Auth,
+    /// The credential cache, the signed-key verifier and the revocation view the chain is handed
+    /// beside the request. Borrowed rather than owned, and borrowed from the node's one set: a
+    /// second cache would be a second answer to "has this credential been seen".
+    pub auth_bindings: &'r crate::root::kernel::auth_bindings::AuthBindings,
     /// The seal the trust unit's verified destinations are minted under. Carried rather than minted
     /// because the kernel mints it and this is not the kernel.
     pub trust_token: &'r TrustToken,
@@ -747,9 +751,18 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // The chain's answer is the chain's, and a decision has no reader on it by design — the only
         // thing that opens one is the loop, with the kernel's seal. So the principal the audit and
         // the settlement need is recorded at the next step, which is handed it.
-        self.bindings
-            .auth
-            .resolve(&request, None, None, None, None, token)
+        // The three seams the chain cannot own, from the node's one set. The revocation view is
+        // what the `new_unit` answer above is FOR: an unbound session asks it every unit, a bound
+        // one never does, and neither question could be asked at all while the argument was absent.
+        let seams = self.bindings.auth_bindings;
+        self.bindings.auth.resolve(
+            &request,
+            seams.cache(),
+            seams.keys(),
+            seams.revocations(),
+            None,
+            token,
+        )
     }
 
     fn verify(

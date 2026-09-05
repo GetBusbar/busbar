@@ -405,6 +405,10 @@ pub struct VoiceNode {
     pub pricer: Pricer,
     /// The authentication chain, resolved from configuration at boot.
     pub auth: Auth,
+    /// The credential cache, the signed-key verifier and the revocation view the chain is handed
+    /// beside the request. Built once for the node, so a session's credential is one row and an
+    /// operator's flush reaches every plane at once.
+    pub auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
     /// What the scope unit reads at approve. Silence is a refusal.
     pub scope: crate::root::policy::ScopePolicy,
     /// What the usage unit meters against, built from the configured rate cards.
@@ -447,6 +451,8 @@ pub struct VoiceNodeParts {
     pub pricer: Pricer,
     /// The authentication chain, resolved at boot.
     pub auth: Auth,
+    /// The three seams the chain is handed beside the request.
+    pub auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
     /// What the scope unit reads at approve.
     pub scope: crate::root::policy::ScopePolicy,
     /// What the usage unit meters against.
@@ -468,6 +474,7 @@ impl VoiceNode {
             door: Mutex::new(Door::new(InMemoryCells::new())),
             pricer: parts.pricer,
             auth: parts.auth,
+            auth_bindings: parts.auth_bindings,
             scope: parts.scope,
             meter_policy: parts.meter_policy,
             durability: Mutex::new(parts.durability),
@@ -786,9 +793,20 @@ impl Units for VoiceUnit<'_> {
             // revocation that arrived after it started.
             new_unit: self.shape.is_handshake(),
         };
-        self.node
-            .auth
-            .resolve(&request, None, None, None, None, token)
+        // The three seams the chain cannot own: the credential cache, so a session's credential
+        // consults its module once per lifetime rather than once per frame; the signed-key
+        // verifier, which is what makes the audience above something that can be checked rather
+        // than something that is merely declared; and the revocation view, which the request above
+        // has already said applies to the opening unit and to no later one.
+        let bindings = &self.node.auth_bindings;
+        self.node.auth.resolve(
+            &request,
+            bindings.cache(),
+            bindings.keys(),
+            bindings.revocations(),
+            None,
+            token,
+        )
     }
 
     fn verify(
@@ -1162,6 +1180,9 @@ mod tests {
             plane: VoicePlane::new(UPSTREAMS),
             pricer: Pricer::flat(0),
             auth: Auth::new(AuthChain::new(Vec::new(), false)),
+            // The chain these tests run is the empty one — the open front door — so the seams have
+            // nothing to answer and the unbound posture is the honest fixture for them.
+            auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
             scope: scope_policy(),
             meter_policy: crate::root::policy::build(
                 &crate::root::policy::MeterPolicyConfig::default(),
