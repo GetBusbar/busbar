@@ -19,7 +19,11 @@ pub enum ClientMode {
     /// Send it and wait for a correlated answer.
     AwaitReply {
         /// The correlation the answer must carry.
-        correlation: crate::ids::CorrelationRef,
+        ///
+        /// A destination is sealed and held past the frame it was built in, so its correlation
+        /// cannot borrow the per-unit arena the way a draft's does: what a leg waits on is fixed
+        /// when the leg is planned, and it outlives the bytes that planned it.
+        correlation: crate::ids::CorrelationRef<'static>,
         /// How long to wait, in seconds, bounded by the configured turn ceiling.
         deadline_secs: u32,
     },

@@ -185,7 +185,7 @@ pub enum AbortBy {
 /// code itself. The refusal names the fact — which step, which stream, which correlation — so the
 /// journal row and the wire bytes are derived from one value rather than written twice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct Refusal {
+pub struct Refusal<'u> {
     /// The step that refused.
     pub step: Step,
     /// Why.
@@ -195,7 +195,7 @@ pub struct Refusal {
     /// Which stream the refusal belongs to.
     pub stream: Option<StreamId>,
     /// Which request the refusal answers.
-    pub correlates: Option<CorrelationRef>,
+    pub correlates: Option<CorrelationRef<'u>>,
 }
 
 /// How a unit ended, as a plugin sees it.
@@ -203,11 +203,11 @@ pub struct Refusal {
 /// The capability crate carries what a settlement *is*; this is the shape a plane is handed so it
 /// can render an ending. A plane cannot construct one, because a plane does not decide endings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub enum UnitEnd {
+pub enum UnitEnd<'u> {
     /// The unit ran the whole loop.
     Completed,
     /// A step refused it.
-    Refused(Refusal),
+    Refused(Refusal<'u>),
     /// A step failed.
     Failed {
         /// Which step.
@@ -478,7 +478,7 @@ pub struct Unit<'u> {
     op: OpClassId,
     body: Ir<'u>,
     facts: Facts<'u>,
-    correlates: Option<CorrelationRef>,
+    correlates: Option<CorrelationRef<'u>>,
     byte_counts: (u64, u64),
     frame_counts: (u32, u32),
     leg_results: BoundedVec<LegResult<'u>, { crate::bounded::MAX_LEG_REPLIES }>,
@@ -499,7 +499,7 @@ impl<'u> Unit<'u> {
         op: OpClassId,
         body: Ir<'u>,
         facts: Facts<'u>,
-        correlates: Option<CorrelationRef>,
+        correlates: Option<CorrelationRef<'u>>,
     ) -> Self {
         Self {
             key,
@@ -579,7 +579,7 @@ impl<'u> Unit<'u> {
 
     /// Which request this unit answers, where it answers one.
     #[must_use]
-    pub fn correlates(&self) -> Option<CorrelationRef> {
+    pub fn correlates(&self) -> Option<CorrelationRef<'u>> {
         self.correlates
     }
 

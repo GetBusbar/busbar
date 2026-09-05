@@ -4,7 +4,7 @@
 //! holds one half of per connection: one for the client, one more per upstream a session dials. This
 //! module is the concrete type this plane wraps in it.
 
-use busbar_contract::ids::CorrelationRef;
+use busbar_contract::ids::{CorrelationRef, CorrelationValue};
 use busbar_voice::ir::{DecodeState, IrClientEvent};
 
 use crate::claims::Dialect;
@@ -63,7 +63,7 @@ pub struct VoiceSessionState {
     /// Whether the current turn is open (a unit has been opened and not yet closed).
     pub turn_open: bool,
     /// The correlation the currently open turn answers frames under, once one has been minted.
-    pub turn_correlation: Option<CorrelationRef>,
+    pub turn_correlation: Option<CorrelationRef<'static>>,
     /// The next turn identity to mint. Monotonic per session; a duplex session opens and closes many
     /// turns in sequence, and each needs a correlation value distinct from the last so a stray late
     /// frame from a just-closed turn cannot be mistaken for one belonging to the next.
@@ -94,12 +94,12 @@ impl VoiceSessionState {
     pub const TURN_FACT_KEY: &'static str = "turn_id";
 
     /// Open a fresh turn, minting the correlation later frames must carry to relay onto it.
-    pub fn open_turn(&mut self) -> CorrelationRef {
+    pub fn open_turn(&mut self) -> CorrelationRef<'static> {
         let id = self.next_turn_id;
         self.next_turn_id += 1;
         let correlation = CorrelationRef {
             fact_key: Self::TURN_FACT_KEY,
-            value: id,
+            value: CorrelationValue::Num(id),
         };
         self.turn_open = true;
         self.turn_correlation = Some(correlation);

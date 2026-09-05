@@ -179,16 +179,34 @@ impl fmt::Display for PrincipalId {
     }
 }
 
+/// The value found under a correlation's declared fact key.
+///
+/// Two shapes, because two shapes is what arrives. A protocol whose request identifier is a whole
+/// number carries it as one; a protocol whose identifier is a string carries the string, allocated
+/// in the unit's arena so it lives as long as the unit that correlates on it.
+///
+/// The string arm exists because the alternative is a digest, and a digest of a string into sixty
+/// four bits is a collision waiting for two identifiers of one principal on one session — which is
+/// the pair a correlation is precisely meant to tell apart. Correlation decides which hold a
+/// provider frame accrues into, so a collision there moves money between two units.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum CorrelationValue<'u> {
+    /// A whole number identifier, used as itself.
+    Num(u64),
+    /// A string identifier, borrowed from the unit's arena.
+    Str(&'u str),
+}
+
 /// How a plane ties a response frame back to the request that asked for it.
 ///
 /// A correlation reference is a fact key plus the value found under it. The plane declares the key;
 /// the kernel never invents one and never parses for one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
-pub struct CorrelationRef {
+pub struct CorrelationRef<'u> {
     /// The declared fact key the correlation is carried under.
     pub fact_key: &'static str,
     /// The value found under that key.
-    pub value: u64,
+    pub value: CorrelationValue<'u>,
 }
 
 /// Which side of a meter class's bytes a quantity comes from.

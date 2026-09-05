@@ -162,7 +162,7 @@ fn every_client_method_decodes() {
         assert_eq!(draft.op, row.op, "{} named the wrong class", row.method);
         assert_eq!(
             draft.correlation_out.expect("a request correlates").value,
-            1,
+            busbar_contract::ids::CorrelationValue::Num(1),
             "{} lost its identifier",
             row.method
         );
@@ -390,7 +390,10 @@ fn a_servers_own_request_opens_a_provider_unit() {
     {
         Progress::OneShot(draft) => {
             assert_eq!(draft.op, ops::OP_SAMPLING);
-            assert_eq!(draft.correlation_out.expect("it correlates").value, 42);
+            assert_eq!(
+                draft.correlation_out.expect("it correlates").value,
+                busbar_contract::ids::CorrelationValue::Num(42)
+            );
         }
         other => panic!("a server's own request decoded as {other:?}"),
     }

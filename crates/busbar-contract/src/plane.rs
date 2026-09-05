@@ -94,9 +94,9 @@ pub struct UnitDraft<'u> {
     /// The decoded body and its resolved pointer spans.
     pub body_ir: Ir<'u>,
     /// Which earlier request this unit answers, where it answers one.
-    pub correlates: Option<CorrelationRef>,
+    pub correlates: Option<CorrelationRef<'u>>,
     /// The correlation an answer to this unit must carry.
-    pub correlation_out: Option<CorrelationRef>,
+    pub correlation_out: Option<CorrelationRef<'u>>,
     /// The facts the plane read off the bytes.
     pub facts: Facts<'u>,
 }
@@ -126,7 +126,7 @@ pub enum Ingress<'u> {
     /// A frame belonging to an already-open unit, to be relayed under its hold.
     Frame {
         /// Which unit it belongs to.
-        for_: Option<CorrelationRef>,
+        for_: Option<CorrelationRef<'u>>,
         /// The bytes to relay.
         relay: ArenaBytes<'u>,
         /// The facts the plane read off it.
@@ -135,7 +135,7 @@ pub enum Ingress<'u> {
     /// The end of an open unit.
     Close {
         /// Which unit ends.
-        for_: Option<CorrelationRef>,
+        for_: Option<CorrelationRef<'u>>,
         /// The facts the plane read off the ending.
         facts: Facts<'u>,
     },
@@ -158,14 +158,14 @@ pub enum Progress<'u> {
     /// One response frame of an open unit.
     Frame {
         /// Which request it answers.
-        for_: Option<CorrelationRef>,
+        for_: Option<CorrelationRef<'u>>,
         /// The decoded response.
         r: Response<'u>,
     },
     /// The last response frame.
     Terminal {
         /// Which request it answers.
-        for_: Option<CorrelationRef>,
+        for_: Option<CorrelationRef<'u>>,
         /// The decoded response.
         r: Response<'u>,
     },

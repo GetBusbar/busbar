@@ -61,7 +61,7 @@ fn request(id: &str, method: &str) -> Vec<u8> {
 }
 
 /// Drive one body through the decode step and hand back what the plane made of it.
-fn decode(plane: &A2aPlane, body: &[u8]) -> Result<(ops::MethodRow, u64), Decode> {
+fn decode(plane: &A2aPlane, body: &[u8]) -> Result<(ops::MethodRow, String), Decode> {
     let scaffold = Scaffold::new("http");
     let ctx = scaffold.ctx();
     let frames = vec![frame(body)];
@@ -79,10 +79,16 @@ fn decode(plane: &A2aPlane, body: &[u8]) -> Result<(ops::MethodRow, u64), Decode
     };
     let row = *ops::row_for(method).expect("the recorded method is one the plane carries");
     assert_eq!(row.op, draft.op, "{method} was drafted under another class");
-    let correlation = draft
-        .correlation_out
-        .expect("a request with an identifier correlates")
-        .value;
+    // Rendered rather than returned: the value borrows the scaffold's arena, and the arena
+    // does not outlive this call. The rendering keeps the two arms distinct, which is the
+    // property under test.
+    let correlation = format!(
+        "{:?}",
+        draft
+            .correlation_out
+            .expect("a request with an identifier correlates")
+            .value
+    );
     Ok((row, correlation))
 }
 
@@ -100,7 +106,7 @@ fn every_method_of_the_later_vocabulary_decodes() {
             ops::Wording::Verb,
             "{method} is the verb wording"
         );
-        assert_eq!(correlation, 1, "{method} lost its identifier");
+        assert_eq!(correlation, "Num(1)", "{method} lost its identifier");
         assert!(!slot.is_empty());
     }
 }
@@ -211,7 +217,7 @@ fn a_streamed_method_opens_a_unit() {
 
 /// A named identifier survives the round trip, bytes for bytes.
 ///
-/// The correlation carries a number the identifier cannot be; the identifier itself travels as a
+/// The correlation carries the identifier itself; the raw bytes travel beside it as a
 /// fact, and this is the assertion that it arrives intact.
 #[test]
 fn a_named_identifier_survives_the_round_trip() {
@@ -229,8 +235,11 @@ fn a_named_identifier_survives_the_round_trip() {
         other => panic!("the identifier was recorded as {other:?}"),
     };
     assert_eq!(recorded, r#""a2a-http-json""#);
-    // And the correlation is the digested form, which is above every bare counter.
-    assert!(draft.correlation_out.expect("it correlates").value >= 1 << 63);
+    // And the correlation carries the identifier itself, not a number standing in for it.
+    assert_eq!(
+        draft.correlation_out.expect("it correlates").value,
+        busbar_contract::ids::CorrelationValue::Str("a2a-http-json")
+    );
 }
 
 /// An answer that already is an envelope goes back exactly as it arrived.
@@ -315,7 +324,10 @@ fn an_error_answer_is_terminal() {
     {
         Progress::Terminal { for_, r } => {
             assert_eq!(r.finish, busbar_contract::unit::FinishClass::Error);
-            assert_eq!(for_.expect("it correlates").value, 1);
+            assert_eq!(
+                for_.expect("it correlates").value,
+                busbar_contract::ids::CorrelationValue::Num(1)
+            );
         }
         other => panic!("an error answer decoded as {other:?}"),
     }

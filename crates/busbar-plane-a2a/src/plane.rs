@@ -203,7 +203,7 @@ impl Plane for A2aPlane {
         &self,
         frames: &mut FrameCursor<'u>,
         _st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
+        ctx: &Ctx<'u>,
     ) -> Result<Ingress<'u>, Decode> {
         let Some(frame) = frames.next_frame() else {
             return Ok(Ingress::NeedMore);
@@ -218,7 +218,9 @@ impl Plane for A2aPlane {
         let method = envelope.method_str(body).ok_or(Decode::Malformed)?;
         let row = ops::row_for(method).ok_or(Decode::UnsupportedOperation)?;
         let facts = request_facts(body, &envelope);
-        let correlation_out = envelope.id_bytes(body).map(f::correlation_for);
+        let correlation_out = envelope
+            .id_bytes(body)
+            .and_then(|raw| f::correlation_for(raw, ctx.arena()));
         let draft = UnitDraft {
             op: row.op,
             body_ir: Ir::new(body, &[]),
@@ -310,7 +312,7 @@ impl Plane for A2aPlane {
         frames: &mut FrameCursor<'u>,
         _dest: &VerifiedDestination,
         st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
+        ctx: &Ctx<'u>,
     ) -> Result<Progress<'u>, Decode> {
         let Some(frame) = frames.next_frame() else {
             return Ok(Progress::NeedMore);
@@ -359,7 +361,7 @@ impl Plane for A2aPlane {
                 let _ = facts.set(f::FACT_ERROR_CODE, FactValue::Str(text));
             }
         }
-        let for_ = id.map(f::correlation_for);
+        let for_ = id.and_then(|raw| f::correlation_for(raw, ctx.arena()));
         // An answer that says it is the last one is the last one. An answer carrying an error is
         // also the last one, whatever it says about itself: an agent does not keep streaming after
         // it has reported that it failed.

@@ -257,7 +257,7 @@ impl Plane for McpPlane {
         &self,
         frames: &mut FrameCursor<'u>,
         _st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
+        ctx: &Ctx<'u>,
     ) -> Result<Ingress<'u>, Decode> {
         let Some(frame) = frames.next_frame() else {
             return Ok(Ingress::NeedMore);
@@ -298,7 +298,9 @@ impl Plane for McpPlane {
             op: row.op,
             body_ir: Ir::new(body, &[]),
             correlates: None,
-            correlation_out: envelope.id_bytes(body).map(f::correlation_for),
+            correlation_out: envelope
+                .id_bytes(body)
+                .and_then(|raw| f::correlation_for(raw, ctx.arena())),
             facts,
         };
         if row.streaming {
@@ -377,7 +379,7 @@ impl Plane for McpPlane {
         frames: &mut FrameCursor<'u>,
         _dest: &VerifiedDestination,
         st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
+        ctx: &Ctx<'u>,
     ) -> Result<Progress<'u>, Decode> {
         let Some(frame) = frames.next_frame() else {
             return Ok(Progress::NeedMore);
@@ -423,7 +425,9 @@ impl Plane for McpPlane {
                 body_ir: Ir::new(body, &[]),
                 // A server's own request answers nothing; it is answered.
                 correlates: None,
-                correlation_out: envelope.id_bytes(body).map(f::correlation_for),
+                correlation_out: envelope
+                    .id_bytes(body)
+                    .and_then(|raw| f::correlation_for(raw, ctx.arena())),
                 facts,
             }));
         }
@@ -473,7 +477,7 @@ impl Plane for McpPlane {
         // Every answer of this protocol is one document. There is no partial answer to relay: the
         // frame that carries a result carries all of it.
         Ok(Progress::Terminal {
-            for_: id.map(f::correlation_for),
+            for_: id.and_then(|raw| f::correlation_for(raw, ctx.arena())),
             r,
         })
     }

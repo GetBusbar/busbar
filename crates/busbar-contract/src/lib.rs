@@ -37,7 +37,7 @@ pub use grammar::{
 };
 pub use ids::{
     AdminVerbId, BucketChain, BucketRef, BucketScope, CapDimension, ClaimKey, ClassDirection,
-    ClassEstimate, CorrelationRef, Estimate, LaneId, MeterClassDecl, MeterClassId, OpClassId,
+    ClassEstimate, CorrelationRef, CorrelationValue, Estimate, LaneId, MeterClassDecl, MeterClassId, OpClassId,
     PrincipalId, RecordSchemaId, SchemeAlt, SchemeKey, SessionId, StreamId, TransportId, UnitKey,
     UpstreamIdx,
 };

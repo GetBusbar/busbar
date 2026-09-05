@@ -55,7 +55,9 @@ use busbar_contract::bounded::{ArenaBytes, FactValue, Facts, Ir};
 use busbar_contract::dest::{
     ClientMode, DestinationFacts, EgressBody, RoutePlan, VerifiedDestination,
 };
-use busbar_contract::ids::{AdminVerbId, CorrelationRef, MeterClassId, OpClassId, SchemeKey};
+use busbar_contract::ids::{
+    AdminVerbId, CorrelationRef, CorrelationValue, MeterClassId, OpClassId, SchemeKey,
+};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
 use busbar_contract::plane::{
     Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
@@ -85,7 +87,7 @@ use crate::{twilio, ulaw, VoicePlane};
 const FACT_PATH: &str = "path";
 
 /// The fact key a tool call's provider-origin `OneShot` correlates on.
-const FACT_TOOL_CORRELATION: &str = "call_id_hash";
+const FACT_TOOL_CORRELATION: &str = "call_id";
 
 /// Both duplex dialects' reader, boxed so the same call site works for either without a generic
 /// parameter leaking into every method signature. Cheap: both codecs are zero-sized.
@@ -102,19 +104,6 @@ fn writer_for(dialect: Dialect) -> Box<dyn DuplexWriter> {
         Dialect::GeminiLive => Box::new(GeminiLiveCodec),
         _ => Box::new(OpenAiRealtimeCodec),
     }
-}
-
-/// Fold a `u64` into the correlation value space, for the tool-call correlation fact.
-///
-/// A `CorrelationRef` carries a `u64`; a wire `call_id` is a string. This is a stable, deterministic
-/// (not cryptographic) fold, adequate for correlating within one session's small live-call set.
-fn fnv1a(s: &str) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for b in s.as_bytes() {
-        hash ^= u64::from(*b);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
 }
 
 impl VoicePlane {
@@ -331,7 +320,7 @@ impl Plane for VoicePlane {
                 mode: ClientMode::AwaitReply {
                     correlation: CorrelationRef {
                         fact_key: FACT_TOOL_CORRELATION,
-                        value: 0,
+                        value: CorrelationValue::Num(0),
                     },
                     deadline_secs: 30,
                 },
@@ -737,9 +726,12 @@ fn progress_from_server_event<'u>(
                 op: OpClassId::new("tool_call"),
                 body_ir: Ir::new(&[], &[]),
                 correlates: None,
+                // The call identifier travels as itself. It is a string on the wire and it is a
+                // string here, allocated in the unit's own arena — a fold into sixty four bits
+                // would be one collision away from answering a tool call with another's reply.
                 correlation_out: Some(CorrelationRef {
                     fact_key: FACT_TOOL_CORRELATION,
-                    value: fnv1a(&call_id),
+                    value: CorrelationValue::Str(call_id_arena),
                 }),
                 facts,
             }))
