@@ -53,7 +53,7 @@ use busbar_substrate::plane::handle_engine::DurableHandleEngine;
 use busbar_substrate::plane::observe::Counted;
 use busbar_substrate::plane::registry::{BuildCtx, PlaneBootCtx};
 use busbar_substrate::plane::PlaneAdmission;
-use busbar_substrate::plane_host::{EngineHost, GateOutcome, MeteringHost, TransformVerdict};
+use busbar_substrate::plane_host::{EngineHost, GateOutcome, TransformVerdict};
 use busbar_substrate::plane_host::{GauntletPlane, GauntletRequest};
 use busbar_substrate::plane_routes::PlaneRouteSpec;
 use bytes::Bytes;
@@ -650,8 +650,7 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
     // the tightest remaining bucket — so an exhausted caller is denied at the reserve and a live
     // session hard-closes the moment its settles reach that ceiling. An unbudgeted (or ungoverned)
     // caller has no ceiling to impose, and stays uncapped exactly as an unbudgeted model call is.
-    let hosted =
-        crate::runtime::build_runtime_hosted(rt, Arc::clone(&host) as Arc<dyn MeteringHost>);
+    let hosted = crate::runtime::build_runtime_hosted(rt, Arc::clone(&host));
     let rt = &hosted;
     let budget = SessionBudget {
         estimate_nanos: SESSION_ESTIMATE_NANOS,
@@ -1183,7 +1182,7 @@ where
     // reserves and settles against the caller's real grant rather than an in-process cell.
     let rt = Arc::new(crate::runtime::build_runtime_hosted(
         &mount.runtime,
-        Arc::clone(&host) as Arc<dyn MeteringHost>,
+        Arc::clone(&host),
     ));
     // The caller `(id, name)` the hook gate/tap read — the middleware-resolved key, or `None` ungoverned.
     let key = vkey.as_ref().map(|k| (k.id.clone(), k.name.clone()));

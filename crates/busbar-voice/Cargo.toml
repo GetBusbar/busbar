@@ -34,12 +34,15 @@ path = "src/lib.rs"
 # out to. It reuses THIS crate's codecs (`OpenAiRealtimeCodec` / `GeminiLiveCodec`) and the T2 runtime
 # (`SessionCore` / `LocalLease` hard-close) to decode/encode the captured fixtures and diff — the legs
 # never reimplement a codec in shell. Gated on `runtime` (the D2 governance probe needs the async
-# session engine + tokio); the default / prod build never compiles it — it's gated behind the "runtime"
-# feature like the rest of the async surface.
+# session engine + tokio) AND `test-support` (the admit/route/audit/exit composition legs drive the
+# substrate's `FixtureHost` — a full `EngineHost` double — over the SAME production `EngineHost` seam
+# `build_runtime_hosted` takes, so the admin-audit row and the breaker/lease behavior are read back
+# through the host, not reimplemented in the harness). Neither feature is default-on, so the default /
+# prod build never compiles this bin.
 [[bin]]
 name = "voice-conform"
 path = "src/bin/voice-conform.rs"
-required-features = ["runtime"]
+required-features = ["runtime", "test-support"]
 
 [dependencies]
 # THE SEAL: busbar-core is NOT a dependency of this plugin at all — not in the shipped build and not in

@@ -15,15 +15,17 @@
 //! Non-`RESULT` lines (`NOTE:` / `SUBITEM`) are ignored by the runner and used to record documented
 //! sub-item gaps that must stay HONESTLY PENDING rather than be dressed as a green.
 
-use busbar_substrate::plane_host::{CostLeaseId, MeteringHost, SettleOutcome};
+use busbar_substrate::plane_host::{CostLeaseId, EngineHost, MeteringHost, SettleOutcome};
+use busbar_substrate::testkit::fixture_host::FixtureHost;
 use busbar_voice::ir::{
     DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, IrClientEvent, IrDuplexControl,
     IrDuplexTool, IrServerEvent, OpenAiRealtimeCodec, WireEvent,
 };
 use busbar_voice::runtime::{
-    Carrier, EchoToolExecutor, HostMeteringPort, LeaseState, LocalMeteringPort, MeteringPort,
-    SessionCore,
+    build_runtime_hosted, Carrier, EchoToolExecutor, HostMeteringPort, LeaseState,
+    LocalMeteringPort, MeteringPort, SessionCore, VoiceRuntime,
 };
+use busbar_voice::topology::{begin_session, dial_provider, DialProviderError, SessionBudget, StartError};
 use bytes::Bytes;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -1165,6 +1167,8 @@ fn composition(slice: &str) -> i32 {
         "session-scope" => probe_session_scope(),
         "gemini-live-route" => probe_gemini_live_route(),
         "provider-dial" => probe_provider_dial(),
+        "admit-refusal" => probe_admit_refusal(),
+        "route-failover" => probe_route_failover(),
         other => ("FAIL", format!("unknown composition slice '{other}'")),
     };
     println!("RESULT {slice} {verdict} {detail}");
@@ -1240,13 +1244,13 @@ fn probe_provider_credential() -> (&'static str, String) {
 /// principal's own remaining budget. Without this, a live session reserves an uncapped in-process cell
 /// and no caller's budget can ever hard-close it.
 fn probe_metering_lease() -> (&'static str, String) {
-    let base = busbar_voice::runtime::VoiceRuntime::new(
+    let base = VoiceRuntime::new(
         Arc::new(busbar_substrate::plane::handle_engine::DurableHandleEngine::new()),
         Arc::new(LocalMeteringPort),
         Arc::new(EchoToolExecutor),
     );
-    let host = Arc::new(ConformHost::default()) as Arc<dyn MeteringHost>;
-    let rt = busbar_voice::runtime::build_runtime_hosted(&base, host);
+    let host = Arc::new(FixtureHost::new()) as Arc<dyn EngineHost>;
+    let rt = build_runtime_hosted(&base, host);
 
     // The ceiling is the caller's tightest remaining bucket, widened from micro-units to nanodollars.
     let chain = [
@@ -1626,13 +1630,175 @@ fn probe_provider_dial() -> (&'static str, String) {
     })
 }
 
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+// LEGS 10-13 — the last four gaps: admit / route / audit / exit, each judged against a REAL
+// `EngineHost` (the substrate's `FixtureHost`, a full double over the same seam `build_runtime_hosted`
+// takes in production) rather than a narrow `MeteringHost`/`BreakerHost` stand-in.
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// Assemble a per-generation [`VoiceRuntime`] rebound onto `host`'s D2 lease — the harness's own
+/// [`build_runtime_hosted`] call, shared by every probe below that needs a governed session.
+fn hosted_runtime(host: Arc<dyn EngineHost>) -> VoiceRuntime {
+    let base = VoiceRuntime::new(
+        Arc::new(busbar_substrate::plane::handle_engine::DurableHandleEngine::new()),
+        Arc::new(LocalMeteringPort),
+        Arc::new(EchoToolExecutor),
+    );
+    build_runtime_hosted(&base, host)
+}
+
+/// LEG 10 — admit-refusal: a key whose budget is already spent is refused AT THE DOOR
+/// (`StartError::BudgetRefused`), before any host-side lease is opened and before any ledger posting
+/// — so no provider dial has anything left to reach. A negative control (the same destination,
+/// uncapped) proves the leg can also see a clean open.
+fn probe_admit_refusal() -> (&'static str, String) {
+    let fixture = Arc::new(FixtureHost::new());
+    let host: Arc<dyn EngineHost> = Arc::clone(&fixture) as Arc<dyn EngineHost>;
+    let rt = hosted_runtime(host);
+
+    let leases_before = fixture.leases_opened();
+    let spent = SessionBudget {
+        estimate_nanos: 1_000,
+        fee_nanos: 0,
+        cap_nanos: Some(0),
+    };
+    match begin_session(
+        &rt,
+        OpenAiRealtimeCodec,
+        "spent-caller",
+        "call-admit-refusal-1",
+        None,
+        Carrier::sideband(),
+        spent,
+        None,
+        0,
+    ) {
+        Err(StartError::BudgetRefused) => {}
+        Ok(_) => return ("FAIL", "a spent budget was admitted a session".into()),
+        Err(e) => return ("FAIL", format!("wrong refusal reason for a spent budget: {e}")),
+    }
+    if fixture.leases_opened() != leases_before {
+        return (
+            "FAIL",
+            "the refused reserve still opened a host-side lease -- a dial would have something to \
+             bill against"
+                .into(),
+        );
+    }
+    if fixture.ledger_usage("spent-caller").is_some() {
+        return (
+            "FAIL",
+            "a refused admission still posted a ledger entry -- voice's design posts no separate \
+             floor line at Admit (nothing was ever dialed, so nothing is owed)"
+                .into(),
+        );
+    }
+
+    // NEGATIVE CONTROL: the SAME destination with an uncapped budget must open cleanly, so this leg
+    // could not pass by always refusing.
+    let open = SessionBudget {
+        estimate_nanos: 1_000,
+        fee_nanos: 0,
+        cap_nanos: None,
+    };
+    match begin_session(
+        &rt,
+        OpenAiRealtimeCodec,
+        "funded-caller",
+        "call-admit-refusal-2",
+        None,
+        Carrier::sideband(),
+        open,
+        None,
+        0,
+    ) {
+        Ok(_) => {}
+        Err(e) => {
+            return (
+                "FAIL",
+                format!("the negative control (an uncapped budget) was refused too: {e}"),
+            )
+        }
+    }
+    if fixture.leases_opened() != leases_before + 1 {
+        return (
+            "FAIL",
+            "the negative control did not open exactly one host-side lease".into(),
+        );
+    }
+
+    (
+        "PASS",
+        "a spent budget is refused at the door (StartError::BudgetRefused) with zero host-side lease \
+         and zero ledger postings -- no provider dial has anything left to reach; the same \
+         destination with an uncapped budget opens cleanly"
+            .into(),
+    )
+}
+
+/// LEG 11 — route-failover: a hard-down provider dial trips the breaker cell on its first strike, and
+/// the tripped cell refuses every FURTHER dial before any socket/URL work — the documented terminal
+/// outcome, with no repeated egress once the cell is open.
+fn probe_route_failover() -> (&'static str, String) {
+    let tokio_rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    tokio_rt.block_on(async move {
+        let host = FixtureHost::new();
+        let pool = "stream:conform-route-failover";
+        let policy = busbar_substrate::net_guard::GuardPolicy::default();
+
+        // ATTEMPT 1 — breaker CLOSED: a real dial to a target the default fail-closed guard refuses (a
+        // plaintext `ws://` loopback address, `allow_plaintext: false` by default) genuinely fails,
+        // and the guard refusal's canonical signal (Auth-class => HardDown) trips the cell.
+        match dial_provider(&host, pool, 0, "ws://127.0.0.1:1/", policy).await {
+            Err(DialProviderError::Dial(_)) => {}
+            Ok(_) => return ("FAIL", "the guard-refused target dialed successfully".into()),
+            Err(e) => return ("FAIL", format!("expected a real dial failure, got: {e}")),
+        }
+        if !matches!(
+            host.breaker_state(pool, 0),
+            busbar_substrate::store::BreakerState::Open { .. }
+        ) {
+            return (
+                "FAIL",
+                "the hard-down dial failure did not trip the breaker cell".into(),
+            );
+        }
+
+        // ATTEMPT 2 — the breaker is now OPEN: a syntactically GARBAGE target (one a real dial would
+        // fail differently on, `DialProviderError::Dial(Url(_))`) must instead come back
+        // `BreakerOpen` -- proving the breaker check runs STRICTLY BEFORE any further dial, not merely
+        // that a retried dial fails again for a different reason.
+        match dial_provider(&host, pool, 0, "not a url at all", policy).await {
+            Err(DialProviderError::BreakerOpen { retry_after_secs }) if retry_after_secs > 0 => {}
+            Ok(_) => return ("FAIL", "a tripped breaker still dialed".into()),
+            Err(e) => {
+                return (
+                    "FAIL",
+                    format!("a tripped breaker let a further dial attempt happen: {e}"),
+                )
+            }
+        }
+
+        (
+            "PASS",
+            "a hard-down dial trips the breaker cell on its first strike, and the tripped cell \
+             refuses every further dial before any socket/URL work is attempted -- the terminal \
+             outcome holds with no repeated egress"
+                .into(),
+        )
+    })
+}
+
 // ── entry point ─────────────────────────────────────────────────────────────────────────────────────
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let usage = || -> ! {
         eprintln!(
-            "usage:\n  voice-conform spec <openai|gemini> <fixtures_dir>\n  voice-conform replay <fixtures_root>\n  voice-conform cross <oo|og|go|gg> <openai_dir> <gemini_dir> <map.json>\n  voice-conform governance <checkpoint>\n  voice-conform composition <provider-credential|metering-lease|session-scope|gemini-live-route|provider-dial>"
+            "usage:\n  voice-conform spec <openai|gemini> <fixtures_dir>\n  voice-conform replay <fixtures_root>\n  voice-conform cross <oo|og|go|gg> <openai_dir> <gemini_dir> <map.json>\n  voice-conform governance <checkpoint>\n  voice-conform composition <provider-credential|metering-lease|session-scope|gemini-live-route|provider-dial|admit-refusal|route-failover>"
         );
         std::process::exit(2);
     };

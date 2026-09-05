@@ -57,6 +57,12 @@ pub struct VoiceRuntime {
     pub context_window_tokens: u32,
     /// The per-response output-token ceiling (`streams.max_output_tokens:`).
     pub max_output_tokens: u32,
+    /// THE LIVE HOST — bound only by [`build_runtime_hosted`] once a mounted route hands the runtime a
+    /// real `Arc<dyn EngineHost>`. `None` on the pre-host/dev-default runtime (no admin-audit trail to
+    /// write to). Carried so a governed session mutation can land ONE admin-audit row through the SAME
+    /// seam the host's other planes journal through (see [`VoiceRuntime::audit_session`]), without the
+    /// D2 metering port (`Arc<dyn MeteringPort>`) needing to widen into the full host trait itself.
+    pub host: Option<Arc<dyn busbar_substrate::plane_host::EngineHost>>,
 }
 
 impl VoiceRuntime {
@@ -77,6 +83,7 @@ impl VoiceRuntime {
             session_max_secs: defaults.session_max_secs,
             context_window_tokens: defaults.context_window_tokens,
             max_output_tokens: defaults.max_output_tokens,
+            host: None,
         }
     }
 
@@ -181,17 +188,19 @@ pub fn build_runtime(
 #[must_use]
 pub fn build_runtime_hosted(
     base: &VoiceRuntime,
-    host: Arc<dyn busbar_substrate::plane_host::MeteringHost>,
+    host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
 ) -> VoiceRuntime {
     VoiceRuntime {
         engine: Arc::clone(&base.engine),
-        metering: Arc::new(metering::HostMeteringPort::new(host)),
+        metering: Arc::new(metering::HostMeteringPort::new(Arc::clone(&host)
+            as Arc<dyn busbar_substrate::plane_host::MeteringHost>)),
         tools: Arc::clone(&base.tools),
         denied_destinations: base.denied_destinations.clone(),
         session_defaults: base.session_defaults.clone(),
         session_max_secs: base.session_max_secs,
         context_window_tokens: base.context_window_tokens,
         max_output_tokens: base.max_output_tokens,
+        host: Some(host),
     }
 }
 

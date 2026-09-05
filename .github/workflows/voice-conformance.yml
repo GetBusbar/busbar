@@ -68,7 +68,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: Build the voice conformance harness
-        run: cargo build -p busbar-voice --features runtime --bin voice-conform
+        run: cargo build -p busbar-voice --features runtime,test-support --bin voice-conform
       # FIRST, and separately from any verdict: never trust a gate's verdict before proving the gate
       # still works. The self-test plants runs that MUST be refused (a ready leg that executed
       # nothing; a dropped leg; a gutted tree) and runs that must be accepted (the all-pending
@@ -114,7 +114,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: Build the voice conformance harness
-        run: cargo build -p busbar-voice --features runtime --bin voice-conform
+        run: cargo build -p busbar-voice --features runtime,test-support --bin voice-conform
       # The spec leg drives every captured fixture under
       # testing/voice-conformance/fixtures/${{ matrix.dialect }}/ through the real dialect codec and
       # asserts wire→IR→wire round-trip stability (the vacuous-ready trap holds a ready-but-empty run
@@ -143,7 +143,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: Build the voice conformance harness
-        run: cargo build -p busbar-voice --features runtime --bin voice-conform
+        run: cargo build -p busbar-voice --features runtime,test-support --bin voice-conform
       - name: Run the replay leg
         run: |
           set -euo pipefail
@@ -166,7 +166,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: Build the voice conformance harness
-        run: cargo build -p busbar-voice --features runtime --bin voice-conform
+        run: cargo build -p busbar-voice --features runtime,test-support --bin voice-conform
       - name: Run the cross-parity leg
         run: |
           set -euo pipefail
@@ -189,7 +189,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: Build the voice conformance harness
-        run: cargo build -p busbar-voice --features runtime --bin voice-conform
+        run: cargo build -p busbar-voice --features runtime,test-support --bin voice-conform
       # Its own job (not folded into `composition`) because it is the one leg here that opens a real
       # socket: a loopback WS "provider" this leg stands up itself, dialed through
       # `topology::dial_provider`'s own net-guarded path — no external network, no vendor credential.
@@ -215,7 +215,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: Build the voice conformance harness
-        run: cargo build -p busbar-voice --features runtime --bin voice-conform
+        run: cargo build -p busbar-voice --features runtime,test-support --bin voice-conform
       # The seams that decide whether a MOUNTED door can serve, meter and authorize a session on a
       # real deployment, PLUS the Gemini Live route's own mount shape (K4: claim/admission/arrival and
       # the wire handshake, over the plane's public functions). Each is its own leg because each fails
@@ -276,7 +276,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: Build the voice conformance harness
-        run: cargo build -p busbar-voice --features runtime --bin voice-conform
+        run: cargo build -p busbar-voice --features runtime,test-support --bin voice-conform
       # SEPARATE FROM THE CONFORMANCE VERDICT BY CONSTRUCTION. The runner records governance findings
       # as observations and refuses to let them move the conformance verdict; --selftest proves that
       # separation bites. A green here is not a governance PASS, and it is never a conformance one.
