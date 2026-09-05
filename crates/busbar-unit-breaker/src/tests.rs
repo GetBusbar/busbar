@@ -16,7 +16,7 @@
 //! no direct callers of those internals to mirror — `BreakerUnit` is the whole public surface).
 
 use crate::budget::LifetimeBudget;
-use crate::cell::BreakerCell;
+use crate::cell::{BreakerCell, BreakerState};
 use crate::cfg::{BreakerCfg, TripConfig, TripMode};
 use crate::classify::{
     classify, normalize_raw_error, parse_retry_after, status_class_from_str, CanonicalSignal,
@@ -306,6 +306,41 @@ fn a_failed_probe_re_trips_with_the_shifted_cooldown() {
     // streak == 2 duration is (200 << 2) = 800 +/- 10%, clamped to >= 400 — strictly larger than
     // any streak == 1 draw above.
     assert!(second_cooldown > first_cooldown, "escalated cooldown ({second_cooldown}) must exceed the first trip's cooldown ({first_cooldown})");
+}
+
+#[test]
+fn the_oracle_cooldown_pool_draws_a_whole_second_in_one_to_three() {
+    // The shadow oracle's `oracle-cd` pool — `base_cooldown_secs: 1, max_cooldown_secs: 5,
+    // trip: { mode: consecutive, consecutive_n: 1 }` — is the config the `cooldown|trip-then-serve`
+    // cell trips, and that cell's two waits (a refusal INSIDE the cooldown, a serve PAST it) are
+    // only meaningful against the exact set of durations this config can draw. Pin the set:
+    //   streak is bumped to 1 before the cooldown is computed -> duration = 1 << 1 = 2, capped at 5
+    //   jitter_range = max(2 / 10, 1) = 1 -> jittered in [1, 3]
+    //   clamped to [max(2 / 2, 1), 5] = [1, 5] -> the clamp cannot widen it
+    // so every draw is a whole second in [1, 3]. The script waits 0.3s (below the 1s floor, in the
+    // same whole second as the trip) and 4.5s (above the 3s ceiling); a change here that widened
+    // the band past either would silently make that cell a coin flip again, which is exactly how it
+    // came to record a jitter draw rather than a behaviour.
+    let cfg = consecutive_cfg(1, 5);
+    // Many independent cells: the jitter seed mixes the cell's own address, so distinct cells are
+    // what sample the band (a single cell re-read would return the same draw within a second).
+    let cells: Vec<BreakerCell> = (0..256).map(|_| BreakerCell::new()).collect();
+    let mut seen = std::collections::BTreeSet::new();
+    for cell in &cells {
+        // Drive the streak to 1 exactly as a first transient failure does, then read the cooldown
+        // the trip armed (`until - now`), so this measures the shipped record path, not a bare
+        // arithmetic helper.
+        let now = 1_000;
+        assert!(cell.record_failure(now, &cfg, None, 86_400), "consecutive_n=1 must trip");
+        let BreakerState::Open { until } = cell.state() else {
+            panic!("expected Open immediately after the trip");
+        };
+        let draw = until - now;
+        assert!((1..=3).contains(&draw), "oracle-cd cooldown draw out of band: {draw}");
+        seen.insert(draw);
+    }
+    // The band is genuinely sampled — otherwise "in [1, 3]" would also pass for a constant.
+    assert!(seen.len() > 1, "jitter never varied across 256 cells: {seen:?}");
 }
 
 #[test]

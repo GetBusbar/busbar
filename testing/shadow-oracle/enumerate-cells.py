@@ -612,19 +612,25 @@ def queue_cells() -> list[dict]:
 
 def cooldown_cells() -> list[dict]:
     """Trip pool oracle-cd's one member (mock `down`, base_cooldown_secs 1, consecutive_n 1), settle
-    the mock, wait past the jittered cooldown, and send the same request again: served 200. Fully
-    self-contained (scripts/cooldown-trip.sh boots its own busbar on its own ports), because the
-    sleep-past-cooldown step needs precise timing no shared-boot bookkeeping here provides."""
+    the mock, prove the refusal while still inside the cooldown, then wait past the LONGEST cooldown
+    the jitter can draw and send the same request again: served 200. Fully self-contained
+    (scripts/cooldown-trip.sh boots its own busbar on its own ports), because both waits are taken
+    against the wall-clock second the trip landed in — timing no shared-boot bookkeeping provides."""
     return [{
         "id": "cooldown|trip-then-serve", "plane": "core", "family": "cooldown", "driver": "script",
         "script": {"name": "cooldown-trip.sh"}, "outcome": "ok",
-        "why": ("base_cooldown_secs 1: a tripped member is refused (503, nothing billed), then once "
-                "the jittered cooldown elapses the SAME request is served (200, billed) — the "
-                "breaker's own trip-then-recover cycle. Proven on the CUMULATIVE counters "
-                "busbar_breaker_trips_total / busbar_upstream_failures_total, which survive the "
-                "scrape-time busbar_lane_state gauge settling back to its starting value (0 -> 2 -> "
-                "0) by the time this cell's one before/after snapshot is taken, plus the "
-                "requests-vs-billable_requests split in the usage delta."),
+        "why": ("base_cooldown_secs 1 with a consecutive-1 trip: the failing member is tripped (503, "
+                "nothing billed), the SAME request is still refused 503 while the cooldown runs even "
+                "though the upstream is healthy again, and once the cooldown is past it is served "
+                "(200, billed) — the breaker's own trip-then-recover cycle, both arms. The first "
+                "trip computes off streak 1, so the draw is a whole second in [1, 3] (base << 1 = 2, "
+                "+/-1s jitter, clamped): the script issues the trip just after a second boundary, "
+                "refuses at +0.3s (inside every possible draw) and serves at +4.5s (past every "
+                "possible draw), so neither arm can land in the jitter window. Proven on the "
+                "CUMULATIVE counters busbar_breaker_trips_total / busbar_upstream_failures_total, "
+                "which survive the scrape-time busbar_lane_state gauge settling back to its starting "
+                "value (0 -> 2 -> 0) by the time this cell's one before/after snapshot is taken, "
+                "plus the requests-vs-billable_requests split in the usage delta."),
     }]
 
 
