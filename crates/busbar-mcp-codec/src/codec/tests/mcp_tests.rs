@@ -189,6 +189,94 @@ fn the_operation_is_resolved_from_the_body_method() {
     );
 }
 
+/// RESOLVING THE OPERATION READS ONE TOP-LEVEL MEMBER, AND ONLY THAT ONE.
+///
+/// The selected cell parses the body again, so a full `serde_json::from_slice` here means every MCP
+/// request pays two complete parses of a body whose `arguments` object can be arbitrarily large.
+/// The span scanner reads `method` without materialising a value — and this test pins what must not
+/// change while it does: the same answers, from the TOP-LEVEL member only, on bodies where a
+/// nested `method` would otherwise be a tempting match.
+#[test]
+fn the_method_is_read_from_the_top_level_member_alone() {
+    let h = McpRequestHandler;
+
+    // A `method` buried in the arguments is not the request's method. It appears BEFORE the real
+    // one so a scanner that took the first match anywhere would answer from it.
+    let nested = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "params": { "name": "t", "arguments": { "method": "tools/call", "nested": { "method": "resources/subscribe" } } },
+        "method": "tools/list"
+    }))
+    .expect("fixture");
+    assert_eq!(
+        h.resolve_operation("/mcp", &nested),
+        None,
+        "a `method` inside `arguments` is argument DATA, not the request's method"
+    );
+
+    // The same body with a real top-level method resolves, however large the arguments are.
+    let big: String = "x".repeat(200_000);
+    let large = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "params": { "name": "t", "arguments": { "method": "resources/subscribe", "blob": big } },
+        "method": "tools/call"
+    }))
+    .expect("fixture");
+    assert_eq!(h.resolve_operation("/mcp", &large), Some(Operation::INVOKE));
+
+    // A body that is a JSON ARRAY, or a `method` that is not a string, names no operation.
+    assert_eq!(
+        h.resolve_operation("/mcp", b"[{\"method\":\"tools/call\"}]"),
+        None
+    );
+    assert_eq!(h.resolve_operation("/mcp", b"{\"method\": 7}"), None);
+    assert_eq!(h.resolve_operation("/mcp", b"{\"id\": 1}"), None);
+    // A truncated body has not yet named anything.
+    assert_eq!(
+        h.resolve_operation("/mcp", b"{\"method\": \"tools/ca"),
+        None
+    );
+    // JSON's optional `\/` escape spells the same method name, and must resolve the same way: the
+    // wire name is the DECODED string, not the bytes that carried it.
+    assert_eq!(
+        h.resolve_operation("/mcp", br#"{"method":"tools\/call"}"#),
+        Some(Operation::INVOKE)
+    );
+}
+
+/// ROUTING COSTS ONE MEMBER, NOT ONE WHOLE BODY.
+///
+/// The cell this resolves to parses the body itself, so a full parse here is the SECOND complete
+/// parse of every MCP request — over a `tools/call` whose `arguments` can be as large as the caller
+/// cares to make it. `method` is the first member in the JSON-RPC shape every client sends, and
+/// answering "which operation is this" should stop there rather than walk the megabytes behind it.
+#[test]
+fn resolving_the_operation_does_not_walk_the_whole_arguments_object() {
+    let h = McpRequestHandler;
+    let blob = "x".repeat(16 * 1024 * 1024);
+    let body = serde_json::to_vec(&serde_json::json!({
+        "method": "tools/call",
+        "jsonrpc": "2.0",
+        "id": 1,
+        "params": { "name": "t", "arguments": { "blob": blob } }
+    }))
+    .expect("fixture");
+
+    let started = std::time::Instant::now();
+    let op = h.resolve_operation("/mcp", &body);
+    let elapsed = started.elapsed();
+
+    assert_eq!(op, Some(Operation::INVOKE));
+    assert!(
+        elapsed < std::time::Duration::from_millis(20),
+        "resolving the operation on a {} byte body took {elapsed:?}: it is materialising the whole \
+         document to read one top-level string",
+        body.len()
+    );
+}
+
 // ── THE ATTRIBUTED OUTCOME NOW SPANS OPERATIONS ──────────────────────────────────────────────────
 
 /// A NON-CHAT OPERATION GETS AN ATTRIBUTED FAILURE, which was structurally impossible before.

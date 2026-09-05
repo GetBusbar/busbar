@@ -727,6 +727,7 @@ name = "busbar-mcp-codec"
 version = "1.6.0"
 dependencies = [
  "busbar-api",
+ "busbar-grammar",
  "busbar-substrate-values",
  "bytes",
  "http",
