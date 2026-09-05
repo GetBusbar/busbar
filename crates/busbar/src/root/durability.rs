@@ -597,6 +597,97 @@ mod tests {
         }
     }
 
+    /// A sealed audit record for a unit that ran.
+    fn audit_inputs(unit: u64) -> busbar_unit_audit::AuditInputs {
+        use busbar_caps::{KernelSeal, Origin, OriginKind, Outcome, UnitKey};
+        use busbar_unit_audit::{
+            Amount, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, What,
+        };
+        AuditInputs {
+            subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
+            what: What {
+                unit_key: UnitKey::new(unit),
+                op_class: OpClassId::new("chat.completion"),
+                destination: Some("upstream-a".into()),
+                parent: None,
+                pre_hook_head: None,
+                post_hook_head: None,
+            },
+            wall: 1_700_000_000 + unit,
+            mono: unit * 1_000,
+            origin: Origin::seal(&KernelSeal::acquire_for_kernel(), OriginKind::Client),
+            outcome: OutcomeFacts {
+                unit_end: Outcome::Completed,
+                step: None,
+                finish: FinishClass::Complete,
+                hook_failed: false,
+                emission_delta: 0,
+                stale_policy: false,
+            },
+            amount: Amount {
+                lines: Vec::new(),
+                pre_tier: 600,
+                priced: 540,
+                tier_bp: 9_000,
+                fee_count: 1,
+                currency: "USD".into(),
+                rate_card_version: 3,
+                bucket_chain_ref: "chain:free>paid".into(),
+            },
+            controls: Controls {
+                lease_epoch: 4,
+                policy_epoch: 7,
+                ..Controls::default()
+            },
+            correlation_label: Some("customer-order-99".into()),
+        }
+    }
+
+    /// A sealed audit record goes on the journal, carrying the two digests that tie it back to the
+    /// audit unit's own chain — and the epochs it ran under land in the journal header, which is
+    /// where a reader asking "under which policy" looks.
+    #[test]
+    fn a_sealed_audit_record_goes_on_the_journal() {
+        use busbar_caps::{Audit as AuditStep, KernelSeal, UnitToken};
+        use busbar_unit_audit::Audit as _;
+
+        let mut durability = build_for_node(
+            &DurabilityConfig { data_dir: None },
+            4,
+            Box::new(NullShipper::new()),
+            rows(),
+        )
+        .expect("memory-buffered cannot fail");
+        let token = token();
+        let audit_token: UnitToken<AuditStep> = UnitToken::mint(&KernelSeal::acquire_for_kernel());
+
+        let sealed = durability.record.seal(audit_inputs(11), &audit_token);
+        let ack = durability
+            .journal_audit(&sealed, &token, StepName::Meter)
+            .expect("the record goes on the chain");
+
+        let record = &ack.sealed[0];
+        assert_eq!(record.class, RecordClass::Transaction);
+        assert_eq!(record.wall, sealed.wall);
+        assert_eq!(record.mono, sealed.mono);
+        assert_eq!(record.lease_epoch, 4);
+        assert_eq!(record.policy_epoch, 7);
+        assert_eq!(
+            record.body,
+            audit_body(&sealed),
+            "the body is the sealed record's, digests first"
+        );
+        // The tie back to the audit unit's chain: the journal body opens with that chain's two
+        // hashes, so a reader holding one can find the other.
+        assert!(String::from_utf8_lossy(&record.body).contains(&sealed.hash));
+        assert_eq!(durability.record.sealed(), 1);
+        assert_eq!(
+            durability.legacy.len(),
+            0,
+            "journalling a sealed record must not touch the previous release's chain"
+        );
+    }
+
     /// The set branch: the operator asked for a journal on this node's disk, so one appears. The
     /// mirror of the test above, and the reason that one means something — an assertion that no
     /// file appears is only worth having if a file appears when it should.
