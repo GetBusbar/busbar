@@ -45,12 +45,19 @@ fi
 if [ -n "$tests" ]; then
   args=""; for p in $tests; do args="$args -p $p"; done
   echo "land.sh: cargo test $args"
+  # cargo's own exit status is the verdict; the grep only names the red lines. A pipeline here
+  # would let pipefail turn a failing cargo into a skipped check.
+  log="$here/target/land-$(date +%H%M%S).log"
   # shellcheck disable=SC2086
-  (cd "$here" && cargo test $args 2>&1 | grep -E '^test result:.* [1-9][0-9]* failed|^error(\[|:)') && {
-    echo "land.sh: RED — tests failed in: $tests" >&2; exit 1; }
+  if ! (cd "$here" && cargo test $args >"$log" 2>&1); then
+    grep -E '^test result:.* [1-9][0-9]* failed|^error(\[|:)|^---- .* stdout ----|panicked at' "$log" | head -20 >&2
+    echo "land.sh: RED — tests failed in: $tests (log: $log)" >&2; exit 1
+  fi
   # shellcheck disable=SC2086
-  (cd "$here" && cargo clippy $args --all-targets -- -D warnings 2>&1 | grep -E '^(warning|error)' | head -5) && {
-    echo "land.sh: RED — clippy" >&2; exit 1; }
+  if ! (cd "$here" && cargo clippy $args --all-targets -- -D warnings >"$log" 2>&1); then
+    grep -E '^(warning|error)' "$log" | head -5 >&2
+    echo "land.sh: RED — clippy (log: $log)" >&2; exit 1
+  fi
   echo "land.sh: tests and clippy green for: $tests"
 fi
 
