@@ -203,6 +203,42 @@ impl ProductionUnits {
         }
     }
 
+    /// The units an administrative listener needs, and only those.
+    ///
+    /// One plane has been switched onto the loop, and this is the composition for it: the journal is
+    /// memory-buffered because the administrative surface writes no money and probes no directory,
+    /// the metering policy is the empty one because the plane declares no meter classes to price
+    /// against, and the store is the unconfigured one because no admin operation this root drives
+    /// reaches the disaster-recovery subset. Every one of those is a decision this constructor
+    /// MAKES rather than defaults into, and each is the reason the corresponding argument of
+    /// [`ProductionUnits::new`] is not asked for here.
+    ///
+    /// When the other four planes switch, they come in through `new` with the configuration they
+    /// actually need. This constructor exists because an admin-only node genuinely needs less, not
+    /// because the rest is unfinished.
+    #[cfg(feature = "root-admin")]
+    #[must_use]
+    pub fn admin_only(dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>) -> Self {
+        let kernel = new_kernel();
+        let durability = crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open");
+
+        ProductionUnits::new(
+            &kernel,
+            AuthChain::new(Vec::new(), false),
+            durability,
+            crate::root::adapters::BreakerPolicy::new(),
+            crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
+            crate::root::policy::ScopePolicy::new(),
+            crate::root::units_admin::AdminBinding::new(dispatch),
+            Arc::new(crate::root::units_admin::RefusingStore),
+        )
+    }
+
     /// The scope an admin credential carries.
     ///
     /// A deployment that mounts the administrative listener behind its own credential grants the

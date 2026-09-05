@@ -387,6 +387,7 @@ dependencies = [
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
+ "tower",
  "tracing",
 ]
 

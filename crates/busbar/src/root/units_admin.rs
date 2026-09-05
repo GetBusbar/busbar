@@ -1082,6 +1082,286 @@ impl busbar_unit_verbs::ReplayEncoder<busbar_unit_verbs::MintedKeyOutcome> for P
     }
 }
 
+// ── the mount: one HTTP surface, one loop, one answer ───────────────────────────────────────────
+
+/// The node an admin request is answered by.
+///
+/// Everything a request needs and nothing it does not: the kernel that mints its tokens, the units
+/// its steps run against, and the in-flight table its hold lives in. Built once at boot and shared
+/// by every request, which is what makes the counts the canary balances node-wide rather than
+/// per-request.
+#[cfg(feature = "root-admin")]
+pub struct AdminNode {
+    kernel: busbar_kernel::teller::Kernel,
+    units: crate::root::kernel::ProductionUnits,
+    inflight: busbar_kernel::inflight::InFlight,
+    gauge: busbar_kernel::slice::ConcurrencyGauge,
+    canary: busbar_caps::Canary,
+    next_key: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(feature = "root-admin")]
+impl AdminNode {
+    /// Compose the node an admin request is answered by.
+    #[must_use]
+    pub fn new(
+        kernel: busbar_kernel::teller::Kernel,
+        units: crate::root::kernel::ProductionUnits,
+    ) -> Self {
+        AdminNode {
+            kernel,
+            units,
+            // The administrative listener is outside the in-flight cap entirely — the design says
+            // so, and for the reason the exemption exists: the surface an operator reaches to find
+            // out why the node is shedding has to answer while it is shedding. The table is still
+            // real, because a hold still has to live somewhere.
+            inflight: busbar_kernel::inflight::InFlight::new(0, 0),
+            gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
+            canary: busbar_caps::Canary::new(),
+            next_key: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    /// Walk one admin request through the loop and answer with what it produced.
+    ///
+    /// The whole of the kernel's ten steps, two audit doors and one exit, for a request that used
+    /// to reach its handler directly. What comes back is what the operation's own surface answered:
+    /// this function chooses the PATH, never the bytes.
+    pub fn answer(&self, request: AdminRequest) -> AdminAnswer {
+        let key = UnitKey::new(
+            self.next_key
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        );
+        self.units.admin.units.open(key, request);
+
+        let arrival = busbar_kernel::inflight::arrival_hold(
+            &self.kernel,
+            &self.units.arrival_door,
+            PrincipalId::new("admin"),
+        );
+        let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
+            key,
+            origin: busbar_caps::OriginKind::Client,
+            session: None,
+            admin_listener: true,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival,
+        });
+
+        let answer = match entered {
+            // The table is uncapped for this listener, so this arm is the table declining for a
+            // reason that is not capacity. It is still an answer rather than a panic.
+            Err(_refused) => unavailable_answer(),
+            Ok(slot) => {
+                let ctx = UnitCtx {
+                    key,
+                    origin: busbar_caps::OriginKind::Client,
+                    session: None,
+                    generation: busbar_kernel::registry::Generation::FIRST,
+                    admin_listener: true,
+                    // An admin unit's whole verified set is a kernel verb, which is what exempts it
+                    // from the concurrency gauge — and what makes the admin API answer at a
+                    // saturated cap.
+                    kernel_verb_only: true,
+                };
+                let mut leases = busbar_kernel::slice::LeaseSet::new();
+                let meter = busbar_kernel::teller::AccrualMeter::new();
+                let _ended = busbar_kernel::teller::run_unit(
+                    &self.kernel,
+                    &self.units,
+                    &ctx,
+                    busbar_kernel::teller::Run {
+                        cell: slot.cell(),
+                        parent: None,
+                        leases: &mut leases,
+                        gauge: &self.gauge,
+                        canary: &self.canary,
+                        meter: &meter,
+                    },
+                );
+                self.inflight.remove(key);
+                // The loop ran; the answer is whatever Route put there. A unit refused before Route
+                // has none, and the refusal it ended on is what the surface renders.
+                self.units
+                    .admin
+                    .units
+                    .answer(key)
+                    .unwrap_or_else(refused_answer)
+            }
+        };
+
+        // Close last, whatever happened. An entry that outlived its unit is the leak per request
+        // this root may not have.
+        let _ = self.units.admin.units.close(key);
+        answer
+    }
+}
+
+/// What a unit that never reached Route answers with.
+///
+/// The plane's own error envelope, which is the previous release's: the caller is the same caller
+/// and the shape is pinned.
+#[cfg(feature = "root-admin")]
+fn refused_answer() -> AdminAnswer {
+    AdminAnswer {
+        status: 403,
+        headers: vec![("content-type".to_string(), "application/json".to_string())],
+        body: br#"{"error":{"code":"forbidden","message":"forbidden"}}"#.to_vec(),
+    }
+}
+
+/// What a node that cannot take the unit at all answers with.
+#[cfg(feature = "root-admin")]
+fn unavailable_answer() -> AdminAnswer {
+    AdminAnswer {
+        status: 503,
+        headers: vec![("content-type".to_string(), "application/json".to_string())],
+        body: br#"{"error":{"code":"unavailable","message":"unavailable"}}"#.to_vec(),
+    }
+}
+
+/// The dispatch that hands an operation to the surface that already answers it.
+///
+/// The seam's production half, and deliberately the thinnest thing in the file: it rebuilds the
+/// request the caller sent, hands it to the router the operation is mounted on, and returns that
+/// router's whole response. No status is computed here, no header is added and no body is touched —
+/// and that is the property the oracle measures.
+#[cfg(feature = "root-admin")]
+pub struct RouterDispatch {
+    inner: axum::Router,
+    runtime: tokio::runtime::Handle,
+}
+
+#[cfg(feature = "root-admin")]
+impl RouterDispatch {
+    /// Bind the seam to a mounted router.
+    #[must_use]
+    pub fn new(inner: axum::Router, runtime: tokio::runtime::Handle) -> Self {
+        RouterDispatch { inner, runtime }
+    }
+}
+
+#[cfg(feature = "root-admin")]
+impl AdminDispatch for RouterDispatch {
+    fn execute(&self, _verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
+        use tower::ServiceExt;
+
+        let mut builder = axum::http::Request::builder()
+            .method(request.method.as_str())
+            .uri(request.path.as_str());
+        for (name, value) in &request.headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        let Ok(http) = builder.body(axum::body::Body::from(request.body.clone())) else {
+            return refused_answer();
+        };
+
+        let inner = self.inner.clone();
+        self.runtime.block_on(async move {
+            // The router's own error type is uninhabited: a mounted axum router answers, and
+            // failing is not among the things it can do. So there is no error arm to write here,
+            // and writing one anyway would be a branch that can never be taken pretending to be a
+            // fallback that could be.
+            let response = inner.oneshot(http).await.unwrap_or_else(|e| match e {});
+            let (parts, body) = response.into_parts();
+            let bytes = axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap_or_default();
+            AdminAnswer {
+                status: parts.status.as_u16(),
+                headers: header_pairs(&parts.headers),
+                body: bytes.to_vec(),
+            }
+        })
+    }
+}
+
+/// Header names and values as owned pairs, in emission order.
+///
+/// A header value is bytes rather than text, and this is the one place that matters: rendering it
+/// lossily here would change a byte the oracle compares. Everything the admin surface emits is
+/// ASCII, so the conversion is exact — and it is written as a conversion rather than an assumption
+/// so that a value which was not would be visible rather than silent.
+#[cfg(feature = "root-admin")]
+fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_string(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        })
+        .collect()
+}
+
+/// Wrap a mounted admin surface so every request on it travels through the kernel.
+///
+/// The router that goes in is the one that already answers; the router that comes out answers the
+/// same operations through the loop. The seam between them is [`RouterDispatch`], so the inner
+/// router remains the only thing that knows what any of these operations do.
+///
+/// The loop is synchronous and the router is not, so the walk runs on a blocking worker and the one
+/// await inside it — the inner router's own — is driven on the runtime this was handed. That is the
+/// honest ordering: Route drives the seam, the seam drives the surface, and the answer comes back
+/// through the steps that are still to run.
+#[cfg(feature = "root-admin")]
+pub fn mount(
+    inner: axum::Router,
+    kernel: busbar_kernel::teller::Kernel,
+    build_units: impl FnOnce(Arc<dyn AdminDispatch>) -> crate::root::kernel::ProductionUnits,
+) -> axum::Router {
+    let runtime = tokio::runtime::Handle::current();
+    let dispatch: Arc<dyn AdminDispatch> = Arc::new(RouterDispatch::new(inner, runtime));
+    let node = Arc::new(AdminNode::new(kernel, build_units(dispatch)));
+
+    axum::Router::new().fallback(axum::routing::any(
+        move |req: axum::http::Request<axum::body::Body>| {
+            let node = Arc::clone(&node);
+            async move {
+                let (parts, body) = req.into_parts();
+                let bytes = axum::body::to_bytes(body, usize::MAX)
+                    .await
+                    .unwrap_or_default();
+                let request = AdminRequest {
+                    method: parts.method.as_str().to_string(),
+                    path: parts
+                        .uri
+                        .path_and_query()
+                        .map_or_else(|| parts.uri.path().to_string(), ToString::to_string),
+                    credential: parts
+                        .headers
+                        .get(axum::http::header::AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|v| v.trim_start_matches("Bearer ").to_string()),
+                    headers: header_pairs(&parts.headers),
+                    body: bytes.to_vec(),
+                    at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs()),
+                };
+                let answer = tokio::task::spawn_blocking(move || node.answer(request))
+                    .await
+                    .unwrap_or_else(|_| unavailable_answer());
+
+                let mut response = axum::http::Response::builder().status(answer.status);
+                for (name, value) in &answer.headers {
+                    response = response.header(name.as_str(), value.as_str());
+                }
+                response
+                    .body(axum::body::Body::from(answer.body))
+                    .unwrap_or_else(|_| {
+                        axum::http::Response::builder()
+                            .status(500)
+                            .body(axum::body::Body::empty())
+                            .expect("an empty 500 always builds")
+                    })
+            }
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

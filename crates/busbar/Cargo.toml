@@ -102,6 +102,10 @@ busbar-transport-stdio = { path = "../busbar-transport-stdio" }
 # `rustls` config: the root builds the dial-side trust store, and the deployment's trust roots are
 # its own statement rather than a unit's.
 rustls = { workspace = true }
+# Behind `root-admin` only. The root-driven admin surface wraps the router the operations are already
+# mounted on and calls it as the tower service it is, so the inner surface answers exactly as it did
+# and no status, header or byte is re-derived on the way out.
+tower = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 axum = { workspace = true }
 tracing = { workspace = true }
@@ -181,6 +185,15 @@ root-a2a = []
 # checked against the real unit traits while the serving path is untouched — so a build with it on
 # and a build with it off answer identically on the wire, and the rigs prove that both ways.
 root-mcp = []
+# THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT OFF, and it
+# stays off until the oracle's admin family is green on it: the switch is what makes an admin request
+# travel through the kernel's loop instead of reaching its handler directly, and until that is
+# measured the shipped binary must keep the path it has. Off, the feature costs one unbuilt module
+# and nothing else — `main.rs` names the mount inside a `cfg` and the router it wraps is untouched.
+#
+# `tower` is the feature's own edge: wrapping a mounted router means calling it as the service it
+# already is, which is the one thing that guarantees the inner surface answers exactly as it did.
+root-admin = ["dep:tower"]
 auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]
 openapi-schema = ["busbar-core/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]

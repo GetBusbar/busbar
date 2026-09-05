@@ -1308,6 +1308,15 @@ async fn run(data_workers: usize) {
         max_inbound,
         response_headers_cfg.server_timing,
     );
+    // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default off. The router that
+    // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
+    // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
+    // and out through the one exit. Off, this line does not exist and the surface is the one it was.
+    #[cfg(feature = "root-admin")]
+    let admin_router = root::units_admin::mount(admin_router, root::kernel::new_kernel(), |d| {
+        root::kernel::ProductionUnits::admin_only(d)
+    });
+
     // Bind the boot generation's engine host to the handle so it OWNS the only strong reference the boot
     // probers depend on (they hold a `Weak`): the first config swap drops it and retires them. See the
     // spawn_probers call above and `AppHandle::set_snapshot_host`.
