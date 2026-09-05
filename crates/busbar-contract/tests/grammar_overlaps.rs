@@ -190,7 +190,7 @@ fn claims_on_different_transports_never_collide() {
     let a = Claim {
         transport: "http",
         selector: Selector::ExactPath("/v1/chat/completions"),
-        scheme: "bearer",
+        scheme: Some("bearer"),
         scheme_alternatives: &[],
         idempotency: None,
     };
@@ -200,6 +200,42 @@ fn claims_on_different_transports_never_collide() {
     };
     assert!(a.overlaps(&a));
     assert!(!a.overlaps(&b));
+}
+
+/// A claim says "no credential" by declaring no scheme, and that keeps the narrowing check honest.
+///
+/// The authenticate step may only narrow within a claim's declared alternatives. If the absence of
+/// a credential were a scheme key the registry knew, it would sit in that set and a plane could
+/// narrow an AUTHENTICATED claim down to it with the check still passing. Carried on the claim, the
+/// two cases stay apart: an authenticated claim has a non-empty set to narrow within, and an open
+/// claim has an empty one, so there is nothing for anything to narrow to.
+#[test]
+fn a_claim_with_no_scheme_offers_nothing_to_narrow_to() {
+    use busbar_contract::grammar::Claim;
+    let authenticated = Claim {
+        transport: "http",
+        selector: Selector::ExactPath("/v1/chat/completions"),
+        scheme: Some("inbound"),
+        scheme_alternatives: &["bearer", "api-key"],
+        idempotency: None,
+    };
+    let open = Claim {
+        selector: Selector::ExactPath("/.well-known/openid-configuration"),
+        scheme: None,
+        scheme_alternatives: &[],
+        ..authenticated
+    };
+
+    assert!(!authenticated.is_anonymous());
+    assert!(open.is_anonymous());
+
+    // The check the step runs, written out: narrowing is membership of the declared set.
+    let narrows_to = |claim: &Claim, alt: &str| claim.scheme_alternatives.contains(&alt);
+    assert!(narrows_to(&authenticated, "bearer"));
+    assert!(!narrows_to(&authenticated, "anonymous"));
+    // Nothing narrows within an open claim, including the word the planes used to invent.
+    assert!(!narrows_to(&open, "bearer"));
+    assert!(!narrows_to(&open, "anonymous"));
 }
 
 /// The family a form belongs to is fixed, and every form belongs to exactly one.

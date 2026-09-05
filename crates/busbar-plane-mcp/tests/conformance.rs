@@ -747,7 +747,14 @@ fn a_local_server_narrows_to_the_environment_alternative() {
 /// authenticate step, and a plane that narrowed outside it would be refusing its own units.
 #[test]
 fn every_narrowing_is_declared() {
-    let declared = McpPlane::CLAIMS[0].scheme_alternatives;
+    // The alternatives of a claim that DECLARES a scheme. The open surface's claim declares none,
+    // which is the whole point of it: there is nothing there to narrow to, so it cannot be the
+    // claim this check is read against.
+    let declared = McpPlane::CLAIMS
+        .iter()
+        .find(|c| c.scheme.is_some())
+        .expect("some claim declares a scheme")
+        .scheme_alternatives;
     let plane = McpPlane::EMPTY;
     let seal = common::TestSeal;
     for op in McpPlane::OP_CLASSES {

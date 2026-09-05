@@ -460,15 +460,18 @@ impl Plane for A2aPlane {
 
     fn authenticate<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> CredentialLocator {
         // Three of this protocol's surfaces carry no credential by design: the two discovery
-        // documents anyone may read, and the callback an agent this node dialled posts back to. The
-        // rest present a bearer credential.
-        let anonymous = matches!(u.op(), ops::OP_PUSH_EVENT);
+        // documents anyone may read, and the callback an agent this node dialled posts back to.
+        // Their claims declare no scheme, so there is nothing to narrow WITHIN and this step names
+        // nothing — which is a stronger statement than the invented "anonymous" alternative it
+        // replaces, because that one was a value a plane could narrow an authenticated claim down
+        // to. The rest present a bearer credential.
+        let open_surface = matches!(u.op(), ops::OP_PUSH_EVENT);
         CredentialLocator {
-            narrowing: Some(SchemeAlt::new(if anonymous {
-                "anonymous"
+            narrowing: if open_surface {
+                None
             } else {
-                "bearer"
-            })),
+                Some(SchemeAlt::new("bearer"))
+            },
             // A bound session's principal is the cached one; an unbound session re-authenticates
             // every unit, and a unit the agent pushed is the kernel's own pairing rather than
             // anything on these bytes.

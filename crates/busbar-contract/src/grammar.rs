@@ -269,9 +269,24 @@ pub struct Claim {
     pub transport: &'static str,
     /// What the claim matches.
     pub selector: Selector,
-    /// The credential scheme the claim's units authenticate under.
-    pub scheme: &'static str,
+    /// The credential scheme the claim's units authenticate under, where they carry one.
+    ///
+    /// `None` says the claim's units carry NO credential: they admit the anonymous principal
+    /// without consulting a scheme at all. A deliberately open surface — a discovery document, a
+    /// callback anyone may post to — is a property of the claim, decided at registration and
+    /// checked at boot.
+    ///
+    /// It is deliberately NOT a scheme key the registry happens to know. The authenticate step may
+    /// only narrow within a claim's declared alternatives, and a scheme key meaning "none" would be
+    /// one alternative among others: a plane could then narrow an authenticated claim down to
+    /// anonymous and the check would pass, because the key IS declared. That is the check failing
+    /// to check the one thing it exists for. With the absence carried on the claim, a claim that
+    /// declares a scheme has alternatives to narrow within and the check runs unchanged, and a
+    /// claim that declares none has nothing to narrow to at all.
+    pub scheme: Option<&'static str>,
     /// The alternatives a plane may narrow the scheme to at the authenticate step.
+    ///
+    /// Empty when the claim declares no scheme: there is nothing to narrow.
     pub scheme_alternatives: &'static [&'static str],
     /// The claim's idempotency rule, if it declares one.
     pub idempotency: Option<Idempotency>,
@@ -285,6 +300,12 @@ impl Claim {
     #[must_use]
     pub fn overlaps(&self, other: &Claim) -> bool {
         self.transport == other.transport && self.selector.overlaps(&other.selector)
+    }
+
+    /// Whether this claim's units carry no credential at all.
+    #[must_use]
+    pub const fn is_anonymous(&self) -> bool {
+        self.scheme.is_none()
     }
 }
 

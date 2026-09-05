@@ -33,7 +33,7 @@ fn claim(transport: &'static str, selector: Selector) -> Claim {
     Claim {
         transport,
         selector,
-        scheme: "none",
+        scheme: Some("none"),
         scheme_alternatives: &[],
         idempotency: None,
     }

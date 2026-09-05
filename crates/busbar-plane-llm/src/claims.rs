@@ -65,7 +65,7 @@ const fn claim(selector: Selector) -> Claim {
     Claim {
         transport: TRANSPORT,
         selector,
-        scheme: SCHEME,
+        scheme: Some(SCHEME),
         scheme_alternatives: SCHEME_ALTS,
         // The design says an idempotency location is claim CONFIG for this plane, and that a
         // migrated configuration carries none. Declaring one here would change the shape of every

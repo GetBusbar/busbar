@@ -56,7 +56,7 @@ const ADMIN_PATTERN: &[PathSeg] = &[
 pub const CLAIMS: &[Claim] = &[Claim {
     transport: TRANSPORT,
     selector: Selector::PathPattern(ADMIN_PATTERN),
-    scheme: SCHEME,
+    scheme: Some(SCHEME),
     scheme_alternatives: SCHEME_ALTS,
     // No idempotency location: the admin surface's own `If-Match` optimistic-concurrency scheme is
     // a body/header concern the verbs unit enforces, not a client-supplied idempotency key this

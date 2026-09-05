@@ -118,7 +118,7 @@ const fn claim(
     Claim {
         transport,
         selector,
-        scheme: SCHEME,
+        scheme: Some(SCHEME),
         scheme_alternatives: alts,
         // None of the four dialects' claims declares an idempotency location: a duplex session has
         // no single request body to key a replay on, and the two one-shot operations are read

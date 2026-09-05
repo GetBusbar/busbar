@@ -145,7 +145,7 @@ fn every_rung_is_a_claim_that_a_boot_would_check() {
         let claim = Claim {
             transport: "http",
             selector: rung.selector,
-            scheme: "bearer",
+            scheme: Some("bearer"),
             scheme_alternatives: &[],
             idempotency: None,
         };

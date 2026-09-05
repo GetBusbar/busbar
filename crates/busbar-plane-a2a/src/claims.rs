@@ -34,20 +34,21 @@ const SCHEME: &str = "a2a-inbound";
 
 /// The alternatives a unit may be narrowed to.
 ///
-/// The bearer form is what an authenticated caller presents. The anonymous form is declared because
-/// three of this protocol's surfaces are deliberately unauthenticated — the two discovery documents
-/// and the callback an agent this node dialled posts back to — and the contract gives a plane no way
-/// to say "this claim's units carry no credential" other than as an alternative of its scheme. That
-/// is a finding about the contract, not a decision taken here; it is written down in the crate's
-/// notes.
-const SCHEME_ALTS: &[&str] = &["bearer", "anonymous"];
+/// One: the bearer form an authenticated caller presents.
+///
+/// There is no anonymous form. There used to be one, invented as a scheme alternative because a
+/// claim could not say "these units carry no credential" any other way — and a scheme alternative
+/// meaning "none" is exactly what makes the authenticate step's narrowing check toothless, because
+/// narrowing DOWN to it would pass. This protocol's three deliberately open surfaces say it in the
+/// one place it belongs instead: their own claims declare no scheme.
+const SCHEME_ALTS: &[&str] = &["bearer"];
 
 /// Build one claim over a selector on the document transport.
 const fn http(selector: Selector) -> Claim {
     Claim {
         transport: TRANSPORT_HTTP,
         selector,
-        scheme: SCHEME,
+        scheme: Some(SCHEME),
         scheme_alternatives: SCHEME_ALTS,
         // No idempotency location is declared. The codec reads no client-supplied idempotency key
         // today, and declaring one here would change the shape of every request that reaches an
@@ -61,8 +62,22 @@ const fn grpc(selector: Selector) -> Claim {
     Claim {
         transport: TRANSPORT_GRPC,
         selector,
-        scheme: SCHEME,
+        scheme: Some(SCHEME),
         scheme_alternatives: SCHEME_ALTS,
+        idempotency: None,
+    }
+}
+
+/// Build one document-transport claim whose units carry no credential at all.
+///
+/// Not "a scheme called anonymous": no scheme. The claim admits the anonymous principal without
+/// consulting one, which is what a deliberately open surface actually is.
+const fn open_http(selector: Selector) -> Claim {
+    Claim {
+        transport: TRANSPORT_HTTP,
+        selector,
+        scheme: None,
+        scheme_alternatives: &[],
         idempotency: None,
     }
 }
@@ -127,10 +142,11 @@ const PAT_GRPC: &[PathSeg] = &[PathSeg::Lit("lf.a2a.v1.A2AService"), PathSeg::Va
 /// serves" a checkable sentence rather than a hopeful one.
 pub const CLAIMS: &[Claim] = &[
     // The two unauthenticated discovery documents. Exact paths, and the tightest thing here.
-    http(Selector::ExactPath(P_METADATA)),
-    http(Selector::ExactPath(P_CARD)),
-    // The unauthenticated callback surface.
-    http(Selector::ExactPath(P_PUSH)),
+    // They declare no scheme, which is how a claim says its units carry no credential.
+    open_http(Selector::ExactPath(P_METADATA)),
+    open_http(Selector::ExactPath(P_CARD)),
+    // The unauthenticated callback surface, declared the same way.
+    open_http(Selector::ExactPath(P_PUSH)),
     // The document binding's named operations, exact before patterned.
     http(Selector::ExactPath(P_MESSAGE_SEND)),
     http(Selector::ExactPath(P_MESSAGE_STREAM)),
@@ -190,16 +206,40 @@ mod tests {
         }
     }
 
-    /// Every claim declares the same scheme and the same alternatives.
+    /// Every claim either declares the one scheme and its alternatives, or declares none.
     ///
     /// A plane may narrow to an alternative its claim declares and to nothing else, so a claim that
     /// declared a narrower set than its siblings would refuse a unit its siblings admit, for no
-    /// reason a reader could find.
+    /// reason a reader could find. The three open surfaces are the other case: no scheme, and
+    /// therefore no alternatives — the emptiness is what makes the narrowing check meaningful,
+    /// because there is nothing there to narrow DOWN to.
     #[test]
-    fn every_claim_declares_one_scheme() {
+    fn every_claim_declares_one_scheme_or_none() {
+        let mut open = 0usize;
         for claim in CLAIMS {
-            assert_eq!(claim.scheme, super::SCHEME);
-            assert_eq!(claim.scheme_alternatives, SCHEME_ALTS);
+            match claim.scheme {
+                Some(scheme) => {
+                    assert_eq!(scheme, super::SCHEME);
+                    assert_eq!(claim.scheme_alternatives, SCHEME_ALTS);
+                }
+                None => {
+                    open += 1;
+                    assert!(claim.is_anonymous());
+                    assert!(claim.scheme_alternatives.is_empty());
+                }
+            }
+        }
+        assert_eq!(open, 3, "the three open surfaces are exactly three");
+    }
+
+    /// No declared alternative is the word "anonymous".
+    ///
+    /// The absence of a credential is a property of the CLAIM, not one more thing a plane may
+    /// narrow to. This is the assertion that keeps the invented alternative from coming back.
+    #[test]
+    fn no_alternative_stands_in_for_having_no_credential() {
+        for claim in CLAIMS {
+            assert!(!claim.scheme_alternatives.contains(&"anonymous"));
         }
     }
 
