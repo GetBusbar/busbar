@@ -673,7 +673,7 @@ fn tool_response_maps_to_call_result_and_roundtrips() {
     assert_eq!(back, src, "toolResponse round-trip is byte-stable");
 }
 
-// ── usageMetadata extraction (`plane4-duplex-session.md` §2.5) ──────────────────────────────────────────────────────────────
+// ── usageMetadata extraction (`plane4-duplex-session.md`) ──────────────────────────────────────────────────────────────
 
 #[test]
 fn usage_metadata_extracts_split_token_classes() {

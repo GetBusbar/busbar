@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TWO EVENT UNIONS — the four layers projected onto the two directions of travel. Design `plane4-duplex-session.md` §2.6.
+//! THE TWO EVENT UNIONS — the four layers projected onto the two directions of travel. Design `plane4-duplex-session.md`.
 //!
 //! [`IrServerEvent`] is the SIBLING of `busbar-llm`'s `IrStreamEvent` (server→client, response-shaped),
 //! NOT an extension of it. [`IrClientEvent`] is the genuine net-new IR work: a client→server event
@@ -13,7 +13,7 @@ use crate::ir::media::IrAudioFrame;
 use crate::ir::tool::IrDuplexTool;
 use crate::ir::usage::IrDuplexUsage;
 
-/// CLIENT → SERVER events (`plane4-duplex-session.md` §2.6). The union of the client-originated cases across the four layers.
+/// CLIENT → SERVER events (`plane4-duplex-session.md`). The union of the client-originated cases across the four layers.
 /// **This vocabulary has no analog anywhere in the tree today** — building it is the net-new IR work.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrClientEvent {
@@ -25,7 +25,7 @@ pub enum IrClientEvent {
     Tool(IrDuplexTool),
 }
 
-/// SERVER → CLIENT events (`plane4-duplex-session.md` §2.6). The union of the server-originated cases across the four layers —
+/// SERVER → CLIENT events (`plane4-duplex-session.md`). The union of the server-originated cases across the four layers —
 /// the sibling of `IrStreamEvent`, plane-owned.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrServerEvent {

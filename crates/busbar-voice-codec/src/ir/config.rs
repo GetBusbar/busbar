@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE GA `session` CONFIG OBJECT — the typed shape carried by `session.update` (client→server) and
-//! echoed by `session.created` (server→client). Design `plane4-duplex-session.md` §2.3.
+//! echoed by `session.created` (server→client). Design `plane4-duplex-session.md`.
 //!
 //! This is the ONE place in the plane where a serde-derived struct models the wire directly, rather
 //! than the hand-mapped `serde_json::Value` dispatch the event codec uses. The justification is the
@@ -10,7 +10,7 @@
 //! while streaming EVENTS are hand-mapped. The Realtime `session` object is exactly a config shape.
 //!
 //! This typed config IS the plane's neutral session-config IR — the cross-dialect superset both dialects
-//! (OpenAI Realtime + Gemini Live, `plane4-duplex-session.md` §1.4) read and write, now that the plane
+//! (OpenAI Realtime + Gemini Live, `plane4-duplex-session.md`) read and write, now that the plane
 //! has earned a superset at its second wire format. The GA field set is modeled faithfully so a
 //! decode→encode round-trip is JSON-stable (opaque `tools` / `tool_choice` ride as `serde_json::Value`;
 //! the plane locks and reconciles them but never reshapes them).
@@ -85,7 +85,7 @@ mod opt_audio_fmt {
     }
 }
 
-/// THE GA `session` CONFIG OBJECT (`plane4-duplex-session.md` §2.3). Every field is optional on the wire (a partial
+/// THE GA `session` CONFIG OBJECT (`plane4-duplex-session.md`). Every field is optional on the wire (a partial
 /// `session.update` patches only what it names), so absent keys decode to `None`/empty and are
 /// omitted on re-encode — keeping a partial patch JSON-stable. `turn_detection` is the ONE field
 /// serialized even when absent: GA distinguishes `null` (VAD disabled) from omitted, so `None` maps
@@ -95,7 +95,7 @@ pub struct SessionConfig {
     /// THE UPSTREAM MODEL ID the session targets. OpenAI Realtime carries this SERVER-SIDE (it appears
     /// on `session.created`, not the writable `session.update` patch), so it stays `None` for the
     /// OpenAI dialect; Gemini Live carries it as `setup.model`. Modeled here as the genuinely-shared
-    /// field the SECOND dialect (Gemini) earns into the superset IR (`plane4-duplex-session.md` §1.4). Optional — an OpenAI
+    /// field the SECOND dialect (Gemini) earns into the superset IR (`plane4-duplex-session.md`). Optional — an OpenAI
     /// `session.update` omits it (decodes to `None`, skipped on re-encode, so the OpenAI round-trip is
     /// unaffected).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -128,7 +128,7 @@ pub struct SessionConfig {
     #[serde(default)]
     pub turn_detection: Option<IrVad>,
     /// The tool set, carried VERBATIM as opaque JSON (the plane locks the set but never reshapes a
-    /// definition — `plane4-duplex-session.md` §2.2's moat normalizes call CORRELATION, not the argument/definition bytes).
+    /// definition — `plane4-duplex-session.md`'s moat normalizes call CORRELATION, not the argument/definition bytes).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<serde_json::Value>,
     /// Tool-choice policy (`"auto"` / `"none"` / `"required"` / a forced-call object), opaque.

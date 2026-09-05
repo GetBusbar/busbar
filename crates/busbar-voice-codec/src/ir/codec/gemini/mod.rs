@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE SECOND DIALECT — Google **Gemini Live** (`BidiGenerateContent`), mapped to/from the SAME
-//! shared voice IR that [`super::OpenAiRealtimeCodec`] targets. Design `plane4-duplex-session.md` §1.4 / §2.6.
+//! shared voice IR that [`super::OpenAiRealtimeCodec`] targets. Design `plane4-duplex-session.md`.
 //!
 //! This is the codec that turns busbar-voice into a real voice *translator*: a Gemini-Live wire event
 //! is decoded into the plane-owned IR ([`IrClientEvent`] / [`IrServerEvent`]), and the OpenAI codec
@@ -279,7 +279,7 @@ fn modality_tokens(details: Option<&Value>, modality: &str) -> u64 {
         .unwrap_or_default()
 }
 
-/// Extract the split token classes from a Gemini `usageMetadata` object (`plane4-duplex-session.md` §2.5 — audio vs text are
+/// Extract the split token classes from a Gemini `usageMetadata` object (`plane4-duplex-session.md` — audio vs text are
 /// SEPARATE classes; extraction-only, never client-translated).
 fn usage_from_metadata(u: &Value) -> IrDuplexUsage {
     let pd = u.get("promptTokensDetails");
