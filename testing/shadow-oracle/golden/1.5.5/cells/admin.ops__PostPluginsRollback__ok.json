@@ -1,0 +1,56 @@
+{
+  "applied": [
+    "audit.hash",
+    "hdr.date",
+    "hdr.etag",
+    "hdr.length",
+    "ver.string"
+  ],
+  "body": {
+    "json": {
+      "config_version": 1,
+      "file": "busbar-headroom-2.0.7-<TRIPLE>.tar.gz",
+      "name": "busbar-headroom",
+      "note": "rolled the plugin DOWN to the prior version and hot-swapped to it; the version pin is persisted (survives restart) and the anti-downgrade floor was lowered ONLY for this explicit, audited action — a silent replay of an old artifact is still refused.",
+      "publisher": "busbar",
+      "version": "<VERSION>"
+    }
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "plugin.rollback",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "applied",
+          "resource": "plugin:busbar-headroom-2.0.7-<TRIPLE>.tar.gz"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "path": "/api/v1/admin/plugins",
+        "status": 400,
+        "body": {
+          "json": {
+            "error": {
+              "code": "invalid_request",
+              "message": "unknown plugin type ``: expected `auth`, `hooks`, `secret`, or `store`"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "headers": {
+    "content-length": "<LEN>",
+    "content-type": "application/json",
+    "etag": "<ETAG>"
+  },
+  "status": 200
+}

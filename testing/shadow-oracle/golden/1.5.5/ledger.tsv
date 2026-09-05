@@ -574,6 +574,7 @@ admin.ops|GetPools|ok	PASS	HTTP 200; usage Δ {}
 admin.ops|GetPools|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetProviders|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetProviders|unauth	PASS	HTTP 401; usage Δ {}	
+admin.ops|GetUsage|no-usage-after-mutation	PASS	HTTP 200; usage Δ {}
 admin.ops|GetUsage|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetUsage|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PatchExportNameSettings|bad-body	PASS	HTTP 400; usage Δ {}	
@@ -615,6 +616,7 @@ admin.ops|PostConfigApply|if-match-stale	PASS	HTTP 200; usage Δ {}
 admin.ops|PostConfigApply|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostConfigApply|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostConfigReload|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|PostConfigReload|rate-limit	PASS	HTTP 429; usage Δ {}
 admin.ops|PostConfigReload|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostConfigRollback|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PostConfigRollback|if-match-malformed	PASS	HTTP 400; usage Δ {}	
@@ -630,7 +632,9 @@ admin.ops|PostGroups|if-match-stale	PASS	HTTP 200; usage Δ {}
 admin.ops|PostGroups|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostGroups|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostHooks|bad-body	PASS	HTTP 400; usage Δ {}	
-admin.ops|PostHooks|ok	SKIP	UNSUPPORTED: needs fixture: ok: null — 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (CFG-220); the compi	named gap: the fixture this cell needs is not in the tree yet
+admin.ops|PostHooks|if-match-malformed	PASS	HTTP 400; usage Δ {}	
+admin.ops|PostHooks|if-match-stale	PASS	HTTP 201; usage Δ {}	
+admin.ops|PostHooks|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostHooks|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostKeysIdRevoke|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|PostKeysIdRevoke|ok	PASS	HTTP 200; usage Δ {}	
@@ -649,7 +653,9 @@ admin.ops|PostPluginsInspect|unauth	PASS	HTTP 401; usage Δ {}
 admin.ops|PostPluginsReload|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostPluginsReload|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostPluginsRollback|bad-body	PASS	HTTP 400; usage Δ {}	
-admin.ops|PostPluginsRollback|ok	SKIP	UNSUPPORTED: needs fixture: ok: null — needs published plugin fixture. `file` required ⇒ bad_body 400. Unknown file is 404 (no path param, so not_found i	named gap: the fixture this cell needs is not in the tree yet
+admin.ops|PostPluginsRollback|if-match-malformed	PASS	HTTP 400; usage Δ {}	
+admin.ops|PostPluginsRollback|if-match-stale	PASS	HTTP 200; usage Δ {}	
+admin.ops|PostPluginsRollback|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostPluginsRollback|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostPlugins|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PostPlugins|ok	PASS	HTTP 201; usage Δ {}	
@@ -694,8 +700,6 @@ admin.ops|PutIdentityProvidersName|not-found	PASS	HTTP 200; usage Δ {}
 admin.ops|PutIdentityProvidersName|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PutIdentityProvidersName|unauth	PASS	HTTP 401; usage Δ {}
 admin.ops|admin-token|wrong-destination	PASS	HTTP 401; usage Δ {}
-admin.ops|PostConfigReload|rate-limit	PASS	HTTP 429; usage Δ {}
-admin.ops|GetUsage|no-usage-after-mutation	PASS	HTTP 200; usage Δ {}
 billing|admin-usage|after-2	PASS	HTTP 200; usage Δ {}
 billing|admin-usage|past-day	PASS	HTTP 200; usage Δ {}	
 billing|group-usage|after-2	PASS	HTTP 200; usage Δ {}	
@@ -958,143 +962,143 @@ cli|env|BUSBAR_CONFIG-missing	PASS	exit 1;
 cli|env|RUST_LOG-crate-filter	PASS	exit 0; ok: config valid — 6 provider(s), 6 model(s), 4 pool(s)   	
 cli|unknown-flag	PASS	exit 2; 	
 config.migrate|v0.10.0|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.10.0|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.10.0|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 3 model(s), 2 pool(s)   	
 config.migrate|v0.11.0|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.11.0|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.11.0|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 3 model(s), 2 pool(s)   	
 config.migrate|v0.11.1|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.11.1|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.11.1|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 3 model(s), 2 pool(s)   	
 config.migrate|v0.12.0|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.12.0|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.12.0|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 3 model(s), 2 pool(s)   	
 config.migrate|v0.13.0|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.13.0|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.13.0|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 8 pool(s)   	
 config.migrate|v0.14.0|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.14.0|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.14.0|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 8 pool(s)   	
 config.migrate|v0.14.1|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.14.1|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.14.1|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 8 pool(s)   	
 config.migrate|v0.15.0|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.15.0|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.15.0|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 9 pool(s)   	
 config.migrate|v0.16.0|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.16.0|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.16.0|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 9 pool(s)   	
 config.migrate|v0.16.1|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.16.1|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.16.1|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 9 pool(s)   	
 config.migrate|v0.16.2|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.16.2|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.16.2|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 9 pool(s)   	
 config.migrate|v0.17.0|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.17.0|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.17.0|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 9 pool(s)   	
 config.migrate|v0.17.1|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.17.1|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.17.1|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 9 pool(s)   	
 config.migrate|v0.17.2|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.17.2|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.17.2|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 9 pool(s)   	
 config.migrate|v0.17.3|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.17.3|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.17.3|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 9 pool(s)   	
 config.migrate|v0.17.4|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.17.4|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.17.4|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 9 pool(s)   	
 config.migrate|v0.9.0|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.9.0|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.9.0|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 3 model(s), 2 pool(s)   	
 config.migrate|v0.9.1|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v0.9.1|validate-migrated	PASS	exit 1; 	
+config.migrate|v0.9.1|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 3 model(s), 2 pool(s)   	
 config.migrate|v1.0.0_bench_latency_config.anthropic.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.0.0_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.0.0_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.0.0_bench_latency_config.mock.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.0.0_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.0.0_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.0.0|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.0.0|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.0.0|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 9 pool(s)   	
 config.migrate|v1.0.1_bench_latency_config.anthropic.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.0.1_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.0.1_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.0.1_bench_latency_config.mock.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.0.1_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.0.1_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.0.1|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.0.1|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.0.1|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 9 pool(s)   	
 config.migrate|v1.1.0_bench_latency_config.anthropic.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.1.0_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.1.0_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.1.0_bench_latency_config.mock.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.1.0_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.1.0_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.1.0|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.1.0|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.1.0|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 9 pool(s)   	
 config.migrate|v1.1.1_bench_latency_config.anthropic.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.1.1_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.1.1_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.1.1_bench_latency_config.mock.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.1.1_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.1.1_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.1.1|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.1.1|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.1.1|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 9 pool(s)   	
 config.migrate|v1.2.0_bench_latency_config.anthropic.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.2.0_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.2.0_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.2.0_bench_latency_config.mock.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.2.0_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.2.0_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.2.0|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.2.0|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.2.0|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)  	
 config.migrate|v1.2.1_bench_latency_config.anthropic.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.2.1_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.2.1_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.2.1_bench_latency_config.mock.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.2.1_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.2.1_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.2.1|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.2.1|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.2.1|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)  	
 config.migrate|v1.3.0_bench_latency_config.anthropic.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.0_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.0_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.3.0_bench_latency_config.mock.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.0_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.0_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.3.0_demo|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.0_demo|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.0_demo|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.3.0|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.0|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.0|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)  	
 config.migrate|v1.3.1_bench_latency_config.anthropic.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.1_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.1_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.3.1_bench_latency_config.mock.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.1_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.1_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.3.1_demo|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.1_demo|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.1_demo|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.3.1|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.1|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.1|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)  	
 config.migrate|v1.3.2_bench_latency_config.anthropic.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.2_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.2_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.3.2_bench_latency_config.mock.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.2_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.2_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.3.2_demo|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.2_demo|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.2_demo|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.3.2|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.2|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.2|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)  	
 config.migrate|v1.3.3_bench_latency_config.anthropic.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.3_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.3_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.3.3_bench_latency_config.mock.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.3_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.3_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.3.3_examples_claude-code-bedrock|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.3_examples_claude-code-bedrock|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.3_examples_claude-code-bedrock|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.3.3|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.3.3|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.3.3|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)  	
 config.migrate|v1.4.0_bench_latency_config.anthropic.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.4.0_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.4.0_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.4.0_bench_latency_config.mock.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.4.0_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.4.0_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.4.0_examples_claude-code-bedrock|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.4.0_examples_claude-code-bedrock|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.4.0_examples_claude-code-bedrock|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.4.0|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.4.0|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.4.0|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)  	
 config.migrate|v1.4.1_bench_latency_config.anthropic.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.4.1_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.4.1_bench_latency_config.anthropic.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.4.1_bench_latency_config.mock.yaml|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.4.1_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.4.1_bench_latency_config.mock.yaml|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.4.1_examples_claude-code-bedrock|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.4.1_examples_claude-code-bedrock|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.4.1_examples_claude-code-bedrock|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.4.1|migrate	PASS	exit 0; # busbar 1.5.5 config, migrated by `busbar --migrate-config`	
-config.migrate|v1.4.1|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.4.1|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)  	
 config.migrate|v1.5.0_docker|migrate	PASS	exit 0; listen: 0.0.0.0:8080 pools:   default:     members:     - mo	
-config.migrate|v1.5.0_docker|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.5.0_docker|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.5.0_examples_claude-code-bedrock|migrate	PASS	exit 0; listen: 127.0.0.1:8080 pools:   claude-code:     members:   	
-config.migrate|v1.5.0_examples_claude-code-bedrock|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.5.0_examples_claude-code-bedrock|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.5.0|migrate	PASS	exit 0; listen: 0.0.0.0:8080 pools:   haiku:     members:     - mode	
-config.migrate|v1.5.0|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.5.0|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)  	
 config.migrate|v1.5.1_docker|migrate	PASS	exit 0; listen: 0.0.0.0:8080 pools:   default:     members:     - mo	
-config.migrate|v1.5.1_docker|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.5.1_docker|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.5.1_examples_claude-code-bedrock|migrate	PASS	exit 0; listen: 127.0.0.1:8080 pools:   claude-code:     members:   	
-config.migrate|v1.5.1_examples_claude-code-bedrock|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.5.1_examples_claude-code-bedrock|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.5.1|migrate	PASS	exit 0; listen: 0.0.0.0:8080 pools:   haiku:     members:     - mode	
-config.migrate|v1.5.1|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.5.1|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)  	
 config.migrate|v1.5.2_docker|migrate	PASS	exit 0; listen: 0.0.0.0:8080 pools:   default:     members:     - mo	
-config.migrate|v1.5.2_docker|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.5.2_docker|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.5.2_examples_claude-code-bedrock|migrate	PASS	exit 0; listen: 127.0.0.1:8080 pools:   claude-code:     members:   	
-config.migrate|v1.5.2_examples_claude-code-bedrock|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.5.2_examples_claude-code-bedrock|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.5.2|migrate	PASS	exit 0; listen: 0.0.0.0:8080 pools:   haiku:     members:     - mode	
-config.migrate|v1.5.2|validate-migrated	PASS	exit 1; 	
+config.migrate|v1.5.2|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)  	
 hooks|admin-list	PASS	HTTP 200; usage Δ {}	
 hooks|hooked-pool|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 hooks|hooked-pool|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
