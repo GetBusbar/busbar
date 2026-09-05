@@ -59,8 +59,9 @@ use busbar_substrate::observability::HOTPATH_LEVEL;
 use busbar_substrate::plane_host::EngineHost;
 
 use crate::engine::{
-    capture_stage_shape, fire_stage_taps, forwardable_client_header_names, EngineTables, GateRejected,
-    LazyBody, NativeRuntime, UsageSink, WeightedLane, APPLICATION_JSON, KIND_NOT_FOUND,
+    capture_stage_shape, fire_stage_taps, forwardable_client_header_names, EngineTables,
+    GateRejected, LazyBody, NativeRuntime, UsageSink, WeightedLane, APPLICATION_JSON,
+    KIND_NOT_FOUND,
 };
 use crate::native_ingress::affinity_header_for;
 
@@ -178,8 +179,10 @@ pub(crate) async fn route(input: RouteInput<'_>) -> Routed {
         .map(str::to_string);
     // Opt-in client beta/version headers, collected against this plane's forwardable set. Empty ⇒
     // byte-identical egress.
-    let client_fwd =
-        busbar_substrate::proxy::collect_client_headers(headers, &forwardable_client_header_names());
+    let client_fwd = busbar_substrate::proxy::collect_client_headers(
+        headers,
+        &forwardable_client_header_names(),
+    );
 
     let span = tracing::span!(
         HOTPATH_LEVEL,
@@ -763,8 +766,7 @@ mod tests {
         }
         async fn notify(&self, projection: &[u8], _budget: std::time::Duration) {
             *self.last.lock().unwrap() = Some(projection.to_vec());
-            self.fired
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
