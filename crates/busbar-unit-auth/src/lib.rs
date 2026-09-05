@@ -32,10 +32,12 @@
 //!
 //! ## The two things the kernel supplies
 //!
-//! The crate is dependency-free, so anything that would have pulled in an HTTP stack, a hash, or a
-//! clock arrives as a trait: [`HeaderView`] for the request's headers, [`DigestFn`] for the
-//! credential digest, [`KeyVerifier`] for the built-in signed-key arm, and [`RevocationView`] for
-//! the revocation set the kernel derives from the journal tail.
+//! The crate is dependency-free BY DEFAULT, so anything that would have pulled in an HTTP stack, a
+//! hash, or a clock arrives as a trait: [`HeaderView`] for the request's headers, [`CredentialDigest`]
+//! for the credential digest, [`KeyVerifier`] for the built-in signed-key arm, and [`RevocationView`]
+//! for the revocation set the kernel derives from the journal tail. The `sha256` feature adds a
+//! production [`cache::Sha256Digest`] for callers willing to take the `sha2`/`hex` dependency rather
+//! than supplying their own.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -53,7 +55,7 @@ pub mod principal;
 pub mod unit;
 
 pub use admin::{admin_grants, kernel_verb_scope_satisfied, Grants, Scope};
-pub use cache::{CacheGeneration, CredentialCache, DigestFn};
+pub use cache::{CacheGeneration, CredentialCache, CredentialDigest};
 pub use carrier::{extract_bearer_token, extract_client_token, CallerToken, HeaderView};
 pub use chain::{AuthChain, ChainEntry, ChainVerdict, KeyVerifier, ResolvedKey, RevocationView};
 pub use challenge::{Challenge, ChallengeBounds};

@@ -1023,8 +1023,11 @@ dependencies = [
 name = "busbar-unit-auth"
 version = "1.6.0"
 dependencies = [
+ "busbar-api",
  "busbar-caps",
  "busbar-contract",
+ "hex",
+ "sha2 0.11.0",
 ]
 
 [[package]]

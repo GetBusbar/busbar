@@ -22,5 +22,20 @@ path = "src/lib.rs"
 [dependencies]
 busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
+# Optional: only pulled in by the `sha256` feature, for the production `CredentialDigest`
+# (`cache::Sha256Digest`). Kept optional so the crate stays dependency-free by default — see the
+# WHY note above and `cache::CredentialDigest`'s doc.
+sha2 = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+
+[features]
+# A production `CredentialDigest` (1.5.5's hex SHA-256) for callers who would rather take the
+# `sha2`/`hex` dependency than supply their own. Off by default.
+sha256 = ["dep:sha2", "dep:hex"]
+
+[dev-dependencies]
+# Test-only, and only exercised under `--features sha256`: the reference `sha256_hex` the
+# `Sha256Digest` jitter-parity test compares against. Never a default-build dependency.
+busbar-api = { path = "../api" }
 
 # Temporary standalone root while the workspace members land in parallel.
