@@ -1,0 +1,38 @@
+# busbar-unit-verbs — the kernel verb table, executed.
+#
+# WHAT THIS CRATE IS. The admin plane (the HTTP codec) decodes a request into a `KernelVerb` and
+# hands it here; this crate is the only place a kernel verb's SEMANTICS live. The admin plane never
+# touches a store, a governance record or a secret directly — it only encodes the answer this crate
+# returns.
+#
+# WHY NO WORKSPACE DEPENDENCY BEYOND `busbar-caps`. This crate holds `AdminToken` (the proof that a
+# verb call is really happening) and is the one place `SecretOnce` (the once-shown-secret
+# placeholder) is built, so it must depend on the capability crate that defines both. It depends on
+# nothing else in the workspace: the store and the governance record it acts on are named here only
+# as traits (`store::Store`, `governance::Governance`) that the INTEGRATOR binds to the concrete
+# types other crates own. That is what "moved in behind store/governance traits" means — the seam is
+# a Rust trait, not a re-exported concrete type, so this crate cannot accidentally reach into
+# `busbar-core` and the workspace graph stays acyclic.
+#
+# `serde_json` is a DEV-dependency only: the table-vs-openapi conformance test parses the committed
+# 1.5.5 `openapi.json` fixture to prove the closed verb table matches it byte-for-byte. Nothing in
+# the shipped crate reads or writes JSON.
+[package]
+name = "busbar-unit-verbs"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: one pinned number, set to what CI verifies (same as busbar-caps).
+rust-version = "1.97"
+description = "The closed kernel-verb table and its execution: the 66 mechanically-derived 1.5.5 admin operations plus the 17 1.6.0 verbs, dual-control posture, the idempotency cache and the mutation rate limiter, behind store/governance traits."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_unit_verbs"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-caps = { path = "../busbar-caps" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
