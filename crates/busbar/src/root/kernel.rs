@@ -49,12 +49,8 @@
 //! could never have been answered. A refusal at the first step costs nothing and says exactly what
 //! happened, which is what makes the coexistence window safe to be in.
 
-// The authenticate step's three seams, declared from here for the length of one window.
-//
 // The authenticate step's three seams live beside the other root modules; reached here by the
 // name every call site uses.
-pub use super::auth_bindings;` and every call
-// site is unchanged, because the name they reach it by is the same one either way.
 pub use super::auth_bindings;
 
 use std::sync::{Arc, Mutex};
