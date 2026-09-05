@@ -60,7 +60,7 @@ use busbar_plane_mcp::meta::{CLASS_BYTES, CLASS_TOOL_CALLS};
 use busbar_plane_mcp::{claims, ops, records, McpPlane, Server};
 use busbar_plugin_loader::store_adapter::StoreAdapter;
 use busbar_unit_admission::{
-    Admission, AdmissionUnit, BucketChain, CellStore, ClassEstimate, Door, Estimate, Pricer,
+    Admission, AdmissionUnit, BucketChain, ClassEstimate, Door, Estimate, InMemoryCells, Pricer,
 };
 use busbar_unit_audit::legacy::{AuditInput, OUTCOME_APPLIED, OUTCOME_REJECTED};
 use busbar_unit_auth::{Auth, AuthRequest, CredentialCache, KeyVerifier, RevocationView};
@@ -606,24 +606,44 @@ pub struct ClassPrices {
     pub bytes: u64,
 }
 
-/// Ask the door.
+/// Everything one unit brings to the door, as one borrowed value.
 ///
-/// The epoch is the unit's own pinned arrival time and never a fresh clock read: a door that read the
-/// clock again would put a unit in a different window from the one it arrived in, and a window
-/// boundary would then be a place where a request could be charged twice or not at all.
-pub fn admit<S: CellStore>(
-    door: &Door<S>,
-    pricer: &Pricer,
-    pool: &str,
-    arrival_epoch: u64,
-    estimate: &Estimate,
-    principal: &PrincipalId,
-    chain: &BucketChain,
+/// The epoch is a field rather than a clock the door could read, and that is the whole reason this
+/// is a struct: a door that read the clock again would put a unit in a different window from the one
+/// it arrived in, and a window boundary would then be a place where a request could be charged twice
+/// or not at all. Pinning it where the unit is assembled makes reading it twice impossible rather
+/// than merely discouraged.
+pub struct Admitting<'a> {
+    /// The door, holding the ledger cells hydrated once at boot.
+    pub door: &'a Door<InMemoryCells>,
+    /// What the deployment's card prices this unit at.
+    pub pricer: &'a Pricer,
+    /// The registration this unit is on, keyed the way the breaker keys it.
+    pub pool: &'a str,
+    /// The unit's own pinned arrival time, in seconds.
+    pub arrival_epoch: u64,
+    /// What it is expected to consume.
+    pub estimate: &'a Estimate,
+    /// Who is calling.
+    pub principal: &'a PrincipalId,
+    /// The buckets it draws against.
+    pub chain: &'a BucketChain,
+}
+
+/// Ask the door.
+pub fn admit(
+    unit: &Admitting<'_>,
     admit_token: &AdmitToken<Admit>,
     token: &UnitToken<Admit>,
 ) -> Decision<Admit> {
-    let mut unit = AdmissionUnit::new(door, pricer, pool, arrival_epoch);
-    unit.admit(estimate, principal, chain, admit_token, token)
+    let mut door = AdmissionUnit::new(unit.door, unit.pricer, unit.pool, unit.arrival_epoch);
+    door.admit(
+        unit.estimate,
+        unit.principal,
+        unit.chain,
+        admit_token,
+        token,
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
