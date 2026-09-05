@@ -1,0 +1,31 @@
+# busbar-unit-breaker — the breaker unit: trip / cooldown / fast-fail per (pool, destination).
+#
+# WHAT THIS CRATE IS. The design (docs/design/ARCHITECTURE.md §3.1, §3.4) names a `Breaker` unit
+# trait (`observe`/`state`) separate from the egress unit that owns the pool. This crate is that
+# unit: the per-cell circuit-breaker state machine (trip, escalating cooldown with jitter, the
+# Retry-After floor, half-open recovery probes) plus the per-destination lifetime request budget,
+# moved byte-identical from the 1.5.5 store (`busbar-core::store::in_memory::breaker` +
+# `busbar-substrate::breaker`) rather than rewritten.
+#
+# NO WORKSPACE DEPENDENCIES BEYOND busbar-caps. Every other crate in the workspace belongs to
+# another agent during this build; `busbar-caps` is the one committed, stable capability-token
+# crate this unit is allowed to name. Concretely this means: no `axum`/`httpdate` for Retry-After
+# parsing (the substrate's `parse_retry_after` took an `axum::http::HeaderMap`; this crate takes a
+# plain `&str` and parses the HTTP-date form itself — see `classify::parse_retry_after`), and no
+# `tracing` for the "unrecognized error_map value" diagnostic (routed through an injectable sink
+# trait instead — see the `// contract:` note on `classify::Diagnostics`).
+[package]
+name = "busbar-unit-breaker"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "The breaker unit: per-(pool, destination) circuit breaker (trip/cooldown/half-open) and lifetime request budget."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_unit_breaker"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-caps = { path = "../busbar-caps" }
