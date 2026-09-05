@@ -41,6 +41,11 @@ pub trait TransportMeta {
     const COMPOSES_OVER: &'static [&'static str];
     /// The signalling-to-session binding this transport declares, where it has one.
     const HANDOFF: Option<Handoff>;
+    /// How this transport delimits what arrives.
+    ///
+    /// The kernel reads it to decide what a decode failure means: a stream that has lost sync
+    /// closes, a datagram that could not be read is discarded and the session stands.
+    const FRAMING: crate::wire::Framing;
     /// Whether this transport carries sessions.
     const SESSION: bool;
     /// Whether a session on this transport caches its principal.

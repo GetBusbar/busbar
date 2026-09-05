@@ -165,6 +165,7 @@ impl TransportMeta for StdioTransport {
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &[];
     const HANDOFF: Option<busbar_contract::wire::Handoff> = None;
+    const FRAMING: busbar_contract::Framing = busbar_contract::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = true;
     const UNIT0_TRIGGER: Option<Unit0Trigger> = Some(Unit0Trigger::FirstMessage);

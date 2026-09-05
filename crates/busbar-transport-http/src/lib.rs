@@ -264,6 +264,7 @@ impl TransportMeta for HttpTransport {
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &["tcp", "tls"];
     const HANDOFF: Option<busbar_contract::Handoff> = None;
+    const FRAMING: busbar_contract::Framing = busbar_contract::Framing::Stream;
     const SESSION: bool = false;
     const SESSION_BOUND: bool = false;
     const UNIT0_TRIGGER: Option<busbar_contract::Unit0Trigger> = None;

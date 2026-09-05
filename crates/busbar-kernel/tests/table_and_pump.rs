@@ -541,3 +541,58 @@ fn a_canary_over_the_table_is_still_balanced_when_nothing_ran() {
     let canary = Canary::new();
     assert_eq!(canary.balanced(), Ok(()));
 }
+
+/// A forged datagram is one datagram: it is discarded, it posts nothing, and the session stands.
+///
+/// The design carves this out explicitly — a decode failure hard-closes on a STREAM transport,
+/// where losing sync makes every later byte suspect, and never on a datagram one, where the next
+/// message is unaffected. The hard-close decision could not see the difference, so the stream arm
+/// fired for datagrams too: anyone able to send one forged packet could drop somebody's session.
+#[test]
+fn a_forged_datagram_is_discarded_and_the_session_stands() {
+    use busbar_contract::Framing;
+    use busbar_kernel::inflight::{hard_closes, HardClose};
+
+    // The same ending, read on each framing.
+    assert_eq!(
+        hard_closes(
+            OriginKind::Client,
+            StepName::Decode,
+            ReasonCode::DecodeFailed,
+            Framing::Stream
+        ),
+        Some(HardClose::DecodeFailedOnStream),
+        "a stream that has lost sync cannot be trusted to resynchronise"
+    );
+    assert_eq!(
+        hard_closes(
+            OriginKind::Client,
+            StepName::Decode,
+            ReasonCode::DecodeFailed,
+            Framing::Datagram
+        ),
+        None,
+        "one unreadable datagram says nothing about the next one"
+    );
+
+    // And the frame itself is dropped without touching the table or the session.
+    let kernel = Kernel::new();
+    let table = InFlight::new(4, 0);
+    let sessions = Sessions::new(4);
+    let session = sessions
+        .open(kernel.session_id(7), Binding::Unbound, 0)
+        .expect("under the budget");
+    let scheduler = Scheduler::default();
+    assert_eq!(
+        scheduler.dispatch(
+            Some(&session),
+            &table,
+            StreamId(1),
+            Direction::Inbound,
+            Shape::Discard
+        ),
+        Dispatch::Drop
+    );
+    assert!(!session.is_closed(), "the session is intact");
+    assert_eq!(table.len(), 0, "and nothing entered the table to be posted");
+}

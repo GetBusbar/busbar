@@ -30,6 +30,8 @@ use busbar_caps::{
     StepName, UnitKey,
 };
 
+use busbar_contract::Framing;
+
 use crate::pump::{Direction, StreamId};
 use crate::teller::Kernel;
 use crate::Millis;
@@ -753,7 +755,18 @@ pub enum HardClose {
 /// The provider case is the one with money in it: content an upstream will invoice arrives on a
 /// session whose budget is dry, so the floor line is posted AND the session is closed, and a dry
 /// bucket therefore sees at most one such push.
-pub fn hard_closes(origin: OriginKind, step: StepName, reason: ReasonCode) -> Option<HardClose> {
+///
+/// The framing is the transport's own declaration and it is load-bearing for exactly one arm. A
+/// stream that could not decode a frame has lost sync and every later byte on it is suspect, so
+/// the session closes; a datagram that could not be decoded is one datagram, and the next is
+/// unaffected — it is discarded and the session stands. Without the framing this function read a
+/// forged packet as a reason to drop a session, which is a denial of service anyone can post.
+pub fn hard_closes(
+    origin: OriginKind,
+    step: StepName,
+    reason: ReasonCode,
+    framing: Framing,
+) -> Option<HardClose> {
     let money_reason = matches!(
         reason,
         ReasonCode::OverBudget
@@ -773,7 +786,9 @@ pub fn hard_closes(origin: OriginKind, step: StepName, reason: ReasonCode) -> Op
         (_, _, ReasonCode::PlanePanic) => Some(HardClose::PlanePanic),
         (_, _, ReasonCode::SessionUnbound) => Some(HardClose::SessionUnbound),
         (_, _, ReasonCode::Revoked) => Some(HardClose::Revoked),
-        (_, StepName::Decode, ReasonCode::DecodeFailed) => Some(HardClose::DecodeFailedOnStream),
+        (_, StepName::Decode, ReasonCode::DecodeFailed) if framing == Framing::Stream => {
+            Some(HardClose::DecodeFailedOnStream)
+        }
         _ => None,
     }
 }

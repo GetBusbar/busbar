@@ -59,6 +59,7 @@ pub use unit::{
 };
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
-    Encode, EnvelopeField, Frame, FrameCursor, FrameMeta, Handoff, HandshakeTrigger, Listener,
-    ListenerHandle, StatusAt, StatusClass, TransportEnvelope, TransportError, Unit0Trigger,
+    Encode, EnvelopeField, Frame, FrameCursor, FrameMeta, Framing, Handoff, HandshakeTrigger,
+    Listener, ListenerHandle, StatusAt, StatusClass, TransportEnvelope, TransportError,
+    Unit0Trigger,
 };

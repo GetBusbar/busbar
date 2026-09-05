@@ -48,6 +48,21 @@ pub enum StatusAt {
     Terminal,
 }
 
+/// How a transport delimits what arrives.
+///
+/// Load-bearing, not descriptive. A stream that cannot decode a frame is out of step and every
+/// later byte on it is suspect, so the session closes; a datagram that cannot be decoded is one
+/// datagram, and the next one is unaffected — so it is discarded and the session stands. Reading a
+/// decode failure without knowing which of the two it happened on turns a forged packet into a
+/// dropped session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum Framing {
+    /// Bytes in order, with no delimiters of their own: losing sync loses the connection.
+    Stream,
+    /// Self-delimiting messages, each independent of the last.
+    Datagram,
+}
+
 /// A frame's transport-level meta.
 ///
 /// Byte counts are always present. The transport-unit count is present only where the transport
