@@ -73,7 +73,7 @@ pub const VERB_SERVER: AdminVerbId = AdminVerbId::new("server");
 /// plane's record schemas, and the plane contributes the shape rather than the action. Liveness is
 /// not here either, for a different reason — a plane holds a registration table and no runtime
 /// state, so a health answer would be a guess wearing a fact's clothes.
-const ADMIN_VERBS: &[AdminVerbId] = &[VERB_TOOLS, VERB_SERVER];
+const INTROSPECTION_VERBS: &[AdminVerbId] = &[VERB_TOOLS, VERB_SERVER];
 
 /// The schema of this plane's own configuration block.
 ///
@@ -126,7 +126,7 @@ impl PlaneMeta for McpPlane {
     const SESSION_FACTS: &'static [&'static str] = facts::SESSION_FACTS;
     const CONTENT_FACTS: &'static [&'static str] = facts::CONTENT_FACTS;
     const RECORD_SCHEMAS: &'static [RecordSchemaId] = records::RECORD_SCHEMAS;
-    const ADMIN_VERBS: &'static [AdminVerbId] = ADMIN_VERBS;
+    const INTROSPECTION_VERBS: &'static [AdminVerbId] = INTROSPECTION_VERBS;
     // The specification names a cancellation notice, and this protocol's own dispatch does NOT act
     // on one today: it is not in the codec's method table, and a notice obliges no answer. So no
     // interrupt fact is declared, because declaring one would make the kernel supersede open units
@@ -141,7 +141,7 @@ impl PlaneMeta for McpPlane {
 
 #[cfg(test)]
 mod tests {
-    use super::{ADMIN_VERBS, CONFIG_SCHEMA, METER_CLASSES};
+    use super::{INTROSPECTION_VERBS, CONFIG_SCHEMA, METER_CLASSES};
     use crate::McpPlane;
     use busbar_contract::ids::MeterClassId;
     use busbar_contract::plane::PlaneMeta;
@@ -192,7 +192,7 @@ mod tests {
     fn the_verbs_are_read_only() {
         for mutating in ["connect", "approve", "install", "promote"] {
             assert!(
-                !ADMIN_VERBS.iter().any(|v| v.as_str() == mutating),
+                !INTROSPECTION_VERBS.iter().any(|v| v.as_str() == mutating),
                 "the plane declares the mutating verb {mutating}"
             );
         }

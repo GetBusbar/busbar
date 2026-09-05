@@ -42,19 +42,20 @@ pub(crate) const FACT_VERB: &str = "verb";
 /// crate-root doc comment on the `SecretOnce` boundary) so there is nothing further to withhold.
 const CONTENT_FACTS: &[&str] = &[FACT_VERB];
 
-/// This plane's own read-only introspection verbs (the `PlaneMeta::ADMIN_VERBS` concept): none.
+/// This plane's own read-only introspection verbs: none.
 ///
-/// **Naming collision worth flagging**: `AdminVerbId`/`ADMIN_VERBS` on `PlaneMeta` names a small,
-/// per-plane set of INTROSPECTION verbs every plane may optionally answer through `plane_facts`
-/// (e.g. the `llm` plane's `dialects`/`ladder`). That is a different, smaller concept from this
-/// crate's own 66+17-row `KernelVerb` table, which is the admin SURFACE itself, not a plane's
-/// self-description of it. Declaring this plane's OWN introspection verb as, say, `verb_table` (a
-/// verb that dumps the 66+17 rows) was considered and rejected: the closed table is already fully
-/// public in this crate's `generated` module and in the pinned openapi fixture, so a further
-/// meta-verb would be a second copy of the same 83 rows rather than new information. Empty is the
-/// honest answer for a plane that IS the admin surface and therefore needs no admin verb ABOUT
-/// itself.
-const ADMIN_VERBS: &[AdminVerbId] = &[];
+/// The constant used to be called `ADMIN_VERBS`, which collided in name with this crate's own
+/// 66+17-row `KernelVerb` table -- the admin SURFACE itself, not a plane's self-description of it.
+/// Two different things wearing one name had already confused an implementer, so the small
+/// per-plane set every plane may answer through `plane_facts` (the `llm` plane's `dialects` and
+/// `ladder`, this protocol's per-name projections) is called what it is.
+///
+/// Declaring this plane's OWN introspection verb as, say, `verb_table` (a verb that dumps the 66+17
+/// rows) was considered and rejected: the closed table is already fully public in this crate's
+/// `generated` module and in the pinned openapi fixture, so a further meta-verb would be a second
+/// copy of the same 83 rows rather than new information. Empty is the honest answer for a plane
+/// that IS the admin surface and therefore needs no verb ABOUT itself.
+const INTROSPECTION_VERBS: &[AdminVerbId] = &[];
 
 /// This plane's configuration schema: an empty object.
 ///
@@ -75,7 +76,7 @@ impl PlaneMeta for AdminPlane {
     // Records for this plane (mutating plane-record writes are the `plane_record_write` KERNEL VERB,
     // executed by `busbar-unit-verbs` against ANOTHER plane's declared schema — never this plane's).
     const RECORD_SCHEMAS: &'static [RecordSchemaId] = &[];
-    const ADMIN_VERBS: &'static [AdminVerbId] = ADMIN_VERBS;
+    const INTROSPECTION_VERBS: &'static [AdminVerbId] = INTROSPECTION_VERBS;
     // No admin frame ever supersedes an open one (there is no open unit to supersede: every admin
     // unit is `OneShot`), and nothing on this plane paces an outbound write path (this plane never
     // writes to an upstream at all — see `route`/`encode_egress`).

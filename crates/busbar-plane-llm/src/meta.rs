@@ -190,7 +190,7 @@ pub const VERB_DIALECTS: AdminVerbId = AdminVerbId::new("dialects");
 pub const VERB_LADDER: AdminVerbId = AdminVerbId::new("ladder");
 
 /// The verbs this plane answers.
-const ADMIN_VERBS: &[AdminVerbId] = &[VERB_DIALECTS, VERB_LADDER];
+const INTROSPECTION_VERBS: &[AdminVerbId] = &[VERB_DIALECTS, VERB_LADDER];
 
 /// The schema of this plane's own configuration block.
 ///
@@ -216,7 +216,7 @@ impl PlaneMeta for LlmPlane {
     // This plane keeps no kernel-held durable records: everything it knows about a unit is on the
     // unit, and the answer to "what happened" is the journal's, not a second store of this plane's.
     const RECORD_SCHEMAS: &'static [RecordSchemaId] = &[];
-    const ADMIN_VERBS: &'static [AdminVerbId] = ADMIN_VERBS;
+    const INTROSPECTION_VERBS: &'static [AdminVerbId] = INTROSPECTION_VERBS;
     // No dialect here has a frame that supersedes the open one, and none paces the write path: a
     // request-and-answer dialect has neither, and declaring one would make the kernel look for a
     // fact that never arrives.

@@ -35,7 +35,7 @@ pub trait PlaneMeta {
     /// The record schemas this plane keeps kernel-held durable records under.
     const RECORD_SCHEMAS: &'static [RecordSchemaId];
     /// The read-only introspection verbs this plane answers.
-    const ADMIN_VERBS: &'static [AdminVerbId];
+    const INTROSPECTION_VERBS: &'static [AdminVerbId];
     /// The fact key that means "this frame supersedes the open one", where the dialect has one.
     const INTERRUPT_FACT: Option<&'static str>;
     /// The fact key that paces the kernel's outbound write path, where the dialect has one.

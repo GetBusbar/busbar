@@ -548,7 +548,7 @@ fn the_per_name_projection_answers_for_the_named_agent() {
     assert!(plane.plane_facts(verb, None, &ctx).is_err());
 
     // And the per-name verb is declared, so the loop can reach it.
-    assert!(<A2aPlane as PlaneMeta>::ADMIN_VERBS.contains(&verb));
+    assert!(<A2aPlane as PlaneMeta>::INTROSPECTION_VERBS.contains(&verb));
 }
 
 /// The session halves open, and each one starts fresh.

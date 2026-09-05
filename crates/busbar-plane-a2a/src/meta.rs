@@ -62,7 +62,7 @@ pub const VERB_AGENT: AdminVerbId = AdminVerbId::new("agent");
 /// the one that records an operator's approval — CHANGE something, so they are not verbs of this
 /// plane either: a mutating plane admin operation is the kernel's own record-write verb, reached
 /// with the plane's record schemas, and the plane contributes the shape rather than the action.
-const ADMIN_VERBS: &[AdminVerbId] = &[VERB_AGENTS, VERB_AGENT];
+const INTROSPECTION_VERBS: &[AdminVerbId] = &[VERB_AGENTS, VERB_AGENT];
 
 /// The schema of this plane's own configuration block.
 ///
@@ -104,7 +104,7 @@ impl PlaneMeta for A2aPlane {
     const SESSION_FACTS: &'static [&'static str] = facts::SESSION_FACTS;
     const CONTENT_FACTS: &'static [&'static str] = facts::CONTENT_FACTS;
     const RECORD_SCHEMAS: &'static [RecordSchemaId] = records::RECORD_SCHEMAS;
-    const ADMIN_VERBS: &'static [AdminVerbId] = ADMIN_VERBS;
+    const INTROSPECTION_VERBS: &'static [AdminVerbId] = INTROSPECTION_VERBS;
     // This protocol has no frame that supersedes an open one. Asking for a task to stop is its own
     // request, with its own identifier and its own answer, so it is a UNIT rather than an interrupt;
     // declaring an interrupt fact here would make the kernel look for a fact that never arrives.
@@ -117,7 +117,7 @@ impl PlaneMeta for A2aPlane {
 
 #[cfg(test)]
 mod tests {
-    use super::{ADMIN_VERBS, CONFIG_SCHEMA, METER_CLASSES};
+    use super::{INTROSPECTION_VERBS, CONFIG_SCHEMA, METER_CLASSES};
     use crate::A2aPlane;
     use busbar_contract::ids::MeterClassId;
     use busbar_contract::plane::PlaneMeta;
@@ -162,7 +162,7 @@ mod tests {
     fn the_verbs_are_read_only() {
         for mutating in ["connect", "approve", "suspend", "resume"] {
             assert!(
-                !ADMIN_VERBS.iter().any(|v| v.as_str() == mutating),
+                !INTROSPECTION_VERBS.iter().any(|v| v.as_str() == mutating),
                 "the plane declares the mutating verb {mutating}"
             );
         }

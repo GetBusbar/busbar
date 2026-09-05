@@ -144,7 +144,7 @@ impl PlaneMeta for FixturePlane {
     const SESSION_FACTS: &'static [&'static str] = &[];
     const CONTENT_FACTS: &'static [&'static str] = &[];
     const RECORD_SCHEMAS: &'static [RecordSchemaId] = &[];
-    const ADMIN_VERBS: &'static [AdminVerbId] = &[];
+    const INTROSPECTION_VERBS: &'static [AdminVerbId] = &[];
     const INTERRUPT_FACT: Option<&'static str> = None;
     const EGRESS_PACING_FACT: Option<&'static str> = None;
     const CONFIG_SCHEMA: &'static str = "{}";

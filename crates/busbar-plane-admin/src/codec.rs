@@ -278,7 +278,7 @@ impl Plane for AdminPlane {
         _subject: Option<&'u str>,
         _ctx: &Ctx<'u>,
     ) -> Result<PlaneFacts<'u>, Decode> {
-        // This plane declares no introspection verbs of its own (`meta::ADMIN_VERBS` is empty; see
+        // This plane declares no introspection verbs of its own (`meta::INTROSPECTION_VERBS` is empty; see
         // its doc comment for the naming collision with the 66+17-row `KernelVerb` table), so every
         // call here names a verb this plane does not declare.
         Err(Decode::UnsupportedOperation)
