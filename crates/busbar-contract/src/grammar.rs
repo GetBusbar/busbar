@@ -490,11 +490,16 @@ impl Selector {
 }
 
 /// Whether a path is exactly one segment under a prefix.
-fn one_level_under(prefix: &str, path: &str) -> bool {
-    let Some(rest) = path.strip_prefix(prefix) else {
+///
+/// The boundary is required, not tolerated: `/apikeys` is a sibling of `/api`, not a level under it,
+/// and a prefix is not one level under itself. This is the one spelling of the rule — the kernel's
+/// registry and a plane deciding which of its claims a request landed on both read it from here, so
+/// what a boot proves disjoint and what a request matches cannot answer differently.
+#[must_use]
+pub fn one_level_under(prefix: &str, path: &str) -> bool {
+    let Some(rest) = path.strip_prefix(prefix).and_then(|r| r.strip_prefix('/')) else {
         return false;
     };
-    let rest = rest.strip_prefix('/').unwrap_or(rest);
     !rest.is_empty() && !rest.contains('/')
 }
 

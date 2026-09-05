@@ -261,7 +261,13 @@ fn a_hard_down_trip_suppresses_a_later_admit_with_the_cooldown_the_port_expects(
     // Touch the "pool" cell before the trip — `hard_down_all` fans out only to pools already
     // known for this destination (the default `""` cell is always included).
     assert!(breaker.ready("pool", DestinationId::new(4), 0, &route_token()));
-    let tripped = breaker.observe("pool", DestinationId::new(4), Outcome::HardDown, 0, &route_token());
+    let tripped = breaker.observe(
+        "pool",
+        DestinationId::new(4),
+        Outcome::HardDown,
+        0,
+        &route_token(),
+    );
     assert!(tripped);
 
     assert!(!breaker.ready("pool", DestinationId::new(4), 10, &route_token()));
@@ -291,7 +297,13 @@ fn probe_release_crosses_the_seam() {
     // Trip and let the cooldown expire so the next admit wins a half-open recovery probe. Touch
     // "pool" first, same as above: `hard_down_all` only fans out to pools already known.
     breaker.ready("pool", DestinationId::new(5), 0, &route_token());
-    breaker.observe("pool", DestinationId::new(5), Outcome::HardDown, 0, &route_token());
+    breaker.observe(
+        "pool",
+        DestinationId::new(5),
+        Outcome::HardDown,
+        0,
+        &route_token(),
+    );
     let admit = breaker
         .try_admit("pool", DestinationId::new(5), 100_000)
         .expect("cooldown has long since expired");

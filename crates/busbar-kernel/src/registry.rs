@@ -25,6 +25,8 @@
 
 use std::sync::Arc;
 
+use busbar_contract::grammar::one_level_under;
+
 use crate::grammar::{Segment, Selector, SelectorFamily};
 
 /// Which generation of the registry a lookup is against.
@@ -516,17 +518,6 @@ fn transport_overlaps(left: &Selector, right: &Selector) -> bool {
         | (Selector::Alpn(a), Selector::Alpn(b)) => a == b,
         (Selector::Port(a), Selector::Port(b)) => a == b,
         _ => true,
-    }
-}
-
-/// Is `path` exactly one segment below `prefix`?
-fn one_level_under(prefix: &str, path: &str) -> bool {
-    match path.strip_prefix(prefix) {
-        Some(rest) => {
-            let rest = rest.strip_prefix('/').unwrap_or(rest);
-            !rest.is_empty() && !rest.contains('/')
-        }
-        None => false,
     }
 }
 

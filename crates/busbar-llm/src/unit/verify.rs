@@ -619,11 +619,7 @@ mod tests {
             assert_eq!(outcome.kind(), refusal.kind());
             assert_eq!(outcome.message(), refusal.message());
             assert_eq!(
-                envelope(
-                    outcome.status().as_u16(),
-                    outcome.kind(),
-                    outcome.message()
-                ),
+                envelope(outcome.status().as_u16(), outcome.kind(), outcome.message()),
                 envelope(refusal.status(), refusal.kind(), &refusal.message())
             );
         }

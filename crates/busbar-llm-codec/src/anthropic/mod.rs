@@ -28,11 +28,11 @@ mod reader;
 mod writer;
 
 use crate::ir::{IrBlockMeta, IrDelta, IrStreamEvent, IrUsage};
-use http::{header::HeaderValue, HeaderName, StatusCode};
 #[cfg(test)]
 use busbar_substrate_values::breaker::CanonicalSignal;
 use busbar_substrate_values::breaker::StatusClass;
 use busbar_substrate_values::proto::*;
+use http::{header::HeaderValue, HeaderName, StatusCode};
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
@@ -100,7 +100,10 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// `anthropic-version`/`anthropic-beta` headers (rung 2), the `x-api-key` credential header that is
 /// Anthropic's alone among the six (rung 4, catching curl users who omit the version header), then
 /// the `/v1/messages` path (rung 11). Lower strength binds tighter — the shared ladder positions.
-fn claims(h: &http::HeaderMap, path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+fn claims(
+    h: &http::HeaderMap,
+    path: &str,
+) -> Option<busbar_substrate_values::proto::ClaimStrength> {
     use busbar_substrate_values::proto::ClaimStrength;
     if h.contains_key("anthropic-version") || h.contains_key("anthropic-beta") {
         return Some(ClaimStrength(2));
@@ -880,7 +883,9 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 .filter(|s| !s.is_empty())
                 .ok_or(IrError {
                     class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+                    provider_signal: Some(
+                        busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
+                    ),
                     retry_after: None,
                 })?
                 .to_string();
@@ -974,7 +979,9 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
             } else {
                 Err(IrError {
                     class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+                    provider_signal: Some(
+                        busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
+                    ),
                     retry_after: None,
                 })
             }

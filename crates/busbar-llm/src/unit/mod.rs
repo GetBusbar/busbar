@@ -22,27 +22,27 @@
 
 #![cfg(feature = "teller-waist")]
 
+/// Step 4 — the charge: the admission door, then the hold and the meter half it opens.
+pub mod admit;
+/// Step 3 — whether the caller may do this at all: the migrated hook seats' veto.
+pub mod approve;
+/// Step 0 — what arrived: the body read and the path-carried model splice.
+pub mod arrival;
+/// Step 7 — the two terminal doors, and nothing else.
+pub mod audit;
+/// Step 1 — who is calling: the read of the auth middleware's already-resolved outcome.
+pub mod authenticate;
 /// The flip's rehearsal — one request driven through every step below, in order, against the
 /// legacy plane on the same fixtures. Tests only.
 pub mod chain;
-/// Step 0 — what arrived: the body read and the path-carried model splice.
-pub mod arrival;
 /// Step 1 — what it means: the model ladder and the handler lookup, in both live orders.
 pub mod decode;
-/// Step 1 — who is calling: the read of the auth middleware's already-resolved outcome.
-pub mod authenticate;
-/// Step 2 — where the unit may go: the three pre-admission guards, in their one order.
-pub mod verify;
-/// Step 3 — whether the caller may do this at all: the migrated hook seats' veto.
-pub mod approve;
-/// Step 4 — the charge: the admission door, then the hold and the meter half it opens.
-pub mod admit;
-/// Step 5 — the one attempt: candidates, the pick, the walk, the completion tap.
-pub mod route;
 /// Step 6 — the figures: the one metering seam, the fee and the refund decided by the outcome.
 pub mod meter;
-/// Step 7 — the two terminal doors, and nothing else.
-pub mod audit;
+/// Step 5 — the one attempt: candidates, the pick, the walk, the completion tap.
+pub mod route;
+/// Step 2 — where the unit may go: the three pre-admission guards, in their one order.
+pub mod verify;
 /// The carry between the steps, and the runtime seam the walk is run across. Not a step, and not a
 /// driver: the composition root drives, and this is what it drives the two engine-typed steps
 /// through.

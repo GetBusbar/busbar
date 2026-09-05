@@ -1464,10 +1464,12 @@ fn test_translate_bedrock_egress_exception_frame_surfaces_error_to_ingress() {
     // carries `:message-type: exception` + `:exception-type: ThrottlingException` and no
     // `:event-type`. `drain_frames` must normalize it to `throttlingException` so the reader's
     // exception arm fires and emits an IR Error → the Anthropic ingress writes an error event.
-    bytes.extend(busbar_substrate_values::eventstream::encode_exception_frame(
-        "ThrottlingException",
-        "rate exceeded mid-stream",
-    ));
+    bytes.extend(
+        busbar_substrate_values::eventstream::encode_exception_frame(
+            "ThrottlingException",
+            "rate exceeded mid-stream",
+        ),
+    );
 
     let out = String::from_utf8(st.feed(&bytes)).unwrap();
     // The mid-stream exception must reach the client as an Anthropic-native error event, NOT be
@@ -1788,8 +1790,8 @@ fn openai_egress_without_include_usage_emits_no_usage_chunk() {
         if data.trim() == "[DONE]" {
             continue;
         }
-        let v: serde_json::Value =
-            busbar_substrate_values::json::parse(data.as_bytes()).expect("each SSE chunk is valid JSON");
+        let v: serde_json::Value = busbar_substrate_values::json::parse(data.as_bytes())
+            .expect("each SSE chunk is valid JSON");
         assert!(
             v.get("usage").is_none(),
             "an opted-out client must receive NO usage object; got:\n{data}"
@@ -1857,7 +1859,8 @@ fn openai_egress_multi_tool_stream_uses_0_based_tool_call_indices() {
     let mut opens: Vec<(String, i64)> = Vec::new();
     let mut all_indices: Vec<i64> = Vec::new();
     for data in out.lines().filter_map(|l| l.strip_prefix("data: ")) {
-        let Ok(v) = busbar_substrate_values::json::parse::<serde_json::Value>(data.as_bytes()) else {
+        let Ok(v) = busbar_substrate_values::json::parse::<serde_json::Value>(data.as_bytes())
+        else {
             continue;
         };
         let Some(calls) = v
@@ -4342,7 +4345,8 @@ fn test_gemini_protocol_resolves() {
         writer.upstream_path_for("gemini-pro"),
         "/v1beta/models/gemini-pro:generateContent"
     );
-    let headers = busbar_substrate_values::egress_auth::api_key_headers("x-goog-api-key", "test-key");
+    let headers =
+        busbar_substrate_values::egress_auth::api_key_headers("x-goog-api-key", "test-key");
     assert_eq!(headers.len(), 1);
     assert_eq!(headers[0].0.as_str(), "x-goog-api-key");
 
@@ -4456,8 +4460,8 @@ fn same_proto_openai_opted_out_strips_trailing_usage_chunk() {
         if data.trim() == "[DONE]" {
             continue;
         }
-        let v: serde_json::Value =
-            busbar_substrate_values::json::parse(data.as_bytes()).expect("each SSE chunk is valid JSON");
+        let v: serde_json::Value = busbar_substrate_values::json::parse(data.as_bytes())
+            .expect("each SSE chunk is valid JSON");
         let usage_obj = v.get("usage").is_some_and(|u| u.is_object());
         let choices_empty = v
             .get("choices")
@@ -4556,8 +4560,8 @@ fn same_proto_openai_opted_out_strips_usage_from_every_chunk() {
         if data.trim() == "[DONE]" {
             continue;
         }
-        let v: serde_json::Value =
-            busbar_substrate_values::json::parse(data.as_bytes()).expect("each SSE chunk is valid JSON");
+        let v: serde_json::Value = busbar_substrate_values::json::parse(data.as_bytes())
+            .expect("each SSE chunk is valid JSON");
         assert!(
             v.get("usage").is_none(),
             "opted-out client must see NO `usage` key on any chunk; got:\n{data}"
