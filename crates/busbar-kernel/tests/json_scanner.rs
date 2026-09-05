@@ -201,6 +201,13 @@ fn every_location_form_says_how_it_is_masked() {
         over: SignedOver::Both
     }
     .needs_whole_body());
+    // A path segment is bytes in the read cursor exactly as a header is, so it hides the same way:
+    // same-length fill, which leaves every offset already computed over the target where it was.
+    assert_eq!(
+        ArrivalLocation::PathSegment(0).mask(),
+        MaskKind::SameLengthFill
+    );
+    assert!(!ArrivalLocation::PathSegment(0).needs_whole_body());
     assert!(!ArrivalLocation::Header("x").needs_whole_body());
 }
 

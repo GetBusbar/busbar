@@ -708,9 +708,9 @@ impl Plane for LlmPlane {
                 end: body.len(),
             });
         AdmitFacts {
-            lane_locator: Some(Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(
-                d.model_pointer,
-            ))),
+            // The dialect's own table says where the model IS: a body pointer for the four that
+            // carry it in the body, a path segment for the two that carry it in the request target.
+            lane_locator: Some(d.model_location),
             max_response_ptr: Some(Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(
                 d.max_response_pointer,
             ))),

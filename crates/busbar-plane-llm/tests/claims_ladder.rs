@@ -172,3 +172,45 @@ fn the_ladder_uses_only_the_forms_it_needs() {
         );
     }
 }
+
+/// The two dialects that carry the model in the request target say so, and the four that carry it
+/// in the body say that.
+///
+/// The location is the value's ACTUAL place. It used to be a body pointer for all six, which was
+/// only true because the arrival path had copied a target-carried model into the body first; a
+/// location that describes where something was put rather than where it is is a location that goes
+/// wrong the moment the putting stops.
+#[test]
+fn the_two_target_carried_dialects_name_a_path_segment() {
+    use busbar_contract::grammar::{ArrivalLocation, Location};
+    use busbar_plane_llm::dialect::{dialect, DIALECTS};
+
+    for name in ["gemini", "bedrock"] {
+        let d = dialect(name).expect("the dialect is in the table");
+        assert_eq!(
+            d.model_location,
+            Location::Arrival(ArrivalLocation::PathSegment(0)),
+            "{name} does not name the path segment its model is in"
+        );
+    }
+    for name in ["anthropic", "openai", "responses", "cohere"] {
+        let d = dialect(name).expect("the dialect is in the table");
+        assert_eq!(
+            d.model_location,
+            Location::Arrival(ArrivalLocation::FirstFrameJsonPointer("/model")),
+            "{name} does not name the body member its model is in"
+        );
+    }
+
+    // Exactly two of the six, so a seventh dialect added on either side is a visible change here.
+    let carried = DIALECTS
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.model_location,
+                Location::Arrival(ArrivalLocation::PathSegment(_))
+            )
+        })
+        .count();
+    assert_eq!(carried, 2);
+}

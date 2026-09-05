@@ -182,6 +182,21 @@ pub enum ArrivalLocation {
     Header(&'static str),
     /// A named query parameter.
     Query(&'static str),
+    /// One variable segment of the matched path pattern, by index among the pattern's variables.
+    ///
+    /// The index counts the pattern's non-literal segments left to right from zero. A
+    /// [`PathSeg::Var`] is one variable and resolves to the one segment it matched; a
+    /// [`PathSeg::Tail`] is also one variable, and resolves to the FIRST segment it matched,
+    /// because a tail's later segments are not addressable by a fixed index. An index past the
+    /// pattern's variables resolves to nothing, which is a missing location and not an error.
+    ///
+    /// The claim grammar already makes the kernel the owner of `PathPattern` and of its
+    /// per-segment overlap rule, so the segment index exists before any plane is chosen and is
+    /// resolvable at arrival like every other form here. It is the form a protocol that names the
+    /// priced thing in the request target rather than in the body needs; without it such a protocol
+    /// can only be located by having the arrival path copy the value into the body first, which is
+    /// a kernel-side body rewrite the lean-core scan would have to allow.
+    PathSegment(u8),
     /// A pointer into the first frame's object notation.
     FirstFrameJsonPointer(&'static str),
     /// The presented client certificate.
@@ -205,9 +220,13 @@ impl ArrivalLocation {
     #[must_use]
     pub const fn mask(&self) -> MaskKind {
         match self {
-            Self::Header(_) | Self::Query(_) | Self::FirstFrameJsonPointer(_) => {
-                MaskKind::SameLengthFill
-            }
+            // A path segment is bytes in the read cursor exactly as a header or a query parameter
+            // is, so it is hidden the same way: same-length fill, which leaves every offset the
+            // pattern match and the span table already computed where it was.
+            Self::Header(_)
+            | Self::Query(_)
+            | Self::PathSegment(_)
+            | Self::FirstFrameJsonPointer(_) => MaskKind::SameLengthFill,
             Self::ClientCert => MaskKind::Nothing,
             Self::Signed { .. } => MaskKind::SignatureSpan,
             Self::HandshakeFrames { .. } => MaskKind::BoundedPrefix,
