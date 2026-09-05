@@ -147,6 +147,7 @@ fn bedrock_rich_fixture() -> serde_json::Value {
 #[test]
 fn test_write_request() {
     let ir = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1256,6 +1257,7 @@ fn test_read_request_honors_injected_stream_flag() {
 fn test_write_request_skips_system_role_message() {
     let writer = BedrockWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1332,6 +1334,7 @@ fn test_write_request_skips_system_role_message() {
 fn test_write_request_tool_result_preserves_non_text_content() {
     let writer = BedrockWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1599,6 +1602,7 @@ fn test_write_request_tool_config_cross_protocol_and_empty() {
 
     // Cross-protocol shape: typed tools, empty extra (seam cleared it).
     let ir_tools = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1647,6 +1651,7 @@ fn test_write_request_tool_config_cross_protocol_and_empty() {
 
     // No tools, no raw toolConfig → no toolConfig key at all.
     let ir_empty = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2002,7 +2007,9 @@ fn eventstream_emits_reasoning_content_for_thinking_block() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let text = String::from_utf8_lossy(&bytes);
     assert!(
@@ -2055,7 +2062,9 @@ fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let frames = busbar_substrate::eventstream::drain_frames(&mut bytes);
     // A text block emits NO `contentBlockStart` (the ConverseStream union has no text member); it
@@ -2144,7 +2153,9 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let frames = busbar_substrate::eventstream::drain_frames(&mut bytes);
 
@@ -2224,7 +2235,9 @@ fn test_write_response_total_tokens_saturates() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let body = writer.write_response(&resp);
     assert_eq!(
         body.pointer("/usage/totalTokens").and_then(|v| v.as_u64()),
@@ -2286,7 +2299,9 @@ fn test_write_response_projects_image_block() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let body = writer.write_response(&resp);
     let content = body
         .pointer("/output/message/content")
@@ -2346,7 +2361,9 @@ fn test_write_response_empty_content_emits_placeholder() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let body = writer.write_response(&resp);
     let content = body
         .pointer("/output/message/content")
@@ -2440,6 +2457,7 @@ fn test_top_k_reaches_bedrock_via_additional_model_request_fields() {
 
     // Cross-protocol shape: top_k set in the IR, extra cleared (as the translate seam leaves it).
     let ir = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2595,6 +2613,7 @@ fn test_inference_config_typed_fields_override_raw_and_cross_protocol() {
         serde_json::json!({"maxTokens": 1, "topP": 0.5}),
     );
     let ir = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2641,6 +2660,7 @@ fn test_inference_config_typed_fields_override_raw_and_cross_protocol() {
 
     // Cross-protocol egress: no inferenceConfig in extra → config built purely from typed IR.
     let ir2 = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2795,6 +2815,7 @@ fn test_write_request_url_sentinel_image_not_emitted_as_base64() {
     // Top-level URL-sentinel image → dropped (no image block, no garbage bytes).
     let url = "https://example.com/cat.png";
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2889,6 +2910,7 @@ fn test_write_request_url_sentinel_image_not_emitted_as_base64() {
 fn test_write_request_all_nonrepresentable_turn_kept_with_placeholder() {
     let writer = BedrockWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3210,6 +3232,7 @@ fn test_write_request_tool_result_url_sentinel_image_dropped() {
     let writer = BedrockWriter;
     let url = "https://example.com/in-tool.png";
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3688,7 +3711,9 @@ fn test_write_response_omits_absent_cache_tokens() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let written = writer.write_response(&resp);
     assert!(
         written.pointer("/usage/cacheReadInputTokens").is_none(),
@@ -4968,6 +4993,7 @@ fn consecutive_user_turns_coalesce_for_alternation() {
         }],
     };
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -5055,6 +5081,7 @@ fn consecutive_user_turns_coalesce_for_alternation() {
 
 fn tool_choice_req(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequest {
     crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -5276,6 +5303,7 @@ fn test_bedrock_tool_choice_absent_is_none() {
 #[test]
 fn test_bedrock_writer_clamps_temperature_above_one() {
     let ir = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -5327,6 +5355,7 @@ fn cache_ctrl_req(
     tools: Vec<crate::ir::IrTool>,
 ) -> crate::ir::IrRequest {
     crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -5674,6 +5703,7 @@ fn test_malformed_media_type_warns_and_falls_back_to_png() {
 fn test_write_request_response_format_dropped() {
     let writer = BedrockWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -6455,7 +6485,9 @@ fn buffered_to_eventstream_metadata_carries_metrics_even_without_timing() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let mut bytes = bedrock_response_to_eventstream(&ir, None);
     let frames = busbar_substrate::eventstream::drain_frames(&mut bytes);
     let (_, payload) = frames

@@ -35,6 +35,7 @@ fn test_write_request() {
             cache_control: None,
             citations: Vec::new(),
         }],
+        system_turns_folded: 0,
         messages: vec![
             crate::ir::IrMessage {
                 role: crate::ir::IrRole::User,
@@ -137,6 +138,7 @@ fn test_read_request_roundtrip() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
+        system_turns_folded: 0,
         messages: vec![
             crate::ir::IrMessage {
                 role: crate::ir::IrRole::User,
@@ -440,7 +442,9 @@ fn test_write_response_preserves_parallel_tool_calls() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
 
     let writer = CohereWriter;
     let json = writer.write_response(&resp);
@@ -470,6 +474,7 @@ fn test_write_request_sole_tooluse_omits_empty_content() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::Assistant,
             content: vec![crate::ir::IrBlock::ToolUse {
@@ -522,6 +527,7 @@ fn test_write_request_text_block_shapes() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
             content: vec![crate::ir::IrBlock::Text {
@@ -553,6 +559,7 @@ fn test_write_request_text_block_shapes() {
     );
 
     let multi = crate::ir::IrRequest {
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
             content: vec![
@@ -909,7 +916,9 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
 
     let writer = CohereWriter;
     let out = writer.write_response(&resp);
@@ -1105,7 +1114,9 @@ fn test_safety_finish_reason_writes_error_non_stream() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let writer = CohereWriter;
     let body = writer.write_response(&resp);
     assert_eq!(
@@ -1208,7 +1219,9 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let err_out = writer.write_response(&err_resp);
     assert_eq!(
         err_out.get("finish_reason").and_then(|v| v.as_str()),
@@ -1540,7 +1553,9 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
 
     let writer = CohereWriter;
     let body = writer.write_response(&resp);
@@ -2251,6 +2266,7 @@ fn test_write_request_stream_field_conditional() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
             content: vec![crate::ir::IrBlock::Text {
@@ -2432,6 +2448,7 @@ fn test_tool_role_text_alongside_result_not_dropped() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::Tool,
             content: vec![
@@ -2496,6 +2513,7 @@ fn test_tool_result_multi_block_content_joins_without_space() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::Tool,
             content: vec![crate::ir::IrBlock::ToolResult {
@@ -2554,6 +2572,7 @@ fn test_tool_role_text_without_result_not_dropped() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::Tool,
             content: vec![crate::ir::IrBlock::Text {
@@ -2606,6 +2625,7 @@ fn test_tool_role_multi_text_without_result_is_string() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::Tool,
             content: vec![
@@ -3869,7 +3889,9 @@ fn test_write_response_stop_sequence_maps_to_stop_sequence() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let writer = CohereWriter;
     let out = writer.write_response(&resp);
     assert_eq!(
@@ -3904,7 +3926,9 @@ fn test_write_response_end_turn_maps_to_complete() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let writer = CohereWriter;
     let out = writer.write_response(&resp);
     assert_eq!(
@@ -4270,6 +4294,7 @@ fn ir_with_tool_choice(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequ
         user: None,
         parallel_tool_calls: None,
         system: vec![],
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
             content: vec![crate::ir::IrBlock::Text {
@@ -4611,6 +4636,7 @@ fn read_write_response_error_finish_reason_round_trips() {
 fn tool_choice_maps_to_cohere_native_strings() {
     let mk = |tc: Option<crate::ir::IrToolChoice>| {
         let mut req = crate::ir::IrRequest {
+            system_turns_folded: 0,
             messages: vec![crate::ir::IrMessage {
                 role: crate::ir::IrRole::User,
                 content: vec![crate::ir::IrBlock::Text {
@@ -4714,6 +4740,7 @@ fn response_format_json_schema_round_trips_cohere_shape() {
 #[test]
 fn n_candidate_count_never_emitted_on_cohere() {
     let mut req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
             content: vec![crate::ir::IrBlock::Text {
@@ -4873,7 +4900,9 @@ fn test_write_response_reemits_folded_tool_plan_as_content_not_tool_plan() {
         system_fingerprint: None,
         stop_sequence: None,
         logprobs: Vec::new(),
-    };
+    
+            request_echo: None,
+        };
     let out = writer.write_response(&resp);
     let message = out.get("message").expect("message");
     assert!(

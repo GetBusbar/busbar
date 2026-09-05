@@ -118,6 +118,14 @@ pub mod handle_impl {
         /// `ingress_protocol`. Default no-op; chat overrides.
         fn prepare_for_ingress(&mut self, _ingress_protocol: &str, _now_epoch: u64) {}
 
+        /// Capture the ORIGINAL ingress request body — the buffered-response twin of
+        /// [`crate::proto::StreamTranslator::set_request_echo`], called once (when the caller has a
+        /// parsed ingress body in hand) between `read_response`/`read_response_value` and
+        /// `write_ingress_response`. Default no-op; chat overrides so a dialect whose response spec
+        /// requires certain members to MIRROR the request (OpenAI Responses) can answer with the
+        /// client's actual values instead of the spec's bare defaults.
+        fn apply_request_echo(&mut self, _ingress_request_body: &serde_json::Value) {}
+
         /// Re-emit a buffered response as the `ingress_protocol` dialect's native STREAM bytes (the
         /// Bedrock ConverseStream case). `None` when a plain buffered body is correct. Default `None`.
         fn wrap_buffered_as_stream(

@@ -232,8 +232,8 @@ fn ensure_ir_reads_the_body_through_the_ingress_reader() {
         .expect("a well-formed openai chat body must read into the IR");
     let shape = ir.shape();
     assert_eq!(
-        shape.turn_count, 1,
-        "the system turn is hoisted out of the conversation turns"
+        shape.turn_count, 2,
+        "the system turn is hoisted into the system slot but still counts as a wire turn, as the previous release counted it"
     );
     assert!(
         shape.system_chars > 0,

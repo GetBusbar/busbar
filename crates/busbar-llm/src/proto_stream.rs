@@ -223,6 +223,16 @@ impl StreamTranslate {
         self.framing.set_client_include_usage(include);
     }
 
+    /// Forward the ORIGINAL ingress request body to the INGRESS writer this translator holds for the
+    /// life of the stream. Every writer but `ResponsesWriter` no-ops; `ResponsesWriter` latches it
+    /// (mirroring how `set_response_id`/`set_created_at`/`set_model` already carry per-stream
+    /// identity forward) so `response.created`/`response.completed` answer with the client's actual
+    /// `temperature`/`top_p`/`instructions`/`metadata`/`tool_choice`/`parallel_tool_calls`/`tools`
+    /// instead of the spec's bare defaults.
+    pub(crate) fn set_request_echo(&mut self, ingress_request_body: &serde_json::Value) {
+        self.ingress.writer().set_request_echo(ingress_request_body);
+    }
+
     /// Translate one egress event `(event_type, payload)` into ingress wire bytes, advancing the
     /// decode state. Shared by the SSE and event-stream feed paths.
     fn translate_event(&mut self, event_type: &str, data: &serde_json::Value, out: &mut Vec<u8>) {
@@ -1135,6 +1145,9 @@ impl StreamTranslator for StreamTranslate {
     }
     fn set_client_include_usage(&mut self, include: bool) {
         self.set_client_include_usage(include)
+    }
+    fn set_request_echo(&mut self, ingress_request_body: &serde_json::Value) {
+        self.set_request_echo(ingress_request_body)
     }
 }
 

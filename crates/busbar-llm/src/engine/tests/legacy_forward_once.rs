@@ -616,6 +616,7 @@ pub(super) async fn forward_once(
                     // `x-busbar-route-*` headers on this path) exactly.
                     None,
                     true, // degraded path: selects the "degraded"-labeled warn strings
+                    None,
                 )
                 .await);
             }

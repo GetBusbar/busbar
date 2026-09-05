@@ -454,6 +454,14 @@ pub trait StreamTranslator: Send {
     fn aborted(&self) -> bool;
     /// Record whether the ORIGINAL client request opted into streaming usage.
     fn set_client_include_usage(&mut self, include: bool);
+    /// Capture the ORIGINAL ingress request body so an ingress writer whose spec requires certain
+    /// response members to MIRROR client-set request values (OpenAI Responses: `temperature`,
+    /// `top_p`, `instructions`, `metadata`, `tool_choice`, `parallel_tool_calls`, `tools`) can answer
+    /// with the caller's actual values instead of the spec's bare defaults. Called once, before the
+    /// first `feed`, on a CROSS-PROTOCOL stream — same-protocol never reaches this (the ingress
+    /// writer never runs; the original bytes are relayed verbatim). Default no-op: every ingress
+    /// writer without such a requirement ignores it.
+    fn set_request_echo(&mut self, _ingress_request_body: &serde_json::Value) {}
 }
 
 /// How tightly a protocol CLAIMS an inbound request, for the generic detection fold. A LOWER value

@@ -108,6 +108,12 @@ pub(crate) async fn translate_response_cross_protocol(
     upstream_started: std::time::Instant,
     chosen_policy_name: Option<&'static str>,
     degraded: bool,
+    // The ORIGINAL ingress request body, parsed once by the caller (owned, not borrowed — this fn
+    // is async and awaits across it). Threaded to `TranslateCodec::translate_response` so a dialect
+    // whose response spec requires certain members to MIRROR the request (OpenAI Responses) can
+    // answer with the client's actual values instead of the spec's bare defaults. `None` when the
+    // caller has no parsed ingress body.
+    ingress_request_body: Option<Value>,
 ) -> Response {
     let egress_name = EngineTables::new(rt).lanes()[i].protocol;
 
@@ -199,6 +205,7 @@ pub(crate) async fn translate_response_cross_protocol(
                 now(),
                 false,
                 None,
+                ingress_request_body.as_ref(),
             ) {
                 Err(ref e) => {
                     diag_debug!(
@@ -245,6 +252,7 @@ pub(crate) async fn translate_response_cross_protocol(
                 upstream_started,
                 egress_name,
                 degraded,
+                ingress_request_body.as_ref(),
             ) {
                 return resp;
             }
@@ -304,6 +312,7 @@ fn deliver_json(
     upstream_started: std::time::Instant,
     egress_name: &str,
     degraded: bool,
+    ingress_request_body: Option<&Value>,
 ) -> Option<Response> {
     let (rt, i, ingress_protocol) = (d.rt, d.i, d.ingress_protocol);
     // One elapsed read for the wants-stream frame-synthesis fork (a Bedrock ConverseStream client
@@ -321,6 +330,7 @@ fn deliver_json(
         now(),
         wants_stream && !gemini_json_array,
         stream_elapsed_ms,
+        ingress_request_body,
     ) {
         Err(ref e) => {
             diag_debug!(

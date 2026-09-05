@@ -1353,7 +1353,9 @@ fn string_args_writers_emit_raw_tool_args_verbatim() {
         system_fingerprint: None,
         stop_sequence: None,
         logprobs: Vec::new(),
-    };
+    
+            request_echo: None,
+        };
 
     // Responses: output[].arguments (bind the const to a local before borrowing — the writer holds
     // interior-mutable stream state, so a direct `Const.method()` trips clippy::borrow_interior_mutable_const).

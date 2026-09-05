@@ -27,6 +27,7 @@ fn resp(reason: IrStopReason) -> IrResponse {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
+        request_echo: None,
     }
 }
 

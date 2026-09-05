@@ -45,7 +45,7 @@ impl IrFacts for IrRequest {
             // `lazy_body_tests::ensure_ir_reads_the_body_through_the_ingress_reader`). NOT
             // `self.messages.len() + self.system_turns_folded` — that would report the pre-fold wire
             // array length, which is exactly the count this normalization deliberately changes.
-            turn_count: self.messages.len(),
+            turn_count: self.messages.len() + self.system_turns_folded,
             has_tools: !self.tools.is_empty(),
             tool_count: self.tools.len(),
             text_chars,
