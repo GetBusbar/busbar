@@ -1,4 +1,4 @@
-# busbar — Architecture v1.30 (parity revision 8 — PB-11/66/75/84 amended to match owner decisions)
+# busbar — Architecture v1.31 (parity revision 9 — §§1.2–1.4, 3.3, 3.6, 3.7, 4.2, 4.7, 6 amended to state the 2026-09-05 contract-gap decisions as rules)
 
 > **busbar is a byte-governance router.** Bytes come in over a transport; a plane says what they mean;
 > the kernel runs the same seven steps on every unit of work — Authenticate, Verify, Approve, Admit,
@@ -96,8 +96,11 @@ Every plugin is passive: the kernel registers it, calls it, consumes what it ret
 - Plane, hook, pure-auth, egress-auth-scheme and secret crates are `#![forbid(unsafe_code)]`;
   transport, ABI, loader, store and export crates are `deny` with a reviewed allow-list; the one FFI
   transform crate is a dependency of the plane that uses it and carries its own `deny` entry.
-- `Ctx` carries exactly one **resource** handle — the per-unit arena; `clock` is a read-only kernel
-  value source; the rest are borrowed views. The ABI exposes no `mount`/`serve`/`bind`/`on_upgrade`; the one carve-out is the 1.5.5 confined plugin-route surface (`/hooks/{owner}/*`, `/exports/{owner}/*`, `/metrics`), which the KERNEL mounts on the plugin's behalf from its declared route table, verbatim (PB-31).
+- `Ctx` carries exactly one **resource** handle — the per-unit arena; `clock` and a per-unit **entropy**
+  value are read-only kernel value sources; the rest are borrowed views. A plane reads no random source
+  of its own: where a codec must mint a value with native shape and entropy (an echoed request id in an
+  error envelope, matching a provider's own wire form), the entropy is supplied through `Ctx`, never
+  drawn by the plane itself, so the purity and determinism rules below hold without exception. The ABI exposes no `mount`/`serve`/`bind`/`on_upgrade`; the one carve-out is the 1.5.5 confined plugin-route surface (`/hooks/{owner}/*`, `/exports/{owner}/*`, `/metrics`), which the KERNEL mounts on the plugin's behalf from its declared route table, verbatim (PB-31).
   The contract is feature-invariant (gate scan). One base `Plugin` trait, one registry type; unit
   traits are sealed.
 - **Mandatory in-tree plugins**: `auth-lease` (peer frames, node leases) and `secret-local`
@@ -137,6 +140,13 @@ classes; credential schemes; egress auth schemes; transports and their compositi
 content and hook facts; record schemas; plane admin verbs (read-only introspection); interrupt and
 pacing facts; config schemas.
 
+**Config-derived keys are leaked once.** An id, name or other open-vocabulary key that is only known at
+config time (a lane, a dialect, a configured plugin key) is leaked into a `&'static str` exactly once,
+by the composition root, at that plugin's registration — never per connection, per dial or per call. The
+resulting allocation is fixed at registration and is counted in §10's `fixed` term of the peak-RSS
+formula; a leak anywhere outside registration (one per dial, one per frame) is a defect, not a variant of
+this rule.
+
 **Lean-core scan** (mechanical): every string literal and `const &str` in kernel and unit crates is
 compared against the union of all registered open-vocabulary keys and dialect names; any match fails;
 `if kind == …` / `match` over an open vocabulary fails. **Doc scan** (mechanical): the deny list is the
@@ -158,7 +168,7 @@ scope.
 
 | Kind | Closed shape (kernel calls) | Open vocabulary (plugin declares) |
 |---|---|---|
-| Plane | 7 codec, 7 fact, 2 introspection methods; `SessionPlane::open_session` / `open_upstream` — **18 call sites** | `KEY`, `CLAIMS`, `OP_CLASSES`, `METER_CLASSES` (each entry: key, `family`, `direction: Input | Response | CacheRead | CacheWrite | Kernel`, default divisor — the card may price but never re-family; "class family" everywhere means this field), `SESSION_FACTS`, `CONTENT_FACTS`, `RECORD_SCHEMAS`, `ADMIN_VERBS`, `INTERRUPT_FACT`, `EGRESS_PACING_FACT`, `CONFIG_SCHEMA` |
+| Plane | 7 codec, 7 fact, 2 introspection methods; `SessionPlane::open_session` / `open_upstream` — **18 call sites** | `KEY`, `CLAIMS`, `OP_CLASSES`, `METER_CLASSES` (each entry: key, `family`, `direction: Input | Response | CacheRead | CacheWrite | Kernel`, default divisor — the card may price but never re-family; "class family" everywhere means this field), `SESSION_FACTS`, `CONTENT_FACTS`, `RECORD_SCHEMAS`, `INTROSPECTION_VERBS`, `INTERRUPT_FACT`, `EGRESS_PACING_FACT`, `CONFIG_SCHEMA` |
 | Transport (in-tree) | `arrival / listen / accept / dial / frames / write / upgrade / close / unit0_refusal` (async, boxed futures) | `KEY`, `SELECTOR_FORMS`, `EGRESS_SELECTOR_FORMS`, `COMPOSES_OVER`, `HANDOFF`, `SESSION`, `SESSION_BOUND`, `UNIT0_TRIGGER`, `UPGRADES_TO`, `HANDSHAKE_TRIGGER`, `TRANSPORT_FACTS`, `DECODES_PAYLOAD` |
 | Auth (ingress) | `verify(credential, arrival, clock, prior: Option<ChallengeState>) → CredentialFacts | Challenge { bytes, state, rounds_left } | Pass` (`Pass` = abstain, 1.5.5's chain continuation; the migrated `auth.chain` runs through `run_chain_cached` semantics, the credential cache applying to EXTERNAL modules only — the `keys` arm is cache-exempt — PB-35) (the proof of round n arrives with the state of round n−1); `refresh(clock) → KeyMaterial` (Tick-driven) | `KEY`, `LOCATIONS` (arrival forms), issuer config, `IO: bool` |
 | Egress-auth scheme | `decorate(cfg, &EgressBody, signer) → AuthDecoration`; `continue_handshake(state, &Frame, signer) → AuthDecoration` for multi-round schemes (the upstream challenge reaches round 2 here) | `KEY` |
@@ -167,6 +177,21 @@ scope.
 | Hook | `observe(seat, &HookView) → HookFacts` at the four seats `Before(Approve)` (1.5.5 `Request`), `After(Admit)` (1.5.5 `Candidate` — AFTER the draw, so a restrict-to-empty veto consumes the `requests` slot exactly as 1.5.5's late reject did), `Before(Route)` (1.5.5 `Routing`, also after the draw), `After(Route)` (1.5.5 `Response`); `HookFacts { permutation: Option<Permutation> (None = abstain, 1.5.5's `Abstain`), restrict: Option<CandidateSet>, veto: Option<VetoCode>, rewrite: Option<IrPatch>, tap: Facts }`; COMPOSITION at a seat: hooks at a gate seat run CONCURRENTLY (`join_all`) against the same t0 candidate set, the reject winning by chain position — 1.5.5's order (proxy-hooks :126-130); sealed in `Policy`, `restrict` sets intersect, the first `veto` wins, the LAST non-`None` permutation wins, re-validated against the final restricted set (PB-5; a ranked order is walked as-is, as 1.5.5 does); the SWRR floor applies when every permutation above it is `None` OR when no ranked lane passes the pick-time gate (in this hop's set, non-zero weight, `ready_in` peek) — 1.5.5's fall-through, PB-5; `restrict` carries `on_empty ∈ { weighted | reject | first }` (the 1.5.5 key, default `reject` — PB-1; `weighted` = for a GATE, skip only that gate's restriction (candidate set unchanged), for the BASE POLICY, escape to the full pool under the SWRR floor (PB-28); `first` on the restrict-empty arm takes the SAME 503 as `reject` (1.5.5's `if matches!(on_empty, Weighted)` else-branch; `first` orders only as an `on_error`-chain terminal, PB-1)), sealed per migrated hook at `Migration`; a MIGRATED 1.5.5 `Request`-stage hook seats `After(Admit)` ahead of the `Candidate` hooks, in 1.5.5's order (PB-6, PB-46 — `Before(Approve)` is a 1.6.0-native seat); `After(Route)` is `Tap`-only (the response has relayed and the fee is decided) and fires once per request that reached the forward path with 1.5.5's `outcome`, OR once on a pre-forward auth refusal on a hooked pool with the synthetic `rejected_by_auth` (OWNER DECISION, PB-84 — every other pre-forward refusal still never taps), detached under `MAX_INFLIGHT_TAP_NOTIFICATIONS = 1024` (PB-84) — 1.5.5 `Gate` = veto/restrict/rewrite, 1.5.5 `Tap` = `tap` facts only; a `rewrite` is applied by the kernel to the `Ir` over the SPOOLED BODY (the head plus the spill, retained until the egress body is encoded at Route or the unit ends — the same bytes the pointers price; never to bytes on the wire; the patched body lives in the spill under `spill_budget`, so a 1.5.5 full-body rewrite gate works unchanged), price-neutral by default (`max_priced_delta = 0`), journaled `Access` with pre/post hash, bounded by `max_priced_delta`; the compiled-in 1.5.5 ranking strategies are in-tree hooks of this kind | `KEY`, kind (`Tap` | `Gate`), seats, `HOOK_FACTS`, `on_failure`, `max_priced_delta`, `may_change_destination`, `may_rewrite` |
 | Export | `receive(JournalEntry | ContentFacts | Segment) → Ack`; `ANCHOR { write(head), read_head(n) }` | `KEY`, sink, format, retention it owns |
 | Rate card (config) | unit price = f(lane, meter_class, extras), with a `*` default lane row (used by `SessionAccrual` on sessions that dialed nothing; absent while any bucket declares a `session_seconds` class → boot refusal `MissingDefaultLaneRow`) with a bucket-level tier multiplier (§4.5); versioned; quantity sources per (plane, transport); permitted lanes per op class; max unit price; lane aliases; `KernelVerb` section (default 0); **bucket chain and cap dimensions** (§4.6) | meter classes, prices, windows, frame selectors, divisors |
+
+**The store trait is typed after the published ABI-2 store protocol**, extended with the 1.6.0-only
+operations: the twelve ABI-2 methods (`heartbeat`, `elect_checkpoint`, `claim_key`, `void_claims`,
+`replay_put`, `replay_get`, `replay_batch`, `legacy_cells_read`, `legacy_cells_write`,
+`legacy_audit_head`, `backup_watermark`, `purge_before`) are the request/response shapes the shadow
+oracle already proves against the released stores; `append_batch`, `reserve`, `release`, `heads`,
+`session_put`, `session_remove`, `sessions_for`, `record_put`, `record_get` and `record_scan` are the ten
+1.6.0-only additions. No store method signature is inferred from prose.
+
+**`INTROSPECTION_VERBS` names one thing.** A plane's per-plane, read-only introspection list is
+`INTROSPECTION_VERBS`; it never shares a name with the kernel's own closed `KernelVerb` table (§4.7),
+which is the admin plane's surface, not a plane-declared one. The contract's closed `Refusal` reason
+code maps onto the admin plane's rendered error codes through one ratified table, owned by the admin
+plane: several reasons share one code (reasons are opaque to a client, §3.1), and that table — not a
+per-implementer reading — is the admin plane's mapping of record.
 
 Registration is the only way in. Zero of any kind is valid, except the mandatory in-tree `auth-lease`, the in-tree `memory` store (the default when a config names none — 1.5.5's default)
 and `secret-local`.
@@ -497,7 +522,7 @@ fold; `Metered` carries the usage AND the disputes · `Ledger::settle(Hold, Usag
 
 ```rust
 pub trait PlaneMeta { const KEY; const CLAIMS; const OP_CLASSES; const METER_CLASSES; const SESSION_FACTS; const CONTENT_FACTS;
-                      const RECORD_SCHEMAS; const ADMIN_VERBS; const INTERRUPT_FACT: Option<&str>; const EGRESS_PACING_FACT: Option<&str>;
+                      const RECORD_SCHEMAS; const INTROSPECTION_VERBS; const INTERRUPT_FACT: Option<&str>; const EGRESS_PACING_FACT: Option<&str>;
                       const CONFIG_SCHEMA; }
 
 pub enum Ingress  { NeedMore, Open(UnitDraft), OneShot(UnitDraft), Handshake(UnitDraft), Frame { for_: Option<CorrelationRef>, relay: ArenaBytes, facts: Facts }, Close { for_: Option<CorrelationRef>, facts: Facts }, Discard { reason: DiscardCode } }
@@ -553,6 +578,12 @@ form: span forms → same-length fill; `ClientCert` → nothing masked; `Signed`
 `HandshakeFrames` → bounded prefix. **JSON is the one serialization the kernel understands, as a closed
 grammar**: a zero-copy, non-allocating span scanner (M1) resolves pointers over the scanned prefix up to
 the deepest pointer; its cost is a §10 row.
+
+**A claim's selector is a compile-time constant, never a registration-time value derived from config.**
+Where a plane's mount is fixed to a single canonical address by design, that address is the literal in
+its `Selector`, and an operator-configured canonical address is checked against it at config validation:
+naming any other path is a boot refusal, not a silent rebind. There is no selector form that resolves a
+configured string at registration.
 
 ### 3.4 Transport (in-tree, async)
 
@@ -621,7 +652,7 @@ DestinationFacts    = { kind: Upstream { transport, host, lane } | SessionUpstre
 Permitted kinds by origin: Client → all except Peer (reached only through `sessions_for`) and SessionAccrual (Tick only); Provider → Client(session), SessionUpstream, NestedPlane, PlaneRecord;
                            Arrival → none (Unit 0 is a Client unit; an Arrival subject is a refusal only); Bootstrap → KernelVerb { bootstrap } only; Handshake → Upgrade, Client { Deliver }; Tick → none (a Tick unit is zero-priced; its hold-sizing max over ∅ is 0 and the lane cross-check does not run), except `SessionAccrual { lane: the session's Unit-0 `Upstream` lane, or the card's `*` row for `session_seconds` when Unit 0 dialed nothing (a session that dialed nothing has no provider units by definition) }` when a `session_seconds` class is declared; Nested → Upstream, SessionUpstream, NestedPlane (depth < max_nest_depth), PlaneRecord, Client { Deliver }; Delivery → Client { Deliver }, Peer, and Upstream (a scatter to N upstreams is N `Delivery` children with per-recipient holds from the sender's chain, so the 8-leg bound per unit never limits fan-out) (neither may reach KernelVerb or SessionAccrual).
 VerifiedDestination = sealed after the trust unit's rule per kind:
-    Upstream        allow-list · transport key resolves · lane permitted for the draft's op class (the located name may be a pool, expanded to member lanes)
+    Upstream        allow-list · the network guard (resolve-then-pin against the allow-list; the hardcoded metadata denylist; the `base_url + path` re-check) runs here, BEFORE any transport `dial`, never inside a transport · transport key resolves · lane permitted for the draft's op class (the located name may be a pool, expanded to member lanes)
                     · unit price ≤ max (1.6.0 cards only) · breaker consulted
     SessionUpstream the session's paired upstream exists (stream in range) and the session's principal is the unit's
     Client          selector resolves within the session, or through `sessions_for` (Peer for remote nodes); the recipient's
@@ -650,7 +681,7 @@ destination is permitted only under `may_change_destination`; the pre/post head 
 |---|---|---|
 | A plugin cannot name the kernel, a capability, a unit, another plane or a transport | manifest allow-list | CI |
 | A pure-kind plugin cannot perform I/O (own crate: scan; dependencies: `cargo metadata` + review); I/O kinds are bounded by signature, deadline, `Access` entries and review | source denylist; blocking pool | CI + runtime |
-| A plugin cannot build a decision / destination / usage / hold / accrual / decoration / key handle / posted | token-sealed constructors | compile-time |
+| A plugin cannot build a decision / destination / usage / hold / accrual / decoration / key handle / posted | token-sealed constructors, sealed by `busbar-caps`' `KernelSeal` token only — there is no public sealing trait in the contract for a plugin to implement | compile-time |
 | Every trait method implemented; no default bodies; one base trait; sealed unit traits; feature-invariant | trait shape + AST scan | compile-time + CI |
 | Object safety | fixture per kind | compile-time |
 | Every path takes its `Hold` exactly once | `HoldCell` state machine + CAS; no `?`/early exit; no capture in `catch_unwind`; no `abort` | runtime CAS + lint |
@@ -699,7 +730,10 @@ journaled.
 resolve and validate, `Seq` monotonic per node, anchored head matches, and **the one identity, per
 `(bucket, dimension, scope, window_start)`, as a delta from the last sealed `Checkpoint` totals**:
 **Δ settlements + Δ open holds + Δ open-slice remainders + Δ unreconciled + Δ adjustments − Δ overdraft
-carried ± Δ cross-window transfers == Δ drawn from the store** (for the open window, `Δ drawn` is the
+carried ± Δ cross-window transfers == Δ drawn from the store** — **an unreconciled amount is a MOVE out
+of settled, never a parallel tally**: booking it is `unreconciled += A; settled -= A` on the same figure,
+so the identity closes with no special case and nothing is reported as settled that the store has not
+confirmed (for the open window, `Δ drawn` is the
 window cap minus store remaining minus the checkpointed figure; closed windows must show Δ = 0 after
 their last transfer; adjustments release headroom to the store only inside the open window, otherwise
 they are pure ledger reversals; an attribution bucket's identity is Σ settlements == Σ accrued). **Independent recompute** on the node Tick: for every
@@ -880,7 +914,16 @@ at the tag — 66 operations over 49 paths (34 `read-only`, 32 `full` — `POST 
 the 1.6.0 additions: `verify`, `plane_facts`, `plane_record_write`, `set_operator_key`, `set_escrow`,
 `chain_break`, `store_restore`, `reseal_epoch_floor`, `set_dual_control`, `set_overdraft_ceiling`,
 `set_dispute_max_age`, `commit_upgrade`, `resolve_dispute`, `resolve_slice`, `adjust`, `export_keyset`,
-`approve` (the maker-checker approval under `required`: its payload hash must equal the pending mutation's and its approver must differ from the maker) (17 verbs; keyset import is the off-node CLI, not a verb). The
+`approve` (the maker-checker approval under `required`: its payload hash must equal the pending mutation's and its approver must differ from the maker) (17 verbs; keyset import is the off-node CLI, not a verb).
+
+**HTTP binding of the 17.** Each of the 17 binds as `<kebab-case-verb>` under the admin prefix: POST for
+every mutating verb, GET for the two read-only verbs (`verify`, `plane_facts`). Bindings: `GET verify` ·
+`GET plane-facts` · `POST plane-record-write` · `POST set-operator-key` · `POST set-escrow` ·
+`POST chain-break` · `POST store-restore` · `POST reseal-epoch-floor` · `POST set-dual-control` ·
+`POST set-overdraft-ceiling` · `POST set-dispute-max-age` · `POST commit-upgrade` ·
+`POST resolve-dispute` · `POST resolve-slice` · `POST adjust` · `POST export-keyset` · `POST approve`.
+
+The
 15 operations the dev tree added to the admin API since the tag are separate new surface with their own
 effects cells. `plugins/reload|rollback` are a registry
 generation swap sealed by `Load`/`Policy` entries and applied at a unit boundary; the store/governance instance is REUSED across the swap and 1.5.5's reload/rollback mechanics hold (PB-63). **Template
@@ -1041,7 +1084,7 @@ A plane is CLAIMED only when its config block is present: a 1.5.5 config claims 
 | `mcp` | mcp (JSON-RPC) | http, sse, stdio | JSON-RPC request; sampling as provider `OneShot`; outbound sessions | tool_calls, bytes | tool catalogue, approvals, settings | |
 | `a2a` | a2a | http, grpc | task ops; push events as provider units | bytes | tasks, push configs, pins | |
 | `admin` | busbar admin v1 | http | one kernel verb = one unit (codec only; `busbar-unit-verbs` executes) | count | — | mints via `SecretOnce` |
-| `voice` | openai-realtime, gemini-live, twilio-media-streams, one-shot transcribe/tts | ws, webrtc, twilio-media, http | a turn; tool calls as provider `OneShot` requests (`Client(AwaitReply)` or `NestedPlane(mcp)`, result as a `SessionUpstream` leg); interrupt fact; pacing fact; one-shot transcribe/TTS | audio_tokens_in/out (`Locator`), text_tokens, cached_tokens, audio_seconds_in (`TransportUnits` on twilio and webrtc; cross-checked by `KernelElapsedMono`; `Locator` on ws), tool_calls | — | OpenAI Realtime ingress/egress; Gemini Live egress; μ-law↔PCM16 in `encode_ingress_frame`; **raw SIP out of scope** (owner decision) |
+| `voice` | openai-realtime, gemini-live, twilio-media-streams, one-shot transcribe/tts | ws, webrtc, twilio-media, http | a turn; tool calls as provider `OneShot` requests (`Client(AwaitReply)` or `NestedPlane(mcp)`, result as a `SessionUpstream` leg); interrupt fact; pacing fact; one-shot transcribe/TTS | audio_tokens_in/out (`Locator`), text_tokens_in/text_tokens_out (`Locator`), cached_tokens, audio_seconds_in (`TransportUnits` on twilio and webrtc; cross-checked by `KernelElapsedMono`; `Locator` on ws), tool_calls | — | OpenAI Realtime ingress/egress; Gemini Live egress; μ-law↔PCM16 in `encode_ingress_frame`; **raw SIP out of scope** (owner decision); only the FIRST decoded IR event per wire frame is acted on; uplink audio is ASSUMED PCM16 for the `audio_seconds_in` estimate; model-emitted text in a duplex turn prices under `text_tokens_out` — an OUTPUT class, never the input one — because §4.5 clause 2 makes the class a money question and emitted text is output, not input; the `webrtc` leg and the one-shot transcribe/TTS wire shape are §9.3 Phase 0.5 work, not Phase 0 |
 | `blob` (acid test) | s3-style multipart | http | streaming multipart as an open unit | bytes_in/out, objects (`PlaneCount`, no same-unit companion → `estimated` under the implausibility bound) | — | |
 | `msg` (acid test) | line-delimited pub/sub | stdio | one message; fan-out across two nodes (aggregate + `peer`, by locator when oversize) | messages, bytes, recipients | subscriptions | |
 | `smtp` (acid test) | smtp, esmtp | tcp-line | one message; SMTP AUTH inbound as a challenge-response Handshake unit; STARTTLS as a Handshake unit inbound and an `Upgrade` leg upstream; AUTH to the MX via `Handshake` decoration | messages, bytes, recipients | — | |
