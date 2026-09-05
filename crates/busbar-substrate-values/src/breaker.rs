@@ -144,9 +144,9 @@ impl RawUpstreamError {
 /// `delay-seconds / HTTP-date`; BOTH forms are normative and providers send both. Parsing only the
 /// integer form silently discards the provider's stated cooldown floor on every date-form response,
 /// leaving the breaker to guess.
-pub fn parse_retry_after(headers: &axum::http::HeaderMap) -> Option<u64> {
+pub fn parse_retry_after(headers: &http::HeaderMap) -> Option<u64> {
     let s = headers
-        .get(axum::http::header::RETRY_AFTER)?
+        .get(http::header::RETRY_AFTER)?
         .to_str()
         .ok()?;
     let s = s.trim();

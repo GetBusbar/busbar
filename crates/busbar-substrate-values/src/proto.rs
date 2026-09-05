@@ -146,11 +146,11 @@ pub fn bearer_error_code(error_type: &str) -> serde_json::Value {
 /// then 429→RateLimit, 401/403→Auth, 5xx→ServerError, other 4xx→ClientError — is single-sourced here.
 #[cfg(any(test, feature = "test-support"))]
 pub fn openai_classify(
-    status: axum::http::StatusCode,
+    status: http::StatusCode,
     body: &[u8],
 ) -> crate::breaker::CanonicalSignal {
     use crate::breaker::StatusClass;
-    use axum::http::StatusCode;
+    use http::StatusCode;
     // context-length-exceeded — the lane is healthy; this must fail over (to a larger-context
     // model), not penalize the breaker. Detect by OpenAI code/message first.
     let code_is_context = serde_json::from_slice::<serde_json::Value>(body)
@@ -260,10 +260,10 @@ pub const BASE62_REJECT_THRESHOLD: u8 = 248;
 pub fn bearer_auth_headers(
     proto: &str,
     key: &str,
-) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
-    match axum::http::HeaderValue::from_str(&format!("Bearer {key}")) {
+) -> Vec<(http::HeaderName, http::HeaderValue)> {
+    match http::HeaderValue::from_str(&format!("Bearer {key}")) {
         Ok(value) => vec![(
-            axum::http::HeaderName::from_static(HDR_AUTHORIZATION),
+            http::HeaderName::from_static(HDR_AUTHORIZATION),
             value,
         )],
         Err(_) => {
@@ -289,9 +289,9 @@ pub fn bearer_auth_headers(
 pub fn api_key_auth_headers(
     header: &'static str,
     key: &str,
-) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
-    match axum::http::HeaderValue::from_str(key) {
-        Ok(v) => vec![(axum::http::HeaderName::from_static(header), v)],
+) -> Vec<(http::HeaderName, http::HeaderValue)> {
+    match http::HeaderValue::from_str(key) {
+        Ok(v) => vec![(http::HeaderName::from_static(header), v)],
         Err(_) => {
             crate::diag_warn!(
                 crate::diagnostics::EGRESS_APIKEY_INVALID_BYTES,
@@ -480,7 +480,7 @@ pub struct ClaimStrength(pub u16);
 /// it at all. The generic fold in `busbar-core` folds every registered protocol's predicate in
 /// registration order and keeps the tightest claim. Relocated here with [`ProtocolDecl`] so a
 /// dialect crate names it without reaching into `busbar-core`.
-pub type ClaimsFn = fn(&axum::http::HeaderMap, &str) -> Option<ClaimStrength>;
+pub type ClaimsFn = fn(&http::HeaderMap, &str) -> Option<ClaimStrength>;
 
 /// The RESIDUAL detection predicate a protocol supplies: `path -> Option<ClaimStrength>`, from the
 /// path SHAPE ALONE (no headers). Narrower than [`ClaimsFn`] — it is the arm the mount table falls
@@ -579,7 +579,7 @@ pub trait DialectCodec: Send + Sync {
     fn inject_response_metrics(&self, value: &mut serde_json::Value, elapsed_ms: Option<u64>);
     fn attach_error_response_headers(
         &self,
-        headers: &mut axum::http::HeaderMap,
+        headers: &mut http::HeaderMap,
         kind: &str,
         envelope: &serde_json::Value,
     );
@@ -638,7 +638,7 @@ pub struct SigningContext<'a> {
 /// substrate/`axum` types (`SigningContext`, `axum::http`), so the decl carries no core edge. Core
 /// re-exports it from `busbar_core::proto::registry::EgressAuthHeaders`.
 pub type EgressAuthHeaders =
-    fn(&str, &SigningContext) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)>;
+    fn(&str, &SigningContext) -> Vec<(http::HeaderName, http::HeaderValue)>;
 
 /// EVERYTHING CORE KNOWS ABOUT A PROTOCOL, declared once by the protocol itself.
 ///
@@ -756,7 +756,7 @@ pub struct ProtocolDecl {
 
     /// Replaces `ProtocolWriter::quota_exceeded_status()`. The native HTTP status a quota/budget
     /// exhaustion maps to (429 for most; Bedrock's `ServiceQuotaExceededException` is 400).
-    pub quota_exceeded_status: axum::http::StatusCode,
+    pub quota_exceeded_status: http::StatusCode,
 
     /// Replaces `ProtocolWriter::ingress_is_eventstream()`. True when this protocol's ingress client
     /// decodes a binary `application/vnd.amazon.eventstream` body (native AWS SDK Bedrock).
@@ -782,7 +782,7 @@ pub struct ProtocolDecl {
 
     /// Replaces `ProtocolWriter::auth_failure_status_and_kind()`. The HTTP status and error `kind` a
     /// bad/missing credential yields, matched to what the genuine vendor returns.
-    pub auth_failure_status_and_kind: (axum::http::StatusCode, &'static str),
+    pub auth_failure_status_and_kind: (http::StatusCode, &'static str),
 
     /// Replaces `ProtocolWriter::ingress_relays_amzn_headers()`. True when this protocol's ingress
     /// client expects `x-amzn-RequestId` (and `x-amzn-errortype` on errors) on every response.
@@ -1470,7 +1470,7 @@ pub fn registry() -> &'static Registry {
 /// speaks, or `None` for a path that names none. Folds every registered protocol's
 /// [`ProtocolDecl::claims`] predicate in REGISTRATION ORDER and keeps the TIGHTEST claim (lowest
 /// [`ClaimStrength`]); a tie breaks by registration order. Byte-identical to the old ladder.
-pub fn detect_protocol(path: &str, headers: &axum::http::HeaderMap) -> Option<&'static str> {
+pub fn detect_protocol(path: &str, headers: &http::HeaderMap) -> Option<&'static str> {
     registry()
         .decls()
         .iter()
@@ -1596,9 +1596,9 @@ pub fn lane_protocol_name(name: &str) -> Option<&'static str> {
 /// Collect `(HeaderName, HeaderValue)` pairs into an axum `HeaderMap`. A dependency-free neutral
 /// helper (no protocol vocabulary), used by the dialect crates on the egress-header path.
 pub fn convert_headers(
-    headers: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
-) -> axum::http::HeaderMap {
-    let mut map = axum::http::HeaderMap::new();
+    headers: Vec<(http::HeaderName, http::HeaderValue)>,
+) -> http::HeaderMap {
+    let mut map = http::HeaderMap::new();
     for (name, value) in headers {
         map.insert(name, value);
     }

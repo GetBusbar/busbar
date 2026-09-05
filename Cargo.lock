@@ -827,6 +827,7 @@ dependencies = [
  "busbar-api",
  "busbar-contract",
  "busbar-plugin",
+ "busbar-substrate-values",
  "busbar-timing",
  "bytes",
  "crc32fast",
@@ -863,6 +864,28 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "webpki-roots",
+]
+
+[[package]]
+name = "busbar-substrate-values"
+version = "1.6.0"
+dependencies = [
+ "busbar-api",
+ "busbar-plugin",
+ "bytes",
+ "crc32fast",
+ "futures",
+ "hex",
+ "hmac",
+ "http",
+ "httpdate",
+ "metrics",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sonic-rs",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -14,7 +14,7 @@ use serde_json::Value;
 /// interpreting either — `application/json` for JSON ops, `audio/mpeg` etc. for a binary op like speech.
 pub struct WireBody {
     pub bytes: Bytes,
-    pub content_type: axum::http::HeaderValue,
+    pub content_type: http::HeaderValue,
 }
 
 impl WireBody {
@@ -22,14 +22,14 @@ impl WireBody {
     pub fn json(bytes: Bytes) -> Self {
         Self {
             bytes,
-            content_type: axum::http::HeaderValue::from_static("application/json"),
+            content_type: http::HeaderValue::from_static("application/json"),
         }
     }
     /// A body with an explicit content-type (e.g. audio speech). Falls back to octet-stream if the
     /// content-type string is not a valid header value.
     pub fn typed(bytes: Bytes, content_type: &str) -> Self {
-        let content_type = axum::http::HeaderValue::from_str(content_type)
-            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream"));
+        let content_type = http::HeaderValue::from_str(content_type)
+            .unwrap_or_else(|_| http::HeaderValue::from_static("application/octet-stream"));
         Self {
             bytes,
             content_type,

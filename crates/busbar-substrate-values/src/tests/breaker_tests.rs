@@ -182,11 +182,11 @@ fn test_unmapped_structured_type_falls_through_to_http() {
     assert_eq!(sig.class, StatusClass::RateLimit); // from HTTP 429
 }
 
-fn headers_with_retry_after(v: &str) -> axum::http::HeaderMap {
-    let mut h = axum::http::HeaderMap::new();
+fn headers_with_retry_after(v: &str) -> http::HeaderMap {
+    let mut h = http::HeaderMap::new();
     h.insert(
-        axum::http::header::RETRY_AFTER,
-        axum::http::HeaderValue::from_str(v).unwrap(),
+        http::header::RETRY_AFTER,
+        http::HeaderValue::from_str(v).unwrap(),
     );
     h
 }
@@ -218,7 +218,7 @@ fn a_past_http_date_retry_after_floors_at_zero() {
 
 #[test]
 fn a_missing_retry_after_is_none() {
-    assert_eq!(parse_retry_after(&axum::http::HeaderMap::new()), None);
+    assert_eq!(parse_retry_after(&http::HeaderMap::new()), None);
 }
 
 #[test]

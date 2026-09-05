@@ -10,6 +10,7 @@ members = [
     "crates/busbar-a2a",
     "crates/busbar-voice",
     "crates/busbar-substrate",
+    "crates/busbar-substrate-values",
     "crates/busbar-caps",
     "crates/busbar-contract",
     "crates/busbar-transport-tcp",

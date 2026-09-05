@@ -1,0 +1,75 @@
+[package]
+name = "busbar-substrate-values"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The PURE half of the neutral substrate: the value families a codec or a plane NAMES — protocol declarations, the IR, the breaker taxonomy, the handler matrix, the billing/media/json/wire/eventstream/sigv4 vocabularies and the diagnostics catalog. Nothing in this crate's dependency closure opens a socket, a file, a process or reads the environment; the egress engine, the runtime hosts and the async doors stay in `busbar-substrate`, which re-exports every module here under its historical path."
+license = "Apache-2.0"
+
+# WHY THIS CRATE EXISTS. `busbar-substrate` held two different things behind one name: the value
+# types the codecs and the planes name, and the egress engine that dials upstreams (hyper,
+# hyper-util, hyper-rustls, reqwest, tokio's `net`). A plane is a PURE kind, so its whole transitive
+# closure is scanned by `cargo xtask denylist` — and because one whole-workspace `cargo metadata`
+# unifies features, no feature gate could keep the engine out of a codec's closure. Naming the value
+# half from the engine half is what separates them: this crate carries the values and NONE of the
+# I/O, so `busbar-llm-codec` (and therefore `busbar-plane-llm`) names it and resolves no hyper,
+# reqwest or tokio edge at all.
+#
+# THE RULE FOR THIS MANIFEST. Every dependency below is a pure-computation leaf. No `hyper`, no
+# `reqwest`, no `tokio`, no `axum` (which drags both), and nothing that reaches `std::{net, fs,
+# process, env}` on a shipped path. `http` — the bare header/status/method vocabulary that `axum`
+# merely re-exports — is the one HTTP name here, and it opens nothing.
+[dependencies]
+# The plugin CONTRACTS (`busbar-api`'s `VirtualKey`, the redaction wrapper) and the plugin ABI, both
+# leaves, exactly as the parent crate named them.
+busbar-api = { path = "../api" }
+busbar-plugin = { path = "../busbar-plugin" }
+# The bare HTTP vocabulary (`HeaderMap`/`HeaderName`/`HeaderValue`/`StatusCode`) the protocol
+# declarations, the breaker's `Retry-After` parse and the wire types name. These are the SAME types
+# `axum::http::…` resolves to — axum re-exports this crate — so the move off the `axum::` spelling
+# renames no type and changes no behaviour; it only drops the server stack from the closure.
+http = { workspace = true }
+# The `json` seam funnels every parse/serialize through sonic-rs (SIMD on the large string-heavy LLM
+# bodies) in ONE place; `serde_json::Value` is the value type it produces.
+serde = { workspace = true }
+serde_json = { workspace = true }
+sonic-rs = { workspace = true }
+# The AWS EventStream framing codec CRC32s each prelude/message.
+crc32fast = { workspace = true }
+# The capped upstream-body read (`proxy::read_capped`) is generic over any chunk stream; `Bytes` is
+# the chunk type and `futures`' `Stream`/`StreamExt` the vocabulary it is generic over. Neither opens
+# anything — the caller supplies the already-connected stream.
+bytes = { workspace = true }
+futures = { workspace = true }
+# The diagnostics emit macros and the classifier's one deduped unrecognized-error_map warning.
+tracing = { workspace = true }
+# The breaker's `parse_retry_after` parses an HTTP-date `Retry-After`.
+httpdate = { workspace = true }
+# The SigV4 signer's HMAC-SHA256 chain and the hex encoding of its digests.
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+# The codec-cell counters the handler matrix emits: `metrics::counter!` writes over bounded labels.
+# Pure data path — the recorder lives elsewhere.
+metrics = { workspace = true }
+# The neutral `testkit::warn_capture::WarnCapture` tracing layer the plane crates' tests assert
+# diagnostics through; test-surface only, so optional under `test-support`.
+tracing-subscriber = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The relocated `eventstream` framing tests capture WARN/ERROR events through a `tracing_subscriber`
+# Layer to assert a `diag_*!` fired without a global subscriber.
+tracing-subscriber = { workspace = true }
+
+[features]
+# The two NEUTRAL capability features the parent crate gates its plane-consumed items on. Both are
+# empty here — they gate `#[cfg]` sites in `transport` only — and must stay DECLARED or
+# `unexpected_cfgs` fires under `-D warnings`. `busbar-substrate` forwards its own same-named
+# features to these so the gated surface arms in lock-step, exactly as before the split.
+dispatch = []
+runtime = []
+# Reveals the test-only protocol-registry seeding (`proto::register_test_protocol`) and the
+# `testkit::warn_capture` layer to a DEPENDENT crate's test binary, mirroring the parent crate's own
+# `test-support`, which forwards to this one.
+test-support = ["dep:tracing-subscriber"]

@@ -21,6 +21,14 @@ license = "Apache-2.0"
 busbar-api = { path = "../api" }
 busbar-contract = { path = "../busbar-contract" }
 busbar-plugin = { path = "../busbar-plugin" }
+# THE VALUE HALF. This crate used to be two things behind one name: the value families the codecs and
+# planes name, and the egress engine that dials upstreams. A plane is a PURE kind, so its whole
+# transitive closure is scanned — and one whole-workspace `cargo metadata` unifies features, so no
+# gate could keep the engine out of a codec's closure while the two shared a crate. The values now
+# live next door, in a crate whose closure opens nothing; this crate keeps the engine, the runtime
+# hosts and the async doors, depends on the values, and RE-EXPORTS every moved module at its
+# historical path (`busbar_substrate::proto::…` and the rest resolve unchanged for the old binary).
+busbar-substrate-values = { path = "../busbar-substrate-values" }
 axum = { workspace = true }
 serde_json = { workspace = true }
 # wt2/neutral-utils: the relocated `json` seam funnels every parse/serialize through sonic-rs (SIMD
@@ -147,6 +155,11 @@ tracing-subscriber = { workspace = true, optional = true }
 # The relocated `governance::signing` known-answer tests hex-encode the derived subkey seeds they pin
 # and the redaction they assert; `hex` is used only by those tests, so it is a dev edge here.
 [dev-dependencies]
+# This crate's OWN test build compiles `testkit` (gated `cfg(any(test, feature = "test-support"))`),
+# and the `warn_capture` layer it re-exports now lives next door behind the values crate's mirror of
+# that feature. `cfg(test)` does not cross a crate boundary, so the dev edge arms the feature — the
+# same shape the reqwest reference stack below already uses.
+busbar-substrate-values = { path = "../busbar-substrate-values", features = ["test-support"] }
 # The reqwest REFERENCE stack (`build_pinned_client`, `RefuseSecondLookup`, the fixture resolver
 # doubles) is compiled under `cfg(any(test, feature = "test-support"))`, and this crate's OWN
 # suite drives it (pinned_pool_tests, resolver_tests assert doctrine-text parity against the
@@ -182,7 +195,11 @@ tokio-rustls = { workspace = true }
 # `dispatch`/`relay` are empty (they gate `#[cfg]`/`#[cfg_attr(...allow(dead_code))]` sites only) and
 # must stay DECLARED or `unexpected_cfgs` fires under `-D warnings`.
 [features]
-dispatch = []
+# `dispatch` gates `#[cfg]` sites in BOTH halves of the split (the wire-selection axis in `transport`
+# moved with the values), so it FORWARDS to the values crate's same-named feature — the gated surface
+# arms in lock-step, exactly as when the two were one crate. `relay` gates no moved site, so it stays
+# empty.
+dispatch = ["busbar-substrate-values/dispatch"]
 relay = []
 # THE FULL-DUPLEX WEBSOCKET TRANSPORT capability — the neutral `ingress`/`egress` duplex-ws acceptor
 # and guarded dialer, plus the `Transport::WebSocket` → `UpstreamWireKind::Duplex` selection they arm.
@@ -193,7 +210,12 @@ relay = []
 # server-side upgrade extractor (`axum/ws`). The `dispatch`-side wire-selection seam
 # (`Transport::upstream_wire` / `UpstreamWireKind`) is compiled under this feature too, so a duplex
 # caller resolves the axis without enabling the MCP dispatch capability.
-runtime = ["dep:tokio-tungstenite", "dep:tokio-rustls", "axum/ws"]
+runtime = [
+    "dep:tokio-tungstenite",
+    "dep:tokio-rustls",
+    "axum/ws",
+    "busbar-substrate-values/runtime",
+]
 # THE PLANE-NAME FORWARDS (composition-root vocabulary; not referenced in this crate's source). Each
 # forwards to its neutral capability so core's `busbar-core/plane-{mcp,a2a}` → `busbar-substrate/
 # plane-{mcp,a2a}` edge enables the same seams it always did, in lock-step. `plane-llm` owns no
@@ -221,4 +243,9 @@ openapi-schema = ["dep:schemars"]
 # The `egress::fixtures` module (rustls fixture servers for the egress differential harness) rides
 # this feature too, so the crates whose test binaries link this one (core's differential harness)
 # can spawn the same fixture servers this crate's own engine tests drive.
-test-support = ["dep:rcgen", "dep:reqwest", "dep:tracing-subscriber"]
+test-support = [
+    "dep:rcgen",
+    "dep:reqwest",
+    "dep:tracing-subscriber",
+    "busbar-substrate-values/test-support",
+]

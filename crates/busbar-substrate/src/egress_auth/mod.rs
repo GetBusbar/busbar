@@ -250,11 +250,14 @@ impl CredentialProvider for NoCredential {
 
 /// Static custom header carrying the raw key (`api-key` or `x-goog-api-key`). An un-encodable key
 /// yields no header (upstream 401s). Free function so auth tests exercise the exact same code.
-/// Delegates to the neutral `crate::proto::api_key_auth_headers` so the config-`api-key`
-/// override path here and the Gemini dialect's `x-goog-api-key` scheme share ONE implementation.
-pub fn api_key_headers(header: &'static str, key: &str) -> Vec<(HeaderName, HeaderValue)> {
-    crate::proto::api_key_auth_headers(header, key)
-}
+/// Delegates to the neutral `proto::api_key_auth_headers` so the config-`api-key` override path here
+/// and the Gemini dialect's `x-goog-api-key` scheme share ONE implementation.
+///
+/// THE CUT: this is a total function of its two arguments, while every other mechanism in this
+/// module mints over the network (the token-endpoint POSTs) or reads a service-account key off disk.
+/// So it — and only it — moved into the values crate, and is re-exported here at its historical
+/// `busbar_substrate::egress_auth::api_key_headers` path.
+pub use busbar_substrate_values::egress_auth::api_key_headers;
 
 struct ApiKeyHeader {
     header: &'static str,
