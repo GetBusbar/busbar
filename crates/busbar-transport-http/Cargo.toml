@@ -1,0 +1,28 @@
+[package]
+name = "busbar-transport-http"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The http transport: request/response frames over tcp or tls, plus the pinned 1.5.5 egress client posture."
+license = "Apache-2.0"
+
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+busbar-transport-tcp = { path = "../busbar-transport-tcp" }
+busbar-transport-tls = { path = "../busbar-transport-tls" }
+futures = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt", "sync", "io-util", "time"] }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+hyper-rustls = { workspace = true }
+http-body-util = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
+webpki-roots = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros"] }

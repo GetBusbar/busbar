@@ -1,0 +1,48 @@
+# busbar-plane-mcp — THE MCP PLANE, as an ADAPTER and nothing else.
+#
+# WHAT THIS CRATE IS. One implementation of the plugin contract's plane kind for the Model Context
+# Protocol. Every method is a thin adapter over a codec that already exists in `busbar-mcp`: the
+# JSON-RPC envelope reader and writer, the method dispatch vocabulary, the notification codec and
+# the error envelopes. No wire format is written twice. If a byte differs between what this crate
+# produces and what the existing codec produces, the existing codec is the answer and this crate
+# has the bug.
+#
+# WHAT THIS CRATE IS NOT. There is no governance here, no breaker, no hook seat, no approval
+# decision and no metering arithmetic. Those are units, and a unit is on the other side of the
+# kernel from a plane. The metering method returns LOCATORS — where the numbers are — and never a
+# number the ledger would post. The routing method returns a plan, never a connection. The plane's
+# durable state — the tool catalogue, the approvals, the settings — is reached only through record
+# legs on that plan, never through a store this crate holds.
+#
+# THE DEPENDENCY EDGE, STATED HONESTLY. The contract crate is the surface a plugin is written
+# against and it stands alone. `busbar-mcp` is named here for the codec vocabulary only, and it is
+# a heavier crate than a pure plane's dependency rule would like: it carries an HTTP stack, an
+# async runtime and the engine that still lives beside its codec. That is a finding about where the
+# codec sits today, not a decision taken here — the adapter itself names no runtime, opens nothing,
+# holds no connection and reads no clock but the one the context hands it.
+[package]
+name = "busbar-plane-mcp"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# One pinned number, set to what CI verifies — the same rationale every other member states.
+rust-version = "1.97"
+description = "The MCP plane for busbar: the plugin contract's plane kind implemented as a thin adapter over the busbar-mcp JSON-RPC codec."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_plane_mcp"
+path = "src/lib.rs"
+
+# NO FEATURES, ON PURPOSE. A plane compiled two ways is two planes, and the kernel would have no way
+# to tell which one it registered. The contract crate holds itself to the same rule and asserts it.
+
+[dependencies]
+# THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
+busbar-contract = { path = "../busbar-contract" }
+# THE CODEC. Read-only from here: this crate calls the JSON-RPC envelope vocabulary, the method
+# names and the notification codec, and edits none of them.
+busbar-mcp = { path = "../busbar-mcp" }
+# The object notation the codec speaks. The adapter hands values across the seam and never invents
+# a second parser.
+serde_json = { workspace = true }

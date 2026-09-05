@@ -1,0 +1,26 @@
+[package]
+name = "busbar-transport-tls"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The tls transport: frames over TLS, composed over tcp."
+license = "Apache-2.0"
+
+# DEPENDENCY POLICY. In-tree only, inside the trusted computing base, reviewed rather than
+# manifest-gated. Names `busbar-contract` for the plugin surface, `busbar-transport-tcp` for the
+# base byte stream it composes over (and the in-band-upgrade seam, `take_stream`), and rustls for
+# the handshake itself — the same crypto backend the rest of the workspace pins (`ring`).
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+busbar-transport-tcp = { path = "../busbar-transport-tcp" }
+futures = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt", "sync", "io-util", "time"] }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+ring = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros"] }
+rcgen = { workspace = true }
