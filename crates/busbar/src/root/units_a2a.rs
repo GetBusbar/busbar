@@ -755,6 +755,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn verify(
         &self,
         token: &UnitToken<Verify>,
+        trust: &TrustToken,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
@@ -776,7 +777,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
                     token,
                     lanes
                         .into_iter()
-                        .map(|lane| VerifiedDestination::seal(self.bindings.trust_token, lane))
+                        .map(|lane| VerifiedDestination::seal(trust, lane))
                         .collect(),
                 )
             }
