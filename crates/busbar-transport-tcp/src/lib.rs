@@ -204,7 +204,10 @@ impl TcpTransport {
         Some(guard.scratch.as_ptr() as usize)
     }
 
-    fn map_connect_err(e: &io::Error) -> TransportError {
+    /// Named for what it does rather than where it was first used: every I/O path in this crate —
+    /// the dial, the frame reads, the writes and the refusal — maps its errors through it, matching
+    /// the sibling `http` and `tls` crates' function of the same shape.
+    fn map_io_err(e: &io::Error) -> TransportError {
         match e.kind() {
             io::ErrorKind::ConnectionRefused => TransportError::Refused,
             io::ErrorKind::TimedOut => TransportError::Timeout,
@@ -301,7 +304,7 @@ impl Transport for TcpTransport {
                 .await
                 .map_err(|_| TransportError::Closed)?;
             self.register(stream, peer)
-                .map_err(|e| Self::map_connect_err(&e))
+                .map_err(|e| Self::map_io_err(&e))
         })
     }
 
@@ -322,9 +325,9 @@ impl Transport for TcpTransport {
                 .map_err(|_| TransportError::AddressRefused)?;
             let stream = TcpStream::connect(addr)
                 .await
-                .map_err(|e| Self::map_connect_err(&e))?;
+                .map_err(|e| Self::map_io_err(&e))?;
             self.register(stream, addr)
-                .map_err(|e| Self::map_connect_err(&e))
+                .map_err(|e| Self::map_io_err(&e))
         })
     }
 
@@ -361,7 +364,7 @@ impl Transport for TcpTransport {
                 }
                 Err(e) => {
                     drop(guard);
-                    Some((Err(TcpTransport::map_connect_err(&e)), None))
+                    Some((Err(TcpTransport::map_io_err(&e)), None))
                 }
             }
         }))
@@ -379,8 +382,8 @@ impl Transport for TcpTransport {
             guard
                 .write_all(bytes.as_slice())
                 .await
-                .map_err(|e| Self::map_connect_err(&e))?;
-            guard.flush().await.map_err(|e| Self::map_connect_err(&e))?;
+                .map_err(|e| Self::map_io_err(&e))?;
+            guard.flush().await.map_err(|e| Self::map_io_err(&e))?;
             Ok(bytes.len())
         })
     }
@@ -476,10 +479,8 @@ where
 {
     w.write_all(bytes)
         .await
-        .map_err(|e| TcpTransport::map_connect_err(&e))?;
-    w.flush()
-        .await
-        .map_err(|e| TcpTransport::map_connect_err(&e))
+        .map_err(|e| TcpTransport::map_io_err(&e))?;
+    w.flush().await.map_err(|e| TcpTransport::map_io_err(&e))
 }
 
 #[cfg(test)]

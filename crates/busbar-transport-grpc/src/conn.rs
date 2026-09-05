@@ -79,10 +79,6 @@ pub(crate) struct ConnState {
     /// task driving that RPC (accepted inbound, or opened by a dial-side `write` to a fresh
     /// `StreamId`) owns the receiving half and forwards each message onto the wire.
     pub(crate) outbound: SyncMutex<HashMap<u64, OpenCall>>,
-    /// The dial-side connection this Conn rides on, plus the origin URI (scheme + authority) every
-    /// call it opens needs, so `write()` can lazily open a new RPC for a `StreamId` it has not
-    /// seen before. `None` for an accepted (server-side) connection, whose streams are opened by
-    /// the PEER — see the crate's own report on this asymmetry.
     /// The dial-side connection, the origin URI, and the gRPC method every call it opens is
     /// dialled against — the method the destination named, so two destinations on one transport
     /// can name two different upstream methods.

@@ -305,9 +305,6 @@ impl TlsTransport {
     }
 }
 
-/// A stand-in fingerprint: the SHA-256 of the DER bytes, formatted for [`CertFacts`]. Not a trust
-/// decision — the trust decision already happened inside the rustls handshake; this is evidence
-/// carried alongside it.
 impl busbar_unit_transport_key::TlsConfigSink for TlsTransport {
     fn register_server_config(&self, slot: u64, cfg: Arc<rustls::ServerConfig>) {
         TlsTransport::register_server_config(self, slot, cfg);
@@ -318,6 +315,9 @@ impl busbar_unit_transport_key::TlsConfigSink for TlsTransport {
     }
 }
 
+/// A stand-in fingerprint: the SHA-256 of the DER bytes, formatted for [`CertFacts`]. Not a trust
+/// decision — the trust decision already happened inside the rustls handshake; this is evidence
+/// carried alongside it.
 fn ring_fingerprint(der: &[u8]) -> Vec<u8> {
     use ring::digest;
     digest::digest(&digest::SHA256, der).as_ref().to_vec()
