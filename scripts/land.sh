@@ -64,7 +64,7 @@ if [ -n "$families" ]; then
   (cd "$here" && cargo build --release -p busbar 2>&1 | grep -E '^error' ) && { echo "land.sh: RED — release build" >&2; exit 1; }
   out="$here/target/oracle/recordings/land-$(date +%H%M%S)"
   ORACLE_LISTEN_PORT=49901 ORACLE_ADMIN_PORT=49902 ORACLE_MOCK_PORT=49911 \
-    "$here/testing/shadow-oracle/record.sh" --bin "$here/target/release/busbar" --filter "$families" \
+    "$here/testing/shadow-oracle/record.sh" --plane all --bin "$here/target/release/busbar" --filter "$families" \
     --out "$out" >"$out.log" 2>&1 || { echo "land.sh: RED — record.sh (see $out.log)" >&2; exit 1; }
   python3 "$here/testing/shadow-oracle/diff-cells.py" --golden "$here/target/oracle/recordings/golden" \
     --candidate "$out" --out "$out.report" --allow-harness-skew --family "$families" \
