@@ -23,10 +23,13 @@
 #![cfg(feature = "teller-waist")]
 
 /// Step 1 — who is calling: the read of the auth middleware's already-resolved outcome.
-pub mod authenticate;
 
 /// Step 2 — where the unit may go: the three pre-admission guards, in their one order.
-pub mod verify;
 
 /// Step 3 — whether the caller may do this at all: the migrated hook seats' veto.
+
 pub mod approve;
+pub mod arrival;
+pub mod authenticate;
+pub mod decode;
+pub mod verify;
