@@ -85,13 +85,15 @@ boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three key
     CUR_VARIANT="$variant"
   fi
   BUSBAR_PID="$(oracle_spawn "$WORK/busbar.log" "$BIN")"; track_pid "$BUSBAR_PID"
-  # busbar boots in tens of ms; poll at 25 ms (the shared wait_for_http sleeps a whole second)
-  local w=0; while [ $w -lt 800 ]; do
+  # busbar boots in tens of ms; poll at 25 ms (the shared wait_for_http sleeps a whole second).
+  # The bound is 60 s, not 20: a hooks-variant boot loads the published plugins, and on a machine
+  # running a test suite beside the recording that took longer than 20 s and read as a failed cell.
+  local w=0; while [ $w -lt 2400 ]; do
     curl -fsS -m 1 -o /dev/null "http://127.0.0.1:${LISTEN_PORT}/healthz" 2>/dev/null && break
     kill -0 "$BUSBAR_PID" 2>/dev/null || return 1
     sleep 0.025; w=$((w+1))
   done
-  [ $w -lt 800 ] || return 1
+  [ $w -lt 2400 ] || return 1
   oracle_mint_keys "$ADMIN_PORT" || return 2
   # PRIME the BROKE key: its group admits exactly one request per day, so one un-recorded request
   # now makes every over_budget cell a real 429 at Admit (the first request would be admitted).

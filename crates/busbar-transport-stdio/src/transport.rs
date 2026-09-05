@@ -379,6 +379,19 @@ impl Transport for StdioTransport {
         Box::pin(async move { Err(TransportError::HandoffMismatch) })
     }
 
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+        // stdio hands nothing up: the process's own stdin/stdout is never adopted by another
+        // transport, so there is no raw stream to give.
+        let _ = conn;
+        None
+    }
+
+    fn composed_over(&self) -> Option<&'static str> {
+        // stdio opens its own channel (the process's stdin/stdout) and was never built over
+        // another transport's stream.
+        None
+    }
+
     fn close(&self, conn: Conn, _reason: CloseReason) {
         let id = conn.id();
         if let Some(state) = self.conns.lock().unwrap().remove(&id) {

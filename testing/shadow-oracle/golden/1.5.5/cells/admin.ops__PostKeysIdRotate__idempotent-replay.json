@@ -1,1 +1,65 @@
-{"applied":["audit.hash","hdr.date","key.id","ts.unix"],"body":{"json":{"allowed_pools":null,"created_at":0,"enabled":true,"expires_at":0,"group":"oracle","id":"<KEY>","labels":{},"name":"oracle-ok","state":"active","token":"bbk_<TOKEN>"}},"effects":{"audit":{"added":1},"metrics":{"unavailable":true},"usage":{}},"headers":{"content-length":"445","content-type":"application/json"},"status":200}
+{
+  "applied": [
+    "audit.hash",
+    "hdr.date",
+    "hdr.length",
+    "key.id",
+    "ts.unix"
+  ],
+  "body": {
+    "json": {
+      "allowed_pools": null,
+      "created_at": 0,
+      "enabled": true,
+      "expires_at": 0,
+      "group": "oracle",
+      "id": "<KEY>",
+      "labels": {},
+      "name": "oracle-ok",
+      "state": "active",
+      "token": "bbk_<TOKEN>"
+    }
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "key.rotate",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "applied",
+          "resource": "key:vk_<KEY>"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {
+      "unavailable": true
+    },
+    "usage": {},
+    "readback": [
+      {
+        "body": {
+          "json": {
+            "allowed_pools": null,
+            "created_at": 0,
+            "enabled": true,
+            "group": "oracle",
+            "id": "<KEY>",
+            "labels": {},
+            "name": "oracle-ok",
+            "state": "active"
+          }
+        },
+        "path": "/api/v1/admin/keys/vk_<KEY>",
+        "status": 200
+      }
+    ]
+  },
+  "headers": {
+    "content-length": "<LEN>",
+    "content-type": "application/json"
+  },
+  "status": 200
+}

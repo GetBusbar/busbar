@@ -74,15 +74,25 @@ them). Each axis is blind to the other two; only the kernel composes them.
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
   (`--ceiling busbar-contract,busbar-caps=3500`), which the construction gate runs as
-  `surface-ceiling:contract+caps`; all `busbar-unit-*` ≤ 45k (incl. verbs
+  `surface-ceiling:contract+caps`. Two crates carry their own surface ceilings beside it, because
+  each is contract surface that a plugin author does not read and a ceiling nothing measures is a
+  ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
+  std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as
+  `surface-ceiling:grammar`; `busbar-contract-transport` — the transport-facing contract: the
+  connection and listener handles, the detached stream, the closed transport failure and close
+  codes, the arrival record, the upstream address, the reserved transport fact keys, the kind's ABI
+  generation and the composition check — ≤ **1k**, gated as `surface-ceiling:contract-transport`.
+  All `busbar-unit-*` ≤ 45k (incl. verbs
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
 
 ### 1.2 Core → plugin. Never plugin → core.
 
 Every plugin is passive: the kernel registers it, calls it, consumes what it returns.
-- **Manifest allow-list**: `busbar-contract` plus reviewed third-party crates; any dependency on
-  `busbar-kernel`, `busbar-caps`, a `busbar-unit-*`, another plane or a transport is a CI failure.
+- **Manifest allow-list**: `busbar-contract`, the closed grammar it is written on and re-exports
+  (`busbar-grammar`), plus reviewed third-party crates; any dependency on `busbar-kernel`,
+  `busbar-caps`, `busbar-contract-transport`, a `busbar-unit-*`, another plane or a transport is a
+  CI failure.
 - **Source denylist** (transitive via `cargo metadata`), scoped to the **pure kinds**: plane, hook,
   static auth schemes that are pure, egress-auth-scheme, and the FFI transform crate: any path under
   `std::{net, fs, process, os, env}`, `tokio::{net, fs, process}`, `async_std::*`, `libc`, `reqwest`,
@@ -573,7 +583,7 @@ ArrivalLocation  = Header(name) | Query(name) | FirstFrameJsonPointer(ptr) | Cli
 Location         = ArrivalLocation | UnitJsonPointer(ptr)                          // UnitJsonPointer: idempotency only; kernel-extracted from the Ir span
 ```
 Overlap is checked ACROSS planes; within one plane the claims form an ORDERED pattern set with sealed most-specific-wins precedence (`Lit` before `Var`, longer before shorter, pools before lanes — the 1.5.5 order; the boot cell asserts it). The kernel owns `overlaps` (for `PathPattern`, per segment: `Var` overlaps any `Lit`, `Tail` overlaps any suffix — conservatively), **total over the cross-product of forms** (cross-form pairs conservatively
-overlap → boot refusal); reflexivity and symmetry asserted; a boot cell per form pair. Masking per
+overlap); reflexivity and symmetry asserted; a boot cell per form pair. **An overlap is RESOLVED by the sealed order before it is refused**: two claims of DIFFERENT precedence are settled by most-specific-wins, and sealing records the pair and its winner; only an overlap at EQUAL precedence — where the order has nothing to say and the route would fall to declaration accident — is a boot refusal; two claims whose SCHEME SETS (declared scheme plus its narrowing alternatives; a claim declaring no scheme has no set and is compatible with every claim) are disjoint never overlap at all, because one request carries one credential. Anchored beats floating: `PathSuffix(s)` matches a strict subset of `PathContains(s)` and outranks it where the length score ties. The five shipped planes' 49 claims seal on this rule with 209 resolved pairs and no refusal. Masking per
 form: span forms → same-length fill; `ClientCert` → nothing masked; `Signed` → the signature span only;
 `HandshakeFrames` → bounded prefix. **JSON is the one serialization the kernel understands, as a closed
 grammar**: a zero-copy, non-allocating span scanner (M1) resolves pointers over the scanned prefix up to

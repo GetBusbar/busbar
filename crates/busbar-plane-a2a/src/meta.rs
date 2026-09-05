@@ -125,7 +125,7 @@ mod tests {
     /// The registry key is the codec's own.
     #[test]
     fn the_key_is_the_codecs_own() {
-        assert_eq!(A2aPlane::KEY, busbar_a2a::PLANE_DECL.key);
+        assert_eq!(A2aPlane::KEY, busbar_a2a_codec::PLANE_KEY);
     }
 
     /// No kernel-reserved class is declared here.
@@ -185,7 +185,7 @@ mod tests {
     /// The configuration schema names the section the codec reads, and no other.
     #[test]
     fn the_configuration_section_is_the_codecs_own() {
-        assert_eq!(busbar_a2a::PLANE_DECL.config_section, "agents");
+        assert_eq!(busbar_a2a_codec::CONFIG_SECTION, "agents");
     }
 
     /// Every declared operation class is named by at least one method of the vocabulary.

@@ -7,8 +7,9 @@ use std::sync::Arc;
 
 use busbar_kernel::grammar::{Segment, Selector};
 use busbar_kernel::registry::{
-    bootstrap, check_claims, overlaps, precedence_order, BootstrapVerdict, Claim, PlaneClaim,
-    Plugin, PluginKind, Registry, RegistryError,
+    bootstrap, check_claims, claims_overlap, overlaps, precedence, precedence_order, seal_claims,
+    BootstrapVerdict, Claim, ConflictReason, PlaneClaim, Plugin, PluginKind, Registry,
+    RegistryError,
 };
 
 struct Fake(&'static str, PluginKind);
@@ -80,7 +81,7 @@ fn overlap_is_total_reflexive_and_symmetric_over_every_form_pair() {
 }
 
 #[test]
-fn two_claims_that_could_both_match_are_refused_at_boot() {
+fn two_claims_that_could_both_match_at_different_precedence_are_resolved_not_refused() {
     let claims = vec![
         PlaneClaim {
             plane: "left",
@@ -94,9 +95,64 @@ fn two_claims_that_could_both_match_are_refused_at_boot() {
             ),
         },
     ];
-    let conflict = check_claims(&claims).expect_err("a variable segment covers the literal one");
+    // The variable segment covers the literal one, so they do overlap — and the sealed order has
+    // something to say about it, so the pair is settled rather than refused.
+    let sealed = seal_claims(&claims);
+    assert!(sealed.refused.is_empty());
+    assert_eq!(sealed.resolved.len(), 1);
+    assert_eq!(
+        sealed.resolved[0].winner, 0,
+        "the exact path is the tighter"
+    );
+    assert!(check_claims(&claims).is_ok());
+}
+
+#[test]
+fn two_claims_that_could_both_match_at_equal_precedence_are_refused_at_boot() {
+    let claims = vec![
+        PlaneClaim {
+            plane: "left",
+            claim: claim("wire", Selector::ExactPath("/v1/thing")),
+        },
+        PlaneClaim {
+            plane: "right",
+            claim: claim("wire", Selector::ExactPath("/v1/thing")),
+        },
+    ];
+    let conflict = check_claims(&claims).expect_err("one path, two planes, nothing to choose by");
     assert_eq!(conflict.left.plane, "left");
     assert_eq!(conflict.right.plane, "right");
+    assert_eq!(conflict.reason, ConflictReason::EqualPrecedence);
+}
+
+#[test]
+fn claims_whose_scheme_sets_share_nothing_never_collide() {
+    let mut one = claim("wire", Selector::ExactPath("/v1/thing"));
+    one.scheme = Some("one-key");
+    one.scheme_alternatives = &["bearer"];
+    let mut two = claim("wire", Selector::ExactPath("/v1/thing"));
+    two.scheme = Some("two-key");
+    two.scheme_alternatives = &["request-signature"];
+
+    // The selectors are the same string; only the credential populations differ.
+    assert!(overlaps(&one.selector, &two.selector));
+    assert!(!claims_overlap(&one, &two));
+
+    // A claim that declares NO scheme reads no credential, so it rules nothing out and collides.
+    let mut open = two;
+    open.scheme = None;
+    open.scheme_alternatives = &[];
+    assert!(claims_overlap(&one, &open));
+}
+
+#[test]
+fn an_anchored_fragment_outranks_the_same_length_floating_one() {
+    // The two literals are the same length, so specificity alone ties them. A suffix matches a
+    // strict subset of what the same literal matches floating, and the order says so.
+    assert!(
+        precedence(&Selector::PathSuffix("/v1/audio/speech"))
+            > precedence(&Selector::PathContains(":generateContent"))
+    );
 }
 
 #[test]

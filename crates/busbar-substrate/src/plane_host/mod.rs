@@ -1014,6 +1014,27 @@ pub trait BudgetHost: Send + Sync {
     /// for the sink's `cost` field.
     fn cost(&self) -> CostHandle;
 
+    /// Whether a RATE CARD is present on this deployment at all — the first of the two questions the
+    /// pre-admission pricing guard asks.
+    ///
+    /// The handle [`cost`](Self::cost) mints is opaque by design: a plane may hold the deployment's
+    /// cost model but may not read its rates, because a plane that could read a rate could price a
+    /// request. But "is anything priced here" is not a rate, it is a POSTURE — and the guard that
+    /// fails a request closed on an unbillable name cannot run without it. So the question is
+    /// answered by the host, over the same handle, exactly as
+    /// [`rate_headroom`](Self::rate_headroom) answers its own: the host downcasts and drives the
+    /// unchanged `CostModel::pricing_enabled` read. A host with no cost model answers `false`, which
+    /// is the honest posture of a deployment that prices nothing.
+    fn cost_pricing_enabled(&self, cost: &CostHandle) -> bool;
+
+    /// Whether a PRESENT card leaves `model` unpriced — the pricing guard's second question, and the
+    /// one that fails closed.
+    ///
+    /// The same seam and the same rule as [`cost_pricing_enabled`](Self::cost_pricing_enabled): the
+    /// host downcasts the opaque handle and drives the unchanged `CostModel::model_unpriced` read,
+    /// which is `false` for every name when no card is configured (there is no card to miss).
+    fn cost_model_unpriced(&self, cost: &CostHandle, model: &str) -> bool;
+
     /// LEDGER one delivered response's tier-split token usage against the key's budget chain — the
     /// host-driven form of `sink.gov.record_usage(&sink.cost, key, pool, model, tokens, now)`. `gov`
     /// and `cost` are the opaque handles the sink minted (via [`governance`](Self::governance) /
@@ -1220,6 +1241,28 @@ pub trait AdmissionHost: Send + Sync {
         proto: &'static str,
         pool: &str,
         started: std::time::Instant,
+        charged_at: u64,
+    ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>>;
+
+    /// THE SAME DOOR, WITHOUT THE TERMINAL — the check-and-charge on its own.
+    ///
+    /// [`admission_door`](Self::admission_door) is exactly this call followed by
+    /// `finish_rejected` on the refusing arm, which is right for a caller whose refusal ends there
+    /// and wrong for one whose terminal is a step of its own: posting the refusal at the door and
+    /// then posting it again at the terminal would put two links on one unit's chain. So a plane
+    /// that owns an Audit step takes this one and hands the refusal — bytes, not a posted record —
+    /// to that step, and a unit posts exactly one link whichever way it ended.
+    ///
+    /// Identical to `busbar_core::ingress::admit_check` over the bound snapshot: the same buckets,
+    /// the same charge, the same downgrade re-pool, and on the refusing arm the same
+    /// protocol-native bytes the door would have finished. The label the terminal records those
+    /// bytes under is [`pool_label`](EngineHost::pool_label) of the same `pool`, which is what the
+    /// door computes for itself before it finishes.
+    fn admission_check(
+        &self,
+        gov: &PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
         charged_at: u64,
     ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>>;
 

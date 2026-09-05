@@ -8,7 +8,7 @@
 //! read the bytes; a later step re-deriving the same answer from the same bytes is a second reading
 //! of one closed grammar, and two readings can drift.
 
-use busbar_contract::bounded::{ArenaBytes, FactValue, Facts};
+use busbar_contract::bounded::{ArenaBytes, FactValue, Facts, Ir, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::AdminVerbId;
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
@@ -21,7 +21,7 @@ use busbar_contract::wire::{Decode, Encode, Frame, FrameCursor};
 
 use crate::meta::FACT_VERB;
 use crate::verbs::{self, VerbEntry, OP_READ, OP_WRITE, VERB_OPENAPI_JSON};
-use crate::{refusal, scan, AdminPlane};
+use crate::{refusal, AdminPlane};
 
 /// What decoding one admin frame's envelope resolved to.
 struct Decoded<'u> {
@@ -34,14 +34,54 @@ struct Decoded<'u> {
 fn identify<'u>(bytes: &'u [u8]) -> Option<Decoded<'u>> {
     // The envelope's two members are the request line's two structural values, so they are named
     // with the kernel's own reserved keys rather than with this crate's guess at their spelling.
-    use busbar_contract::transport::facts as tfacts;
-    let whole = scan::whole(bytes);
-    let method_span = scan::object_field(bytes, whole, tfacts::METHOD)?;
-    let path_span = scan::object_field(bytes, whole, tfacts::PATH)?;
-    let method = core::str::from_utf8(&bytes[method_span.start..method_span.end]).ok()?;
-    let path = core::str::from_utf8(&bytes[path_span.start..path_span.end]).ok()?;
+    let method = str_at(bytes, PTR_METHOD)?;
+    let path = str_at(bytes, PTR_PATH)?;
     let (entry, params) = verbs::find_verb(method, path)?;
     Some(Decoded { entry, params })
+}
+
+/// Where the envelope carries the request line's method.
+///
+/// Spelled as a pointer to the kernel's own reserved transport fact key rather than to this
+/// crate's guess at it; the test below is what keeps the two spellings one.
+const PTR_METHOD: &str = "/method";
+
+/// Where the envelope carries the request line's target.
+const PTR_PATH: &str = "/path";
+
+/// The span of a string value's CONTENT at one pointer, quotes excluded.
+///
+/// Through the contract's own span grammar, which is the kernel's. This plane used to carry a
+/// scanner of a different design again — a cursor over nested scopes rather than a pointer walk —
+/// and the closed grammar the design names has one reading, not two.
+fn content_at(bytes: &[u8], pointer: &str) -> Option<Span> {
+    match busbar_contract::spans::resolve_pointer(bytes, pointer) {
+        busbar_contract::spans::Resolved::Found(span) => {
+            let raw = bytes.get(span.start..span.end)?;
+            if raw.first() == Some(&b'"') && raw.len() >= 2 && raw.last() == Some(&b'"') {
+                Some(Span::new(span.start + 1, span.end - 1))
+            } else {
+                Some(span)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The string value at one pointer, with its quotes stripped.
+fn str_at<'u>(bytes: &'u [u8], pointer: &str) -> Option<&'u str> {
+    let span = content_at(bytes, pointer)?;
+    core::str::from_utf8(bytes.get(span.start..span.end)?).ok()
+}
+
+/// The span view of a body, built from the pointers this step resolved.
+///
+/// One scan of one closed grammar, into the unit's own arena, so the loop reads the spans the
+/// plane resolved instead of walking the same bytes a second time.
+fn view<'u>(bytes: &'u [u8], pointers: &[&'u str], ctx: &Ctx<'u>) -> Result<Ir<'u>, Decode> {
+    let spans = busbar_contract::spans::resolve(bytes, pointers, ctx.arena())
+        .map_err(|_| Decode::Oversize)?;
+    Ok(Ir::new(bytes, spans))
 }
 
 /// The verb `decode_ingress` resolved, read back off the unit's sealed draft facts.
@@ -61,7 +101,7 @@ impl Plane for AdminPlane {
         &self,
         frames: &mut FrameCursor<'u>,
         _st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
+        ctx: &Ctx<'u>,
     ) -> Result<Ingress<'u>, Decode> {
         let frame = frames.next_frame().ok_or(Decode::Malformed)?;
         let bytes = frame.bytes.as_slice();
@@ -82,19 +122,23 @@ impl Plane for AdminPlane {
         // per-operation schema validation. Every verb this table does not cover still decodes
         // correctly above; it simply carries no extra body fact, which is a visible omission (the
         // fact is absent) rather than a silently wrong one (nothing is invented in its place).
+        // Every pointer this step resolved, in the order it resolved them: the request line's two
+        // structural values, and the one body member the verb's row documents where it has one.
+        let mut pointers: [&'u str; 3] = [PTR_METHOD, PTR_PATH, PTR_PATH];
+        let mut declared = 2;
         if let Some(field) = verbs::documented_body_field(decoded.entry.verb) {
-            let whole = scan::whole(bytes);
-            if let Some(body_span) = scan::object_field(bytes, whole, "body") {
-                if let Some(value_span) = scan::object_field(bytes, body_span, field) {
-                    if let Ok(text) = core::str::from_utf8(&bytes[value_span.start..value_span.end])
-                    {
-                        let _ = facts.set(field, FactValue::Str(text));
-                    }
-                }
+            let pointer = ctx
+                .arena()
+                .alloc_str(&format!("/body/{field}"))
+                .map_err(|_| Decode::Oversize)?;
+            if let Some(text) = str_at(bytes, pointer) {
+                let _ = facts.set(field, FactValue::Str(text));
             }
+            pointers[declared] = pointer;
+            declared += 1;
         }
 
-        let ir = busbar_contract::bounded::Ir::new(bytes, &[]);
+        let ir = view(bytes, &pointers[..declared], ctx)?;
         let op = if decoded.entry.read_only {
             OP_READ
         } else {
@@ -310,9 +354,7 @@ impl Plane for AdminPlane {
 /// `info.version` shape, so the caller's safe default (verbatim passthrough) applies instead of a
 /// half-substituted document.
 fn substitute_info_version(bytes: &[u8], version: &str) -> Option<Vec<u8>> {
-    let whole = scan::whole(bytes);
-    let info_span = scan::object_field(bytes, whole, "info")?;
-    let version_span = scan::object_field(bytes, info_span, "version")?;
+    let version_span = content_at(bytes, "/info/version")?;
     let mut out = Vec::with_capacity(bytes.len() + version.len());
     out.extend_from_slice(&bytes[..version_span.start]);
     out.extend_from_slice(version.as_bytes());
@@ -323,6 +365,18 @@ fn substitute_info_version(bytes: &[u8], version: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two envelope pointers spell the kernel's own reserved transport fact keys.
+    ///
+    /// The envelope's two members ARE the request line's structural values, and the kernel reserves
+    /// the spelling of both. Three planes each guessed `"path"` before the constants existed; this
+    /// is what stops a fourth guess landing here.
+    #[test]
+    fn the_envelope_pointers_spell_the_reserved_keys() {
+        use busbar_contract::transport::facts as tfacts;
+        assert_eq!(PTR_METHOD, format!("/{}", tfacts::METHOD));
+        assert_eq!(PTR_PATH, format!("/{}", tfacts::PATH));
+    }
 
     #[test]
     fn substitutes_info_version_and_leaves_everything_else_byte_identical() {

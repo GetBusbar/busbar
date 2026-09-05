@@ -1,1 +1,44 @@
-{"applied":["hdr.date","hdr.etag"],"body":{"text":""},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"etag":"<ETAG>"},"status":204}
+{
+  "applied": [
+    "hdr.date",
+    "hdr.etag"
+  ],
+  "body": {
+    "text": ""
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "identity-provider.delete",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "applied",
+          "resource": "identity-provider:oracle-idp2"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "body": {
+          "json": {
+            "error": {
+              "code": "not_found",
+              "message": "identity-provider `oracle-idp2` not found"
+            }
+          }
+        },
+        "path": "/api/v1/admin/identity-providers/oracle-idp2",
+        "status": 404
+      }
+    ]
+  },
+  "headers": {
+    "etag": "<ETAG>"
+  },
+  "status": 204
+}

@@ -1,1 +1,42 @@
-{"applied":["hdr.date"],"body":{"text":""},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{},"status":204}
+{
+  "applied": [
+    "audit.hash",
+    "hdr.date"
+  ],
+  "body": {
+    "text": ""
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "plugin.remove",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "applied",
+          "resource": "plugin:busbar-webrequest-1.0.6-<TRIPLE>.tar.gz"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "body": {
+          "json": {
+            "error": {
+              "code": "invalid_request",
+              "message": "unknown plugin type ``: expected `auth`, `hooks`, `secret`, or `store`"
+            }
+          }
+        },
+        "path": "/api/v1/admin/plugins",
+        "status": 400
+      }
+    ]
+  },
+  "headers": {},
+  "status": 204
+}

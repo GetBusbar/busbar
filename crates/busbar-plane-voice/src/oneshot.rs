@@ -1,7 +1,7 @@
 //! The one-shot transcribe/TTS surface — a provisional wire shape, documented as such.
 //!
 //! `busbar-voice`'s own IR is duplex/session-only: per its crate-root documentation, Plane 4 is "the
-//! duplex / live-voice plane," and nothing in `busbar_voice::ir` models a request with no session at
+//! duplex / live-voice plane," and nothing in `busbar_voice_codec::ir` models a request with no session at
 //! all. So there is no dedicated wire format anywhere in this crate's dependency closure to decode a
 //! one-shot transcribe or text-to-speech request against — this is one of the places the task this
 //! crate exists for names as a genuine gap rather than something to guess past silently.

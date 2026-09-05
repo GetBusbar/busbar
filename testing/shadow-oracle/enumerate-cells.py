@@ -381,6 +381,51 @@ def admin_cells() -> list[dict]:
             cells.append(http(f"admin.ops|{opid}|not-found", F, op["method"], op["not_found"]["path"], auth="admin",
                               listener="admin", headers=(v.get("headers") or {}), body=_req_of(op, v)["body"] if v else None,
                               why=f"expect {op['not_found'].get('expect')}"))
+
+    # Three cells added for the ADMIN row of qa/teller-steps.json (the H2 Teller-step matrix): a fifth
+    # plane, mapped onto the existing admin.ops family rather than a new one.
+    #
+    # verify/approve: the operator admin credential presented at the DATA listener. `chain: [keys]`
+    # only recognizes a signed virtual key, so the raw admin secret is Denied before any budget bucket
+    # is drawn -- the credential cannot reach a destination it was never scoped to reach. This is the
+    # closest genuine proof the harness can produce today: a role-bound external admin identity
+    # provider (the seam that would let a real insufficient-SCOPE 403 exist, as opposed to a wrong-
+    # destination refusal) is not wired up here -- the harness only proves the auth-oidc plugin loads
+    # (plugins.load|auth-oidc), not a working token-issuing flow -- so approve stays mapped to the same
+    # cell rather than gaining an independent one.
+    cells.append(http("admin.ops|admin-token|wrong-destination", F, "POST", "/v1/chat/completions",
+                       auth="admin", listener="data", headers={"Content-Type": "application/json"},
+                       body=json.dumps({"model": "m-openai-chat", "messages": [{"role": "user", "content": "ping"}]},
+                                       separators=(",", ":")),
+                       why="the admin operator credential is not a valid signed vkey on the data-plane "
+                           "chain (keys); refused before Admit ever draws a budget bucket"))
+
+    # admit: the Config rate class is limited to 10 mutating calls/min per bucket. PostConfigReload
+    # carries no If-Match and no side effect beyond re-reading the same config.yaml, so it can be
+    # hammered in one fresh boot without any other cell's state getting in the way. `repeat: 11`
+    # records only the LAST response -- the 11th call in this boot's Config-class window.
+    reload_cell = http("admin.ops|PostConfigReload|rate-limit", F, "POST", "/api/v1/admin/config/reload",
+                        auth="admin", listener="admin",
+                        why="the 11th Config-class mutation inside one boot's 60s window is refused "
+                            "(429) before the reload itself runs -- CONFIG_CLASS_RULES, not the crate's "
+                            "own Crud placeholder")
+    reload_cell["request"]["repeat"] = 11
+    cells.append(reload_cell)
+
+    # meter: one mutating admin op (creating a group) posts no billing/usage delta at all, even though
+    # the oracle's providers carry a non-zero per-request fee (the `billing` family's own cells price
+    # every LLM request at 2.5 units). GET /api/v1/admin/usage after the ONE admin mutation, on an
+    # otherwise-untouched fresh boot, is still the all-zero shape.
+    usage_cell = http("admin.ops|GetUsage|no-usage-after-mutation", F, "GET", "/api/v1/admin/usage",
+                       auth="admin", listener="admin",
+                       why="admin operations are never billed: one PostGroups mutation leaves "
+                           "/api/v1/admin/usage at its fresh-boot zero shape")
+    usage_cell["request"]["pre"] = [{
+        "method": "POST", "path": "/api/v1/admin/groups", "listener": "admin", "auth": "admin",
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(ops["PostGroups"]["ok"]["body"], separators=(",", ":"), sort_keys=True),
+    }]
+    cells.append(usage_cell)
     return cells
 
 

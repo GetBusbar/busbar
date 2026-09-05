@@ -521,6 +521,14 @@ impl BudgetHost for FixtureHost {
     fn cost(&self) -> CostHandle {
         CostHandle(Arc::new(()))
     }
+    // The fixture carries no cost model, so it prices nothing and nothing is left unpriced — the
+    // posture of a deployment with no rate card, which is what the fixture's `cost()` hands back.
+    fn cost_pricing_enabled(&self, _cost: &CostHandle) -> bool {
+        false
+    }
+    fn cost_model_unpriced(&self, _cost: &CostHandle, _model: &str) -> bool {
+        false
+    }
     fn meter_ledger(
         &self,
         _gov: &GovHandle,
@@ -667,6 +675,15 @@ impl AdmissionHost for FixtureHost {
         _proto: &'static str,
         _pool: &str,
         _started: std::time::Instant,
+        _charged_at: u64,
+    ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>> {
+        Ok((None, None))
+    }
+    fn admission_check(
+        &self,
+        _gov: &PlaneRequestCtx,
+        _proto: &'static str,
+        _pool: &str,
         _charged_at: u64,
     ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>> {
         Ok((None, None))

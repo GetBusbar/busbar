@@ -283,7 +283,7 @@ fn the_revision_is_the_codecs_own() {
     let spec = std::fs::read_to_string(battery().join("src/core/spec.mjs"))
         .expect("the battery's own revision is readable");
     assert!(
-        spec.contains(busbar_mcp::mcp::envelope::PROTOCOL_VERSION),
+        spec.contains(busbar_mcp_codec::codec::PROTOCOL_VERSION),
         "the battery and the codec no longer agree on the revision"
     );
 }

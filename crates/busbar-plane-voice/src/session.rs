@@ -5,7 +5,7 @@
 //! module is the concrete type this plane wraps in it.
 
 use busbar_contract::ids::{CorrelationRef, CorrelationValue};
-use busbar_voice::ir::{DecodeState, IrClientEvent};
+use busbar_voice_codec::ir::{DecodeState, IrClientEvent};
 
 use crate::claims::Dialect;
 
@@ -32,7 +32,7 @@ pub enum Pending {
 /// The plane's own bookkeeping for the current, still-open turn.
 ///
 /// Reset to zero every time a turn closes (see `crate::plane`'s `decode_response`), because these
-/// are the quantities [`busbar_voice::ir::usage::IrDuplexUsage`] does not carry and this plane must
+/// are the quantities [`busbar_voice_codec::ir::usage::IrDuplexUsage`] does not carry and this plane must
 /// derive itself: `audio_seconds_in` from the byte counts of ingress audio frames, `tool_calls` from
 /// counting `IrDuplexTool::CallOpen` events as they are decoded.
 #[derive(Debug, Clone, Copy, Default)]

@@ -1013,7 +1013,8 @@ def rule_manifest_allowlist(tree, cfg):
     unit_names = {_crate_name(d) for d in unit_dirs}
     plane_names = set(cfg["gate"]["plane_crates"]) | {_crate_name(d) for d in _kind_crate_dirs(tree.root, cfg, "plane")}
     transport_names = {_crate_name(d) for d in _kind_crate_dirs(tree.root, cfg, "transport")}
-    global_ok = set(c["reviewed_allowlist"]) | {"busbar-contract"}
+    # The contract, and the closed grammar the contract is written on and re-exports as `spans`.
+    global_ok = set(c["reviewed_allowlist"]) | {"busbar-contract", "busbar-grammar"}
     extra = c.get("reviewed_extra", {})
     known_red = c.get("known_red_deps", {})
 

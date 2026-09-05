@@ -38,8 +38,11 @@
 use busbar_caps::{TransportKeyHandle, TransportKeyToken};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::server::WebPkiClientVerifier;
+use rustls::server::danger::ClientCertVerifier;
+use rustls::server::{ClientHello, ResolvesServerCert, WebPkiClientVerifier};
+use rustls::sign::CertifiedKey;
 use rustls::{RootCertStore, ServerConfig};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Install a process-wide `ring` crypto provider. rustls 0.23 requires exactly one; idempotent —
@@ -317,6 +320,115 @@ pub fn provision_client(
 ) -> TransportKeyHandle {
     sink.register_client_config(slot.index, cfg);
     issue_handle(token, slot.index, slot.fingerprint)
+}
+
+/// One SNI name and the secret locations its certificate and key resolve from, for
+/// [`provision_server_named`].
+///
+/// A named entry never carries a client CA of its own: rustls' [`ResolvesServerCert`] only ever
+/// swaps the leaf certificate and key per `ClientHello`, never the client-cert verifier, so mTLS —
+/// where a deployment wants it — is a listener-wide setting configured once on `default_at` and
+/// applies uniformly regardless of which name a client offered.
+#[derive(Debug, Clone, Copy)]
+pub struct NamedTlsLocations<'a> {
+    /// The SNI name a `ClientHello` must present exactly to select this entry.
+    pub sni: &'a str,
+    /// The certificate chain, leaf first.
+    pub cert: &'a str,
+    /// The private key.
+    pub key: &'a str,
+}
+
+/// Parse resolved material into a [`CertifiedKey`] — the unit of what a [`ResolvesServerCert`]
+/// hands back per `ClientHello`. Kept separate from [`build_server_config`] because a named-SNI
+/// listener builds several of these and installs them behind one resolver rather than baking a
+/// single one straight into a `ServerConfig`.
+fn certified_key(material: &TlsMaterial) -> Result<Arc<CertifiedKey>, String> {
+    let certs = load_cert_chain(&material.cert_pem)?;
+    let key = load_private_key(&material.key_pem)?;
+    let provider = rustls::crypto::ring::default_provider();
+    CertifiedKey::from_der(certs, key, &provider)
+        .map(Arc::new)
+        .map_err(|e| format!("TLS cert/key are not a valid pair: {e}"))
+}
+
+/// Build the client-cert verifier for a named-SNI listener's shared mTLS setting. Kept apart from
+/// [`build_server_config`]'s inline equivalent so that function is untouched by this addition.
+fn client_verifier(client_ca_pem: &[u8]) -> Result<Arc<dyn ClientCertVerifier>, String> {
+    let roots = load_client_roots(client_ca_pem)?;
+    WebPkiClientVerifier::builder(Arc::new(roots))
+        .build()
+        .map_err(|e| format!("cannot build client-cert verifier from TLS client_ca: {e}"))
+}
+
+/// Picks a [`CertifiedKey`] by the `ClientHello`'s SNI name, falling back to the listener's
+/// default when the name is absent (no SNI offered) or present but unrecognised (an unknown name).
+/// 1.5.5 served exactly one certificate per listener regardless of SNI (`v1.5.5` `tls.rs` never
+/// reads `ClientHello::server_name` at all) — falling through to the default for an unrecognised
+/// name, rather than refusing the handshake, is the parity choice: a client that would have gotten
+/// 1.5.5's one cert unconditionally still gets *a* cert here, on any name.
+#[derive(Debug)]
+struct SniCertResolver {
+    by_name: HashMap<String, Arc<CertifiedKey>>,
+    default: Arc<CertifiedKey>,
+}
+
+impl ResolvesServerCert for SniCertResolver {
+    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        Some(match client_hello.server_name() {
+            Some(name) => self.by_name.get(name).unwrap_or(&self.default).clone(),
+            None => self.default.clone(),
+        })
+    }
+}
+
+/// Resolve several named listener certificates plus a default, journal one `Access` entry per
+/// secret actually read (each name's cert and key, in order, then the default's cert, key and
+/// optional client CA), build one `ServerConfig` whose [`ResolvesServerCert`] picks among them by
+/// `ClientHello` SNI, register it under `slot`, and hand back the handle a listener presents at
+/// `listen`, `accept` and every adoption over it — the same single handle a single-cert listener
+/// gets from [`provision_server`], because the routing this adds lives entirely inside the one
+/// registered config's resolver, not in a second registry the transport has to know about.
+///
+/// # Errors
+///
+/// A name's or the default's material could not be resolved through the secret source, or it did
+/// not parse into a usable certificate and key.
+#[allow(clippy::missing_panics_doc)]
+pub fn provision_server_named(
+    source: &dyn SecretSource,
+    journal: &dyn AccessJournal,
+    sink: &dyn TlsConfigSink,
+    token: &TransportKeyToken,
+    slot: Slot,
+    names: &[NamedTlsLocations<'_>],
+    default_at: &TlsLocations<'_>,
+) -> Result<TransportKeyHandle, String> {
+    let mut by_name = HashMap::with_capacity(names.len());
+    for n in names {
+        let material = resolve_tls_material(source, journal, n.cert, n.key, None)?;
+        by_name.insert(n.sni.to_string(), certified_key(&material)?);
+    }
+
+    let default_material = resolve_tls_material(
+        source,
+        journal,
+        default_at.cert,
+        default_at.key,
+        default_at.client_ca,
+    )?;
+    let default = certified_key(&default_material)?;
+
+    let builder = ServerConfig::builder();
+    let builder = match &default_material.client_ca_pem {
+        Some(ca_pem) => builder.with_client_cert_verifier(client_verifier(ca_pem)?),
+        None => builder.with_no_client_auth(),
+    };
+    let mut config = builder.with_cert_resolver(Arc::new(SniCertResolver { by_name, default }));
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+
+    sink.register_server_config(slot.index, Arc::new(config));
+    Ok(issue_handle(token, slot.index, slot.fingerprint))
 }
 
 #[cfg(test)]

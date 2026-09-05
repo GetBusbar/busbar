@@ -12,6 +12,8 @@
 //! relayed to the client as it came, and only an attempt that produced no answer at all moves on
 //! to the next member.
 
+use busbar_caps::{Route, UnitToken};
+
 use crate::attempt::{attempt, AttemptInput, AttemptOutcome, Hop};
 use crate::pool::{Member, OnExhausted, Pool};
 use crate::ports::{Breaker, DestinationId, Permit, Unavailable};
@@ -43,13 +45,19 @@ pub const AT_CAPACITY_RETRY_AFTER_SECS: u64 = 2;
 /// when a slot frees, so it gets the honest floor and never the deceptive bare one.
 ///
 /// Always at least one second, because a zero-second wait means nothing.
-pub fn retry_after_secs(breaker: &dyn Breaker, members: &[Member], pool: &str, now: u64) -> u64 {
+pub fn retry_after_secs(
+    breaker: &dyn Breaker,
+    members: &[Member],
+    pool: &str,
+    now: u64,
+    token: &UnitToken<Route>,
+) -> u64 {
     members
         .iter()
         // A member that is dead or out of lifetime budget sits outside the cooldown machinery
         // entirely and reports zero, so filter to the usable ones exactly as the shed always did.
         .filter(|m| breaker.admissible(m.destination))
-        .map(|m| breaker.cooldown_remaining(pool, m.destination, now))
+        .map(|m| breaker.cooldown_remaining(pool, m.destination, now, token))
         .filter(|remaining| *remaining > 0)
         .min()
         .unwrap_or(AT_CAPACITY_RETRY_AFTER_SECS)
@@ -62,9 +70,10 @@ pub fn handle_status_503(
     members: &[Member],
     pool: &str,
     now: u64,
+    token: &UnitToken<Route>,
 ) -> RouteOutcome {
     RouteOutcome::Refused(Shed::overloaded(retry_after_secs(
-        breaker, members, pool, now,
+        breaker, members, pool, now, token,
     )))
 }
 
@@ -83,7 +92,9 @@ pub async fn handle_exhaustion_for_pool<'a>(
     ctx.mark_pool_visited(&pool.name);
     let now = request.clock.now_secs();
     match &pool.on_exhausted {
-        OnExhausted::Status503 => handle_status_503(request.breaker, members, &pool.name, now),
+        OnExhausted::Status503 => {
+            handle_status_503(request.breaker, members, &pool.name, now, request.token)
+        }
         OnExhausted::FallbackPool(target) => {
             Box::pin(handle_fallback_pool(request, ctx, target)).await
         }
@@ -189,12 +200,24 @@ async fn handle_fallback_pool<'a>(
 
     // The loop guard: if this request already routed through this pool, stop.
     if ctx.is_pool_visited(target) {
-        return handle_status_503(request.breaker, &[], target, request.clock.now_secs());
+        return handle_status_503(
+            request.breaker,
+            &[],
+            target,
+            request.clock.now_secs(),
+            request.token,
+        );
     }
 
     let Some(pool) = request.pools.get(target) else {
         // The target is not configured: the shed, with the empty-set floor.
-        return handle_status_503(request.breaker, &[], target, request.clock.now_secs());
+        return handle_status_503(
+            request.breaker,
+            &[],
+            target,
+            request.clock.now_secs(),
+            request.token,
+        );
     };
     let members = pool.admissible_members();
 
@@ -220,6 +243,7 @@ async fn handle_fallback_pool<'a>(
                 affinity: None,
                 preference: None,
                 now,
+                token: request.token,
             },
             ctx,
         );
@@ -271,7 +295,7 @@ async fn handle_least_bad<'a>(
     ranked.sort_by_key(|m| {
         request
             .breaker
-            .cooldown_remaining(&pool.name, m.destination, now)
+            .cooldown_remaining(&pool.name, m.destination, now, request.token)
     });
 
     let mut dispatch: Option<(&Member, Permit)> = None;
@@ -284,7 +308,7 @@ async fn handle_least_bad<'a>(
     let Some((member, permit)) = dispatch else {
         // Nothing usable at all, or every usable member is at capacity: no degraded dispatch is
         // possible, so shed.
-        return handle_status_503(request.breaker, members, &pool.name, now);
+        return handle_status_503(request.breaker, members, &pool.name, now, request.token);
     };
 
     match dispatch_degraded(request, ctx, pool, member, permit, None).await {
@@ -294,6 +318,7 @@ async fn handle_least_bad<'a>(
             members,
             &pool.name,
             request.clock.now_secs(),
+            request.token,
         ),
     }
 }
@@ -335,6 +360,7 @@ async fn handle_queue<'a>(
             members,
             &pool.name,
             request.clock.now_secs(),
+            request.token,
         );
     }
 
@@ -368,6 +394,7 @@ async fn queue_wait<'a>(
                 members,
                 &pool.name,
                 request.clock.now_secs(),
+                request.token,
             );
         }
         let spent = request.clock.now_millis().saturating_sub(started);
@@ -391,6 +418,7 @@ async fn queue_wait<'a>(
                     members,
                     &pool.name,
                     request.clock.now_secs(),
+                    request.token,
                 )
             }
         };
@@ -421,6 +449,7 @@ async fn queue_wait<'a>(
                         members,
                         &pool.name,
                         request.clock.now_secs(),
+                        request.token,
                     ),
                 };
             }

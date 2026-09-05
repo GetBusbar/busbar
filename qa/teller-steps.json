@@ -71,6 +71,18 @@
       "meter": {"cell": "voice.rig|metering-lease", "status": "mapped", "note": "testing/voice-conformance/legs/metering-lease.sh; K2 -- the session's money hop is the host's reserve-then-settle lease, capped by the caller's own budget"},
       "audit": {"cell": "voice.rig|audit-record", "status": "new", "note": "testing/voice-conformance/legs/audit-record.sh; one governed session lands exactly one new admin-audit entry (topology::open_admitted_session -> VoiceRuntime::audit_session -> JournalHost::audit_record), carrying the voice.session.open action literal and the applied outcome; two sessions land exactly two rows"},
       "exit": {"cell": "voice.rig|exit-terminal", "status": "new", "note": "testing/voice-conformance/legs/exit-terminal.sh; one session ends once -- a metering lease settles exactly once under a double close (LeaseCloseGuard's own idempotent cost_close contract), and a session's one admin-audit row survives being torn down before it ever runs a frame"}
+    },
+    "admin": {
+      "arrival": {"cell": "concurrency|inbound-shed|n8", "status": "mapped", "note": "shared kernel gate; plane-agnostic"},
+      "decode": {"cell": "admin.ops|PostGroups|bad-body", "status": "mapped", "note": "a malformed body is rejected before any admin operation runs -- the admin plane's own wire-shape check"},
+      "authenticate": {"cell": "admin.ops|GetInfo|unauth", "status": "mapped", "note": "no credential on the admin listener -> 401 envelope, before any operation runs"},
+      "verify": {"cell": "admin.ops|admin-token|wrong-destination", "status": "new", "note": "the operator admin credential presented at the DATA listener is not a valid signed vkey on the `keys` chain; refused before Admit ever draws a budget bucket -- the credential cannot reach a destination it was never scoped to reach"},
+      "approve": {"cell": "admin.ops|admin-token|wrong-destination", "status": "new", "note": "same cell as verify: the closest genuine proof this harness can produce. A real insufficient-SCOPE 403 needs a role-bound EXTERNAL admin identity provider (busbar-core's admin-tokens principal is exempt/full by definition and cannot be capped); the harness only proves the auth-oidc plugin loads (plugins.load|auth-oidc), not a working token-issuing flow, so a scope-ceiling refusal is not exercised today"},
+      "admit": {"cell": "admin.ops|PostConfigReload|rate-limit", "status": "new", "note": "the Config rate class (10 mutating calls/min) refuses the 11th call in one boot's window before the reload itself runs"},
+      "route": {"cell": "admin.ops|PostConfigApply|bad-body", "status": "mapped", "note": "an invalid new config is refused outright; the atomic rebuild-and-swap never runs and the prior config stays live -- the down-lane-ends-terminal outcome, admin-style"},
+      "meter": {"cell": "admin.ops|GetUsage|no-usage-after-mutation", "status": "new", "note": "one mutating admin op (PostGroups) leaves /api/v1/admin/usage at its fresh-boot zero shape -- admin operations are never billed, even under the oracle's non-zero per-request fee"},
+      "audit": {"cell": "admin.ops|GetAudit|ok", "status": "mapped", "note": "the fresh 4-op chain (mint, rotate, revoke, config/settings write): each mutating op seals exactly one new audit entry, right action/outcome, chain-linked"},
+      "exit": {"cell": "admin.ops|PostKeys|idempotent-replay", "status": "mapped", "note": "the same Idempotency-Key replayed returns the first response verbatim -- one terminal per mutation, never doubled"}
     }
   }
 }

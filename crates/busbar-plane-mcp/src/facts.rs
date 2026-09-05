@@ -113,7 +113,7 @@ fn correlation_value<'u>(raw_id: &[u8], arena: &'u dyn Arena) -> Option<Correlat
 #[cfg(test)]
 mod tests {
     use super::{correlation_for, correlation_value, FACT_RPC_ID};
-    use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes};
+    use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Span};
     use busbar_contract::ids::CorrelationValue;
 
     /// An arena that hands out leaked bytes, which is what a test arena is.
@@ -126,6 +126,13 @@ mod tests {
 
         fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
             Ok(Box::leak(src.to_string().into_boxed_str()))
+        }
+
+        fn alloc_spans<'a>(
+            &'a self,
+            src: &[(&'a str, Span)],
+        ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+            Ok(Box::leak(src.to_vec().into_boxed_slice()))
         }
 
         fn remaining(&self) -> usize {

@@ -18,6 +18,11 @@ busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-caps = { path = "../busbar-caps" }
 busbar-kernel = { path = "../busbar-kernel" }
 busbar-unit-verbs = { path = "../busbar-unit-verbs" }
+# The migration's read off the previous release's rows. The ledger unit states WHAT an opening
+# figure is; the row shapes it is read from are on this side of the seam, where the loaded plugin
+# already is — the same division the ledger's dual write makes in the other direction. The ledger
+# unit depends only on `busbar-caps`, so there is no cycle back into this crate.
+busbar-unit-ledger = { path = "../busbar-unit-ledger" }
 busbar-unit-wal = { path = "../busbar-unit-wal" }
 libloading = { workspace = true }
 # The kind:hook seam: `DlopenPolicy` implements the async `busbar_api::RoutingPolicy` trait, running

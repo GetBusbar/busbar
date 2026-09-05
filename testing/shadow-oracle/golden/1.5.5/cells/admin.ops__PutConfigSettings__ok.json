@@ -1,1 +1,59 @@
-{"applied":["hdr.date","hdr.etag"],"body":{"json":{"applied":true,"config_version":1,"note":"applied live","reload_to_apply":[],"settings":{"limits":{"request_body_max_bytes":33554432}}}},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"content-length":"136","content-type":"application/json","etag":"<ETAG>"},"status":200}
+{
+  "applied": [
+    "hdr.date",
+    "hdr.etag"
+  ],
+  "body": {
+    "json": {
+      "applied": true,
+      "config_version": 1,
+      "note": "applied live",
+      "reload_to_apply": [],
+      "settings": {
+        "limits": {
+          "request_body_max_bytes": 33554432
+        }
+      }
+    }
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "config.settings",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "applied",
+          "resource": "config:settings"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "body": {
+          "json": {
+            "applied": false,
+            "config_version": 1,
+            "settings": {
+              "limits": {
+                "request_body_max_bytes": 33554432
+              }
+            }
+          }
+        },
+        "path": "/api/v1/admin/config/settings",
+        "status": 200
+      }
+    ]
+  },
+  "headers": {
+    "content-length": "136",
+    "content-type": "application/json",
+    "etag": "<ETAG>"
+  },
+  "status": 200
+}

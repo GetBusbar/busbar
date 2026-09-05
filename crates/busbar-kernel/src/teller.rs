@@ -36,11 +36,12 @@
 //! "every unit posts exactly once" has to be readable in the shape of the code, not just true.
 
 use busbar_caps::{
-    Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Authenticated, Canary,
-    Decision, Decode, DurabilityLost, Encode, ExitToken, Hold, HoldCell, KernelSeal, LedgerToken,
-    Meter, MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags, PrincipalId,
-    QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName, TransportKeyToken, UnitEnd,
-    UnitKey, UnitToken, Usage, UsageLine, UsageToken, VerifiedDestination, Verify,
+    AdminToken, Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Authenticated,
+    Canary, Decision, Decode, DurabilityLost, Encode, ExitToken, Hold, HoldCell, KernelSeal,
+    LedgerToken, Meter, MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags,
+    PrincipalId, QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName,
+    TransportKeyToken, TrustToken, UnitEnd, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
+    VerifiedDestination, Verify,
 };
 
 use crate::registry::Generation;
@@ -102,6 +103,20 @@ impl Kernel {
     /// mint sees this one too.
     pub fn transport_key_token(&self) -> TransportKeyToken {
         TransportKeyToken::mint(&self.seal)
+    }
+
+    /// The verbs unit's token, as the composition root lends it.
+    ///
+    /// The second token minted outside the loop, and for the same reason as the first: a kernel
+    /// verb is a Route DESTINATION rather than a step of its own, so there is no step whose token
+    /// could stand in, and without this the verbs unit's `execute` has a parameter no caller in the
+    /// tree can supply. That was true of `provision_server` until `transport_key_token` existed and
+    /// it is true of `execute` until this does.
+    ///
+    /// Kept beside the other two and named the same way, so the source scan that accounts for every
+    /// mint sees this one too.
+    pub fn admin_token(&self) -> AdminToken {
+        AdminToken::mint(&self.seal)
     }
 
     /// The seal itself, for the other two places in the kernel that mint tokens: the recovery
@@ -368,9 +383,17 @@ pub trait Units {
     ) -> Decision<Authenticate>;
 
     /// Where the unit may go.
+    ///
+    /// Lent TWO tokens, for the same reason admit and meter are: the step's answer is a set of
+    /// SEALED destinations, and sealing one takes the trust token. A step lent only its unit token
+    /// could decide where a unit may go but could not say so, so every implementor would have to
+    /// answer with the empty set — which is a legitimate answer for a pool with every lane excluded
+    /// and a silent one for everything else. The trust token is lent for the length of this call and
+    /// nowhere else, so no other step can seal a destination.
     fn verify(
         &self,
         token: &UnitToken<Verify>,
+        trust: &TrustToken,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify>;
@@ -501,7 +524,12 @@ pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_
         .and_then(|authenticated| match authenticated {
             Authenticated::Challenge(_) => Ok(Admission::ZeroHold),
             Authenticated::Principal(principal) => units
-                .verify(&UnitToken::<Verify>::mint(seal), ctx, &principal)
+                .verify(
+                    &UnitToken::<Verify>::mint(seal),
+                    &TrustToken::mint(seal),
+                    ctx,
+                    &principal,
+                )
                 .into_result(seal)
                 .map(|destinations| (principal, destinations))
                 .and_then(

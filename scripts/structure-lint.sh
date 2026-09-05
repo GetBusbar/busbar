@@ -49,11 +49,16 @@ SUBSTRATE_VALUES=crates/busbar-substrate-values/src
 # protocol from the scan. `busbar-llm` is the LLM protocol's plugin (six dialect modules under one
 # crate — one plugin per PROTOCOL, not per dialect); `busbar-mcp` is the MCP protocol's plugin
 # (its `codec/` module holds the MCP dialect the former `busbar-proto-mcp` carried); `busbar-proto-*`
-# is the older per-protocol naming, kept so a crate under that spelling is still picked up. A future
+# is the older per-protocol naming, kept so a crate under that spelling is still picked up.
+# `busbar-*-codec` is the FOURTH glob and the newest naming: each protocol plugin shed its pure half
+# — the codecs, the record vocabulary, the duplex IR, the dialect grammars — into a `-codec` crate a
+# PURE plane kind may name, and those sources are every bit as much protocol sources as the halves
+# they left behind. Named as a glob so a fifth protocol's codec is scanned without editing this. A
+# future
 # protocol crate under any of the three is scanned without editing this list, and if ALL globs go
 # empty the check below goes loud.
 PROTO_ROOTS=""
-for _pd in crates/busbar-llm/src crates/busbar-mcp/src crates/busbar-proto-*/src; do
+for _pd in crates/busbar-llm/src crates/busbar-mcp/src crates/busbar-*-codec/src crates/busbar-proto-*/src; do
   [ -d "$_pd" ] || continue
   PROTO_ROOTS="${PROTO_ROOTS}${_pd}/,"
 done
@@ -70,7 +75,7 @@ note() { printf '  %s\n' "$1"; }
 hdr()  { printf '\n== %s ==\n' "$1"; }
 
 if [ -z "$PROTO_ROOTS" ]; then
-  note "PROTO-ROOTS-MISSING: no \`crates/busbar-llm/src\`, \`crates/busbar-mcp/src\` or \`crates/busbar-proto-*/src\` directory exists. The operation and"
+  note "PROTO-ROOTS-MISSING: no \`crates/busbar-llm/src\`, \`crates/busbar-mcp/src\`, \`crates/busbar-*-codec/src\` or \`crates/busbar-proto-*/src\` directory exists. The operation and"
   note "  transport axis bans are scoped over the protocol crates, so this is a ban scanning NOTHING,"
   note "  and zero is the passing answer to a ban. If the protocol crates legitimately moved, fix the"
   note "  search above — do not drop the scope."

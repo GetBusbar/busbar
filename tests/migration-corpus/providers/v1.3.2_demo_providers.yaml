@@ -1,0 +1,6 @@
+bedrock:
+  protocol: bedrock
+  base_url: https://bedrock-runtime.us-east-1.amazonaws.com
+  error_map:
+    ThrottlingException: rate_limit
+    ServiceQuotaExceededException: billing

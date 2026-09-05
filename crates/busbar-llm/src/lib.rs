@@ -142,6 +142,12 @@ pub mod arrival;
 /// ingress_path_model`] entry points.
 pub mod native_ingress;
 
+/// THE TELLER STEP FILES (1.6.0 wave C), one file per step, written dark. The whole directory is
+/// gated by the inner `#![cfg(feature = "teller-waist")]` on its own `mod.rs`, so this declaration
+/// is unconditional and the flag is stated exactly once, next to the files it governs. With the flag
+/// down this resolves to nothing at all.
+pub mod unit;
+
 /// THE MONEY-PATH TEST FIXTURE, re-exported from core's now-plane-agnostic `test_support` (money-path
 /// Phase 3-4 C M4). The relocated engine tests name `crate::test_support::{LaneSpec, TestApp,
 /// MockServer, …}`; the fixture builds the LLM runtime through the neutral `PlaneBuildInput` +

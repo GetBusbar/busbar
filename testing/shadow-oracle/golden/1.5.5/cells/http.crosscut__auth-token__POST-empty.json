@@ -1,1 +1,1 @@
-{"applied":["hdr.date"],"body":{"json":{"error":"not authenticated"}},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"29","content-type":"application/json"},"status":401}
+{"applied":["hdr.date"],"body":{"json":{"error":"not authenticated"}},"effects":{"audit":{"added":0,"items":[]},"egress":[],"metrics":{},"usage":{}},"headers":{"content-length":"29","content-type":"application/json"},"status":401}

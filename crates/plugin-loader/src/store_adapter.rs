@@ -55,11 +55,35 @@
 //!   deployment, and a second copy here would be an unbounded leak on a long-running node. It never
 //!   fails, because a shipping failure is a durability failure and durability here is the legacy
 //!   rows', not this seam's.
+//! - **The migration's marker.** The record that says this deployment has already sealed its opening
+//!   balances goes where every other addition goes: the node-local shim. There is nowhere else it
+//!   COULD go — the rows the migration read may be on a read-only replica, and writing a marker
+//!   beside somebody else's data is a migration taking ownership of a schema it does not own.
+//!
+//! # The migration's read, and why it is on this side of the seam
+//!
+//! The first boot after an upgrade seals what the previous release already holds as the ledger's
+//! opening figures. Reading it is two published operations — the audit tail for the chain head, and
+//! the token-ledger and metering rows for the balances — so the read lives here, where the row shapes
+//! and the loaded plugin already are, and the ledger unit is handed plain figures. That is the same
+//! division the ledger's dual write makes in the other direction, for the same reason: one place that
+//! knows what a legacy row looks like.
+//!
+//! Every method of that read is a READ. There is no write-read-back probe and no watermark stamped
+//! back onto the rows, because a deployment booting on a read-only replica or a grant-restricted
+//! database is the previous release's supported shape and must keep booting.
 
 use crate::DynStore;
 use busbar_api::Store as AbiStore;
+use busbar_api::{StoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
 use busbar_caps::AdminToken;
 use busbar_kernel::slice::{Epoch, SliceError, SliceGrant, SliceId, SliceRequest, SliceStore};
+use busbar_unit_ledger::legacy::{LegacyHead, LegacyMigrationSource};
+use busbar_unit_ledger::migration::{
+    LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows, MigrationError, MigrationMarker,
+    MigrationRecords,
+};
+use busbar_unit_ledger::totals::CapDimension;
 use busbar_unit_verbs::store::{Store as VerbStore, StoreError as VerbStoreError};
 use busbar_unit_wal::{Record, ShipError, Shipper};
 use std::collections::HashMap;
@@ -136,6 +160,8 @@ struct Shim {
     recovery: Mutex<Recovery>,
     /// Records acknowledged by the shipper. A count, not a copy — see the module preamble.
     records_shipped: AtomicU64,
+    /// The migration's marker: the record that this deployment has sealed its opening balances.
+    migration: Mutex<Option<MigrationMarker>>,
     /// The identity of the last record acknowledged, which is what a `heads` read would want.
     head: Mutex<Option<(u64, u64)>>,
 }
@@ -257,6 +283,299 @@ impl StoreAdapter {
     pub fn shipper(&self) -> Box<dyn Shipper> {
         Box::new(self.clone())
     }
+
+    /// The previous release's chain head: its last administrative sequence number and the hash at
+    /// that point.
+    ///
+    /// An EMPTY head is a legitimate answer and not a failure. A store that keeps no audit rows, a
+    /// store that predates the tail read and answers that it does not know the operation, and a
+    /// store that simply has an empty log all read the same way — and the migration seals a zero
+    /// opening balance for all three rather than refusing to boot a configuration that worked
+    /// yesterday.
+    pub fn legacy_audit_head(&self) -> LegacyHead {
+        match self.store().list_audit_tail(1) {
+            Ok(tail) => match tail.last() {
+                Some(entry) => LegacyHead {
+                    seq: Some(entry.seq),
+                    hash: Some(entry.hash.clone()),
+                    ..LegacyHead::empty()
+                },
+                None => LegacyHead::empty(),
+            },
+            Err(_) => LegacyHead::empty(),
+        }
+    }
+
+    /// Read the previous release's cells: the token ledger for each named (bucket, window) and the
+    /// metering rows for each named day.
+    ///
+    /// Reads only. A row the store would not answer for is NAMED in
+    /// [`LegacyCells::unreadable`] rather than raised, because one unreadable bucket must not stop a
+    /// node booting and must not vanish either.
+    pub fn legacy_cells_read(&self, plan: &LegacyReadPlan) -> LegacyCells {
+        let store = self.store();
+        let mut cells = LegacyCells::default();
+        for (bucket, window) in &plan.windows {
+            match store.get_usage(bucket, *window) {
+                Err(e) => cells
+                    .unreadable
+                    .push(format!("the token ledger for {bucket} at {window}: {e}")),
+                Ok(ledger) => {
+                    // An untouched (bucket, window) reads as the EMPTY ledger, and counting that as
+                    // a cell read would report a migration that walked rows which were never there.
+                    if ledger.requests == 0
+                        && ledger.billable_requests == 0
+                        && ledger.models.is_empty()
+                    {
+                        continue;
+                    }
+                    cells.cells_read += 1;
+                    let mut push = |lane: &str, dimension: CapDimension, amount: u64| {
+                        if amount != 0 {
+                            cells.figures.push(LegacyFigure {
+                                family: LegacyFamily::Window,
+                                bucket: bucket.clone(),
+                                window: *window,
+                                lane: lane.to_string(),
+                                provider: String::new(),
+                                dimension,
+                                amount: i128::from(amount),
+                            });
+                        }
+                    };
+                    push("", CapDimension::Requests, ledger.requests);
+                    push(
+                        "",
+                        CapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
+                        ledger.billable_requests,
+                    );
+                    for model in &ledger.models {
+                        for (unit, count) in &model.usage_units {
+                            push(&model.model, CapDimension::Class(unit.clone()), *count);
+                        }
+                    }
+                    // The bucket's balance comes from the ENFORCEMENT ledger alone. The metering
+                    // rows below are the observability view of the same consumption, and adding
+                    // them here would report a bucket as having consumed twice what it did.
+                    let total = i128::from(ledger.total_tokens());
+                    match cells.balances.iter_mut().find(|(b, _)| b == bucket) {
+                        Some((_, held)) => *held += total,
+                        None => cells.balances.push((bucket.clone(), total)),
+                    }
+                }
+            }
+        }
+        for day in &plan.days {
+            match store.list_metering(*day) {
+                Err(e) => cells
+                    .unreadable
+                    .push(format!("the metering rows for {day}: {e}")),
+                Ok(rows) => {
+                    for row in rows {
+                        cells.cells_read += 1;
+                        let mut push = |dimension: CapDimension, amount: u64| {
+                            if amount != 0 {
+                                cells.figures.push(LegacyFigure {
+                                    family: LegacyFamily::Meter,
+                                    bucket: row.key_id.clone(),
+                                    window: *day,
+                                    lane: row.model.clone(),
+                                    provider: row.provider.clone(),
+                                    dimension,
+                                    amount: i128::from(amount),
+                                });
+                            }
+                        };
+                        push(CapDimension::Requests, row.requests);
+                        push(
+                            CapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
+                            row.billable_requests,
+                        );
+                        for (unit, amount) in [
+                            (UNIT_INPUT, row.tokens_input),
+                            (UNIT_OUTPUT, row.tokens_output),
+                            (UNIT_CACHE_READ, row.tokens_cache_read),
+                            (UNIT_CACHE_WRITE, row.tokens_cache_write),
+                        ] {
+                            push(CapDimension::Class(unit.to_string()), amount);
+                        }
+                    }
+                }
+            }
+        }
+        cells
+    }
+
+    /// The plan for a deployment whose buckets are its key rows' own: every key id at `window`, plus
+    /// the group buckets the caller names, plus the metering days it names.
+    ///
+    /// The (bucket, window) pairs cannot be discovered from the published store — a token ledger is
+    /// addressed by bucket AND window and neither is enumerable — so the enumerable half comes from
+    /// the key rows, which is the same place the previous release's own boot hydration gets it, and
+    /// the rest is named by the caller that holds the configuration.
+    ///
+    /// # Errors
+    ///
+    /// The key rows could not be listed.
+    pub fn key_bucket_plan(
+        &self,
+        window: u64,
+        group_buckets: &[(String, u64)],
+        days: &[u64],
+    ) -> Result<LegacyReadPlan, StoreError> {
+        let mut windows: Vec<(String, u64)> = self
+            .store()
+            .list_keys()?
+            .into_iter()
+            .map(|key| (key.id, window))
+            .collect();
+        windows.extend(group_buckets.iter().cloned());
+        Ok(LegacyReadPlan {
+            windows,
+            days: days.to_vec(),
+        })
+    }
+
+    /// The migration's source over this adapter's store, reading exactly `plan`.
+    pub fn legacy_ledger_rows(&self, plan: LegacyReadPlan) -> LegacyStoreRows {
+        LegacyStoreRows {
+            adapter: self.clone(),
+            plan,
+            cells: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The ledger's own records for the migration marker.
+    pub fn migration_records(&self) -> ShimMigrationRecords {
+        ShimMigrationRecords {
+            adapter: self.clone(),
+        }
+    }
+
+    /// The migration marker this node is holding, if it has sealed one.
+    pub fn migration_marker(&self) -> Option<MigrationMarker> {
+        self.inner.shim.migration().clone()
+    }
+}
+
+/// The name the previous release's billable-request count takes as a meter class.
+///
+/// A count of billable requests is not the same balance as a count of admitted ones — the previous
+/// release refunds one and never the other — so it opens as its own declared class rather than
+/// being folded into the request count it is a subset of.
+pub const BILLABLE_REQUESTS_CLASS: &str = "billable_requests";
+
+/// Which of the previous release's rows the migration reads.
+///
+/// It is a plan rather than a scan because the published store has nothing to scan WITH: a token
+/// ledger is addressed by (bucket, window) and a metering row by day, and neither key space is
+/// enumerable across that seam. Naming what will be read also means the read is bounded and
+/// reviewable, which a full-store walk at boot would not be.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LegacyReadPlan {
+    /// The (bucket, window) pairs whose token ledger to read.
+    pub windows: Vec<(String, u64)>,
+    /// The metering day buckets to read.
+    pub days: Vec<u64>,
+}
+
+impl LegacyReadPlan {
+    /// A plan naming nothing. Reading it produces no figures, which seals a zero opening balance.
+    pub fn nothing() -> Self {
+        LegacyReadPlan::default()
+    }
+
+    /// Whether this plan names anything at all.
+    pub fn is_empty(&self) -> bool {
+        self.windows.is_empty() && self.days.is_empty()
+    }
+}
+
+/// What the previous release's cells held.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LegacyCells {
+    /// One figure per bucket, day, lane, provider and dimension that held anything.
+    pub figures: Vec<LegacyFigure>,
+    /// The opening balance per bucket, from the enforcement ledger.
+    pub balances: Vec<(String, i128)>,
+    /// How many rows were read to arrive at those figures.
+    pub cells_read: u64,
+    /// The rows the store would not answer for, named.
+    pub unreadable: Vec<String>,
+}
+
+/// The migration's source: the previous release's head and cells, over one loaded store.
+///
+/// Holds the adapter rather than the raw store handle so the read goes through exactly the
+/// pass-through the rest of the published surface uses.
+///
+/// The cells are read ONCE and kept. The head and the figures are two views of one reading, and a
+/// source that went back to the store for each of them would walk every named row twice on a boot
+/// and — on a store being written by something else — could answer the two questions from two
+/// different moments.
+#[derive(Debug, Clone)]
+pub struct LegacyStoreRows {
+    adapter: StoreAdapter,
+    plan: LegacyReadPlan,
+    cells: std::sync::OnceLock<LegacyCells>,
+}
+
+impl LegacyStoreRows {
+    /// What this source will read.
+    pub fn plan(&self) -> &LegacyReadPlan {
+        &self.plan
+    }
+
+    /// The reading, taken on first use and kept.
+    pub fn cells(&self) -> &LegacyCells {
+        self.cells
+            .get_or_init(|| self.adapter.legacy_cells_read(&self.plan))
+    }
+}
+
+impl LegacyMigrationSource for LegacyStoreRows {
+    /// The chain head, with the per-bucket balances the cells hold hung off it — one object that
+    /// read one store, so the head and the figures cannot disagree about what was there.
+    fn read_head(&self) -> LegacyHead {
+        let cells = self.cells();
+        LegacyHead {
+            balances: cells.balances.clone(),
+            cells_read: cells.cells_read,
+            ..self.adapter.legacy_audit_head()
+        }
+    }
+}
+
+impl LegacyLedgerRows for LegacyStoreRows {
+    fn read_figures(&self) -> LegacyFigures {
+        let cells = self.cells();
+        LegacyFigures {
+            figures: cells.figures.clone(),
+            unreadable: cells.unreadable.clone(),
+        }
+    }
+}
+
+/// The migration marker, in the node-local shim.
+///
+/// The honest place for it on every store this binary can load, and labelled as one: the marker does
+/// not survive a restart, so the next boot re-reads the previous release's rows and seals a
+/// checkpoint with the same body hash from the same figures. What it must never do is go into the
+/// rows it read — those may be read-only, and they are not this release's to write.
+#[derive(Debug, Clone)]
+pub struct ShimMigrationRecords {
+    adapter: StoreAdapter,
+}
+
+impl MigrationRecords for ShimMigrationRecords {
+    fn read_marker(&self) -> Result<Option<MigrationMarker>, MigrationError> {
+        Ok(self.adapter.migration_marker())
+    }
+
+    fn write_marker(&mut self, marker: &MigrationMarker) -> Result<(), MigrationError> {
+        *self.adapter.inner.shim.migration() = Some(marker.clone());
+        Ok(())
+    }
 }
 
 impl Shim {
@@ -276,6 +595,10 @@ impl Shim {
 
     fn head(&self) -> MutexGuard<'_, Option<(u64, u64)>> {
         self.head.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn migration(&self) -> MutexGuard<'_, Option<MigrationMarker>> {
+        self.migration.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 

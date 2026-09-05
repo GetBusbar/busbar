@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":"plugins dir: plugins (plugins.enabled: false)\nno plugin tarballs found\n"},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n"},"headers":{},"status":0}

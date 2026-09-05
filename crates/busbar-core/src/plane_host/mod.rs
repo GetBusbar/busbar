@@ -837,6 +837,26 @@ impl busbar_substrate::plane_host::BudgetHost for EngineHostImpl {
         )
     }
 
+    fn cost_pricing_enabled(&self, cost: &busbar_substrate::plane_host::CostHandle) -> bool {
+        // The SAME read the in-place pre-admission guard makes off `app.cost`; a handle that is not
+        // this deployment's cost model answers the no-card posture rather than guessing.
+        cost.0
+            .clone()
+            .downcast::<crate::cost::CostModel>()
+            .is_ok_and(|c| c.pricing_enabled())
+    }
+
+    fn cost_model_unpriced(
+        &self,
+        cost: &busbar_substrate::plane_host::CostHandle,
+        model: &str,
+    ) -> bool {
+        cost.0
+            .clone()
+            .downcast::<crate::cost::CostModel>()
+            .is_ok_and(|c| c.model_unpriced(model))
+    }
+
     fn meter_ledger(
         &self,
         gov: &busbar_substrate::plane_host::GovHandle,
@@ -1045,6 +1065,37 @@ impl busbar_substrate::plane_host::AdmissionHost for EngineHostImpl {
         // is wrapped in the opaque `AdmitHandle` the plane's sink holds Drop-only. The `Arc::new` here
         // mirrors the engine's own `admit.map(Arc::new)` at the sink-build site.
         crate::ingress::admission_door(&self.app, gov, proto, pool, started, charged_at).map(
+            |(admit, downgraded)| {
+                (
+                    admit.map(|a| {
+                        busbar_substrate::plane_host::AdmitHandle(
+                            Arc::new(a) as Arc<dyn std::any::Any + Send + Sync>
+                        )
+                    }),
+                    downgraded,
+                )
+            },
+        )
+    }
+
+    fn admission_check(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
+        charged_at: u64,
+    ) -> Result<
+        (
+            Option<busbar_substrate::plane_host::AdmitHandle>,
+            Option<String>,
+        ),
+        Box<axum::response::Response>,
+    > {
+        // The door's own body, minus the `finish_rejected` the door wraps its refusing arm in: same
+        // buckets, same charge, same downgrade, same bytes. The grant is wrapped in the opaque
+        // handle exactly as `admission_door` wraps it, so the two seams differ in nothing but which
+        // side of them posts the refusal.
+        crate::ingress::admit_check(&self.app, gov, proto, pool, charged_at).map(
             |(admit, downgraded)| {
                 (
                     admit.map(|a| {

@@ -49,6 +49,8 @@ pub struct TestUnits {
     pub admitted_door: AtomicBool,
     /// Answer the authenticate step with a challenge instead of an identity.
     pub challenge: bool,
+    /// The lanes the verified set carried when it reached the approve step.
+    pub approved_lanes: Mutex<Vec<busbar_caps::LaneId>>,
 }
 
 impl Default for TestUnits {
@@ -62,6 +64,7 @@ impl Default for TestUnits {
             challenge: false,
             refused_door: AtomicBool::new(false),
             admitted_door: AtomicBool::new(false),
+            approved_lanes: Mutex::new(Vec::new()),
         }
     }
 }
@@ -91,6 +94,11 @@ impl TestUnits {
             self.refused_door.load(Ordering::Acquire),
             self.admitted_door.load(Ordering::Acquire),
         )
+    }
+
+    /// The destination set as the approve step received it — what the verify step actually sealed.
+    pub fn approved_lanes(&self) -> Vec<busbar_caps::LaneId> {
+        self.approved_lanes.lock().unwrap().clone()
     }
 
     fn note(&self, step: StepName) {
@@ -230,13 +238,23 @@ impl Units for TestUnits {
     fn verify(
         &self,
         token: &UnitToken<Verify>,
+        trust: &busbar_caps::TrustToken,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
     ) -> Decision<Verify> {
         self.note(StepName::Verify);
         match self.refusal(StepName::Verify) {
             Some(refusal) => Decision::refuse(token, refusal),
-            None => Decision::proceed(token, Vec::<VerifiedDestination>::new()),
+            // The trust token the loop lends this step is what seals a destination, so the fixture
+            // seals one: a step that answered with the empty set would exercise the loop's
+            // no-destination path on every test rather than the one that names it.
+            None => Decision::proceed(
+                token,
+                vec![VerifiedDestination::seal(
+                    trust,
+                    busbar_caps::LaneId::new("fixture-lane"),
+                )],
+            ),
         }
     }
 
@@ -245,8 +263,12 @@ impl Units for TestUnits {
         token: &UnitToken<Approve>,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
-        _destinations: &[VerifiedDestination],
+        destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
+        self.approved_lanes
+            .lock()
+            .unwrap()
+            .extend(destinations.iter().map(|d| *d.lane()));
         step!(
             self,
             token,

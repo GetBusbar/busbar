@@ -183,6 +183,21 @@ struct Metadata {
     manifest_paths: BTreeMap<String, String>,
     /// package id -> node
     nodes: BTreeMap<String, Node>,
+    /// package id -> the set of that package's OWN normal-kind dependencies that are `optional =
+    /// true` in its manifest, keyed by the LOCAL (rename-if-present, else published) name in
+    /// published (hyphenated) form — the same form a Cargo.toml `[features]` string names it in
+    /// (`"foo"` or `"dep:foo"`). Built once from `packages[].dependencies` so [`edge_is_active`]
+    /// can tell a genuinely-compiled edge from one `cargo metadata`'s resolve graph merely lists as
+    /// POSSIBLE (see that function's doc for why the distinction matters).
+    optional_normal_deps: BTreeMap<String, BTreeSet<String>>,
+    /// package id -> that package's OWN `[features]` table, name -> its raw requirement strings
+    /// (`"dep:foo"`, `"foo"`, `"foo/bar"`, `"foo?/bar"`, or another feature name), exactly as
+    /// `packages[].features` reports it. [`edge_is_active`] scans the definitions of a node's
+    /// currently-ACTIVE feature names (already the flattened closure `cargo metadata` reports in
+    /// `nodes[].features`) for the token that would turn a given optional dependency on, rather
+    /// than assuming (wrongly) that an activated optional dependency's OWN name always appears
+    /// verbatim in the active-features list — new-style `dep:foo` syntax means it often does not.
+    feature_defs: BTreeMap<String, BTreeMap<String, Vec<String>>>,
 }
 
 fn run_cargo_metadata(manifest_path: &Path) -> Value {
@@ -211,6 +226,8 @@ fn run_cargo_metadata(manifest_path: &Path) -> Value {
 fn parse_metadata(v: &Value) -> Metadata {
     let mut names = BTreeMap::new();
     let mut manifest_paths = BTreeMap::new();
+    let mut optional_normal_deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut feature_defs: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
     for pkg in v["packages"].as_array().cloned().unwrap_or_default() {
         let id = pkg["id"].as_str().unwrap_or_default().to_string();
         names.insert(
@@ -218,12 +235,45 @@ fn parse_metadata(v: &Value) -> Metadata {
             pkg["name"].as_str().unwrap_or_default().to_string(),
         );
         manifest_paths.insert(
-            id,
+            id.clone(),
             pkg["manifest_path"]
                 .as_str()
                 .unwrap_or_default()
                 .to_string(),
         );
+        let mut optional = BTreeSet::new();
+        for dep in pkg["dependencies"].as_array().cloned().unwrap_or_default() {
+            // Only a NORMAL-kind declaration matters here — the same scoping `closure_hits` walks
+            // (dev/build edges are out of scope by construction). `kind` is `null` for normal.
+            if !dep["kind"].is_null() {
+                continue;
+            }
+            if dep["optional"].as_bool().unwrap_or(false) {
+                let local = dep["rename"]
+                    .as_str()
+                    .or_else(|| dep["name"].as_str())
+                    .unwrap_or_default();
+                if !local.is_empty() {
+                    optional.insert(local.to_string());
+                }
+            }
+        }
+        optional_normal_deps.insert(id.clone(), optional);
+
+        let mut defs = BTreeMap::new();
+        if let Some(features_obj) = pkg["features"].as_object() {
+            for (feat_name, reqs) in features_obj {
+                let list = reqs
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect();
+                defs.insert(feat_name.clone(), list);
+            }
+        }
+        feature_defs.insert(id, defs);
     }
     let mut nodes = BTreeMap::new();
     for node in v["resolve"]["nodes"]
@@ -255,7 +305,69 @@ fn parse_metadata(v: &Value) -> Metadata {
         names,
         manifest_paths,
         nodes,
+        optional_normal_deps,
+        feature_defs,
     }
+}
+
+/// Is the edge `from_id -> dep_ident` one `cargo build` actually compiles into `from_id`, or
+/// merely one `cargo metadata`'s resolve graph LISTS as a possible edge?
+///
+/// `cargo metadata`'s `resolve.nodes[].deps` names every dependency declared in a package's
+/// manifest whose required version is satisfied by SOME package already resolved in the lockfile
+/// — including an `optional = true` dependency whose enabling feature is OFF for this node. Only
+/// the node's own `features` list says which optional deps are really turned on; `deps` does not
+/// filter by it. A denylist walk that trusted `deps` alone would flag a banned crate reachable
+/// only through a dependency nothing ever activates — verified against this exact shape: `faststr`
+/// (a `sonic-rs` dependency) declares an optional, non-default `rkyv` dependency, and `cargo
+/// metadata` lists that edge for every consumer regardless of whether `rkyv` is active; the actual
+/// `rustc` invocation for `busbar-plane-llm`'s build carries no `--cfg feature="rkyv"` and no
+/// `--extern rkyv=...` at all, so the crate genuinely never sees `rkyv` — let alone `rkyv`'s own
+/// optional `uuid` dependency and ITS `getrandom` — despite the phantom edge showing up three hops
+/// later as `sonic_rs -> faststr -> rkyv -> uuid_1 -> getrandom -> libc`.
+///
+/// `dep_ident` is the edge's `deps[].name` — the local (rename-if-any) extern-crate identifier,
+/// underscored. A non-optional dependency (or one this function has no record of, e.g. because
+/// `from_id` itself was not found in `packages[]`) is always treated as active — the same
+/// conservative default `is_normal`'s own fallback uses, so a metadata shape this function does
+/// not recognize never silently HIDES a real hit.
+///
+/// An optional dependency is turned on by a NAMED feature whose own definition mentions it —
+/// `"dep:foo"` (new explicit syntax), a bare `"foo"` (old implicit syntax, only when no `dep:foo`
+/// exists anywhere for it), or `"foo/bar"` (a strong feature-forward, which activates `foo` as a
+/// side effect; `"foo?/bar"` is the WEAK form and does NOT). `nodes[].features` is already the
+/// flattened closure of every active named feature, so checking one level of each active feature's
+/// OWN definition (from `packages[].features`) — no further recursion — is enough to find that
+/// token if it is reachable at all.
+fn edge_is_active(meta: &Metadata, from_id: &str, dep_ident: &str) -> bool {
+    let Some(optional) = meta.optional_normal_deps.get(from_id) else {
+        return true;
+    };
+    let hyphenated = dep_ident.replace('_', "-");
+    if !optional.contains(&hyphenated) {
+        // Not declared optional (or declared under a different local name than we could resolve)
+        // — a normal, unconditional dependency, always compiled in.
+        return true;
+    }
+    let Some((_, active_features)) = meta.nodes.get(from_id) else {
+        return true;
+    };
+    let Some(defs) = meta.feature_defs.get(from_id) else {
+        return true;
+    };
+    let dep_marker = format!("dep:{hyphenated}");
+    let strong_forward = format!("{hyphenated}/");
+    active_features.iter().any(|feat| {
+        // The old-style implicit optional-dependency feature: activating a feature with the SAME
+        // name as the dependency turns it on, unless `dep:foo` syntax is used elsewhere (in which
+        // case this name means something else and never appears bare in a definition list anyway).
+        feat == &hyphenated
+            || defs.get(feat).is_some_and(|reqs| {
+                reqs.iter().any(|r| {
+                    r == &dep_marker || r == &hyphenated || r.starts_with(&strong_forward)
+                })
+            })
+    })
 }
 
 fn find_package_id(meta: &Metadata, crate_dir: &Path, crate_name: &str) -> Option<String> {
@@ -292,6 +404,13 @@ fn closure_hits(meta: &Metadata, root_id: &str, root_name: &str, banned: &Banned
         };
         for (dep_name, dep_pkg, is_normal) in deps {
             if !is_normal || dep_pkg.is_empty() {
+                continue;
+            }
+            // An edge `cargo metadata` lists but nothing actually activates (an inert optional
+            // dependency) is not part of the compiled crate at all — see `edge_is_active`'s doc.
+            // Not marking it `visited` either: if some OTHER, active edge reaches the same
+            // package, that path must still be walked.
+            if !edge_is_active(meta, &id, dep_name) {
                 continue;
             }
             let mut next_path = path.clone();
@@ -497,15 +616,18 @@ fn own_src_hits(
 /// before `via` existed: ANY transitive path from the crate to that dependency is forgiven.
 ///
 /// A `dep` entry WITH `via` is precise instead: it waives the offender only when EVERY normal
-/// dependency path from the crate to the offender passes through the named `via` crate somewhere
-/// along it. If even one path reaches the offender without going through `via`, the waiver does
-/// not apply at all — the hit (including the one that *does* route through `via`) stays red, and
-/// the bypassing path is exactly the kind of hit row the report already prints, so it shows up
-/// there naming itself.
+/// dependency path from the crate to the offender passes through one of the named `via` crates
+/// somewhere along it. `via` may name more than one crate (comma-separated: `via = "cpufeatures,
+/// getrandom"`) for the case where the SAME offender is genuinely reached through more than one
+/// reviewed, non-I/O edge — each named crate is checked independently, and a path counts as
+/// covered if it passes through ANY of them. If even one path reaches the offender through NONE of
+/// them, the waiver does not apply at all — every hit for that (crate, offender) pair (including
+/// the ones that DO route through a named `via`) stays red, and the bypassing path is exactly the
+/// kind of hit row the report already prints, so it shows up there naming itself.
 pub(crate) struct AllowEntry {
     crate_name: String,
     offender: String,
-    via: Option<String>,
+    via: Option<Vec<String>>,
 }
 
 /// The load-bearing allow-list check: `qa/denylist-allow.toml` is EMPTY at hour 0 (section 1.2),
@@ -535,11 +657,17 @@ fn load_allowlist(root: &Path) -> Vec<AllowEntry> {
                  not a waiver. Fix the entry or remove it."
             );
         }
-        let via = entry
+        let via_raw = entry
             .get_one("via")
             .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string);
+            .filter(|v| !v.is_empty());
+        let via: Option<Vec<String>> = via_raw.map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        });
         if let Some(v) = &via {
             if !is_dep_entry {
                 panic!(
@@ -568,14 +696,16 @@ fn load_allowlist(root: &Path) -> Vec<AllowEntry> {
 }
 
 /// Is there a normal-dependency path from `root_id` to a node named `target_name` that never
-/// passes through any node named `via_name`? Returns the path (root name first) if so — that path
-/// is the "bypass" that keeps a `via`-narrowed waiver from applying — or `None` if `target_name`
-/// is unreachable without going through `via_name` (in which case the waiver fully covers it).
+/// passes through any node named in `via_names`? Returns the path (root name first) if so — that
+/// path is the "bypass" that keeps a `via`-narrowed waiver from applying — or `None` if
+/// `target_name` is unreachable without going through one of `via_names` (in which case the waiver
+/// fully covers it). `via_names` holding more than one entry means ANY of them stops a path — the
+/// waiver only fails to cover a route that passes through NONE of the named crates.
 fn find_bypass_path(
     meta: &Metadata,
     root_id: &str,
     root_name: &str,
-    via_name: &str,
+    via_names: &[String],
     target_name: &str,
 ) -> Option<String> {
     // `cargo metadata`'s resolve-node edge `name` is the Rust extern-crate identifier (dashes
@@ -583,7 +713,7 @@ fn find_bypass_path(
     // `qa/construction.toml` are written as published crate (package) names (dashes as-is) — the
     // same distinction `crate_manifest_name` and `pattern_to_crate_name` exist to bridge
     // elsewhere. Normalize both sides so a hyphenated crate name matches its edge.
-    let via_name = via_name.replace('-', "_");
+    let via_names: BTreeSet<String> = via_names.iter().map(|v| v.replace('-', "_")).collect();
     let target_name = target_name.replace('-', "_");
     let mut visited = BTreeSet::new();
     visited.insert(root_id.to_string());
@@ -595,9 +725,14 @@ fn find_bypass_path(
             continue;
         };
         for (dep_name, dep_pkg, is_normal) in deps {
-            if !is_normal || dep_pkg.is_empty() || dep_name == &via_name {
-                // `via_name` nodes are never entered and never traversed past — a path is only a
-                // bypass if it reaches the target WITHOUT going through `via` at all.
+            if !is_normal || dep_pkg.is_empty() || via_names.contains(dep_name.as_str()) {
+                // A `via_names` node is never entered and never traversed past — a path is only a
+                // bypass if it reaches the target WITHOUT going through any named `via` at all.
+                continue;
+            }
+            // Same phantom-edge filter `closure_hits` applies: an edge nothing actually activates
+            // is not a real bypass. See `edge_is_active`'s doc.
+            if !edge_is_active(meta, &id, dep_name) {
                 continue;
             }
             let mut next_path = path.clone();
@@ -697,7 +832,13 @@ pub fn run_on_with_allow(
         .map(|(crate_name, offender, via)| AllowEntry {
             crate_name: crate_name.to_string(),
             offender: offender.to_string(),
-            via: via.map(str::to_string),
+            via: via.map(|v| {
+                v.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            }),
         })
         .collect();
     let waived = fully_waived_pairs(&meta, &crates, &allowed);

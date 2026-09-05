@@ -56,6 +56,31 @@ fn every_step_runs_once_in_order() {
     assert!(matches!(ended, Ended::Settled { .. }));
 }
 
+/// THE VERIFY STEP CAN SEAL WHAT IT VERIFIED.
+///
+/// Sealing a destination takes the trust token, and the loop lends it beside the unit token at
+/// verify — the same shape admit is lent the admit token and meter the usage token. Without it a
+/// step could decide where a unit may go and have no way to say so, so every implementor would have
+/// answered with the empty set. This pins that what verify sealed is what approve is handed.
+#[test]
+fn the_verify_step_seals_the_destinations_the_later_steps_read() {
+    let kernel = Kernel::new();
+    let units = TestUnits::passing();
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    let ended = run(&units, &kernel, &cell, &canary);
+    assert!(matches!(ended, Ended::Settled { .. }));
+    assert_eq!(
+        units
+            .approved_lanes()
+            .iter()
+            .map(|lane| lane.as_str())
+            .collect::<Vec<_>>(),
+        vec!["fixture-lane"],
+        "the sealed set reaches approve as the verify step sealed it"
+    );
+}
+
 /// A challenge round is a handshake unit: the authenticate step answers "one more round" rather
 /// than an identity, so verify, approve and admit are never asked and no reservation is opened.
 /// The design says the step's decision may yield a challenge; this is what the loop does with one.

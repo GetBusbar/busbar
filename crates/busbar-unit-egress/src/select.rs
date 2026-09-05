@@ -19,6 +19,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
+use busbar_caps::{Route, UnitToken};
+
 use crate::pool::Member;
 use crate::ports::{Admit, Breaker, Capacity, DestinationId, Permit, Unavailable};
 
@@ -254,6 +256,11 @@ pub struct PickInput<'a> {
     pub preference: Preference<'a>,
     /// This second, read once for the whole pick.
     pub now: u64,
+    /// The capability token proving the loop is at the route step for this unit right now
+    /// (`busbar-caps`'s `&UnitToken<Route>`, per CG-29), lent down to every
+    /// [`crate::ports::Breaker::ready`] / [`crate::ports::Breaker::cooldown_remaining`] call the
+    /// pick makes.
+    pub token: &'a UnitToken<Route>,
 }
 
 /// Pick one member of the pool for this hop, or find that there is nowhere to send it.
@@ -411,10 +418,12 @@ impl<'a, 'b> Order<'a, 'b> {
             .filter(|(_, destination, weight)| {
                 *weight != 0
                     && self.input.breaker.admissible(*destination)
-                    && self
-                        .input
-                        .breaker
-                        .ready(self.input.pool, *destination, self.input.now)
+                    && self.input.breaker.ready(
+                        self.input.pool,
+                        *destination,
+                        self.input.now,
+                        self.input.token,
+                    )
             })
             .map(|(_, destination, weight)| (*destination, *weight))
             .collect();

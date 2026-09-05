@@ -642,7 +642,12 @@ impl CostModel {
     }
 
     /// Whether a rate card is configured (token pricing active).
-    pub(crate) fn pricing_enabled(&self) -> bool {
+    ///
+    /// `pub` (was crate-private): the first of the two questions the pre-admission pricing guard
+    /// asks, answered for a plane through the
+    /// [`BudgetHost::cost_pricing_enabled`](busbar_substrate::plane_host::BudgetHost::cost_pricing_enabled)
+    /// seam, which downcasts the opaque cost handle and drives this same read.
+    pub fn pricing_enabled(&self) -> bool {
         self.rates.is_some()
     }
 
@@ -697,8 +702,13 @@ impl CostModel {
     /// Whether a request for `model` must be REJECTED because the rate card is present but has no
     /// entry (an arbitrary passthrough model string not in any configured lane). Fail-closed and
     /// consistent with the completeness rule: you either price nothing or price everything.
+    ///
+    /// `pub` (was crate-private): the second of the pricing guard's two questions, answered for a
+    /// plane through the
+    /// [`BudgetHost::cost_model_unpriced`](busbar_substrate::plane_host::BudgetHost::cost_model_unpriced)
+    /// seam over the same opaque handle.
     #[inline]
-    pub(crate) fn model_unpriced(&self, model: &str) -> bool {
+    pub fn model_unpriced(&self, model: &str) -> bool {
         match &self.rates {
             None => false,
             Some(table) => !table.contains_key(model),

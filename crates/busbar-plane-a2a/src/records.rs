@@ -45,11 +45,11 @@
 use busbar_contract::ids::RecordSchemaId;
 
 /// The task rows: one per governed exchange this node is tracking.
-pub const SCHEMA_TASK: RecordSchemaId = RecordSchemaId::new(busbar_a2a::record::KIND_TASK);
+pub const SCHEMA_TASK: RecordSchemaId = RecordSchemaId::new(busbar_a2a_codec::record::KIND_TASK);
 
 /// The task event rows: the hash-linked history behind each task.
 pub const SCHEMA_TASK_EVENT: RecordSchemaId =
-    RecordSchemaId::new(busbar_a2a::record::KIND_TASK_EVENT);
+    RecordSchemaId::new(busbar_a2a_codec::record::KIND_TASK_EVENT);
 
 /// The push-notification configurations a caller registered against a task.
 pub const SCHEMA_PUSH_CONFIG: RecordSchemaId = RecordSchemaId::new("push_config");
@@ -111,10 +111,10 @@ mod tests {
     /// under a name nothing reads back.
     #[test]
     fn the_durable_schemas_are_the_codecs_own_kinds() {
-        assert_eq!(SCHEMA_TASK.as_str(), busbar_a2a::record::KIND_TASK);
+        assert_eq!(SCHEMA_TASK.as_str(), busbar_a2a_codec::record::KIND_TASK);
         assert_eq!(
             SCHEMA_TASK_EVENT.as_str(),
-            busbar_a2a::record::KIND_TASK_EVENT
+            busbar_a2a_codec::record::KIND_TASK_EVENT
         );
     }
 

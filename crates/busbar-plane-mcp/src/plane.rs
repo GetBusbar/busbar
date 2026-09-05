@@ -123,25 +123,38 @@ impl McpPlane {
     }
 }
 
+/// The span view of a body, built from the pointers this plane declared.
+///
+/// One scan of one closed grammar, into the unit's own arena, so the loop reads the spans the plane
+/// resolved instead of walking the same bytes a second time. The arena refusing is a decode
+/// failure at the step that asked for the bytes, which is what the arena's budget means.
+fn view<'u>(body: &'u [u8], pointers: &[&'u str], ctx: &Ctx<'u>) -> Result<Ir<'u>, Decode> {
+    let spans = busbar_contract::spans::resolve(body, pointers, ctx.arena())
+        .map_err(|_| Decode::Oversize)?;
+    Ok(Ir::new(body, spans))
+}
+
 /// The string value at one pointer of a body, with its quotes stripped.
 fn read_str<'u>(body: &'u [u8], pointer: &str) -> Option<&'u str> {
-    let found = crate::spans::resolve(body, &[pointer]);
-    let (_, span) = found.first()?;
-    let raw = body.get(span.start..span.end)?;
+    let raw = read_raw(body, pointer)?;
     let inner = raw.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
     core::str::from_utf8(inner).ok()
 }
 
 /// The raw bytes at one pointer of a body.
+///
+/// Through the contract's own span grammar, which is the kernel's: this plane used to carry a
+/// scanner of its own, and a closed grammar with a second reading is two grammars.
 fn read_raw<'u>(body: &'u [u8], pointer: &str) -> Option<&'u [u8]> {
-    let found = crate::spans::resolve(body, &[pointer]);
-    let (_, span) = found.first()?;
-    body.get(span.start..span.end)
+    match busbar_contract::spans::resolve_pointer(body, pointer) {
+        busbar_contract::spans::Resolved::Found(span) => body.get(span.start..span.end),
+        _ => None,
+    }
 }
 
 /// Whether a body has a member at one pointer at all.
 fn has(body: &[u8], pointer: &str) -> bool {
-    !crate::spans::resolve(body, &[pointer]).is_empty()
+    read_raw(body, pointer).is_some()
 }
 
 /// The facts a request body yields, read once.
@@ -293,7 +306,7 @@ impl Plane for McpPlane {
             }
             return Ok(Ingress::OneShot(UnitDraft {
                 op: ops::OP_NOTIFICATION,
-                body_ir: Ir::new(body, &[]),
+                body_ir: view(body, jsonrpc::REQUEST_PTRS, ctx)?,
                 correlates: None,
                 correlation_out: None,
                 facts,
@@ -308,7 +321,7 @@ impl Plane for McpPlane {
         }
         let draft = UnitDraft {
             op: row.op,
-            body_ir: Ir::new(body, &[]),
+            body_ir: view(body, jsonrpc::REQUEST_PTRS, ctx)?,
             correlates: None,
             correlation_out: envelope
                 .id_bytes(body)
@@ -434,7 +447,7 @@ impl Plane for McpPlane {
             }
             return Ok(Progress::OneShot(UnitDraft {
                 op: row.op,
-                body_ir: Ir::new(body, &[]),
+                body_ir: view(body, jsonrpc::REQUEST_PTRS, ctx)?,
                 // A server's own request answers nothing; it is answered.
                 correlates: None,
                 correlation_out: envelope
@@ -482,7 +495,7 @@ impl Plane for McpPlane {
             FinishClass::Complete
         };
         let r = Response {
-            ir: Ir::new(body, &[]),
+            ir: view(body, jsonrpc::RESPONSE_PTRS, ctx)?,
             finish,
             facts,
         };

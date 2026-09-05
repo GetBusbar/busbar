@@ -26,6 +26,10 @@ use crate::AdminPlane;
 // simple, honest double instead of unsafe code (which this crate forbids even in its own tests).
 struct TestArena;
 
+/// One arena that outlives every unit a test builds, because a span table handed to a `Unit<'u>`
+/// has to live at least as long as the unit does and a test's own local arena does not.
+static LEAK_ARENA: TestArena = TestArena;
+
 impl Arena for TestArena {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
         let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
@@ -35,6 +39,13 @@ impl Arena for TestArena {
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
         let leaked: &'static str = Box::leak(src.to_string().into_boxed_str());
         Ok(leaked)
+    }
+
+    fn alloc_spans<'a>(
+        &'a self,
+        src: &[(&'a str, Span)],
+    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+        Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
 
     fn remaining(&self) -> usize {
@@ -275,7 +286,12 @@ fn build_unit<'u>(
             "busbar-plane-admin::tests"
         }
     }
-    let ir = busbar_contract::bounded::Ir::new(bytes.as_bytes(), &[]);
+    // Through the one scanner, exactly as the codec builds it, so a unit a test hands the plane
+    // carries the same span table a unit the plane decoded would.
+    let spans =
+        busbar_contract::spans::resolve(bytes.as_bytes(), &["/method", "/path"], &LEAK_ARENA)
+            .expect("the leaking arena always has room");
+    let ir = busbar_contract::bounded::Ir::new(bytes.as_bytes(), spans);
     busbar_contract::unit::Unit::new(
         &TestSeal,
         busbar_contract::UnitKey::new(0),

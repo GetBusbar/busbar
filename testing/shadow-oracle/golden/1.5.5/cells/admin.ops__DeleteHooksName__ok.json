@@ -1,1 +1,62 @@
-{"applied":["hdr.date"],"body":{"json":{"error":{"code":"conflict","message":"hook `busbar-headroom` is defined in the base config file; edit config.yaml (the API cannot silently shadow operator file config)"}}},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"content-length":"171","content-type":"application/json"},"status":409}
+{
+  "applied": [
+    "hdr.date"
+  ],
+  "body": {
+    "json": {
+      "error": {
+        "code": "conflict",
+        "message": "hook `busbar-headroom` is defined in the base config file; edit config.yaml (the API cannot silently shadow operator file config)"
+      }
+    }
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "hook.delete",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "rejected",
+          "resource": "hook:busbar-headroom"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "body": {
+          "json": {
+            "at": null,
+            "global": false,
+            "kind": "gate",
+            "name": "busbar-headroom",
+            "on_error": "nothing",
+            "priority": 0,
+            "prompt": "rw",
+            "settings_keys": [
+              "min_savings_pct",
+              "target_ratio"
+            ],
+            "timeout_ms": 50,
+            "transport": {
+              "kind": "plugin",
+              "target": "busbar-headroom"
+            },
+            "user": "no"
+          }
+        },
+        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "status": 200
+      }
+    ]
+  },
+  "headers": {
+    "content-length": "171",
+    "content-type": "application/json"
+  },
+  "status": 409
+}

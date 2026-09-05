@@ -692,6 +692,20 @@ fn register_planes() {
     #[cfg(feature = "plane-voice")]
     installed.push(&busbar_voice::PLANE_DECL);
     busbar_core::plane::registry::install_planes(installed.leak());
+
+    // THE MCP PLANE'S KERNEL BINDINGS, SEALED. Behind `root-mcp`, which is default-OFF: the bindings
+    // are built and checked against the real unit traits before any byte is served through them, so
+    // this reads the plane's own declarations and compares them against each other and against
+    // nothing else. It binds no listener, opens no store, reads no configuration and writes no line —
+    // a build with the feature on and a build with it off answer identically on the wire, which is
+    // what the plane rigs are run both ways to prove. A refusal here is a boot refusal for the same
+    // reason a claim overlap is: a plane whose own declarations disagree cannot serve, and finding
+    // that out on the first request would be finding it out from a customer.
+    #[cfg(feature = "root-mcp")]
+    if let Err(refusal) = root::units_mcp::seal(&busbar_plane_mcp::McpPlane::EMPTY) {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
+    }
 }
 
 /// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics
@@ -733,6 +747,38 @@ fn register_ws_arrivals() {
     }
 }
 
+/// SEAL THE COMPOSITION ROOT AND MOUNT THE VOICE PLANE ONTO IT — the switch-over, behind
+/// `root-voice`, which is off by default.
+///
+/// The root is built before any plane is switched onto it, and this is where one is. Sealing is the
+/// whole mount: seven transports composed bottom-up, five planes registered over them, every claim
+/// checked against every other claim and against the transports that exist, and the walk order
+/// answered once. A composition that does not seal is a node that must not bind a listener, so the
+/// answer is a refusal on the standard error stream and a non-zero exit — not a warning, and not a
+/// log line, because a node that refused to boot has no boot to log.
+///
+/// Nothing is emitted on the success path. That is the point: a deployment cannot tell from its logs
+/// which way this binary was built, so the boot-line set, the series list and the route list are the
+/// same either way, and the neutrality cells compare like with like.
+#[cfg(feature = "root-voice")]
+fn mount_root_voice() {
+    match root::registry::seal(busbar_transport_http::ClientSettings::default()) {
+        Ok(sealed) => {
+            debug_assert!(
+                sealed
+                    .registry
+                    .resolve(busbar_kernel::registry::PluginKind::Plane, "voice")
+                    .is_some(),
+                "the voice plane is registered or the seal is not the composition it claims to be"
+            );
+        }
+        Err(refusal) => {
+            eprintln!("busbar: the composition root did not seal: {refusal}");
+            std::process::exit(2);
+        }
+    }
+}
+
 fn main() {
     // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
     // set. This is the composition root's whole knowledge of the protocol crates: one line per
@@ -756,6 +802,12 @@ fn main() {
     // installs nothing and the router mounts no WS-accept route. Gated to `plane-voice` (voice is the
     // only duplex plane today), so a shipped build drops it entirely — strong-form deletable.
     register_ws_arrivals();
+    // THE COMPOSITION ROOT'S OWN SEAL, in the same slot and for the same reason as the axes above:
+    // it reads the plane and transport lists, so every axis must be installed before it runs and it
+    // must run before any reader. Behind `root-voice`, which is off by default — with it off this
+    // line is not compiled and the binary is what it was.
+    #[cfg(feature = "root-voice")]
+    mount_root_voice();
     // THE HOSTLESS-EGRESS DRIVER, installed once here beside the plane axis: the neutral
     // `busbar_substrate::egress::seam::HostlessEgress` a plane drives its governed outbound hop
     // through, backed by core's `CoreHostlessEgress` (the `plane_host` FFI egress vtable). An
@@ -787,6 +839,22 @@ fn main() {
     busbar_substrate::admin_verbs::install_plane_admin_envelope(
         &busbar_core::admin::planeverbs::CorePlaneAdminEnvelope,
     );
+    // THE A2A PLANE'S KERNEL COMPOSITION, behind `root-a2a` and default off. The root is built
+    // before any plane is switched onto it, so what this installs is the scope entries the approve
+    // step reads for this plane's twelve operation classes — every one of them, because the scope
+    // unit reads silence as a refusal and a partly-declared policy leaves the rest unreachable. It
+    // diverts no byte: the serving path is still the one `register_planes` mounted, which is why
+    // the conformance battery and the neutrality cells read identically with this on and with it
+    // off. No config key, no environment variable, no boot line.
+    #[cfg(feature = "root-a2a")]
+    {
+        let policy = root::units_a2a::scope_policy(root::policy::ScopePolicy::new());
+        debug_assert_eq!(
+            policy.len(),
+            busbar_plane_a2a::ops::OP_CLASSES.len(),
+            "every A2A operation class needs a scope entry before the plane is switched over"
+        );
+    }
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
     if let Some(code) = handle_cli_flags() {
@@ -1240,6 +1308,15 @@ async fn run(data_workers: usize) {
         max_inbound,
         response_headers_cfg.server_timing,
     );
+    // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default off. The router that
+    // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
+    // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
+    // and out through the one exit. Off, this line does not exist and the surface is the one it was.
+    #[cfg(feature = "root-admin")]
+    let admin_router = root::units_admin::mount(admin_router, root::kernel::new_kernel(), |d| {
+        root::kernel::ProductionUnits::admin_only(d)
+    });
+
     // Bind the boot generation's engine host to the handle so it OWNS the only strong reference the boot
     // probers depend on (they hold a `Weak`): the first config swap drops it and retires them. See the
     // spawn_probers call above and `AppHandle::set_snapshot_host`.

@@ -42,7 +42,10 @@ path = "src/lib.rs"
 busbar-contract = { path = "../busbar-contract" }
 # THE CODEC. Read-only from here: this crate calls the JSON-RPC envelope vocabulary, the task-op
 # names and the error envelopes, and edits none of them.
-busbar-a2a = { path = "../busbar-a2a" }
+# `busbar-a2a-codec`, NOT `busbar-a2a`: the wire vocabulary split out of the plugin so a PURE kind
+# can name it; the axum REST and JSON-RPC routes, the tonic gRPC binding and the reqwest relay leg
+# stayed in `busbar-a2a`, and this edge names only the vocabulary.
+busbar-a2a-codec = { path = "../busbar-a2a-codec" }
 # The object notation the codec speaks. The adapter hands values across the seam and never invents
 # a second parser.
 serde_json = { workspace = true }

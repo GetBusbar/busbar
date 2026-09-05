@@ -43,16 +43,16 @@
     }
   ],
   "counts": {
-    "total": 2280,
+    "total": 2283,
     "by_plane": {
       "a2a": 468,
-      "core": 766,
+      "core": 769,
       "llm": 134,
       "mcp": 912
     },
     "by_family": {
       "a2a": 468,
-      "admin.ops": 231,
+      "admin.ops": 234,
       "auth.lifecycle": 3,
       "billing": 11,
       "boot.refusal": 205,
@@ -7248,6 +7248,34 @@
       "why": "no credential -> 401 envelope"
     },
     {
+      "id": "admin.ops|GetUsage|no-usage-after-mutation",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/api/v1/admin/groups",
+            "listener": "admin",
+            "auth": "admin",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"config\":{\"limits\":[{\"budget\":5,\"per\":\"day\"}]},\"name\":\"oracle-added\"}"
+          }
+        ]
+      },
+      "why": "admin operations are never billed: one PostGroups mutation leaves /api/v1/admin/usage at its fresh-boot zero shape"
+    },
+    {
       "id": "admin.ops|GetUsage|ok",
       "plane": "core",
       "family": "admin.ops",
@@ -8164,6 +8192,23 @@
         ]
       },
       "why": "200 ConfigReloadView; re-reads the on-disk config.yaml/providers.yaml and swaps. No body. Rate class Config."
+    },
+    {
+      "id": "admin.ops|PostConfigReload|rate-limit",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/config/reload",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "repeat": 11
+      },
+      "why": "the 11th Config-class mutation inside one boot's 60s window is refused (429) before the reload itself runs -- CONFIG_CLASS_RULES, not the crate's own Crud placeholder"
     },
     {
       "id": "admin.ops|PostConfigReload|unauth",
@@ -9887,6 +9932,24 @@
       "why": "no credential -> 401 envelope"
     },
     {
+      "id": "admin.ops|admin-token|wrong-destination",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}",
+        "auth": "admin",
+        "listener": "data"
+      },
+      "why": "the admin operator credential is not a valid signed vkey on the data-plane chain (keys); refused before Admit ever draws a budget bucket"
+    },
+    {
       "id": "auth.lifecycle|key-expiry",
       "plane": "core",
       "family": "auth.lifecycle",
@@ -11296,7 +11359,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b is a tap with `default: true`, but a tap cannot be a pool's base ordering",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-056|validate",
@@ -11330,7 +11393,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b more than one hook sets `default: true`",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-058a|validate",
@@ -12418,7 +12481,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b was written by a newer busbar (overlay version",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-124|validate",
@@ -12587,7 +12650,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b but it was not loaded:",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-137c|boot",
@@ -12632,7 +12695,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b but it was not loaded:",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-138c|boot",
@@ -12677,7 +12740,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b but it was not loaded:",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-140|boot",
@@ -13926,7 +13989,7 @@
         "env": {}
       },
       "why": "expect exit 0; stderr \u220b definition this binary cannot parse; it is NOT applied (edit or remove it, then ",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.warning|BOOT-W22|boot",
@@ -13941,7 +14004,7 @@
         "env": {}
       },
       "why": "expect exit 0; stderr \u220b plugin present but NOT loaded (trust policy)",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.warning|BOOT-W23|boot",
@@ -13956,7 +14019,7 @@
         "env": {}
       },
       "why": "expect exit 0; stderr \u220b plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.warning|BOOT-W24|boot",

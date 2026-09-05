@@ -50,6 +50,7 @@ pub mod checkpoint;
 pub mod digest;
 pub mod identity;
 pub mod legacy;
+pub mod migration;
 pub mod recompute;
 pub mod settle;
 pub mod totals;
@@ -66,6 +67,11 @@ pub use identity::{
 pub use legacy::{
     opening_balances, LegacyHead, LegacyMigrationSource, LegacyPosting, LegacyRows,
     LegacyWriteError, OpeningBalance, RecordingRows,
+};
+pub use migration::{
+    migrate, opening_totals, LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows,
+    MigrationError, MigrationMarker, MigrationRecords, NodeLocalRecords, Opening,
+    Outcome as MigrationOutcome, OPENING_CHECKPOINT_SEQ,
 };
 pub use recompute::{
     apply_tier, recheck, recompute, Divergence, Finding as RecomputeFinding, Pass, PolicyArchive,

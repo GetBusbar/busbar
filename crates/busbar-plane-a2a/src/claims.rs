@@ -176,11 +176,11 @@ mod tests {
     /// the claim that says where it lives goes red here rather than quietly claiming an empty path.
     #[test]
     fn the_mount_points_are_the_codecs_own() {
-        assert_eq!(P_ROOT, busbar_a2a::a2a::serve::MOUNT_PATH);
+        assert_eq!(P_ROOT, busbar_a2a_codec::MOUNT_PATH);
         // The framed binding's mount is one path segment, and the claim spells it as that one
         // segment followed by the method.
         assert_eq!(
-            busbar_a2a::a2a::serve::GRPC_MOUNT_PATH,
+            busbar_a2a_codec::GRPC_MOUNT_PATH,
             "/lf.a2a.v1.A2AService"
         );
     }
@@ -190,7 +190,7 @@ mod tests {
     fn the_plane_key_is_the_codecs_own() {
         assert_eq!(
             <crate::A2aPlane as busbar_contract::plane::PlaneMeta>::KEY,
-            busbar_a2a::PLANE_DECL.key
+            busbar_a2a_codec::PLANE_KEY
         );
     }
 

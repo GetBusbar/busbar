@@ -43,6 +43,12 @@ busbar-core = { path = "../busbar-core", default-features = false, features = ["
 busbar-substrate = { path = "../busbar-substrate", features = ["plane-a2a"] }
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
+# THE WIRE VOCABULARY. The pure half of this plugin, split out so `busbar-plane-a2a` can name the
+# canonicalization, the anomaly grammar, the id remap, the meter classes, the durable task record
+# shapes and the mount paths without pulling this crate's axum routes, tonic binding, reqwest relay
+# leg and socket-capable tokio into a pure kind's closure. Every module that moved is re-exported
+# from this crate under its old name.
+busbar-a2a-codec = { path = "../busbar-a2a-codec" }
 # The plane's own runtime surface — the same workspace pins core takes, for the plane code that moved
 # here whole: the transports (tokio, reqwest, futures, tonic/tonic-types/prost + a2a-pb for the gRPC
 # binding, tower), the config codecs (serde, serde_yaml, indexmap), the trust crypto (sha2, hex,

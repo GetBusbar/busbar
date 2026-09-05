@@ -266,13 +266,13 @@
       "capability": "governance-budget",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/meter_tests.rs::a_delegation_bills_the_initiating_key_for_the_hop_and_claims_nothing_beyond_it"
+      "test": "crates/busbar-a2a-codec/src/a2a/tests/meter_tests.rs::a_delegation_bills_the_initiating_key_for_the_hop_and_claims_nothing_beyond_it"
     },
     {
       "capability": "governance-budget",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/meter_tests.rs::reaching_the_limit_is_over_it_and_the_refusal_carries_a_retry_after"
+      "test": "crates/busbar-a2a-codec/src/a2a/tests/meter_tests.rs::reaching_the_limit_is_over_it_and_the_refusal_carries_a_retry_after"
     },
     {
       "capability": "disposition",

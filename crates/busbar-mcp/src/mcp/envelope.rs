@@ -49,14 +49,10 @@ use base64::Engine as _;
 use super::sse;
 use busbar_substrate::ingress::protocol::CoreRefusal;
 
-/// The single MCP protocol revision busbar implements.
-///
-/// ONE revision, deliberately. The conformance suite runs each scenario per revision and one run
-/// does not cover another, so supporting two revisions is two test legs and two wire formats, not a
-/// compatibility shim. `2025-11-25` and earlier are stateful: they have an `initialize` handshake,
-/// protocol sessions and a GET stream, all of which this revision deleted, and building them means
-/// building session machinery this release can otherwise skip entirely.
-pub const PROTOCOL_VERSION: &str = "2026-07-28";
+/// The single MCP protocol revision busbar implements — MOVED to `busbar-mcp-codec` with the rest
+/// of the protocol vocabulary and re-exported here, so `busbar_mcp::mcp::envelope::PROTOCOL_VERSION`
+/// resolves unchanged and there is one revision string rather than two that agree today.
+pub use busbar_mcp_codec::codec::PROTOCOL_VERSION;
 
 /// Every revision busbar will accept, echoed to a client that asked for one we do not implement so
 /// it can pick a mutually supported one and retry. Exactly one entry today; the shape is plural

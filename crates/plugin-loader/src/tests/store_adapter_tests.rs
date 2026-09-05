@@ -449,7 +449,7 @@ fn the_three_seams_share_one_shim() {
 /// The published sqlite store tarball, fetched by pinned digest into the oracle cache by
 /// `testing/shadow-oracle/fetch-plugin.sh`. `None` when the cache is cold — the script downloads on
 /// demand and a unit test must not, so this reads the cache the oracle already fills.
-fn cached_published_sqlite_tarball() -> Option<std::path::PathBuf> {
+pub(super) fn cached_published_sqlite_tarball() -> Option<std::path::PathBuf> {
     let asset_triple = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("macos", "x86_64") => "x86_64-apple-darwin",

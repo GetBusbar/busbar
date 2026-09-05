@@ -1,1 +1,1 @@
-{"applied":["hdr.date"],"body":{"json":{"flushed":0}},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"content-length":"13","content-type":"application/json"},"status":200}
+{"applied":["hdr.date"],"body":{"json":{"flushed":0}},"effects":{"audit":{"added":1,"items":[{"action":"auth.cache_flush","actor":"admin","chain_ok":true,"outcome":"applied","resource":"*"}]},"egress":[],"metrics":{},"usage":{}},"headers":{"content-length":"13","content-type":"application/json"},"status":200}

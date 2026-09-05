@@ -1,0 +1,13 @@
+# The "mid" crate: an optional dependency on `libc`, turned ON by the root fixture crate's
+# `features = ["with-libc"]` request.
+[package]
+name = "xtask-fixture-optional-mid-2"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[features]
+with-libc = ["dep:libc"]
+
+[dependencies]
+libc = { version = "0.2", optional = true }

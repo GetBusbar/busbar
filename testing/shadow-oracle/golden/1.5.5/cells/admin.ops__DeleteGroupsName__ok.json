@@ -1,1 +1,44 @@
-{"applied":["hdr.date","hdr.etag"],"body":{"text":""},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"etag":"<ETAG>"},"status":204}
+{
+  "applied": [
+    "hdr.date",
+    "hdr.etag"
+  ],
+  "body": {
+    "text": ""
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "group.delete",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "applied",
+          "resource": "group:oracle-added"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "body": {
+          "json": {
+            "error": {
+              "code": "not_found",
+              "message": "group `oracle-added` not found"
+            }
+          }
+        },
+        "path": "/api/v1/admin/groups/oracle-added",
+        "status": 404
+      }
+    ]
+  },
+  "headers": {
+    "etag": "<ETAG>"
+  },
+  "status": 204
+}

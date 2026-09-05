@@ -4,7 +4,9 @@
 //! arena, a clock, a configuration view, a transport view and a label set, plus the kernel-built
 //! values (a unit, a verified destination) handed through a seal. Nothing here is shipped.
 
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels, SlabBytes};
+use busbar_contract::bounded::{
+    Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels, SlabBytes, Span,
+};
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::ids::{LaneId, OpClassId, SessionId, StreamId};
 use busbar_contract::plugin::KernelSeal;
@@ -23,6 +25,13 @@ impl Arena for LeakArena {
 
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
         Ok(Box::leak(src.to_string().into_boxed_str()))
+    }
+
+    fn alloc_spans<'a>(
+        &'a self,
+        src: &[(&'a str, Span)],
+    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+        Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
 
     fn remaining(&self) -> usize {

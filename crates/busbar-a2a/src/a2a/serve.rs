@@ -258,20 +258,13 @@ pub(crate) fn agent_endpoint(public_url: &str, agent_id: &str) -> Result<String,
     absolute(public_url, &format!("{MOUNT_PATH}/agents/{agent_id}"))
 }
 
-/// THE PLANE'S MOUNT, the path prefix the A2A plane's HTTP bindings are served under. Every route
-/// this plane serves over HTTP is under it, and the host's plane dispatch (`PlaneDispatch`) matches on it at a
-/// segment boundary, so `/a2ax` is somebody else's path.
-pub const MOUNT_PATH: &str = "/a2a";
-
-/// THE PATH PREFIX THE gRPC BINDING IS SERVED AT, and busbar did not choose it.
-///
-/// gRPC derives a request path from the `.proto`'s package and service name — `lf.a2a.v1` and
-/// `A2AService` in the a2aproject's own canonical `a2a.proto`, vendored by `a2a-pb` — and a client
-/// is given an AUTHORITY, never a path prefix, so there is no spelling of this that could live under
-/// [`MOUNT_PATH`]. Written as a constant beside the mount it is not under, because "the A2A plane
-/// answers here too" is a fact the mount table has to be told
-/// (the host's `PlaneDispatch::mount`) or this binding's tokens go unchecked for audience.
-pub const GRPC_MOUNT_PATH: &str = "/lf.a2a.v1.A2AService";
+/// THE PLANE'S MOUNT and THE gRPC BINDING'S PATH PREFIX — MOVED to `busbar-a2a-codec` with the rest
+/// of the wire vocabulary and re-exported here, so `busbar_a2a::a2a::serve::MOUNT_PATH` and its
+/// framed sibling resolve unchanged. They crossed because `busbar-plane-a2a` declares its path
+/// claims against them and may not name this crate; two spellings of a mount is a plane claiming a
+/// path nothing is served at. See the codec crate for what each one is and why gRPC's is not under
+/// the other.
+pub use busbar_a2a_codec::{GRPC_MOUNT_PATH, MOUNT_PATH};
 
 /// The RFC 9728 protected-resource metadata path for this plane: the well-known prefix with the
 /// plane's mount appended, exactly as the sibling plane composes its own.

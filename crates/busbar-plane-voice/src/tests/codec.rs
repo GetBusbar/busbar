@@ -350,7 +350,8 @@ fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
     for expected in [
         "audio_tokens_in",
         "audio_tokens_out",
-        "text_tokens",
+        "text_tokens_in",
+        "text_tokens_out",
         "cached_tokens",
         "audio_seconds_in",
     ] {
@@ -359,6 +360,21 @@ fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
             "expected meter class {expected} in {classes:?}"
         );
     }
+
+    // The point of the split, asserted as a quantity and not just as a label: the fixture reports
+    // three text tokens consumed and four emitted, and the two land on different classes at their
+    // reported figures. Summed into one input-direction class -- which is what this plane used to do
+    // -- the emitted four would have priced at the input rate.
+    let quantity = |class: &str| {
+        locators
+            .lines
+            .as_slice()
+            .iter()
+            .find(|l| l.class.as_str() == class)
+            .and_then(|l| l.quantity)
+    };
+    assert_eq!(quantity("text_tokens_in"), Some(3));
+    assert_eq!(quantity("text_tokens_out"), Some(4));
 }
 
 #[test]
@@ -374,7 +390,13 @@ fn twilio_media_after_start_admits_a_ulaw_audio_frame() {
     let transport = WsStack::new("/twilio/call-123");
     let labels = Labels::new();
     let c = ctx(&arena, &config, &transport, &labels);
-    let mut state = SessionPlane::open_session(&plane, &c);
+    // The dialect is bound directly rather than resolved from the path. The telephony CLAIM is
+    // gone — its transport has no crate — so no selector maps `/twilio/...` onto this dialect any
+    // more; the CODEC is what this cell is about and it is untouched. Binding the state here is
+    // what an arrival on a registered telephony transport would do.
+    let mut state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::TwilioMediaStreams,
+    ));
 
     let start = serde_json::to_vec(&json!({
         "event": "start",
@@ -419,7 +441,13 @@ fn twilio_media_with_a_forged_stream_sid_is_discarded() {
     let transport = WsStack::new("/twilio/call-123");
     let labels = Labels::new();
     let c = ctx(&arena, &config, &transport, &labels);
-    let mut state = SessionPlane::open_session(&plane, &c);
+    // The dialect is bound directly rather than resolved from the path. The telephony CLAIM is
+    // gone — its transport has no crate — so no selector maps `/twilio/...` onto this dialect any
+    // more; the CODEC is what this cell is about and it is untouched. Binding the state here is
+    // what an arrival on a registered telephony transport would do.
+    let mut state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::TwilioMediaStreams,
+    ));
 
     let start = serde_json::to_vec(&json!({
         "event": "start",

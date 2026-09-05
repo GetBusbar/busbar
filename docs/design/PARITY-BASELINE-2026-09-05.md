@@ -2,7 +2,7 @@
 
 Golden: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam-work/target/oracle/recordings/golden` · Candidate: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam-work/target/oracle/recordings/candidate` · cells: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam-work/testing/shadow-oracle/cells.json`
 
-**Owed 840 · diverging 0 · golden gaps 1410 · weighted D/W = 0.0000**
+**Owed 882 · diverging 0 · golden gaps 1401 · weighted D/W = 0.0000**
 
 ## Decision
 
@@ -12,16 +12,18 @@ Golden: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam
 
 | family | owed | diverging | D/W |
 |---|---|---|---|
-| admin.ops | 231 | 0 | 0.000 |
+| admin.ops | 234 | 0 | 0.000 |
 | auth.lifecycle | 3 | 0 | 0.000 |
 | billing | 11 | 0 | 0.000 |
-| boot.refusal | 184 | 0 | 0.000 |
-| boot.warning | 25 | 0 | 0.000 |
+| boot.refusal | 190 | 0 | 0.000 |
+| boot.warning | 28 | 0 | 0.000 |
 | cli | 14 | 0 | 0.000 |
 | concurrency | 3 | 0 | 0.000 |
 | config.migrate | 138 | 0 | 0.000 |
 | cooldown | 1 | 0 | 0.000 |
 | crosscut.traps | 5 | 0 | 0.000 |
+| documented | 28 | 0 | 0.000 |
+| hazard | 2 | 0 | 0.000 |
 | hooks | 10 | 0 | 0.000 |
 | http.crosscut | 20 | 0 | 0.000 |
 | llm.wire | 127 | 0 | 0.000 |
@@ -79,9 +81,9 @@ Golden: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam
 - `boot.refusal|BOOT-030|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
 - `boot.refusal|BOOT-031|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
 - `boot.refusal|BOOT-032|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
-- … 226 more in the report's diverging.txt
+- … 246 more in the report's diverging.txt
 
 ## Golden gaps (cells the 1.5.5 recording could not produce — named, never owed)
 
 - 1380 × SKIP: named gap on the golden, never owed
-- 30 × SKIP: named gap: the fixture this cell needs is not in the tree yet
+- 21 × SKIP: named gap: the fixture this cell needs is not in the tree yet

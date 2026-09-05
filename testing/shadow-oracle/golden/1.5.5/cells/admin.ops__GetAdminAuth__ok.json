@@ -1,1 +1,1 @@
-{"applied":["hdr.date","hdr.etag"],"body":{"json":{"configured":true,"modules":["admin-tokens"]}},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"46","content-type":"application/json","etag":"<ETAG>"},"status":200}
+{"applied":["hdr.date","hdr.etag"],"body":{"json":{"configured":true,"modules":["admin-tokens"]}},"effects":{"audit":{"added":0,"items":[]},"egress":[],"metrics":{},"usage":{}},"headers":{"content-length":"46","content-type":"application/json","etag":"<ETAG>"},"status":200}

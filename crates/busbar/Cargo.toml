@@ -59,11 +59,16 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-kernel = { path = "../busbar-kernel" }
 busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
+# THE PUBLISHED STORE PROTOCOL. A plane's durable records reach the node through record legs on its
+# route plan, and the eight kind-tagged operations those legs run are declared here. Named by the
+# root and by nothing else on this path: a plane may not hold a store and a unit may not know a
+# schema, so the mapping from one to the other belongs to the composition and lives in `src/root/`.
+busbar-api = { path = "../api" }
 # The fourteen units. Eight are facades reached as free functions; six carry a long-lived object the
 # root owns and holds in `ProductionUnits`.
 busbar-unit-admission = { path = "../busbar-unit-admission" }
 busbar-unit-audit = { path = "../busbar-unit-audit" }
-busbar-unit-auth = { path = "../busbar-unit-auth" }
+busbar-unit-auth = { path = "../busbar-unit-auth", features = ["sha256"] }
 busbar-unit-breaker = { path = "../busbar-unit-breaker" }
 busbar-unit-cost = { path = "../busbar-unit-cost" }
 busbar-unit-egress = { path = "../busbar-unit-egress" }
@@ -97,6 +102,10 @@ busbar-transport-stdio = { path = "../busbar-transport-stdio" }
 # `rustls` config: the root builds the dial-side trust store, and the deployment's trust roots are
 # its own statement rather than a unit's.
 rustls = { workspace = true }
+# Behind `root-admin` only. The root-driven admin surface wraps the router the operations are already
+# mounted on and calls it as the tower service it is, so the inner surface answers exactly as it did
+# and no status, header or byte is re-derived on the way out.
+tower = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 axum = { workspace = true }
 tracing = { workspace = true }
@@ -151,6 +160,40 @@ plane-a2a = ["dep:busbar-a2a", "busbar-core/plane-a2a"]
 # rule it strips `busbar-voice?/openapi-schema`, leaving voice byte-for-byte removable. Compiling the
 # runtime here gives the `build_runtime` body; the skeleton build leaves `build_runtime: None`.
 plane-voice = ["dep:busbar-voice", "busbar-voice?/runtime", "busbar-core/plane-voice"]
+# THE VOICE PLANE, SERVED THROUGH THE COMPOSITION ROOT rather than through the previous release's
+# path. OFF by default and deliberately so: the root is BUILT before any plane is SWITCHED onto it,
+# and this is the switch. Off, the binary is byte-for-byte what it was — the module still compiles
+# and its cells still run, because the root is proved against the real traits whether or not
+# anything routes through it. On, `main()` mounts the voice plane's units.
+#
+# It carries no config key, no environment variable and no boot line. A deployment cannot turn it on
+# by editing a config file and cannot tell from the logs which way it was built, which is what keeps
+# the neutrality cells answering the same on both legs. It forwards to `plane-voice` because the
+# thing it mounts needs the plane's own crate edge to exist.
+root-voice = ["plane-voice"]
+# THE A2A PLANE ON THE KERNEL. Default OFF, and off is the point: the root is BUILT before any
+# plane is SWITCHED onto it, so this feature installs the composition and diverts no byte. With it
+# on, `main()` assembles the A2A plane's scope entries and its record-leg binding at boot and holds
+# them; the serving path is still the one the A2A plugin mounts, which is why the conformance
+# battery, the TCK and the neutrality cells read identically with the feature on and with it off.
+# It carries no config key, no environment variable and no boot line, for the same reason.
+root-a2a = []
+# THE MCP PLANE'S KERNEL BINDINGS, default OFF. Not a second MCP switch: `plane-mcp` above still
+# decides whether this binary speaks the protocol at all. This one decides whether the MCP plane's
+# bindings to the fourteen units are compiled and sealed at boot, which is the step BEFORE any byte
+# is served through them. Default-off is the whole point of the ordering — the bindings are built and
+# checked against the real unit traits while the serving path is untouched — so a build with it on
+# and a build with it off answer identically on the wire, and the rigs prove that both ways.
+root-mcp = []
+# THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT OFF, and it
+# stays off until the oracle's admin family is green on it: the switch is what makes an admin request
+# travel through the kernel's loop instead of reaching its handler directly, and until that is
+# measured the shipped binary must keep the path it has. Off, the feature costs one unbuilt module
+# and nothing else — `main.rs` names the mount inside a `cfg` and the router it wraps is untouched.
+#
+# `tower` is the feature's own edge: wrapping a mounted router means calling it as the service it
+# already is, which is the one thing that guarantees the inner surface answers exactly as it did.
+root-admin = ["dep:tower"]
 auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]
 openapi-schema = ["busbar-core/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]

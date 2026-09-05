@@ -35,6 +35,34 @@ exactly where the inventory row says):
                                         archive/manifest is now unreadable (BOOT-135's `plugin
                                         validation failed` family), as opposed to a wrong-KIND but
                                         otherwise-intact one.
+  {"plugin_dir_unsigned": ["<repo-name>", ...]}
+                                        same staging as `plugin_dir`, but flips one hex nibble in
+                                        the copied manifest's `signature` field (same length, still
+                                        valid hex, no longer the real ed25519 signature) before
+                                        repacking. The archive and manifest stay well-formed — the
+                                        published dylib runs unmodified — but `busbar-plugin-sign`
+                                        now sees a TAMPERED signature over a `publisher: busbar`
+                                        (or third-party) manifest, i.e. "unsigned" in trust-policy
+                                        terms: REJECTED under `allow_unsigned: false` (the
+                                        `plugin present but NOT loaded (trust policy)` family) or
+                                        `Verdict::Allowed` (UNVERIFIED) under `allow_unsigned: true`
+                                        — without needing a from-source unsigned plugin build.
+  {"overlay": {...}}                   write the given JSON object verbatim as
+                                        <out>/busbar-overlay.json (or <out>/boot-overlay.json when
+                                        the mutation also sets mode: boot — see NOTE below), i.e. the
+                                        durable overlay busbar reads next to config.yaml by default.
+                                        The op vocabulary otherwise writes only config.yaml /
+                                        providers.yaml; this is the one escape hatch for mutations
+                                        that are only reachable through the overlay layer (a runtime
+                                        `HookCfg` key config.yaml's `HookDefCfg` never exposes, an
+                                        overlay schema version newer than this binary understands,
+                                        a named-map patch this binary's typed parse rejects, etc).
+                                        NOTE: record.sh's `boot` mode copies the mutated config.yaml
+                                        to `<out>/boot.yaml` and rewrites BUSBAR_CONFIG to point at
+                                        it, but the config's DIRECTORY is unchanged (`<out>`), so a
+                                        `busbar-overlay.json` written here lands in the same
+                                        directory `boot.yaml` resolves its default overlay from
+                                        either way — one code path serves both modes.
 """
 import argparse
 import json
@@ -74,6 +102,55 @@ def _stage_plugin_dir(out_dir: str, repos: list, corrupt: dict | None = None) ->
             n = int(corrupt["truncate_bytes"])
             with open(dst, "r+b") as f:
                 f.truncate(n)
+    return plugins_dir
+
+
+def _stage_plugin_dir_unsigned(out_dir: str, repos: list) -> str:
+    """Copy each named published plugin's tarball into <out_dir>/plugins/, tampering the copy's
+    manifest `signature` field (one hex nibble flipped, same length) so the artifact no longer
+    verifies — the archive stays well-formed and the dylib is untouched, only the ed25519 signature
+    is now wrong. Returns the absolute plugins dir path. tarfile round-trip preserves member order
+    and names; only manifest.json's bytes change (and therefore the .tar.gz's compressed bytes, but
+    never its members)."""
+    import tarfile
+    import io
+
+    plugins_dir = os.path.join(out_dir, "plugins")
+    os.makedirs(plugins_dir, exist_ok=True)
+    for repo in repos:
+        src = _fetch_plugin(repo)
+        dst = os.path.join(plugins_dir, os.path.basename(src))
+        with tarfile.open(src, "r:gz") as tin:
+            members = []
+            datas = {}
+            for m in tin.getmembers():
+                members.append(m)
+                if m.isfile():
+                    datas[m.name] = tin.extractfile(m).read()
+        manifest_name = next((n for n in datas if n.endswith("manifest.json")), None)
+        if manifest_name is None:
+            raise RuntimeError(f"plugin_dir_unsigned: {repo} tarball carries no manifest.json")
+        manifest = json.loads(datas[manifest_name])
+        sig = manifest.get("signature", "")
+        if not sig:
+            raise RuntimeError(f"plugin_dir_unsigned: {repo} manifest carries no signature to tamper")
+        # flip one hex nibble in the middle of the signature — same length, still valid hex, no
+        # longer the real ed25519 signature over this artifact's sha256.
+        mid = len(sig) // 2
+        flipped = "0" if sig[mid] != "0" else "1"
+        manifest["signature"] = sig[:mid] + flipped + sig[mid + 1:]
+        datas[manifest_name] = json.dumps(manifest).encode("utf-8")
+        with tarfile.open(dst, "w:gz") as tout:
+            for m in members:
+                if m.name in datas:
+                    payload = datas[m.name]
+                    m2 = tarfile.TarInfo(m.name)
+                    m2.size = len(payload)
+                    m2.mode = m.mode
+                    m2.mtime = m.mtime
+                    tout.addfile(m2, io.BytesIO(payload))
+                else:
+                    tout.addfile(m)
     return plugins_dir
 
 
@@ -137,7 +214,7 @@ def main() -> int:
     cfg = yaml.safe_load(cfg_text) or {}
     prov = yaml.safe_load(prov_text) or {}
     raw_tail, replace_all, prov_touched = [], None, False
-    env_lines, args = [], []
+    env_lines, args, overlay_doc = [], [], None
     for op in mut["op"]:
         if "set" in op:
             walk_set(cfg, op["set"], op.get("value"))
@@ -164,6 +241,12 @@ def main() -> int:
             spec = op["plugin_dir_corrupt"]
             plugins_dir = _stage_plugin_dir(a.out, [spec["name"]], corrupt=spec)
             cfg.setdefault("plugins", {})["dir"] = plugins_dir
+        elif "plugin_dir_unsigned" in op:
+            os.makedirs(a.out, exist_ok=True)
+            plugins_dir = _stage_plugin_dir_unsigned(a.out, op["plugin_dir_unsigned"])
+            cfg.setdefault("plugins", {})["dir"] = plugins_dir
+        elif "overlay" in op:
+            overlay_doc = op["overlay"]
         else:
             print(f"apply-mutation: unknown op {op}", file=sys.stderr); return 2
 
@@ -178,6 +261,9 @@ def main() -> int:
     if prov_touched:
         open(os.path.join(a.out, "providers.yaml"), "w", encoding="utf-8").write(
             yaml.safe_dump(prov, sort_keys=False, default_flow_style=False, allow_unicode=True))
+    if overlay_doc is not None:
+        open(os.path.join(a.out, "busbar-overlay.json"), "w", encoding="utf-8").write(
+            json.dumps(overlay_doc))
     json.dump({"args": args}, open(os.path.join(a.out, "mutation-args.json"), "w"))
     for ln in env_lines:
         print(ln)

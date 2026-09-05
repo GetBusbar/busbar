@@ -333,6 +333,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "busbar-a2a",
+ "busbar-api",
  "busbar-caps",
  "busbar-contract",
  "busbar-core",
@@ -386,6 +387,7 @@ dependencies = [
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
+ "tower",
  "tracing",
 ]
 
@@ -398,6 +400,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
+ "busbar-a2a-codec",
  "busbar-api",
  "busbar-core",
  "busbar-plugin",
@@ -432,6 +435,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "busbar-a2a-codec"
+version = "1.6.0"
+dependencies = [
+ "busbar-api",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -616,6 +628,8 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "busbar-api",
+ "busbar-caps",
+ "busbar-contract",
  "busbar-core",
  "busbar-llm-codec",
  "busbar-mcp",
@@ -678,6 +692,7 @@ dependencies = [
  "busbar-api",
  "busbar-core",
  "busbar-llm",
+ "busbar-mcp-codec",
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
@@ -708,10 +723,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-mcp-codec"
+version = "1.6.0"
+dependencies = [
+ "busbar-api",
+ "busbar-substrate-values",
+ "bytes",
+ "http",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
 dependencies = [
- "busbar-a2a",
+ "busbar-a2a-codec",
  "busbar-contract",
  "serde_json",
 ]
@@ -739,7 +766,7 @@ name = "busbar-plane-mcp"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-mcp",
+ "busbar-mcp-codec",
  "serde_json",
 ]
 
@@ -748,7 +775,7 @@ name = "busbar-plane-voice"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-voice",
+ "busbar-voice-codec",
  "bytes",
  "serde_json",
 ]
@@ -772,6 +799,7 @@ dependencies = [
  "busbar-kernel",
  "busbar-plugin",
  "busbar-plugin-sign",
+ "busbar-unit-ledger",
  "busbar-unit-verbs",
  "busbar-unit-wal",
  "flate2",
@@ -1195,6 +1223,7 @@ dependencies = [
  "busbar-api",
  "busbar-plugin",
  "busbar-substrate",
+ "busbar-voice-codec",
  "bytes",
  "futures",
  "http",
@@ -1208,6 +1237,17 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "busbar-voice-codec"
+version = "1.6.0"
+dependencies = [
+ "busbar-api",
+ "busbar-substrate-values",
+ "bytes",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -271,7 +271,13 @@ impl Breaker for TestBreaker {
         })
     }
 
-    fn ready(&self, _pool: &str, destination: DestinationId, _now: u64) -> bool {
+    fn ready(
+        &self,
+        _pool: &str,
+        destination: DestinationId,
+        _now: u64,
+        _token: &busbar_caps::UnitToken<busbar_caps::Route>,
+    ) -> bool {
         let health = self.health_of(destination);
         !health.dead
             && !health.budget_exhausted
@@ -284,7 +290,13 @@ impl Breaker for TestBreaker {
         !health.dead && !health.budget_exhausted
     }
 
-    fn cooldown_remaining(&self, _pool: &str, destination: DestinationId, _now: u64) -> u64 {
+    fn cooldown_remaining(
+        &self,
+        _pool: &str,
+        destination: DestinationId,
+        _now: u64,
+        _token: &busbar_caps::UnitToken<busbar_caps::Route>,
+    ) -> u64 {
         self.health_of(destination).cooldown
     }
 
@@ -788,6 +800,14 @@ impl busbar_contract::Transport for TestTransport {
         Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
+    fn detach(&self, _conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+        None
+    }
+
+    fn composed_over(&self) -> Option<&'static str> {
+        None
+    }
+
     fn close(&self, _conn: Conn, _reason: busbar_contract_transport::wire::CloseReason) {
         *self.closed.lock().unwrap_or_else(|e| e.into_inner()) += 1;
     }
@@ -1040,6 +1060,13 @@ impl busbar_contract::Arena for LeakArena {
 
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, busbar_contract::ArenaBudget> {
         Ok(Box::leak(src.to_string().into_boxed_str()))
+    }
+
+    fn alloc_spans<'a>(
+        &'a self,
+        src: &[(&'a str, busbar_contract::Span)],
+    ) -> Result<&'a [(&'a str, busbar_contract::Span)], busbar_contract::ArenaBudget> {
+        Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
 
     fn remaining(&self) -> usize {
