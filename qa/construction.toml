@@ -18,7 +18,8 @@ scan_roots = ["crates/*/src"]
 plane_crates = ["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"]
 # A file at one of these path fragments is TEST code (same rule the purity lint applies), in
 # addition to any `#[cfg(test)] mod … { … }` block inside a production file.
-test_path_fragments = ["/tests/", "_tests.rs", "_test.rs"]
+# A bare `tests.rs` (Rust's `#[cfg(test)] mod tests;` file convention) is test code too.
+test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
@@ -29,7 +30,9 @@ has one ROUTE step and one dispatch; the code should have one too."""
 # The egress client's send verb: the call that turns an assembled request into an upstream
 # round trip. Every occurrence in non-test code outside `allowed_function` is a finding.
 send_verb = '\.client\(\)\.get\(\)\.request\('
-allowed_function = "forward_with_pool_parsed_inner"
+# The seam moved from the pooled hot loop to `engine/attempt/mod.rs::attempt` when the degraded
+# walk twin was deleted; the hot loop now calls `attempt()` too, so no extra site remains.
+allowed_function = "attempt"
 max_extra_sites = 0
 
 # ── 2. request-path-fn-size ──────────────────────────────────────────────────────────────────────
@@ -39,7 +42,16 @@ tested at its seams, or diffed with confidence. The loop is eight named steps; a
 be one of them, not all of them."""
 files = [
   "crates/busbar-llm/src/engine/pipeline.rs",
-  "crates/busbar-llm/src/engine/walk.rs",
+  "crates/busbar-llm/src/engine/attempt/mod.rs",
+  "crates/busbar-llm/src/engine/attempt/assemble.rs",
+  "crates/busbar-llm/src/engine/attempt/send.rs",
+  "crates/busbar-llm/src/engine/attempt/classify.rs",
+  "crates/busbar-llm/src/engine/attempt/respond.rs",
+  "crates/busbar-llm/src/engine/attempt/buffered.rs",
+  "crates/busbar-llm/src/engine/exhaustion/mod.rs",
+  "crates/busbar-llm/src/engine/exhaustion/queue.rs",
+  "crates/busbar-llm/src/engine/exhaustion/fallback.rs",
+  "crates/busbar-llm/src/engine/exhaustion/least_bad.rs",
   "crates/busbar-llm/src/native_ingress.rs",
   "crates/busbar-llm/src/arrival.rs",
   "crates/busbar-core/src/ingress/mod.rs",
@@ -81,6 +93,9 @@ seam_root = "crates/busbar-substrate/src"
 seam_name_pattern = '^(install_[a-z0-9_]+|set_[a-z0-9_]+_factory)$'
 # A file whose path contains one of these is NOT production and cannot count as an installer.
 non_production_path_fragments = ["testkit", "test_support", "plugin-testkit", "fixtures.rs"]
+# A seam DEFINED under the substrate's own test kit is a fixture install hook, never a production
+# promise, so it is not counted at all.
+exempt_seam_path_fragments = ["/testkit/", "/testkit.rs"]
 max_uninstalled = 0
 
 # ── 5. neutral-no-dialect ────────────────────────────────────────────────────────────────────────
@@ -114,3 +129,65 @@ shingle_tokens = 12
 top_pairs = 5
 # Ceiling on total duplicated lines. Informational: shown in --summary, never enforced.
 max_duplicated_lines = 0
+
+# ── 8. token-sealed ──────────────────────────────────────────────────────────────────────────────
+[rules.token-sealed]
+why = """The Teller's decision, hold and posting tokens are what make the loop's order a matter of \
+types rather than discipline: a step can only be answered with that step's token, a hold can only \
+be opened by Admit, a posting can only be minted after Audit. That holds exactly as long as nothing \
+outside the Teller can spell a constructor. Every such spelling elsewhere is a forged token."""
+patterns = ["Decision::proceed(", "Decision::refuse(", "Hold::", "Posted(", "UnitToken::mint("]
+allowed_root = "crates/busbar-substrate/src/teller"
+max_sites = 0
+
+# ── 9. teller-step-order ─────────────────────────────────────────────────────────────────────────
+[rules.teller-step-order]
+why = """The loop is nine named steps in one fixed order, written once. The loop file is read as \
+the loop plus the helpers it calls (the opener is synchronous, the runner is async), and the steps \
+must appear once each in the canonical order; the session opener runs exactly the steps up to the \
+door. Exactly one loop function may exist."""
+file = "crates/busbar-substrate/src/teller/run.rs"
+loop_function = "run_unit"
+opener_function = "open_unit"
+door_step = "admit"
+steps = ["arrival", "decode", "authenticate", "verify", "approve", "admit", "route", "meter", "audit"]
+max_findings = 0
+
+# ── 10. one-teller-loop ──────────────────────────────────────────────────────────────────────────
+[rules.one-teller-loop]
+why = """Each plane enters the loop from one place, so a unit cannot be run twice or half-run. The \
+legacy adapter (`run_gauntlet`) is the coexistence shim the planes migrate off one at a time; its \
+call-site count is a ratchet the owner drives to zero and never loosens."""
+loop_verb = "run_unit"
+loop_root = "crates/busbar-substrate/src/teller"
+max_callers_per_plane_crate = 1
+legacy_verb = "run_gauntlet"
+# Today: the LLM, MCP and A2A planes plus the host-seam adapter body. Down to 0 when the planes move.
+max_legacy_sites = 4
+
+# ── 11. no-response-escapes-audit ────────────────────────────────────────────────────────────────
+[rules.no-response-escapes-audit]
+why = """A plane's step files decide; only its Audit step answers. A function under the plane's \
+step directory that returns a `Response` from anywhere but `audit.rs` is a way for a unit to end \
+without being posted — the exact hole the loop exists to close."""
+root = "crates/busbar-llm/src/unit"
+allowed_files = ["audit.rs"]
+max_escapes = 0
+
+# ── 12. terminal-doors-in-audit-step ─────────────────────────────────────────────────────────────
+[rules.terminal-doors-in-audit-step]
+why = """The terminal doors (`finish_admitted` / `finish_rejected`) seal and post a unit. In the \
+rebuilt plane they are called from its Audit step and nowhere else, so every unit is posted exactly \
+once by the one step whose job that is. Red by design until that step exists: every call from the \
+legacy ingress is a site the rebuild must move."""
+crate = "busbar-llm"
+doors = ["finish_admitted", "finish_rejected"]
+allowed_file = "crates/busbar-llm/src/unit/audit.rs"
+max_extra_sites = 0
+
+# ── 13. one-pick-site ────────────────────────────────────────────────────────────────────────────
+[rules.one-pick-site]
+why = """The lane pick has two legitimate callers: the Route loop and the fallback-pool re-entry. \
+A third is a second selection policy growing beside the first."""
+verb = "pick_among"
+max_sites = 2

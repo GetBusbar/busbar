@@ -36,6 +36,11 @@ What is normalized (each rule is a named entry in `applied`):
                       nondeterministic on the SAME binary (measured on 1.5.5: 3/6 each way) -> sorted
   ver.string          `"version": "X.Y.Z"` of the binary -> "<VERSION>" (the diff of interest is
                       everything else; the version itself is expected to differ)
+  body.keep-lines     a cell whose contract is the ABSENCE of something (`body_lines` on the cell)
+                      keeps only the body lines matching that regex; an empty result is the
+                      contract, and any surviving line is a diff
+
+Usage: normalize.py <captured.json> [--key-id <id>] [--keep-body-lines <regex>] > normalized.json
 
 Anything NOT listed is preserved byte-for-byte. Body JSON is re-serialized canonically (sorted keys,
 no whitespace) so that key order — which is NOT semantically meaningful and which serializers may
@@ -204,10 +209,17 @@ def norm_body(body: str, applied: set, key_id: str | None):
     return {"text": norm_text("\n".join(lines), applied)}
 
 
-def normalize(cap: dict, key_id: str | None) -> dict:
+def normalize(cap: dict, key_id: str | None, keep_lines: str | None = None) -> dict:
     applied: set = set()
     body_rules: set = set()
     body = norm_body(cap.get("body", ""), body_rules, key_id)
+    if keep_lines is not None:
+        # The cell's contract is what is NOT there: keep only the matching lines (a JSON body is
+        # rendered canonically first so the filter sees one line per top-level entry).
+        rx = re.compile(keep_lines)
+        text = body["text"] if "text" in body else json.dumps(body["json"], separators=(",", ":"), sort_keys=True, indent=0)
+        body = {"text": "\n".join(ln for ln in text.split("\n") if rx.search(ln))}
+        body_rules.add("body.keep-lines")
     applied |= body_rules
     headers = norm_headers(cap.get("headers", {}), applied)
     if body_rules and "content-length" in headers:
@@ -227,10 +239,13 @@ def normalize(cap: dict, key_id: str | None) -> dict:
 def main() -> int:
     args = sys.argv[1:]
     key_id = None
+    keep_lines = None
     if "--key-id" in args:
         i = args.index("--key-id"); key_id = args[i + 1]; del args[i:i + 2]
+    if "--keep-body-lines" in args:
+        i = args.index("--keep-body-lines"); keep_lines = args[i + 1]; del args[i:i + 2]
     cap = json.load(open(args[0])) if args else json.load(sys.stdin)
-    print(json.dumps(normalize(cap, key_id), separators=(",", ":"), sort_keys=True))
+    print(json.dumps(normalize(cap, key_id, keep_lines), separators=(",", ":"), sort_keys=True))
     return 0
 
 

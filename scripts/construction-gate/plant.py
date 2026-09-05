@@ -10,6 +10,9 @@
 # that rule. A rule whose planted violation goes unnoticed is a rule that is not measuring anything.
 #
 #   plant.py <rule-id> <pristine-root> <scratch-root> <calibrated.toml> [baseline-rows.json]
+#
+# Exit 3 = "nothing to plant": the rule's subject is absent from this tree (a twin already retired,
+# a file not yet written); the self-test notes it and moves on rather than failing.
 
 import json
 import os
@@ -20,12 +23,19 @@ import tomllib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rules  # noqa: E402
 
-# Every file any plant edits; all are restored before each plant so plants never stack.
+# Every file any plant edits; all are restored before each plant so plants never stack. A file
+# that the pristine copy does not have (deleted upstream, or created by a plant) is REMOVED from
+# the scratch copy on restore, so a plant can create a file and the next plant starts clean.
 TOUCHED = [
     "crates/busbar-llm/src/engine/walk.rs",
+    "crates/busbar-llm/src/engine/select.rs",
     "crates/busbar-llm/src/arrival.rs",
+    "crates/busbar-llm/src/native_ingress.rs",
+    "crates/busbar-llm/src/unit/route.rs",
     "crates/busbar-voice/src/lib.rs",
     "crates/busbar-substrate/src/lib.rs",
+    "crates/busbar-substrate/src/plane_host/mod.rs",
+    "crates/busbar-substrate/src/teller/run.rs",
     "crates/busbar-core/src/router.rs",
 ]
 
@@ -34,17 +44,33 @@ def restore(pristine, scratch):
     for rel in TOUCHED:
         src, dst = os.path.join(pristine, rel), os.path.join(scratch, rel)
         if os.path.exists(src):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copyfile(src, dst)
+        elif os.path.exists(dst):
+            os.remove(dst)
+            # a directory a plant created for the file goes with it, once empty
+            d = os.path.dirname(dst)
+            if os.path.isdir(d) and not os.listdir(d):
+                os.rmdir(d)
 
 
 def append(scratch, rel, text):
-    with open(os.path.join(scratch, rel), "a", encoding="utf-8") as fh:
+    path = os.path.join(scratch, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
         fh.write("\n" + text + "\n")
+
+
+def nothing_to_plant(reason):
+    print(f"plant: nothing to plant: {reason}")
+    sys.exit(3)
 
 
 def plant(rule, pristine, scratch, cfg, baseline):
     if rule == "one-attempt-seam":
-        append(scratch, "crates/busbar-llm/src/engine/walk.rs",
+        # The planted send lives in a file that is NOT the attempt file, whatever the tree calls
+        # the attempt file today.
+        append(scratch, "crates/busbar-llm/src/engine/select.rs",
                "pub(crate) async fn planted_second_attempt(rt: &Arc<NativeRuntime>, hreq: Req) {\n"
                "    let _ = EngineTables::new(rt).client().get().request(hreq);\n}")
     elif rule == "request-path-fn-size":
@@ -68,13 +94,49 @@ def plant(rule, pristine, scratch, cfg, baseline):
     elif rule == "single-terminal":
         append(scratch, "crates/busbar-core/src/router.rs",
                "fn planted_terminal() { crate::ingress::finish_inner(); }")
+    elif rule == "token-sealed":
+        # A hold opened outside the Teller: a forged token.
+        append(scratch, "crates/busbar-substrate/src/plane_host/mod.rs",
+               "fn planted_forge() { let _ = crate::teller::Hold::open(None, None, false); }")
+    elif rule == "teller-step-order":
+        rel = cfg["rules"]["teller-step-order"]["file"]
+        path = os.path.join(scratch, rel)
+        if not os.path.exists(path):
+            nothing_to_plant(f"{rel} does not exist yet")
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        # Swap the first two steps: the loop now decodes before it has an arrival.
+        src = src.replace(".arrival(", ".__swap__(").replace(".decode(", ".arrival(").replace(".__swap__(", ".decode(")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(src)
+    elif rule == "one-teller-loop":
+        # Two entries into the loop from one plane crate.
+        append(scratch, "crates/busbar-llm/src/native_ingress.rs",
+               "async fn planted_loop_a() { let _ = busbar_substrate::teller::run_unit(a, b).await; }\n"
+               "async fn planted_loop_b() { let _ = busbar_substrate::teller::run_unit(a, b).await; }")
+    elif rule == "one-teller-loop:run_gauntlet":
+        append(scratch, "crates/busbar-llm/src/native_ingress.rs",
+               "async fn planted_legacy() { let _ = busbar_substrate::plane_host::run_gauntlet(a, b).await; }")
+    elif rule == "no-response-escapes-audit":
+        # A step file (not audit.rs) that hands a Response back.
+        append(scratch, "crates/busbar-llm/src/unit/route.rs",
+               "pub(crate) fn planted_escape() -> axum::response::Response { todo!() }")
+    elif rule == "terminal-doors-in-audit-step":
+        append(scratch, "crates/busbar-llm/src/native_ingress.rs",
+               "fn planted_door(host: &dyn Host) { host.finish_rejected(a, b, c, d); }")
+    elif rule == "one-pick-site":
+        append(scratch, "crates/busbar-llm/src/engine/select.rs",
+               "async fn planted_pick() { let _ = pick_among(a, b, c, d, e, f, g).await; }")
     elif rule == "duplicate-dispatch":
         # Copy a brace-balanced block of the hot-path twin into the degraded twin, from a region
         # the baseline did not already report as shared, so the duplicated-line total must rise.
         tree = rules.Tree(scratch, cfg)
         names = cfg["rules"]["duplicate-dispatch"]["twins"]
-        a = tree.find_fn_by_name(names[0])[0]
-        b = tree.find_fn_by_name(names[1])[0]
+        found = [tree.find_fn_by_name(n) for n in names]
+        if not all(found):
+            nothing_to_plant("twin(s) absent: " + ", ".join(n for n, f in zip(names, found) if not f))
+        a = found[0][0]
+        b = found[1][0]
         taken = []
         for r in baseline or []:
             if r["id"] == "duplicate-dispatch":

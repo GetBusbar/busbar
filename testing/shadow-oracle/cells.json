@@ -36,14 +36,18 @@
     {
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "outcome": "ok_stream_array",
+      "why": "happy path, streamed as a JSON array (gemini without alt=sse)"
     }
   ],
   "counts": {
-    "total": 2199,
+    "total": 2203,
     "by_plane": {
       "a2a": 468,
-      "core": 693,
-      "llm": 126,
+      "core": 696,
+      "llm": 127,
       "mcp": 912
     },
     "by_family": {
@@ -56,11 +60,11 @@
       "config.migrate": 138,
       "hooks": 6,
       "http.crosscut": 20,
-      "llm.wire": 126,
+      "llm.wire": 127,
       "mcp": 912,
-      "ops.scrape": 13,
+      "ops.scrape": 14,
       "plugins": 14,
-      "route.failover": 14
+      "route.failover": 16
     }
   },
   "cells": [
@@ -17548,6 +17552,18 @@
       "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
     },
     {
+      "id": "llm|gemini|gemini|request|ok_stream_array",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_array",
+      "why": "happy path, streamed as a JSON array (gemini without alt=sse)"
+    },
+    {
       "id": "llm|gemini|gemini|request|out_of_scope",
       "plane": "llm",
       "family": "llm.wire",
@@ -28299,6 +28315,23 @@
       "why": "RouteAuth::Key; text/plain; version=0.0.4 (PB-43/70)"
     },
     {
+      "id": "ops.scrape|metrics|no-ledger-series",
+      "plane": "core",
+      "family": "ops.scrape",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/metrics",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty (PB-13, PB-15, PB-17, PB-41)",
+      "body_lines": "^busbar_(ledger|journal|hold|wal)_"
+    },
+    {
       "id": "ops.scrape|metrics|none",
       "plane": "core",
       "family": "ops.scrape",
@@ -28651,6 +28684,25 @@
       }
     },
     {
+      "id": "route.failover|fb|member-401",
+      "plane": "core",
+      "family": "route.failover",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"oracle-fb\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "cohere answers 401: an auth hard-down on the member; what the caller sees and what the breaker records (PB-83)",
+      "mock_control": {
+        "m-cohere": "401"
+      }
+    },
+    {
       "id": "route.failover|fb|member-down",
       "plane": "core",
       "family": "route.failover",
@@ -28665,6 +28717,26 @@
         "listener": "data"
       },
       "why": "cohere down -> on_exhausted fallback_pool oracle-fo -> served by the hop; scoped draws on the ATTEMPTED pool (PB-47)",
+      "mock_control": {
+        "m-cohere": "down"
+      }
+    },
+    {
+      "id": "route.failover|fb|member-down-stream-openai",
+      "plane": "core",
+      "family": "route.failover",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"oracle-fb\",\"stream\":true}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "a STREAM served by the fallback lane (oracle-fo's openai-chat member): the usage delta is the contract \u2014 a fallback stream must bill exactly as the hot path does",
+      "weight": 10,
       "mock_control": {
         "m-cohere": "down"
       }

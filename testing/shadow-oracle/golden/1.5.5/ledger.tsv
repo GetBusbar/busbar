@@ -1192,6 +1192,7 @@ llm|gemini|cohere|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"spend
 llm|gemini|cohere|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 llm|gemini|gemini|request|malformed	PASS	HTTP 400; usage Δ {}	
 llm|gemini|gemini|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
+llm|gemini|gemini|request|ok_stream_array	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 llm|gemini|gemini|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|gemini|gemini|request|over_budget	PASS	HTTP 429; usage Δ {}	
 llm|gemini|gemini|request|unauthenticated	PASS	HTTP 400; usage Δ {}	
@@ -2161,6 +2162,7 @@ ops.scrape|healthz|data	PASS	HTTP 200; usage Δ {}
 ops.scrape|metricshooks|key	PASS	HTTP 200; usage Δ {}	
 ops.scrape|metrics|admin-listener	PASS	HTTP 401; usage Δ {}	
 ops.scrape|metrics|key	PASS	HTTP 200; usage Δ {}	
+ops.scrape|metrics|no-ledger-series	PASS	HTTP 200; usage Δ {}	
 ops.scrape|metrics|none	PASS	HTTP 401; usage Δ {}	
 ops.scrape|stats|key	PASS	HTTP 200; usage Δ {}	
 ops.scrape|stats|none	PASS	HTTP 401; usage Δ {}	
@@ -2184,7 +2186,9 @@ plugins.store-persist|store-postgres	SKIP	UNSUPPORTED: validate, boot, mint, spe
 plugins.store-persist|store-sqlite	PASS	script store-persist.sh: status 0	
 plugins.store-persist|store-valkey	SKIP	UNSUPPORTED: validate, boot, mint, spend, restart, read back (PB-11/37/93; persistence is the job)	named gap: the fixture this cell needs is not in the tree yet
 route.failover|fb|all-down	PASS	HTTP 503; usage Δ {"requests":1}	
+route.failover|fb|member-401	PASS	HTTP 401; usage Δ {"requests":1}	
 route.failover|fb|member-down	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
+route.failover|fb|member-down-stream-openai	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 route.failover|fo|all-down	PASS	HTTP 503; usage Δ {"requests":1}	
 route.failover|fo|all-down-stream	PASS	HTTP 503; usage Δ {"requests":1}	
 route.failover|fo|all-up	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	

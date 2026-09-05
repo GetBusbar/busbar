@@ -11,14 +11,14 @@
  },
  "counts": {
   "bindings": 103,
-  "mapped": 78,
-  "unmapped": 25,
+  "mapped": 85,
+  "unmapped": 18,
   "checks_by_kind": {
    "gate": 7,
    "lint": 3,
-   "oracle-cell": 35,
+   "oracle-cell": 41,
    "oracle-family": 4,
-   "test": 396
+   "test": 412
   }
  },
  "owner_decisions": {
@@ -381,6 +381,13 @@
      "proves": "request-stage taps fire through fire_global_taps",
      "source": "curated",
      "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "migrated_request_hook_seats_after_admit_before_candidate",
+     "proves": "a decision-gate reject consumes the requests slot and refunds the billable request; rewrite, request taps and gates all run after the admission charge",
+     "source": "hand",
+     "status": "mapped"
     }
    ]
   },
@@ -406,7 +413,7 @@
    "surface": "request bounds for `http`/`sse` units",
    "binding": "only 1.5.5's: `failover.timeout_secs` (120 s walk deadline, checked UNCONDITIONALLY before every attempt streaming included → 503 + `DETAIL_REQUEST_TIMEOUT` on the pre-attempt check; the `pick_among` guard instead returns `None` and lands on the pool's `on_exhausted` terminal (503 `KIND_OVERLOADED` + `Retry-After`)); the per-request reqwest timeout applied only when NOT streaming; per-attempt time-to-headers cap with pool-member override; `upstream_request_timeout_secs` (default 300, no ceiling — the client-level TOTAL deadline that also bounds streams); `max_hops + 1` attempts; `failover.exclusions`; context-length exclusion of every candidate whose `context_max` <= the failed lane's (a `None` failed limit excludes only the failed lane, `engine/mod.rs:2099-2120`); NO `max_unit_duration` cut and NO drain deadline (SIGTERM drain is unbounded, streams run to completion); `max_unit_duration` is the stall sweep only (PB-48)",
    "inventory": "proxy-hooks §2.8 rows 1 and 12 (`engine/mod.rs:1363-1373`, `:1694-1698`), ops §3.6, config CFG-130",
-   "note": "The mapped tests cover the deadline, context_max exclusion and attempt caps; DETAIL_REQUEST_TIMEOUT is asserted by no test and max_unit_duration does not exist yet.",
+   "note": "The mapped tests cover the deadline, context_max exclusion and attempt caps; route_deadline_tests.rs pins DETAIL_REQUEST_TIMEOUT on the pre-attempt check and the pick_among None path landing on on_exhausted (503 overloaded + Retry-After); max_unit_duration does not exist yet.",
    "status": "mapped",
    "checks": [
     {
@@ -456,6 +463,20 @@
      "ref": "test_attempt_cap_budget_floor",
      "proves": "the attempt cap floor",
      "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "route_deadline_503_carries_detail_request_timeout",
+     "proves": "the pre-attempt walk-deadline check answers 503 with DETAIL_REQUEST_TIMEOUT and makes no attempt",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "pick_among_none_lands_on_on_exhausted_with_overloaded_and_retry_after",
+     "proves": "the pick_among None path lands on on_exhausted: 503 KIND_OVERLOADED with Retry-After",
+     "source": "hand",
      "status": "mapped"
     }
    ]
@@ -671,15 +692,22 @@
    "surface": "`data_dir`",
    "binding": "DEFAULT UNSET; no data-dir probe, no data-dir files, no `DataDirNotWritable`, no `KeysetMissing`; the 1.5.5 overlay file `busbar-overlay.json` beside the resolved `config.yaml` and its boot writability probe (BOOT-W18) are unchanged (PB-49); the journal is memory-buffered and shipped to the configured store; the deployment keyset is sealed in the store ONLY where the store can hold it (a 1.6.0 native-ABI store); on a 1.5.5 ABI-2 store (which has no such method) and on the memory store the keyset is node-local and ephemeral and NOTHING depends on it on a 1.5.5-shaped deployment — no fingerprint check, no `KeysetMissing`, no ceremony — a node joins by starting with the shared config and store (rolling start); the WAL, local keyset, probe and import exist only when `data_dir` is written",
    "inventory": "plugins-stores :945, ops :208, config CFG-009 / :744",
-   "note": "data_dir, DataDirNotWritable, KeysetMissing and wal_capacity do not exist in crates/ yet; the binding is vacuously true and nothing tests it.",
-   "status": "unmapped",
-   "suggestion": "boot test: a config with no data_dir writes no data-dir files and emits no KeysetMissing/DataDirNotWritable; boot.warning cell with data_dir unset",
+   "note": "data_dir, DataDirNotWritable, KeysetMissing and wal_capacity do not exist in crates/ yet; the tripwire is armed anyway: no_data_dir_neutrality.rs boots a 1.5.5-shaped config and asserts no ledger/journal/hold/WAL series and no keyset/data-dir boot line, and the ops.scrape no-ledger-series cell records the same absence against 1.5.5.",
+   "status": "mapped",
    "checks": [
     {
+     "kind": "oracle-cell",
+     "ref": "ops.scrape|metrics|no-ledger-series",
+     "status": "mapped",
+     "why": "no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty (PB-13, PB-15, PB-17, PB-41)",
+     "source": "cells.json why"
+    },
+    {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "boot test: a config with no data_dir writes no data-dir files and emits no KeysetMissing/DataDirNotWritable; boot.warning cell with data_dir unset"
+     "ref": "no_ledger_series_and_no_keyset_lines_without_data_dir",
+     "proves": "a 1.5.5-shaped config (no data_dir) exposes no busbar_ledger_/journal_/hold_/wal_ series and logs no keyset / data-dir / WAL / record-rate line",
+     "source": "hand",
+     "status": "mapped"
     }
    ]
   },
@@ -704,15 +732,22 @@
    "surface": "WAL high-water",
    "binding": "never refuses admission on a 1.5.5 config: without `data_dir` there is no WAL; with an explicit store the discard posture is sealed for every migrated config",
    "inventory": "governance 7.4.1",
-   "note": "No WAL or high-water concept exists in crates/ yet; vacuously true, untested.",
-   "status": "unmapped",
-   "suggestion": "unit test: WAL is absent when data_dir is unset and admission never returns a WAL refusal on a migrated config",
+   "note": "No WAL or high-water concept exists in crates/ yet; the neutrality tripwire (no_data_dir_neutrality.rs + the ops.scrape no-ledger-series cell) turns red the day a WAL series or boot line appears on a config without data_dir.",
+   "status": "mapped",
    "checks": [
     {
+     "kind": "oracle-cell",
+     "ref": "ops.scrape|metrics|no-ledger-series",
+     "status": "mapped",
+     "why": "no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty (PB-13, PB-15, PB-17, PB-41)",
+     "source": "cells.json why"
+    },
+    {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "unit test: WAL is absent when data_dir is unset and admission never returns a WAL refusal on a migrated config"
+     "ref": "no_ledger_series_and_no_keyset_lines_without_data_dir",
+     "proves": "a 1.5.5-shaped config (no data_dir) exposes no busbar_ledger_/journal_/hold_/wal_ series and logs no keyset / data-dir / WAL / record-rate line",
+     "source": "hand",
+     "status": "mapped"
     }
    ]
   },
@@ -758,14 +793,21 @@
    "surface": "boot warnings",
    "binding": "none beyond 1.5.5's 228 unless a 1.6.0-additive key (`data_dir`, `peers`, `keyset_ref`, `wal_capacity`, …) is written",
    "inventory": "config §3",
-   "status": "unmapped",
-   "suggestion": "boot.warning oracle family gate: warning count on every 1.5.5 corpus config equals the golden's (config.migrate cells could carry the warning count)",
+   "status": "mapped",
    "checks": [
     {
      "kind": "oracle-cell",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "boot.warning oracle family gate: warning count on every 1.5.5 corpus config equals the golden's (config.migrate cells could carry the warning count)"
+     "ref": "ops.scrape|metrics|no-ledger-series",
+     "status": "mapped",
+     "why": "no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty (PB-13, PB-15, PB-17, PB-41)",
+     "source": "cells.json why"
+    },
+    {
+     "kind": "test",
+     "ref": "no_ledger_series_and_no_keyset_lines_without_data_dir",
+     "proves": "a 1.5.5-shaped config (no data_dir) exposes no busbar_ledger_/journal_/hold_/wal_ series and logs no keyset / data-dir / WAL / record-rate line",
+     "source": "hand",
+     "status": "mapped"
     }
    ]
   },
@@ -1054,14 +1096,14 @@
    "surface": "usage absent from a stream",
    "binding": "bills zero; kernel floor internal only",
    "inventory": "dialects §4",
-   "status": "unmapped",
-   "suggestion": "busbar-llm unit test: a stream with no usage frame bills zero tokens on every dialect",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "busbar-llm unit test: a stream with no usage frame bills zero tokens on every dialect"
+     "ref": "stream_without_usage_frame_bills_zero_on_every_dialect",
+     "proves": "six ingress dialects, a stream with no usage frame: zero tokens ledgered, one metering request with every tier zero",
+     "source": "hand",
+     "status": "mapped"
     }
    ]
   },
@@ -1230,14 +1272,42 @@
    "surface": "gate vs routing-policy 503 literals",
    "binding": "four distinct bodies reproduced: \"No upstream satisfies a required gate's restriction…\" / \"No upstream satisfies the routing policy's restriction…\" / \"A required gate could not complete…\" / \"The routing policy could not select an upstream…\", keyed on whether the failing hook is the pool's base policy or a decision gate",
    "inventory": "proxy-hooks §7",
-   "status": "unmapped",
-   "suggestion": "engine unit test asserting the four distinct 503 bodies keyed on base policy vs decision gate",
+   "status": "mapped",
    "checks": [
     {
-     "kind": "gate",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "engine unit test asserting the four distinct 503 bodies keyed on base policy vs decision gate"
+     "kind": "test",
+     "ref": "decision_gate_that_cannot_complete_has_its_own_503_body",
+     "proves": "\"A required gate could not complete…\" is the decision-gate error body",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "decision_gate_restriction_leaving_no_lane_has_its_own_503_body",
+     "proves": "\"No upstream satisfies a required gate's restriction…\" is the decision-gate empty-restrict body",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "base_policy_that_cannot_select_has_its_own_503_body",
+     "proves": "\"The routing policy could not select an upstream…\" is the base-policy error body",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "base_policy_restriction_leaving_no_lane_has_its_own_503_body",
+     "proves": "\"No upstream satisfies the routing policy's restriction…\" is the base-policy empty-restrict body",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "the_four_503_literals_are_distinct",
+     "proves": "the four literals are pairwise distinct",
+     "source": "hand",
+     "status": "mapped"
     }
    ]
   },
@@ -1828,14 +1898,21 @@
    "surface": "1.6.0 warnings on 1.5.5 configs",
    "binding": "the store record-rate warning and the `keyset_ref`-unset warning fire ONLY when `data_dir` or `peers:` is written; otherwise they are ledger-endpoint lines; PB-17 holds for every 1.5.5 key incl. `store.module`",
    "inventory": "config CFG-170, §3",
-   "status": "unmapped",
-   "suggestion": "boot test: no record-rate or keyset_ref warning without data_dir/peers; boot.warning cell",
+   "status": "mapped",
    "checks": [
     {
+     "kind": "oracle-cell",
+     "ref": "ops.scrape|metrics|no-ledger-series",
+     "status": "mapped",
+     "why": "no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty (PB-13, PB-15, PB-17, PB-41)",
+     "source": "cells.json why"
+    },
+    {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "boot test: no record-rate or keyset_ref warning without data_dir/peers; boot.warning cell"
+     "ref": "no_ledger_series_and_no_keyset_lines_without_data_dir",
+     "proves": "a 1.5.5-shaped config (no data_dir) exposes no busbar_ledger_/journal_/hold_/wal_ series and logs no keyset / data-dir / WAL / record-rate line",
+     "source": "hand",
+     "status": "mapped"
     }
    ]
   },
@@ -2041,14 +2118,21 @@
    "surface": "migrated hook seats",
    "binding": "a 1.5.5 `Request`-stage hook seats `After(Admit)` ahead of `Candidate` hooks, in 1.5.5's order; `Before(Approve)` is never used for a migrated hook",
    "inventory": "proxy-hooks §2.1, §2.2",
-   "status": "unmapped",
-   "suggestion": "hook seating unit test: a migrated Request-stage hook seats After(Admit) ahead of Candidate hooks in config order",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "hook seating unit test: a migrated Request-stage hook seats After(Admit) ahead of Candidate hooks in config order"
+     "ref": "migrated_request_hook_seats_after_admit_before_candidate",
+     "proves": "a migrated request-stage chain seats after the admission door and ahead of the candidate tap: admission → rewrite → request taps → gates → candidate tap",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once",
+     "proves": "the candidate tap fires only after the gates decided, on a served request",
+     "source": "hand",
+     "status": "mapped"
     }
    ]
   },
@@ -3455,6 +3539,13 @@
    "status": "mapped",
    "checks": [
     {
+     "kind": "oracle-cell",
+     "ref": "route.failover|fb|member-401",
+     "status": "mapped",
+     "why": "cohere answers 401: an auth hard-down on the member; what the caller sees and what the breaker records (PB-83)",
+     "source": "cells.json why"
+    },
+    {
      "kind": "test",
      "ref": "test_pool_breaker_isolation",
      "proves": "independent breaker state per (pool, lane)",
@@ -3489,7 +3580,7 @@
    "surface": "response-stage taps",
    "binding": "the `response` stage fires ONCE per request that reaches the forward path (a streaming response taps at response-head time); pre-forward refusals (401/403/429/413/404) never tap; `outcome ∈ {ok, failed, rejected_by_gate}` is the only synthetic field — detached, fire-and-forget, under `MAX_INFLIGHT_TAP_NOTIFICATIONS = 1024`",
    "inventory": "proxy-hooks §7.2 (`engine/mod.rs:198-221`, `hooks.rs:1407-1417`)",
-   "note": "In tension with green tests: hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth asserts a completion tap fires on an auth denial, where the binding says pre-forward refusals never tap.",
+   "note": "OWNER DECISION (1.6.0 rebuild, PR-0): the binding is AMENDED — an auth refusal on a hooked pool DOES fire the completion tap, with the synthetic outcome `rejected_by_auth` and the protocol-native status; hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth pins it and the oracle cell hooks|hooked-pool|unauth records 1.5.5 doing exactly that. Other pre-forward refusals (403/429/413/404) are unchanged.",
    "status": "mapped",
    "checks": [
     {
@@ -3504,6 +3595,20 @@
      "ref": "completion_tap_fires_synthetic_rejected_by_gate",
      "proves": "the synthetic outcome rejected_by_gate",
      "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "completion_tap_fires_synthetic_rejected_by_auth",
+     "proves": "OWNER DECISION: an auth refusal on a hooked pool fires the completion tap with outcome rejected_by_auth and the protocol-native status (binding amended)",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "hooks|hooked-pool|unauth",
+     "proves": "1.5.5 recorded: the unauthenticated request on the hooked pool, the tap-bearing refusal the amended binding keeps",
+     "source": "hand",
      "status": "mapped"
     }
    ]

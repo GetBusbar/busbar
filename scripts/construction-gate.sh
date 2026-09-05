@@ -146,11 +146,15 @@ run_selftest() {
   fi
 
   # 3. Plant each violation and require exactly one FAIL row, naming the rule.
-  local rule
+  local rule rc
   for rule in one-attempt-seam request-path-fn-size ports-only:busbar-voice ports-only-tests:busbar-voice \
-              no-uninstalled-seam neutral-no-dialect single-terminal; do
-    python3 "$HELPERS/plant.py" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json" \
-      || { fail=1; note "plant FAILED for $rule"; continue; }
+              no-uninstalled-seam neutral-no-dialect single-terminal \
+              token-sealed teller-step-order one-teller-loop one-teller-loop:run_gauntlet \
+              no-response-escapes-audit terminal-doors-in-audit-step one-pick-site; do
+    python3 "$HELPERS/plant.py" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
+    # exit 3 = the rule's subject is absent from this tree (nothing to plant): noted, not failed
+    [ "$rc" -ne 3 ] || { note "SKIP $rule: nothing to plant (subject absent from this tree)"; continue; }
+    [ "$rc" -eq 0 ] || { fail=1; note "plant FAILED for $rule"; continue; }
     CONSTRUCTION_TOML="$scratch/calibrated.toml" CONSTRUCTION_OUT="$out" bash "$gate" --check >/dev/null 2>&1
     local failed_ids
     failed_ids="$(awk -F'\t' '$2=="FAIL"{print $1}' "$out/ledger.tsv" | tr '\n' ' ' | sed 's/ $//')"
@@ -165,17 +169,21 @@ run_selftest() {
   # 4. The informational rule: planting a shared block raises its duplicated-line count and still
   #    produces no FAIL row (it is a WARN, never a gate).
   rule=duplicate-dispatch
-  python3 "$HELPERS/plant.py" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json" \
-    || { fail=1; note "plant FAILED for $rule"; }
-  CONSTRUCTION_TOML="$scratch/calibrated.toml" CONSTRUCTION_OUT="$out" bash "$gate" --check >/dev/null 2>&1
-  local before after dupfails
-  before="$(python3 -c "import json,sys; print([r['current'] for r in json.load(open(sys.argv[1])) if r['id']=='duplicate-dispatch'][0])" "$scratch/baseline-rows.json")"
-  after="$(python3 -c "import json,sys; print([r['current'] for r in json.load(open(sys.argv[1])) if r['id']=='duplicate-dispatch'][0])" "$out/rows.json")"
-  dupfails="$(awk -F'\t' '$2=="FAIL"{n++} END{print n+0}' "$out/ledger.tsv")"
-  if [ "$after" -gt "$before" ] && [ "$dupfails" -eq 0 ]; then
-    note "WARN $rule: planted shared block raised duplicated lines $before -> $after with 0 FAIL rows"
+  python3 "$HELPERS/plant.py" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
+  if [ "$rc" -eq 3 ]; then
+    note "SKIP $rule: nothing to plant (a twin is absent from this tree)"
   else
-    fail=1; note "WARN $rule FAILED: duplicated lines $before -> $after, FAIL rows $dupfails (expected a rise and 0)"
+    [ "$rc" -eq 0 ] || { fail=1; note "plant FAILED for $rule"; }
+    CONSTRUCTION_TOML="$scratch/calibrated.toml" CONSTRUCTION_OUT="$out" bash "$gate" --check >/dev/null 2>&1
+    local before after dupfails
+    before="$(python3 -c "import json,sys; print([r['current'] for r in json.load(open(sys.argv[1])) if r['id']=='duplicate-dispatch'][0])" "$scratch/baseline-rows.json")"
+    after="$(python3 -c "import json,sys; print([r['current'] for r in json.load(open(sys.argv[1])) if r['id']=='duplicate-dispatch'][0])" "$out/rows.json")"
+    dupfails="$(awk -F'\t' '$2=="FAIL"{n++} END{print n+0}' "$out/ledger.tsv")"
+    if [ "$after" -gt "$before" ] && [ "$dupfails" -eq 0 ]; then
+      note "WARN $rule: planted shared block raised duplicated lines $before -> $after with 0 FAIL rows"
+    else
+      fail=1; note "WARN $rule FAILED: duplicated lines $before -> $after, FAIL rows $dupfails (expected a rise and 0)"
+    fi
   fi
 
   # 5. Zero rows is red: a ledger nothing wrote must not pass the verdict.

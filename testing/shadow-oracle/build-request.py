@@ -39,7 +39,9 @@ def request_for(cell: dict) -> dict:
     ing = canon(cell["ingress_dialect"])
     model = f"m-{canon(cell['egress_dialect'])}"
     oc = cell["outcome"]
-    stream = oc == "ok_stream"
+    # `ok_stream_array` is gemini's JSON-array streaming (no `alt=sse`); every other dialect streams
+    # one way only, so the array outcome is emitted for gemini ingress alone.
+    stream = oc in ("ok_stream", "ok_stream_array")
     hdr = {"Content-Type": "application/json"}
     auth = "bearer"
     note = ""
@@ -61,7 +63,10 @@ def request_for(cell: dict) -> dict:
         if stream:
             body["stream"] = True
     elif ing == "gemini":
-        verb = "streamGenerateContent?alt=sse" if stream else "generateContent"
+        if stream:
+            verb = "streamGenerateContent" if oc == "ok_stream_array" else "streamGenerateContent?alt=sse"
+        else:
+            verb = "generateContent"
         path = f"/v1beta/models/{model}:{verb}"
         body = {"contents": [{"role": "user", "parts": [{"text": PING}]}]}
     elif ing == "bedrock":

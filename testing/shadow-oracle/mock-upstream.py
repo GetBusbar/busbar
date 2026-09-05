@@ -20,6 +20,7 @@ process serves all six egress dialects:
 Outcome controls (the recorder sets them per cell):
   header  X-Oracle-Upstream: down   -> 503 with a fixed body (drives busbar's failover / upstream-error path)
   header  X-Oracle-Upstream: slow   -> reserved (timeout cells), currently same as down
+  header  X-Oracle-Upstream: 401    -> 401 with a fixed body (the member's credential is rejected: a hard-down)
   body    {"stream": true} (openai/anthropic/cohere) or the *stream* path (gemini/bedrock)
                                     -> a fixed SSE / streamed sequence in that dialect
 
@@ -189,7 +190,8 @@ class H(BaseHTTPRequestHandler):
 
         # Control: a header (handy for curl-by-hand) or the CONTROL FILE the recorder writes per cell.
         # The file is either a bare verb (applies to every model) or JSON {"<model>": "<verb>"}.
-        # Verbs: down (503) | 429 (Retry-After: 7) | 5xx (500) | slow (sleep past busbar's attempt cap)
+        # Verbs: down (503) | 429 (Retry-After: 7) | 5xx (500) | 401 (credential rejected: a hard-down)
+        #        | slow (sleep past busbar's attempt cap)
         #        | cut (close the socket after the first streamed event / mid-body)
         ctl = (self.headers.get("X-Oracle-Upstream") or "").strip().lower()
         ctl_file = self.server.control_file  # type: ignore[attr-defined]
@@ -210,6 +212,8 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
         if ctl == "5xx":
             return self._send(500, j({"error": {"type": "server_error", "message": "oracle: upstream exploded"}}))
+        if ctl == "401":
+            return self._send(401, j({"error": {"type": "authentication_error", "message": "oracle: upstream rejected the credential"}}))
         if ctl == "slow":
             import time
             time.sleep(float(os.environ.get("ORACLE_MOCK_SLOW_SECS", "8")))

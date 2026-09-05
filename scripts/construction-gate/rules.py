@@ -319,14 +319,35 @@ def rule_one_attempt_seam(tree, cfg):
                 detail, current, c["max_extra_sites"], c["why"], offenders)]
 
 
+def _is_glob(pattern):
+    return any(ch in pattern for ch in "*?[")
+
+
+def expand_files(tree, patterns):
+    """Resolve a `files` list that may mix exact paths and globs (`crates/x/src/unit/*.rs`).
+    Returns (matched rel paths in list order, exact paths not found, globs that matched nothing).
+    A glob matching nothing is a NOTE, not a finding: it names files a later step adds."""
+    matched, missing, empty_globs = [], [], []
+    for pat in patterns:
+        if _is_glob(pat):
+            hits = sorted(fnmatch.filter(tree.fns.keys(), pat))
+            if hits:
+                matched.extend(h for h in hits if h not in matched)
+            else:
+                empty_globs.append(pat)
+        elif pat in tree.fns:
+            if pat not in matched:
+                matched.append(pat)
+        else:
+            missing.append(pat)
+    return matched, missing, empty_globs
+
+
 def rule_request_path_fn_size(tree, cfg):
     c = cfg["rules"]["request-path-fn-size"]
     sized = []
-    missing = []
-    for rel in c["files"]:
-        if rel not in tree.fns:
-            missing.append(rel)
-            continue
+    files, missing, empty_globs = expand_files(tree, c["files"])
+    for rel in files:
         for f in tree.fns[rel]:
             if not f.intest:
                 sized.append(f)
@@ -340,6 +361,8 @@ def rule_request_path_fn_size(tree, cfg):
                  for f in sized[:c["top"]]]
     if missing:
         offenders.append("listed file(s) not found: " + ", ".join(missing))
+    if empty_globs:
+        offenders.append("glob(s) matching no file yet (not a finding): " + ", ".join(empty_globs))
     detail = (f"{len(over)} function(s) over {c['max_lines']} lines; worst {worst}: "
               + ("; ".join(offenders[:3]) if offenders else "none"))
     return [row("request-path-fn-size", not over and not missing,
@@ -383,8 +406,13 @@ def rule_no_uninstalled_seam(tree, cfg):
     c = cfg["rules"]["no-uninstalled-seam"]
     name_rx = re.compile(c["seam_name_pattern"])
     seams = []
+    # A seam DEFINED in the substrate's own test kit is a fixture's install hook, not a production
+    # promise: it is never counted (a test-kit path fragment names it).
+    exempt = c.get("exempt_seam_path_fragments", [])
     for rel, fns in tree.fns.items():
         if not rel.startswith(c["seam_root"].rstrip("/") + os.sep):
+            continue
+        if any(frag in rel for frag in exempt):
             continue
         lines = tree.files[rel]
         statics = set()
@@ -568,6 +596,219 @@ def rule_duplicate_dispatch(tree, cfg):
     return [r]
 
 
+# ── The Teller-loop rules ─────────────────────────────────────────────────────────────────────────
+# Each measures one construction promise of the rebuilt request loop. A rule whose subject does not
+# exist yet (a directory or file a later step adds) reports PASS with a "vacuous" note rather than
+# failing or crashing: the promise is trivially kept until there is something to keep it against.
+
+VACUOUS = "vacuous: "
+
+
+def _word(rx_literal):
+    """A regex for `rx_literal` as a whole token (no identifier char immediately before it)."""
+    return r"(?<![A-Za-z0-9_])" + re.escape(rx_literal)
+
+
+def _call_sites(tree, verb, files=None):
+    """Production lines calling `verb(`, excluding its own definition and `use` lines."""
+    call_rx = _word(verb) + r"\s*\("
+    defn_rx = re.compile(r"fn\s+" + re.escape(verb) + r"(?![A-Za-z0-9_])")
+    out = []
+    for rel, l in tree.grep(call_rx, files=files):
+        if defn_rx.search(l.code) or _USE_RE.match(l.code):
+            continue
+        out.append((rel, l))
+    return out
+
+
+def rule_token_sealed(tree, cfg):
+    """The Teller's tokens are built only inside the Teller: outside `allowed_root`, no production
+    line spells one of the constructor patterns (`Decision::proceed(`, `Hold::`, …)."""
+    c = cfg["rules"]["token-sealed"]
+    root = c["allowed_root"].rstrip("/") + os.sep
+    offenders = []
+    for pat in c["patterns"]:
+        for rel, l in tree.grep(_word(pat)):
+            if rel.startswith(root):
+                continue
+            offenders.append(f"`{pat}` at {rel}:{l.no}")
+    current = len(offenders)
+    detail = (f"{current} token constructor(s) spelled outside {c['allowed_root']} "
+              f"(ceiling {c['max_sites']}): " + ("; ".join(offenders) if offenders else "none"))
+    if not any(rel.startswith(root) for rel in tree.files):
+        detail = VACUOUS + f"{c['allowed_root']} does not exist yet; nothing to seal"
+    return [row("token-sealed", current <= c["max_sites"],
+                "the Teller's tokens are minted only inside the Teller",
+                detail, current, c["max_sites"], c["why"], offenders)]
+
+
+def _expanded_calls(tree, rel, entry, steps, depth=4):
+    """Walk `entry`'s body in source order, splicing in the bodies of the file's own helper
+    functions where they are called, and return the ordered list of step names met as
+    `.step(` calls. The loop is split across helpers (a sync opener, an async runner), so the
+    order is a property of the expansion, not of any one function."""
+    local = {f.name: f for f in tree.fns.get(rel, []) if not f.intest}
+    step_rx = re.compile(r"\.(" + "|".join(re.escape(s) for s in steps) + r")\s*\(")
+    call_rx = re.compile(r"(?<![A-Za-z0-9_.:])([a-z_][a-z0-9_]*)\s*\(")
+    seen = []
+
+    def walk(name, d, stack):
+        f = local.get(name)
+        if f is None or d > depth or name in stack:
+            return
+        body = tree.files[rel][f.body_start - 1:f.end]
+        for l in body:
+            events = [(m.start(), "step", m.group(1)) for m in step_rx.finditer(l.code)]
+            events += [(m.start(), "call", m.group(1)) for m in call_rx.finditer(l.code)
+                       if m.group(1) in local and m.group(1) != name]
+            for _pos, kind, nm in sorted(events):
+                if kind == "step":
+                    seen.append(nm)
+                else:
+                    walk(nm, d + 1, stack + [name])
+
+    walk(entry, 0, [])
+    return seen
+
+
+def _in_order(seen, steps):
+    """True when every step in `steps` occurs in `seen` and their FIRST occurrences are in order."""
+    firsts = []
+    for s in steps:
+        if s not in seen:
+            return False
+        firsts.append(seen.index(s))
+    return firsts == sorted(firsts)
+
+
+def rule_teller_step_order(tree, cfg):
+    c = cfg["rules"]["teller-step-order"]
+    rel = c["file"]
+    steps = c["steps"]
+    findings = []
+    if rel not in tree.fns:
+        detail = VACUOUS + f"{rel} does not exist yet; no loop to order"
+        return [row("teller-step-order", True,
+                    "the Teller loop calls the nine steps once each, in the canonical order",
+                    detail, 0, c["max_findings"], c["why"], [])]
+    loops = [f for f in tree.fns[rel] if f.name == c["loop_function"] and not f.intest]
+    if len(loops) != 1:
+        findings.append(f"expected exactly one `fn {c['loop_function']}` in {rel}, found {len(loops)}")
+    run_seen = _expanded_calls(tree, rel, c["loop_function"], steps)
+    if not _in_order(run_seen, steps):
+        findings.append(f"`{c['loop_function']}` (expanded through its helpers) calls the steps as "
+                        f"{run_seen}; the canonical order is {steps}")
+    door = steps[:steps.index(c["door_step"]) + 1]
+    open_seen = _expanded_calls(tree, rel, c["opener_function"], steps)
+    if not open_seen:
+        findings.append(f"`{c['opener_function']}` calls no step at all in {rel}")
+    elif not _in_order(open_seen, door) or any(s not in door for s in open_seen):
+        findings.append(f"`{c['opener_function']}` (expanded) calls {open_seen}; a session opener "
+                        f"runs exactly the steps up to the door, in order: {door}")
+    current = len(findings)
+    detail = (f"{current} order finding(s) in {rel} (ceiling {c['max_findings']}): "
+              + ("; ".join(findings) if findings else
+                 f"`{c['loop_function']}` runs {' → '.join(run_seen)}"))
+    return [row("teller-step-order", current <= c["max_findings"],
+                "the Teller loop calls the nine steps once each, in the canonical order",
+                detail, current, c["max_findings"], c["why"], findings)]
+
+
+def rule_one_teller_loop(tree, cfg):
+    """Two rows: at most one production caller of the loop per plane crate (outside the Teller
+    itself), and the count of legacy adapter call sites, a ratchet the planes drive to zero."""
+    c = cfg["rules"]["one-teller-loop"]
+    root = c["loop_root"].rstrip("/") + os.sep
+    per_crate = {}
+    for rel, l in _call_sites(tree, c["loop_verb"]):
+        if rel.startswith(root):
+            continue
+        crate = tree.crate_of(rel)
+        per_crate.setdefault(crate, []).append(f"{rel}:{l.no}")
+    planes = cfg["gate"]["plane_crates"]
+    worst = max((len(per_crate.get(p, [])) for p in planes), default=0)
+    offenders = [f"{p}: {len(per_crate[p])} caller(s) of `{c['loop_verb']}(`: " + ", ".join(per_crate[p])
+                 for p in planes if len(per_crate.get(p, [])) > c["max_callers_per_plane_crate"]]
+    seen = {p: len(per_crate.get(p, [])) for p in planes}
+    detail = (f"callers of `{c['loop_verb']}(` per plane crate {seen} "
+              f"(ceiling {c['max_callers_per_plane_crate']} each): "
+              + ("; ".join(offenders) if offenders else "none over"))
+    if not any(rel.startswith(root) for rel in tree.files):
+        detail = VACUOUS + f"{c['loop_root']} does not exist yet; no loop to call"
+    rows = [row("one-teller-loop", worst <= c["max_callers_per_plane_crate"],
+                "each plane runs its units through the one Teller loop, from one place",
+                detail, worst, c["max_callers_per_plane_crate"], c["why"], offenders)]
+    legacy = [f"{rel}:{l.no}" for rel, l in _call_sites(tree, c["legacy_verb"])]
+    detail = (f"{len(legacy)} production call site(s) of the legacy `{c['legacy_verb']}(` adapter "
+              f"(ceiling {c['max_legacy_sites']}): " + ("; ".join(legacy) if legacy else "none"))
+    rows.append(row("one-teller-loop:run_gauntlet", len(legacy) <= c["max_legacy_sites"],
+                    "the legacy adapter's call sites only ever shrink",
+                    detail, len(legacy), c["max_legacy_sites"], c["why"], legacy))
+    return rows
+
+
+_RETURNS_RESPONSE = re.compile(r"->[^{;]*(?<![A-Za-z0-9_])Response(?![A-Za-z0-9_])")
+
+
+def rule_no_response_escapes_audit(tree, cfg):
+    c = cfg["rules"]["no-response-escapes-audit"]
+    root = c["root"].rstrip("/") + os.sep
+    files = [rel for rel in tree.fns if rel.startswith(root)]
+    allowed = set(c["allowed_files"])
+    offenders = []
+    for rel in files:
+        if os.path.basename(rel) in allowed:
+            continue
+        for f in tree.fns[rel]:
+            if f.intest:
+                continue
+            sig = " ".join(l.code for l in tree.files[rel][f.start - 1:f.body_start])
+            if _RETURNS_RESPONSE.search(sig):
+                offenders.append(f"{f.name} returns a Response at {rel}:{f.start}")
+    current = len(offenders)
+    if not files:
+        detail = VACUOUS + f"{c['root']} does not exist yet; no step file to check"
+    else:
+        detail = (f"{current} function(s) under {c['root']} returning a Response outside "
+                  f"{sorted(allowed)} (ceiling {c['max_escapes']}): "
+                  + ("; ".join(offenders) if offenders else "none"))
+    return [row("no-response-escapes-audit", current <= c["max_escapes"],
+                "only the Audit step hands a Response back to the loop",
+                detail, current, c["max_escapes"], c["why"], offenders)]
+
+
+def rule_terminal_doors_in_audit_step(tree, cfg):
+    c = cfg["rules"]["terminal-doors-in-audit-step"]
+    prefix = os.path.join("crates", c["crate"]) + os.sep
+    files = [rel for rel in tree.files if rel.startswith(prefix)]
+    offenders = []
+    for door in c["doors"]:
+        for rel, l in _call_sites(tree, door, files=files):
+            if rel == c["allowed_file"]:
+                continue
+            offenders.append(f"`{door}(` at {rel}:{l.no}")
+    current = len(offenders)
+    if current == 0 and c["allowed_file"] not in tree.files:
+        detail = VACUOUS + f"no door is called in {c['crate']} and {c['allowed_file']} does not exist yet"
+    else:
+        detail = (f"{current} terminal-door call(s) in {c['crate']} outside {c['allowed_file']} "
+                  f"(ceiling {c['max_extra_sites']}): " + ("; ".join(offenders) if offenders else "none"))
+    return [row("terminal-doors-in-audit-step", current <= c["max_extra_sites"],
+                "the plane's terminal doors are called only from its Audit step",
+                detail, current, c["max_extra_sites"], c["why"], offenders)]
+
+
+def rule_one_pick_site(tree, cfg):
+    c = cfg["rules"]["one-pick-site"]
+    sites = [f"{rel}:{l.no}" for rel, l in _call_sites(tree, c["verb"])]
+    current = len(sites)
+    detail = (f"{current} production call site(s) of `{c['verb']}(` (ceiling {c['max_sites']}): "
+              + ("; ".join(sites) if sites else "none"))
+    return [row("one-pick-site", current <= c["max_sites"],
+                "the lane pick is called from at most the loop and the fallback re-entry",
+                detail, current, c["max_sites"], c["why"], sites)]
+
+
 def evaluate(tree, cfg, hits_path):
     rows = []
     rows += rule_one_attempt_seam(tree, cfg)
@@ -577,6 +818,12 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_neutral_no_dialect(tree, cfg, hits_path)
     rows += rule_single_terminal(tree, cfg)
     rows += rule_duplicate_dispatch(tree, cfg)
+    rows += rule_token_sealed(tree, cfg)
+    rows += rule_teller_step_order(tree, cfg)
+    rows += rule_one_teller_loop(tree, cfg)
+    rows += rule_no_response_escapes_audit(tree, cfg)
+    rows += rule_terminal_doors_in_audit_step(tree, cfg)
+    rows += rule_one_pick_site(tree, cfg)
     return rows
 
 
@@ -660,6 +907,13 @@ def calibrate(rows, cfg, path):
     rules["neutral-no-dialect"]["max_hits"] = max(by_id["neutral-no-dialect"]["current"], 0)
     rules["single-terminal"]["max_extra_sites"] = by_id["single-terminal"]["current"]
     rules["duplicate-dispatch"]["max_duplicated_lines"] = by_id["duplicate-dispatch"]["current"]
+    rules["token-sealed"]["max_sites"] = by_id["token-sealed"]["current"]
+    rules["teller-step-order"]["max_findings"] = by_id["teller-step-order"]["current"]
+    rules["one-teller-loop"]["max_callers_per_plane_crate"] = by_id["one-teller-loop"]["current"]
+    rules["one-teller-loop"]["max_legacy_sites"] = by_id["one-teller-loop:run_gauntlet"]["current"]
+    rules["no-response-escapes-audit"]["max_escapes"] = by_id["no-response-escapes-audit"]["current"]
+    rules["terminal-doors-in-audit-step"]["max_extra_sites"] = by_id["terminal-doors-in-audit-step"]["current"]
+    rules["one-pick-site"]["max_sites"] = by_id["one-pick-site"]["current"]
     out = ["# calibrated copy of qa/construction.toml: every ceiling equals the measured value", ""]
     _emit_table("", cfg, out)
     with open(path, "w", encoding="utf-8") as fh:

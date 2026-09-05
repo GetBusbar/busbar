@@ -51,6 +51,9 @@ OUTCOMES = [
 # Outcomes that only make sense for a request the plane actually forwards (not for refusals that
 # never reach Route).
 STREAMING_OUTCOMES = [("ok_stream", "happy path, streamed response (SSE / frames)")]
+# Gemini's second streaming framing: `streamGenerateContent` WITHOUT `?alt=sse` answers a JSON
+# array, not SSE. A Gemini client's own framing, so it is enumerated same-dialect only.
+ARRAY_STREAM_OUTCOME = ("ok_stream_array", "happy path, streamed as a JSON array (gemini without alt=sse)")
 
 
 # Refusals are produced BEFORE Route, so they never depend on the egress dialect: enumerate them
@@ -93,6 +96,10 @@ def llm_cells(inv: dict) -> list[dict]:
             if e in streams:
                 for oc, why in STREAMING_OUTCOMES:
                     cells.append(cell(i, e, oc, why))
+    # Not gated on the inventory's `streaming` flag: the array framing is a gemini path selector
+    # (`streamGenerateContent` without `alt=sse`), not a field the inventory lists.
+    if "gemini" in dialects:
+        cells.append(cell("gemini", "gemini", *ARRAY_STREAM_OUTCOME))
     return cells
 
 
@@ -181,6 +188,11 @@ def scrape_cells() -> list[dict]:
     return [
         http("ops.scrape|/metrics|key", F, "GET", "/metrics", why="RouteAuth::Key; text/plain; version=0.0.4 (PB-43/70)"),
         http("ops.scrape|/metrics|none", F, "GET", "/metrics", auth="none", why="data-plane key auth refused"),
+        # The contract is an ABSENCE: the body is filtered to the ledger/journal/hold/WAL series lines
+        # only, so the 1.5.5 golden is an empty body and any such series on a later binary is a diff.
+        http("ops.scrape|/metrics|no-ledger-series", F, "GET", "/metrics",
+             body_lines=r"^busbar_(ledger|journal|hold|wal)_",
+             why="no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty (PB-13, PB-15, PB-17, PB-41)"),
         http("ops.scrape|/metrics|admin-listener", F, "GET", "/metrics", auth="admin", listener="admin", why="admin router has no /metrics (PB-76)"),
         http("ops.scrape|/metrics/hooks|key", F, "GET", "/metrics/hooks", why="core axum route; charset=utf-8 (PB-43)"),
         http("ops.scrape|/stats|key", F, "GET", "/stats", why="20 per-lane fields, 'unbounded', variant names (PB-43)"),
@@ -361,6 +373,8 @@ def failover_cells() -> list[dict]:
         fo("fo|primary-cut-body", "oracle-fo", {"m-openai-chat": "cut"}, "transport cut mid-body on a buffered response: 502, fee refunded (PB-91)"),
         fo("fb|member-down", "oracle-fb", {"m-cohere": "down"}, "cohere down -> on_exhausted fallback_pool oracle-fo -> served by the hop; scoped draws on the ATTEMPTED pool (PB-47)"),
         fo("fb|all-down", "oracle-fb", {"m-cohere": "down", "m-openai-chat": "down", "m-anthropic": "down"}, "hop exhausted too -> 503"),
+        fo("fb|member-401", "oracle-fb", {"m-cohere": "401"}, "cohere answers 401: an auth hard-down on the member; what the caller sees and what the breaker records (PB-83)"),
+        fo("fb|member-down-stream-openai", "oracle-fb", {"m-cohere": "down"}, "a STREAM served by the fallback lane (oracle-fo's openai-chat member): the usage delta is the contract — a fallback stream must bill exactly as the hot path does", stream=True, weight=10),
         fo("lb|member-down", "oracle-lb", {"m-gemini": "down"}, "least_bad: one breaker-bypassing attempt against the tripped member (PB-4)"),
         fo("lb|up", "oracle-lb", {}, "least_bad pool healthy"),
         fo("fo|second-request-after-trip", "oracle-fo", {"m-openai-chat": "down"}, "two requests in one boot: the second never tries the tripped member", pre_same=True),
@@ -460,7 +474,7 @@ def main() -> int:
         ],
         "derived_from": {"method_inventory": str(METHOD_INV.relative_to(ROOT)),
                           "field_inventory": str(FIELD_INV.relative_to(ROOT))},
-        "outcomes": [{"outcome": o, "why": w} for o, w in OUTCOMES + STREAMING_OUTCOMES],
+        "outcomes": [{"outcome": o, "why": w} for o, w in OUTCOMES + STREAMING_OUTCOMES + [ARRAY_STREAM_OUTCOME]],
         "counts": {
             "total": len(cells),
             "by_plane": {p: sum(1 for c in cells if c["plane"] == p) for p in sorted({c["plane"] for c in cells})},

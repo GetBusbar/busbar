@@ -643,6 +643,15 @@ fn register_protocols() {
     busbar_substrate::ingress::arrival::install_completion_ingress(
         busbar_llm::native_ingress::synthesize_completion,
     );
+
+    // THE STREAMING-TRANSLATOR FACTORY — the LLM plane's cross-protocol stream translator, installed
+    // once at boot so the neutral construction seam resolves it in production exactly as the test kit
+    // does. Both engine forward paths name the concrete factory directly today, so this line changes
+    // no bytes on the wire; it makes the seam's production installer exist (set-once, first writer wins).
+    #[cfg(feature = "proto-llm")]
+    busbar_substrate::proto::install_stream_translator_factory(
+        busbar_llm::proto_stream::new_stream_translator,
+    );
 }
 
 /// REGISTER THE LINKED PLANE CRATES — the composition root's one write into the plane axis
