@@ -42,15 +42,23 @@
 //! asked for none is the failure this shape exists to make impossible, and the tests below assert
 //! it by listing the directory rather than by trusting the code.
 //!
-//! ## The shipper is part of the answer, not an optimisation
+//! ## The shipper is part of the answer, not an optimisation, and it has a name
 //!
 //! Without a data directory, the journal is *shipped to the configured store synchronously*, which
 //! is why the unset branch takes the store's shipper rather than the null one. That shipper is the
-//! store adapter's, and on every store this binary can load it is answered by the adapter's
-//! node-local shim for the plane-record verbs — `record_put`, `record_get` and `record_scan`, the
-//! three the contract adds for a kernel-held durable record. A node with no store configured and no
-//! directory keeps nothing, which is again the previous release's behaviour and not a silent data
-//! loss: there was nowhere it was ever going.
+//! store adapter's, and the verb behind it is the contract's `append_batch(stream, records)` —
+//! segment-level batched, idempotent on the `(node, node_seq)` pair the journal's records carry,
+//! which is what makes a re-offered batch after a store hiccup append what is new and pass over what
+//! is already there. Reading one record of the chain back by key is the other three the contract
+//! adds for a kernel-held durable record, `record_put`, `record_get` and `record_scan`.
+//!
+//! On every store this binary can load, all four are answered by the adapter's NODE-LOCAL SHIM: the
+//! binary's store window tops out below the payload schema at which those operations gain a wire, so
+//! there is no published store that speaks them and the shim is the answer rather than a fallback.
+//! It acknowledges and never fails, which is why a memory-buffered journal on such a deployment
+//! never sees a durability loss it did not deserve. A node with no store configured and no directory
+//! keeps nothing, which is again the previous release's behaviour and not a silent data loss: there
+//! was nowhere it was ever going.
 //!
 //! **One constraint this places on the caller, and it is load-bearing.** In the memory-buffered
 //! mode the shipper's answer is part of the commit: a failed ship comes back as a durability loss

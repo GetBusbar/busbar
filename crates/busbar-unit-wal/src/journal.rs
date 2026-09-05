@@ -40,9 +40,11 @@
 //!
 //! Through the log, which is the durable form of this chain and not a second one. With a data
 //! directory the log's segments are files and the journal is on that disk. Without one the log is
-//! memory-buffered and the records are shipped through the store adapter's plane-record verbs, so
-//! there is still no file, no probe and no warning — the journal did not acquire a disk by acquiring
-//! a name.
+//! memory-buffered and the records are shipped through the [`Shipper`] seam, which the composition
+//! root binds to the store — so there is still no file, no probe and no warning; the journal did not
+//! acquire a disk by acquiring a name. Which store verb that is on the other side is deliberately
+//! not this crate's business: a log that knew the name of a database would be a log with an opinion
+//! about deployments.
 //!
 //! ## The buffer is bounded, and full is a decision
 //!
