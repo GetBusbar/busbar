@@ -16,7 +16,7 @@
 //! no direct callers of those internals to mirror — `BreakerUnit` is the whole public surface).
 
 use crate::budget::LifetimeBudget;
-use crate::cell::{BreakerCell, BreakerState};
+use crate::cell::{BreakerCell, BreakerState, FailureEffect, ProbeAdmit};
 use crate::cfg::{BreakerCfg, TripConfig, TripMode};
 use crate::classify::{
     classify, normalize_raw_error, parse_retry_after, status_class_from_str, CanonicalSignal,
@@ -424,7 +424,7 @@ fn the_oracle_cooldown_pool_draws_a_whole_second_in_one_to_three() {
         // arithmetic helper.
         let now = 1_000;
         assert!(
-            cell.record_failure(now, &cfg, None, 86_400),
+            cell.record_failure(now, &cfg, None, 86_400).tripped(),
             "consecutive_n=1 must trip"
         );
         let BreakerState::Open { until } = cell.state() else {
@@ -561,6 +561,158 @@ fn hard_down_trips_every_pool_cell_for_the_destination() {
         &route_token(),
     );
     assert!(!fresh_again);
+}
+
+// ── The probe journal is a function of what the cell actually did ───────────────────────────────
+
+/// A journal that keeps what it was handed, so a test can ask what the unit said happened.
+#[derive(Debug, Default)]
+struct RecordingJournal {
+    events: std::sync::Mutex<Vec<crate::journal::ProbeEvent>>,
+}
+
+impl RecordingJournal {
+    fn events(&self) -> Vec<crate::journal::ProbeEvent> {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
+impl crate::journal::JournalSink for std::sync::Arc<RecordingJournal> {
+    fn record(&self, event: crate::journal::ProbeEvent) {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(event);
+    }
+}
+
+/// `record_failure` says which arm it took, so a caller never has to guess from a state it read
+/// beforehand.
+///
+/// The three answers are distinct because the consequences are: a fresh trip is what the kernel's
+/// trip metric counts, a reopen is what the probe journal records, and a bench is neither.
+#[test]
+fn record_failure_says_which_arm_it_took() {
+    let cfg = consecutive_cfg(100, 10_000);
+    let now = 1_000;
+
+    // Closed and at the threshold: a genuine fresh trip.
+    let fresh = BreakerCell::new();
+    assert_eq!(
+        fresh.record_failure(now, &cfg, None, 86_400),
+        FailureEffect::Tripped
+    );
+
+    // The same cell, now Open: nothing to do, and certainly not a reopen.
+    assert_eq!(
+        fresh.record_failure(now, &cfg, None, 86_400),
+        FailureEffect::Nothing
+    );
+
+    // Closed but under the threshold: benched, not tripped and not reopened.
+    let mut lenient = consecutive_cfg(100, 10_000);
+    lenient.trip.consecutive_n = 5;
+    let benched = BreakerCell::new();
+    assert_eq!(
+        benched.record_failure(now, &lenient, None, 86_400),
+        FailureEffect::Benched
+    );
+
+    // HalfOpen: the probe failed, so the cell reopens — and that is NOT a fresh trip.
+    let probing = BreakerCell::new();
+    assert_eq!(
+        probing.record_failure(now, &cfg, None, 86_400),
+        FailureEffect::Tripped
+    );
+    let past = now + 100_000;
+    assert!(matches!(probing.acquire(past), ProbeAdmit::ProbeWon(_)));
+    assert_eq!(
+        probing.record_failure(past, &cfg, None, 86_400),
+        FailureEffect::Reopened
+    );
+
+    // And the boolean the kernel counts trips with is unchanged.
+    assert!(FailureEffect::Tripped.tripped());
+    assert!(!FailureEffect::Reopened.tripped());
+    assert!(!FailureEffect::Benched.tripped());
+    assert!(!FailureEffect::Nothing.tripped());
+}
+
+/// A failure that freshly tripped a cell is never journaled as a failed probe.
+///
+/// `observe` used to decide this from a state it read BEFORE calling `record_failure`, so a
+/// concurrent success winning the recovery CAS in between turned a genuine Closed→Open trip into a
+/// journal line claiming a probe had failed — a combination the cell's own contract says cannot
+/// happen. Gating on what the call reports closes both directions of that race.
+#[test]
+fn a_fresh_trip_is_never_journaled_as_a_failed_probe() {
+    let cfg = consecutive_cfg(1, 5);
+    let token = route_token();
+    let destination = DestinationId::new(1);
+
+    let mut disagreements = 0usize;
+    for _ in 0..500 {
+        let journal = std::sync::Arc::new(RecordingJournal::default());
+        let unit =
+            BreakerUnit::<_, crate::classify::NoopDiagnostics>::with_journal(journal.clone());
+
+        // Trip it, then win the recovery probe: the cell is HalfOpen and both threads below can see
+        // it that way.
+        unit.observe(
+            "pool",
+            destination,
+            Outcome::Transient { retry_after: None },
+            &cfg,
+            1_000,
+            &token,
+        );
+        let admit = unit
+            .try_admit("pool", destination, 1_000_000)
+            .expect("the cooldown is long past, so the probe is winnable");
+        assert!(admit.probe_epoch.is_some(), "this call won the probe");
+
+        // A degraded fallback path recording a transient failure against the same cell the probe
+        // holder is recording a success against — a shape `record_success` documents as supported.
+        let tripped = std::thread::scope(|scope| {
+            let failing = scope.spawn(|| {
+                unit.observe(
+                    "pool",
+                    destination,
+                    Outcome::Transient { retry_after: None },
+                    &cfg,
+                    1_000_000,
+                    &token,
+                )
+            });
+            scope.spawn(|| {
+                unit.observe(
+                    "pool",
+                    destination,
+                    Outcome::Success,
+                    &cfg,
+                    1_000_000,
+                    &token,
+                )
+            });
+            failing.join().expect("the failing thread did not panic")
+        });
+
+        let journaled_a_failed_probe = journal
+            .events()
+            .iter()
+            .any(|e| matches!(e, crate::journal::ProbeEvent::Failed { .. }));
+        if tripped && journaled_a_failed_probe {
+            disagreements += 1;
+        }
+    }
+
+    assert_eq!(
+        disagreements, 0,
+        "a call that reported a fresh Closed->Open trip also journaled a failed probe"
+    );
 }
 
 #[test]

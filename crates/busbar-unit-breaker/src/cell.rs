@@ -179,6 +179,39 @@ pub enum ProbeAdmit {
     ProbeWon(u64),
 }
 
+/// What a recorded failure actually did to a cell ([`BreakerCell::record_failure`]).
+///
+/// The arm is decided under the cell's transition lock and reported from there, so a caller never
+/// has to infer it from a state read taken before the call — a read a concurrent transition can
+/// invalidate. Two different callers need two different facts out of the same event: a trip metric
+/// counts a fresh trip, and the probe journal records a reopen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureEffect {
+    /// A Closed cell reached its trip threshold and opened. The logical trip a metric counts.
+    Tripped,
+    /// A HalfOpen cell's recovery probe failed, so the cell reopened with a fresh cooldown. Not a
+    /// fresh trip: the cell was already tripped.
+    Reopened,
+    /// A Closed cell stayed closed but was benched for a cooldown, below the trip threshold.
+    Benched,
+    /// Nothing changed: an already-Open cell, or a sub-threshold failure on a cell that does not
+    /// bench below the threshold.
+    Nothing,
+}
+
+impl FailureEffect {
+    /// Whether this was a logical Closed→Open trip — the boolean a trip metric counts.
+    pub fn tripped(self) -> bool {
+        matches!(self, FailureEffect::Tripped)
+    }
+
+    /// Whether this reopened a cell whose recovery probe failed — the event the probe journal
+    /// records.
+    pub fn reopened(self) -> bool {
+        matches!(self, FailureEffect::Reopened)
+    }
+}
+
 impl BreakerCell {
     /// THE single decoder of a cell's breaker situation. Read-only — no Open→HalfOpen transition,
     /// no probe CAS. Every "is the breaker open" question resolves here so the notions can never
@@ -450,16 +483,21 @@ impl BreakerCell {
     /// Record a failure (transient or rate-limit — identical breaker handling) against the cell:
     /// push the outcome, bump the error count and streak, then trip or extend the cooldown.
     ///
-    /// Returns `true` IFF this failure drove a logical Closed→Open trip. A HalfOpen→Open reopen
-    /// (a failed recovery probe) is NOT counted as a fresh trip — the cell was already tripped and
-    /// is merely re-arming its cooldown — nor is an already-Open no-op.
+    /// Reports which arm it took, decided under the transition lock rather than from a state a
+    /// caller read beforehand: between such a read and this call the cell can move, and a caller
+    /// that guessed would journal a probe failure for a fresh trip, or miss one for a reopen it did
+    /// not know it was doing.
+    ///
+    /// [`FailureEffect::tripped`] is the logical Closed→Open trip a trip metric counts. A
+    /// HalfOpen→Open reopen (a failed recovery probe) is NOT a fresh trip — the cell was already
+    /// tripped and is merely re-arming its cooldown — nor is an already-Open no-op.
     pub fn record_failure(
         &self,
         now_time: u64,
         cfg: &BreakerCfg,
         retry_after: Option<u64>,
         max_honored_retry_after_secs: u64,
-    ) -> bool {
+    ) -> FailureEffect {
         lock_recover(&self.outcome_window).push(now_time, true);
         self.err.fetch_add(1, Ordering::Relaxed);
 
@@ -469,7 +507,7 @@ impl BreakerCell {
                 self.streak.fetch_add(1, Ordering::Relaxed);
                 if self.should_trip(now_time, cfg) {
                     self.open_locked(now_time, cfg, retry_after, max_honored_retry_after_secs);
-                    true
+                    FailureEffect::Tripped
                 } else if !cfg.bench_below_trip_threshold {
                     // A degenerate single-member cell: there is no sibling to fail over to, so a
                     // sub-threshold failure benches nothing — it has not earned a cooldown. An
@@ -483,7 +521,7 @@ impl BreakerCell {
                             );
                         }
                     }
-                    false
+                    FailureEffect::Nothing
                 } else {
                     let duration = self.compute_cooldown_with_retry_after(
                         cfg,
@@ -492,7 +530,7 @@ impl BreakerCell {
                     );
                     self.cooldown_until
                         .store(now_time.saturating_add(duration), Ordering::Release);
-                    false
+                    FailureEffect::Benched
                 }
             }
             // The probe failed → reopen. The cell was already tripped (Open) and won the half-open
@@ -500,12 +538,12 @@ impl BreakerCell {
             ST_HALF_OPEN => {
                 self.streak.fetch_add(1, Ordering::Relaxed);
                 self.open_locked(now_time, cfg, retry_after, max_honored_retry_after_secs);
-                false
+                FailureEffect::Reopened
             }
             // Already Open: an intentional no-op. The cooldown is already armed; a failure while
             // Open does not re-escalate on every request during the cooldown.
-            ST_OPEN => false,
-            _ => false, // fail safe on an unreachable encoding
+            ST_OPEN => FailureEffect::Nothing,
+            _ => FailureEffect::Nothing, // fail safe on an unreachable encoding
         }
     }
 

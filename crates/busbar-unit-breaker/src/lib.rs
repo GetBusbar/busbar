@@ -502,10 +502,13 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
             }
             Outcome::Transient { retry_after } => {
                 let cell = self.cell(pool, destination);
-                let was_probe = matches!(cell.state(), CellState::HalfOpen);
-                let tripped =
+                // Gated on what the call REPORTS, not on a state read before it — the same way the
+                // Success arm gates on record_success's own answer. A state read here can be stale
+                // by the time record_failure takes the transition lock, and the journal would then
+                // name a probe failure for a fresh trip, or miss one for a reopen.
+                let effect =
                     cell.record_failure(now, cfg, retry_after, self.max_honored_retry_after_secs);
-                if was_probe {
+                if effect.reopened() {
                     let cooldown_until = match cell.state() {
                         CellState::Open { until } => until,
                         _ => now,
@@ -517,7 +520,7 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
                         now,
                     });
                 }
-                tripped
+                effect.tripped()
             }
         }
     }
