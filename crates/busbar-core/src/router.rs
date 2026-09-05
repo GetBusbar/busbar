@@ -792,13 +792,13 @@ pub fn build_split_routers_with_limits(
 /// true no-op) — but `0` is NOT the default; `DEFAULT_MAX_INBOUND_CONCURRENT` is `8192`, so the layer
 /// IS installed out of the box and an operator opts OUT with `0`, not in. When `> 0` (including the
 /// default), [`limits::admission::InboundAdmissionLayer`] (one `AdmissionGate`, shared across ALL
-/// requests) bounds in-flight inbound work: a request that arrives with the cap FULL WAITS FIFO
-/// for a slot (parked in its own request future — `poll_ready` never blocks, so Bug 4's
-/// connection head-of-line hazard stays closed; the shed-503 this queueing replaced caused a
-/// measured fail/retry collapse under a connection herd — see `limits::admission`). Applied as
-/// the last `.layer()` so it is outermost (it must admission-control before any inner work,
-/// including body buffering — a parked arrival holds no buffered body). Factored out so the
-/// add-only-when-`>0` rule is unit-testable in isolation.
+/// requests) bounds in-flight inbound work: a request that arrives with the cap FULL is SHED
+/// immediately with a static 503 (`Retry-After: 1`) rather than parked waiting for a slot — see
+/// `limits::admission` for why shedding, not queueing, is the caller-facing contract. `poll_ready`
+/// never blocks either, so a shed on one request cannot head-of-line-block another sharing the
+/// connection. Applied as the last `.layer()` so it is outermost (it must admission-control before
+/// any inner work, including body buffering — a shed arrival never buffered a body). Factored out
+/// so the add-only-when-`>0` rule is unit-testable in isolation.
 /// Project the resolved `auth:` block onto [`state::App::auth_scope_caps`] — the per-PROVIDER admin
 /// trust CEILING (`max_admin_scope:`) the admin authorization step floors every non-`admin-tokens`
 /// verdict against.
