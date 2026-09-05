@@ -2095,3 +2095,8 @@ fn event_free_probe() -> SampleEvent {
         hash: "h".into(),
     }
 }
+
+#[path = "legacy_default_tests.rs"]
+mod legacy_default_tests;
+#[path = "abi2_store_ops_tests.rs"]
+mod abi2_store_ops_tests;
