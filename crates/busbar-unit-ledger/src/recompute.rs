@@ -310,12 +310,21 @@ pub fn recheck(posting: &Posting, policies: &dyn PolicyArchive) -> Vec<Divergenc
 
     // The class lines, then the fee line. The fee line is separate because the origin rule applies
     // to it and to nothing else, and because on a no-card deployment it is the whole check.
+    // Saturating, like the pricing path this exists to check. A figure that wrapped could land back
+    // on the posted one and report a clean pass over a posting that is wrong; a figure that
+    // saturates can only ever disagree, which is the answer an alarm is allowed to give.
     let mut pre_tier: i128 = 0;
     for line in &posting.lines {
-        pre_tier += card.price(&line.class) * i128::from(line.quantity);
+        pre_tier = pre_tier.saturating_add(
+            card.price(&line.class)
+                .saturating_mul(i128::from(line.quantity)),
+        );
     }
     if posting.origin == PostingOrigin::Client {
-        pre_tier += card.per_request_fee * i128::from(posting.fee_count);
+        pre_tier = pre_tier.saturating_add(
+            card.per_request_fee
+                .saturating_mul(i128::from(posting.fee_count)),
+        );
     }
     if pre_tier != posting.pre_tier_amount {
         found.push(Divergence::PreTier {
@@ -345,9 +354,10 @@ pub fn recheck(posting: &Posting, policies: &dyn PolicyArchive) -> Vec<Divergenc
 /// Apply a tier in basis points to a pre-tier amount.
 ///
 /// Integer arithmetic, multiply before divide, so a tier of 9,999 basis points on a small amount
-/// does not round to nothing through a division that happened first.
+/// does not round to nothing through a division that happened first. The multiply saturates, so a
+/// figure at the ceiling stays at the ceiling rather than wrapping through it.
 pub fn apply_tier(pre_tier: i128, tier_bp: u32) -> i128 {
-    pre_tier * i128::from(tier_bp) / i128::from(BASIS_POINTS)
+    pre_tier.saturating_mul(i128::from(tier_bp)) / i128::from(BASIS_POINTS)
 }
 
 /// Recompute every posting after `watermark`, in order, and advance the watermark to the head.
