@@ -435,24 +435,14 @@ impl Units for LlmUnit<'_> {
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
-        // A veto answers in the neutral vocabulary and carries no bytes of its own, and a decision
-        // can only be opened with the seal the KERNEL holds — so this file cannot ask whether the
-        // step refused. It does not need to: the veto's bytes are rendered and held HERE, before the
-        // answer, and every path that walks past this step replaces them. The door replaces them
-        // with its own refusal, and the walk replaces them with the response it produced; there is
-        // no path from here to a terminal that posts these bytes except the one where the seat
-        // actually vetoed.
-        self.walk.hold_bytes(audit::render_refusal(
-            self.walk.proto(),
-            &audit::RefusalOutcome::new(
-                StatusCode::FORBIDDEN,
-                busbar_substrate::proxy::KIND_PERMISSION,
-                "Your API key does not have permission to access this resource.",
-            ),
-        ));
-        // No veto seat is installed on any deployment today, so this step is a no-op — and it is
-        // still called, because "nothing is seated" is a fact about configuration, not a licence to
-        // skip a step.
+        // THE SEATS, and there are none. The step's only refusal is a seated gate's veto, the seat
+        // list handed over is empty, and an empty list cannot veto — so on every deployment today
+        // this step proceeds. It is still called, because "nothing is seated" is a fact about
+        // configuration rather than a licence to skip a step, and the day a seat IS installed is the
+        // day this arm grows the rendered refusal beside it: a veto answers in the neutral
+        // vocabulary and carries no bytes, and the terminal can only post bytes some step rendered.
+        // Rendering them now, for a refusal this list cannot raise, would be a response allocated
+        // per request for a path that does not exist.
         approve::approve(token, principal, destinations, &[])
     }
 
