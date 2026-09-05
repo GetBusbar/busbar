@@ -3840,7 +3840,10 @@ fn nothing_is_repeatable_unless_the_operator_names_it() {
 #[test]
 fn test_auth_policy_block_parses_and_resolves() {
     use crate::config::BindingMode;
-    let deploy: DeployCfg = serde_yaml::from_str(
+    // `auth.policy:` is a 1.6.0-additive key, so it is LIFTED off the document before the frozen
+    // structs parse: the document entry point is the only one that sees it (a bare
+    // `serde_yaml::from_str::<DeployCfg>` skips the lift and leaves the block at its default).
+    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(
         "auth:\n  \
            chain: [keys]\n  \
            policy:\n    \
@@ -3923,7 +3926,7 @@ fn test_auth_policy_absent_is_default() {
 /// pools), explicit `[]` = Some(empty) (no pools), `[list]` = exactly those. Never conflated.
 #[test]
 fn test_auth_policy_ceiling_allowed_pools_three_state() {
-    let deploy: DeployCfg = serde_yaml::from_str(
+    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(
         "auth:\n  \
            policy:\n    \
              mint_ceilings:\n      \
@@ -3957,21 +3960,27 @@ fn test_auth_policy_ceiling_allowed_pools_three_state() {
 /// boot rather than sitting inert.
 #[test]
 fn test_auth_policy_rejects_bad_input_at_parse() {
-    let bad_mode = "policy:\n  binding_modes: [forever]\n";
-    let err = serde_yaml::from_str::<crate::config::AuthDeployCfg>(bad_mode)
+    // Whole DOCUMENTS, because `auth.policy:` is lifted off the document by the pre-pass: parsing
+    // the `auth:` block on its own would never reach the block at all.
+    let doc = |policy_body: &str| {
+        format!("auth:\n  policy:\n{policy_body}providers: {{}}\nmodels: {{}}\n")
+    };
+
+    let bad_mode = doc("    binding_modes: [forever]\n");
+    let err = crate::config::deploy_from_yaml_str(&bad_mode)
         .expect_err("an unknown binding mode must be rejected at parse");
     assert!(
         err.to_string().contains("forever") || err.to_string().contains("unknown variant"),
         "got: {err}"
     );
 
-    let typo = "policy:\n  slef_mint: true\n";
-    let err = serde_yaml::from_str::<crate::config::AuthDeployCfg>(typo)
+    let typo = doc("    slef_mint: true\n");
+    let err = crate::config::deploy_from_yaml_str(&typo)
         .expect_err("a typo'd policy key must be rejected (deny_unknown_fields)");
     assert!(err.to_string().contains("unknown field"), "got: {err}");
 
-    let ceiling_typo = "policy:\n  mint_ceilings:\n    app-admin: { max_tll: \"7d\" }\n";
-    let err = serde_yaml::from_str::<crate::config::AuthDeployCfg>(ceiling_typo)
+    let ceiling_typo = doc("    mint_ceilings:\n      app-admin: { max_tll: \"7d\" }\n");
+    let err = crate::config::deploy_from_yaml_str(&ceiling_typo)
         .expect_err("a typo'd ceiling key must be rejected (deny_unknown_fields)");
     assert!(err.to_string().contains("unknown field"), "got: {err}");
 }

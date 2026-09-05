@@ -135,7 +135,7 @@ fn handle_cli_flags() -> Option<i32> {
             if let Ok(raw) = std::fs::read_to_string(&config_path) {
                 match config::interpolate_env(&raw) {
                     Ok(interpolated) => {
-                        match serde_yaml::from_str::<config::DeployCfg>(&interpolated) {
+                        match config::deploy_from_yaml_str(&interpolated) {
                             Ok(deploy) => {
                                 if let Some(sec) = deploy.security {
                                     entries.extend(sec.blocked_metadata_hosts);
@@ -552,7 +552,7 @@ fn worker_threads_from_config() -> Option<usize> {
     let mut unset = Vec::new();
     let interpolated =
         config::interpolate_env_with(&raw, config::EnvSubst::Lenient, &mut unset).ok()?;
-    let deploy: config::DeployCfg = serde_yaml::from_str(&interpolated).ok()?;
+    let deploy: config::DeployCfg = config::deploy_from_yaml_str(&interpolated).ok()?;
     match validate_worker_threads_config(deploy.advanced.worker_threads) {
         Ok(v) => v,
         Err(msg) => {
@@ -1172,11 +1172,9 @@ async fn run(data_workers: usize) {
         // model, so today both endpoints are composed from the SAME resolved (origin, reference) pair;
         // a deployment that fronts Gemini Live through a distinct provider entry needs a second
         // `streams:` knob to name it, which is not this cycle's grammar change (see docs/voice.md).
-        if let Err(e) = busbar_voice::mount::compose_gemini_provider(
-            base_url,
-            &api_key,
-            &*app.secret_resolver,
-        ) {
+        if let Err(e) =
+            busbar_voice::mount::compose_gemini_provider(base_url, &api_key, &*app.secret_resolver)
+        {
             tracing::warn!(
                 "voice: the Gemini Live provider credential did not resolve, so the Gemini route \
                  stays uncomposed: {e}"
@@ -1606,8 +1604,8 @@ fn bind_reuseport_listener(addr: &str) -> std::io::Result<std::net::TcpListener>
 /// cert/key/CA loaded and validated up front so a bad path/parse `die`s at startup, not per request.
 /// `label` names the plane in log lines and error messages. Any serve error `die`s the process.
 #[allow(clippy::too_many_arguments)] // one more than the default threshold for `log_at_info`, the
-// once-per-listener-not-once-per-worker fix (see its own doc); grouping the existing seven into a
-// struct is a larger refactor this fix does not need.
+                                     // once-per-listener-not-once-per-worker fix (see its own doc); grouping the existing seven into a
+                                     // struct is a larger refactor this fix does not need.
 async fn serve_listener(
     listener: tokio::net::TcpListener,
     router: Router,

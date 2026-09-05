@@ -18,7 +18,12 @@ pub(crate) mod migrate_export;
 pub mod named_map;
 /// The secret-reference type: `{ module, settings }` + the `{env}`/`{file}` sugar.
 pub(crate) mod patch;
+/// The 1.6.0-only key PRE-PASS: lift the additive keys off a document before the frozen
+/// 1.5.5-shaped structs parse the remainder, so their `expected one of` lists never move.
+pub mod prepass;
 pub mod secret;
+
+pub use prepass::{deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value};
 
 pub use groups::GroupCfg;
 pub(crate) use groups::LimitCfg;
@@ -542,7 +547,6 @@ pub use busbar_substrate::config::auth::{
     KEYS_MODULE,
 };
 
-
 /// The built-in signed-key verifier module name (`auth.chain: [keys]`).
 /// The config shape `--migrate-config` targets, for anything that needs to NAME it in output.
 ///
@@ -846,20 +850,20 @@ pub use busbar_substrate::config::PolicyOnError;
 // so no caller (this module's own definition-to-registry lowering, validation, `config_validate`,
 // `store`) moves.
 pub use busbar_substrate::config::hooks::{
-    caller_in_hook_groups, default_on_error, default_policy_timeout_ms, on_error_terminal,
-    HookCfg, HookDefCfg, HookDefs, HookKind, HookStage, OnErrorCfg, PromptAccess, UserAccess,
+    caller_in_hook_groups, default_on_error, default_policy_timeout_ms, on_error_terminal, HookCfg,
+    HookDefCfg, HookDefs, HookKind, HookStage, OnErrorCfg, PromptAccess, UserAccess,
     ALL_HOOK_STAGES, CORE_HOOK_PHASES, DEFAULT_POLICY_TIMEOUT_MS, FROZEN_HOOK_NAME_WORD_SPACE,
     ON_ERROR_FIRST, ON_ERROR_NOTHING, ON_ERROR_REJECT, ON_ERROR_WEIGHTED, RESERVED_HOOK_NAMES,
 };
 pub use busbar_substrate::config::pools::{
-    default_cooldown, default_consecutive_n, default_failover_timeout, default_max_cooldown,
-    default_max_hops, default_min_requests, default_threshold, default_trip_mode,
-    default_weight, default_window_secs, is_strategy_name, parse_strategy, AffinityCfg,
-    AffinityMode, BreakerCfg, BreakerTripConfig, BreakerTripMode, FailoverCfg, OnExhausted,
-    OnExhaustedCfg, PoolCfg, PoolMember, PoolPolicy, DEFAULT_BREAKER_BASE_COOLDOWN_SECS,
-    DEFAULT_BREAKER_CONSECUTIVE_N, DEFAULT_BREAKER_MAX_COOLDOWN_SECS,
-    DEFAULT_BREAKER_MIN_REQUESTS, DEFAULT_BREAKER_THRESHOLD, DEFAULT_BREAKER_WINDOW_SECS,
-    STRATEGY_CHEAPEST, STRATEGY_FASTEST, STRATEGY_LEAST_BUSY, STRATEGY_USAGE,
+    default_consecutive_n, default_cooldown, default_failover_timeout, default_max_cooldown,
+    default_max_hops, default_min_requests, default_threshold, default_trip_mode, default_weight,
+    default_window_secs, is_strategy_name, parse_strategy, AffinityCfg, AffinityMode, BreakerCfg,
+    BreakerTripConfig, BreakerTripMode, FailoverCfg, OnExhausted, OnExhaustedCfg, PoolCfg,
+    PoolMember, PoolPolicy, DEFAULT_BREAKER_BASE_COOLDOWN_SECS, DEFAULT_BREAKER_CONSECUTIVE_N,
+    DEFAULT_BREAKER_MAX_COOLDOWN_SECS, DEFAULT_BREAKER_MIN_REQUESTS, DEFAULT_BREAKER_THRESHOLD,
+    DEFAULT_BREAKER_WINDOW_SECS, STRATEGY_CHEAPEST, STRATEGY_FASTEST, STRATEGY_LEAST_BUSY,
+    STRATEGY_USAGE,
 };
 
 // The FAILOVER BUDGET numeric defaults/bounds are plain scalars with no config grammar attached, so
@@ -1142,12 +1146,18 @@ pub struct DeployCfg {
     // the MCP plane's own endpoint config behind `dyn PlaneEndpointCfg`, so `DeployCfg` names no
     // `crate::mcp` endpoint type. The plane compiled out captures it raw and refuses a present block
     // at `resolve` (the deletion-gate leg).
-    #[serde(default)]
+    ///
+    /// A CARRIER, not a parsed field: the key is lifted off the document by
+    /// [`crate::config::prepass`] before this struct parses, so it is never in this struct's
+    /// accepted key set and never named in its unknown-key refusal. See that module for why.
+    #[serde(skip)]
     pub(crate) mcp: McpEndpointSection, // plane-purity: frozen-wire the mcp: top-level wire key + McpEndpointSection snapshot type (frozen since 1.5.3)
     /// `oauth_as:` — busbar AS an OAuth 2.1 authorization server, for the deployment that has no
     /// identity provider (or has one that will not do dynamic registration). ABSENT BY DEFAULT, and
     /// absent means nothing is built: see `crate::oauth_as`.
-    #[serde(default)]
+    ///
+    /// A lifted CARRIER, exactly as `mcp:` above is.
+    #[serde(skip)]
     pub(crate) oauth_as: Option<crate::oauth_as::config::OauthAsCfg>,
     /// The top-level `tools:` NAMED-DEFINITION map (1.6.0) — THE MCP PLANE's registry: server name →
     /// `{url, pin, tools_allow, …}`. Sibling of `pools:` and `agents:` with the same shape and the
@@ -1163,7 +1173,9 @@ pub struct DeployCfg {
     // the MCP plane's own `ToolsCfg` behind `dyn PlaneCfg`, so `DeployCfg` names no `crate::mcp`
     // registry type. The plane compiled out captures it raw and refuses a present section at
     // `resolve`.
-    #[serde(default)]
+    ///
+    /// A lifted CARRIER, exactly as `mcp:` above is.
+    #[serde(skip)]
     pub(crate) tools: ToolsSection,
     /// TLS/mTLS for the admin listener (only meaningful with `admin_listen`). Its own cert + optional
     /// `client_ca_file`, so admin can require client certificates without forcing them on data-plane
@@ -1243,7 +1255,9 @@ pub struct DeployCfg {
     // the A2A plane's own `AgentsCfg` behind `dyn PlaneCfg`, so `DeployCfg` names no `crate::a2a`
     // registry type. The plane compiled out captures it raw and refuses a present section at
     // `resolve`.
-    #[serde(default)]
+    ///
+    /// A lifted CARRIER, exactly as `mcp:` above is.
+    #[serde(skip)]
     pub(crate) agents: AgentsSection,
     /// The top-level `streams:` section (1.6.0) — THE VOICE PLANE's owned config: the locked session
     /// defaults (media/VAD/`SessionConfig`) plus the three session ceilings (wall-clock, context
@@ -1254,7 +1268,9 @@ pub struct DeployCfg {
     // plane's own `StreamsCfg` behind `dyn PlaneCfg`, so `DeployCfg` names no `busbar_voice` type. The
     // plane compiled out (voice off-default) captures it RAW and refuses a present section at
     // `resolve`, exactly as `tools:`/`agents:` do — so no `#[cfg]` guards the field itself.
-    #[serde(default)]
+    ///
+    /// A lifted CARRIER, exactly as `mcp:` above is.
+    #[serde(skip)]
     pub(crate) streams: StreamsSection,
     // 1.6.0 UNIFIED POOLS: the separate `tool_pools:` and `agent_pools:` sections are GONE. There is
     // ONE neutral top-level `pools:` (above); a pool's kind is INFERRED from its members and MCP/A2A
@@ -1659,7 +1675,8 @@ pub use busbar_substrate::config::sections::{
 // (not just at their own call sites) because `LimitsResolved::from_sections` takes `&AdvancedCfg`.
 pub use busbar_substrate::config::sections::{
     default_response_headers_route_policy, default_response_headers_server_timing, AdvancedCfg,
-    ResponseHeadersCfg, DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY, DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+    ResponseHeadersCfg, DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY,
+    DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
 };
 
 // The `config:` config-management-policy block, its `overlay:` backend selector, the `rate_card:`
@@ -1964,23 +1981,21 @@ pub use busbar_substrate::config::limits::{
     default_tls_handshake_timeout_secs, default_upstream_error_body_max_bytes,
     default_upstream_request_timeout_secs, default_usage_flush_interval_ms,
     default_webhook_delivery_timeout_secs, ExportLimits, HealthDefaultsCfg, LimitsCfg,
-    LimitsResolved, ReasoningEffortBudgets, RoutingCfg,
-    DEFAULT_DEFAULT_MAX_TOKENS, DEFAULT_HARD_DOWN_COOLDOWN_SECS, DEFAULT_KEY_GAUGE_LIMIT,
-    DEFAULT_MAX_HONORED_RETRY_AFTER_SECS, DEFAULT_MAX_INBOUND_CONCURRENT,
-    DEFAULT_MAX_INFLIGHT_WEBHOOK_DELIVERIES, DEFAULT_PLUGIN_FETCH_MAX_BYTES,
-    DEFAULT_POOL_IDLE_TIMEOUT_SECS, DEFAULT_POOL_MAX_IDLE_PER_HOST, DEFAULT_PROBE_INTERVAL_SECS,
-    DEFAULT_PROBE_TIMEOUT_SECS,
-    DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_REQUEST_BODY_MAX_BYTES,
-    DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS, DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS,
-    DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES, DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
-    DEFAULT_USAGE_FLUSH_INTERVAL_MS, DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_SECS,
-    REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR,
+    LimitsResolved, ReasoningEffortBudgets, RoutingCfg, DEFAULT_DEFAULT_MAX_TOKENS,
+    DEFAULT_HARD_DOWN_COOLDOWN_SECS, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
+    DEFAULT_MAX_INBOUND_CONCURRENT, DEFAULT_MAX_INFLIGHT_WEBHOOK_DELIVERIES,
+    DEFAULT_PLUGIN_FETCH_MAX_BYTES, DEFAULT_POOL_IDLE_TIMEOUT_SECS, DEFAULT_POOL_MAX_IDLE_PER_HOST,
+    DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS, DEFAULT_RATE_SWEEP_INTERVAL,
+    DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS,
+    DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS, DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES,
+    DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
+    DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_SECS, REQUEST_BODY_MAX_BYTES_CEIL,
+    REQUEST_BODY_MAX_BYTES_FLOOR,
 };
 
 fn default_plugins_dir() -> String {
     "plugins".to_string()
 }
-
 
 /// Resolve DeployCfg + ProviderDef map into resolved RootCfg.
 /// For each deployed provider, look up its definition by name; produce a resolved ProviderCfg

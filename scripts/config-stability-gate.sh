@@ -279,7 +279,50 @@ mod tests {
 }
 RS
 
-  # (6) TWO PLANES, ONE BARE NAME. The fingerprint is keyed by the bare Rust ident with no module
+  # (6) LIFTED CARRIERS. A `#[serde(skip)]` field is dropped from the fingerprint — it is not wire
+  #     grammar. The 1.6.0-additive keys are the exception: they are skipped CARRIERS filled in by
+  #     the config pre-pass (so the frozen structs' `expected one of` lists never name them), and
+  #     they ARE grammar. The generator keeps a skipped field whose wire key the pre-pass's own
+  #     lift list names, and nothing else — these fixtures pin both halves of that rule.
+  cat >"$tmp/fx/lift-none.rs" <<'RS'
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LiftFx {
+    pub(crate) frozen_key: String,
+    #[serde(skip)]
+    pub(crate) carried_key: CarriedCfg,
+    #[serde(skip)]
+    pub(crate) private_state: u64,
+}
+RS
+  cat >"$tmp/fx/lift-listed.rs" <<'RS'
+pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] = &["carried_key"];
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LiftFx {
+    pub(crate) frozen_key: String,
+    #[serde(skip)]
+    pub(crate) carried_key: CarriedCfg,
+    #[serde(skip)]
+    pub(crate) private_state: u64,
+}
+RS
+  # A lift list naming a key NO struct carries: either a deleted field the list is holding open, or
+  # an entry that was never grammar. Refused outright, like the duplicate-name case.
+  cat >"$tmp/fx/lift-orphan.rs" <<'RS'
+pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] = &["carried_key", "no_such_key"];
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LiftFx {
+    pub(crate) frozen_key: String,
+    #[serde(skip)]
+    pub(crate) carried_key: CarriedCfg,
+}
+RS
+
+  # (7) TWO PLANES, ONE BARE NAME. The fingerprint is keyed by the bare Rust ident with no module
   #     path, so a second file declaring a same-named type would REPLACE the first — the replaced
   #     grammar stops being covered at all, and the classifier reports the swap as a break in a
   #     grammar nobody edited. This is not hypothetical: `a2a/config.rs` and `mcp/config.rs` both
@@ -382,6 +425,28 @@ PY
     'assert sorted(t["RenameFx"]["fields"]) == ["max-tokens", "on-error"], t["RenameFx"]' \
     "$tmp/fx-rename.json"
 
+  # LIFTED CARRIERS — the `#[serde(skip)]` exception, pinned in BOTH directions.
+  gen_case "lift: naming a skipped carrier is GREEN (additive)"  0 \
+    "$tmp/fx/lift-none.rs" "$tmp/fx/lift-listed.rs"
+  gen_case "lift: dropping a carrier from the list is RED"       3 \
+    "$tmp/fx/lift-listed.rs" "$tmp/fx/lift-none.rs"
+  gen_fp "$tmp/fx/lift-none.rs" "$tmp/fx-lift-none.json" || fails=$((fails + 1))
+  py_assert "lift: an UNLISTED skipped field stays out of the grammar" \
+    'assert sorted(t["LiftFx"]["fields"]) == ["frozen_key"], t["LiftFx"]' \
+    "$tmp/fx-lift-none.json"
+  gen_fp "$tmp/fx/lift-listed.rs" "$tmp/fx-lift-listed.json" || fails=$((fails + 1))
+  py_assert "lift: a LISTED carrier is recorded, typed and OPTIONAL" \
+    'f = t["LiftFx"]["fields"]
+assert sorted(f) == ["carried_key", "frozen_key"], f
+assert f["carried_key"] == {"type": "CarriedCfg", "optional": True}, f["carried_key"]' \
+    "$tmp/fx-lift-listed.json"
+  py_assert "lift: listing one carrier does NOT readmit the others" \
+    'assert "private_state" not in t["LiftFx"]["fields"], t["LiftFx"]' \
+    "$tmp/fx-lift-listed.json"
+  # Exit 1 (SystemExit) — neither a silent pass nor a normal RED.
+  "$PY" "$GEN" gen "$tmp/fx/lift-orphan.rs" >/dev/null 2>&1
+  verdict "lift: a key with NO carrier field is REFUSED" 1 "$?"
+
   # A test-only type is not grammar, and must not displace a same-named real one.
   gen_fp "$tmp/fx/cfgtest.rs" "$tmp/fx-cfgtest.json" || fails=$((fails + 1))
   py_assert "cfg(test) types are EXCLUDED from the grammar" \
@@ -451,6 +516,18 @@ assert {"pin", "tools_allow", "prompts_allow", "resources_allow", "grants"} <= s
   py_assert "coverage: the A2A pin grammar SURVIVED the MCP addition" \
     'assert t["PinMechanism"]["variants"] == ["cert_spki", "jws_issuer_key", "mtls", "unpinned"], t["PinMechanism"]'
 
+  # The 1.6.0-additive keys are grammar an operator writes, and they are all skipped carriers now.
+  # A generator that forgot the lift exception would drop every one of them silently, so the real
+  # render is asserted to still carry them at their declared types.
+  py_assert "coverage: the LIFTED 1.6.0 keys are still fingerprinted" \
+    'd = t["DeployCfg"]["fields"]
+for k in ("mcp", "oauth_as", "tools", "agents", "streams"):
+    assert k in d and d[k]["optional"] is True, (k, d.get(k))
+assert d["tools"]["type"] == "ToolsSection", d["tools"]
+assert d["agents"]["type"] == "AgentsSection", d["agents"]
+assert d["streams"]["type"] == "StreamsSection", d["streams"]
+assert t["AuthDeployCfg"]["fields"]["policy"]["type"] == "AuthPolicyCfg", t["AuthDeployCfg"]["fields"].get("policy")'
+
   # A tracked source that vanished must be a HARD ERROR. If a rename could silently shrink the
   # tracked set, the whole gate could be disabled by moving a file.
   if "$PY" "$GEN" gen "$tmp/no-such-source.rs" >/dev/null 2>&1; then rc=1; else rc=0; fi
@@ -460,7 +537,7 @@ assert {"pin", "tools_allow", "prompts_allow", "resources_allow", "grants"} <= s
   # is the false green this project has already been burned by three times in one night. Assert the
   # cases actually EXECUTED, and pin the floor to the count at the time of writing so deleting
   # coverage is itself RED.
-  local want_cases=50
+  local want_cases=57
   if [ "$cases" -lt "$want_cases" ]; then
     red "  FAIL  self-test executed only $cases case(s); expected at least $want_cases."
     red "        Coverage was deleted, or the suite exited early — either way this is NOT a pass."
