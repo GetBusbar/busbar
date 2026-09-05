@@ -969,6 +969,7 @@ name = "busbar-unit-auth"
 version = "1.6.0"
 dependencies = [
  "busbar-caps",
+ "busbar-contract",
 ]
 
 [[package]]
@@ -1036,6 +1037,7 @@ name = "busbar-unit-trust"
 version = "1.6.0"
 dependencies = [
  "busbar-caps",
+ "busbar-contract",
 ]
 
 [[package]]

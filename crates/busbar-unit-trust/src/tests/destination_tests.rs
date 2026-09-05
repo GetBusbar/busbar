@@ -4,7 +4,7 @@
 //! Which kinds each origin may reach, and the per-kind rules.
 
 use crate::destination::{
-    kind_permitted, kind_rule_passes, DestinationFacts, DestinationKind, KindFacts, OriginKind,
+    kind_permitted, kind_rule_passes, DestinationFacts, KindFacts, OriginKind,
 };
 
 /// Facts that say yes to everything, so a test can turn exactly one answer off and see it land.
@@ -81,104 +81,174 @@ impl KindFacts for AllYes {
     }
 }
 
-pub(crate) fn dest(kind: DestinationKind) -> DestinationFacts {
-    DestinationFacts {
-        kind,
-        lane: busbar_caps::LaneId::new("lane-a"),
-        lane_index: Some(0),
+/// One destination of each kind, filled in with whatever its arm needs.
+///
+/// The kind is what these tests are about; the payload is the contract's shape and every field
+/// here is a placeholder for it. A lane-bearing kind gets the one lane the fixtures share.
+pub(crate) mod kinds {
+    use super::DestinationFacts;
+
+    const LANE: busbar_caps::LaneId = busbar_caps::LaneId::new("lane-a");
+
+    pub(crate) fn upstream() -> DestinationFacts {
+        DestinationFacts::Upstream {
+            transport: "wire",
+            host: "upstream.example",
+            lane: LANE,
+        }
+    }
+
+    pub(crate) fn session_upstream() -> DestinationFacts {
+        DestinationFacts::SessionUpstream {
+            upstream: busbar_contract::UpstreamIdx(0),
+            stream: None,
+            lane: LANE,
+        }
+    }
+
+    pub(crate) fn client() -> DestinationFacts {
+        DestinationFacts::Client {
+            selector: "caller",
+            mode: busbar_contract::ClientMode::Deliver,
+        }
+    }
+
+    pub(crate) fn kernel_verb() -> DestinationFacts {
+        DestinationFacts::KernelVerb { verb: "status" }
+    }
+
+    pub(crate) fn nested_plane() -> DestinationFacts {
+        DestinationFacts::NestedPlane {
+            plane: "child",
+            op: busbar_contract::OpClassId::new("call"),
+        }
+    }
+
+    pub(crate) fn plane_record() -> DestinationFacts {
+        DestinationFacts::PlaneRecord {
+            schema: busbar_contract::RecordSchemaId::new("notes"),
+            op: "read",
+        }
+    }
+
+    pub(crate) fn peer() -> DestinationFacts {
+        DestinationFacts::Peer {
+            node: "node-2",
+            selector: "caller",
+        }
+    }
+
+    pub(crate) fn upgrade() -> DestinationFacts {
+        DestinationFacts::Upgrade { to: "tls" }
+    }
+
+    pub(crate) fn session_accrual() -> DestinationFacts {
+        DestinationFacts::SessionAccrual { lane: LANE }
     }
 }
 
 #[test]
 fn a_client_reaches_everything_but_peers_and_session_accrual() {
-    use DestinationKind::*;
+    use kinds::*;
     for kind in [
-        Upstream,
-        SessionUpstream,
-        Client,
-        KernelVerb,
-        NestedPlane,
-        PlaneRecord,
-        Upgrade,
+        upstream(),
+        session_upstream(),
+        client(),
+        kernel_verb(),
+        nested_plane(),
+        plane_record(),
+        upgrade(),
     ] {
         assert!(kind_permitted(OriginKind::Client, &kind), "{kind:?}");
     }
-    assert!(!kind_permitted(OriginKind::Client, &Peer));
-    assert!(!kind_permitted(OriginKind::Client, &SessionAccrual));
+    assert!(!kind_permitted(OriginKind::Client, &peer()));
+    assert!(!kind_permitted(OriginKind::Client, &session_accrual()));
 }
 
 #[test]
 fn a_provider_push_can_never_address_a_verb() {
-    use DestinationKind::*;
-    for kind in [Client, SessionUpstream, NestedPlane, PlaneRecord] {
+    use kinds::*;
+    for kind in [client(), session_upstream(), nested_plane(), plane_record()] {
         assert!(kind_permitted(OriginKind::Provider, &kind), "{kind:?}");
     }
-    for kind in [KernelVerb, Upstream, Peer, Upgrade, SessionAccrual] {
+    for kind in [
+        kernel_verb(),
+        upstream(),
+        peer(),
+        upgrade(),
+        session_accrual(),
+    ] {
         assert!(!kind_permitted(OriginKind::Provider, &kind), "{kind:?}");
     }
 }
 
 #[test]
 fn an_arrival_reaches_nothing_and_a_bootstrap_only_its_verb() {
-    use DestinationKind::*;
+    use kinds::*;
     for kind in [
-        Upstream,
-        SessionUpstream,
-        Client,
-        KernelVerb,
-        NestedPlane,
-        PlaneRecord,
-        Peer,
-        Upgrade,
-        SessionAccrual,
+        upstream(),
+        session_upstream(),
+        client(),
+        kernel_verb(),
+        nested_plane(),
+        plane_record(),
+        peer(),
+        upgrade(),
+        session_accrual(),
     ] {
         assert!(!kind_permitted(OriginKind::Arrival, &kind), "{kind:?}");
     }
-    assert!(kind_permitted(OriginKind::Bootstrap, &KernelVerb));
-    assert!(!kind_permitted(OriginKind::Bootstrap, &Upstream));
+    assert!(kind_permitted(OriginKind::Bootstrap, &kernel_verb()));
+    assert!(!kind_permitted(OriginKind::Bootstrap, &upstream()));
 }
 
 #[test]
 fn a_handshake_reaches_only_an_upgrade_or_the_client_it_is_challenging() {
-    use DestinationKind::*;
-    assert!(kind_permitted(OriginKind::Handshake, &Upgrade));
-    assert!(kind_permitted(OriginKind::Handshake, &Client));
-    assert!(!kind_permitted(OriginKind::Handshake, &Upstream));
-    assert!(!kind_permitted(OriginKind::Handshake, &KernelVerb));
+    use kinds::*;
+    assert!(kind_permitted(OriginKind::Handshake, &upgrade()));
+    assert!(kind_permitted(OriginKind::Handshake, &client()));
+    assert!(!kind_permitted(OriginKind::Handshake, &upstream()));
+    assert!(!kind_permitted(OriginKind::Handshake, &kernel_verb()));
 }
 
 #[test]
 fn the_heartbeat_reaches_nothing_but_a_session_accrual() {
-    use DestinationKind::*;
-    assert!(kind_permitted(OriginKind::Tick, &SessionAccrual));
-    for kind in [Upstream, Client, KernelVerb, NestedPlane, Peer] {
+    use kinds::*;
+    assert!(kind_permitted(OriginKind::Tick, &session_accrual()));
+    for kind in [upstream(), client(), kernel_verb(), nested_plane(), peer()] {
         assert!(!kind_permitted(OriginKind::Tick, &kind), "{kind:?}");
     }
 }
 
 #[test]
 fn a_nested_call_never_goes_sideways_into_a_verb() {
-    use DestinationKind::*;
-    for kind in [Upstream, SessionUpstream, NestedPlane, PlaneRecord, Client] {
+    use kinds::*;
+    for kind in [
+        upstream(),
+        session_upstream(),
+        nested_plane(),
+        plane_record(),
+        client(),
+    ] {
         assert!(kind_permitted(OriginKind::Nested, &kind), "{kind:?}");
     }
-    assert!(!kind_permitted(OriginKind::Nested, &KernelVerb));
-    assert!(!kind_permitted(OriginKind::Nested, &SessionAccrual));
+    assert!(!kind_permitted(OriginKind::Nested, &kernel_verb()));
+    assert!(!kind_permitted(OriginKind::Nested, &session_accrual()));
 }
 
 #[test]
 fn a_delivery_may_deliver_hop_or_dial_and_nothing_else() {
-    use DestinationKind::*;
-    for kind in [Client, Peer, Upstream] {
+    use kinds::*;
+    for kind in [client(), peer(), upstream()] {
         assert!(kind_permitted(OriginKind::Delivery, &kind), "{kind:?}");
     }
-    assert!(!kind_permitted(OriginKind::Delivery, &KernelVerb));
-    assert!(!kind_permitted(OriginKind::Delivery, &SessionAccrual));
+    assert!(!kind_permitted(OriginKind::Delivery, &kernel_verb()));
+    assert!(!kind_permitted(OriginKind::Delivery, &session_accrual()));
 }
 
 #[test]
 fn an_upstream_needs_the_allow_list_the_key_and_the_lane() {
-    let d = dest(DestinationKind::Upstream);
+    let d = kinds::upstream();
     assert!(kind_rule_passes(&d, &AllYes::default()));
     for (label, facts) in [
         (
@@ -209,7 +279,7 @@ fn an_upstream_needs_the_allow_list_the_key_and_the_lane() {
 
 #[test]
 fn a_session_upstream_needs_the_pairing_and_the_principal() {
-    let d = dest(DestinationKind::SessionUpstream);
+    let d = kinds::session_upstream();
     assert!(kind_rule_passes(&d, &AllYes::default()));
     assert!(!kind_rule_passes(
         &d,
@@ -229,7 +299,7 @@ fn a_session_upstream_needs_the_pairing_and_the_principal() {
 
 #[test]
 fn a_client_destination_needs_the_selector_and_the_deadline() {
-    let d = dest(DestinationKind::Client);
+    let d = kinds::client();
     assert!(kind_rule_passes(&d, &AllYes::default()));
     assert!(!kind_rule_passes(
         &d,
@@ -249,7 +319,7 @@ fn a_client_destination_needs_the_selector_and_the_deadline() {
 
 #[test]
 fn the_verb_scope_check_always_runs() {
-    let d = dest(DestinationKind::KernelVerb);
+    let d = kinds::kernel_verb();
     assert!(kind_rule_passes(&d, &AllYes::default()));
     assert!(
         !kind_rule_passes(
@@ -267,36 +337,35 @@ fn the_verb_scope_check_always_runs() {
 fn the_remaining_kinds_each_carry_their_own_rule() {
     for (kind, facts) in [
         (
-            DestinationKind::NestedPlane,
+            kinds::nested_plane(),
             AllYes {
                 nested: false,
                 ..AllYes::default()
             },
         ),
         (
-            DestinationKind::PlaneRecord,
+            kinds::plane_record(),
             AllYes {
                 record: false,
                 ..AllYes::default()
             },
         ),
         (
-            DestinationKind::Peer,
+            kinds::peer(),
             AllYes {
                 peer_lease: false,
                 ..AllYes::default()
             },
         ),
         (
-            DestinationKind::Upgrade,
+            kinds::upgrade(),
             AllYes {
                 upgrade: false,
                 ..AllYes::default()
             },
         ),
     ] {
-        let d = dest(kind.clone());
-        assert!(kind_rule_passes(&d, &AllYes::default()), "{kind:?}");
-        assert!(!kind_rule_passes(&d, &facts), "{kind:?}");
+        assert!(kind_rule_passes(&kind, &AllYes::default()), "{kind:?}");
+        assert!(!kind_rule_passes(&kind, &facts), "{kind:?}");
     }
 }

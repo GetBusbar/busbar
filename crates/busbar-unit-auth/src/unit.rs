@@ -8,7 +8,7 @@ use busbar_caps::{Authenticate, Decision, ReasonCode, Refusal, UnitToken};
 use crate::cache::CredentialCache;
 use crate::chain::{AuthChain, ChainVerdict, KeyVerifier, RevocationView};
 use crate::challenge::Challenge;
-use crate::principal::{to_caps_principal, Principal};
+use crate::principal::Principal;
 
 /// Everything the unit is given about one authentication.
 pub struct AuthRequest<'a> {
@@ -131,14 +131,12 @@ impl Auth {
                 if Principal::id_is_reserved(&principal.id) {
                     Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
                 } else {
-                    Decision::proceed(token, to_caps_principal(&principal))
+                    Decision::proceed(token, (&principal).into())
                 }
             }
             // The open front door admits with the anonymous principal: no bucket, and an actor id
             // that reads as the plain word everywhere it is written.
-            ChainVerdict::Open => {
-                Decision::proceed(token, to_caps_principal(&Principal::anonymous()))
-            }
+            ChainVerdict::Open => Decision::proceed(token, (&Principal::anonymous()).into()),
             ChainVerdict::Denied => {
                 Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
             }

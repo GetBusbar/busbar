@@ -48,12 +48,7 @@ pub enum BrowserAction {
 ///    the issued page's own rotate link sends.
 /// 4. Otherwise the chooser.
 pub fn dispatch(query: &[(String, String)]) -> BrowserAction {
-    let get = |k: &str| {
-        query
-            .iter()
-            .find(|(n, _)| n == k)
-            .map(|(_, v)| v.clone())
-    };
+    let get = |k: &str| query.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
 
     if get("logout").is_some() {
         return BrowserAction::SignedOut;

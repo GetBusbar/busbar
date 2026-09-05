@@ -55,8 +55,12 @@ pub struct ResolvedKey {
 /// the check.
 pub trait KeyVerifier: Send + Sync {
     /// Verify a signed key. `None` for unknown, expired, rotated, revoked or disabled.
-    fn verify_token(&self, token: &str, now: u64, expected_aud: Option<&str>)
-        -> Option<ResolvedKey>;
+    fn verify_token(
+        &self,
+        token: &str,
+        now: u64,
+        expected_aud: Option<&str>,
+    ) -> Option<ResolvedKey>;
 }
 
 /// The revocation set, as the kernel derives it from the journal tail.

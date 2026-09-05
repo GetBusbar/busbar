@@ -59,9 +59,12 @@ impl Trust {
         let sealed: Vec<VerifiedDestination> = req
             .candidates
             .iter()
-            .filter(|d| kind_permitted(req.origin, &d.kind))
+            .filter(|d| kind_permitted(req.origin, d))
             .filter(|d| kind_rule_passes(d, facts))
-            .map(|d| VerifiedDestination::seal(trust, d.lane))
+            // A destination whose kind carries no lane is not priced on one; the seal records
+            // that rather than inventing a name for it.
+            .filter_map(|d| d.lane())
+            .map(|lane| VerifiedDestination::seal(trust, lane))
             .collect();
 
         Decision::proceed(token, sealed)

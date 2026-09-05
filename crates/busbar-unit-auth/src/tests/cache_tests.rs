@@ -14,8 +14,14 @@ fn a_rejected_chain_admits_nothing_to_the_cache() {
     let cache = CredentialCache::new(test_digest);
     let c = AuthChain::new(
         vec![
-            entry("passer", Box::new(Canned::cacheable("p", AuthOutcome::Pass))),
-            entry("rejecter", Box::new(Canned::cacheable("r", AuthOutcome::Reject))),
+            entry(
+                "passer",
+                Box::new(Canned::cacheable("p", AuthOutcome::Pass)),
+            ),
+            entry(
+                "rejecter",
+                Box::new(Canned::cacheable("r", AuthOutcome::Reject)),
+            ),
         ],
         false,
     );
@@ -54,7 +60,10 @@ fn an_identified_chain_still_caches_the_leading_pass() {
     let cache = CredentialCache::new(test_digest);
     let c = AuthChain::new(
         vec![
-            entry("leader", Box::new(Canned::cacheable("a", AuthOutcome::Pass))),
+            entry(
+                "leader",
+                Box::new(Canned::cacheable("a", AuthOutcome::Pass)),
+            ),
             entry(
                 "identifier",
                 Box::new(Canned::cacheable(
@@ -197,7 +206,10 @@ fn pass_churn_cannot_evict_an_identity() {
     // Now an unauthenticated prober drives thousands of distinct credentials through an all-pass
     // chain. None of them is committed, so none of them can evict the identity above.
     let passing = AuthChain::new(
-        vec![entry("idp", Box::new(Canned::cacheable("idp", AuthOutcome::Pass)))],
+        vec![entry(
+            "idp",
+            Box::new(Canned::cacheable("idp", AuthOutcome::Pass)),
+        )],
         false,
     );
     for i in 0..6000u32 {

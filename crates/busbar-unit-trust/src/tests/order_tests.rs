@@ -123,7 +123,11 @@ fn the_affinity_offer_comes_first_and_exactly_once() {
     // falls through to the floor.
     let c = cands(&[(0, 1), (1, 1)]);
     let (outcome, passed) = pick_with(&lanes, &c, None, Some(3), &no_exclusions());
-    assert_eq!(lanes.admissions.borrow()[0], 1, "the pinned lane is asked first");
+    assert_eq!(
+        lanes.admissions.borrow()[0],
+        1,
+        "the pinned lane is asked first"
+    );
     assert_eq!(
         outcome,
         PickOutcome::Admitted(Pick {
@@ -131,7 +135,9 @@ fn the_affinity_offer_comes_first_and_exactly_once() {
             position: 0
         })
     );
-    assert!(passed.iter().any(|(_, why)| *why == Unavailable::AtCapacity));
+    assert!(passed
+        .iter()
+        .any(|(_, why)| *why == Unavailable::AtCapacity));
 }
 
 #[test]

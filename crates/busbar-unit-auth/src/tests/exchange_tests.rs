@@ -24,11 +24,7 @@ fn the_bypass_is_an_exact_match_and_nothing_wider() {
 #[test]
 fn logout_is_decided_first() {
     // Even with a code and a method also present, sign-out wins.
-    let action = dispatch(&q(&[
-        ("code", "abc"),
-        ("method", "entra"),
-        ("logout", "1"),
-    ]));
+    let action = dispatch(&q(&[("code", "abc"), ("method", "entra"), ("logout", "1")]));
     assert_eq!(action, BrowserAction::SignedOut);
     // Any value at all, not just "1".
     assert_eq!(dispatch(&q(&[("logout", "")])), BrowserAction::SignedOut);

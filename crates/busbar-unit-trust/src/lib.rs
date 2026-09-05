@@ -54,7 +54,7 @@ pub mod swrr;
 pub mod unit;
 
 pub use destination::{
-    kind_permitted, kind_rule_passes, DestinationFacts, DestinationKind, KindFacts, OriginKind,
+    kind_permitted, kind_rule_passes, Candidate, DestinationFacts, KindFacts, OriginKind,
 };
 pub use guard::{
     destination_guard, fallback_pools_authorized, pool_authorized, priced, GuardRefusal, PoolView,

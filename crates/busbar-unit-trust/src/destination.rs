@@ -31,42 +31,32 @@ pub enum OriginKind {
     Delivery,
 }
 
-/// What a destination IS.
+/// What a destination IS, as the contract crate declares it.
 ///
-/// The payload of each arm is deliberately thin: this unit judges destinations, and the wire detail
-/// each kind needs belongs to the crate that dials it.
-// contract: the fuller shape of each arm lands with the contract crate's `DestinationFacts`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DestinationKind {
-    /// A pool member dialled fresh.
-    Upstream,
-    /// The upstream this session already paired with.
-    SessionUpstream,
-    /// Back to a client on this session.
-    Client,
-    /// One of the kernel's own verbs.
-    KernelVerb,
-    /// Another plane, called as a child.
-    NestedPlane,
-    /// The priced passage of session time.
-    SessionAccrual,
-    /// A record the calling plane declared a schema for.
-    PlaneRecord,
-    /// Another node.
-    Peer,
-    /// An upgrade of the current transport.
-    Upgrade,
-}
+/// A plane writes these facts, so they are the plane's own words and this unit reads what it was
+/// handed. The arms carried no payload here until now, flagged as thin on purpose against the
+/// contract's fuller shape; that shape has landed, so the thin copy is gone and the wire detail
+/// each kind needs travels with the kind that needs it.
+pub use busbar_contract::DestinationFacts;
 
 /// One candidate destination as the plane proposed it, before the trust unit judged it.
+///
+/// The facts are the plane's; the lane index is this unit's own, because it is a position in the
+/// lane table the walk orders and nothing outside this unit has one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DestinationFacts {
-    /// What it is.
-    pub kind: DestinationKind,
-    /// The lane it sits on — the priced axis.
-    pub lane: busbar_caps::LaneId,
+pub struct Candidate {
+    /// What the plane said it is.
+    pub facts: DestinationFacts,
     /// The lane's position in the lane table, when it has one.
     pub lane_index: Option<usize>,
+}
+
+impl Candidate {
+    /// The lane this candidate is priced on, where its kind has one.
+    #[must_use]
+    pub fn lane(&self) -> Option<busbar_caps::LaneId> {
+        self.facts.lane()
+    }
 }
 
 /// Whether an origin may reach a kind at all.
@@ -82,22 +72,34 @@ pub struct DestinationFacts {
 /// - A delivery may deliver, hop to a peer, or dial an upstream — a scatter to many upstreams is
 ///   many delivery children, each with its own reservation, which is why the per-unit leg bound
 ///   never limits a fan-out.
-pub fn kind_permitted(origin: OriginKind, kind: &DestinationKind) -> bool {
-    use DestinationKind::*;
+pub fn kind_permitted(origin: OriginKind, kind: &DestinationFacts) -> bool {
+    use DestinationFacts as D;
     match origin {
-        OriginKind::Client => !matches!(kind, Peer | SessionAccrual),
+        OriginKind::Client => !matches!(kind, D::Peer { .. } | D::SessionAccrual { .. }),
         OriginKind::Provider => {
-            matches!(kind, Client | SessionUpstream | NestedPlane | PlaneRecord)
+            matches!(
+                kind,
+                D::Client { .. }
+                    | D::SessionUpstream { .. }
+                    | D::NestedPlane { .. }
+                    | D::PlaneRecord { .. }
+            )
         }
         OriginKind::Arrival => false,
-        OriginKind::Bootstrap => matches!(kind, KernelVerb),
-        OriginKind::Handshake => matches!(kind, Upgrade | Client),
-        OriginKind::Tick => matches!(kind, SessionAccrual),
+        OriginKind::Bootstrap => matches!(kind, D::KernelVerb { .. }),
+        OriginKind::Handshake => matches!(kind, D::Upgrade { .. } | D::Client { .. }),
+        OriginKind::Tick => matches!(kind, D::SessionAccrual { .. }),
         OriginKind::Nested => matches!(
             kind,
-            Upstream | SessionUpstream | NestedPlane | PlaneRecord | Client
+            D::Upstream { .. }
+                | D::SessionUpstream { .. }
+                | D::NestedPlane { .. }
+                | D::PlaneRecord { .. }
+                | D::Client { .. }
         ),
-        OriginKind::Delivery => matches!(kind, Client | Peer | Upstream),
+        OriginKind::Delivery => {
+            matches!(kind, D::Client { .. } | D::Peer { .. } | D::Upstream { .. })
+        }
     }
 }
 
@@ -146,23 +148,23 @@ pub trait KindFacts {
 /// zero price and is never refused for a budget or a breaker — an operator locked out of the
 /// read-only surface because a budget ran dry cannot diagnose why the budget ran dry.
 pub fn kind_rule_passes(dest: &DestinationFacts, facts: &dyn KindFacts) -> bool {
-    match dest.kind {
-        DestinationKind::Upstream => {
+    match dest {
+        DestinationFacts::Upstream { lane, .. } => {
             facts.allow_listed(dest)
                 && facts.transport_key_resolves(dest)
-                && facts.lane_permitted_for_op_class(dest.lane.as_str())
+                && facts.lane_permitted_for_op_class(lane.as_str())
         }
-        DestinationKind::SessionUpstream => {
+        DestinationFacts::SessionUpstream { .. } => {
             facts.session_upstream_ok() && facts.session_principal_matches()
         }
-        DestinationKind::Client => facts.client_selector_ok() && facts.await_deadline_ok(),
-        DestinationKind::KernelVerb => facts.verb_scope_held(),
-        DestinationKind::NestedPlane => facts.nested_plane_ok(),
-        DestinationKind::PlaneRecord => facts.plane_record_ok(),
-        DestinationKind::Peer => facts.peer_lease_live(),
-        DestinationKind::Upgrade => facts.upgrade_ok(),
+        DestinationFacts::Client { .. } => facts.client_selector_ok() && facts.await_deadline_ok(),
+        DestinationFacts::KernelVerb { .. } => facts.verb_scope_held(),
+        DestinationFacts::NestedPlane { .. } => facts.nested_plane_ok(),
+        DestinationFacts::PlaneRecord { .. } => facts.plane_record_ok(),
+        DestinationFacts::Peer { .. } => facts.peer_lease_live(),
+        DestinationFacts::Upgrade { .. } => facts.upgrade_ok(),
         // A session accrual is the passage of time on a lane already paired at session open; there
         // is nothing further to verify about it.
-        DestinationKind::SessionAccrual => true,
+        DestinationFacts::SessionAccrual { .. } => true,
     }
 }

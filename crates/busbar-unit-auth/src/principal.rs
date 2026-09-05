@@ -68,11 +68,15 @@ impl Principal {
     }
 }
 
-/// The kernel's own principal marker, as the capability crate spells it. The two types are kept
-/// apart on purpose: this crate's `Principal` carries the credential facts a chain produces, and
-/// the capability crate's carries only the identity an accrual is checked against.
-// contract: the kernel's `Principal` is `busbar_caps::PrincipalId`; this is the conversion the loop
-// performs when it seals the answer.
-pub fn to_caps_principal(p: &Principal) -> busbar_caps::PrincipalId {
-    busbar_caps::PrincipalId::new(p.actor_id())
+/// The conversion the loop performs when it seals this step's answer.
+///
+/// The two types are kept apart on purpose: this crate's `Principal` carries the credential facts a
+/// chain produced, and the contract's identity carries only the actor an accrual is checked
+/// against. Everything else the chain learned stays here, where the next chain run can use it, and
+/// never travels on the capability that moves money. It is a `From` impl rather than a free
+/// function because one crate can now name both halves.
+impl From<&Principal> for busbar_contract::PrincipalId {
+    fn from(p: &Principal) -> Self {
+        busbar_contract::PrincipalId::new(p.actor_id())
+    }
 }

@@ -17,10 +17,7 @@ fn chain(entries: Vec<crate::chain::ChainEntry>, keys: bool) -> AuthChain {
 fn test_chain_identifies_with_module_and_principal() {
     let c = chain(
         vec![
-            entry(
-                "first",
-                Box::new(Canned::new("mod-a", AuthOutcome::Pass)),
-            ),
+            entry("first", Box::new(Canned::new("mod-a", AuthOutcome::Pass))),
             entry(
                 "second",
                 Box::new(Canned::new(
@@ -35,7 +32,10 @@ fn test_chain_identifies_with_module_and_principal() {
         ChainVerdict::Identified {
             module, principal, ..
         } => {
-            assert_eq!(module, "second", "the PROVIDER name identifies, not the module's own");
+            assert_eq!(
+                module, "second",
+                "the PROVIDER name identifies, not the module's own"
+            );
             assert_eq!(principal.id, "alice");
         }
         other => panic!("expected an identification, got {other:?}"),
@@ -83,7 +83,10 @@ fn test_empty_chain_is_open_front_door() {
 fn test_keys_in_chain_sets_flag_not_module() {
     // The keys arm keeps the door SHUT even though the module list is empty.
     let c = chain(Vec::new(), true);
-    assert!(!c.is_open(), "a chain naming the keys arm is not an open door");
+    assert!(
+        !c.is_open(),
+        "a chain naming the keys arm is not an open door"
+    );
     assert!(c.has_no_modules());
     assert!(c.keys_in_chain());
     assert_eq!(
@@ -100,7 +103,10 @@ fn test_keys_arm_runs_after_every_module_and_identifies() {
         aud: None,
     };
     let c = chain(
-        vec![entry("plugin", Box::new(Canned::new("p", AuthOutcome::Pass)))],
+        vec![entry(
+            "plugin",
+            Box::new(Canned::new("p", AuthOutcome::Pass)),
+        )],
         true,
     );
     match c.run_chain_cached(Some("vk-token"), None, Some(&verifier), 1000, None) {
@@ -205,8 +211,14 @@ fn test_cacheable_defaults_to_false() {
 fn test_chain_names_are_the_modules_own_names() {
     let c = chain(
         vec![
-            entry("alias-one", Box::new(Canned::new("mod-a", AuthOutcome::Pass))),
-            entry("alias-two", Box::new(Canned::new("mod-b", AuthOutcome::Pass))),
+            entry(
+                "alias-one",
+                Box::new(Canned::new("mod-a", AuthOutcome::Pass)),
+            ),
+            entry(
+                "alias-two",
+                Box::new(Canned::new("mod-b", AuthOutcome::Pass)),
+            ),
         ],
         false,
     );
