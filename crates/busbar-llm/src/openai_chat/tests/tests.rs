@@ -5374,3 +5374,93 @@ fn stream_usage_subbuckets_match_buffered() {
     assert_eq!(detail.accepted_prediction_tokens, Some(5));
     assert_eq!(detail.rejected_prediction_tokens, Some(2));
 }
+
+// --- write_response: the members OpenAI's published chat.completion schema REQUIRES on every
+// choice (`logprobs`, nullable object) and every message (`refusal`, nullable string). Real OpenAI
+// emits both on every completion; a body without them fails strict schema validation and is a
+// proxy tell. The spec's null is emitted when the backend carried nothing; the carried value when
+// it did.
+
+fn plain_ir_response(logprobs: Vec<crate::ir::IrTokenLogprob>) -> crate::ir::IrResponse {
+    crate::ir::IrResponse {
+        logprobs,
+        role: IrRole::Assistant,
+        content: vec![text_block("Hello there!")],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: IrUsage {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
+        },
+        model: Some("gpt-4o".to_string()),
+        id: Some("chatcmpl-1".to_string()),
+        created: Some(1),
+        system_fingerprint: None,
+        stop_sequence: None,
+    }
+}
+
+#[test]
+fn write_response_emits_required_null_logprobs_and_refusal_when_backend_carried_none() {
+    let out = OpenAiWriter.write_response(&plain_ir_response(Vec::new()));
+    let choice = out["choices"][0]
+        .as_object()
+        .expect("choice is an object");
+    assert_eq!(
+        choice.get("logprobs"),
+        Some(&serde_json::Value::Null),
+        "choices[].logprobs is required by the spec: JSON null when none were produced: {out}"
+    );
+    let message = choice["message"]
+        .as_object()
+        .expect("message is an object");
+    assert_eq!(
+        message.get("refusal"),
+        Some(&serde_json::Value::Null),
+        "choices[].message.refusal is required by the spec: JSON null when the model did not \
+         refuse: {out}"
+    );
+    // The content string itself is untouched by the new members.
+    assert_eq!(message["content"], serde_json::json!("Hello there!"));
+}
+
+#[test]
+fn write_response_passes_carried_logprobs_through_instead_of_null() {
+    let carried = vec![crate::ir::IrTokenLogprob {
+        token: "Hi".into(),
+        logprob: -0.1,
+        bytes: None,
+        top: vec![],
+    }];
+    let out = OpenAiWriter.write_response(&plain_ir_response(carried));
+    assert_eq!(
+        out["choices"][0]["logprobs"]["content"][0]["token"],
+        serde_json::json!("Hi"),
+        "a backend that produced logprobs must reach the caller as the object, not null: {out}"
+    );
+    assert_eq!(
+        out["choices"][0]["message"]["refusal"],
+        serde_json::Value::Null
+    );
+}
+
+#[test]
+fn write_response_tool_call_only_turn_still_carries_refusal_and_logprobs() {
+    let mut resp = plain_ir_response(Vec::new());
+    resp.content = vec![IrBlock::ToolUse {
+        thought_signature: None,
+        id: "call_1".to_string(),
+        name: "get_weather".to_string(),
+        input: serde_json::json!({"city": "Paris"}),
+        cache_control: None,
+    }];
+    resp.stop_reason = Some(crate::ir::IrStopReason::ToolUse);
+    let out = OpenAiWriter.write_response(&resp);
+    let message = &out["choices"][0]["message"];
+    assert_eq!(message["content"], serde_json::Value::Null);
+    assert_eq!(message["refusal"], serde_json::Value::Null);
+    assert_eq!(message["tool_calls"][0]["id"], serde_json::json!("call_1"));
+    assert_eq!(out["choices"][0]["logprobs"], serde_json::Value::Null);
+}

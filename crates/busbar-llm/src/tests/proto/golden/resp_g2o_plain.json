@@ -1,1 +1,1 @@
-{"choices":[{"finish_reason":"stop","index":0,"message":{"content":"Hello there!","role":"assistant"}}],"created":1752000000,"id":"chatcmpl-NORMALIZED","model":"gpt-4o","object":"chat.completion","usage":{"completion_tokens":4,"prompt_tokens":12,"total_tokens":16}}
+{"choices":[{"finish_reason":"stop","index":0,"logprobs":null,"message":{"content":"Hello there!","refusal":null,"role":"assistant"}}],"created":1752000000,"id":"chatcmpl-NORMALIZED","model":"gpt-4o","object":"chat.completion","usage":{"completion_tokens":4,"prompt_tokens":12,"total_tokens":16}}
