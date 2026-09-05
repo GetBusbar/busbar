@@ -1073,7 +1073,6 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "tokio",
- "tokio-tungstenite",
  "tracing",
  "url",
 ]

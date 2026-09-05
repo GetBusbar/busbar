@@ -94,7 +94,12 @@ fn thread_per_core_boots_and_serves_healthz() {
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("MOCK_KEY", "x")
-        .env("RUST_LOG", "info")
+        // DEBUG, not the default INFO: the per-worker "thread-per-core data plane" / "busbar
+        // listening" facts below are DEBUG-level (a 1.5.5-shaped config must see no new line at INFO
+        // — the neutrality binding, docs/design/ARCHITECTURE.md Appendix B); this test still wants to
+        // observe them, so it opts in explicitly rather than asserting on what an operator sees by
+        // default.
+        .env("RUST_LOG", "debug")
         .stdout(log)
         .stderr(log_err)
         .spawn()
@@ -116,7 +121,7 @@ fn thread_per_core_boots_and_serves_healthz() {
         "busbar did not reach 'listening' within 30s; log:\n{}",
         read_to_string(&log_path)
     );
-    // The topology announces itself at boot; assert the data plane is on the per-worker seam.
+    // The topology announces itself at boot (DEBUG); assert the data plane is on the per-worker seam.
     assert!(
         read_to_string(&log_path).contains("thread-per-core data plane"),
         "expected the thread-per-core boot log; log:\n{}",

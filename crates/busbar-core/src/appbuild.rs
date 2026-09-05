@@ -772,6 +772,13 @@ pub fn build_app_from_config(
                 tags: m.tags.clone(),
             });
         }
+        if let Some(ref on_exc) = pool.on_exhausted {
+            // Same INFO line 1.5.5 logged from `main.rs`'s per-pool `on_exhausted` parse, carried
+            // here now that pool construction lives core-side (neutrality: no boot-line drift).
+            let mode = on_exc.to_runtime();
+            tracing::info!(pool = %name, on_exhausted = ?mode, "pool exhaustion policy");
+        }
+
         pool_inputs.push(PoolInput {
             name: name.clone(),
             members,

@@ -37,6 +37,10 @@ What is normalized (each rule is a named entry in `applied`):
                       shadow of a value that was just normalized, e.g. a latency or an id)
   boot.pair-order     "(A vs B)" conflict pairs in validation messages come out in map order,
                       nondeterministic on the SAME binary (measured on 1.5.5: 3/6 each way) -> sorted
+  boot.exhaustion-order the boot banner's "pool exhaustion policy pool=<name> on_exhausted=<mode>"
+                      lines (one per pool with an `on_exhausted:`) come out in map order, which is
+                      nondeterministic on the SAME binary (measured on 1.5.5: two runs on the same
+                      oracle config gave different orderings) -> each run sorted in place
   ver.string          `"version": "X.Y.Z"` of the binary -> "<VERSION>" (the diff of interest is
                       everything else; the version itself is expected to differ)
   body.keep-lines     a cell whose contract is the ABSENCE of something (`body_lines` on the cell)
@@ -113,6 +117,12 @@ TIMING_KEYS = {"latency_ms", "latencyMs"}
 VERSION_RX = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$")
 POOL_LINE = re.compile(r"^\s+pool /\S+ = ")
 ERROR_BULLET = re.compile(r"^  - ")
+# The boot-time "pool exhaustion policy pool=<name> on_exhausted=<mode>" INFO line, one per pool that
+# sets `on_exhausted:` — emitted from a walk over `cfg.pools` (a `HashMap`), so its relative order is
+# per-process, not a contract (measured directly: two 1.5.5 runs on the same oracle config, same
+# binary, produced oracle-lb/oracle-q/oracle-fb and oracle-fb/oracle-lb/oracle-q respectively). Same
+# treatment as `POOL_LINE`/`ERROR_BULLET` above.
+EXHAUSTION_LINE = re.compile(r".*\bpool exhaustion policy pool=")
 PAIR = re.compile(r"\((\d+) vs (\d+)")
 EXPO_TIMING = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*(_seconds_sum|_seconds|_bucket)(\{|\s)|quantile=")
 
@@ -269,7 +279,10 @@ def sort_runs(lines: list, rx, rule: str, applied: set) -> list:
 
 
 def sort_pool_lines(lines: list, applied: set) -> list:
-    return sort_runs(sort_runs(lines, POOL_LINE, "boot.pool-order", applied), ERROR_BULLET, "boot.error-order", applied)
+    lines = sort_runs(lines, POOL_LINE, "boot.pool-order", applied)
+    lines = sort_runs(lines, ERROR_BULLET, "boot.error-order", applied)
+    lines = sort_runs(lines, EXHAUSTION_LINE, "boot.exhaustion-order", applied)
+    return lines
 
 
 VERSION_KV = re.compile(r'version="(\d+\.\d+\.\d+)(?:-[0-9A-Za-z.]+)?"')

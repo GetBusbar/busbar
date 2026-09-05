@@ -1360,6 +1360,7 @@ async fn run(data_workers: usize) {
             &admin_listen,
             recv_shutdown(shutdown_tx.subscribe()),
             None,
+            true,
         )
         .await;
         // The shutdown broadcast has fired (the admin serve returned), so every per-core data
@@ -1387,6 +1388,7 @@ async fn run(data_workers: usize) {
                 &listen,
                 recv_shutdown(shutdown_tx.subscribe()),
                 None,
+                true,
             ),
             serve_listener(
                 admin_listener,
@@ -1396,6 +1398,7 @@ async fn run(data_workers: usize) {
                 &admin_listen,
                 recv_shutdown(shutdown_tx.subscribe()),
                 None,
+                true,
             ),
         );
     }
@@ -1470,7 +1473,10 @@ fn serve_thread_per_core(
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let cores: Vec<Option<core_affinity::CoreId>> =
         (0..n).map(|i| core_ids.get(i).copied()).collect();
-    tracing::info!(
+    // DEBUG, not INFO: this is a per-worker implementation fact, not something a 1.5.5-shaped config
+    // ever printed — an operator of such a config must see the SAME lines at INFO as 1.5.5 did (the
+    // neutrality binding, docs/design/ARCHITECTURE.md Appendix B).
+    tracing::debug!(
         runtimes = cores.len(),
         pinned = core_ids.len().min(n),
         listen = %addr,
@@ -1542,6 +1548,10 @@ fn serve_thread_per_core(
                         &listen,
                         recv_shutdown(shutdown_rx),
                         balancer,
+                        // ONE "busbar listening" line per LISTENER, matching 1.5.5, not one per
+                        // worker: only worker 0 logs it at INFO; every other worker's identical fact
+                        // logs at DEBUG (the per-worker detail an operator can still opt into).
+                        i == 0,
                     )
                     .await;
                     // Connections are drained; give this worker's detached work its bounded
@@ -1595,6 +1605,9 @@ fn bind_reuseport_listener(addr: &str) -> std::io::Result<std::net::TcpListener>
 /// slow-loris-hardened hyper loop; `Some` ⇒ terminate TLS (mTLS when `client_ca_file` is set), with
 /// cert/key/CA loaded and validated up front so a bad path/parse `die`s at startup, not per request.
 /// `label` names the plane in log lines and error messages. Any serve error `die`s the process.
+#[allow(clippy::too_many_arguments)] // one more than the default threshold for `log_at_info`, the
+// once-per-listener-not-once-per-worker fix (see its own doc); grouping the existing seven into a
+// struct is a larger refactor this fix does not need.
 async fn serve_listener(
     listener: tokio::net::TcpListener,
     router: Router,
@@ -1605,10 +1618,20 @@ async fn serve_listener(
     // The data workers' connection-placement balancer (`None` for the admin listener and
     // non-unix builds — those accept exactly as before). See `tls::ConnBalancer`.
     balancer: Option<tls::ConnBalancer>,
+    // Whether THIS call logs "busbar listening" at INFO. `true` for the admin listener and for the
+    // single data listener on non-unix builds (both call this exactly once); on unix's
+    // thread-per-core data plane, `serve_thread_per_core` calls this once PER WORKER on the SAME
+    // listen address — only the first call logs at INFO (matching 1.5.5's once-per-listener line),
+    // the rest log the identical fact at DEBUG.
+    log_at_info: bool,
 ) {
     match tls_cfg {
         None => {
-            tracing::info!(listen = %label, "busbar listening");
+            if log_at_info {
+                tracing::info!(listen = %label, "busbar listening");
+            } else {
+                tracing::debug!(listen = %label, "busbar listening");
+            }
             if let Err(e) = tls::serve_plain(listener, router, shutdown, balancer).await {
                 die(format!("server error on '{label}': {e}"));
             }
@@ -1624,7 +1647,11 @@ async fn serve_listener(
             let server_config = tls::build_server_config(&tls, &secret_resolver)
                 .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
             let mtls = tls.client_ca.is_some();
-            tracing::info!(listen = %label, mtls, "busbar listening (TLS)");
+            if log_at_info {
+                tracing::info!(listen = %label, mtls, "busbar listening (TLS)");
+            } else {
+                tracing::debug!(listen = %label, mtls, "busbar listening (TLS)");
+            }
             if let Err(e) = tls::serve(listener, router, server_config, shutdown, balancer).await {
                 die(format!("server error on '{label}': {e}"));
             }
