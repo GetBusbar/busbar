@@ -69,6 +69,24 @@ fn nonsense_is_called_nonsense() {
     assert_eq!(resolve_pointer(b"{\"a\": 1}", "a"), Resolved::Malformed);
 }
 
+#[test]
+fn a_closer_that_does_not_match_its_opener_is_nonsense() {
+    // A container must close with the bracket that opened it. Counting brackets without recording
+    // which one opened each level answers Found over a span that is not a JSON value.
+    assert_eq!(
+        resolve_pointer(br#"{"a":[1,2}}"#, "/a"),
+        Resolved::Malformed
+    );
+    assert_eq!(resolve_pointer(br#"{"a":1]"#, "/a"), Resolved::Malformed);
+    assert_eq!(
+        resolve_pointer(br#"{"a":{"b":1]}"#, "/a"),
+        Resolved::Malformed
+    );
+    // The well-matched shapes still resolve.
+    assert_eq!(found(br#"{"a":[1,2]}"#, "/a"), b"[1,2]");
+    assert_eq!(found(br#"{"a":{"b":[1]}}"#, "/a"), br#"{"b":[1]}"#);
+}
+
 /// Build a body of at least `bytes` bytes whose lane key is the LAST thing in it.
 fn big_body(bytes: usize) -> Vec<u8> {
     let mut body = Vec::with_capacity(bytes + 64);

@@ -173,10 +173,16 @@ fn member(b: &[u8], at: usize, key: &str, depth: usize) -> Result<Option<Span>, 
             return Err(ScanErr::NeedMore);
         }
         let value_end = skip_value(b, value_start, depth + 1)?;
-        if matched {
-            return Ok(Some(Span::new(value_start, value_end)));
-        }
         i = skip_ws(b, value_end);
+        if matched {
+            // What follows the value has to be this object's own punctuation. Ending the walk on the
+            // match without that look would hand back a span out of a document closed by the wrong
+            // bracket. Running out of bytes stays an answer, as it is everywhere else here.
+            return match b.get(i) {
+                Some(b',') | Some(b'}') | None => Ok(Some(Span::new(value_start, value_end))),
+                Some(_) => Err(ScanErr::Malformed),
+            };
+        }
         match b.get(i) {
             Some(b',') => i = skip_ws(b, i + 1),
             Some(b'}') => return Ok(None),
@@ -202,11 +208,15 @@ fn element(b: &[u8], at: usize, index: &str, depth: usize) -> Result<Option<Span
             return Err(ScanErr::NeedMore);
         }
         let end = skip_value(b, i, depth + 1)?;
+        let element_start = i;
+        i = skip_ws(b, end);
         if seen == wanted {
-            return Ok(Some(Span::new(i, end)));
+            return match b.get(i) {
+                Some(b',') | Some(b']') | None => Ok(Some(Span::new(element_start, end))),
+                Some(_) => Err(ScanErr::Malformed),
+            };
         }
         seen += 1;
-        i = skip_ws(b, end);
         match b.get(i) {
             Some(b',') => i = skip_ws(b, i + 1),
             Some(b']') => return Ok(None),
@@ -244,21 +254,35 @@ fn skip_value(b: &[u8], i: usize, depth: usize) -> Result<usize, ScanErr> {
     }
 }
 
-/// Skip a whole object or array, counting brackets and stepping over strings so a brace inside a
-/// string never confuses the count.
+/// Skip a whole object or array, matching brackets and stepping over strings so a brace inside a
+/// string never confuses the walk.
+///
+/// The open brackets are held on a stack bounded by the depth ceiling rather than merely counted: a
+/// closer that does not match the opener it would close is malformed, not a level down. Counting
+/// alone would answer a span ending at the wrong bracket, which is bytes that are not a value.
 fn skip_container(b: &[u8], start: usize, depth: usize) -> Result<usize, ScanErr> {
+    let mut stack = [0u8; MAX_JSON_DEPTH];
     let mut level = 0usize;
     let mut i = start;
     while let Some(c) = b.get(i) {
         match c {
             b'{' | b'[' => {
-                level += 1;
-                if depth + level > MAX_JSON_DEPTH {
+                if depth + level + 1 > MAX_JSON_DEPTH {
                     return Err(ScanErr::Malformed);
                 }
+                stack[level] = *c;
+                level += 1;
                 i += 1;
             }
             b'}' | b']' => {
+                let opener = match level.checked_sub(1) {
+                    Some(below) => stack[below],
+                    None => return Err(ScanErr::Malformed),
+                };
+                let wanted = if *c == b'}' { b'{' } else { b'[' };
+                if opener != wanted {
+                    return Err(ScanErr::Malformed);
+                }
                 level -= 1;
                 i += 1;
                 if level == 0 {
