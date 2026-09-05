@@ -94,33 +94,18 @@ impl Migration {
 
 /// Read the previous release's rows through the store adapter and seal the opening.
 ///
+/// The rows are read through the adapter — they are the previous release's and nobody else has them
+/// — but WHERE the marker goes is the CALLER'S, and it is an argument rather than a default for that
+/// reason. On a node built by [`crate::root::durability::build_for_node`] it goes on the one journal,
+/// beside the opening checkpoint it is a marker for. There was a default once, the store adapter's
+/// node-local shim, and it is what made a second boot on a node with a data directory re-read the
+/// previous release's rows anyway.
+///
 /// # Errors
 ///
 /// The opening could not be signed, the ledger's own records were not usable, or the figures read do
 /// not fit. A store that would not answer for some rows is NOT an error — see this module's preamble.
 pub fn run(
-    adapter: &StoreAdapter,
-    cfg: &MigrationConfig,
-    wall: u64,
-    secret: Option<&dyn CheckpointSecret>,
-) -> Result<Migration, MigrationError> {
-    let mut records = adapter.migration_records();
-    run_with(adapter, &mut records, cfg, wall, secret)
-}
-
-/// [`run`] over records the caller names, which is how the marker reaches the journal.
-///
-/// The rows are still read through the adapter — they are the previous release's and nobody else has
-/// them — but WHERE the marker goes is the caller's to decide, and on a node built by
-/// [`crate::root::durability::build_for_node`] it goes on the one journal beside the opening
-/// checkpoint it is a marker for. That is the difference between a marker that survives a restart
-/// on a node with a data directory and one that does not: the adapter's node-local shim never
-/// could, so every boot re-read the previous release's rows.
-///
-/// # Errors
-///
-/// As [`run`].
-pub fn run_with(
     adapter: &StoreAdapter,
     records: &mut dyn MigrationRecords,
     cfg: &MigrationConfig,
