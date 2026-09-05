@@ -209,3 +209,54 @@ fn walk(dir: &std::path::Path, f: &mut impl FnMut(&std::path::Path, &str)) {
         }
     }
 }
+
+/// A plane may name two places for the response ceiling, and the FIRST that resolves is the one.
+///
+/// The case is one dialect accepting the ceiling under an older member name and a newer one.
+/// Declaration order is precedence order, so a request carrying both means the older, and a request
+/// carrying only the newer is still read instead of sizing a hold off a key nobody sent.
+#[test]
+fn the_first_response_ceiling_pointer_that_resolves_is_the_one() {
+    use busbar_contract::bounded::{BoundedVec, Ir, Span, MAX_RESPONSE_PTRS};
+    use busbar_contract::grammar::{ArrivalLocation, Location};
+    use busbar_contract::unit::AdmitFacts;
+
+    assert_eq!(MAX_RESPONSE_PTRS, 2);
+
+    let older = Location::Arrival(ArrivalLocation::FirstFrameJsonPointer("/max_tokens"));
+    let newer = Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(
+        "/max_completion_tokens",
+    ));
+    let mut ptrs: BoundedVec<Location, MAX_RESPONSE_PTRS> = BoundedVec::new();
+    ptrs.push(older).expect("the first fits");
+    ptrs.push(newer).expect("the second fits");
+    ptrs.push(older).expect_err("a third does not");
+
+    let facts = AdmitFacts {
+        max_response_ptrs: ptrs,
+        ..AdmitFacts::default()
+    };
+
+    // Only the newer spelling arrived: the older misses, the newer answers.
+    let only_newer = br#"{"max_completion_tokens":256}"#;
+    let ir = Ir::new(only_newer, &[("/max_completion_tokens", Span { start: 25, end: 28 })]);
+    assert_eq!(facts.max_response_bytes(&ir), Some(&b"256"[..]));
+
+    // Both arrived: the first declared wins.
+    let both = br#"{"max_tokens":1,"max_completion_tokens":2}"#;
+    let ir = Ir::new(
+        both,
+        &[
+            ("/max_tokens", Span { start: 14, end: 15 }),
+            ("/max_completion_tokens", Span { start: 39, end: 40 }),
+        ],
+    );
+    assert_eq!(facts.max_response_bytes(&ir), Some(&b"1"[..]));
+
+    // Neither arrived: no ceiling, which is a missing value and not a refusal.
+    let ir = Ir::new(b"{}", &[]);
+    assert_eq!(facts.max_response_bytes(&ir), None);
+
+    // A plane that names no place at all answers nothing, exactly as before.
+    assert_eq!(AdmitFacts::default().max_response_bytes(&ir), None);
+}

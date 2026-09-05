@@ -4,7 +4,9 @@
 //! count. The plane delimits units from frames; the kernel constructs them and is the sole writer
 //! of their identity. Everything below is read-only from a plugin's side.
 
-use crate::bounded::{ArenaBytes, BoundedVec, Facts, Ir, Labels, MAX_USAGE_LINES};
+use crate::bounded::{
+    ArenaBytes, BoundedVec, Facts, Ir, Labels, MAX_RESPONSE_PTRS, MAX_USAGE_LINES,
+};
 use crate::grammar::Location;
 use crate::ids::{
     CorrelationRef, LaneId, MeterClassId, OpClassId, PrincipalId, SessionId, StreamId, UnitKey,
@@ -298,14 +300,42 @@ pub struct ScopeFacts {
 /// Three pointers and nothing more: where the lane name is in the request, where the client's
 /// response ceiling is, and which span of the body counts as input. The kernel resolves all three
 /// itself, so a plane that lies about them is caught by the lane cross-check rather than believed.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct AdmitFacts {
     /// Where the lane name is in the request.
     pub lane_locator: Option<Location>,
-    /// Where the client's own response ceiling is, clamped to the lane's declared maximum.
-    pub max_response_ptr: Option<Location>,
+    /// Where the client's own response ceiling may be, in declaration order.
+    ///
+    /// A list, not one place, because a dialect can accept the same ceiling under either of two
+    /// member names — an older spelling its existing clients send and a newer one its current
+    /// documentation gives. The kernel takes the first that RESOLVES, so a plane naming both reads
+    /// whichever the client actually sent, and a plane naming one behaves exactly as before.
+    ///
+    /// The ceiling is accounting rather than admission, so a pointer that misses never refuses a
+    /// unit; it sizes the hold off a key the client did not send, which the hold derivation and the
+    /// resident-memory bound both assume was read.
+    pub max_response_ptrs: BoundedVec<Location, MAX_RESPONSE_PTRS>,
     /// Which span of the body is the priced input.
     pub input_span: Option<crate::bounded::Span>,
+}
+
+impl AdmitFacts {
+    /// The first declared response-ceiling pointer that resolves in a body.
+    ///
+    /// Declaration order is precedence order: a plane that names an older spelling first and a
+    /// newer one second is saying which one wins when a request carries both.
+    #[must_use]
+    pub fn max_response_bytes<'u>(&self, body: &Ir<'u>) -> Option<&'u [u8]> {
+        self.max_response_ptrs.as_slice().iter().find_map(|loc| {
+            match loc {
+                Location::Arrival(crate::grammar::ArrivalLocation::FirstFrameJsonPointer(ptr))
+                | Location::UnitJsonPointer(ptr) => body.pointer(ptr),
+                // Every other form is resolved against the arrival record rather than the body,
+                // and a response ceiling is a body value in all six reference dialects.
+                _ => None,
+            }
+        })
+    }
 }
 
 /// The node's read-only clock.

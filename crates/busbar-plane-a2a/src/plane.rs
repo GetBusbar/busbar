@@ -15,7 +15,7 @@
 //! about the contract's allocator, not a decision taken here, and it is written down in the crate's
 //! notes.
 
-use busbar_contract::bounded::{ArenaBytes, FactValue, Facts, Ir, Span};
+use busbar_contract::bounded::{ArenaBytes, BoundedVec, FactValue, Facts, Ir, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::{AdminVerbId, LaneId, SchemeAlt};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
@@ -529,8 +529,9 @@ impl Plane for A2aPlane {
             // The lane is not in the request. It is a property of the agent the operator
             // configured, and the trust unit re-derives it against the allow-list.
             lane_locator: None,
-            // This protocol gives a caller no way to declare a ceiling on the answer.
-            max_response_ptr: None,
+            // This protocol gives a caller no way to declare a ceiling on the answer, so no
+            // place is named for one.
+            max_response_ptrs: BoundedVec::new(),
             // The priced input is the whole request document.
             input_span: Some(Span {
                 start: 0,

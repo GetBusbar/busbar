@@ -11,9 +11,11 @@
 //! body under the ordinary member name before a plane saw the bytes. The location is the value's
 //! actual place now, and nothing has to copy it there first.
 //!
-//! One dialect accepts the response ceiling under either of two member names. A location is one
-//! place, so the entry names the older of the two — the one every client of that dialect still
-//! sends — and the newer spelling is read by the codec, which sees both.
+//! One dialect accepts the response ceiling under either of two member names. It declares BOTH, in
+//! precedence order, because the admit facts carry a bounded list rather than one place and the
+//! kernel takes the first that resolves. It used to declare only the older spelling — the one every
+//! client of that dialect still sends — which meant a request carrying only the newer one sized its
+//! hold off a key the client had not sent.
 
 use busbar_contract::grammar::{ArrivalLocation, Location};
 
@@ -27,8 +29,12 @@ pub struct Dialect {
     /// Four dialects carry it in the body, as a pointer. Two carry it in the request target, as a
     /// segment of the matched path pattern.
     pub model_location: Location,
-    /// Where the request carries the client's own response ceiling.
-    pub max_response_pointer: &'static str,
+    /// Where the request may carry the client's own response ceiling, in precedence order.
+    ///
+    /// One place for five of the six. Two for the dialect that accepts the ceiling under either of
+    /// two member names: the older spelling first, because a request that carries both means the
+    /// older one, and the newer one second so a request that carries only it is still read.
+    pub max_response_pointers: &'static [&'static str],
     /// Where the request carries the conversation itself — the span that is the priced input.
     pub input_pointer: &'static str,
     /// Where the response reports the input quantity that was not served from a cache.
@@ -62,7 +68,7 @@ pub const DIALECTS: &[Dialect] = &[
     Dialect {
         name: "anthropic",
         model_location: MODEL,
-        max_response_pointer: "/max_tokens",
+        max_response_pointers: &["/max_tokens"],
         input_pointer: "/messages",
         tokens_in_pointer: "/usage/input_tokens",
         tokens_out_pointer: "/usage/output_tokens",
@@ -74,9 +80,10 @@ pub const DIALECTS: &[Dialect] = &[
     Dialect {
         name: "openai",
         model_location: MODEL,
-        // This dialect accepts a newer spelling as well. One location is one place, so this is the
-        // older one; the codec reads whichever the client sent.
-        max_response_pointer: "/max_tokens",
+        // This dialect accepts a newer spelling as well, and both are declared. The reasoning
+        // models of this vendor refuse the older key outright, so a client of one of them sends
+        // only the newer; naming just the older was a hold sized off a key that never arrived.
+        max_response_pointers: &["/max_tokens", "/max_completion_tokens"],
         input_pointer: "/messages",
         tokens_in_pointer: "/usage/prompt_tokens",
         tokens_out_pointer: "/usage/completion_tokens",
@@ -90,7 +97,7 @@ pub const DIALECTS: &[Dialect] = &[
         name: "gemini",
         // The model is in the request target, not the body.
         model_location: MODEL_IN_PATH,
-        max_response_pointer: "/generationConfig/maxOutputTokens",
+        max_response_pointers: &["/generationConfig/maxOutputTokens"],
         input_pointer: "/contents",
         tokens_in_pointer: "/usageMetadata/promptTokenCount",
         tokens_out_pointer: "/usageMetadata/candidatesTokenCount",
@@ -103,7 +110,7 @@ pub const DIALECTS: &[Dialect] = &[
         name: "bedrock",
         // The model is in the request target, not the body.
         model_location: MODEL_IN_PATH,
-        max_response_pointer: "/inferenceConfig/maxTokens",
+        max_response_pointers: &["/inferenceConfig/maxTokens"],
         input_pointer: "/messages",
         tokens_in_pointer: "/usage/inputTokens",
         tokens_out_pointer: "/usage/outputTokens",
@@ -115,7 +122,7 @@ pub const DIALECTS: &[Dialect] = &[
     Dialect {
         name: "responses",
         model_location: MODEL,
-        max_response_pointer: "/max_output_tokens",
+        max_response_pointers: &["/max_output_tokens"],
         input_pointer: "/input",
         tokens_in_pointer: "/usage/input_tokens",
         tokens_out_pointer: "/usage/output_tokens",
@@ -127,7 +134,7 @@ pub const DIALECTS: &[Dialect] = &[
     Dialect {
         name: "cohere",
         model_location: MODEL,
-        max_response_pointer: "/max_tokens",
+        max_response_pointers: &["/max_tokens"],
         input_pointer: "/messages",
         tokens_in_pointer: "/usage/tokens/input_tokens",
         tokens_out_pointer: "/usage/tokens/output_tokens",

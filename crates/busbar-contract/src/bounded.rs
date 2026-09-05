@@ -43,6 +43,13 @@ pub const MAX_LEGS: usize = 8;
 /// The most leg replies one unit may collect.
 pub const MAX_LEG_REPLIES: usize = 2;
 
+/// The most places a plane may say the client's response ceiling could be.
+///
+/// Two, because the case this exists for is one dialect accepting the same ceiling under an older
+/// member name and a newer one. A plane that wanted a third would be describing a dialect nobody
+/// can write a client for.
+pub const MAX_RESPONSE_PTRS: usize = 2;
+
 /// The per-unit arena size in bytes.
 ///
 /// The arena is reset per frame on the relay path of an open unit and at unit end otherwise.
@@ -116,6 +123,12 @@ impl<T, const N: usize> BoundedVec<T, N> {
     /// The items, in insertion order, mutably.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         &mut self.items
+    }
+}
+
+impl<T: serde::Serialize, const N: usize> serde::Serialize for BoundedVec<T, N> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.items.serialize(serializer)
     }
 }
 

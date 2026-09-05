@@ -5,7 +5,7 @@
 //! asks for. The interesting reading is in the codec crate; the interesting decisions are in the
 //! units. What is here is the wiring, and it is meant to stay boring enough to check by eye.
 
-use busbar_contract::bounded::{ArenaBytes, FactValue, Facts, Ir, Span};
+use busbar_contract::bounded::{ArenaBytes, BoundedVec, FactValue, Facts, Ir, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::grammar::{ArrivalLocation, Location};
 use busbar_contract::ids::{AdminVerbId, MeterClassId, OpClassId, SchemeAlt, SchemeKey};
@@ -711,9 +711,18 @@ impl Plane for LlmPlane {
             // The dialect's own table says where the model IS: a body pointer for the four that
             // carry it in the body, a path segment for the two that carry it in the request target.
             lane_locator: Some(d.model_location),
-            max_response_ptr: Some(Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(
-                d.max_response_pointer,
-            ))),
+            // Every place this dialect accepts the ceiling, in the dialect table's own order. The
+            // kernel takes the first that resolves, so a dialect with two spellings reads whichever
+            // the client actually sent.
+            max_response_ptrs: {
+                let mut ptrs = BoundedVec::new();
+                for ptr in d.max_response_pointers {
+                    let _ = ptrs.push(Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(
+                        ptr,
+                    )));
+                }
+                ptrs
+            },
             input_span: Some(input_span),
         }
     }
