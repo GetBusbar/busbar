@@ -1063,7 +1063,21 @@ pub struct ToolIdRemap {
     map: std::collections::HashMap<String, String>,
 }
 
+/// Upper bound on MEMOIZED egress→native tool-id pairs held by one [`ToolIdRemap`]. The map is an
+/// optimization over a pure, deterministic encode, so refusing an insert past this point changes no
+/// answer — only the retention. Set to the same scale as the dialect readers' `MAX_OPEN_TOOLS`
+/// (OpenAI's documented parallel-tool-call limit), which is the number of distinct tool ids a
+/// legitimate turn can carry; a stream that presents more is an untrusted upstream growing a
+/// per-request map without bound, not a request busbar needs to memoize for.
+pub const TOOL_ID_REMAP_MAX_MEMO: usize = crate::openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS;
+
 impl ToolIdRemap {
+    /// Number of memoized pairs currently retained — the retention the cap bounds.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn memo_len(&self) -> usize {
+        self.map.len()
+    }
+
     /// Reshape one egress tool id into the ingress protocol's native form. Deterministic + memoized.
     /// A `None` ingress prefix (Gemini, Cohere) returns the id unchanged — Gemini drops tool ids
     /// outright, and Cohere ids are free-form (no canonical prefix to make the reshape reversible
@@ -1076,7 +1090,18 @@ impl ToolIdRemap {
             return existing.clone();
         }
         let native = format!("{prefix}{TOOL_ID_REMAP_MARKER}{}", hex::encode(egress_id));
-        self.map.insert(egress_id.to_string(), native.clone());
+        // Bounded retention. The encode above is a pure, deterministic function of
+        // (ingress prefix, egress id), so the map is a memo, NOT a correctness crutch: past the cap
+        // the SAME native id is returned, just not remembered, and `decode_native_tool_id` still
+        // reverses it. Without the cap the map grows for the life of the stream, keyed by an id
+        // string the UPSTREAM chose — and the Anthropic reader puts no per-stream limit on how many
+        // distinct `tool_use` blocks a response may open, unlike the OpenAI/Responses/Cohere/Gemini
+        // readers' `MAX_OPEN_TOOLS` gate. Stop inserting rather than evict: eviction would buy
+        // nothing (the recomputation is the same cheap format!) and an LRU would add a second piece
+        // of per-request state to keep correct.
+        if self.map.len() < TOOL_ID_REMAP_MAX_MEMO {
+            self.map.insert(egress_id.to_string(), native.clone());
+        }
         native
     }
 
