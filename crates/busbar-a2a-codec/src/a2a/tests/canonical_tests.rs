@@ -141,20 +141,38 @@ fn array_order_is_preserved() {
     assert_ne!(c(&json!([3, 1, 2])), c(&json!([1, 2, 3])));
 }
 
-/// The refusal arm. A non-finite number cannot be spelled in JSON at all, so it can only arrive from
-/// a `Value` built in memory. Emitting `null` or `0` for it would produce a fingerprint that no
-/// second implementation could reproduce, so it is an error rather than a guess.
+/// NON-FINITE NUMBERS ARE UNREPRESENTABLE BEFORE THEY REACH THE CANONICALIZER — which is the honest
+/// name for what this checks, and NOT "the canonicalizer refuses one".
+///
+/// `CanonicalError::NonFiniteNumber` cannot be produced through anything this suite can call:
+/// `serde_json::Number` will not BUILD a NaN or an infinity (`from_f64` answers `None`), and
+/// `to_value` renders one as `null` rather than a number, so no `Value` reaching `canonicalize` can
+/// carry one. Asserting the refusal here would be asserting something no code path can satisfy; the
+/// defence that actually holds is the type's, and this test pins THAT. See the note on
+/// `CanonicalError::NonFiniteNumber` for why the arm stays anyway.
 #[test]
-fn a_non_finite_number_is_refused_rather_than_guessed() {
+fn a_non_finite_number_cannot_be_built_into_a_value_at_all() {
+    // The first and, in practice, only line of defence.
+    assert!(serde_json::Number::from_f64(f64::NAN).is_none());
+    assert!(serde_json::Number::from_f64(f64::INFINITY).is_none());
+    assert!(serde_json::Number::from_f64(f64::NEG_INFINITY).is_none());
+    // And the other route into a `Value` does not carry one either: it degrades to `null`, which
+    // canonicalizes as `null` and never reaches `number()`.
+    assert_eq!(
+        serde_json::to_value(f64::NAN).expect("to_value"),
+        Value::Null
+    );
+    assert_eq!(
+        c(&serde_json::to_value(f64::NAN).expect("to_value")),
+        "null"
+    );
+
+    // The finite number the canonicalizer does render, so the arm's neighbour stays covered.
     let mut map = serde_json::Map::new();
     map.insert(
         "x".to_string(),
         Value::Number(serde_json::Number::from_f64(1.0).expect("finite")),
     );
-    // `serde_json` refuses to BUILD a non-finite number, which is itself the first line of defense.
-    assert!(serde_json::Number::from_f64(f64::NAN).is_none());
-    assert!(serde_json::Number::from_f64(f64::INFINITY).is_none());
-    // And the canonicalizer accepts the finite one it can actually render.
     assert_eq!(
         canonicalize(&Value::Object(map)),
         Ok(r#"{"x":1}"#.to_string())
