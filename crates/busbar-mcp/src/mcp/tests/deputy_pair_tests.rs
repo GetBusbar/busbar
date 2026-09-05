@@ -37,8 +37,8 @@ use super::upstream_support::{
     call, contains, encodings, exchanging_server, gov_with_scopes, key_with_scopes, mcp_cfg,
     wildcard_key, Behaviour, Peer,
 };
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
@@ -48,8 +48,8 @@ const SUBJECT: &str = "busbar-ambient-subject-token-SENTINEL-9c1f";
 const ISSUED: &str = "downscoped-access-token-for-this-backend";
 
 /// Build an app fronting `peer`, with the two tools `fs_read` and `fs_write` approved.
-fn app_for(peer: &Peer) -> Arc<busbar_core::state::App> {
-    TestApp::new()
+fn app_for(peer: &Peer) -> Arc<dyn EngineApp> {
+    test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(peer, SUBJECT))
         .build()
@@ -66,7 +66,7 @@ fn params(tool: &str) -> serde_json::Value {
 /// caller's grant.
 #[tokio::test]
 async fn a_granted_caller_reaches_the_upstream_with_a_credential_scoped_to_its_own_grant() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let app = app_for(&peer);
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
@@ -122,7 +122,7 @@ async fn a_granted_caller_reaches_the_upstream_with_a_credential_scoped_to_its_o
 /// fail this one.
 #[tokio::test]
 async fn two_callers_making_the_same_call_get_two_different_credentials() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let app = app_for(&peer);
 
@@ -160,7 +160,7 @@ async fn two_callers_making_the_same_call_get_two_different_credentials() {
 /// operator's IdP is spending the operator's rate limit for free.
 #[tokio::test]
 async fn a_server_only_grant_is_refused_and_causes_no_token_exchange() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let app = app_for(&peer);
     let server_only = gov_with_scopes(&[("mcp_server", "fs")]);
@@ -190,7 +190,7 @@ async fn a_server_only_grant_is_refused_and_causes_no_token_exchange() {
 /// and holding one capability on a server is not holding its neighbours.
 #[tokio::test]
 async fn a_grant_for_a_different_tool_on_the_same_server_is_refused() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let app = app_for(&peer);
     let other = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_write")]);
@@ -229,9 +229,10 @@ async fn a_grant_for_a_different_tool_on_the_same_server_is_refused() {
 /// The control is at the bottom: the scanner is proven able to FIND a secret on this same wire.
 #[tokio::test]
 async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
-    use busbar_core::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
-    busbar_core::metrics::init();
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
+    use busbar_substrate::governance::NewKeySpec;
+    metrics_init();
 
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let store = Arc::new(MemoryStore::new());
@@ -239,14 +240,13 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
     // the test to mint the caller's audience-bound token with. Same bytes, same kid, so the verifier
     // busbar runs is verifying a token this test really minted.
     let signer = TokenSigner::from_secret_bytes(&[11u8; 32], DEFAULT_KID);
-    let gov = Arc::new(
-        GovState::new_with_signer(
+    let gov = engine()
+        .governance(
             store.clone(),
             Some("admintok".to_string()),
             Some(TokenSigner::from_secret_bytes(&[11u8; 32], DEFAULT_KID)),
         )
-        .unwrap(),
-    );
+        .unwrap();
 
     // Mint a REAL key, then give it the MCP grants. Nothing in this release writes `mcp_server` /
     // `mcp_tool` scopes at mint time (the admin verbs for it are a separate unit), so the row is
@@ -291,7 +291,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
         Some("external-client-1"),
     );
 
-    let app = TestApp::new()
+    let app = test_app()
         .keys_chain()
         .governance(gov)
         .mcp(&mcp_cfg(CANONICAL))
@@ -301,7 +301,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
     // the server just-verified so the gate reuses the snapshot (the mock upstream answers `tools/call`
     // but not a verifiable `tools/list`). See `crate::testkit::prefresh_mcp_sightings`.
     crate::testkit::prefresh_mcp_sightings(app.as_ref());
-    let router = busbar_core::build_router(app);
+    let router = build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -365,7 +365,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
     }
     // Belt and braces on the same haystack: no fragment of the token's payload segment either.
     let payload_segment = bearer
-        .trim_start_matches(busbar_core::governance::signing::TOKEN_PREFIX)
+        .trim_start_matches(busbar_substrate::governance::signing::TOKEN_PREFIX)
         .split('.')
         .next()
         .unwrap()
@@ -404,7 +404,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
 /// and "the one it called" are observably different strings.
 #[tokio::test]
 async fn a_wildcard_principal_is_down_scoped_to_the_single_tool_it_called() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let app = app_for(&peer);
     let wildcard = busbar_api::PlaneRequestCtx {
@@ -443,7 +443,7 @@ async fn a_wildcard_principal_is_down_scoped_to_the_single_tool_it_called() {
 /// there would have asked the authorization server for everything, on every ungoverned deployment.
 #[tokio::test]
 async fn an_ungoverned_deployment_still_down_scopes_to_the_tool_it_called() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let app = app_for(&peer);
 
@@ -472,7 +472,7 @@ async fn an_ungoverned_deployment_still_down_scopes_to_the_tool_it_called() {
 /// agree right up until they do not, and the divergence is silent.
 #[tokio::test]
 async fn the_dispatch_gate_and_the_egress_gate_agree_on_every_grant_shape() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let app = app_for(&peer);
 

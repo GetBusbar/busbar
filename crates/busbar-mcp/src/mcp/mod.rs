@@ -1157,6 +1157,17 @@ fn normalise_path(path: &str) -> String {
     format!("/{trimmed}")
 }
 
+// THE ENGINE BINDING for the plane's test binary: the one module that names the engine crate. Every
+// App-needing test below reaches the engine through it (the neutral `testkit::engine_kit` seam).
+// Gated on `test-support` alone (never bare `cfg(test)`, where no engine is in the closure): that is
+// also the feature a dependent crate's test binary compiles the plane batteries in under
+// (`admin_view::adminverbs_tests`), so those reach it too; in that feature-only build its helpers
+// read as dead to rustc, which is the compilation mode, not rot.
+#[cfg(feature = "test-support")]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+#[path = "tests/engine.rs"]
+pub(crate) mod test_engine;
+
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/config_tests.rs"]
 mod config_tests;

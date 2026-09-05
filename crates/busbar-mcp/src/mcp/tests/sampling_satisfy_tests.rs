@@ -24,9 +24,10 @@
 //!   the upstream asked.
 
 use super::upstream_support::{call, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer};
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
 use axum::http::StatusCode;
-use busbar_core::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+use busbar_substrate::testkit::loopback_http::{MockResponse, MockServer, MockServerState};
 use std::sync::Arc;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
@@ -34,6 +35,9 @@ const SUBJECT: &str = "busbar-own-subject-token-for-the-exchange";
 const ISSUED: &str = "downscoped-access-token-issued-by-the-as";
 /// The model the OPERATOR declares. The completion must run here and nowhere the upstream names.
 const MODEL: &str = "sampler-model";
+/// The dialect the operator's lane speaks — the LLM plane's `openai` codec, registered below the way
+/// the composition root registers it (`busbar_llm::DECLS`).
+const OPENAI_PROTOCOL: &str = "openai";
 
 /// The operator's policy: where a granted sampling ask runs, and both ceilings.
 fn declared_sampling(per_minute: u32) -> crate::mcp::config::SamplingCfg {
@@ -75,11 +79,7 @@ async fn app_with_provider(
     peer: &Peer,
     per_minute: u32,
     completions: usize,
-) -> (
-    Arc<MockServerState>,
-    MockServer,
-    Arc<busbar_core::state::App>,
-) {
+) -> (Arc<MockServerState>, MockServer, Arc<dyn EngineApp>) {
     let state = Arc::new(MockServerState::new());
     for _ in 0..completions {
         state.push(MockResponse::Ok {
@@ -102,12 +102,8 @@ async fn app_with_provider(
     busbar_substrate::ingress::arrival::set_test_completion_ingress(
         busbar_llm::native_ingress::synthesize_completion,
     );
-    let app = TestApp::new()
-        .lane(LaneSpec::new(
-            MODEL,
-            busbar_core::proto::PROTO_OPENAI,
-            &provider.base_url(),
-        ))
+    let app = test_app()
+        .lane(MODEL, OPENAI_PROTOCOL, &provider.base_url())
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", sampling_server(peer, per_minute))
         .build();
@@ -131,7 +127,7 @@ fn gov_with_pool() -> busbar_api::PlaneRequestCtx {
 /// the ask.
 #[tokio::test]
 async fn a_granted_sampling_ask_is_completed_on_the_operators_model_and_answered() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::AsksForSampling, ISSUED).await;
     let (state, _provider, app) = app_with_provider(&peer, 5, 1).await;
     let g = gov_with_pool();
@@ -238,7 +234,7 @@ async fn a_granted_sampling_ask_is_completed_on_the_operators_model_and_answered
 /// and the provider was reached EXACTLY once, because the budget is spent before the model leg.
 #[tokio::test]
 async fn the_per_upstream_budget_refuses_the_completion_past_the_cap_before_it_runs() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::AsksForSamplingPair, ISSUED).await;
     let (state, _provider, app) = app_with_provider(&peer, 1, 2).await;
     let g = gov_with_pool();
@@ -290,7 +286,7 @@ async fn the_per_upstream_budget_refuses_the_completion_past_the_cap_before_it_r
 /// grant — the `Ungranted` arm, whose remedy is a config key. The provider is never reached.
 #[tokio::test]
 async fn an_ungranted_sampling_ask_is_still_refused_and_spends_nothing() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::AsksForSampling, ISSUED).await;
     let state = Arc::new(MockServerState::new());
     let provider = MockServer::new(state.clone()).await;
@@ -310,12 +306,8 @@ async fn an_ungranted_sampling_ask_is_still_refused_and_spends_nothing() {
     busbar_substrate::ingress::arrival::set_test_completion_ingress(
         busbar_llm::native_ingress::synthesize_completion,
     );
-    let app = TestApp::new()
-        .lane(LaneSpec::new(
-            MODEL,
-            busbar_core::proto::PROTO_OPENAI,
-            &provider.base_url(),
-        ))
+    let app = test_app()
+        .lane(MODEL, OPENAI_PROTOCOL, &provider.base_url())
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();
@@ -360,7 +352,7 @@ async fn an_ungranted_sampling_ask_is_still_refused_and_spends_nothing() {
 /// `Unsatisfiable` arm — a different answer with a different remedy, naming the exact key.
 #[tokio::test]
 async fn a_granted_ask_with_no_policy_refuses_and_names_the_key() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::AsksForSampling, ISSUED).await;
     let mut cfg = exchanging_server(&peer, SUBJECT);
     cfg.grants.sampling = true;
@@ -380,7 +372,7 @@ async fn a_granted_ask_with_no_policy_refuses_and_names_the_key() {
     busbar_substrate::ingress::arrival::set_test_completion_ingress(
         busbar_llm::native_ingress::synthesize_completion,
     );
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", cfg)
         .build();
@@ -411,7 +403,7 @@ async fn a_granted_ask_with_no_policy_refuses_and_names_the_key() {
 /// pipeline, before any provider is touched — however enthusiastically the upstream asked.
 #[tokio::test]
 async fn a_caller_whose_key_does_not_reach_the_pool_cannot_be_spent_through() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::AsksForSampling, ISSUED).await;
     let (state, _provider, app) = app_with_provider(&peer, 5, 1).await;
     // The caller may reach the tool — and holds NO pool grant, so the completion the upstream

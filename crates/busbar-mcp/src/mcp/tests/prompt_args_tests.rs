@@ -25,9 +25,8 @@
 use crate::mcp::config::{
     McpPinMechanism, McpServerDefCfg, PromptAllowCfg, ServerPinCfg, ServerRequestGrants,
 };
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::state::{App, AppHandle};
-use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
 /// The capabilities a handler-level test declares on the caller's behalf.
@@ -93,8 +92,8 @@ fn server_with_prompt() -> McpServerDefCfg {
     }
 }
 
-fn app() -> Arc<App> {
-    TestApp::new()
+fn app() -> Arc<dyn EngineApp> {
+    test_app()
         .mcp(&crate::mcp::McpCfg {
             canonical_uri: "https://gateway.example.com/mcp".to_string(),
             authorization_servers: vec!["https://login.example.com".to_string()],
@@ -107,12 +106,12 @@ fn app() -> Arc<App> {
 
 /// `prompts/get` for `fs_greet` with `arguments`, returning the single message's text.
 async fn prompt_text(arguments: serde_json::Value) -> String {
-    busbar_core::metrics::init();
+    metrics_init();
     let app = app();
-    let handle = Arc::new(AppHandle::new(app.clone()));
+    let handle = app_handle(app.clone());
     let gov = busbar_api::PlaneRequestCtx { key: None };
     let ctx = crate::mcp::method::Ctx {
-        host: busbar_core::plane_host::engine_host_from_handle(&handle),
+        host: engine_host_from_handle(&handle),
         gov: &gov,
         actor: "test-principal",
         capabilities: &ALL_CAPABILITIES,
@@ -180,12 +179,12 @@ async fn an_unsupplied_placeholder_is_left_visible_rather_than_emptied() {
 /// `-32601`, which would say this server does not speak completion at all.
 #[tokio::test]
 async fn completion_complete_answers_an_empty_completion_rather_than_method_not_found() {
-    busbar_core::metrics::init();
+    metrics_init();
     let app = app();
-    let handle = Arc::new(AppHandle::new(app.clone()));
+    let handle = app_handle(app.clone());
     let gov = busbar_api::PlaneRequestCtx { key: None };
     let ctx = crate::mcp::method::Ctx {
-        host: busbar_core::plane_host::engine_host_from_handle(&handle),
+        host: engine_host_from_handle(&handle),
         gov: &gov,
         actor: "test-principal",
         capabilities: &ALL_CAPABILITIES,

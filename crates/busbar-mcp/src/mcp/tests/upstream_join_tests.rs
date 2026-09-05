@@ -23,8 +23,8 @@
 //! everything. Each is load-bearing only because the others exist.
 
 use super::upstream_support::{call, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer};
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 const SUBJECT: &str = "busbar-own-subject-token-for-the-exchange";
@@ -38,9 +38,9 @@ const ISSUED: &str = "downscoped-access-token-issued-by-the-as";
 /// exchanged bearer rather than anything of the caller's.
 #[tokio::test]
 async fn a_granted_call_reaches_the_upstream_and_returns_its_result() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();
@@ -104,9 +104,9 @@ async fn a_granted_call_reaches_the_upstream_and_returns_its_result() {
 /// costs a round trip is a refusal an unauthorised party can use to make busbar generate traffic.
 #[tokio::test]
 async fn an_ungranted_call_is_refused_before_the_upstream_is_contacted_at_all() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();
@@ -141,7 +141,7 @@ async fn an_ungranted_call_is_refused_before_the_upstream_is_contacted_at_all() 
 /// a simulated one.
 #[tokio::test]
 async fn a_granted_call_to_an_unreachable_upstream_fails_at_the_round_trip() {
-    busbar_core::metrics::init();
+    metrics_init();
     // Bind and immediately drop, so the port is one nothing answers on rather than one that might
     // belong to something else on the machine.
     let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -153,7 +153,7 @@ async fn a_granted_call_to_an_unreachable_upstream_fails_at_the_round_trip() {
     def.url = format!("http://{dead_addr}/mcp");
     def.aud = Some(def.url.clone());
 
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", def)
         .build();
@@ -213,9 +213,9 @@ async fn a_granted_call_to_an_unreachable_upstream_fails_at_the_round_trip() {
 /// happened to share a word would make the pairing above prove nothing.
 #[tokio::test]
 async fn the_three_arms_are_distinguishable_by_their_audit_reason() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
-    let reachable = TestApp::new()
+    let reachable = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();
@@ -226,7 +226,7 @@ async fn the_three_arms_are_distinguishable_by_their_audit_reason() {
     let mut def = exchanging_server(&peer, SUBJECT);
     def.url = format!("http://{dead_addr}/mcp");
     def.aud = Some(def.url.clone());
-    let unreachable = TestApp::new()
+    let unreachable = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", def)
         .build();
@@ -279,9 +279,9 @@ async fn the_three_arms_are_distinguishable_by_their_audit_reason() {
 /// recognised off the wire rather than constructed by a fake.
 #[tokio::test]
 async fn an_upstreams_ask_is_recognised_off_the_wire_and_refused_deny_by_default() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::AsksForSampling, ISSUED).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();
@@ -328,9 +328,9 @@ async fn an_upstreams_ask_is_recognised_off_the_wire_and_refused_deny_by_default
 /// remember to extend, and the next `InputRequiredResult` field is the one it will not name.
 #[tokio::test]
 async fn a_conformant_upstreams_ask_reaches_the_caller_never() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::HarvestsCredentials, ISSUED).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();
@@ -377,9 +377,9 @@ async fn a_conformant_upstreams_ask_reaches_the_caller_never() {
 /// result it had no way to know was truncated.
 #[tokio::test]
 async fn an_ask_smuggled_onto_a_result_labelled_complete_does_not_reach_the_caller_either() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::HalfConformantAsk, ISSUED).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();
@@ -431,9 +431,9 @@ async fn an_ask_smuggled_onto_a_result_labelled_complete_does_not_reach_the_call
 /// upstream's message is not laundered into busbar's own vocabulary.
 #[tokio::test]
 async fn an_upstream_json_rpc_error_is_reported_as_an_upstream_failure() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Errors, ISSUED).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();
@@ -479,11 +479,11 @@ async fn an_upstream_json_rpc_error_is_reported_as_an_upstream_failure() {
 /// the way OUT to the caller, which is the moment the text re-enters model context.
 #[tokio::test]
 async fn upstream_tool_output_is_markup_normalised_before_it_reaches_the_caller() {
-    busbar_core::metrics::init();
+    metrics_init();
     // A peer whose result carries injection markup. Served through the same recorder so the wire is
     // still assertable.
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();
@@ -517,9 +517,9 @@ async fn upstream_tool_output_is_markup_normalised_before_it_reaches_the_caller(
 /// PAYLOAD immune, and a live upstream leg is exactly where that distinction starts to matter.
 #[tokio::test]
 async fn a_metadata_url_hidden_in_the_tool_arguments_is_refused_and_never_sent() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();

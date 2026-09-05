@@ -2188,6 +2188,15 @@ pub mod warn_capture;
 /// The REAL `kind: store` plugin, loaded over the REAL C ABI: how a durability claim is judged.
 pub mod plugin_store;
 
+/// The engine's implementation of the neutral engine test-kit seam
+/// (`busbar_substrate::testkit::engine_kit`): what a plane crate's test binary binds in one line so
+/// its tests build and drive the whole fixture naming no other item of this crate.
+pub mod engine_kit;
+
+/// The engine's implementation of the WIDENED engine test-kit seam
+/// (`busbar_substrate::testkit::engine_kit_plus`), on the same fixture types as `engine_kit`.
+pub mod engine_kit_plus;
+
 /// Panic-safe process-env restore for a test that must temporarily override a `std::env` var (e.g.
 /// `BUSBAR_CONFIG`). A bare "set, assert, manually restore" sequence leaks the override to every
 /// later test in the same binary the instant an `assert!`/`assert_eq!` in between fails: the panic

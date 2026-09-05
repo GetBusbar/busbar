@@ -13,7 +13,7 @@
 //! so a self-signed test CA cannot be reached through the seam — the same reason `egress_tests` uses
 //! plaintext). The peer-SPKI dimension is therefore `None == None` here; its byte-identity over TLS is
 //! by CONSTRUCTION — the host and the plane decode the pin through the one shared
-//! `busbar_core::plane_host::spki::pin` (`a2a::spki::spki_pin` re-exports it), so there is no second spelling
+//! `busbar_substrate::plane_host::spki::pin` (`a2a::spki::spki_pin` re-exports it), so there is no second spelling
 //! to diverge. `client_identity_offered` is asserted directly (both compute `is_some()`).
 
 use std::io::{Read, Write};
@@ -23,11 +23,18 @@ use std::sync::Arc;
 use crate::a2a::fetch::{FetchPolicy, Transport};
 use crate::a2a::relay::{ChunkFlow, RelayTransport};
 use crate::a2a::transport::ReqwestTransport;
-use busbar_core::egress::seam::{
-    buffered, pump, stream_head, with_hostless, HopSpec, StreamOutcome,
-};
-use busbar_core::egress::{build_pinned_client, RefuseSecondLookup};
-use busbar_core::proxy::{read_capped, ReadEnd};
+use busbar_substrate::egress::seam::{HopSpec, HostlessEgress};
+use busbar_substrate::egress::{build_pinned_client, RefuseSecondLookup};
+use busbar_substrate::proxy::{read_capped, ReadEnd};
+
+/// The installed hostless-egress driver — the engine's, bound by the transport's own test boot
+/// (`test_egress_boot`, the same binding the composition root makes) and read back through the ONE
+/// neutral seam the plane's production transport reads. Each verb on it runs the engine's
+/// buffered / streaming egress bodies whole over one hostless scope.
+fn driver() -> &'static dyn HostlessEgress {
+    super::test_egress_boot::install();
+    busbar_substrate::egress::seam::hostless().expect("the hostless-egress driver is installed")
+}
 
 const LOOPBACK: &str = "127.0.0.1";
 
@@ -153,7 +160,7 @@ fn buffered_adapter_matches_the_a2a_transport_get_byte_for_byte() {
 
     // The neutral adapter over the host egress seam.
     let cap = policy.max_body_bytes.saturating_add(1);
-    let seamed = with_hostless(|scope| buffered(scope, &hop(&url), cap).expect("seam buffered"));
+    let seamed = driver().buffered(&hop(&url), cap).expect("seam buffered");
 
     assert_eq!(seamed.status, direct.status, "status matches");
     assert_eq!(seamed.location, direct.location, "location matches");
@@ -192,7 +199,7 @@ fn buffered_adapter_surfaces_a_redirect_location_like_the_transport() {
         .expect("direct get");
 
     let cap = policy.max_body_bytes.saturating_add(1);
-    let seamed = with_hostless(|scope| buffered(scope, &hop(&url), cap).unwrap());
+    let seamed = driver().buffered(&hop(&url), cap).unwrap();
 
     assert_eq!(seamed.status, 302);
     assert_eq!(seamed.status, direct.status);
@@ -222,7 +229,7 @@ fn capped_read_reproduces_all_three_readend_states() {
         // A second, independent hop for the seam (the mock answers each connection freshly).
         let port2 = spawn_mock("200 OK", &[], body.clone());
         let url2 = format!("http://127.0.0.1:{port2}/");
-        let seamed = with_hostless(|scope| buffered(scope, &hop(&url2), cap).unwrap());
+        let seamed = driver().buffered(&hop(&url2), cap).unwrap();
         assert_eq!(dend, ReadEnd::Complete);
         assert_eq!(seamed.end, ReadEnd::Complete, "under-cap body is Complete");
         assert_eq!(seamed.body, dbytes, "Complete body byte-identical");
@@ -238,7 +245,7 @@ fn capped_read_reproduces_all_three_readend_states() {
         let (_s, _l, dbytes, dend) = direct_read(&url, addr, port, cap);
         let port2 = spawn_mock("200 OK", &[], body.clone());
         let url2 = format!("http://127.0.0.1:{port2}/");
-        let seamed = with_hostless(|scope| buffered(scope, &hop(&url2), cap).unwrap());
+        let seamed = driver().buffered(&hop(&url2), cap).unwrap();
         assert_eq!(dend, ReadEnd::Truncated);
         assert_eq!(seamed.end, ReadEnd::Truncated, "over-cap body is Truncated");
         assert_eq!(
@@ -257,7 +264,7 @@ fn capped_read_reproduces_all_three_readend_states() {
         let (_s, _l, _db, dend) = direct_read(&url, addr, port, cap);
         let port2 = spawn_truncating_mock(b"partial", 1000);
         let url2 = format!("http://127.0.0.1:{port2}/");
-        let seamed = with_hostless(|scope| buffered(scope, &hop(&url2), cap).unwrap());
+        let seamed = driver().buffered(&hop(&url2), cap).unwrap();
         assert_eq!(dend, ReadEnd::TransportError);
         assert_eq!(
             seamed.end,
@@ -301,7 +308,10 @@ fn stream_adapter_concatenation_matches_post_stream() {
         sse.clone(),
     );
     let url2 = format!("http://127.0.0.1:{port2}/rpc");
-    let (seam_head, seam_body) = with_hostless(|scope| {
+    // The driver reads the head and, for an event-stream reply, pumps every chunk into the sink over
+    // the same scope; a non-stream reply comes back as its head alone with nothing pumped.
+    let mut seam_body = Vec::new();
+    let seam_head = {
         let spec = HopSpec {
             verb: "POST",
             url: &url2,
@@ -314,19 +324,14 @@ fn stream_adapter_concatenation_matches_post_stream() {
             timeout: std::time::Duration::ZERO,
             resolved_addr: None,
         };
-        match stream_head(scope, &spec, cap).expect("seam stream_head") {
-            StreamOutcome::Buffered(h) => (h, Vec::new()),
-            StreamOutcome::Streaming { head, id } => {
-                let mut body = Vec::new();
-                let mut on = |chunk: &[u8]| -> ChunkFlow {
-                    body.extend_from_slice(chunk);
-                    ChunkFlow::Continue
-                };
-                pump(scope, id, &mut on);
-                (head, body)
-            }
-        }
-    });
+        let mut on = |chunk: &[u8]| -> ChunkFlow {
+            seam_body.extend_from_slice(chunk);
+            ChunkFlow::Continue
+        };
+        driver()
+            .stream(&spec, cap, &mut on)
+            .expect("seam stream_head")
+    };
 
     assert_eq!(
         seam_head.status, direct_head.status,

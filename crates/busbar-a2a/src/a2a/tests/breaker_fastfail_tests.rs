@@ -6,7 +6,7 @@
 //! The relay mounts the breaker beneath the transport axis (one admission in `prepare`, one
 //! recording on every hop exit), so JsonRpc, HttpJson and Grpc are covered by ONE mechanism — and
 //! this file proves that claim rather than asserting it, by running the same battery under each
-//! binding's card through the REAL router (`relay_harness`, `busbar_core::build_router`).
+//! binding's card through the REAL router (`relay_harness`, the real router).
 //!
 //! The claims are the owner-decided breaker-across-planes renderings and the audit's test rows:
 //!
@@ -30,7 +30,7 @@ use crate::a2a::relay::{
     ChunkFlow, RelayCall, RelayRefusal, RelaySeam, RelayTransport, StreamHead, BINDING_GRPC,
     BINDING_HTTP_JSON, BINDING_JSONRPC,
 };
-use busbar_core::store::PlaneBreakers;
+use crate::testkit::engine_boot::engine;
 
 // ══ THE UNIT HALF: the relay records into the ONE core cell, and it opens ════════════════════════
 
@@ -138,11 +138,11 @@ fn a_call<'a>(
 fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_wire() {
     crate::testkit::install_test_seams();
     use busbar_substrate::plane_host::DispatchScope;
-    // A real `EngineHost` double over a bare app: the breaker cell store IS `app.plane_breakers`, the
-    // same seam the ingress admits/settles the relay through, so this exercises the production path.
-    let app = busbar_core::test_support::TestApp::new().build();
-    let host = busbar_core::plane_host::engine_host(&app);
-    let breakers = &app.plane_breakers;
+    // A real `EngineHost` double over a bare app: the breaker cell store IS the built App's own cells,
+    // the same seam the ingress admits/settles the relay through, so this exercises the production
+    // path.
+    let app = engine().new_app_plus().build();
+    let host = std::sync::Arc::clone(&app).engine_host();
     let transport = CountingDenier {
         status: 401,
         hits: AtomicUsize::new(0),
@@ -166,7 +166,7 @@ fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_
     assert_eq!(transport.hits.load(Ordering::SeqCst), 1);
     assert!(
         matches!(
-            breakers.state(&PlaneBreakers::agent_key("planner")),
+            app.breaker_state(&busbar_substrate::store::agent_key("planner")),
             busbar_substrate::store::BreakerState::Open { .. }
         ),
         "the agent's cell must be Open after a definitive backend failure"
@@ -209,10 +209,9 @@ fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_
 fn a_shared_host_scope_settles_the_prepare_admit() {
     crate::testkit::install_test_seams();
     use busbar_substrate::plane_host::DispatchScope;
-    let app = busbar_core::test_support::TestApp::new().build();
-    let host = busbar_core::plane_host::engine_host(&app);
-    let breakers = &app.plane_breakers;
-    let key = busbar_core::store::PlaneBreakers::agent_key("planner");
+    let app = engine().new_app_plus().build();
+    let host = std::sync::Arc::clone(&app).engine_host();
+    let key = busbar_substrate::store::agent_key("planner");
     let transport = CountingDenier {
         status: 401,
         hits: AtomicUsize::new(0),
@@ -238,7 +237,7 @@ fn a_shared_host_scope_settles_the_prepare_admit() {
     );
     assert!(
         matches!(
-            breakers.state(&key),
+            app.breaker_state(&key),
             busbar_substrate::store::BreakerState::Open { .. }
         ),
         "the settle folded the 401 through the same record_signal disposition and opened the cell"

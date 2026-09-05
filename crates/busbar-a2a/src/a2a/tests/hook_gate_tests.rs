@@ -17,14 +17,16 @@
 //! prose — reach the hook.
 
 use super::relay_harness::{call, call_agent, envelope, harness_gated, Gates, Outcome};
-use busbar_core::config::{HookCfg, HookKind, PromptAccess, UserAccess};
+use crate::testkit::engine_boot::engine;
+use busbar_substrate::testkit::engine_kit::HookNeed;
 
-/// The `hooks:` DEFINITION a test attaches: a `kind: gate` on the hermetic test cdylib, holding the
+/// The `hooks:` DEFINITION a test attaches, as the document an operator writes (the engine parses
+/// it with its own grammar at build): a `kind: gate` on the hermetic test cdylib, holding the
 /// `prompt: ro` grant so the content projection is sent.
-fn gate(settings: serde_json::Value) -> HookCfg {
-    HookCfg {
-        kind: HookKind::Gate,
-        plugin: "test-hook".to_string(),
+fn gate(settings: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "gate",
+        "module": "test-hook",
         // NOT `DEFAULT_POLICY_TIMEOUT_MS` (1 ms). These tests assert the gate's VERDICT, not its
         // latency, and the deadline arm is indistinguishable from the thing under test: on a
         // loaded machine (`cargo test --workspace` saturating every core) the 1 ms
@@ -34,19 +36,13 @@ fn gate(settings: serde_json::Value) -> HookCfg {
         // it is "never fires for a healthy in-process dlopen call, on any load this side of a
         // wedged host". The deadline path itself is covered by its own tests, on purpose, where
         // firing is the point.
-        timeout_ms: 10_000,
-        on_error: "weighted".to_string(),
-        prompt: PromptAccess::Ro,
-        user: UserAccess::Ro,
-        priority: 0,
-        settings: settings.as_object().cloned().unwrap_or_default(),
-        on_empty: None,
-        global: false,
-        default: false,
-        signals: Vec::new(),
-        groups: Vec::new(),
-        phase: Vec::new(),
-    }
+        "timeout_ms": 10_000,
+        "on_error": "weighted",
+        "prompt": "ro",
+        "user": "ro",
+        "priority": 0,
+        "settings": settings.as_object().cloned().unwrap_or_default(),
+    })
 }
 
 /// The attach, with the cdylib loaded through the real scan/trust/load pipeline.
@@ -55,18 +51,13 @@ fn gate(settings: serde_json::Value) -> HookCfg {
 /// skipped acceptance test reports green, and with the firing site reverted and the cdylib missing
 /// every assertion in this file passed. The panic names the command that fixes it.
 fn gates(name: &str, settings: serde_json::Value) -> Gates {
-    let env = busbar_core::test_support::test_hook_env(
-        &["test-hook"],
-        busbar_plugin_sign::HookNeeds {
-            prompt: busbar_plugin_sign::NeedLevel::Rw,
-            user: busbar_plugin_sign::NeedLevel::Ro,
-        },
-    )
-    .expect(
-        "the busbar-hook-test-plugin cdylib is not built. This battery is the A2A half of the \
+    let env = engine()
+        .hook_env(&["test-hook"], HookNeed::Rw, HookNeed::Ro)
+        .expect(
+            "the busbar-hook-test-plugin cdylib is not built. This battery is the A2A half of the \
          release's acceptance test and it CANNOT be skipped: with no gate to load, every assertion \
          below is vacuous and reports a green. Build it: `cargo build -p busbar-hook-test-plugin`.",
-    );
+        );
     Gates {
         env,
         hooks: vec![(name.to_string(), gate(settings))],

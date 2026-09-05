@@ -18,7 +18,9 @@
 //! signed, down to the byte, or the first card containing a number in an unusual form silently
 //! stops verifying at somebody else's gateway.
 
+use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
+use busbar_substrate::testkit::engine_kit_plus::EngineAppPlus;
 use ed25519_dalek::{Verifier, VerifyingKey};
 use serde_json::{json, Value};
 
@@ -36,26 +38,27 @@ fn token_signer(seed: u8) -> TokenSigner {
 
 /// A live app whose governance holds `token_signer(seed)` — the seam a `CardSigner` reaches its
 /// host card-signing capability through. The card subkey is derived and used ENTIRELY host-side
-/// (`GovState::card_sign`); the plane holds only the public issuer key, exactly as it will once the
-/// A2A plane is a separate crate. Every signature below is therefore produced over the same
-/// `token_signer(seed)` the pre-re-seam `CardSigner::derived_from` used, so the bytes are identical.
-fn app_signed_by(seed: u8) -> std::sync::Arc<busbar_core::state::App> {
-    let gov = std::sync::Arc::new(
-        busbar_core::governance::GovState::new_with_signer(
-            std::sync::Arc::new(busbar_core::governance::MemoryStore::new()),
+/// (the governance registry's card-sign verb); the plane holds only the public issuer key, exactly
+/// as it does now that the A2A plane is a separate crate. Every signature below is therefore
+/// produced over the same `token_signer(seed)` the pre-re-seam `CardSigner::derived_from` used, so
+/// the bytes are identical.
+fn app_signed_by(seed: u8) -> std::sync::Arc<dyn EngineAppPlus> {
+    let gov = engine()
+        .governance(
+            std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
             None,
             Some(token_signer(seed)),
         )
-        .expect("a memory-store GovState with a signing key constructs"),
-    );
+        .expect("a memory-store governance registry with a signing key constructs");
     // An a2a plane must exist for `card_signer` to reach the public issuer key off the plane's own
-    // slot (where `TestApp::build` stashes it from governance, mirroring the `a2a_start` hook). One
-    // unpinned registration is the minimal `agents:` that lowers a plane — the card-signing bytes are
-    // over the served card, independent of which agents are registered.
+    // slot (where the fixture's build stashes it from governance, mirroring the `a2a_start` hook).
+    // One unpinned registration is the minimal `agents:` that lowers a plane — the card-signing bytes
+    // are over the served card, independent of which agents are registered.
     let def: crate::a2a::config::AgentDefCfg =
         serde_yaml::from_str("url: https://agent.example/a2a\npin: { mechanism: unpinned }\n")
             .expect("a minimal unpinned agent def parses");
-    busbar_core::test_support::TestApp::new()
+    engine()
+        .new_app_plus()
         .governance(gov)
         .agent_def("planner", def)
         .build()
@@ -100,7 +103,7 @@ fn busbars_issuer_key(signer: &crate::a2a::sign::CardSigner<'_>) -> IssuerKey {
 #[test]
 fn a_served_card_carries_a_signature_that_verifies_against_busbars_published_key() {
     let app = app_signed_by(7);
-    let host = busbar_core::plane_host::engine_host(&app);
+    let host = std::sync::Arc::clone(&app).engine_host();
     let signer = card_signer(&host).expect("a deployment with a signing key has a card signer");
     let served = served_by(&signer);
 
@@ -123,7 +126,7 @@ fn a_served_card_carries_a_signature_that_verifies_against_busbars_published_key
 #[test]
 fn the_served_card_carries_busbars_signature_and_only_busbars() {
     let app = app_signed_by(7);
-    let host = busbar_core::plane_host::engine_host(&app);
+    let host = std::sync::Arc::clone(&app).engine_host();
     let signer = card_signer(&host).expect("a signing key means a card signer");
     let served = served_by(&signer);
     let signatures = served
@@ -149,7 +152,7 @@ fn the_served_card_carries_busbars_signature_and_only_busbars() {
 #[test]
 fn tampering_with_one_byte_of_the_served_document_breaks_verification() {
     let app = app_signed_by(7);
-    let host = busbar_core::plane_host::engine_host(&app);
+    let host = std::sync::Arc::clone(&app).engine_host();
     let signer = card_signer(&host).expect("a signing key means a card signer");
     let key = busbars_issuer_key(&signer);
     let served = served_by(&signer);
@@ -204,8 +207,8 @@ fn a_card_signed_by_a_different_busbar_deployment_does_not_verify_here() {
     // accept the other, or the pin identifies "some busbar" rather than "this busbar".
     let ours_app = app_signed_by(7);
     let theirs_app = app_signed_by(9);
-    let ours_host = busbar_core::plane_host::engine_host(&ours_app);
-    let theirs_host = busbar_core::plane_host::engine_host(&theirs_app);
+    let ours_host = std::sync::Arc::clone(&ours_app).engine_host();
+    let theirs_host = std::sync::Arc::clone(&theirs_app).engine_host();
     let ours = card_signer(&ours_host).expect("a signing key means a card signer");
     let theirs = card_signer(&theirs_host).expect("a signing key means a card signer");
     assert_eq!(
@@ -224,7 +227,7 @@ fn the_signature_covers_exactly_the_inbound_paths_signing_payload() {
     // this fails while `verify_card` might not, because `verify_card` would be using the signer's
     // idea of canonical too.
     let app = app_signed_by(7);
-    let host = busbar_core::plane_host::engine_host(&app);
+    let host = std::sync::Arc::clone(&app).engine_host();
     let signer = card_signer(&host).expect("a signing key means a card signer");
     let served = served_by(&signer);
 
@@ -322,7 +325,7 @@ fn there_is_exactly_one_canonicalizer_and_one_signing_payload_on_this_plane() {
 fn the_card_key_is_not_the_token_key_and_cannot_be_walked_back_to_it() {
     let token = token_signer(7);
     let app = app_signed_by(7);
-    let host = busbar_core::plane_host::engine_host(&app);
+    let host = std::sync::Arc::clone(&app).engine_host();
     let card = card_signer(&host).expect("a signing key means a card signer");
 
     let card_spki = base64::engine::general_purpose::STANDARD
@@ -347,10 +350,10 @@ fn the_derivation_is_deterministic_and_domain_separated() {
     let token = token_signer(7);
     let app = app_signed_by(7);
     assert_eq!(
-        card_signer(&busbar_core::plane_host::engine_host(&app))
+        card_signer(&std::sync::Arc::clone(&app).engine_host())
             .unwrap()
             .issuer_spki_base64(),
-        card_signer(&busbar_core::plane_host::engine_host(&app))
+        card_signer(&std::sync::Arc::clone(&app).engine_host())
             .unwrap()
             .issuer_spki_base64(),
         "a restart must serve cards under the same key, or every caller's pin breaks on a bounce"
@@ -375,8 +378,8 @@ fn rotating_the_token_key_rotates_the_card_key_with_it() {
     // no longer verifies — which is the signal `approve-pin` exists to absorb.
     let before_app = app_signed_by(7);
     let after_app = app_signed_by(8);
-    let before_host = busbar_core::plane_host::engine_host(&before_app);
-    let after_host = busbar_core::plane_host::engine_host(&after_app);
+    let before_host = std::sync::Arc::clone(&before_app).engine_host();
+    let after_host = std::sync::Arc::clone(&after_app).engine_host();
     let before = card_signer(&before_host).expect("a signing key means a card signer");
     let after = card_signer(&after_host).expect("a signing key means a card signer");
     assert_ne!(before.issuer_spki_base64(), after.issuer_spki_base64());
@@ -410,7 +413,7 @@ fn the_signature_is_taken_over_the_document_that_is_actually_served() {
     // bytes — busbar's endpoints, busbar's security scheme, the backend nowhere in them — are the
     // ones under the signature.
     let app = app_signed_by(7);
-    let host = busbar_core::plane_host::engine_host(&app);
+    let host = std::sync::Arc::clone(&app).engine_host();
     let signer = card_signer(&host).expect("a signing key means a card signer");
     let served = served_by(&signer);
     let flattened = serde_json::to_string(&served).expect("serialize");

@@ -24,6 +24,7 @@
 //! the resolver, then the transport with the address that lookup produced — and asserts on what the
 //! real client did with them.
 
+use crate::testkit::engine_boot::engine;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -157,7 +158,7 @@ pub(crate) type ObservedSni = Arc<Mutex<Vec<Option<String>>>>;
 /// A real rustls server on an ephemeral loopback port. Records the SNI of every connection and, if
 /// the handshake completes, answers `body`.
 pub(crate) fn spawn_tls(cert_pem: &str, key_pem: &str, body: String) -> (SocketAddr, ObservedSni) {
-    busbar_core::tls::install_crypto_provider();
+    engine().install_crypto_provider();
     let certs: Vec<rustls_pki_types::CertificateDer<'static>> = {
         use rustls_pki_types::pem::PemObject;
         rustls_pki_types::CertificateDer::pem_slice_iter(cert_pem.as_bytes())

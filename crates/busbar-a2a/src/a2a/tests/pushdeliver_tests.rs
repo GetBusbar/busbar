@@ -31,6 +31,7 @@ use super::super::pushdeliver::{self, PushRefusal};
 use super::super::pushnotify::{self, PushNotifyError};
 use super::super::relay::{ChunkFlow, RelaySeam, RelayTransport, StreamHead};
 use super::super::task::{Direction, Task, TaskState};
+use crate::testkit::engine_boot::engine;
 use busbar_substrate::audit::vocab as provenance;
 
 const CALLBACK: &str = "https://hook.caller.test/notify";
@@ -153,8 +154,8 @@ fn task_with_callback(task_id: &str, state: TaskState) -> Task {
 /// set, so the chain append is a swallowed `NoSuchTask` — exactly the best-effort posture the delivery
 /// path takes).
 fn deliver_hosted(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
-    let app = busbar_core::test_support::TestApp::new().build();
-    let engine_host = busbar_core::plane_host::engine_host(&app);
+    let app = engine().new_app_plus().build();
+    let engine_host = std::sync::Arc::clone(&app).engine_host();
     pushdeliver::deliver(engine_host.as_ref(), seam, task)
 }
 
@@ -592,7 +593,7 @@ fn the_terminal_delivery_drops_its_pin() {
 /// A REGRESSION LOCK ON AN ABSENCE AND ON A PRESENCE, and both halves have been wrong here.
 ///
 /// **The absence.** Every other place busbar puts JSON on this plane's wire is a JSON-RPC message
-/// read or written through `busbar_core::ingress::jsonrpc`. A reviewer who has just been through the
+/// read or written through the engine's JSON-RPC ingress. A reviewer who has just been through the
 /// three response sites that really did lack a `jsonrpc` member and an `id` will read the same
 /// absence HERE as a fourth instance and add them — and that would be a protocol violation, because
 /// a push notification is POSTed to a webhook: it is not a request (busbar invokes no method on the

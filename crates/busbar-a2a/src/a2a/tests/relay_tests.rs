@@ -3,7 +3,7 @@
 
 //! THE RELAY, DRIVEN THROUGH THE REAL ROUTER.
 //!
-//! Every assertion here goes through `busbar_core::build_router` and a real socket, with a REAL
+//! Every assertion here goes through the real router and a real socket, with a REAL
 //! audience-bound busbar token minted by the same signer the verifier runs. A relay that behaves
 //! correctly when a test calls it and forwards the caller's credential when axum calls it is the
 //! exact defect these tests exist to catch, and a test that called `relay::relay` directly would
@@ -29,6 +29,8 @@
 //! rule one and vice versa. Both hold; neither implies the other.
 
 use crate::taskstore::TaskStoreTestExt;
+use crate::testkit::engine_boot::engine;
+use busbar_substrate::testkit::engine_kit_plus::metric_sum;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::Ordering;
 
@@ -386,7 +388,7 @@ async fn the_hop_is_metered_and_the_callees_own_reported_spend_is_not() {
     let rows = h
         .gov
         .store()
-        .list_metering(busbar_core::governance::metering_bucket(
+        .list_metering(busbar_substrate::governance::metering_bucket(
             busbar_substrate::store::now(),
         ))
         .expect("metering reads back");
@@ -555,7 +557,7 @@ fn a_grant_for_one_agent_cannot_mint_against_a_registration_for_another() {
     let out = crate::a2a::creds::mint(
         &grant,
         &reg,
-        &busbar_core::config::secret::SecretResolver::builtins_only(),
+        engine().builtin_secret_resolver().as_ref(),
         1_000,
     );
     assert!(
@@ -678,7 +680,7 @@ async fn an_already_demoted_registration_is_refused_at_admission_with_the_same_s
 /// there is no other way to reach the mint.
 fn a_lease(agent_id: &'static str, now_ms: u64) -> crate::a2a::creds::Lease {
     let path = secret_file();
-    let resolver = busbar_core::config::secret::SecretResolver::builtins_only();
+    let resolver = engine().builtin_secret_resolver();
     let key = a_key("k-lease", Some(&[agent_id]));
     let grant = crate::a2a::creds::authorise_egress(&key, agent_id, 1).expect("the grant");
     crate::a2a::creds::mint_from(
@@ -688,7 +690,7 @@ fn a_lease(agent_id: &'static str, now_ms: u64) -> crate::a2a::creds::Lease {
             placement: crate::a2a::creds::CredentialPlacement::Bearer,
             lease_ttl_ms: 600_000,
         },
-        &resolver,
+        resolver.as_ref(),
         now_ms,
     )
     .expect("the lease mints")
@@ -1459,21 +1461,20 @@ async fn an_admitted_agent_task_lands_in_the_plane_request_series() {
         ("ingress_protocol", "jsonrpc"),
         ("outcome", "ok"),
     ];
-    let before =
-        busbar_core::test_support::metric_sum(busbar_core::metrics::PLANE_REQUESTS_TOTAL, &labels);
+    let family = engine().plane_request_family();
+    let before = metric_sum(&engine().metrics_render(), family, &labels);
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "the admitted call must be served: {body}");
-    let after =
-        busbar_core::test_support::metric_sum(busbar_core::metrics::PLANE_REQUESTS_TOTAL, &labels);
+    let after = metric_sum(&engine().metrics_render(), family, &labels);
 
     assert!(
         after > before,
-        "a relayed agent task produced no `{}` sample on the a2a plane (before {before}, after \
-         {after}) — the plane is invisible to an operator again",
-        busbar_core::metrics::PLANE_REQUESTS_TOTAL,
+        "a relayed agent task produced no `{family}` sample on the a2a plane (before {before}, \
+         after {after}) — the plane is invisible to an operator again",
     );
     assert!(
-        busbar_core::test_support::metric_sum(
+        metric_sum(
+            &engine().metrics_render(),
             "busbar_plane_request_duration_seconds_count",
             &[("plane", "a2a"), ("ingress_protocol", "jsonrpc")],
         ) > 0.0,

@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar-a2a/src/a2a/verbs.rs`.
 //!
 //! The three verbs the generic five-verb CRUD chassis models none of. Every test drives the REAL
-//! `busbar_core::trust` machine through the real verb; the only doubles are the two seams the delegating
+//! `busbar_substrate::trust` machine through the real verb; the only doubles are the two seams the delegating
 //! side owns (the fetch and the verification), which is what lets a test stage the answers a real
 //! network makes hard to produce on demand.
 

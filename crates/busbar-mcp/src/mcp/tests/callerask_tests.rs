@@ -14,6 +14,7 @@
 
 use super::*;
 use crate::mcp::config::{AskEntryCfg, AskRoundCfg};
+use crate::mcp::test_engine::*;
 
 const KEY: [u8; 32] = [3u8; 32];
 const NOW: u64 = 1_700_000_000;
@@ -76,8 +77,8 @@ const DIGEST: &str = "d";
 /// these behavioural cases want: single use across two presentations of ONE approval is proven in
 /// `spentledger_tests`, over one shared ledger.
 fn with_host<R>(f: impl FnOnce(&dyn busbar_substrate::plane_host::EngineHost) -> R) -> R {
-    let app = busbar_core::test_support::TestApp::new().build();
-    let engine = busbar_core::plane_host::engine_host(&app);
+    let app = test_app().build();
+    let engine = engine_host(&app);
     f(engine.as_ref())
 }
 

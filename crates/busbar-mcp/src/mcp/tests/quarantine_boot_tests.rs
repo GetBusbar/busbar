@@ -31,9 +31,8 @@ use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::connect::connect_support::{
     approved_hash, call, gov_with_scopes, mcp_cfg, server_cfg, wire_tool, Peer,
 };
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::plugin_store::{durable_cfg, open_plugin};
-use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
 const DESCRIPTION: &str = "reads a file from disk";
@@ -75,11 +74,11 @@ fn boot(
     peer: &Peer,
     sightings: Arc<CatalogueCache>,
     store: Option<Arc<dyn busbar_api::Store>>,
-) -> Arc<busbar_core::state::App> {
+) -> Arc<dyn EngineApp> {
     let hash = approved_hash("read", DESCRIPTION, honest_schema());
     let mut cfg = server_cfg(peer, &[("read", Some(hash))]);
     cfg.verify_ttl = Some("0s".to_string());
-    let mut app = TestApp::new()
+    let mut app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("fs", cfg)
         .with_mcp_sightings(sightings);
@@ -87,14 +86,14 @@ fn boot(
     // consumes one for the core-owned write-through sinks (spent-ledger + demotion record).
     let replay_store = store.clone();
     if let Some(store) = store {
-        app = app.mcp_durable_store(store);
+        app = app.durable_store(store);
     }
     let app = app.build();
     // MIRROR production's `mcp_hydrate` boot hook: right after the app is built (and its plane sinks
     // attached), replay recorded demotions into the live sightings cache off the GENERIC plane store,
     // BEFORE the first request. No-op when no durable store is configured.
     if let Some(store) = replay_store {
-        let host = busbar_core::plane_host::engine_host(&app);
+        let host = engine_host(&app);
         let plane_store = busbar_substrate::plane::store::PlaneStoreView::narrow(store);
         crate::mcp::demotion::hydrate(&host, Some(&plane_store));
     }
@@ -108,7 +107,7 @@ async fn quarantined(
     peer: &Peer,
     sightings: Arc<CatalogueCache>,
     store: Option<Arc<dyn busbar_api::Store>>,
-) -> Arc<busbar_core::state::App> {
+) -> Arc<dyn EngineApp> {
     let app = boot(peer, sightings, store);
     let (status, body) = read_call(&app).await;
     assert_eq!(
@@ -127,7 +126,7 @@ async fn quarantined(
     app
 }
 
-async fn read_call(app: &Arc<busbar_core::state::App>) -> (u16, serde_json::Value) {
+async fn read_call(app: &Arc<dyn EngineApp>) -> (u16, serde_json::Value) {
     call(
         app,
         &granted(),
@@ -138,7 +137,7 @@ async fn read_call(app: &Arc<busbar_core::state::App>) -> (u16, serde_json::Valu
 }
 
 /// The namespaced names `tools/list` publishes to a caller holding both grants.
-async fn advertised(app: &Arc<busbar_core::state::App>) -> Vec<String> {
+async fn advertised(app: &Arc<dyn EngineApp>) -> Vec<String> {
     let (status, body) = call(app, &granted(), "tools/list", serde_json::json!({})).await;
     assert_eq!(status, 200, "the catalogue must be listable: {body}");
     body.pointer("/result/tools")
@@ -161,13 +160,13 @@ async fn advertised(app: &Arc<busbar_core::state::App>) -> Vec<String> {
 /// durable methods are defaulted to accept-and-keep-nothing.
 #[tokio::test]
 async fn a_restart_does_not_re_approve_a_quarantined_upstream() {
-    busbar_core::metrics::init();
-    let (file, cfg) = durable_cfg("mcp-quarantine-restart");
+    metrics_init();
+    let (file, cfg) = engine().durable_store_cfg("mcp-quarantine-restart");
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let app = quarantined(
         &peer,
         Arc::new(CatalogueCache::new()),
-        Some(open_plugin(&cfg)),
+        Some(engine().open_store_plugin(&cfg)),
     )
     .await;
 
@@ -186,7 +185,7 @@ async fn a_restart_does_not_re_approve_a_quarantined_upstream() {
     let restarted = boot(
         &peer,
         Arc::new(CatalogueCache::new()),
-        Some(open_plugin(&cfg)),
+        Some(engine().open_store_plugin(&cfg)),
     );
 
     let before = peer.calls();
@@ -221,13 +220,13 @@ async fn a_restart_does_not_re_approve_a_quarantined_upstream() {
 /// that way — a planning client reads it, builds a call against it, and is refused.
 #[tokio::test]
 async fn a_restart_does_not_re_advertise_a_quarantined_upstream() {
-    busbar_core::metrics::init();
-    let (_file, cfg) = durable_cfg("mcp-quarantine-restart-listing");
+    metrics_init();
+    let (_file, cfg) = engine().durable_store_cfg("mcp-quarantine-restart-listing");
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let app = quarantined(
         &peer,
         Arc::new(CatalogueCache::new()),
-        Some(open_plugin(&cfg)),
+        Some(engine().open_store_plugin(&cfg)),
     )
     .await;
     drop(app);
@@ -235,7 +234,7 @@ async fn a_restart_does_not_re_advertise_a_quarantined_upstream() {
     let restarted = boot(
         &peer,
         Arc::new(CatalogueCache::new()),
-        Some(open_plugin(&cfg)),
+        Some(engine().open_store_plugin(&cfg)),
     );
     let names = advertised(&restarted).await;
     assert!(
@@ -253,13 +252,13 @@ async fn a_restart_does_not_re_advertise_a_quarantined_upstream() {
 /// honest schema the operator approved, so the first call's live verification agrees and serves.
 #[tokio::test]
 async fn a_durable_deployment_with_no_recorded_demotion_still_serves_its_declarative_approval() {
-    busbar_core::metrics::init();
-    let (_file, cfg) = durable_cfg("mcp-quarantine-no-record");
+    metrics_init();
+    let (_file, cfg) = engine().durable_store_cfg("mcp-quarantine-no-record");
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let app = boot(
         &peer,
         Arc::new(CatalogueCache::new()),
-        Some(open_plugin(&cfg)),
+        Some(engine().open_store_plugin(&cfg)),
     );
 
     assert!(
@@ -280,7 +279,7 @@ async fn a_durable_deployment_with_no_recorded_demotion_still_serves_its_declara
 /// record still refuses a drifted upstream — the defence does not depend on a store being configured.
 #[tokio::test]
 async fn the_first_call_after_a_restart_re_establishes_the_quarantine() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let _ = quarantined(&peer, Arc::new(CatalogueCache::new()), None).await;
 
@@ -307,7 +306,7 @@ async fn the_first_call_after_a_restart_re_establishes_the_quarantine() {
 /// longer exists.
 #[tokio::test]
 async fn a_quarantined_tool_is_not_advertised() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let app = quarantined(&peer, Arc::new(CatalogueCache::new()), None).await;
 
@@ -327,7 +326,7 @@ async fn a_quarantined_tool_is_not_advertised() {
 /// above and would have deleted the product.
 #[tokio::test]
 async fn an_undrifted_tool_is_still_advertised() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let app = boot(&peer, Arc::new(CatalogueCache::new()), None);
     let (status, body) = read_call(&app).await;
@@ -345,7 +344,7 @@ async fn an_undrifted_tool_is_still_advertised() {
 /// catalogue exactly as it always did (`tools/list` does not itself verify).
 #[tokio::test]
 async fn a_server_nobody_has_called_is_still_advertised() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let app = boot(&peer, Arc::new(CatalogueCache::new()), None);
 

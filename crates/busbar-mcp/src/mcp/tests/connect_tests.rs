@@ -11,8 +11,8 @@
 use super::connect_support::{approved_hash, mcp_cfg, server_cfg, wire_tool, Peer};
 use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::connect::{changes, overlay_patch, parse_tool_list, refresh};
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
 const DESCRIPTION: &str = "reads a file from disk";
@@ -57,10 +57,10 @@ fn a_result_that_is_not_a_tool_list_is_refused() {
 /// rather than adopted from anything the upstream supplied.
 #[tokio::test]
 async fn a_refresh_records_the_observation_it_re_hashed() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
     let cache = Arc::new(CatalogueCache::new());
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server(
             "fs",
@@ -101,10 +101,10 @@ async fn a_refresh_records_the_observation_it_re_hashed() {
 /// it did.
 #[tokio::test]
 async fn a_failed_refresh_is_recorded_and_demotes_the_server() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
     let cache = Arc::new(CatalogueCache::new());
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server(
             "fs",
@@ -151,7 +151,7 @@ async fn a_failed_refresh_is_recorded_and_demotes_the_server() {
 /// refresh has no caller.
 #[tokio::test]
 async fn a_passthrough_server_refuses_an_operator_driven_refresh() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
     let cache = Arc::new(CatalogueCache::new());
     let mut cfg = server_cfg(
@@ -159,7 +159,7 @@ async fn a_passthrough_server_refuses_an_operator_driven_refresh() {
         &[("read", Some(approved_hash("read", DESCRIPTION, schema())))],
     );
     cfg.upstream_credentials = Some(busbar_api::UpstreamCreds::Passthrough);
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("fs", cfg)
         .with_mcp_sightings(cache.clone())
@@ -190,7 +190,7 @@ async fn a_passthrough_server_refuses_an_operator_driven_refresh() {
 #[test]
 fn an_approval_projects_onto_the_config_fields_the_build_reads_back() {
     use crate::mcp::client::catalogue::TransportPin;
-    use busbar_core::trust::{Approval, Observation, Sighting};
+    use busbar_substrate::trust::{Approval, Observation, Sighting};
 
     let mut approval: Approval<TransportPin> = Approval::declared(
         TransportPin::declared("cert_spki", "sha256/OLD="),
@@ -237,7 +237,7 @@ fn an_approval_projects_onto_the_config_fields_the_build_reads_back() {
 #[test]
 fn the_projected_approval_rebuilds_into_the_same_dispatch_answer() {
     use crate::mcp::client::catalogue::TransportPin;
-    use busbar_core::trust::{Approval, Observation, Sighting};
+    use busbar_substrate::trust::{Approval, Observation, Sighting};
 
     let mut approval: Approval<TransportPin> = Approval::declared(
         TransportPin::declared("cert_spki", "sha256/PEER="),

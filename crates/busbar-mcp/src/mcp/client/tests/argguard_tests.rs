@@ -14,6 +14,7 @@ use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::client::dispatch::{check_arguments, resolve, DispatchRefusal};
 use crate::mcp::client::ssrf::SsrfPolicy;
 use crate::mcp::client::support::{approved_server, key_wildcard, tool};
+use crate::mcp::test_engine::*;
 use serde_json::{json, Value};
 
 fn public() -> SsrfPolicy {
@@ -591,10 +592,9 @@ fn dispatch_walks_the_pinned_schema_and_refuses_a_metadata_argument() {
 /// cannot name); this pins the two implementations together so neither can drift from the other.
 #[test]
 fn guard_url_slot_matches_the_inline_arg_guard_for_every_input() {
-    use busbar_core::plane_host::{guard_url_over, GuardOutcome};
     use busbar_plugin::hot::GuardClass;
 
-    let app = busbar_core::test_support::TestApp::new().build();
+    let app = test_app().build();
 
     // The inline judge's verdict for one absolute URL, reduced to the slot's neutral (class, host)
     // shape by routing it through a declared-`uri` field (the AbsoluteUrl path the slot reproduces).
@@ -662,10 +662,7 @@ fn guard_url_slot_matches_the_inline_arg_guard_for_every_input() {
         for allow_private in [false, true] {
             let policy = SsrfPolicy { allow_private };
             let expected = inline(url, policy);
-            let actual = match guard_url_over(&app, url, allow_private) {
-                GuardOutcome::Allow => Ok(()),
-                GuardOutcome::Deny { class, reason } => Err((class, reason)),
-            };
+            let actual = app.guard_url(url, allow_private);
             assert_eq!(
                 actual, expected,
                 "verdict parity for `{url}` (allow_private={allow_private})"

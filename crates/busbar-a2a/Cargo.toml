@@ -12,7 +12,10 @@
 # dependency — the default build compiles with NO busbar-core in its closure, every former
 # `busbar_core::` reach served by the neutral substrate (the config-section split, the task-reader /
 # hostless-egress / admin-envelope seams). busbar-core stays an OPTIONAL dep pulled ONLY by
-# `test-support`, because the plane's `&App`-typed test helpers name `busbar_core::state::App`.
+# `test-support`: the plane's tests drive the engine fixture through the neutral substrate test kit
+# (`busbar_substrate::testkit::engine_kit` / `engine_kit_plus`), and the engine's ONE implementation
+# of that kit is bound in three `tests/`-path boot files (`engine_boot`, `egress_boot`,
+# `envelope_boot`) — the only places this crate's test tree names `busbar_core::`.
 [package]
 name = "busbar-a2a"
 version = "1.6.0"
@@ -29,9 +32,9 @@ path = "src/lib.rs"
 
 [dependencies]
 # THE SEAL (1.6.0): busbar-core is no longer a PRODUCTION dependency of this plugin. Optional, pulled
-# ONLY by `test-support` (the plane's `&App`-typed test helpers name `busbar_core::state::App`, which
-# compiles only where busbar-core is in the closure — the dual-compile into core's own test binary, or
-# a `test-support` build). Optional rather than a dev-dependency because a feature cannot reference a
+# ONLY by `test-support`: the plane's tests reach the engine fixture through the neutral substrate
+# test kit, and the engine's implementation of that kit is bound in the `tests/`-path boot files
+# alone (see the header). Optional rather than a dev-dependency because a feature cannot reference a
 # dev-dep-only crate.
 busbar-core = { path = "../busbar-core", default-features = false, features = ["plane-a2a"], optional = true }
 # The substrate crate: the neutral shared surface the plugin names instead of busbar-core — the
@@ -55,6 +58,10 @@ http = { workspace = true }
 # `test-support` and drive reqwest as a client against the fixtures — optional on that feature,
 # absent from every shipped build; plain `cargo test -p` reaches it via [dev-dependencies].
 reqwest = { workspace = true, features = ["http2", "json"], optional = true }
+# TEST MACHINERY ONLY, same shape: the in-memory store the admin-verb battery hands the engine kit's
+# governance registry. That battery compiles into the LIBRARY under `test-support` (core's own
+# test-support build takes this shape), where a dev-dependency is out of reach.
+busbar-store-memory = { path = "../store-memory", optional = true }
 # The transport's extra trust anchors are DER (`CertificateDer`) now that the hostless hop rides
 # the engine (`Trust::WebpkiPlus`); parsed from PEM at registration, same fail-at-parse posture as
 # the retired `reqwest::Certificate::from_pem`.
@@ -112,8 +119,9 @@ openapi-schema = ["busbar-substrate/openapi-schema", "dep:schemars"]
 # force-pulls the optional busbar-core into a non-test-support build; it only cascades where
 # busbar-core is already in the closure.
 auth-admin-tokens = ["busbar-core?/auth-admin-tokens"]
-# Pulls busbar-core (the optional dep) and its test fixtures: the plane's `&App`-typed test helpers and
-# the dual-compile plane tests name `busbar_core::…`, so this feature is the one edge that puts
+# Pulls busbar-core (the optional dep) and its test fixtures: the plane's App-driving tests reach the
+# engine fixture through the neutral substrate test kit, whose engine-side implementation the
+# `tests/`-path boot files bind from busbar-core, so this feature is the one edge that puts
 # busbar-core in the closure — the default/prod build has none. Core's `TestApp` fixture names BOTH
 # planes' config types unconditionally, so this forwards `plane-mcp`/`plane-a2a` too — the same
 # both-planes shape core's own dual-compile test binary builds with.
@@ -123,6 +131,7 @@ test-support = [
     "busbar-core/plane-mcp",
     "busbar-core/plane-a2a",
     "dep:reqwest",
+    "dep:busbar-store-memory",
 ]
 
 [dev-dependencies]

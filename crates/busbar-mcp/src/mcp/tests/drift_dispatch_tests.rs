@@ -29,8 +29,8 @@ use super::connect_support::{
     approved_hash, call, gov_with_scopes, mcp_cfg, server_cfg, wire_tool, Peer,
 };
 use crate::mcp::client::catalogue::CatalogueCache;
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
 const DESCRIPTION: &str = "reads a file from disk";
@@ -57,12 +57,10 @@ fn poisoned_schema() -> serde_json::Value {
 
 /// Build the app, the shared sightings cache, and take the FIRST observation — the approval the
 /// operator worked, live.
-async fn approved_and_connected(
-    peer: &Peer,
-) -> (Arc<busbar_core::state::App>, Arc<CatalogueCache>) {
+async fn approved_and_connected(peer: &Peer) -> (Arc<dyn EngineApp>, Arc<CatalogueCache>) {
     let hash = approved_hash("read", DESCRIPTION, honest_schema());
     let cache = Arc::new(CatalogueCache::new());
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("fs", server_cfg(peer, &[("read", Some(hash))]))
         .with_mcp_sightings(cache.clone())
@@ -91,7 +89,7 @@ async fn approved_and_connected(
 /// THE CONTROL. Unchanged schema, live cache, and the call goes through to the upstream.
 #[tokio::test]
 async fn an_unchanged_schema_still_dispatches_under_a_live_cache() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let (app, _cache) = approved_and_connected(&peer).await;
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
@@ -125,7 +123,7 @@ async fn an_unchanged_schema_still_dispatches_under_a_live_cache() {
 /// refused before it reaches the wire.
 #[tokio::test]
 async fn a_schema_changed_under_a_live_cache_refuses_the_dispatch() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let (app, cache) = approved_and_connected(&peer).await;
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
@@ -192,7 +190,7 @@ async fn a_schema_changed_under_a_live_cache_refuses_the_dispatch() {
 /// most, while leaving every structural field alone.
 #[tokio::test]
 async fn a_description_only_change_refuses_the_dispatch() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let (app, cache) = approved_and_connected(&peer).await;
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
@@ -229,7 +227,7 @@ async fn a_description_only_change_refuses_the_dispatch() {
 /// meaning, and a defence that alarmed on it would teach operators to click through drift alerts.
 #[tokio::test]
 async fn a_key_reorder_is_not_drift_and_still_dispatches() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let (app, cache) = approved_and_connected(&peer).await;
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
@@ -272,7 +270,7 @@ async fn a_key_reorder_is_not_drift_and_still_dispatches() {
 /// changed, and the operator has to look.
 #[tokio::test]
 async fn an_approved_tool_that_vanished_refuses_the_dispatch() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let (app, cache) = approved_and_connected(&peer).await;
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
@@ -306,7 +304,7 @@ async fn an_approved_tool_that_vanished_refuses_the_dispatch() {
 /// observation that happened to succeed.
 #[tokio::test]
 async fn a_failed_refresh_refuses_the_dispatch() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let (app, cache) = approved_and_connected(&peer).await;
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
@@ -351,9 +349,9 @@ async fn a_failed_refresh_refuses_the_dispatch() {
 /// case isolates the OTHER branch, the one a reused or not-yet-observed snapshot takes.
 #[tokio::test]
 async fn a_reused_unsighted_snapshot_dispatches_on_the_configured_hash() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server(
             "fs",

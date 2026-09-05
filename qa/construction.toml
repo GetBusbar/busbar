@@ -67,8 +67,8 @@ private shape just as surely as production code does; they are reported separate
 counts can trend to zero at their own pace."""
 [rules.ports-only-tests.max_per_crate]
 busbar-llm = 565
-busbar-mcp = 360
-busbar-a2a = 120
+busbar-mcp = 1
+busbar-a2a = 3
 busbar-voice = 0
 
 # ── 4. no-uninstalled-seam ───────────────────────────────────────────────────────────────────────

@@ -19,49 +19,37 @@
 //! must receive the caller's ORIGINAL `params`, verbatim.
 
 use super::relay_harness::{backend_ok, call, call_agent, envelope, harness_gated, Gates, Outcome};
-use busbar_core::config::{HookCfg, HookKind, PromptAccess, UserAccess};
+use crate::testkit::engine_boot::engine;
+use busbar_substrate::testkit::engine_kit::HookNeed;
 
-/// A `prompt: rw` REWRITE gate on the hermetic test cdylib. `raw_transform_reply` drives its
+/// A `prompt: rw` REWRITE gate on the hermetic test cdylib, as the `hooks:` document an operator
+/// writes (the engine parses it with its own grammar at build). `raw_transform_reply` drives its
 /// `transform` reply verbatim, so a test states the exact replacement `params` object it returns.
-fn rewrite(raw_transform_reply: serde_json::Value) -> HookCfg {
-    HookCfg {
-        kind: HookKind::Gate,
-        plugin: "test-hook".to_string(),
+fn rewrite(raw_transform_reply: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "gate",
+        "module": "test-hook",
         // Not the 1 ms default — see the gate battery: under load the deadline fires on scheduling
         // delay and `on_error: weighted` maps the timed-out rewrite to an abstain (no rewrite).
-        timeout_ms: 10_000,
-        on_error: "weighted".to_string(),
-        prompt: PromptAccess::Rw,
-        user: UserAccess::Ro,
-        priority: 0,
-        settings: serde_json::json!({ "raw_transform_reply": raw_transform_reply })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-        on_empty: None,
-        global: false,
-        default: false,
-        signals: Vec::new(),
-        groups: Vec::new(),
-        phase: Vec::new(),
-    }
+        "timeout_ms": 10_000,
+        "on_error": "weighted",
+        "prompt": "rw",
+        "user": "ro",
+        "priority": 0,
+        "settings": { "raw_transform_reply": raw_transform_reply },
+    })
 }
 
 /// The attach, cdylib loaded through the real scan/trust/load pipeline. ABSENCE IS A HARD FAILURE,
 /// never a skip (a skipped acceptance test reports green); the panic names the fix.
-fn gates(name: &str, cfg: HookCfg) -> Gates {
-    let env = busbar_core::test_support::test_hook_env(
-        &["test-hook"],
-        busbar_plugin_sign::HookNeeds {
-            prompt: busbar_plugin_sign::NeedLevel::Rw,
-            user: busbar_plugin_sign::NeedLevel::Ro,
-        },
-    )
-    .expect(
-        "the busbar-hook-test-plugin cdylib is not built. This battery is the A2A half of the \
+fn gates(name: &str, cfg: serde_json::Value) -> Gates {
+    let env = engine()
+        .hook_env(&["test-hook"], HookNeed::Rw, HookNeed::Ro)
+        .expect(
+            "the busbar-hook-test-plugin cdylib is not built. This battery is the A2A half of the \
          rewrite-hook acceptance test and it CANNOT be skipped. Build it: `cargo build -p \
          busbar-hook-test-plugin`.",
-    );
+        );
     Gates {
         env,
         hooks: vec![(name.to_string(), cfg)],
@@ -146,13 +134,8 @@ async fn a_rewrite_hook_edits_the_submission_params_before_the_hop() {
 /// and its refusal stops the submission before ANY hop.
 #[tokio::test]
 async fn a_rewrite_gate_can_reject_on_the_params_it_screens() {
-    let cfg = HookCfg {
-        settings: serde_json::json!({ "reject_if_contains": "EXFILTRATE" })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-        ..rewrite(serde_json::Value::Null)
-    };
+    let mut cfg = rewrite(serde_json::Value::Null);
+    cfg["settings"] = serde_json::json!({ "reject_if_contains": "EXFILTRATE" });
     let h = harness_gated(
         Outcome::AnswersCorrelated(200, backend_ok()),
         false,

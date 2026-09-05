@@ -547,6 +547,7 @@ dependencies = [
  "busbar-core",
  "busbar-mcp",
  "busbar-plugin",
+ "busbar-store-memory",
  "busbar-substrate",
  "busbar-timing",
  "bytes",

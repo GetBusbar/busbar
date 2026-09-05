@@ -10,7 +10,7 @@
 
 use super::*;
 use crate::a2a::registry::AgentRegistration;
-use busbar_core::config::secret::SecretResolver;
+use crate::testkit::engine_boot::engine;
 
 /// Write a secret to a uniquely-named file and hand back a `file:` reference to it. A file rather
 /// than an env var because `set_var` is process-global and these tests run in parallel with every
@@ -68,7 +68,7 @@ fn a_minted_lease_carries_the_secret_only_through_the_header_it_was_placed_at() 
         &authorise_egress(&a_caller(), "planner", 0)
             .expect("the caller is granted `agent:planner`"),
         &reg,
-        &SecretResolver::builtins_only(),
+        engine().builtin_secret_resolver().as_ref(),
         1_000,
     )
     .expect("mint");
@@ -106,7 +106,7 @@ fn a_named_header_placement_carries_the_value_verbatim() {
         &authorise_egress(&a_caller(), "planner", 0)
             .expect("the caller is granted `agent:planner`"),
         &reg,
-        &SecretResolver::builtins_only(),
+        engine().builtin_secret_resolver().as_ref(),
         0,
     )
     .expect("mint");
@@ -128,7 +128,7 @@ fn a_lease_stops_working_at_its_expiry_rather_than_being_checked_by_the_caller()
         &authorise_egress(&a_caller(), "planner", 0)
             .expect("the caller is granted `agent:planner`"),
         &reg,
-        &SecretResolver::builtins_only(),
+        engine().builtin_secret_resolver().as_ref(),
         1_000,
     )
     .expect("mint");
@@ -159,7 +159,7 @@ fn a_lease_minted_for_one_agent_is_refused_on_a_hop_to_another() {
         &authorise_egress(&a_caller(), "planner", 0)
             .expect("the caller is granted `agent:planner`"),
         &reg,
-        &SecretResolver::builtins_only(),
+        engine().builtin_secret_resolver().as_ref(),
         0,
     )
     .expect("mint");
@@ -180,7 +180,7 @@ fn a_registration_with_no_credential_refuses_rather_than_delegating_unauthentica
             &authorise_egress(&a_caller(), "planner", 0)
                 .expect("the caller is granted `agent:planner`"),
             &reg,
-            &SecretResolver::builtins_only(),
+            engine().builtin_secret_resolver().as_ref(),
             0,
         )
         .expect_err("no credential"),
@@ -200,7 +200,7 @@ fn an_unresolvable_handle_fails_closed_and_names_the_agent() {
         &authorise_egress(&a_caller(), "planner", 0)
             .expect("the caller is granted `agent:planner`"),
         &reg,
-        &SecretResolver::builtins_only(),
+        engine().builtin_secret_resolver().as_ref(),
         0,
     )
     .expect_err("unresolvable");
@@ -224,7 +224,7 @@ fn the_lease_never_renders_the_secret_in_a_debug_line() {
         &authorise_egress(&a_caller(), "planner", 0)
             .expect("the caller is granted `agent:planner`"),
         &reg,
-        &SecretResolver::builtins_only(),
+        engine().builtin_secret_resolver().as_ref(),
         0,
     )
     .expect("mint");
@@ -321,7 +321,7 @@ fn busbars_own_credential_is_not_spent_for_a_caller_that_holds_no_grant_on_the_b
     // The granted agent authorises, and the lease is minted. The control: without it, the refusal
     // below would be equally green against a gate that refuses everything.
     let grant = authorise_egress(&caller, "planner", 0).expect("the granted agent authorises");
-    assert!(mint(&grant, &reg, &SecretResolver::builtins_only(), 0).is_ok());
+    assert!(mint(&grant, &reg, engine().builtin_secret_resolver().as_ref(), 0).is_ok());
 
     // A DIFFERENT backend the same caller holds no grant on: no grant, therefore no mint, therefore
     // no credential. There is no second path to a lease — `mint` and `mint_from` both take the
@@ -340,7 +340,12 @@ fn busbars_own_credential_is_not_spent_for_a_caller_that_holds_no_grant_on_the_b
     let mut other = AgentRegistration::registered("payments", "https://a2a.vendor/payments");
     other.outbound_cred = reg.outbound_cred.clone();
     assert!(matches!(
-        mint(&grant, &other, &SecretResolver::builtins_only(), 0),
+        mint(
+            &grant,
+            &other,
+            engine().builtin_secret_resolver().as_ref(),
+            0
+        ),
         Err(LeaseError::WrongAgent { .. })
     ));
 }

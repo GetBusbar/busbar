@@ -17,29 +17,28 @@
 //! Every test here runs against a CLOSED chain (`keys_chain` + governance), because the whole
 //! question is what an unauthenticated caller receives.
 
+use crate::mcp::test_engine::*;
 use crate::mcp::McpCfg;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 const ISSUER: &str = "https://login.example.com";
 const METADATA_PATH: &str = "/.well-known/oauth-protected-resource/mcp";
 
 async fn serve() -> (String, tokio::task::JoinHandle<()>) {
-    use busbar_core::governance::signing::{TokenSigner, DEFAULT_KID};
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::governance::signing::{TokenSigner, DEFAULT_KID};
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
-    let gov = Arc::new(
-        GovState::new_with_signer(
+    metrics_init();
+    let gov = engine()
+        .governance(
             Arc::new(MemoryStore::new()),
             Some("admintok".to_string()),
             Some(TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID)),
         )
-        .unwrap(),
-    );
-    let app = TestApp::new()
+        .unwrap();
+    let app = test_app()
         .keys_chain()
         .governance(gov)
         .mcp(&McpCfg {
@@ -49,7 +48,7 @@ async fn serve() -> (String, tokio::task::JoinHandle<()>) {
             allowed_origins: Vec::new(),
         })
         .build();
-    let router = busbar_core::build_router(app);
+    let router = build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -218,8 +217,8 @@ async fn the_public_metadata_route_is_an_exact_path_and_grants_no_neighbours() {
 async fn a_token_minted_for_another_resource_is_refused_even_when_the_chain_would_admit_it() {
     crate::testkit::install_test_seams();
     use base64::Engine as _;
-    busbar_core::metrics::init();
-    let app = TestApp::new()
+    metrics_init();
+    let app = test_app()
         .idp_chain()
         .mcp(&McpCfg {
             canonical_uri: CANONICAL.to_string(),
@@ -228,7 +227,7 @@ async fn a_token_minted_for_another_resource_is_refused_even_when_the_chain_woul
             allowed_origins: Vec::new(),
         })
         .build();
-    let router = busbar_core::build_router(app);
+    let router = build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let h = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -339,7 +338,7 @@ async fn a_token_minted_for_another_resource_is_refused_even_when_the_chain_woul
 /// function.
 #[test]
 fn challenge_values_cannot_escape_their_quoted_string() {
-    use busbar_core::auth::challenge::{www_authenticate, ChallengeError};
+    use busbar_substrate::auth::challenge::{www_authenticate, ChallengeError};
     let hostile = "https://h.example/\"x\\y\r\nInjected: yes";
     let v = www_authenticate(ChallengeError::InvalidToken, hostile, None, None);
     assert!(
@@ -365,7 +364,7 @@ fn challenge_values_cannot_escape_their_quoted_string() {
 /// `401` would send the client round a loop that cannot terminate.
 #[test]
 fn insufficient_scope_is_a_403_and_still_names_the_metadata() {
-    use busbar_core::auth::challenge::{refuse, ChallengeError};
+    use busbar_substrate::auth::challenge::{refuse, ChallengeError};
     let resp = refuse(
         ChallengeError::InsufficientScope,
         "https://h.example/.well-known/oauth-protected-resource/mcp",

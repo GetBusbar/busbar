@@ -24,8 +24,8 @@ use super::upstream_support::{
     call, call_response, call_response_caps, exchanging_server, gov_with_scopes, mcp_cfg,
     Behaviour, Peer,
 };
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -39,8 +39,8 @@ const ISSUED: &str = "downscoped-access-token-issued-by-the-as";
 /// it is naming.
 const TRIP_MIN_REQUESTS: usize = 5;
 
-fn app_for(peer: &Peer) -> Arc<busbar_core::state::App> {
-    TestApp::new()
+fn app_for(peer: &Peer) -> Arc<dyn EngineApp> {
+    test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(peer, SUBJECT))
         .build()
@@ -54,7 +54,7 @@ fn params() -> serde_json::Value {
 /// call fast-fails with the decided rendering, and the dead upstream is never touched again.
 #[tokio::test]
 async fn a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_touching_it() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::DeniesWithStatus(401), ISSUED).await;
     let app = app_for(&peer);
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
@@ -69,9 +69,8 @@ async fn a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_to
     // cell opens on the FIRST definitive failure, per the core classifier.
     assert!(
         matches!(
-            app.plane_breakers
-                .state(&busbar_substrate::store::tool_key("fs")),
-            busbar_core::store::BreakerState::Open { .. }
+            app.breaker_state(&busbar_substrate::store::tool_key("fs")),
+            busbar_substrate::store::BreakerState::Open { .. }
         ),
         "a 401 from the upstream must open the server's breaker cell"
     );
@@ -137,13 +136,13 @@ async fn a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_to
 /// and NO task id is minted for work busbar already knows it will not dispatch.
 #[tokio::test]
 async fn a_tripped_server_refuses_before_a_task_id_is_minted() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::DeniesWithStatus(401), ISSUED).await;
     let mut server = exchanging_server(&peer, SUBJECT);
     for allow in server.tools_allow.values_mut() {
         allow.task_support = crate::mcp::config::TaskSupport::Required;
     }
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", server)
         .build();
@@ -167,9 +166,8 @@ async fn a_tripped_server_refuses_before_a_task_id_is_minted() {
     }
     for _ in 0..50 {
         if matches!(
-            app.plane_breakers
-                .state(&busbar_substrate::store::tool_key("fs")),
-            busbar_core::store::BreakerState::Open { .. }
+            app.breaker_state(&busbar_substrate::store::tool_key("fs")),
+            busbar_substrate::store::BreakerState::Open { .. }
         ) {
             break;
         }
@@ -199,7 +197,7 @@ async fn a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fa
         McpPinMechanism, McpServerDefCfg, ServerPinCfg, ServerRequestGrants, ToolAllowCfg,
         Transport,
     };
-    busbar_core::metrics::init();
+    metrics_init();
 
     let mut tools_allow = indexmap::IndexMap::new();
     tools_allow.insert(
@@ -245,7 +243,7 @@ async fn a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fa
         hooks: Vec::new(),
         sampling: None,
     };
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("sh", server)
         .build();
@@ -272,8 +270,8 @@ async fn a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fa
     let key = busbar_substrate::store::tool_key("sh");
     let deadline = Instant::now() + Duration::from_secs(20);
     while !matches!(
-        app.plane_breakers.state(&key),
-        busbar_core::store::BreakerState::Open { .. }
+        app.breaker_state(&key),
+        busbar_substrate::store::BreakerState::Open { .. }
     ) {
         assert!(
             Instant::now() < deadline,
@@ -323,7 +321,7 @@ async fn a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fa
 /// `mcp_hits() == 2` proves the call was dispatched rather than fast-failed.
 #[tokio::test]
 async fn one_transient_failure_does_not_refuse_the_next_caller() {
-    busbar_core::metrics::init();
+    metrics_init();
     // 503 is `ServerError` → `TransientUpstream`: the disposition whose sub-threshold arm this is
     // about. (401 is `Auth` → `HardDown`, which trips on the FIRST failure by design — see the
     // first test in this file, which is unchanged.)
@@ -342,9 +340,8 @@ async fn one_transient_failure_does_not_refuse_the_next_caller() {
     // false — and a cell that did not trip must not behave as though it had.
     assert!(
         matches!(
-            app.plane_breakers
-                .state(&busbar_substrate::store::tool_key("fs")),
-            busbar_core::store::BreakerState::Closed
+            app.breaker_state(&busbar_substrate::store::tool_key("fs")),
+            busbar_substrate::store::BreakerState::Closed
         ),
         "one sub-threshold transient must leave the cell Closed and admitting, not benched"
     );
@@ -367,7 +364,7 @@ async fn one_transient_failure_does_not_refuse_the_next_caller() {
 /// with the decided rendering, and the dead peer stops being touched.
 #[tokio::test]
 async fn a_transient_server_that_breaches_the_error_rate_trips_and_then_fast_fails() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::DeniesWithStatus(503), ISSUED).await;
     let app = app_for(&peer);
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
@@ -387,9 +384,8 @@ async fn a_transient_server_that_breaches_the_error_rate_trips_and_then_fast_fai
     );
     assert!(
         matches!(
-            app.plane_breakers
-                .state(&busbar_substrate::store::tool_key("fs")),
-            busbar_core::store::BreakerState::Open { .. }
+            app.breaker_state(&busbar_substrate::store::tool_key("fs")),
+            busbar_substrate::store::BreakerState::Open { .. }
         ),
         "an all-error window at or above min_requests must trip the cell"
     );

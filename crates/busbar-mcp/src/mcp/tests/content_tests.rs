@@ -23,9 +23,9 @@
 //! about the wire, and `method::resources_read` returning a `Response` is not the wire.
 
 use crate::mcp::envelope::PROTOCOL_VERSION;
+use crate::mcp::test_engine::*;
 use crate::mcp::McpCfg;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 
@@ -36,10 +36,10 @@ const PNG_1X1: &str =
 
 /// Boot an MCP deployment with ONE registered server, described in the operator's own YAML.
 async fn serve(server_id: &str, yaml: &str) -> (String, tokio::task::JoinHandle<()>) {
-    busbar_core::metrics::init();
+    metrics_init();
     let def: crate::mcp::config::McpServerDefCfg = serde_yaml::from_str(yaml)
         .unwrap_or_else(|e| panic!("the `tools:` registration was refused by the grammar: {e}"));
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&McpCfg {
             canonical_uri: CANONICAL.to_string(),
             authorization_servers: vec!["https://login.example.com".to_string()],
@@ -51,7 +51,7 @@ async fn serve(server_id: &str, yaml: &str) -> (String, tokio::task::JoinHandle<
     // These batteries assert content/envelope handling once a tool is servable, not verify-on-call:
     // mark the server just-verified so the gate reuses the snapshot over the real wire.
     crate::testkit::prefresh_mcp_sightings(app.as_ref());
-    let router = busbar_core::build_router(app);
+    let router = build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

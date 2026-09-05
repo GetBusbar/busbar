@@ -27,9 +27,8 @@
 use super::upstream_support::{
     call_as, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer,
 };
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::config::{HookCfg, HookKind, PromptAccess, UserAccess};
-use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 const SUBJECT: &str = "busbar-own-subject-token-for-the-exchange";
@@ -38,55 +37,44 @@ const ISSUED: &str = "downscoped-access-token-issued-by-the-as";
 /// A `prompt: rw` REWRITE gate backed by the hermetic test cdylib. `raw_transform_reply` drives its
 /// `transform` reply verbatim, so a test states the exact replacement `arguments` object the hook
 /// returns — the invoke-family apply seam then swaps it in for the caller's arguments.
-fn rewrite(raw_transform_reply: serde_json::Value) -> HookCfg {
-    HookCfg {
-        kind: HookKind::Gate,
-        plugin: "test-hook".to_string(),
+fn rewrite(raw_transform_reply: serde_json::Value) -> serde_json::Value {
+    // The `hooks.<name>:` DOCUMENT as an operator writes it — the engine's own parser turns it into
+    // its config type, so the grammar under test is the file grammar, not a struct literal.
+    serde_json::json!({
+        "kind": "gate",
+        "module": "test-hook",
         // Not the 1 ms default — under parallel-suite load the deadline fires on scheduling delay
         // alone and the rewrite would silently abstain; the rewrite is under test, not the deadline.
-        timeout_ms: 10_000,
-        on_error: "weighted".to_string(),
+        "timeout_ms": 10_000,
+        "on_error": "weighted",
         // `rw` is the resolution ticket: `resolve_container_rewrites` files only EFFECTIVE-rw gates.
-        prompt: PromptAccess::Rw,
-        user: UserAccess::Ro,
-        priority: 0,
-        settings: serde_json::json!({ "raw_transform_reply": raw_transform_reply })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-        on_empty: None,
-        global: false,
-        default: false,
-        signals: Vec::new(),
-        groups: Vec::new(),
-        phase: Vec::new(),
-    }
+        "prompt": "rw",
+        "user": "ro",
+        "priority": 0,
+        "settings": { "raw_transform_reply": raw_transform_reply },
+        "global": false,
+        "default": false,
+        "signals": [],
+        "groups": [],
+        "phase": [],
+    })
 }
 
 /// A screening `prompt: rw` gate that REJECTS on a token in the content projection — proves a rewrite
 /// gate can also stop a call (reject > rewrite), and that the content it screens is the arguments.
-fn screen(reject_if_contains: &str) -> HookCfg {
-    HookCfg {
-        settings:
-            serde_json::json!({ "reject_if_contains": reject_if_contains, "reject_status": 451 })
-                .as_object()
-                .cloned()
-                .unwrap_or_default(),
-        ..rewrite(serde_json::Value::Null)
-    }
+fn screen(reject_if_contains: &str) -> serde_json::Value {
+    let mut def = rewrite(serde_json::Value::Null);
+    def["settings"] =
+        serde_json::json!({ "reject_if_contains": reject_if_contains, "reject_status": 451 });
+    def
 }
 
 /// The env that loads the test cdylib under the alias `test-hook`, declaring the `prompt: rw` /
 /// `user: ro` manifest intent the operator grant is met against. ABSENCE IS A HARD FAILURE, never a
 /// skip: with no gate to load every assertion below is vacuous. The panic names the fix.
-fn hook_env() -> busbar_core::hooks::HookEnv {
-    busbar_core::test_support::test_hook_env(
-        &["test-hook"],
-        busbar_plugin_sign::HookNeeds {
-            prompt: busbar_plugin_sign::NeedLevel::Rw,
-            user: busbar_plugin_sign::NeedLevel::Ro,
-        },
-    )
+fn hook_env() -> HookEnvHandle {
+    engine()
+        .hook_env(&["test-hook"], HookNeed::Rw, HookNeed::Ro)
     .expect(
         "the busbar-hook-test-plugin cdylib is not built. This battery is the acceptance test for \
          \"the rewrite half of the hook surface fires on a non-LLM protocol\" and it CANNOT be \
@@ -105,7 +93,7 @@ async fn a_rewrite_hook_edits_the_tool_call_arguments_before_they_go_upstream() 
 
     // ── THE CONTROL: no rewrite hook, so the caller's arguments reach the peer VERBATIM. This is the
     //    byte-identical-when-unconfigured guarantee, exercised. ───────────────────────────────────
-    let ungated = TestApp::new()
+    let ungated = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();
@@ -120,7 +108,7 @@ async fn a_rewrite_hook_edits_the_tool_call_arguments_before_they_go_upstream() 
 
     // ── THE TEST: `tools.hooks: [rewrite]`, same call. The upstream must receive the REWRITTEN
     //    arguments, and the caller's `/etc/hosts` must appear nowhere on the wire it went out on. ──
-    let gated = TestApp::new()
+    let gated = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .tools_hooks(&["rewrite"])
@@ -167,7 +155,7 @@ async fn a_rewrite_gate_can_reject_on_the_arguments_it_screens() {
     let env = hook_env();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .tools_hooks(&["screen"])

@@ -18,8 +18,8 @@ use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::connect::connect_support::{
     approved_hash, call, gov_with_scopes, mcp_cfg, server_cfg, wire_tool, Peer,
 };
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
 const DESCRIPTION: &str = "reads a file from disk";
@@ -41,18 +41,18 @@ fn granted() -> busbar_api::PlaneRequestCtx {
 
 /// Boot a deployment whose one server is reachable at `peer`, approved at the honest digest, with the
 /// given `verify_ttl`. A fresh sightings cache, so the first call is `NeverChecked` — verify-now.
-fn boot(peer: &Peer, verify_ttl: &str) -> Arc<busbar_core::state::App> {
+fn boot(peer: &Peer, verify_ttl: &str) -> Arc<dyn EngineApp> {
     let hash = approved_hash("read", DESCRIPTION, honest_schema());
     let mut cfg = server_cfg(peer, &[("read", Some(hash))]);
     cfg.verify_ttl = Some(verify_ttl.to_string());
-    TestApp::new()
+    test_app()
         .mcp(&mcp_cfg())
         .mcp_server("fs", cfg)
         .with_mcp_sightings(Arc::new(CatalogueCache::new()))
         .build()
 }
 
-async fn read(app: &Arc<busbar_core::state::App>) -> (u16, serde_json::Value) {
+async fn read(app: &Arc<dyn EngineApp>) -> (u16, serde_json::Value) {
     call(
         app,
         &granted(),
@@ -67,7 +67,7 @@ async fn read(app: &Arc<busbar_core::state::App>) -> (u16, serde_json::Value) {
 /// dispatch, which is the whole of verify-on-call.
 #[tokio::test]
 async fn a_drifted_upstream_is_refused_at_the_call_with_no_tick() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let app = boot(&peer, "0s"); // strict-live so the drift is deterministic without a wall clock
 
@@ -97,7 +97,7 @@ async fn a_drifted_upstream_is_refused_at_the_call_with_no_tick() {
 /// count, which is the load lever the whole design turns on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn n_concurrent_stale_calls_fetch_the_tool_list_once() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let app = boot(&peer, "5s");
 
@@ -118,7 +118,7 @@ async fn n_concurrent_stale_calls_fetch_the_tool_list_once() {
 /// call itself never reaches the wire.
 #[tokio::test]
 async fn an_unreachable_upstream_at_verify_is_refused_fail_closed() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let app = boot(&peer, "0s");
     // The upstream cannot be re-verified: its `tools/list` answers a JSON-RPC error.
@@ -140,7 +140,7 @@ async fn an_unreachable_upstream_at_verify_is_refused_fail_closed() {
 /// fetches — there is no freshness window to reuse.
 #[tokio::test]
 async fn verify_ttl_zero_refetches_every_call() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let app = boot(&peer, "0s");
 
@@ -157,7 +157,7 @@ async fn verify_ttl_zero_refetches_every_call() {
 /// lands well inside the window re-verifies nothing: exactly one `tools/list` for the two calls.
 #[tokio::test]
 async fn a_call_within_verify_ttl_reuses_the_snapshot() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let app = boot(&peer, "300s"); // a wide window; the two calls are milliseconds apart
 

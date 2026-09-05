@@ -20,9 +20,8 @@ use crate::mcp::config::{
     McpPinMechanism, McpServerDefCfg, PromptAllowCfg, ResourceAllowCfg, ServerPinCfg,
     ServerRequestGrants, ToolAllowCfg,
 };
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::state::{App, AppHandle};
-use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
 /// The capabilities a handler-level test declares on the caller's behalf.
@@ -121,8 +120,8 @@ fn poisoned_server(id: &str, tool: &str) -> McpServerDefCfg {
 }
 
 /// An app with two registered servers, so a grant can single one out.
-fn two_server_app() -> Arc<App> {
-    TestApp::new()
+fn two_server_app() -> Arc<dyn EngineApp> {
+    test_app()
         .mcp(&mcp_cfg())
         .mcp_server("fs", poisoned_server("fs", "read"))
         .mcp_server("db", poisoned_server("db", "query"))
@@ -161,16 +160,16 @@ fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
 
 /// Call one method and return `(status, body)`.
 async fn call(
-    app: &Arc<App>,
+    app: &Arc<dyn EngineApp>,
     gov: &busbar_api::PlaneRequestCtx,
     method: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {
     // Assert the method surface, not verify-on-call: reuse the snapshot for reachable servers.
     crate::testkit::prefresh_mcp_sightings(app.as_ref());
-    let handle = Arc::new(AppHandle::new(app.clone()));
+    let handle = app_handle(app.clone());
     let ctx = crate::mcp::method::Ctx {
-        host: busbar_core::plane_host::engine_host_from_handle(&handle),
+        host: engine_host_from_handle(&handle),
         gov,
         actor: "test-principal",
         capabilities: &ALL_CAPABILITIES,
@@ -205,7 +204,7 @@ fn tool_names(body: &serde_json::Value) -> Vec<String> {
 /// shape, through the real handler.
 #[tokio::test]
 async fn tools_list_is_scoped_to_the_callers_grant() {
-    busbar_core::metrics::init();
+    metrics_init();
     let app = two_server_app();
 
     let a = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
@@ -236,7 +235,7 @@ async fn tools_list_is_scoped_to_the_callers_grant() {
 /// the emitted object, not on the catalogue that produced it.
 #[tokio::test]
 async fn tools_list_publishes_the_namespaced_name_and_a_normalised_description() {
-    busbar_core::metrics::init();
+    metrics_init();
     let app = two_server_app();
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
     let (_, body) = call(&app, &g, "tools/list", serde_json::json!({})).await;
@@ -263,7 +262,7 @@ async fn tools_list_publishes_the_namespaced_name_and_a_normalised_description()
 /// body are exactly as injectable, and arrive by the same route. Both must come back stripped.
 #[tokio::test]
 async fn prompts_and_resources_are_sanitised_on_the_way_out() {
-    busbar_core::metrics::init();
+    metrics_init();
     let app = two_server_app();
     let g = gov_with_scopes(&[
         ("mcp_server", "fs"),
@@ -309,7 +308,7 @@ async fn prompts_and_resources_are_sanitised_on_the_way_out() {
 /// prompt that exists as for one that does not.
 #[tokio::test]
 async fn an_ungranted_prompt_answers_exactly_like_a_nonexistent_one() {
-    busbar_core::metrics::init();
+    metrics_init();
     let app = two_server_app();
     let none = gov_with_scopes(&[]);
     let (s1, b1) = call(
@@ -345,7 +344,7 @@ async fn an_ungranted_prompt_answers_exactly_like_a_nonexistent_one() {
 /// different sets of servers, and neither is handed a map of the operator's whole estate.
 #[tokio::test]
 async fn server_discover_advertises_the_merged_grant_scoped_catalogue() {
-    busbar_core::metrics::init();
+    metrics_init();
     let app = two_server_app();
     let a = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
     let both = gov_with_scopes(&[
@@ -402,10 +401,10 @@ async fn server_discover_advertises_the_merged_grant_scoped_catalogue() {
          vacuously; got {advertised:?}"
     );
     // And every advertised method actually resolves in the table.
-    let handle = Arc::new(AppHandle::new(app.clone()));
+    let handle = app_handle(app.clone());
     for m in &advertised {
         let ctx = crate::mcp::method::Ctx {
-            host: busbar_core::plane_host::engine_host_from_handle(&handle),
+            host: engine_host_from_handle(&handle),
             gov: &none,
             actor: "t",
             capabilities: &ALL_CAPABILITIES,
@@ -431,7 +430,7 @@ async fn server_discover_advertises_the_merged_grant_scoped_catalogue() {
 /// deployment still serves — the same posture `pool_allowed` takes on the LLM plane.
 #[tokio::test]
 async fn a_deployment_without_governance_serves_its_whole_catalogue() {
-    busbar_core::metrics::init();
+    metrics_init();
     let app = two_server_app();
     let (_, body) = call(
         &app,
@@ -452,12 +451,12 @@ async fn a_deployment_without_governance_serves_its_whole_catalogue() {
 /// own test and is not what is under examination here).
 #[tokio::test]
 async fn the_method_table_is_reachable_through_the_real_mounted_route() {
-    busbar_core::metrics::init();
-    let app = TestApp::new()
+    metrics_init();
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("fs", poisoned_server("fs", "read"))
         .build();
-    let router = busbar_core::build_router(app);
+    let router = build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -522,22 +521,22 @@ async fn the_method_table_is_reachable_through_the_real_mounted_route() {
 /// back out of the real store after a real flush.
 #[tokio::test]
 async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane() {
-    use busbar_core::governance::{GovState, MemoryStore};
-    busbar_core::metrics::init();
+    use busbar_store_memory::MemoryStore;
+    metrics_init();
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[3u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov_state = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov_state = engine()
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     // `allowed_pools: None` is the WILDCARD (`store.rs`), so no scope can be what refuses this call
     // — which is the point: the thing under test is the meter, not the grant.
     let (key, _secret) = gov_state
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "mcp-agent".to_string(),
                 allowed_pools: None,
                 group: None,
@@ -549,7 +548,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
         )
         .unwrap();
 
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg())
         // A UNIQUE server+tool for THIS test, so the `mcp_tool.call` row it audits carries a
         // resource (`mcp_tool:meter_probe`) no sibling MCP test writes. Sharing the `fs`/`read`
@@ -571,12 +570,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
     // saturates, so "an entry appeared AFTER this point" stays a fact about THIS call — and it is
     // the same value that scopes the row lookup below to our own dispatch rather than to whichever
     // sibling most recently wrote an `mcp_tool.call`.
-    let before = busbar_core::admin::audit::AUDIT
-        .export()
-        .iter()
-        .map(|e| e.seq)
-        .max()
-        .unwrap_or(0);
+    let before = engine().audit_high_water_seq();
     let (status, body) = call(
         &app,
         &gov,
@@ -607,7 +601,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
         gov_state.flush_metering() > 0,
         "the round must have metered"
     );
-    let bucket = busbar_core::governance::metering_bucket(busbar_substrate::store::now());
+    let bucket = busbar_substrate::governance::metering_bucket(busbar_substrate::store::now());
     let rows = gov_state.metering_for(bucket).expect("metering rows");
     let ours: Vec<_> = rows.iter().filter(|r| r.key_id == key.id).collect();
     assert_eq!(
@@ -636,18 +630,13 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
     // lookup scoped only to `action`/`seq` would `.rev().find` this decoy first and assert on the
     // wrong row; scoping the find to OUR resource+principal skips it. Without that scoping this test
     // is red here.
-    busbar_core::plane::auditlog::emit_admin_hostless_now(
+    engine().emit_admin_audit_now(
         "mcp_tool.call",
         "mcp_tool:fs_read",
         busbar_substrate::audit::vocab::OUTCOME_REJECTED,
         "test-principal",
     );
-    let entries = busbar_core::plane::auditlog::AUDIT_LOG.list_filtered(
-        0,
-        busbar_core::admin::audit::MAX_AUDIT_ENTRIES,
-        None,
-        None,
-    );
+    let entries = engine().audit_entries();
     let row = entries
         .iter()
         .find(|e| {
@@ -708,8 +697,8 @@ fn asking_tool(server: &str, tool: &str, method: &str) -> McpServerDefCfg {
 
 #[tokio::test]
 async fn a_minted_ask_the_caller_cannot_answer_is_32021_and_400() {
-    busbar_core::metrics::init();
-    let app = TestApp::new()
+    metrics_init();
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server(
             "fs",
@@ -722,10 +711,10 @@ async fn a_minted_ask_the_caller_cannot_answer_is_32021_and_400() {
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_needs_sampling")]);
 
     // The caller declares NOTHING, which is exactly what the scenario does.
-    let handle = Arc::new(AppHandle::new(app.clone()));
+    let handle = app_handle(app.clone());
     let none: serde_json::Value = serde_json::json!({});
     let ctx = crate::mcp::method::Ctx {
-        host: busbar_core::plane_host::engine_host_from_handle(&handle),
+        host: engine_host_from_handle(&handle),
         gov: &g,
         actor: "test-principal",
         capabilities: &none,

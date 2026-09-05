@@ -320,7 +320,6 @@ fn an_unknown_key_is_refused_rather_than_ignored() {
 #[test]
 fn the_admin_write_path_rejects_exactly_what_the_file_rejects() {
     crate::testkit::install_test_seams();
-    use busbar_core::config::named_map::NamedMapSection;
 
     // (name, definition document). Half must be accepted, half refused; which is which is decided by
     // the two paths, never by this list — the list only has to COVER every rule.
@@ -398,8 +397,8 @@ fn the_admin_write_path_rejects_exactly_what_the_file_rejects() {
             file_rejects.push(name);
         }
         // THE ADMIN WRITE PATH: the typed parse the generic handler runs before it persists.
-        if NamedMapSection::Plane(crate::mcp::PLANE_DECL.config_section)
-            .validate_def(name, def)
+        if engine()
+            .validate_named_def(crate::mcp::PLANE_DECL.config_section, name, def)
             .is_err()
         {
             api_rejects.push(name);
@@ -425,6 +424,7 @@ fn the_admin_write_path_rejects_exactly_what_the_file_rejects() {
 // implementation misses, which is an override colliding with a name NOBODY TYPED.
 
 use crate::mcp::config::validate_published_names;
+use crate::mcp::test_engine::*;
 
 /// AN UNGOVERNED CALLER — no principal, so no grant narrows anything. `busbar_substrate::trust::validate`
 /// states that posture once for the whole tree; these two tests are about which NAMES the catalogue
@@ -633,10 +633,8 @@ fn the_admin_write_path_refuses_a_malformed_publish_as_exactly_as_the_file_does(
         "pin": { "mechanism": "unpinned" },
         "tools_allow": { "greet": { "publish_as": "  " } },
     });
-    let err = busbar_core::config::named_map::NamedMapSection::Plane(
-        crate::mcp::PLANE_DECL.config_section,
-    )
-    .validate_def("gh", &def)
-    .expect_err("the API must reject exactly what the file rejects");
+    let err = engine()
+        .validate_named_def(crate::mcp::PLANE_DECL.config_section, "gh", &def)
+        .expect_err("the API must reject exactly what the file rejects");
     assert!(err.contains("publish_as"), "{err}");
 }

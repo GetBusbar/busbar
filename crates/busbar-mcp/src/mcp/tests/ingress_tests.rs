@@ -10,9 +10,9 @@
 //! endpoint was unmounted.
 
 use crate::mcp::envelope::{PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS};
+use crate::mcp::test_engine::*;
 use crate::mcp::McpCfg;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 
@@ -34,9 +34,9 @@ fn mcp_cfg(allowed_origins: Vec<String>) -> McpCfg {
 /// leaving the door open here narrows what each test can be wrong about rather than skipping a
 /// check.
 async fn serve(origins: Vec<String>) -> (String, tokio::task::JoinHandle<()>) {
-    busbar_core::metrics::init();
-    let app = TestApp::new().mcp(&mcp_cfg(origins)).build();
-    let router = busbar_core::build_router(app);
+    metrics_init();
+    let app = test_app().mcp(&mcp_cfg(origins)).build();
+    let router = build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -517,15 +517,15 @@ async fn the_default_origin_allowlist_is_empty_and_therefore_closed() {
 /// plane makes of it. A gateway that is not an MCP server must not answer as one.
 #[tokio::test]
 async fn without_the_config_block_the_plane_does_not_exist() {
-    busbar_core::metrics::init();
-    let app = TestApp::new().build();
-    for (path, _auth) in busbar_core::base_data_route_table_view(&app) {
+    metrics_init();
+    let app = test_app().build();
+    for path in app.data_route_paths() {
         assert!(
             !path.starts_with("/.well-known/oauth-protected-resource"),
             "an unconfigured deployment mounted {path}"
         );
     }
-    let router = busbar_core::build_router(app);
+    let router = build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let h = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

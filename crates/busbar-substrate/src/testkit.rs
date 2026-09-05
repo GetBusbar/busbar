@@ -38,6 +38,18 @@ pub mod loopback_http;
 /// An in-memory `metrics` recorder + exposition render, for asserting a plane's counter emits.
 pub mod metrics_capture;
 
+/// THE ENGINE TEST-KIT (see the module docs): the object-safe provider a plane's test binary drives
+/// the whole engine fixture through — building the test App, minting keys, the call log and audit
+/// ring, the store-plugin fixture, and the built App's router / host / handle / breaker cells —
+/// naming no engine item. The engine implements it; a plane's test tree binds it in one function.
+pub mod engine_kit;
+
+/// THE ENGINE TEST-KIT, WIDENED (see the module docs): the mount table, audience bindings, route
+/// auth bars and forced breaker cells of a built App; the public URL and candidate pools of the
+/// builder; the metrics exposition, TLS provider, built-in secret resolver and named-map chassis
+/// facts of the provider. Same one-function binding as `engine_kit`.
+pub mod engine_kit_plus;
+
 /// THE BUILT-APP SEAM — the second half of the fixture doorway. [`TestAppSeam`] is what a plane drives
 /// while the test App is being BUILT; this trait is what it drives on the App that came OUT of
 /// `build()`, so a plane's money-path tests forward a request, mount the real HTTP router and mutate

@@ -12,14 +12,18 @@ use crate::a2a::config::{
 /// `plane::config`, called with THIS plane's wording and the DERIVED section list. The wrapper
 /// exists only so these tests read as the boot path does.
 fn validate_section_hooks(hooks: &[String]) -> Result<(), String> {
-    busbar_core::plane::config::validate_section_hooks(
-        "`agents.hooks`",
-        hooks,
-        &busbar_core::plane::config::config_sections(),
-    )
+    let sections = busbar_substrate::plane::config::default_plane_sections();
+    for hook in hooks {
+        busbar_substrate::plane::config::refuse_cross_plane_reference(
+            "`agents.hooks`",
+            hook,
+            &sections,
+        )?;
+    }
+    Ok(())
 }
 use crate::a2a::pin::CardPin;
-use busbar_core::config::named_map::NamedMapSection;
+use crate::testkit::engine_boot::engine;
 
 /// A STAND-IN FOR THE LLM PLANE (`pools:`), registered so the cross-plane refusal battery below has a
 /// section owned by ANOTHER plane to reach onto. The LLM plane's declaration relocated to `busbar-llm`
@@ -304,7 +308,7 @@ fn a_cross_plane_hook_reference_is_refused() {
     // the composition root binds in production; without it `plane_sections()` is empty and a dotted
     // reference reads as merely malformed rather than cross-plane. Idempotent.
     busbar_substrate::plane::config::install_plane_sections(
-        busbar_core::plane::config::config_sections,
+        busbar_substrate::plane::config::default_plane_sections,
     );
     // Make the `pools:` (LLM) plane a section this test binary knows about — see [`LLM_POOLS_STANDIN`].
     busbar_substrate::plane::registry::register_test_plane(&LLM_POOLS_STANDIN);
@@ -502,39 +506,41 @@ fn the_admin_write_path_and_the_file_share_one_grammar() {
                                "hooks": ["pools.fast"]}),
         ),
     ];
-    // The `agents:` section, carried as its plane's declared config section — the shape core folds
-    // into the named-map chassis from the registry.
-    let agents = NamedMapSection::Plane(crate::a2a::PLANE_DECL.config_section);
+    // The `agents:` section, carried as its plane's declared config section — the shape the engine
+    // folds into the named-map chassis from the registry, whose typed parse the admin write path runs.
+    let agents = crate::a2a::PLANE_DECL.config_section;
     for (what, def) in cases {
         assert!(
-            agents.validate_def("planner", &def).is_err(),
+            engine()
+                .validate_named_def(agents, "planner", &def)
+                .is_err(),
             "the admin path must refuse {what}, as the file does"
         );
     }
     // And the legal one is legal on both.
     let good = serde_json::json!({"url": "https://x/", "pin": {"mechanism": "unpinned"}});
-    agents
-        .validate_def("planner", &good)
+    engine()
+        .validate_named_def(agents, "planner", &good)
         .expect("a legal definition must be legal on both paths");
 }
 
 /// The section is a real member of the named-map chassis, not a special case bolted beside it.
 #[test]
 fn the_section_is_a_first_class_member_of_the_chassis() {
-    let agents = NamedMapSection::Plane(crate::a2a::PLANE_DECL.config_section);
+    let agents = engine()
+        .named_map_section_facts(crate::a2a::PLANE_DECL.config_section)
+        .expect(
+            "a section missing from sections() is a section the router, the OpenAPI generator and \
+             the overlay applier all silently skip",
+        );
+    assert_eq!(agents.key, "agents");
+    assert_eq!(agents.path_root, format!("/{}", agents.key));
     assert!(
-        NamedMapSection::sections().contains(&agents),
-        "a section missing from sections() is a section the router, the OpenAPI generator and the \
-         overlay applier all silently skip"
-    );
-    assert_eq!(agents.key(), "agents");
-    assert_eq!(agents.path_root().as_ref(), format!("/{}", agents.key()));
-    assert!(
-        !agents.requires_module(),
+        !agents.requires_module,
         "an agent is a remote endpoint somebody else runs; there is no plugin behind it to name"
     );
     assert!(
-        !agents.has_trust_ceiling(),
+        !agents.has_trust_ceiling,
         "the trust ceiling is an identity-provider concern; an agent's trust is its pin"
     );
 }
@@ -649,14 +655,8 @@ planner:
         .client_identity
         .as_ref()
         .expect("the client identity is carried through");
-    assert_eq!(
-        identity.cert.module,
-        busbar_core::config::secret::SECRET_MODULE_FILE
-    );
-    assert_eq!(
-        identity.key.module,
-        busbar_core::config::secret::SECRET_MODULE_FILE
-    );
+    assert_eq!(identity.cert.module, busbar_secret_ref::SECRET_MODULE_FILE);
+    assert_eq!(identity.key.module, busbar_secret_ref::SECRET_MODULE_FILE);
     // The REFERENCE is what the config holds. Nothing here is key material, which is why the type
     // is safe to `Debug` and safe to serve back from the admin API.
     assert!(!format!("{identity:?}").contains("BEGIN"));

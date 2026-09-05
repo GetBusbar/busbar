@@ -24,6 +24,13 @@ use std::sync::Arc;
 #[path = "a2a/tests/envelope_boot.rs"]
 mod envelope_boot;
 
+// The engine test-kit binding (`engine()`): the ONE function the plane's tests reach the engine's
+// fixture through, in a `tests/`-path file for the same reason as `envelope_boot` above. Not gated
+// on `cfg(test)`: the admin-verb battery compiles into the library under `test-support` (the shape
+// core's own test-support build takes) and binds through it there too.
+#[path = "a2a/tests/engine_boot.rs"]
+pub(crate) mod engine_boot;
+
 /// The A2A plane's scratch key — the same string as `PLANE_DECL.key`.
 const SCRATCH_KEY: &str = "a2a";
 

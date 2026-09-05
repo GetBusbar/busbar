@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 
 use crate::a2a::config::{AgentDefCfg, AgentPinCfg, PinMechanism};
 use crate::a2a::jws::ED25519_SPKI_PREFIX;
-use busbar_core::test_support::TestApp;
+use crate::testkit::engine_boot::engine;
 
 const TOKEN: &str = "admintok";
 const STD: base64::engine::general_purpose::GeneralPurpose =
@@ -124,9 +124,9 @@ async fn serve(
     tokio::task::JoinHandle<()>,
     Arc<crate::a2a::plane::A2aPlane>,
 ) {
-    let gov = Arc::new(
-        busbar_core::governance::GovState::new_with_signer(
-            Arc::new(busbar_core::governance::MemoryStore::new()),
+    let gov = engine()
+        .governance(
+            Arc::new(busbar_store_memory::MemoryStore::new()),
             Some(TOKEN.to_string()),
             Some(
                 busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
@@ -135,15 +135,15 @@ async fn serve(
                 ),
             ),
         )
-        .unwrap(),
-    );
-    let app = TestApp::new()
+        .unwrap();
+    let app = engine()
+        .new_app_plus()
         .governance(gov)
         .agent_def("echo", def)
         .build();
     let plane =
         crate::a2a::runtime_arc(app.as_ref()).expect("an `agents:` section is an A2A plane");
-    let router = busbar_core::build_router(app);
+    let router = app.router();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
@@ -183,7 +183,7 @@ async fn request(
 /// born `Pending`, previewed, approved against the fingerprint the preview showed, and serving.
 #[tokio::test]
 async fn an_operator_can_take_a_registration_out_of_pending() {
-    busbar_core::metrics::init();
+    engine().metrics_init();
     let k = key();
     let (agent, agent_task) = agent_endpoint(signed_by(&k, a_card("echo"))).await;
     let (addr, server, plane) = serve(agent_cfg(&format!("http://{agent}/agent"), true)).await;
@@ -261,7 +261,7 @@ async fn an_operator_can_take_a_registration_out_of_pending() {
 /// button on it.
 #[tokio::test]
 async fn approve_refuses_a_fingerprint_that_is_not_the_one_being_served() {
-    busbar_core::metrics::init();
+    engine().metrics_init();
     let k = key();
     let (agent, agent_task) = agent_endpoint(signed_by(&k, a_card("echo"))).await;
     let (addr, server, plane) = serve(agent_cfg(&format!("http://{agent}/agent"), true)).await;
@@ -297,7 +297,7 @@ async fn approve_refuses_a_fingerprint_that_is_not_the_one_being_served() {
 /// about what its artifact means, reachable now that there is a surface that could have broken it.
 #[tokio::test]
 async fn an_unpinned_registration_cannot_be_approved() {
-    busbar_core::metrics::init();
+    engine().metrics_init();
     let (agent, agent_task) = agent_endpoint(a_card("echo")).await;
     let mut def = agent_cfg(&format!("http://{agent}/agent"), true);
     def.pin = AgentPinCfg {
@@ -332,7 +332,7 @@ async fn an_unpinned_registration_cannot_be_approved() {
 /// so out loud; absent it, the SSRF guard's answer does not change because an admin verb asked.
 #[tokio::test]
 async fn a_loopback_backend_is_refused_without_the_opt_in() {
-    busbar_core::metrics::init();
+    engine().metrics_init();
     let k = key();
     let (agent, agent_task) = agent_endpoint(signed_by(&k, a_card("echo"))).await;
     let (addr, server, _plane) = serve(agent_cfg(&format!("http://{agent}/agent"), false)).await;
@@ -360,7 +360,7 @@ async fn a_loopback_backend_is_refused_without_the_opt_in() {
 /// a driver rather than assumed.
 #[tokio::test]
 async fn an_unregistered_agent_is_not_found_on_every_verb() {
-    busbar_core::metrics::init();
+    engine().metrics_init();
     let (addr, server, _plane) = serve(agent_cfg("https://echo.example/agent", false)).await;
 
     for (method, path, body) in [
@@ -388,14 +388,14 @@ async fn an_unregistered_agent_is_not_found_on_every_verb() {
 /// POSTs.
 #[tokio::test]
 async fn the_trust_verbs_need_full_scope() {
-    busbar_core::metrics::init();
+    engine().metrics_init();
     for path in [
         "/api/v1/admin/agents/echo/connect",
         "/api/v1/admin/agents/echo/approve",
     ] {
         assert_eq!(
-            busbar_core::admin::v1::contract::required_scope(&axum::http::Method::POST, path),
-            busbar_core::admin::v1::contract::Scope::Full,
+            engine().admin_required_scope(&axum::http::Method::POST, path),
+            busbar_substrate::testkit::engine_kit::AdminScope::Full,
             "{path} is a mutation"
         );
     }
@@ -406,7 +406,7 @@ async fn the_trust_verbs_need_full_scope() {
 // No cfg of its own: this whole module is gated on `auth-admin-tokens` at its include site in
 // `adminverbs.rs`, exactly as the MCP plane's sibling is.
 pub async fn drive_a2a_verb_errors() {
-    busbar_core::metrics::init();
+    engine().metrics_init();
     let k = key();
     let (agent, agent_task) = agent_endpoint(signed_by(&k, a_card("echo"))).await;
     let (addr, server, _plane) = serve(agent_cfg(&format!("http://{agent}/agent"), true)).await;

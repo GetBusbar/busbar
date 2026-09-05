@@ -15,8 +15,8 @@
 
 use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::connect::connect_support::{approved_hash, mcp_cfg, server_cfg, wire_tool, Peer};
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
 const TOKEN: &str = "admintok";
@@ -45,21 +45,20 @@ async fn serve(
     tokio::task::JoinHandle<()>,
     Arc<CatalogueCache>,
 ) {
-    let gov = Arc::new(
-        busbar_core::governance::GovState::new_with_signer(
-            Arc::new(busbar_core::governance::MemoryStore::new()),
+    let gov = engine()
+        .governance(
+            Arc::new(busbar_store_memory::MemoryStore::new()),
             Some(TOKEN.to_string()),
             Some(
-                busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+                busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
                     &[9u8; 32],
-                    busbar_core::governance::signing::DEFAULT_KID,
+                    busbar_substrate::governance::signing::DEFAULT_KID,
                 ),
             ),
         )
-        .unwrap(),
-    );
+        .unwrap();
     let sightings = Arc::new(CatalogueCache::new());
-    let app = TestApp::new()
+    let app = test_app()
         .governance(gov)
         .mcp(&mcp_cfg())
         .mcp_server(
@@ -71,7 +70,7 @@ async fn serve(
         )
         .with_mcp_sightings(Arc::clone(&sightings))
         .build();
-    let router = busbar_core::build_router(app);
+    let router = build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
@@ -82,31 +81,30 @@ async fn serve(
 
 /// The same server, but with the registration configured `upstream_credentials: passthrough`.
 async fn serve_passthrough(peer: &Peer) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let gov = Arc::new(
-        busbar_core::governance::GovState::new_with_signer(
-            Arc::new(busbar_core::governance::MemoryStore::new()),
+    let gov = engine()
+        .governance(
+            Arc::new(busbar_store_memory::MemoryStore::new()),
             Some(TOKEN.to_string()),
             Some(
-                busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+                busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
                     &[9u8; 32],
-                    busbar_core::governance::signing::DEFAULT_KID,
+                    busbar_substrate::governance::signing::DEFAULT_KID,
                 ),
             ),
         )
-        .unwrap(),
-    );
+        .unwrap();
     let mut cfg = server_cfg(
         peer,
         &[("read", Some(approved_hash("read", DESCRIPTION, schema())))],
     );
     cfg.upstream_credentials = Some(busbar_api::UpstreamCreds::Passthrough);
-    let app = TestApp::new()
+    let app = test_app()
         .governance(gov)
         .mcp(&mcp_cfg())
         .mcp_server("fs", cfg)
         .with_mcp_sightings(Arc::new(CatalogueCache::new()))
         .build();
-    let router = busbar_core::build_router(app);
+    let router = build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
@@ -135,7 +133,7 @@ async fn request(
 /// health, watch the upstream change, connect again, and see the quarantine on every surface.
 #[tokio::test]
 async fn the_trust_verbs_report_the_drift_an_operator_has_to_work() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
     let (addr, server, _sightings) = serve(&peer).await;
 
@@ -207,7 +205,7 @@ async fn the_trust_verbs_report_the_drift_an_operator_has_to_work() {
 /// templated read, produced by a driver rather than assumed.
 #[tokio::test]
 async fn an_unregistered_server_is_not_found_on_every_verb() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
     let (addr, server, _sightings) = serve(&peer).await;
 
@@ -237,13 +235,10 @@ async fn an_unregistered_server_is_not_found_on_every_verb() {
 /// that from the METHOD, which is exactly why `connect` is a POST.
 #[tokio::test]
 async fn connect_needs_full_scope_while_the_reads_do_not() {
-    busbar_core::metrics::init();
+    metrics_init();
     assert_eq!(
-        busbar_core::admin::v1::contract::required_scope(
-            &axum::http::Method::POST,
-            "/api/v1/admin/tools/fs/connect"
-        ),
-        busbar_core::admin::v1::contract::Scope::Full,
+        engine().admin_required_scope(&axum::http::Method::POST, "/api/v1/admin/tools/fs/connect"),
+        busbar_substrate::testkit::engine_kit::AdminScope::Full,
         "connect is a mutation: it contacts an endpoint and can quarantine a server"
     );
     for path in [
@@ -251,8 +246,8 @@ async fn connect_needs_full_scope_while_the_reads_do_not() {
         "/api/v1/admin/tools/fs/health",
     ] {
         assert_eq!(
-            busbar_core::admin::v1::contract::required_scope(&axum::http::Method::GET, path),
-            busbar_core::admin::v1::contract::Scope::ReadOnly,
+            engine().admin_required_scope(&axum::http::Method::GET, path),
+            busbar_substrate::testkit::engine_kit::AdminScope::ReadOnly,
             "{path} is a derived read"
         );
     }
@@ -263,7 +258,7 @@ async fn connect_needs_full_scope_while_the_reads_do_not() {
 /// has no caller — substituting busbar's own would be the deputy the whole plane exists to close.
 #[tokio::test]
 async fn connect_refuses_a_passthrough_registration() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
     let (addr, server) = serve_passthrough(&peer).await;
 
@@ -293,7 +288,7 @@ async fn connect_refuses_a_passthrough_registration() {
 // here would imply the two conditions could differ, and they cannot — if this module compiles,
 // the caller does too.
 pub async fn drive_mcp_verb_errors() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
 
     // NotFound / UnknownResource, on all three verbs.
@@ -327,7 +322,7 @@ async fn a_connect_stamps_the_ledger_so_the_sweep_is_not_still_due() {
     use crate::mcp::client::identity::ServerId;
     use busbar_substrate::trust::reverify::{due, Due, Policy};
 
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
     let (addr, server, sightings) = serve(&peer).await;
 

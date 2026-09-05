@@ -29,10 +29,9 @@
 
 use crate::mcp::config::McpServerDefCfg;
 use crate::mcp::envelope::PROTOCOL_VERSION;
+use crate::mcp::test_engine::*;
 use crate::mcp::McpCfg;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::state::{App, AppHandle};
-use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
 /// The client capabilities every case here declares. Each test module carries its own rather than
@@ -130,14 +129,14 @@ fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
 }
 
 async fn call(
-    app: &Arc<App>,
+    app: &Arc<dyn EngineApp>,
     gov: &busbar_api::PlaneRequestCtx,
     method: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {
-    let handle = Arc::new(AppHandle::new(app.clone()));
+    let handle = app_handle(app.clone());
     let ctx = crate::mcp::method::Ctx {
-        host: busbar_core::plane_host::engine_host_from_handle(&handle),
+        host: engine_host_from_handle(&handle),
         gov,
         actor: "test-principal",
         capabilities: &ALL_CAPABILITIES,
@@ -162,12 +161,12 @@ async fn call(
 /// CLIENT can do: the four official scenarios send this exact request and were answered `404`.
 #[tokio::test]
 async fn a_resource_is_readable_by_the_uri_the_protocol_defines() {
-    busbar_core::metrics::init();
-    let app = TestApp::new()
+    metrics_init();
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("test", server_exposing("test://static-text", "hello"))
         .build();
-    let router = busbar_core::build_router(app);
+    let router = build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let _h = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -211,8 +210,8 @@ async fn a_resource_is_readable_by_the_uri_the_protocol_defines() {
 /// `resources/list` publishes the raw URI, because that is what a client will hand back.
 #[tokio::test]
 async fn the_catalogue_publishes_the_uri_a_client_can_read_back() {
-    busbar_core::metrics::init();
-    let app = TestApp::new()
+    metrics_init();
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("test", server_exposing("test://static-text", "hello"))
         .build();
@@ -246,9 +245,9 @@ async fn the_catalogue_publishes_the_uri_a_client_can_read_back() {
 /// an order dependency.
 #[tokio::test]
 async fn a_caller_granted_one_server_is_never_served_the_others_content() {
-    busbar_core::metrics::init();
+    metrics_init();
     for (first, second) in [("alpha", "beta"), ("beta", "alpha")] {
-        let app = TestApp::new()
+        let app = test_app()
             .mcp(&mcp_cfg())
             .mcp_server(first, server_exposing("shared://doc", first))
             .mcp_server(second, server_exposing("shared://doc", second))
@@ -275,8 +274,8 @@ async fn a_caller_granted_one_server_is_never_served_the_others_content() {
 /// case, and it is REFUSED, naming both servers — never resolved by picking one.
 #[tokio::test]
 async fn a_genuine_ambiguity_is_refused_and_names_both_servers() {
-    busbar_core::metrics::init();
-    let app = TestApp::new()
+    metrics_init();
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("alpha", server_exposing("shared://doc", "alpha"))
         .mcp_server("beta", server_exposing("shared://doc", "beta"))
@@ -314,8 +313,8 @@ async fn a_genuine_ambiguity_is_refused_and_names_both_servers() {
 /// existence of what it hides.
 #[tokio::test]
 async fn not_found_and_not_granted_are_indistinguishable() {
-    busbar_core::metrics::init();
-    let app = TestApp::new()
+    metrics_init();
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("alpha", server_exposing("shared://doc", "alpha"))
         .build();
@@ -323,7 +322,7 @@ async fn not_found_and_not_granted_are_indistinguishable() {
     // The SAME uri against two deployments: one where it exists but is not granted, one where it
     // does not exist at all. Comparing two DIFFERENT uris would compare two messages that each echo
     // the caller's own input and would differ for that reason alone, proving nothing.
-    let absent_app = TestApp::new()
+    let absent_app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("alpha", server_exposing("shared://other", "alpha"))
         .build();
@@ -368,9 +367,9 @@ async fn not_found_and_not_granted_are_indistinguishable() {
 /// only that the plane refuses everything.
 #[tokio::test]
 async fn a_caller_granted_one_server_is_never_served_the_others_templated_content() {
-    busbar_core::metrics::init();
+    metrics_init();
     for (first, second) in [("alpha", "beta"), ("beta", "alpha")] {
-        let app = TestApp::new()
+        let app = test_app()
             .mcp(&mcp_cfg())
             .mcp_server(first, server_exposing_template("shared://doc/{id}", first))
             .mcp_server(
@@ -410,8 +409,8 @@ async fn a_caller_granted_one_server_is_never_served_the_others_templated_conten
 /// identifier chooses the winner, on every process, silently, for as long as the config stands.
 #[tokio::test]
 async fn a_genuine_template_ambiguity_is_refused_and_names_both_servers() {
-    busbar_core::metrics::init();
-    let app = TestApp::new()
+    metrics_init();
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server(
             "alpha",
@@ -459,8 +458,8 @@ async fn a_genuine_template_ambiguity_is_refused_and_names_both_servers() {
 /// wrote two overlapping approvals is an operator who has to say which they meant.
 #[tokio::test]
 async fn two_overlapping_templates_on_one_server_are_refused_rather_than_ordered() {
-    busbar_core::metrics::init();
-    let app = TestApp::new()
+    metrics_init();
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server(
             "alpha",

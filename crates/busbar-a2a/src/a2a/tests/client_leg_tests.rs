@@ -3,7 +3,7 @@
 
 //! BUSBAR AS AN A2A **CLIENT**, over all three of A2A's bindings.
 //!
-//! Every test here drives busbar's REAL router — the same `busbar_core::build_router`, the same admission,
+//! Every test here drives busbar's REAL router — the same router the engine serves, the same admission,
 //! the same egress gate, the same SSRF guard, the same audit chain, the same task store — and then
 //! reads what busbar ASKED TO HAVE SENT off the recording seam. That is what makes these tests
 //! evidence for a coverage cell rather than evidence that a function exists: the claim
@@ -1156,7 +1156,7 @@ async fn a_list_with_no_open_task_of_this_callers_makes_no_hop() {
 // outcomes are chained"), and it is what the two tests below close for the DELEGATION HOP: the leg
 // busbar itself issues to a registered backend agent.
 
-/// A task-event sink for the process-global [`busbar_core::plane::taskstore::TASKS`].
+/// A task-event sink for the process-global `crate::taskstore::TASKS`.
 ///
 /// The shipped `busbar-store-memory` implements NONE of the task methods — it is documented as
 /// genuinely ephemeral and the boot-restore path relies on that — so a sink is the only way to read
@@ -1171,7 +1171,7 @@ struct ChainSink {
     inner: busbar_store_memory::MemoryStore,
     /// `(task_id, body)` — the OPAQUE stored task-event bodies a durable backend holds (the neutral
     /// `{seq,prev_hash,hash,content}` the P5-C9 seam persists), kept verbatim and reconstructed to a
-    /// typed view on read via [`busbar_core::plane::store::task_event_row_from_body`].
+    /// typed view on read via the plane store's `task_event_row_from_body`.
     events: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
 }
 
