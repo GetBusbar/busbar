@@ -30,6 +30,10 @@
 #                    binding is mapped to a check that still exists in the tree (test, oracle cell,
 #                    lint, gate). An unmapped binding is a named gap and is RED here -- "done" means
 #                    nothing we designed is unproven. Existence only; the checks run in their own tiers.
+#   changelog        scripts/changelog-register-check.sh --check: every `kind: breaking` entry in
+#                    testing/shadow-oracle/accepted-differences.json has its `changelog` field's exact
+#                    line present, verbatim, in CHANGELOG.md -- a named break the owner accepted cannot
+#                    silently fall out of the release notes.
 # Every sub-gate runs its own `--selftest` FIRST where it has one, then its `--check`, so a gate that
 # could not fire is refused before its verdict is trusted (the house rule).
 #
@@ -237,6 +241,19 @@ if [ -f scripts/design-bindings.sh ]; then
   step "design-bindings --check --strict"  bash scripts/design-bindings.sh --check --strict
 else
   absent_step "design bindings gate" "scripts/design-bindings.sh"
+fi
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+begin_group "CHANGELOG — every breaking register entry is named"
+# testing/shadow-oracle/accepted-differences.json's own differ refuses an entry that accepts
+# status/effects.usage without kind=breaking and a `changelog` field; this gate closes the other
+# half -- that the named line was actually WRITTEN, verbatim, in CHANGELOG.md, not just declared.
+if [ -f scripts/changelog-register-check.sh ]; then
+  step "changelog-register-check --selftest" bash scripts/changelog-register-check.sh --selftest
+  step "changelog-register-check --check"    bash scripts/changelog-register-check.sh --check
+else
+  absent_step "changelog register gate" "scripts/changelog-register-check.sh"
 fi
 end_group
 

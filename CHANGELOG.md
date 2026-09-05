@@ -11,7 +11,8 @@ caller's key, its grants, its budget, hooks and the audit chain — applies to a
 A2A agent task and a live voice session unchanged, and a deployment that declares none of them
 gains no endpoint and no route. The bar for this release was measured, not asserted: the same
 config, the same requests and the same plugins were run through the published 1.5.5 binary and
-through 1.6.0, and every difference is either listed below as an improvement or does not exist.
+through 1.6.0, and every difference is either listed below as an improvement, a breaking change, or
+does not exist.
 
 ### Additive planes
 
@@ -33,7 +34,8 @@ wildcard grants over every registered server: close the data-plane chain, or dro
 Measured by the shadow oracle over 780 cells — boot refusals and warnings, `--validate`,
 `--migrate-config` on the whole migration corpus, the admin API, the six LLM dialects buffered and
 streaming, failover, billing, `/metrics`, and the published store plugins — 1.6.0 answers a 1.5.5
-config, request and plugin exactly as 1.5.5 did, apart from the improvements named next.
+config, request and plugin exactly as 1.5.5 did, apart from the improvements and breaking changes
+named next.
 
 ### Improvements
 
@@ -70,31 +72,42 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 - **Responses API streams carry the lifecycle frames the spec declares:**
   `response.content_part.added`, `response.output_text.done` and `response.content_part.done`, with
   a contiguous `sequence_number`. 1.5.5 omitted them. See [Spec fidelity](#spec-fidelity).
-- **Fallback-lane and least-bad streams to OpenAI Chat Completions lanes are now metered.** This
-  is a billing change. A streaming request served through a fallback, least-bad or queue hop to
-  an OpenAI Chat Completions lane previously billed the key zero tokens; 1.6.0 injects
-  `stream_options.include_usage` on that hop exactly as it does on the primary hop, so the
-  trailing usage chunk arrives and the key is billed its real tokens. A client that did not opt
-  in sees an unchanged stream (the injected chunk is stripped); a client that did opt in now gets
-  its usage chunk on the fallback hop too. If you priced on 1.5.5's numbers for traffic that
-  routinely fails over, expect those keys' spend to rise to what they actually used.
 - **A degraded hop is accounted like a primary hop.** On a fallback, least-bad or queue hop: a
   non-2xx records the breaker outcome by status class, honouring the upstream `Retry-After` as the
-  cooldown floor, and emits the upstream-failure series; an auth or billing hard-down trips the
-  lane in every breaker cell and, for Busbar's own lane credential, answers with the
-  ingress-native auth-failure envelope rather than relaying the upstream 401 verbatim; a
-  client-fault 4xx bumps the lane's `client_fault` counter (no breaker penalty either way); a
-  transport error emits the same upstream-failure and failover series; and a pool member's
-  `attempt_timeout_ms` override is honoured (the degraded path previously used only the lane-level
-  value, so the cap can only fire earlier where you set a tighter member override). Except for the
-  hard-down envelope, the relayed response is unchanged; only bookkeeping and metrics moved.
+  cooldown floor, and emits the upstream-failure series; a client-fault 4xx bumps the lane's
+  `client_fault` counter (no breaker penalty either way); a transport error emits the same
+  upstream-failure and failover series; and a pool member's `attempt_timeout_ms` override is
+  honoured (the degraded path previously used only the lane-level value, so the cap can only fire
+  earlier where you set a tighter member override). The relayed response is unchanged in every
+  case here; only bookkeeping and metrics moved. The one exception — an upstream auth/billing
+  hard-down on a degraded hop — is a billing- and body-affecting change and is named under
+  [Breaking](#breaking) below.
 
 ### Breaking
 
-None. The accepted-differences register for this release has no entry of kind `breaking`: a config
-written for 1.5.5 boots, validates and migrates identically, every 1.5.5 key and minted secret
-carries over, and no client-visible status or body changed on the model plane beyond the two
-spec-fidelity stream shapes above.
+The accepted-differences register for this release has exactly two entries of kind `breaking`,
+both confined to the fallback/least-bad/queue hop; the primary hop's behaviour is unchanged in
+both. Everything else that touches a 1.5.5 config, request or plugin is named above as an
+improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
+identically, and every 1.5.5 key and minted secret carries over.
+
+- 1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native
+  auth-failure envelope and recorded on the breaker. Previously, an auth or billing hard-down on a
+  fallback, least-bad or queue hop relayed the upstream's 401/403 body verbatim and left the
+  breaker Closed, so a dead lane credential kept being tried; 1.6.0 trips the lane in every breaker
+  cell and, for Busbar's own lane credential, answers with Busbar's own ingress-native
+  auth-failure envelope instead of relaying the upstream's body — the same rule the primary hop
+  already applied. **Migration:** a client or monitor that parsed the upstream's own 401/403 body
+  off a degraded hop must parse Busbar's auth-failure envelope there instead, exactly as it already
+  does for a primary-hop hard-down; no config change is needed.
+- 1.6.0 Improvements: fallback-lane streams are now billed. A streaming request served through a
+  fallback, least-bad or queue hop to an OpenAI Chat Completions lane previously billed the key
+  zero tokens; 1.6.0 injects `stream_options.include_usage` on that hop exactly as it does on the
+  primary hop, so the trailing usage chunk arrives and the key is billed its real tokens. A client
+  that did not opt in sees an unchanged stream (the injected chunk is stripped); a client that did
+  opt in now gets its usage chunk on the fallback hop too. **Migration:** if you priced or
+  capacity-planned on 1.5.5's numbers for traffic that routinely fails over, expect those keys'
+  recorded spend to rise to what they actually used; no config change is needed.
 
 Four retired 1.5.x spellings that were never the documented form are rewritten for you rather
 than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap
@@ -136,6 +149,20 @@ docs say `ping` events occur and real Anthropic streams carry them. Busbar keeps
 Anthropic client — and records the row as a named gap of the spec, re-judged whenever the pin
 moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
 `testing/llm-conformance/README.md`.
+
+### Upgrade
+
+- **A 1.6.0 config is a 1.5.5 config plus whichever plane sections you write.** `mcp:`, `agents:`
+  and `streams:` are new top-level keys; every 1.5.5 key keeps its 1.5.5 meaning and default, and a
+  config with none of the three new keys boots and behaves exactly as it did under 1.5.5 (see
+  [Behaviour identical to 1.5.5](#behaviour-identical-to-155) above).
+- **`busbar --migrate-config` leaves your 1.5.5 pool members exactly as written.** Only the four
+  retired spellings named under [Breaking](#breaking) above are rewritten; nothing else in a pool,
+  provider or model block is touched.
+- **The store plugin ABI window is `2..=4`.** A published 1.5.5 store plugin (`abi_version: 2`,
+  e.g. the sqlite, postgres, mysql or valkey plugin) loads as-is, with no rebuild and no manifest
+  change, and answers the plane-record verbs it doesn't know with "unsupported", which 1.6.0
+  treats as inert. See [Plugins](#plugins) above.
 
 ### Added
 
