@@ -52,6 +52,7 @@
 pub mod adapters;
 pub mod durability;
 pub mod kernel;
+pub mod ledger_identity;
 pub mod migration;
 pub mod policy;
 pub mod registry;
