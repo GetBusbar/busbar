@@ -134,7 +134,12 @@ fn check_approve_admits_a_different_approver_with_a_matching_payload() {
 
 #[test]
 fn set_dual_control_required_needs_at_least_two_admin_principals() {
-    assert!(check_set_dual_control_required(1).is_err());
+    // The reason, not just the refusal: an operator locking themselves out of their own node needs
+    // to be told which precondition they missed, and every other test in this file pins the code
+    // its call site returns.
+    let err = check_set_dual_control_required(1).unwrap_err();
+    assert_eq!(err.reason, ReasonCode::InsufficientApprovers);
+    assert_eq!(check_set_dual_control_required(0).unwrap_err().reason, ReasonCode::InsufficientApprovers);
     assert!(check_set_dual_control_required(2).is_ok());
 }
 
