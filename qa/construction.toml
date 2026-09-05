@@ -323,7 +323,8 @@ consulted when present to widen the same check to transitive path/workspace deps
 # the commit that added it: busbar-api / busbar-plugin-sdk are the 1.5.5-era loader ABI every
 # example plugin still bridges through until it moves onto busbar-contract; the rest are ordinary
 # third-party crates.
-reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs"]
+reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec"]
+# busbar-llm-codec: the pure codec half of the split llm crate (no I/O in its closure); the plane adapts it.
 # Per-crate additions beyond the global list above, each a one-line review.
 [rules.manifest-allowlist.reviewed_extra]
 # store-example-plugin demonstrates wrapping the in-tree memory store; it is not itself the store.
