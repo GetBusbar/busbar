@@ -111,11 +111,15 @@ pub struct ProductionUnits {
     /// The admission unit's long-lived door. Its ledger cells are hydrated once, at boot, and are
     /// never re-read on the request path.
     pub door: Door<InMemoryCells>,
-    /// Every `(pool, destination)` breaker cell and every destination's lifetime budget. Consulted
-    /// at Verify through the trust unit's view of it, and recorded at Route.
-    pub breaker: BreakerUnit,
     /// The egress unit's rotation memory. The walk itself is a per-request value.
     pub egress: EgressUnit,
+    /// Every `(pool, destination)` breaker cell and every destination's lifetime budget, behind the
+    /// port the egress unit reaches it through.
+    ///
+    /// There is exactly one of these and it is reached only here. Two breaker units would be two
+    /// sets of cells: a trip recorded through one would be invisible to the other, and a lane the
+    /// walk had benched would still read as ready at Verify.
+    pub breaker: crate::root::adapters::BreakerAdapter,
     /// The authentication chain, resolved from configuration at boot.
     pub auth: Auth,
     /// The trust unit. Stateless: it is handed the pool view and the kind facts per call.
@@ -128,23 +132,38 @@ pub struct ProductionUnits {
     /// one of them: the record is sealed, the ledger moves and the journal takes the batch, and a
     /// reader that saw two of the three would be reading a half-settled unit.
     pub durability: Mutex<crate::root::durability::Durability>,
+    /// What the usage unit meters against — built from the configured rate cards, never from the
+    /// unit's own default, because an empty lane expansion disputes every pooled posting.
+    pub meter_policy: crate::root::policy::MeterPolicyHandle,
+    /// What the scope unit reads at Approve. Silence is a refusal.
+    pub scope_policy: crate::root::policy::ScopePolicy,
 }
 
 impl ProductionUnits {
-    /// Assemble the units the loop reaches, over the durability stack the root already built.
+    /// Assemble the units the loop reaches, over what the root already built.
     ///
     /// Everything expensive — opening a journal, hydrating the ledger cells, resolving the auth
-    /// chain — has happened by the time this is called. This is the assembly, not the work.
+    /// chain, reading the rate cards — has happened by the time this is called. This is the
+    /// assembly, not the work. Every argument is a value configuration decided, which is the shape
+    /// that makes it impossible to construct these units and forget one.
     #[must_use]
-    pub fn new(auth_chain: AuthChain, durability: crate::root::durability::Durability) -> Self {
+    pub fn new(
+        auth_chain: AuthChain,
+        durability: crate::root::durability::Durability,
+        breaker_policy: crate::root::adapters::BreakerPolicy,
+        meter_policy: crate::root::policy::MeterPolicyHandle,
+        scope_policy: crate::root::policy::ScopePolicy,
+    ) -> Self {
         ProductionUnits {
             door: Door::new(InMemoryCells::new()),
-            breaker: BreakerUnit::new(),
+            breaker: crate::root::adapters::BreakerAdapter::new(BreakerUnit::new(), breaker_policy),
             egress: EgressUnit::new(),
             auth: Auth::new(auth_chain),
             trust: Trust,
             arrival_door: AdmissionDoor,
             durability: Mutex::new(durability),
+            meter_policy,
+            scope_policy,
         }
     }
 }
@@ -268,6 +287,39 @@ mod tests {
         let hold = busbar_kernel::inflight::arrival_hold(&kernel, &door, PrincipalId::new("k-7"));
         assert_eq!(hold.reserved(), 0);
         assert_eq!(hold.principal(), &PrincipalId::new("k-7"));
+    }
+
+    /// The whole assembly, end to end: a kernel, a durability stack that opened nothing, the
+    /// configured breaker ladders, the configured metering policy and a scope policy that permits
+    /// only what it was told about — composed into the one type the loop reaches a unit through.
+    ///
+    /// Every argument is a value configuration decided. That is the shape that makes it impossible
+    /// to build these units and forget one: there is no constructor that fills a policy in from a
+    /// default, so a deployment that never read its rate cards does not compile.
+    #[test]
+    fn the_units_assemble_from_values_configuration_decided() {
+        let durability = crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open");
+
+        let units = ProductionUnits::new(
+            AuthChain::new(Vec::new(), false),
+            durability,
+            crate::root::adapters::BreakerPolicy::new(),
+            crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
+            crate::root::policy::ScopePolicy::new(),
+        );
+
+        // The journal opened nothing, the ledger is dual-writing, and the scope policy permits
+        // nothing until it is told to. All three are the safe end of a choice that had an unsafe
+        // end, and all three are checkable here rather than at the first request.
+        let durability = units.durability.lock().expect("durability lock");
+        assert!(!durability.on_disk());
+        assert!(durability.ledger.is_dual_writing());
+        assert!(units.scope_policy.is_empty());
     }
 
     /// The interner is idempotent, which is what makes "leaked exactly once" a property of the

@@ -52,6 +52,7 @@
 pub mod adapters;
 pub mod durability;
 pub mod kernel;
+pub mod policy;
 pub mod registry;
 pub mod transports;
 pub mod vocabulary;
