@@ -205,11 +205,42 @@ impl Audited {
 /// are the kernel's own vocabulary, named at `busbar-caps` where a plugin may name it.
 pub type AuditStep = for<'a> fn(&UnitToken<Audit>, &AuditCtx<'a>, Response, bool) -> Audited;
 
-/// How the plane says a unit ended, read off the bytes the client is actually given.
+/// How the plane says a unit ended.
 ///
-/// The client-facing status and nothing else: an upstream that answered 200 into a client-facing
-/// 502 ended in error, because the end a record seals is the end the caller experienced.
+/// TWO SOURCES, and the order between them is the whole of this function. The first is the WALK'S
+/// OWN TAP, riding back on the response in the cell the walk handed it: where the tap has reported,
+/// it is the only thing that knows the difference between an answer that finished and one that
+/// stopped — a stream is served on 2xx headers and can still die mid-body, so the status line says
+/// `Complete` and the truth is `Partial`. The second is the client-facing status, which is what a
+/// response without a tap can say and all the older release ever said: an upstream that answered 200
+/// into a client-facing 502 ended in error, because the end a record seals is the end the CALLER
+/// experienced.
+///
+/// The tap is empty while a response is still in flight, and then this reads the status exactly as
+/// it always has — so the terminal's timing and its bytes are unchanged, and what the tap adds is a
+/// truer class on every end that has already happened by the time the record is written.
+///
+/// [`FinishClass::TurnComplete`] is never answered here. It names one turn of a duplex exchange
+/// whose session continues, and no dialect this plane speaks has one: a completion's end is the
+/// unit's end.
 fn finish_of(resp: &Response) -> FinishClass {
+    if let Some(finish) = resp
+        .extensions()
+        .get::<crate::engine::TapCell>()
+        .and_then(|cell| cell.get())
+        .map(|report| report.finish)
+    {
+        // THE ONE MAPPING between the engine's own three-class ending and the loop's four. It is
+        // written here because this file is the only one on this plane that speaks the loop's
+        // vocabulary; the engine spells its own so the default build does not depend on the waist's
+        // flag. `TurnComplete` has no source: nothing below can produce it, and nothing on this
+        // plane should.
+        return match finish {
+            crate::engine::TapFinish::Complete => FinishClass::Complete,
+            crate::engine::TapFinish::Partial => FinishClass::Partial,
+            crate::engine::TapFinish::Error => FinishClass::Error,
+        };
+    }
     if resp.status().is_success() {
         FinishClass::Complete
     } else {

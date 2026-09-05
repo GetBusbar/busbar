@@ -55,6 +55,11 @@ pub(super) fn deliver<'a>(
     drop(_rec);
     async move {
         let _resp = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RespBuild);
+        // THE REPORT-BACK CELL for this delivery. Handed to whichever tap ends this response — the
+        // buffered translate below, or the streaming body wrapper further down — and RIDDEN BACK on
+        // the response itself, so the steps that ran before the tap existed can read what it saw
+        // without the plane growing a second carry between them.
+        let tap = TapCell::new();
         let _rb_pre = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbPre);
 
         let ct = r.headers().get(CONTENT_TYPE).cloned();
@@ -91,7 +96,7 @@ pub(super) fn deliver<'a>(
         // below only fits a client that did not ask for a stream. Boxed: this arm is cold and its
         // future is large relative to the pinned hot path.
         if !is_sse && (cross_protocol || hop.wants_stream) {
-            return Box::pin(translate_response_cross_protocol(
+            let mut resp = Box::pin(translate_response_cross_protocol(
                 host,
                 rt,
                 i,
@@ -111,8 +116,15 @@ pub(super) fn deliver<'a>(
                 hop.chosen_policy_name,
                 hop.degraded,
                 ingress_request_body.clone(),
+                &tap,
             ))
             .await;
+            // The buffered tap has already finished by the time this returns — a non-stream body is
+            // read whole before it is translated — so the cell it rides back on is FILLED, and the
+            // Route step reads the serving lane, the usage and the finish class off it without
+            // waiting for anything.
+            resp.extensions_mut().insert(tap);
+            return resp;
         }
 
         // Streaming (or same-protocol non-stream): the first-byte-tracking wrapper. ONE
@@ -171,6 +183,7 @@ pub(super) fn deliver<'a>(
             json_array,
             usage_sink.take(),
             budget_spent,
+            tap.clone(),
         );
         let axum_body = guarded_body.into_body();
         drop(_rb_new);
@@ -210,7 +223,13 @@ pub(super) fn deliver<'a>(
         rb = maybe_attach_route_policy(rb, hop.chosen_policy_name, &hop.lane_row().model);
         drop(_rbf_attach);
         let _rbf_body = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBody);
-        rb.body(axum_body)
-            .unwrap_or_else(|_| status.into_response())
+        let mut resp = rb
+            .body(axum_body)
+            .unwrap_or_else(|_| status.into_response());
+        // The cell rides out EMPTY here and stays empty until the body ends: a stream is served on
+        // its headers and its figures do not exist yet. That is the point — the Route step returns
+        // while this is still in flight, and the cell is what lets the tap answer it afterwards.
+        resp.extensions_mut().insert(tap);
+        resp
     }
 }

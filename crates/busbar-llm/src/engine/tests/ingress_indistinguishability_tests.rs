@@ -3,6 +3,7 @@ use super::{
     ingress_stream_content_type, read_capped, shape_cross_protocol_error, ReadEnd, UsageSink,
     KIND_AUTHENTICATION, KIND_INVALID_REQUEST, KIND_OVERLOADED, KIND_RATE_LIMIT,
 };
+use crate::engine::TapCell;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
@@ -784,6 +785,7 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
         None, // json_array
         sink,
         false, // budget_spent
+        TapCell::new(),
     );
 
     // Drain the body fully (drives poll_next to Poll::Ready(None), firing the IR read + record).
@@ -925,6 +927,7 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
         None, // json_array
         sink,
         false, // budget_spent
+        TapCell::new(),
     );
 
     let collected = fbb
@@ -1060,6 +1063,7 @@ async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
         None, // json_array
         sink,
         false, // budget_spent
+        TapCell::new(),
     );
 
     let collected = fbb
@@ -1224,6 +1228,7 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
             None,
             sink.clone(),
             false,
+            TapCell::new(),
         );
         // Drive chunk 1 to completion (buffers CHUNK1_LEN bytes, whatever the cap happens to be at
         // that instant — retried by the outer loop if it lands unlucky and truncates early).
@@ -1328,6 +1333,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
         Some(json_array),
         None,  // usage_sink
         false, // budget_spent
+        TapCell::new(),
     );
     let out = fbb.into_body().collect().await.expect("drain").to_bytes();
     let text = String::from_utf8_lossy(&out);
@@ -1404,6 +1410,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
         None, // plain SSE — no json-array framer
         None,
         false,
+        TapCell::new(),
     );
     let out = fbb.into_body().collect().await.expect("drain").to_bytes();
     let text = String::from_utf8_lossy(&out);
@@ -1514,6 +1521,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
         None,
         sink,
         false,
+        TapCell::new(),
     );
     // Drain (emits the mid-stream error frame then None), then the body drops → Drop billing gate runs.
     let _ = fbb.into_body().collect().await;
@@ -3268,6 +3276,7 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
         None,
         None,
         budget_spent,
+        TapCell::new(),
     );
     futures::pin_mut!(body);
 
@@ -3358,6 +3367,7 @@ async fn test_repeated_pre_first_byte_failures_trip_breaker() {
             None,
             None,
             false, // no budget spent on this unlimited lane
+            TapCell::new(),
         );
         futures::pin_mut!(body);
         let item = body.next().await;
@@ -3456,6 +3466,7 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
         None,
         None,
         budget_spent,
+        TapCell::new(),
     );
     futures::pin_mut!(body);
 
@@ -3612,6 +3623,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
         None,
         sink,
         false, // budget_spent: irrelevant to this arm
+        TapCell::new(),
     );
     futures::pin_mut!(body);
 
@@ -3734,6 +3746,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
             None,
             sink,
             false,
+            TapCell::new(),
         );
         futures::pin_mut!(body);
         let _ = body.next().await; // poll once: feed the usage chunk, accumulate IrUsage
@@ -3849,6 +3862,7 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
             None,
             sink,
             false,
+            TapCell::new(),
         );
         futures::pin_mut!(body);
         let _ = body.next().await; // usage chunk → accumulate IrUsage
@@ -3928,6 +3942,7 @@ async fn test_cancel_drop_mid_stream_refunds_budget() {
             None,
             None,
             budget_spent,
+            TapCell::new(),
         );
         futures::pin_mut!(body);
         let _ = body.next().await; // poll once: consume the chunk, no terminal arm reached

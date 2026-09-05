@@ -89,15 +89,17 @@ use busbar_substrate::plane_host::EngineHost;
 #[allow(dead_code)]
 pub(crate) struct MeterFacts {
     /// The serving lane, as an index into the engine's lane table — the lane that actually answered
-    /// after any failover. `None` where the walk owns the accrual, because the lane that answers is
-    /// resolved inside the walk at the tap and the walk hands back a response, not a lane.
+    /// after any failover. Filled from [`MeterFacts::tap`] where the tap had already finished when
+    /// Route returned (every buffered end); `None` while a stream is still flowing, and read off the
+    /// cell instead when this step runs after it.
     pub(crate) lane: Option<usize>,
-    /// The usage the dialect's reader found. `None` for the same reason, and additionally for a
-    /// stream, whose terminal usage frame has not arrived when this step runs.
+    /// The usage the dialect's reader found. Same source and the same timing: a stream's terminal
+    /// usage frame has not arrived when Route returns, so the snapshot is empty and the cell is what
+    /// answers later.
     pub(crate) usage: Option<busbar_substrate::billing::TokenUsage>,
     /// The status the CLIENT saw — the fee basis, decided at the frame that carried it.
     pub(crate) status: u16,
-    /// The terminal-error/abort fact the stream taps read off the translator.
+    /// The terminal-error/abort/cut fact the taps read at the end of the response.
     pub(crate) billing_failed: bool,
     /// Whether the unit reached an upstream at all, which is what makes it a fee-bearing client
     /// request rather than a turn-away that never dialled.
@@ -105,6 +107,26 @@ pub(crate) struct MeterFacts {
     /// Whether the walk's own taps hold this unit's accrual. When true this step seals; when false
     /// this step posts.
     pub(crate) accrued: bool,
+}
+
+impl MeterFacts {
+    /// FOLD A TAP'S REPORT INTO THESE FACTS.
+    ///
+    /// The three figures the Route step could not fill are the tap's, and this is where they land:
+    /// the serving lane, the usage the dialect's reader found, and whether those figures are
+    /// evidence rather than a charge. Route calls it on the way out, which fills them for every end
+    /// the tap had already reached — every buffered answer, and every transfer that failed before a
+    /// body could flow. A stream's report does not exist yet at that moment, so nothing is folded and
+    /// the facts stay as they were, `accrued` says the tap owns the posting, and the tap's own
+    /// accrual is the unit's one accrual.
+    ///
+    /// A report is folded ONCE and never partially: reading three figures out of two different
+    /// observations of the same response is the divergence this takes the whole report to avoid.
+    pub(crate) fn fold(&mut self, report: &crate::engine::TapReport) {
+        self.lane = Some(report.lane);
+        self.usage = report.usage.clone();
+        self.billing_failed = report.billing_failed;
+    }
 }
 
 /// What the accrual needs that the step shape has nowhere to put.

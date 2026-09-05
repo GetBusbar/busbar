@@ -70,7 +70,7 @@ use crate::unit::meter::MeterFacts;
 
 use crate::engine::{
     capture_stage_shape, fire_stage_taps, forwardable_client_header_names, EngineTables,
-    GateRejected, LazyBody, NativeRuntime, UsageSink, WeightedLane, APPLICATION_JSON,
+    GateRejected, LazyBody, NativeRuntime, TapCell, UsageSink, WeightedLane, APPLICATION_JSON,
     KIND_NOT_FOUND,
 };
 use crate::native_ingress::affinity_header_for;
@@ -440,25 +440,36 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
         .instrument(span)
         .await
     };
+    // THE TAP'S REPORT-BACK, taken off the response the walk handed back. The serving lane, the
+    // usage the dialect's reader found and the terminal-error fact are resolved INSIDE the walk, at
+    // the tap that accrues them — the walk answers with a response, not with a lane — so this is how
+    // they reach the step that has to report them.
+    //
+    // For a BUFFERED answer the tap has already finished: the body was read whole before it was
+    // translated, so the cell is filled here and the three figures below are the tap's own. For a
+    // STREAMED answer the cell is still empty, because the response is served on its headers and its
+    // figures do not exist yet — so the fields stay as they were, `accrued` says the tap owns the
+    // posting, and the Meter step reads the cell later, when it has been filled.
+    let mut facts = MeterFacts {
+        // Empty until the tap says otherwise, which is the state a stream leaves them in.
+        lane: None,
+        usage: None,
+        // The status the CLIENT saw, which is the fee basis and is known at the head either way.
+        status: resp.status().as_u16(),
+        billing_failed: false,
+        // The walk resolved candidates and dialled, so this is a fee-bearing client request.
+        upstream_leg: true,
+        accrued,
+    };
+    if let Some(report) = resp
+        .extensions()
+        .get::<TapCell>()
+        .and_then(|cell| cell.get())
+    {
+        facts.fold(report);
+    }
     RouteParts {
-        facts: MeterFacts {
-            // The serving lane and the usage the reader found are resolved INSIDE the walk, at the
-            // tap that accrues them, and the walk hands back a response rather than a lane. For a
-            // streamed answer they do not exist yet at all: the terminal usage frame arrives after
-            // the client has the bytes. Both are the tap's, which is why `accrued` is what this
-            // step reports about them rather than the figures themselves.
-            lane: None,
-            usage: None,
-            // The status the CLIENT saw, which is the fee basis.
-            status: resp.status().as_u16(),
-            // A terminal reader error or an aborted translation is read at stream end, inside the
-            // tap that skips the accrual on it. A unit whose accrual is the tap's carries that fact
-            // there; one whose accrual is not has no stream to fail.
-            billing_failed: false,
-            // The walk resolved candidates and dialled, so this is a fee-bearing client request.
-            upstream_leg: true,
-            accrued,
-        },
+        facts,
         // The walk took it.
         meter_sink: None,
         // The plan the walk ran, for the token to seal as the step's answer.

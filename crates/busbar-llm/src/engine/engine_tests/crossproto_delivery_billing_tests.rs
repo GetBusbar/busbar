@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
-
 //! Regression tests for `translate_response_cross_protocol` in
 //! `crates/busbar-core/src/proxy/engine/mod.rs`: a buffered cross-protocol response whose delivery
 //! resolves to a NON-DELIVERY terminal must NOT charge the caller — neither the token ledger nor the
@@ -16,6 +15,7 @@
 
 use super::{translate_response_cross_protocol, BudgetSpendGuard};
 use crate::engine::AppEngineExt as _;
+use crate::engine::TapCell;
 use busbar_core::governance::{GovState, MemoryStore};
 use busbar_substrate::governance::NewKeySpec;
 use std::sync::Arc;
@@ -176,6 +176,7 @@ async fn drive(
             None,
             false,
             None,
+            &TapCell::new(),
         )
         .await;
         resp.status()
