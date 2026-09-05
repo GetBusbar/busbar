@@ -438,27 +438,11 @@ impl<'u> Labels<'u> {
 }
 
 /// A half-open byte range inside a scanned prefix.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
-pub struct Span {
-    /// First byte of the range.
-    pub start: usize,
-    /// One past the last byte of the range.
-    pub end: usize,
-}
-
-impl Span {
-    /// How many bytes the span covers.
-    #[must_use]
-    pub const fn len(&self) -> usize {
-        self.end.saturating_sub(self.start)
-    }
-
-    /// Whether the span covers nothing.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.end <= self.start
-    }
-}
+///
+/// The span grammar's own type, named here rather than declared a second time: a span the plane
+/// resolved and a span the kernel resolved have to be the same value, and two structurally
+/// identical types with one field order between them is exactly how that stops being true.
+pub use busbar_grammar::Span;
 
 /// The kernel's view of a unit's body: the bytes plus the resolved pointer spans.
 ///

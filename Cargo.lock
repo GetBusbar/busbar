@@ -476,6 +476,7 @@ dependencies = [
 name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
+ "busbar-grammar",
  "futures",
  "serde",
 ]
@@ -564,6 +565,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-grammar"
+version = "1.6.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "busbar-hook-test-plugin"
 version = "1.5.0"
 dependencies = [
@@ -588,6 +596,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
+ "busbar-grammar",
 ]
 
 [[package]]

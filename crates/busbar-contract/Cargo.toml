@@ -19,6 +19,11 @@ license = "Apache-2.0"
 # `futures` is here for exactly one item: the `Stream` trait in the transport frame pump. The
 # standard library has no stable stream trait, and inventing a private one would mean every in-tree
 # transport re-implements the adapter the ecosystem already has.
+# `busbar-grammar` is the closed JSON span grammar and is the one busbar crate this one names. It
+# is not an exception to the rule above: it sits BELOW the contract, names nothing itself, and is
+# re-exported here as `busbar_contract::spans` so that a plane resolving a declared pointer and the
+# kernel resolving the same pointer are one reading of one grammar rather than two.
 [dependencies]
+busbar-grammar = { path = "../busbar-grammar" }
 serde = { workspace = true }
 futures = { workspace = true }

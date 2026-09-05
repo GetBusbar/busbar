@@ -1,0 +1,29 @@
+# busbar-grammar — the closed JSON span grammar, on its own.
+#
+# WHY THIS CRATE EXISTS. JSON is the one serialization busbar reads, and the design says it is read
+# as a CLOSED grammar. A closed grammar with four readings is four grammars: before this crate, the
+# kernel had the scanner, three planes had their own approximations of it, and a fourth plane had a
+# fifth design. The scanner is now one crate that everything else names, so "the wrong locator" is a
+# question with one answer and the meta-test that asks it cannot be green against one reading and
+# blind to another.
+#
+# DEPENDENCIES. It names nothing of busbar's, so that the contract can be written ON it: the
+# contract re-exports it as `busbar_contract::spans`, and a crate the contract depends on cannot
+# name the contract back. `serde` is here for one derive — a resolved span is sealed into the policy
+# journal and read back out of it, and a span that cannot round-trip is a pointer nobody can settle
+# against later.
+[package]
+name = "busbar-grammar"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The closed JSON span grammar: one scanner that resolves a pointer to a span of the caller's own bytes, without allocating and without copying."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_grammar"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }

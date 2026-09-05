@@ -17,6 +17,7 @@ pub mod ids;
 pub mod kinds;
 pub mod plane;
 pub mod plugin;
+pub mod spans;
 pub mod surface;
 pub mod transport;
 pub mod unit;

@@ -58,11 +58,18 @@ fn the_crate_forbids_unsafe_and_undocumented_items() {
     assert!(lib.contains("#![deny(missing_docs)]"));
 }
 
-/// The crate names no other crate of the workspace.
+/// The crates that sit BELOW the contract, and may therefore be named by it.
 ///
-/// This is the manifest allow-list, asserted from the inside: the contract has to stand alone, so
-/// a dependency on the kernel, on the capability crate, on a unit, on a plane or on a transport is
-/// a failure here rather than a discovery later.
+/// Both are the contract's own surface split out under its own ceiling rather than a dependency in
+/// the ordinary sense: each names nothing itself, each is re-exported here, and a plugin that
+/// reaches one reaches it through this crate. Anything else is a layering violation.
+const BELOW_THE_CONTRACT: [&str; 1] = ["busbar-grammar"];
+
+/// The crate names no other crate of the workspace except the ones below it.
+///
+/// This is the manifest allow-list, asserted from the inside: the contract has to stand alone
+/// against everything ABOVE it, so a dependency on the kernel, on the capability crate, on a unit,
+/// on a plane or on a transport is a failure here rather than a discovery later.
 #[test]
 fn the_contract_stands_alone() {
     let manifest =
@@ -78,6 +85,9 @@ fn the_contract_stands_alone() {
             continue;
         }
         let name = line.split_whitespace().next().unwrap_or_default();
+        if BELOW_THE_CONTRACT.contains(&name) {
+            continue;
+        }
         assert!(
             !name.starts_with("busbar"),
             "the contract depends on {name}, so it does not stand alone"

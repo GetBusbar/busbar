@@ -13,6 +13,7 @@ members = [
     "crates/busbar-substrate-values",
     "crates/busbar-caps",
     "crates/busbar-contract",
+    "crates/busbar-grammar",
     "crates/busbar-transport-tcp",
     "crates/busbar-transport-tls",
     "crates/busbar-transport-http",
