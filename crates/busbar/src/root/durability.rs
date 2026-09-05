@@ -97,7 +97,7 @@ use busbar_unit_audit::{AuditChain, AuditLog, AuditRecord};
 use busbar_unit_ledger::checkpoint::Checkpoint;
 use busbar_unit_ledger::legacy::LegacyRows;
 use busbar_unit_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
-use busbar_unit_ledger::settle::Ledger;
+use busbar_unit_ledger::settle::{Ledger, Settlement};
 use busbar_unit_ledger::totals::{TotalsKey, WindowStart};
 use busbar_unit_wal::{
     BodyWriter, Entry, Journal, JournalAck, Mode, OpenError, RecordClass, Shipper,
@@ -202,6 +202,102 @@ impl Durability {
         self.journal.append(token, at, &[entry])
     }
 
+    /// Settle a hold and put what it produced on the journal, in that order.
+    ///
+    /// The binding the journal was built for, and the reason [`Durability::journal_posting`] is a
+    /// method here rather than a call the ledger makes: the ledger unit owns the arithmetic and
+    /// knows nothing about a chain, and the journal unit owns the chain and knows nothing about a
+    /// posting. Joining them is the composition root's job, and doing it in ONE function is what
+    /// makes "every posting is a journal record" a fact about the code rather than a convention
+    /// every call site has to remember.
+    ///
+    /// A unit that ran past everything reservable leaves two records, not one. The settlement says
+    /// what was reserved and what was posted; the overdraft record says what part of it nothing
+    /// backed, as its own entry in the same order, so the carry into the next window can be read
+    /// off the chain rather than inferred from a difference between two settlements.
+    ///
+    /// # Errors
+    ///
+    /// As [`Durability::journal_audit`]. The books have already moved when this fails — value was
+    /// delivered and the settlement is the truth about it — so the failure is a durability loss to
+    /// be retained and re-appended, never a settlement that is rolled back.
+    pub fn settle(
+        &mut self,
+        at: &Settling<'_>,
+        hold: busbar_caps::Hold,
+        usage: &busbar_caps::Usage,
+        ledger: &busbar_caps::LedgerToken,
+    ) -> Result<Settled, DurabilityLost> {
+        let settlement = self
+            .ledger
+            .settle_recording(at.key, at.window, hold, usage, ledger);
+        self.journal_settlement(at, settlement)
+    }
+
+    /// Settle a posting the loop's exit path already built, and journal it.
+    ///
+    /// The exit path owns the hold and consumes it there, so what comes back out of a finished unit
+    /// is a posting and never a hold. This is the same act as [`Durability::settle`] from that side:
+    /// the books move through the ledger's one book-moving function, and the same two records reach
+    /// the same chain.
+    ///
+    /// # Errors
+    ///
+    /// As [`Durability::settle`].
+    pub fn settle_posted(
+        &mut self,
+        at: &Settling<'_>,
+        posted: busbar_caps::Posted,
+    ) -> Result<Settled, DurabilityLost> {
+        let settlement = self.ledger.post(at.key, at.window, posted);
+        self.journal_settlement(at, settlement)
+    }
+
+    fn journal_settlement(
+        &mut self,
+        at: &Settling<'_>,
+        settlement: Settlement,
+    ) -> Result<Settled, DurabilityLost> {
+        let stamp = at.stamp;
+        let posting = Posting {
+            key: at.key.clone(),
+            window: at.window,
+            reserved: i128::from(settlement.posted.reserved()),
+            settled: i128::from(settlement.posted.settled()),
+            overdraft: i128::from(settlement.posted.overdraft()),
+            rate_card_version: stamp.rate_card_version,
+            wall: stamp.wall,
+            mono: stamp.mono,
+        };
+        self.journal_posting(&posting, at.durability, at.step)?;
+        // The overdraft's own record. Reserved and settled are zero on it deliberately: the
+        // settlement above already carries both, and repeating them here would double every figure
+        // a replay adds up. What this record holds that nothing else does is the carry, on the
+        // chain, in order, beside the posting it came out of.
+        let overdraft = match settlement.overdraft.as_ref() {
+            None => None,
+            Some(note) => {
+                let record = Posting {
+                    key: note.key.clone(),
+                    window: note.window,
+                    reserved: 0,
+                    settled: 0,
+                    overdraft: note.amount,
+                    rate_card_version: stamp.rate_card_version,
+                    wall: stamp.wall,
+                    mono: stamp.mono,
+                };
+                self.journal_posting(&record, at.durability, at.step)?;
+                Some(record)
+            }
+        };
+        Ok(Settled {
+            settlement,
+            posting,
+            overdraft,
+        })
+    }
+
     /// The ledger's own records, on the journal.
     ///
     /// This is what the migration step binds its marker to. It replaces the store adapter's
@@ -220,6 +316,50 @@ impl Durability {
             at,
         }
     }
+}
+
+/// The facts a posting record needs that neither the books nor the hold hold.
+///
+/// A stamp rather than three arguments, so a caller cannot get the clock and the card version in the
+/// wrong order without the compiler noticing, and so adding a fourth is one change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PostingStamp {
+    /// Which card version priced the unit.
+    pub rate_card_version: u64,
+    /// The wall clock, in whole seconds. The unit's pinned arrival epoch, never a fresh read.
+    pub wall: u64,
+    /// The node's monotonic clock.
+    pub mono: u64,
+}
+
+/// Where a settlement lands: which balance, which window, on whose authority, and stamped how.
+///
+/// One borrowed value rather than six arguments, and it is not only tidiness. The window and the
+/// stamp's wall clock are the same pinned arrival epoch read two ways; passing them separately is
+/// how a straddling unit ends up booked in one window and recorded in another.
+#[derive(Debug, Clone, Copy)]
+pub struct Settling<'a> {
+    /// Which balance moves.
+    pub key: &'a TotalsKey,
+    /// Which window it moves in.
+    pub window: WindowStart,
+    /// The token the journal append is made under.
+    pub durability: &'a DurabilityToken,
+    /// Which step the append is attributed to.
+    pub step: StepName,
+    /// What the record carries beyond the figures.
+    pub stamp: PostingStamp,
+}
+
+/// What one settlement moved and what it left on the chain.
+#[derive(Debug)]
+pub struct Settled {
+    /// What the ledger did: the posting, the residual released, the overdraft noted.
+    pub settlement: Settlement,
+    /// The settlement's own journal record.
+    pub posting: Posting,
+    /// The overdraft's journal record, where the unit ran past everything reservable.
+    pub overdraft: Option<Posting>,
 }
 
 /// A settlement as the journal carries it.
@@ -996,5 +1136,234 @@ mod tests {
             durability.journal.head(),
             "the store's head is the node's head"
         );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Settlement, bound to the journal
+    // ---------------------------------------------------------------------------------------
+
+    fn memory_node() -> Durability {
+        build(
+            &DurabilityConfig { data_dir: None },
+            Box::new(NullShipper::new()),
+            rows(),
+        )
+        .expect("memory-buffered cannot fail")
+    }
+
+    fn totals_key(bucket: &str) -> TotalsKey {
+        use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension};
+        TotalsKey::new(
+            BucketId::new(bucket),
+            CapDimension::NanoUnits,
+            BucketScope::All,
+        )
+    }
+
+    fn stamp() -> PostingStamp {
+        PostingStamp {
+            rate_card_version: 3,
+            wall: 1_700_000_000,
+            mono: 42,
+        }
+    }
+
+    fn settling<'a>(key: &'a TotalsKey, durability: &'a DurabilityToken) -> Settling<'a> {
+        Settling {
+            key,
+            window: 86_400,
+            durability,
+            step: StepName::Meter,
+            stamp: stamp(),
+        }
+    }
+
+    /// One hold, one settlement, one journal record — and the books moved. Before this binding the
+    /// ledger moved figures that nothing put in the one order, which is the gap the journal exists
+    /// to close.
+    #[test]
+    fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
+        use busbar_caps::{
+            step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
+            QuantitySource, Usage, UsageLine, UsageToken,
+        };
+        let seal = KernelSeal::acquire_for_kernel();
+        let mut durability = memory_node();
+        let key = totals_key("vk_settle");
+        durability.ledger.record_hold_opened(&key, 86_400, 5_000);
+
+        let hold = Hold::open(
+            &AdmitToken::<Admit>::mint(&seal),
+            PrincipalId::new("vk_settle"),
+            5_000,
+        );
+        let usage = Usage::report(
+            &UsageToken::mint(&seal),
+            vec![UsageLine {
+                class: MeterClassId::new("nano_units"),
+                quantity: 4_200,
+                source: QuantitySource::Count,
+                estimated: false,
+            }],
+        )
+        .expect("one line");
+
+        let durability_token = token();
+        let settled = durability
+            .settle(
+                &settling(&key, &durability_token),
+                hold,
+                &usage,
+                &LedgerToken::mint(&seal),
+            )
+            .expect("the null shipper takes it");
+
+        assert_eq!(settled.settlement.posted.settled(), 4_200);
+        assert_eq!(settled.settlement.released, 800);
+        assert!(settled.overdraft.is_none());
+        let figures = durability.ledger.book().get(&key, 86_400);
+        assert_eq!(figures.open_holds, 0);
+        assert_eq!(figures.settled, 4_200);
+
+        let replayed = durability
+            .journal
+            .replay()
+            .expect("the journal reads back")
+            .expect("and verifies");
+        assert_eq!(replayed.len(), 1, "one posting, one record");
+        assert_eq!(replayed[0].class, RecordClass::Transaction);
+        assert_eq!(replayed[0].body, settled.posting.body());
+    }
+
+    /// A unit that ran past everything reservable leaves TWO records: the settlement, and the carry.
+    /// The overdraft record's reserved and settled are zero on purpose — the settlement beside it
+    /// already carries both, and a replay that added them twice would double the window.
+    #[test]
+    fn an_overdraft_is_its_own_record_beside_the_posting_it_came_out_of() {
+        use busbar_caps::{
+            step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
+            QuantitySource, Usage, UsageLine, UsageToken,
+        };
+        let seal = KernelSeal::acquire_for_kernel();
+        let mut durability = memory_node();
+        let key = totals_key("vk_over");
+        durability.ledger.record_hold_opened(&key, 86_400, 1_000);
+
+        let mut hold = Hold::open(
+            &AdmitToken::<Admit>::mint(&seal),
+            PrincipalId::new("vk_over"),
+            1_000,
+        );
+        // Nothing left in the slice to grow the reservation into: the spend lands anyway.
+        let spend = hold.spend(4_000, 0);
+        assert_eq!(spend.overdraft, 3_000);
+        let usage = Usage::report(
+            &UsageToken::mint(&seal),
+            vec![UsageLine {
+                class: MeterClassId::new("nano_units"),
+                quantity: 4_000,
+                source: QuantitySource::Count,
+                estimated: false,
+            }],
+        )
+        .expect("one line");
+
+        let durability_token = token();
+        let settled = durability
+            .settle(
+                &settling(&key, &durability_token),
+                hold,
+                &usage,
+                &LedgerToken::mint(&seal),
+            )
+            .expect("the null shipper takes it");
+
+        let note = settled
+            .settlement
+            .overdraft
+            .as_ref()
+            .expect("the ledger noted it");
+        assert_eq!(note.principal, "vk_over");
+        assert_eq!(note.amount, 3_000);
+        let record = settled.overdraft.as_ref().expect("and journalled it");
+        assert_eq!(record.reserved, 0);
+        assert_eq!(record.settled, 0);
+        assert_eq!(record.overdraft, 3_000);
+
+        let replayed = durability
+            .journal
+            .replay()
+            .expect("the journal reads back")
+            .expect("and verifies");
+        assert_eq!(replayed.len(), 2, "the posting, then the carry");
+        assert_eq!(replayed[0].body, settled.posting.body());
+        assert_eq!(replayed[1].body, record.body());
+        let seqs: Vec<u64> = replayed.iter().map(|r| r.node_seq).collect();
+        assert_eq!(
+            seqs,
+            vec![1, 2],
+            "the carry comes after the posting it is of"
+        );
+        verify_journal(&replayed).expect("the chain verifies");
+    }
+
+    /// The exit path consumes the hold, so the root can only hand over a posting. It has to reach
+    /// the same books and the same chain, or a unit's record would depend on which door it came
+    /// through.
+    #[test]
+    fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
+        use busbar_caps::{
+            step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, Posted,
+            PrincipalId, QuantitySource, Usage, UsageLine, UsageToken,
+        };
+        let seal = KernelSeal::acquire_for_kernel();
+        let admit = AdmitToken::<Admit>::mint(&seal);
+        let key = totals_key("vk_both");
+        let usage = |q: u64| {
+            Usage::report(
+                &UsageToken::mint(&seal),
+                vec![UsageLine {
+                    class: MeterClassId::new("nano_units"),
+                    quantity: q,
+                    source: QuantitySource::Count,
+                    estimated: false,
+                }],
+            )
+            .expect("one line")
+        };
+
+        let durability_token = token();
+        let at = settling(&key, &durability_token);
+
+        let mut through_hold = memory_node();
+        through_hold.ledger.record_hold_opened(&key, 86_400, 5_000);
+        let a = through_hold
+            .settle(
+                &at,
+                Hold::open(&admit, PrincipalId::new("vk_both"), 5_000),
+                &usage(4_200),
+                &LedgerToken::mint(&seal),
+            )
+            .expect("settles");
+
+        let mut through_posting = memory_node();
+        through_posting
+            .ledger
+            .record_hold_opened(&key, 86_400, 5_000);
+        let posted = Posted::settle(
+            Hold::open(&admit, PrincipalId::new("vk_both"), 5_000),
+            &usage(4_200),
+            &LedgerToken::mint(&seal),
+        );
+        let b = through_posting
+            .settle_posted(&at, posted)
+            .expect("settles");
+
+        assert_eq!(a.posting, b.posting);
+        assert_eq!(
+            through_hold.ledger.book().get(&key, 86_400),
+            through_posting.ledger.book().get(&key, 86_400)
+        );
+        assert_eq!(through_hold.journal.head(), through_posting.journal.head());
     }
 }
