@@ -259,9 +259,10 @@ fn generated_table_has_the_pinned_read_only_full_split() {
     assert_eq!(rows.len() - read_only, 32);
 }
 
-/// The combined table (66 generated + 17 additive) has exactly 83 rows and no duplicate verb name.
+/// The combined table (66 generated + 17 money-governance + 5 ledger views) has exactly the rows
+/// its count declares, and no duplicate verb name.
 #[test]
-fn combined_table_has_83_unique_verb_names() {
+fn combined_table_has_unique_verb_names() {
     let all = verbs::all_verbs();
     assert_eq!(all.len(), VERB_COUNT);
     let mut names: Vec<&str> = all.iter().map(|e| e.verb).collect();

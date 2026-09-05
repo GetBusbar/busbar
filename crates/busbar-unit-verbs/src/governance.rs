@@ -133,4 +133,30 @@ pub trait Governance {
         admin: &AdminToken,
         request: &[u8],
     ) -> Result<Vec<u8>, GovernanceError>;
+
+    /// `// contract:` the answer to one of the five 1.6.0 ledger views
+    /// ([`crate::verb::LEDGER_VERBS`]), once `Verbs::execute` has checked its scope. A view reads
+    /// figures the ledger already holds and mutates nothing, which is why it has a seam of its own
+    /// rather than sharing [`Governance::execute_new_verb`]: that method's callers have passed a
+    /// posture check this one deliberately has not, and folding a read into it would make the two
+    /// indistinguishable to an implementor.
+    ///
+    /// The default answers `NotFound`, which is the truthful answer for an integrator that has not
+    /// bound a ledger: there is no ledger behind the view, so there are no figures to serve, and
+    /// inventing zeros would be a reconciliation that reports as balanced because nothing was ever
+    /// read. It is also what keeps this addition additive — an existing implementor compiles
+    /// unchanged and serves nothing it does not have.
+    ///
+    /// # Errors
+    ///
+    /// The view could not be answered. The default returns [`GovernanceError::NotFound`].
+    fn execute_ledger_read(
+        &self,
+        verb: KernelVerb,
+        admin: &AdminToken,
+        request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError> {
+        let (_, _, _) = (verb, admin, request);
+        Err(GovernanceError::NotFound)
+    }
 }

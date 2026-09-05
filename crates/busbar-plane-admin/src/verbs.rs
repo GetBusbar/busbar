@@ -1,4 +1,4 @@
-//! The closed 66+17 kernel-verb table, and the pure `(method, path) -> verb` match this plane runs.
+//! The closed 66+17+5 kernel-verb table, and the pure `(method, path) -> verb` match this plane runs.
 //!
 //! The 66 come from `generated::verb_table_1_5_5` — mechanically extracted from the pinned
 //! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 17 are the
@@ -135,8 +135,52 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     },
 ];
 
-/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag plus the 17 1.6.0 additions.
-pub(crate) const VERB_COUNT: usize = 66 + 17;
+/// The five 1.6.0 ledger views, mounted under one sub-prefix of the admin surface.
+///
+/// Unlike the 17 above, these paths are NOT a judgment call. `/api/v1/admin/ledger/*` is the prefix
+/// the design names for them, and `/api/v1/admin/ledger/openapi.json` is the path it names for the
+/// document that describes the 1.6.0 operations — a document beside the 1.5.5 one rather than
+/// inside it, because the 1.5.5 document's bytes are pinned and an additive path is not a byte.
+///
+/// Every one is a `GET` and every one is read-only, which is what puts them on the same rung as the
+/// legacy `GET /usage`: the same credential that may read what a bucket spent may read what the
+/// ledger posted for it, and neither may write anything.
+const LEDGER_VERBS_1_6_0: &[VerbEntry] = &[
+    VerbEntry {
+        method: "GET",
+        path: "/api/v1/admin/ledger/totals",
+        verb: "get_ledger_totals",
+        read_only: true,
+    },
+    VerbEntry {
+        method: "GET",
+        path: "/api/v1/admin/ledger/checkpoints",
+        verb: "get_ledger_checkpoints",
+        read_only: true,
+    },
+    VerbEntry {
+        method: "GET",
+        path: "/api/v1/admin/ledger/reconciliation",
+        verb: "get_ledger_reconciliation",
+        read_only: true,
+    },
+    VerbEntry {
+        method: "GET",
+        path: "/api/v1/admin/ledger/migration",
+        verb: "get_ledger_migration",
+        read_only: true,
+    },
+    VerbEntry {
+        method: "GET",
+        path: "/api/v1/admin/ledger/openapi.json",
+        verb: "get_ledger_openapi_json",
+        read_only: true,
+    },
+];
+
+/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 17 1.6.0
+/// money-governance verbs, and the 5 1.6.0 ledger views.
+pub(crate) const VERB_COUNT: usize = 66 + 17 + 5;
 
 /// The verb the `openapi.json` blob is served under, where `encode_response` applies the one
 /// documented exception (an `info.version` substitution over an otherwise verbatim body).
@@ -156,7 +200,7 @@ pub(crate) const OP_WRITE: OpClassId = OpClassId::new("admin_write");
 ///
 /// A `const fn`-free concatenation would need `[T; N]` const generics arithmetic this table does not
 /// need to pay for: the table is built once, at first use, by `std::sync::LazyLock`, which keeps the
-/// 83-row list a single flat slice for every lookup while declaring its true source in one place.
+/// combined list a single flat slice for every lookup while declaring its true source in one place.
 pub(crate) fn all_verbs() -> &'static [VerbEntry] {
     static TABLE: std::sync::OnceLock<Vec<VerbEntry>> = std::sync::OnceLock::new();
     TABLE.get_or_init(|| {
@@ -172,6 +216,7 @@ pub(crate) fn all_verbs() -> &'static [VerbEntry] {
                 }),
         );
         v.extend_from_slice(NEW_VERBS_1_6_0);
+        v.extend_from_slice(LEDGER_VERBS_1_6_0);
         v
     })
 }
@@ -180,7 +225,7 @@ pub(crate) fn all_verbs() -> &'static [VerbEntry] {
 ///
 /// This is how a step after `decode_ingress` gets back to the static row: the draft's fact map
 /// carries the verb the decode step resolved, and this turns that name into the one row that owns
-/// it. A lookup in a closed 83-row table, not a second reading of the body's bytes.
+/// it. A lookup in one closed table, not a second reading of the body's bytes.
 pub(crate) fn verb_named(verb: &str) -> Option<&'static VerbEntry> {
     all_verbs().iter().find(|e| e.verb == verb)
 }
@@ -223,7 +268,7 @@ fn match_path<'p>(
 
 /// Find the verb a method and concrete path decode to, and the path parameters it carries.
 ///
-/// Total over the closed table: a linear scan of at most 83 rows, each a handful of segment
+/// Total over the closed table: a linear scan of at most [`VERB_COUNT`] rows, each a handful of segment
 /// comparisons. This is a decode-time cost paid once per admin unit, not a hot per-byte path.
 pub(crate) fn find_verb<'p>(
     method: &str,
@@ -292,7 +337,7 @@ pub fn resolve(method: &str, path: &str) -> Option<ResolvedVerb> {
 /// Every row the closed table declares, in the order the plane holds them.
 ///
 /// The generated 1.5.5 rows first, then the 1.6.0 additions — so a caller counting them sees the
-/// 66 and the 17 as two runs rather than as one undifferentiated 83.
+/// 66, the 17 and the 5 as three runs rather than as one undifferentiated list.
 #[must_use]
 pub fn table() -> Vec<ResolvedVerb> {
     all_verbs()
@@ -381,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn table_has_exactly_83_rows() {
+    fn table_has_exactly_the_rows_the_count_declares() {
         assert_eq!(all_verbs().len(), VERB_COUNT);
     }
 

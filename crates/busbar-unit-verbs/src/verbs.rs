@@ -32,7 +32,7 @@ use crate::posture::{ApprovalState, PostureCtx};
 use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
 use crate::refusal::{ReasonCode, Refusal, RefusalStep};
 use crate::store::Store;
-use crate::verb::{KernelVerb, VerbScope, LEGACY_VERBS, NEW_VERBS};
+use crate::verb::{KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS};
 use busbar_caps::{AdminToken, SecretOnce, UnitKey};
 
 /// CG-39: the nonce seam. This crate has no CSPRNG dependency of its own, so the 128-bit nonce a
@@ -128,6 +128,15 @@ pub fn required_scope(verb: KernelVerb) -> VerbScope {
     }
     if NEW_VERBS.contains(&verb) {
         return VerbScope::Full;
+    }
+    // The five ledger views are reads, and are answered here rather than by the fallthrough below
+    // so that the scope is a decision this function MAKES about them. The fallthrough happens to
+    // land on the same rung, and that coincidence is exactly why it must not be relied on: a
+    // read-only view and an unrecognised verb would then be indistinguishable, and the day the
+    // fallthrough is tightened to `Full` — the safe direction for an unknown — every ledger view
+    // would silently start demanding a full-scope credential.
+    if LEDGER_VERBS.contains(&verb) {
+        return VerbScope::ReadOnly;
     }
     // Named surfaces: every `Get*` is a read; `PostAuthToken`/`GetAuthToken` are exempt from this
     // model entirely (see module doc) and are given `ReadOnly` here only so `required_scope` stays
@@ -389,6 +398,17 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             "create_key/rotate_key have dedicated methods with their own idempotency handling"
         );
         self.admit(verb, actor, granted, now)?;
+        // A ledger view is answered BEFORE the new-verb branch, and the ordering is the whole of
+        // its posture: it never reaches `check_new_verb_admission`, because there is no mutation
+        // for dual control to check and no ceremony a read has to wait for. What it does reach is
+        // the same `admit` above every other verb reaches, so its scope and its rate class are
+        // decided by the same two lines that decide every other verb's.
+        if LEDGER_VERBS.contains(&verb) {
+            return self
+                .governance
+                .execute_ledger_read(verb, admin, request)
+                .map_err(GovernanceError::into_refusal);
+        }
         if NEW_VERBS.contains(&verb) {
             let ctx = posture.expect("a new verb must be called with a resolved PostureCtx");
             crate::posture::check_new_verb_admission(verb, ctx, approval)?;

@@ -51,7 +51,9 @@ use busbar_plane_admin::verbs::ResolvedVerb;
 use busbar_unit_auth::unit::AuthRequest;
 use busbar_unit_scope::Scope;
 use busbar_unit_verbs::rate::{MutationClass, CONFIG_CLASS_RULES};
-use busbar_unit_verbs::{KernelVerb, VerbScope, LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS};
+use busbar_unit_verbs::{
+    KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS,
+};
 
 /// The transport an admin claim is declared over, and therefore the one a sealed destination for an
 /// admin verb carries.
@@ -251,15 +253,79 @@ impl busbar_unit_verbs::store::Store for RefusingStore {
     }
 }
 
+// ── the ledger's read-only views ────────────────────────────────────────────────────────────────
+
+/// The figures the five ledger views read.
+///
+/// A read seam and nothing else: four methods, none of which takes an argument and none of which
+/// can change anything. That shape is the point. The views are the one part of the administrative
+/// surface whose answer is not produced by the operation's own handler — there is no 1.5.5 handler
+/// for a figure 1.5.5 never kept — so the root has to reach the ledger itself, and reaching it
+/// through a seam that offers no way to write is what keeps "read-only admin surface" a property of
+/// the type rather than a promise in a comment.
+///
+/// It is deliberately NOT the ledger. A `Ledger` can settle, adjust and transfer; a view has no
+/// business holding one. What the root binds behind this is a snapshot of what the ledger holds,
+/// taken under whatever lock the node keeps it behind, and what the views render is that snapshot.
+pub trait LedgerView: Send + Sync {
+    /// What the ledger posted, by row — the ledger side of the reconciliation identity.
+    fn ledger_rows(&self) -> crate::root::ledger_identity::LedgerSnapshot;
+
+    /// What the previous release's rows carry for the same cells — the other side of it.
+    fn legacy_rows(&self) -> crate::root::ledger_identity::LegacySnapshot;
+
+    /// The sealed checkpoints, oldest first.
+    fn checkpoints(&self) -> Vec<busbar_unit_ledger::checkpoint::Checkpoint>;
+
+    /// The marker the first boot after the upgrade sealed, if this deployment has migrated.
+    fn migration_marker(&self) -> Option<busbar_unit_ledger::migration::MigrationMarker>;
+}
+
+/// The view a node has before a ledger is bound behind it.
+///
+/// Every answer is empty, and each emptiness is a statement rather than a placeholder: no rows were
+/// posted, no rows were read, nothing has been sealed and this deployment has not migrated. A node
+/// composed without a ledger genuinely has none of those things, and saying so is a true answer.
+///
+/// What it is NOT is a reconciliation that balances. Two empty snapshots do reconcile — trivially —
+/// and that is honest here precisely because the emptiness is visible in the totals view beside it:
+/// an operator reading `"rows": []` can see that the identity held over nothing.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UnopenedLedger;
+
+impl LedgerView for UnopenedLedger {
+    fn ledger_rows(&self) -> crate::root::ledger_identity::LedgerSnapshot {
+        crate::root::ledger_identity::LedgerSnapshot::new()
+    }
+
+    fn legacy_rows(&self) -> crate::root::ledger_identity::LegacySnapshot {
+        crate::root::ledger_identity::LegacySnapshot::new()
+    }
+
+    fn checkpoints(&self) -> Vec<busbar_unit_ledger::checkpoint::Checkpoint> {
+        Vec::new()
+    }
+
+    fn migration_marker(&self) -> Option<busbar_unit_ledger::migration::MigrationMarker> {
+        None
+    }
+}
+
 /// The verbs unit's governance seam, bound to whatever executes an admin operation.
 ///
-/// Every one of the trait's seven methods is a delegation. `execute_legacy` is the one that carries
-/// the 66; `execute_new_verb` carries the 17, which reach the same seam because the surface that
-/// answers them is the same surface. The four governance-store methods answer from the request the
-/// dispatch already ran, because minting a key IS an admin operation and there is no second place
-/// this root is entitled to mint one.
+/// Every one of the trait's methods is a delegation. `execute_legacy` is the one that carries the
+/// 66; `execute_new_verb` carries the 17, which reach the same seam because the surface that answers
+/// them is the same surface. `execute_ledger_read` carries the 5 ledger views, and it is the one
+/// method that does NOT reach the dispatch: there is no 1.5.5 handler behind a figure 1.5.5 never
+/// kept, so the answer is rendered here, from the bound view. The four governance-store methods
+/// answer from the request the dispatch already ran, because minting a key IS an admin operation and
+/// there is no second place this root is entitled to mint one.
 pub struct CoreGovernance {
     dispatch: Arc<dyn AdminDispatch>,
+    /// The figures the five ledger views read. Held beside the dispatch rather than behind it
+    /// because the two answer different halves of the surface and neither can stand in for the
+    /// other: a dispatch handed a ledger path would answer the 404 its router has for it.
+    ledger: Arc<dyn LedgerView>,
     /// The request the current unit is executing, so the seam's argument-free methods can reach it.
     /// One unit at a time per governance value, which is what the root guarantees by building one
     /// per unit rather than sharing one across them.
@@ -270,9 +336,15 @@ pub struct CoreGovernance {
 impl CoreGovernance {
     /// Bind the governance seam for one unit.
     #[must_use]
-    pub fn new(dispatch: Arc<dyn AdminDispatch>, verb: KernelVerb, request: AdminRequest) -> Self {
+    pub fn new(
+        dispatch: Arc<dyn AdminDispatch>,
+        ledger: Arc<dyn LedgerView>,
+        verb: KernelVerb,
+        request: AdminRequest,
+    ) -> Self {
         CoreGovernance {
             dispatch,
+            ledger,
             request,
             verb,
         }
@@ -342,6 +414,339 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
     ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
         Ok(self.run())
     }
+
+    fn execute_ledger_read(
+        &self,
+        verb: KernelVerb,
+        _admin: &busbar_caps::AdminToken,
+        _request: &[u8],
+    ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
+        // The request body is deliberately unread. Every view is a `GET` whose whole identity is its
+        // path, so a body would be an argument to an operation that takes none — and an operation
+        // that quietly read one would have a second way to be asked a question, which is exactly the
+        // kind of surface a closed table exists to prevent.
+        let body = render_ledger_view(verb, self.ledger.as_ref())
+            .ok_or(busbar_unit_verbs::GovernanceError::NotFound)?;
+        Ok(ledger_answer(body).pack())
+    }
+}
+
+/// The answer a ledger view produces: a 200 carrying JSON, and no other header.
+///
+/// Nothing here is derived from a legacy response, because there is no legacy response to derive it
+/// from — these paths did not exist. `content-type` is the one header a JSON body needs; a
+/// `content-length` is the transport's to add, and adding one here would be this root deciding a
+/// framing detail the listener already owns.
+fn ledger_answer(body: Vec<u8>) -> AdminAnswer {
+    AdminAnswer {
+        status: 200,
+        headers: vec![("content-type".to_string(), "application/json".to_string())],
+        body,
+    }
+}
+
+/// The bytes one ledger view answers with, or `None` for a verb that is not one.
+///
+/// `None` is reachable only if the closed table and this match ever disagree, which is a defect in
+/// this file rather than a request to forgive — so it becomes a `NotFound` at the call site rather
+/// than a body invented for a verb nobody wrote one for.
+fn render_ledger_view(verb: KernelVerb, view: &dyn LedgerView) -> Option<Vec<u8>> {
+    Some(match verb {
+        KernelVerb::GetLedgerTotals => render_totals(&view.ledger_rows()).into_bytes(),
+        KernelVerb::GetLedgerCheckpoints => render_checkpoints(&view.checkpoints()).into_bytes(),
+        KernelVerb::GetLedgerReconciliation => {
+            render_reconciliation(&view.ledger_rows(), &view.legacy_rows()).into_bytes()
+        }
+        KernelVerb::GetLedgerMigration => {
+            render_migration(view.migration_marker().as_ref()).into_bytes()
+        }
+        KernelVerb::GetLedgerOpenapiJson => LEDGER_OPENAPI_ADDITIVE.as_bytes().to_vec(),
+        _ => return None,
+    })
+}
+
+/// The document describing the 1.6.0 ledger operations.
+///
+/// A SECOND document, served at a path of its own, and that is the whole of the design's answer to
+/// how a new operation gets documented without moving a byte of the pinned one. The 1.5.5
+/// `openapi.json` is a fixed artefact: a client that fetched it before the upgrade and after it gets
+/// the same bytes, so nothing that reads it can be surprised by a path it does not know. An operator
+/// who wants the new surface asks for the new document by name.
+///
+/// It is `include_str!` of a committed file rather than a literal here for the same reason the
+/// verbs unit reads its conformance fixture that way: a document is an artefact somebody reviews as
+/// a document, and a test below parses this same file to check it describes exactly the operations
+/// the closed table declares.
+const LEDGER_OPENAPI_ADDITIVE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../docs/openapi-1.6.0-additive.json"
+));
+
+/// One JSON string, quoted and escaped.
+///
+/// Written out rather than taken from a serialization crate because this crate does not depend on
+/// one on the request path, and because the escape set is small and closed: the two characters JSON
+/// requires escaping, the five it names short forms for, and every remaining control character as a
+/// `\u` escape. A bucket, lane or provider name comes from a deployment's configuration and may hold
+/// any of them, so escaping is not optional here — an unescaped quote would end the string early and
+/// hand a reader a different document from the one this rendered.
+fn json_string(value: &str, out: &mut String) {
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+/// One money figure, as a decimal string.
+///
+/// Every figure the ledger keeps is a 128-bit integer and JSON's number is a double, which is exact
+/// only to 2^53. A nano-unit total on a busy deployment passes that in a day, and a figure that
+/// silently loses its last digits on the way to an operator is worse than no figure at all — the
+/// number still LOOKS like money. So money is a string and a count is a number, and the rule is
+/// stated in the served document rather than left for a reader to infer from one row's magnitude.
+fn json_amount(value: i128, out: &mut String) {
+    out.push('"');
+    out.push_str(&value.to_string());
+    out.push('"');
+}
+
+/// Thirty-two bytes as lower-case hex.
+fn hex32(bytes: &[u8; 32]) -> String {
+    let mut out = String::with_capacity(64);
+    for b in bytes {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+/// `GET /api/v1/admin/ledger/totals` — what the ledger posted, per bucket, day, lane and provider.
+///
+/// The row width is the reconciliation's row width, and deliberately so: this view and the
+/// reconciliation view are two readings of one set of rows, so a discrepancy an operator finds in
+/// one can be looked up in the other by the same four-part name.
+fn render_totals(rows: &crate::root::ledger_identity::LedgerSnapshot) -> String {
+    let mut out = String::from("{\"rows\":[");
+    for (i, (row, figures)) in rows.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"bucket\":");
+        json_string(&row.bucket, &mut out);
+        out.push_str(",\"day\":");
+        out.push_str(&row.day.to_string());
+        out.push_str(",\"lane\":");
+        json_string(&row.lane, &mut out);
+        out.push_str(",\"provider\":");
+        json_string(&row.provider, &mut out);
+        out.push_str(",\"priced_nanos\":\"");
+        out.push_str(&figures.priced_nanos.to_string());
+        out.push_str("\",\"priced_micros\":");
+        json_amount(i128::from(figures.micros()), &mut out);
+        out.push_str(",\"fee_count\":");
+        out.push_str(&figures.fee_count.to_string());
+        out.push('}');
+    }
+    out.push_str("]}");
+    out
+}
+
+/// `GET /api/v1/admin/ledger/checkpoints` — the sealed figures, and whether each seal verifies.
+///
+/// `body_hash_verifies` is served beside the hash rather than instead of it. The hash is what an
+/// auditor re-derives independently; the boolean is this node's own answer for the same question,
+/// and serving both is what lets the two be compared rather than trusted.
+fn render_checkpoints(checkpoints: &[busbar_unit_ledger::checkpoint::Checkpoint]) -> String {
+    let mut out = String::from("{\"checkpoints\":[");
+    for (i, cp) in checkpoints.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"checkpoint_seq\":");
+        out.push_str(&cp.checkpoint_seq.to_string());
+        out.push_str(",\"node\":");
+        out.push_str(&cp.node.to_string());
+        out.push_str(",\"wall\":");
+        out.push_str(&cp.wall.to_string());
+        out.push_str(",\"backup_watermark\":");
+        out.push_str(&cp.backup_watermark.to_string());
+        out.push_str(",\"store_seq_high_water\":");
+        out.push_str(&cp.store_seq_high_water.to_string());
+        out.push_str(",\"body_hash\":");
+        json_string(&hex32(&cp.body_hash), &mut out);
+        out.push_str(",\"body_hash_verifies\":");
+        out.push_str(if cp.body_hash_verifies() {
+            "true"
+        } else {
+            "false"
+        });
+        // The signature's PRESENCE is a fact an operator needs; its bytes are not something an
+        // administrative read hands out. A checkpoint nobody signed and a checkpoint whose signature
+        // this response withheld would otherwise look the same.
+        out.push_str(",\"signed\":");
+        out.push_str(if cp.signature.is_some() {
+            "true"
+        } else {
+            "false"
+        });
+        out.push_str(",\"heads\":[");
+        for (j, head) in cp.heads.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"node\":");
+            out.push_str(&head.node.to_string());
+            out.push_str(",\"node_seq\":");
+            out.push_str(&head.node_seq.to_string());
+            out.push_str(",\"hash\":");
+            json_string(&hex32(&head.hash), &mut out);
+            out.push('}');
+        }
+        out.push_str("],\"totals\":[");
+        for (j, ((key, window), totals)) in cp.totals.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            render_totals_cell(key, *window, totals, &mut out);
+        }
+        out.push_str("]}");
+    }
+    out.push_str("]}");
+    out
+}
+
+/// One sealed balance, as the checkpoint holds it.
+fn render_totals_cell(
+    key: &busbar_unit_ledger::totals::TotalsKey,
+    window: busbar_unit_ledger::totals::WindowStart,
+    totals: &busbar_unit_ledger::totals::Totals,
+    out: &mut String,
+) {
+    out.push_str("{\"bucket\":");
+    json_string(key.bucket.as_str(), out);
+    out.push_str(",\"dimension\":");
+    json_string(&key.dimension.to_string(), out);
+    out.push_str(",\"scope\":");
+    json_string(&key.scope.to_string(), out);
+    out.push_str(",\"window\":");
+    out.push_str(&window.to_string());
+    for (name, amount) in [
+        ("budget", totals.budget),
+        ("drawn", totals.drawn),
+        ("released", totals.released),
+        ("settled", totals.settled),
+        ("open_holds", totals.open_holds),
+        ("open_slice_remainders", totals.open_slice_remainders),
+        ("adjustments", totals.adjustments),
+        ("unreconciled", totals.unreconciled),
+        ("overdraft_carried_in", totals.overdraft_carried_in),
+        ("overdraft_carried_out", totals.overdraft_carried_out),
+        ("cross_window_transfers", totals.cross_window_transfers),
+        ("disputed", totals.disputed),
+    ] {
+        out.push_str(",\"");
+        out.push_str(name);
+        out.push_str("\":");
+        json_amount(amount, out);
+    }
+    for (name, count) in [
+        ("oldest_open_hold_age_secs", totals.oldest_open_hold_age_secs),
+        ("open_dispute_count", totals.open_dispute_count),
+        ("oldest_dispute_age_secs", totals.oldest_dispute_age_secs),
+    ] {
+        out.push_str(",\"");
+        out.push_str(name);
+        out.push_str("\":");
+        out.push_str(&count.to_string());
+    }
+    out.push('}');
+}
+
+/// `GET /api/v1/admin/ledger/reconciliation` — the residual against the previous release's rows.
+///
+/// The arithmetic is NOT here. `ledger_identity::reconcile` is the one implementation of the
+/// identity, and this view calls it: an operator reading this endpoint and a test asserting the
+/// books balance are looking at the same number computed by the same function, which is the only
+/// arrangement in which the endpoint can be believed. Rendering a second derivation here would make
+/// the endpoint capable of disagreeing with the check that gates the release.
+fn render_reconciliation(
+    ledger: &crate::root::ledger_identity::LedgerSnapshot,
+    legacy: &crate::root::ledger_identity::LegacySnapshot,
+) -> String {
+    let discrepancies = crate::root::ledger_identity::reconcile(ledger, legacy);
+    let mut out = String::from("{\"holds\":");
+    out.push_str(if discrepancies.is_empty() {
+        "true"
+    } else {
+        "false"
+    });
+    out.push_str(",\"discrepancies\":[");
+    for (i, d) in discrepancies.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"bucket\":");
+        json_string(&d.row.bucket, &mut out);
+        out.push_str(",\"day\":");
+        out.push_str(&d.row.day.to_string());
+        out.push_str(",\"lane\":");
+        json_string(&d.row.lane, &mut out);
+        out.push_str(",\"provider\":");
+        json_string(&d.row.provider, &mut out);
+        out.push_str(",\"residual\":{\"accounted\":");
+        json_amount(d.spend.accounted, &mut out);
+        out.push_str(",\"drawn\":");
+        json_amount(d.spend.drawn, &mut out);
+        out.push_str(",\"amount\":");
+        json_amount(d.spend.amount(), &mut out);
+        out.push_str("},\"ledger_fee_count\":");
+        out.push_str(&d.ledger_fee_count.to_string());
+        out.push_str(",\"legacy_billable_requests\":");
+        out.push_str(&d.legacy_billable_requests.to_string());
+        out.push('}');
+    }
+    out.push_str("]}");
+    out
+}
+
+/// `GET /api/v1/admin/ledger/migration` — the marker the first boot after the upgrade sealed.
+///
+/// `migrated` is a field of its own rather than something a reader infers from a null marker,
+/// because the two facts an operator is actually asking about — "has this deployment opened its
+/// balances" and "what did it open them at" — fail separately, and a reader who has to derive the
+/// first from the absence of the second will eventually derive it wrong.
+fn render_migration(marker: Option<&busbar_unit_ledger::migration::MigrationMarker>) -> String {
+    let Some(m) = marker else {
+        return String::from("{\"migrated\":false,\"marker\":null}");
+    };
+    let mut out = String::from("{\"migrated\":true,\"marker\":{\"checkpoint_seq\":");
+    out.push_str(&m.checkpoint_seq.to_string());
+    out.push_str(",\"node\":");
+    out.push_str(&m.node.to_string());
+    out.push_str(",\"sealed_at\":");
+    out.push_str(&m.sealed_at.to_string());
+    out.push_str(",\"body_hash\":");
+    json_string(&hex32(&m.body_hash), &mut out);
+    out.push_str(",\"balances\":");
+    out.push_str(&m.balances.to_string());
+    out.push_str(",\"cells_read\":");
+    out.push_str(&m.cells_read.to_string());
+    out.push_str(",\"rate_card_version\":");
+    out.push_str(&m.rate_card_version.to_string());
+    out.push_str("}}");
+    out
 }
 
 /// The table of admin units the kernel is currently walking.
@@ -472,6 +877,13 @@ impl AdminUnits {
 pub struct AdminBinding {
     /// The seam an operation's body is reached through.
     pub dispatch: Arc<dyn AdminDispatch>,
+    /// The figures the five 1.6.0 ledger views read.
+    ///
+    /// A second seam beside the dispatch, not a widening of it. The 66 legacy operations and the 17
+    /// money-governance verbs all reach a surface that already answers them; the views reach
+    /// figures that surface never kept, so they need somewhere else to reach, and giving them their
+    /// own read-only seam is what stops the dispatch from acquiring a way to read money.
+    pub ledger: Arc<dyn LedgerView>,
     /// The requests currently being walked.
     pub units: AdminUnits,
 }
@@ -486,12 +898,26 @@ impl std::fmt::Debug for AdminBinding {
 
 impl AdminBinding {
     /// Bind the admin steps over a dispatch.
+    ///
+    /// The ledger views answer from [`UnopenedLedger`] until a root binds a real one through
+    /// [`AdminBinding::with_ledger_view`]. That default is a decision rather than an oversight: a
+    /// node composed without a ledger has no postings, no seals and no migration, and the views say
+    /// so. What it must never do is claim a reconciliation over figures it never read, and it does
+    /// not — the totals view beside it reports the empty set the identity held over.
     #[must_use]
     pub fn new(dispatch: Arc<dyn AdminDispatch>) -> Self {
         AdminBinding {
             dispatch,
+            ledger: Arc::new(UnopenedLedger),
             units: AdminUnits::new(),
         }
+    }
+
+    /// Bind the ledger views to the figures a node actually holds.
+    #[must_use]
+    pub fn with_ledger_view(mut self, ledger: Arc<dyn LedgerView>) -> Self {
+        self.ledger = ledger;
+        self
     }
 }
 
@@ -523,6 +949,7 @@ pub fn kernel_verb(resolved: &ResolvedVerb) -> Option<KernelVerb> {
     }
     NEW_VERBS
         .iter()
+        .chain(LEDGER_VERBS.iter())
         .chain(NAMED_SURFACES.iter())
         .copied()
         .find(|verb| verb_name(*verb) == resolved.verb)
@@ -553,6 +980,11 @@ fn verb_name(verb: KernelVerb) -> &'static str {
         KernelVerb::Adjust => "adjust",
         KernelVerb::ExportKeyset => "export_keyset",
         KernelVerb::Approve => "approve",
+        KernelVerb::GetLedgerTotals => "get_ledger_totals",
+        KernelVerb::GetLedgerCheckpoints => "get_ledger_checkpoints",
+        KernelVerb::GetLedgerReconciliation => "get_ledger_reconciliation",
+        KernelVerb::GetLedgerMigration => "get_ledger_migration",
+        KernelVerb::GetLedgerOpenapiJson => "get_ledger_openapi_json",
         _ => "",
     }
 }
@@ -754,6 +1186,11 @@ pub(crate) fn admit(
 /// The verbs unit is what executes it — it is the crate that holds the admin token and the closed
 /// verb enumeration — and the governance seam under it is what reaches the surface the operation
 /// already belongs to. The whole answer comes back and is put where the exit path will find it.
+///
+/// The five ledger views travel this same path and are not special-cased here. They reach
+/// `Verbs::execute` like every other verb, are scope-checked and rate-classed by the same two lines,
+/// and differ only in which method of the governance seam the unit calls at the end of it — which is
+/// the unit's decision, from its own closed table, and not this step's.
 pub(crate) fn route(
     binding: &AdminBinding,
     store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
@@ -788,7 +1225,12 @@ pub(crate) fn route(
     }
 
     let verbs = busbar_unit_verbs::Verbs::new(
-        CoreGovernance::new(Arc::clone(&binding.dispatch), verb, request.clone()),
+        CoreGovernance::new(
+            Arc::clone(&binding.dispatch),
+            Arc::clone(&binding.ledger),
+            verb,
+            request.clone(),
+        ),
         StoreRef(store),
         ArrivalNonce(request.at),
         PackedReplay,

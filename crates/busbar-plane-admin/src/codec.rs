@@ -1,7 +1,7 @@
 //! The `Plane` implementation: the codec itself.
 //!
 //! Every method here is pure over its inputs and performs no I/O, matching the plane trait's own
-//! doc comment. The one piece of shared logic — "which of the 66+17 verbs does this unit's body
+//! doc comment. The one piece of shared logic — "which of the table's verbs does this unit's body
 //! name" — is `identify`, and it runs exactly once, at `decode_ingress`, which writes the verb it
 //! resolved into the draft's fact map. Every later step that needs the verb (`verify`, `approve`,
 //! `content_facts`) reads it back off `Unit::draft_facts()`. Decode is the step that is entitled to
@@ -29,7 +29,7 @@ struct Decoded<'u> {
     params: Vec<(&'static str, &'u str)>,
 }
 
-/// Identify which of the 66+17 verbs a decoded body names, by re-scanning its `method`/`path`
+/// Identify which of the table's verbs a decoded body names, by re-scanning its `method`/`path`
 /// fields. See the module doc comment for why this is a fresh scan rather than a cached fact.
 fn identify<'u>(bytes: &'u [u8]) -> Option<Decoded<'u>> {
     // The envelope's two members are the request line's two structural values, so they are named
@@ -261,7 +261,7 @@ impl Plane for AdminPlane {
     }
 
     fn verify<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> DestinationFacts {
-        // `decode_ingress` already refused anything that does not resolve to one of the 66+17
+        // `decode_ingress` already refused anything that does not resolve to one of the table's
         // verbs, so the verb fact is always set on a unit that reached this step. The `"unknown"`
         // fallback exists only because `verify` cannot return a `Result`: it is unreachable in a
         // correctly wired loop, not a silently wrong answer — a destination named `"unknown"` is
@@ -323,7 +323,7 @@ impl Plane for AdminPlane {
         _ctx: &Ctx<'u>,
     ) -> Result<PlaneFacts<'u>, Decode> {
         // This plane declares no introspection verbs of its own (`meta::INTROSPECTION_VERBS` is empty; see
-        // its doc comment for the naming collision with the 66+17-row `KernelVerb` table), so every
+        // its doc comment for the naming collision with the `KernelVerb` table), so every
         // call here names a verb this plane does not declare.
         Err(Decode::UnsupportedOperation)
     }
