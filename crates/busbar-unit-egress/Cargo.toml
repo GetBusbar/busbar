@@ -1,0 +1,43 @@
+# busbar-unit-egress — the egress unit: the pool, the walk, the one attempt, the terminals.
+#
+# WHAT THIS CRATE IS. The design (docs/design/ARCHITECTURE.md §2.2 step 5, §3.1, §3.4, §3.6) gives
+# the egress unit one job with four parts: it owns the pool per (transport, destination); it walks
+# the verified set in the pick order; it runs THE ONE ATTEMPT per hop — the durable dispatch record,
+# the dial, the encode, the decoration, the lane cross-check, the send, the per-frame decode; and
+# when the walk finds nowhere to send, it runs the pool's exhaustion terminal. This crate is that
+# unit, MOVED from the 1.5.5 model plane (`busbar-llm`'s `engine/attempt/**`, `engine/exhaustion/**`,
+# `engine/select.rs`'s `pick_among` and the failover loop in `engine/pipeline.rs`) rather than
+# rewritten. The pick order, the hop count, the deadline rule, the refund points and the terminal
+# bodies are the ones that shipped.
+#
+# WHAT IS DELIBERATELY NOT HERE. The dialect codecs are the PLANE's (this crate calls
+# `Plane::encode_egress` / `Plane::decode_response` and never reads a body). The breaker state
+# machine is the BREAKER unit's (this crate consults it through one trait and records against it;
+# the 31-row classification table is data the breaker trait consumes, not a match arm here). The
+# money is the admission and ledger units'.
+#
+# DEPENDENCIES. Two workspace crates, both committed: `busbar-contract` for the plugin-visible
+# surface this unit calls across (`Transport`, `Plane`, `VerifiedDestination`, `RoutePlan`,
+# `Frame`), and `busbar-caps` for the capability tokens that seal the step. Every other seam — the
+# breaker, the egress-auth decoration, the journal, the pool's own permit store — enters through a
+# `// contract:`-marked trait in `ports`, for the integrator to bind. `futures` is here for exactly
+# one item: polling the `Stream` behind `busbar_contract::transport::FrameStream`. There is no
+# async runtime dependency; the clock and the sleep are ports too, so a test drives the whole unit
+# on one thread with no timer wheel.
+[package]
+name = "busbar-unit-egress"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The egress unit: the pool per (transport, destination), the ordered walk, the one attempt, and the on_exhausted terminals."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_unit_egress"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-caps = { path = "../busbar-caps" }
+busbar-contract = { path = "../busbar-contract" }
+futures = { workspace = true }
