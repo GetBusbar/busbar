@@ -203,6 +203,86 @@ async fn a_declared_length_body_cut_short_at_eof_is_a_framing_error() {
     writer.abort();
 }
 
+/// The body cap the crate doc names is real, on both sides, and it is the operator's own
+/// `limits.request_body_max_bytes` rather than a constant invented here.
+///
+/// Ingress refuses a declared length past the cap without reading the body behind it; egress
+/// refuses to keep accumulating a message past it. One knob, two accumulators, so the cap this
+/// transport applies can never disagree with the one the served door applies.
+#[tokio::test]
+async fn a_body_past_the_configured_maximum_is_refused_on_both_sides() {
+    let settings = ClientSettings {
+        request_body_max_bytes: 64,
+        ..ClientSettings::default()
+    };
+
+    // Ingress: a declared length past the cap, plus a trickle of the body behind it.
+    let transport = StdArc::new(HttpTransport::new(settings));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let writer = tokio::spawn(async move {
+        let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(
+            &mut client,
+            b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 1000000\r\n\r\nabcd",
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+    let conn = accept_fut.await.unwrap();
+    let mut frames = transport.frames(conn);
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the reader refuses rather than buffering a megabyte")
+        .expect("the stream yields the framing error");
+    assert_eq!(
+        first.unwrap_err(),
+        TransportError::Framing,
+        "a declared length past the configured maximum is refused, not accumulated"
+    );
+    writer.abort();
+
+    // Egress: the pending accumulator refuses to grow past the same cap.
+    let transport = HttpTransport::new(settings);
+    let conn = transport
+        .dial(&upstream_dest("http://127.0.0.1:1/"), &fixture_key())
+        .await
+        .unwrap();
+    // Chunked, so no declared total: only the accumulator itself can refuse this.
+    let head = b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n";
+    transport
+        .write(&conn, StreamId(0), ArenaBytes::new(head))
+        .await
+        .unwrap();
+    let mut err = None;
+    for _ in 0..64 {
+        if let Err(e) = transport
+            .write(
+                &conn,
+                StreamId(0),
+                ArenaBytes::new(b"10\r\naaaaaaaaaaaaaaaa\r\n"),
+            )
+            .await
+        {
+            err = Some(e);
+            break;
+        }
+    }
+    assert_eq!(
+        err,
+        Some(TransportError::Framing),
+        "the egress accumulator refuses past the configured maximum instead of growing unbounded"
+    );
+}
+
 /// A chunked body of at least a mebibyte, written in chunks that straddle the read budget, arrives
 /// byte-exact — and the trailers that follow it arrive as their own frame rather than as body.
 ///

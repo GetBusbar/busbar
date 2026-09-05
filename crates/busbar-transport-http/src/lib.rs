@@ -23,7 +23,11 @@
 //! at `write`/`frames`, because the trait carries no request payload at dial time. A body is not
 //! one call's worth of bytes, though: the large-body design is a HEAD frame followed by body-chunk
 //! frames, and a request body is accepted up to the configured maximum regardless of how many
-//! chunks it took.
+//! chunks it took. That maximum is [`ClientSettings::request_body_max_bytes`], carried here from
+//! the operator's own `limits.request_body_max_bytes` — the SAME knob the served door's body limit
+//! is built from, so the two caps cannot disagree about what this gateway accepts. Both
+//! accumulators are held to it: the ingress reader refuses a declared length past it without
+//! reading the body behind it, and `write`'s pending buffer refuses to grow past it.
 //!
 //! So `write` ACCUMULATES. Each call appends to the connection's pending message, and the exchange
 //! runs when the message is complete and not before — at the declared `Content-Length`, or at the
@@ -92,7 +96,20 @@ pub struct ClientSettings {
     pub upstream_http1_only: bool,
     /// Force cleartext HTTP/2 prior-knowledge.
     pub upstream_h2_prior_knowledge: bool,
+    /// The largest body this transport will accumulate, in bytes, on either side.
+    ///
+    /// This is the operator's `limits.request_body_max_bytes`, not a constant of this crate's own:
+    /// the same knob the served door's inbound body limit and the egress translate cap are built
+    /// from. Feeding all three from one value is what makes it impossible for the transport to
+    /// accept a body the door refused, or refuse one the door accepted. The default here is the
+    /// same historical 32 MiB the config layer falls back to when no limit is installed.
+    pub request_body_max_bytes: usize,
 }
+
+/// The uninstalled-config fallback for [`ClientSettings::request_body_max_bytes`] — the same
+/// historical value the config layer resolves `limits.request_body_max_bytes` to when no operator
+/// limit is installed, named here so the two never drift apart silently.
+pub const DEFAULT_REQUEST_BODY_MAX_BYTES: usize = 32 * 1024 * 1024;
 
 impl Default for ClientSettings {
     fn default() -> Self {
@@ -101,6 +118,7 @@ impl Default for ClientSettings {
             pool_idle_timeout_secs: 4,
             upstream_http1_only: false,
             upstream_h2_prior_knowledge: false,
+            request_body_max_bytes: DEFAULT_REQUEST_BODY_MAX_BYTES,
         }
     }
 }
@@ -166,6 +184,8 @@ pub struct HttpTransport {
     conns: Mutex<HashMap<u64, Arc<Inner>>>,
     listeners: Mutex<HashMap<String, Arc<TcpListener>>>,
     egress_client: Arc<EgressClient>,
+    /// The operator's body cap, carried from [`ClientSettings`] and applied to both accumulators.
+    max_body_bytes: usize,
 }
 
 impl std::fmt::Debug for HttpTransport {
@@ -184,6 +204,7 @@ impl HttpTransport {
             conns: Mutex::new(HashMap::new()),
             listeners: Mutex::new(HashMap::new()),
             egress_client: Arc::new(build_egress_client(&settings)),
+            max_body_bytes: settings.request_body_max_bytes,
         }
     }
 
@@ -402,6 +423,7 @@ impl Transport for HttpTransport {
         conn: Conn,
     ) -> Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>> {
         let inner = self.inner(conn.id());
+        let max_body_bytes = self.max_body_bytes;
         // State: the connection (once — `None` after the HEAD/body pair or the response has been
         // fully drained) and a small queue of already-computed frames not yet handed out. The
         // queue is what lets one read (ingress: HEAD + one body chunk; egress: nothing buffered,
@@ -426,7 +448,7 @@ impl Transport for HttpTransport {
                         };
                         item.map(|item| (item, (Some(inner), queue)))
                     }
-                    false => match read_ingress_message(&inner).await {
+                    false => match read_ingress_message(&inner, max_body_bytes).await {
                         Ok(Some(mut frames)) => {
                             if frames.is_empty() {
                                 return None;
@@ -472,7 +494,13 @@ impl Transport for HttpTransport {
                     let queued = bytes.len();
                     let mut buffered = pending.lock().await;
                     buffered.extend_from_slice(bytes.as_slice());
-                    let Some(raw) = complete_message(&buffered)? else {
+                    if buffered.len() > self.max_body_bytes {
+                        // The operator's cap, applied to the accumulator itself: an unsent message
+                        // that outgrows what this gateway accepts is refused here rather than held.
+                        buffered.clear();
+                        return Err(TransportError::Framing);
+                    }
+                    let Some(raw) = complete_message(&buffered, self.max_body_bytes)? else {
                         // A prefix of a message. Nothing goes on the wire until the declared length
                         // or the terminal chunk says the message is whole.
                         return Ok(queued);
@@ -678,7 +706,10 @@ impl Transport for HttpTransport {
 /// a chunked body seen, or a message that declares neither coding and therefore carries no body at
 /// all. A chunked message is decoded here, so what comes back always carries the body itself rather
 /// than a framing of it.
-fn complete_message(buffered: &[u8]) -> Result<Option<raw::RawMessage>, TransportError> {
+fn complete_message(
+    buffered: &[u8],
+    max_body_bytes: usize,
+) -> Result<Option<raw::RawMessage>, TransportError> {
     let Some(header_end) = find_header_end(buffered) else {
         return Ok(None);
     };
@@ -700,6 +731,9 @@ fn complete_message(buffered: &[u8]) -> Result<Option<raw::RawMessage>, Transpor
     }
 
     let declared = raw::content_length(&message.headers).unwrap_or(0);
+    if declared > max_body_bytes {
+        return Err(TransportError::Framing);
+    }
     if rest.len() < declared {
         return Ok(None);
     }
@@ -717,6 +751,7 @@ fn complete_message(buffered: &[u8]) -> Result<Option<raw::RawMessage>, Transpor
 /// wire form, which is where a reader that folded it into the body would have lost it.
 async fn read_ingress_message(
     inner: &Inner,
+    max_body_bytes: usize,
 ) -> Result<Option<Vec<(StreamId, Frame)>>, TransportError> {
     let Inner::Ingress { read, leftover, .. } = inner else {
         return Err(TransportError::Framing);
@@ -751,13 +786,20 @@ async fn read_ingress_message(
 
     let (bodies, trailers) = if raw::is_chunked(&headers) {
         let mut decoder = raw::ChunkedDecoder::default();
+        // A chunked sender declares no total, so the cap is held against the bytes that have
+        // actually arrived rather than against a number the peer supplied.
+        let mut read_so_far = rest.len();
         decoder.feed(&rest).map_err(|_| TransportError::Framing)?;
         while !decoder.is_done() {
+            if read_so_far > max_body_bytes {
+                return Err(TransportError::Framing);
+            }
             let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
             let n = r
                 .read(&mut chunk)
                 .await
                 .map_err(|e| HttpTransport::map_io_err(&e))?;
+            read_so_far += n;
             if n == 0 {
                 // The peer stopped before the terminal chunk: the declared framing did not happen,
                 // and guessing where the body ended is the one thing a transport must not do.
@@ -770,6 +812,11 @@ async fn read_ingress_message(
         decoder.take()
     } else {
         let declared = raw::content_length(&headers).unwrap_or(0);
+        if declared > max_body_bytes {
+            // Refused on the declaration, before a byte of the body behind it is read: reading a
+            // megabyte only to discard it is the resource cost the cap exists to avoid.
+            return Err(TransportError::Framing);
+        }
         while rest.len() < declared {
             let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
             let n = r
