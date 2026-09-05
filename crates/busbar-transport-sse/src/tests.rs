@@ -269,19 +269,64 @@ async fn an_upstream_frame_past_the_cursor_budget_ends_the_stream() {
     );
 }
 
-#[test]
-fn frame_meta_honesty_holds_for_sse_frames() {
-    let raw = b"data: x\n\n";
-    let bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(&raw[..]);
-    let frame = Frame {
-        direction: Direction::Inbound,
-        stream: StreamId(0),
-        bytes: SlabBytes::new(bytes),
-        meta: FrameMeta {
-            bytes: raw.len() as u64,
-            transport_units: None,
-            status: None,
-        },
-    };
-    assert_eq!(frame.meta.bytes, frame.bytes.len() as u64);
+/// Frame meta is honest on frames a REAL `SseTransport` emitted, and the check that says so is one
+/// an inflating or a deflating fixture turns red.
+///
+/// The old cell built a `Frame` literal in the test body, set `meta.bytes` from the same slice it
+/// then compared against, and never constructed a transport at all: a tautology that would have
+/// shipped green over a `meta.bytes` that counted the terminator twice as the buffer drained. The
+/// metering path reads `FrameMeta.bytes` as the bytes meter class, so a dishonest one is a billing
+/// figure, not a cosmetic slip. This asserts against frames off the wire and proves the predicate
+/// discriminates by perturbing them one byte each way.
+#[tokio::test]
+async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
+    fn honest(frame: &Frame) -> bool {
+        frame.meta.bytes == frame.bytes.len() as u64
+    }
+    fn perturbed(frame: &Frame, by: i64) -> Frame {
+        Frame {
+            meta: FrameMeta {
+                bytes: (frame.meta.bytes as i64 + by) as u64,
+                ..frame.meta
+            },
+            ..frame.clone()
+        }
+    }
+
+    let uri = sse_server().await;
+    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let sse = SseTransport::new(http);
+    let conn = sse
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    sse.write(
+        &conn,
+        StreamId(0),
+        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+    )
+    .await
+    .unwrap();
+
+    let mut seen = 0_usize;
+    let mut frames = sse.frames(conn);
+    while let Some(item) = frames.next().await {
+        let (_s, frame) = item.unwrap();
+        assert!(
+            honest(&frame),
+            "the transport's own frame reports the bytes it actually carries"
+        );
+        // The terminator is part of the frame's bytes, so an off-by-one either way is a real
+        // possibility and the check has to see it.
+        assert!(
+            !honest(&perturbed(&frame, 1)),
+            "an inflating fixture is red"
+        );
+        assert!(
+            !honest(&perturbed(&frame, -1)),
+            "a deflating fixture is red"
+        );
+        seen += 1;
+    }
+    assert_eq!(seen, 2, "both frames of the fixture stream were checked");
 }
