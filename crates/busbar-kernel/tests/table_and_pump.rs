@@ -16,7 +16,7 @@ use busbar_kernel::inflight::{
 };
 use busbar_kernel::pump::{
     BodySpool, Direction, Dispatch, Emission, EmissionClock, NestedPool, Scheduler, Shape,
-    SpillBudget, StreamId, TransportKind,
+    SpillBudget, StreamId, TransportKind, MAX_NEEDMORE_FRAMES,
 };
 use busbar_kernel::teller::{settle_amount, Evidence, Kernel};
 
@@ -298,6 +298,91 @@ fn a_second_open_on_an_occupied_direction_is_refused_and_the_session_stays_up() 
         }
     );
     assert!(!session.is_closed(), "the session stays open");
+}
+
+#[test]
+fn a_peer_that_only_ever_asks_for_more_is_refused_at_the_declared_ceiling() {
+    // MAX_NEEDMORE_FRAMES is the handshake framing ceiling. A peer that answers "not a whole
+    // anything yet" forever holds a session slot for as long as it cares to, so the ceiling has to
+    // be a refusal rather than a number in a doc comment.
+    let kernel = Kernel::new();
+    let table = InFlight::new(8, 0);
+    let sessions = Sessions::new(4);
+    let session = sessions
+        .open(kernel.session_id(11), Binding::Bound, 0)
+        .expect("under the session budget");
+    let scheduler = Scheduler::default();
+
+    let wait = |n: usize| {
+        let mut last = Dispatch::Drop;
+        for _ in 0..n {
+            last = scheduler.dispatch(
+                Some(&session),
+                &table,
+                StreamId(1),
+                Direction::Inbound,
+                Shape::NeedMore,
+            );
+        }
+        last
+    };
+
+    assert_eq!(
+        wait(MAX_NEEDMORE_FRAMES),
+        Dispatch::Wait,
+        "up to the ceiling"
+    );
+    assert_eq!(
+        wait(1),
+        Dispatch::Refuse {
+            step: StepName::Decode,
+            reason: ReasonCode::Stalled,
+        },
+        "the frame past the ceiling"
+    );
+    assert!(
+        !session.is_closed(),
+        "the session stays open to be told why"
+    );
+}
+
+#[test]
+fn any_other_shape_forgives_the_frames_that_asked_for_more() {
+    // The ceiling counts CONSECUTIVE asks. A peer that is slow but making progress must never walk
+    // into the refusal, however long the session runs.
+    let kernel = Kernel::new();
+    let table = InFlight::new(8, 0);
+    let sessions = Sessions::new(4);
+    let session = sessions
+        .open(kernel.session_id(12), Binding::Bound, 0)
+        .expect("under the session budget");
+    let scheduler = Scheduler::default();
+
+    for _ in 0..4 {
+        for _ in 0..MAX_NEEDMORE_FRAMES {
+            assert_eq!(
+                scheduler.dispatch(
+                    Some(&session),
+                    &table,
+                    StreamId(1),
+                    Direction::Inbound,
+                    Shape::NeedMore,
+                ),
+                Dispatch::Wait
+            );
+        }
+        // One frame that IS something resets the run.
+        assert_eq!(
+            scheduler.dispatch(
+                Some(&session),
+                &table,
+                StreamId(1),
+                Direction::Inbound,
+                Shape::Discard,
+            ),
+            Dispatch::Drop
+        );
+    }
 }
 
 #[test]
