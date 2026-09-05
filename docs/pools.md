@@ -86,7 +86,20 @@ The field-by-field reference, every pool and member field with its type, default
 
 In short: a pool takes a list of `members`, an optional `hooks` list (one ordering strategy, `weighted`/`cheapest`/`fastest`/`least_busy`/`usage`, plus any gates as inline `kind: hook` plugin refs), and optional `affinity`, `breaker`, `failover`, and `on_exhausted` blocks.
 
-Members are written in the 1.6.0 **uniform grammar**: a member is a bare name referencing an entry in a plane's noun map (`models:` here on the LLM plane, `tools:`/`agents:` on the MCP/A2A planes), and the pool carries the plane-neutral routing knobs — `weights: { <member>: <n> }` (present ⇒ weighted distribute, absent ⇒ ordered failover with the first member as primary), plus optional `tier:`, `attempt_timeout_ms:`, and `repeatable:`. On the LLM plane the older **rich member object** (`{ model, weight, context_max, tier, tags }`) remains a valid superset and is still the way to attach per-member fields with no pool-level knob, such as `context_max` or `tags`; a per-member `weight:` written inline wins over the pool-level `weights:` map.
+A member is written as it has been since 1.5: a `model:` naming an entry in `models:`, with an optional `weight:` and any per-member capabilities (`context_max`, `attempt_timeout_ms`, `reasoning`, `tier`, `tags`) beside it. That is the canonical form, it is what the field reference documents, and it is what `busbar --migrate-config` leaves exactly as you wrote it.
+
+```yaml
+pools:
+  chat:
+    members:
+      - model: gpt-4o
+        weight: 8
+      - model: claude-sonnet
+        weight: 2
+      - model: gemini-pro                # weight defaults to 1
+```
+
+An equivalent shorthand is accepted for pools whose members carry nothing but a weight: list the members as bare names and put the weights in a pool-level `weights:` map (`weights:` present ⇒ weighted distribute; absent ⇒ ordered failover with the first member as primary). The two spellings mean the same thing and may be mixed; a per-member `weight:` written inline wins over the `weights:` map for that member. The bare-name form is also how MCP and A2A failover pools name their `tools:` / `agents:` members, since those carry no per-member capabilities.
 
 Each block with its own guide: [Hooks](/docs/hooks/) for the selection strategies, the ordering-hook contract, and [what a gate receives](hooks.md#what-a-gate-receives); [Circuit breaker](/docs/circuit-breaker/#circuit-breaker-configuration) for the per-pool `breaker` block; and [In-flight failover](/docs/failover/) for `failover` and `on_exhausted`.
 
@@ -101,11 +114,19 @@ Each block with its own guide: [Hooks](/docs/hooks/) for the selection strategie
 ```yaml
 pools:
   chat:
-    members: [gpt-4o, claude-sonnet, gemini-pro]   # uniform bare-name members
-    weights:                                       # present ⇒ weighted distribute
-      gpt-4o:        8   # ~80% of traffic
-      claude-sonnet: 2   # ~20%
-      gemini-pro:    1   # picks up load when the others trip
+    members:
+      - { model: gpt-4o,        weight: 8 }   # ~80% of traffic
+      - { model: claude-sonnet, weight: 2 }   # ~20%
+      - { model: gemini-pro,    weight: 1 }   # picks up load when the others trip
+```
+
+The same pool in the bare-name shorthand:
+
+```yaml
+pools:
+  chat:
+    members: [gpt-4o, claude-sonnet, gemini-pro]
+    weights: { gpt-4o: 8, claude-sonnet: 2, gemini-pro: 1 }
 ```
 
 ### Same model, two providers (cross-provider failover)

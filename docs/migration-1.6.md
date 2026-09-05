@@ -1,188 +1,150 @@
 # Migrating from 1.5.x to 1.6.0
 
-1.5.3 was the last config-breaking release; the config grammar is frozen and only grows with new
-optional keys. 1.6.0 is a **clean-slate** pass that removes the deprecated back-compat surfaces that
-1.5.x still accepted — including ones whose deprecation note never committed to a removal window.
-Nothing here changes the shape of a config an operator wrote in the 1.5.3 grammar. Every removal
-below ships **with a migration path**, so no persisted state and no boot is bricked:
+There is nothing to migrate. 1.5.3 was the last config-breaking release, the config grammar is
+frozen and grows only by optional keys, and 1.6.0 holds to that: a config written for 1.5.5 boots,
+validates and serves on 1.6.0 with no edits, every minted key and every durable store carries
+over, and the published 1.5.5 store plugins load unchanged. This was measured rather than
+promised — the same configs, requests and plugins were run through the published 1.5.5 binary
+and through 1.6.0, and the differences are the ones named in [the changelog](../CHANGELOG.md)
+under "Improvements", every one additive.
 
-- `busbar --migrate-config old.yaml > config-1.6.yaml` rewrites every retired config-file spelling.
-- The persisted config **overlay** (the API-written file that survives a restart) is auto-migrated
-  in place at boot the first time 1.6.0 reads it — a pre-1.6.0 overlay never bricks startup.
-
-The recommended path: `busbar --migrate-config old.yaml > config-1.6.yaml`, review any
-TODO/WARNING comments, `busbar --validate`, then start. If Busbar boots, you're done.
-
----
-
-## 1. Hook plugin reference: `plugin:` → `module:`
-
-The retired `plugin:` spelling of a hook's backing-plugin reference is gone. The one wire word for
-"which plugin backs this instance" is `module:`, matching `store.module`,
-`identity-providers.<n>.module`, and `export.<n>.module`.
-
-**Before (accepted via a read-only alias in 1.5.x):**
-
-<!-- config-check: historical -->
-```yaml
-hooks:
-  audit:
-    kind: tap
-    plugin: audit-hook
-```
-
-**After (1.6.0):**
-
-```yaml
-hooks:
-  audit:
-    kind: tap
-    module: audit-hook
-```
-
-**Migration.** `busbar --migrate-config` rewrites `plugin:` → `module:` on every hook definition.
-A persisted overlay whose hook entries still spell it `plugin:` is auto-migrated to `module:` at
-boot (the next overlay write persists the new spelling), so removing the alias never drops an
-API-registered hook. This applies to the Admin API write surface too: `POST`/`PUT /api/v1/admin/hooks`
-bodies must now name `module:` (a body that sends `plugin:` is rejected as an unknown field).
-
-## 2. Hook stage pinning: `at: <stage>` → `phase: [<stage>]`
-
-The single-stage tap key `at:` is removed; `phase:` (a list, since 1.5.3) is the sole stage-scoping
-spelling. An omitted `phase:` still means "the four core stages, and only those" — unchanged.
-
-**Before (1.5.x):**
-
-<!-- config-check: historical -->
-```yaml
-hooks:
-  audit:
-    kind: tap
-    module: audit-hook
-    at: request
-```
-
-**After (1.6.0):**
-
-```yaml
-hooks:
-  audit:
-    kind: tap
-    module: audit-hook
-    phase: [request]
-```
-
-**Migration.** `busbar --migrate-config` rewrites `at: <stage>` → `phase: [<stage>]`
-(behavior-preserving: a single-stage tap keeps firing at exactly that one stage). A persisted overlay
-carrying `at:` is auto-migrated the same way at boot, honoring the same hard stage-value rename the
-migrator uses (`route` → `candidate`, `attempt` → `routing`, `completion` → `response`). If an entry
-somehow carries both `at:` and a non-empty `phase:`, the `phase:` list wins and the stray `at:` is
-dropped — exactly the precedence the old resolver applied.
-
-> The `at:` **value** vocabulary (`route`/`attempt`/`completion`) was already hard-removed in 1.5.3;
-> that is unchanged. 1.6.0 removes the `at:` **key** itself.
-
-## 3. `PUT /api/v1/admin/config/settings`: the `persist:` field is removed
-
-The request-scoped `persist:` control key — accepted-then-ignored since durable-by-default landed in
-1.5.3 — is gone. The body is now parsed straight into the typed settings shape, whose
-`deny_unknown_fields` rejects a stray `persist:`.
-
-**Behavior change to document for clients.** A pre-1.5.3 client that still sends `persist: true`
-(or `false`, or any value) now receives a `400 invalid_request` naming `persist` as an unknown
-field, instead of the previous silent accept-and-ignore. Drop the field: a mutable config is always
-durable and a locked config always refuses, so the field never affected the outcome.
-
-## 4. `GET /api/v1/admin/hooks[/{name}]`: the `at` response field is removed
-
-The hook contract view no longer projects the legacy single-valued `at` stage field. It was `null`
-for essentially every hook a running deployment had. Read `fires_at` (the resolved stage set, in
-pipeline order) for "when does this hook run", or `phase` for the literal config echo.
-
-## 5. Lane/endpoint status JSON: the `limit` field is removed
-
-The lane status object served by `/stats` no longer carries `limit`, the shorter alias of
-`max_concurrent`. Read **`max_concurrent`** — the same integer, unchanged.
-
-**Before:**
-
-```json
-{ "model": "...", "max_concurrent": 20, "limit": 20, "inflight": 3, ... }
-```
-
-**After:**
-
-```json
-{ "model": "...", "max_concurrent": 20, "inflight": 3, ... }
-```
+The recommended path is the same as for any point release: install the binary, `busbar
+--validate`, start. If Busbar boots, you're done. What follows is what you may notice afterwards,
+and what is new to write if you want it.
 
 ---
 
-## 6. MCP tool trust: `refresh_ttl:` → `verify_ttl:` (and verify-on-call)
+## 1. No config changes required
 
-1.6.0 replaces the background tool-list refresh sweep with **verify-on-call**: an MCP tool server is
-re-verified on the `tools/call` path, before the call is dispatched, if its last observation is older
-than a per-server staleness bound. The A2A plane's card re-verification moved the same way, on the
-delegation path. There is no background job on either plane any more. See
-[Tool and agent trust](/docs/tool-and-agent-trust/) for the full model.
+- **Every 1.5.5 key means what it meant.** Pool members stay as you wrote them — `- model: x`
+  with an optional `weight:` and per-member capabilities is the canonical form (a bare-name list
+  plus a pool-level `weights:` map is accepted as an equivalent shorthand; see
+  [Pools](pools.md#config-reference)). `busbar --migrate-config` on a 1.5.5 config prints the
+  same output the 1.5.5 migrator printed, byte for byte; it does not rewrite members, add
+  `TODO` comments, or touch anything a 1.5.5 config can contain.
+- **Keys carry over.** `auth.signing_key` is read as before, so every outstanding minted key
+  keeps verifying; nothing is re-minted.
+- **Stores carry over.** A `sqlite`, `postgres`, `mysql` or `valkey` store opens on its 1.5.5
+  contents: keys, groups, audit rows and usage history are all read as they were written. The
+  usage ledger's on-disk shape is re-folded into 1.6.0's representation on first read through a
+  versioned, idempotent migration (a partial run followed by a rerun yields the same totals as a
+  clean one); nothing is dropped and recreated.
+- **Store plugins carry over.** The four published 1.5.5 store plugins (`abi_version: 2`) load on
+  1.6.0: the durable wire is additive, and the new plane-record verbs (MCP call records, A2A
+  tasks) are simply inert on an old plugin, kept in process as under `store: memory`. See
+  [Plugins](plugins.md#the-artifact).
+- **Validation is the same gate.** `--validate` resolves the same `env:` / `file:` references
+  boot reads, and no others, exactly as 1.5.5 did. A CI job that passed on 1.5.5 passes on 1.6.0.
+- **The reserved name `admin`** is still refused for a model, pool or provider, with the 1.5.5
+  message.
 
-The per-server MCP key is renamed and its **meaning changed**:
+## 2. Deprecated env vars keep working, with a warning
 
-- `tools.<server>.refresh_ttl:` → `tools.<server>.verify_ttl:`
-- It was a background sweep cadence (default `6h`); it is now the longest an observation may be
-  **reused on the request path** before a `tools/call` re-verifies (default `5s`). `0` is strict-live.
+`BUSBAR_PROVIDERS`, `BUSBAR_CONFIG_OVERLAY`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY`
+and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` were deprecated in 1.5.3 in favour of config.yaml keys.
+1.6.0 reads each of them at the same point of the boot sequence as 1.5.5 and honours it exactly as
+before; the only difference is that the 1.5.5 deprecation warning now carries a diagnostic code,
+BUSBAR-3021, whose entry in [the diagnostics reference](diagnostics.md) names the replacement key:
 
-`busbar --migrate-config` performs the rename and carries your value over **unchanged**, then emits a
-loud per-server `WARNING` — because a value that was a sensible sweep cadence is a drift-serving
-**window** as a `verify_ttl`. A `refresh_ttl: 6h` becomes a `verify_ttl: 6h`, i.e. a tool whose
-fingerprint moved could be dispatched for up to six hours before the next call re-verifies it. Review
-every migrated value: a few seconds is the new default, `0` is strict-live, and a large value is an
-explicit security downgrade.
+| Deprecated env var (still honoured) | config.yaml key |
+|---|---|
+| `BUSBAR_PROVIDERS` | `providers_file:` (or the `--providers <path>` flag) |
+| `BUSBAR_CONFIG_OVERLAY` | `config.overlay.file` |
+| `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
+| `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
+| `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
 
-The A2A key keeps its name — `agents.<agent>.reverify_ttl:` — and only its default changed from `6h`
-to `5s`; nothing in an A2A config file needs editing.
+`BUSBAR_PROVIDERS` pointing at a file that does not exist refuses to boot, as it did in 1.5.5,
+rather than silently using the `providers.yaml` beside the config. `BUSBAR_CONFIG`, secret
+`{ env: NAME }` references, `RUST_LOG` and `TOKIO_WORKER_THREADS` are not deprecated. Move each
+variable into config.yaml when convenient; the warning is the only consequence of not doing so.
 
-**Before:**
+## 3. What you will notice after the upgrade
 
-<!-- config-check: historical -->
-```yaml
-tools:
-  servers:
-    acme:
-      url: https://tools.acme.example/mcp
-      pin: { mechanism: cert_spki, key: "sha256/…" }
-      refresh_ttl: 6h
-```
+None of these need action; they are listed so what you see is expected.
 
-**After:**
+- **Diagnostic codes on every error and warning line.** `[error]`, `[warn]` and `warning:`
+  lines are prefixed `BUSBAR-NNNN:` and every boot log line carries `diag=BUSBAR-NNNN`; the text
+  after the code is unchanged. If a log pipeline matches on the leading text of those lines,
+  allow for the code. See [the diagnostics reference](diagnostics.md).
+- **The jemalloc background-purge line is `[info]` on macOS**, not `[warn]`.
+- **One new `/metrics` series** on an unchanged config, `busbar_metering_pending_coalesced_total`.
+  No 1.5.5 series changed shape or labels; in particular `busbar_requests_total` and
+  `busbar_request_duration_seconds` are byte-identical (MCP and A2A traffic is on the separate
+  `busbar_plane_*` families). See [Observability](observability.md).
+- **Admin views gained fields.** Hook objects carry `fires_at`, `groups` and `phase`; the
+  overlay-section 404 lists the sections that now exist; `openapi.json` describes the new planes.
+  Every 1.5.5 field, including the lane `limit` alias on `/stats`, is still there.
+- **`--help` is longer and `--version` prints two lines** (the second is a `build:` provenance
+  stamp). `-c`/`--config` and `--providers` are new, additive flags.
+- **Streams through a fallback or least-bad hop to an OpenAI Chat Completions lane are now
+  billed** their real tokens (1.5.5 billed them zero). If a key's traffic routinely fails over,
+  its spend rises to what it actually used.
+- **Two cross-protocol stream shapes match the provider's spec** where 1.5.5 did not: Bedrock text
+  blocks no longer open with an empty `contentBlockStart`, and Responses streams carry the
+  `content_part` / `output_text.done` lifecycle frames. See
+  [Protocols → Spec fidelity](protocols.md#spec-fidelity).
+- **Thread-per-core data plane (unix).** N threads named `busbar-core-0` … `busbar-core-N-1`, N
+  listen sockets on the data port via `SO_REUSEPORT`, and one `busbar listening` log line per
+  listener. `advanced.worker_threads` now sizes that worker count (default one per core;
+  `TOKIO_WORKER_THREADS` still works as a fallback). Non-unix builds are unchanged.
 
-```yaml
-tools:
-  servers:
-    acme:
-      url: https://tools.acme.example/mcp
-      pin: { mechanism: cert_spki, key: "sha256/…" }
-      verify_ttl: 5s   # migrate-config carries 6h over unchanged; reconsider it — see the WARNING
-```
+## 4. New optional sections for the planes
+
+Each plane is declared by writing its section and is absent otherwise: a config with none of them
+gains no endpoint and no route, and the migrator adds none of them.
+
+| Section | What it declares | Guide |
+|---|---|---|
+| `mcp:` | Busbar as an MCP server: canonical URI, identity provider, OAuth 2.1 discovery | [MCP](mcp.md) |
+| `tools:` | Registered upstream MCP servers Busbar governs (`transport: stdio` for local ones) | [MCP](mcp.md), [Tool and agent trust](tool-and-agent-trust.md) |
+| `agents:` | Registered A2A agents, served over JSON-RPC, HTTP+JSON and gRPC | [A2A](a2a.md) |
+| `streams:` | The live-voice plane: full-duplex realtime sessions over one IR | the grammar at the head of `crates/busbar-voice/src/config.rs` until the operator guide lands |
+| `oauth_as:` | The embedded OAuth 2.1 authorization server the MCP door can use | [MCP](mcp.md) |
+
+Two things about them are worth knowing before you write one. An `mcp:` block with an empty
+`auth.chain` refuses to start, because an anonymous MCP request is never narrowed by a key and
+would run with wildcard grants over every registered server. And an MCP or A2A failover pool is
+written in the top-level `pools:` map with `tools:` / `agents:` entries as bare-name members, so
+the same breaker and failover you already run for models applies to them; see
+[Circuit breaker](circuit-breaker.md).
+
+Validation messages know the new keys: an `expected one of` list now includes `mcp`, `oauth_as`,
+`tools`, `agents` and `streams`, and the group-limit `metric` list includes the four token
+sub-metrics `tokens_input`, `tokens_output`, `tokens_cache_read` and `tokens_cache_write` (see
+[Configuration → `groups`](configuration.md#groups)).
+
+## 5. Retired 1.5.x spellings, rewritten for you
+
+Four spellings that 1.5.x accepted as read-only back-compat, and that were never the documented
+form, are gone in 1.6.0. Each has a migration path, so no config and no persisted state is bricked.
+
+- **Hook `plugin:` → `module:`.** The `plugin:` key on a hook definition was a read-only alias of
+  `module:` (the documented spelling since 1.5.3). `busbar --migrate-config` rewrites it, and a
+  persisted config overlay that still spells it `plugin:` is auto-migrated at boot. Admin API
+  `POST`/`PUT /api/v1/admin/hooks` bodies must name `module:`.
+- **Hook `at: <stage>` → `phase: [<stage>]`.** The single-stage tap key is replaced by the
+  `phase:` list documented since 1.5.3. `busbar --migrate-config` rewrites it (behaviour-preserving)
+  and a persisted overlay is auto-migrated at boot. An omitted `phase:` still means the four core
+  stages.
+- **`persist:` on `PUT /api/v1/admin/config/settings`** was accepted and ignored since 1.5.3
+  (config mutation is durable by default). A client that still sends it receives `400
+  invalid_request` naming `persist` as an unknown field. Drop the field; it never changed the
+  outcome.
+- **The `at` field on `GET /api/v1/admin/hooks[/{name}]`**, which was `null` for essentially every
+  hook, is replaced by `fires_at` (the resolved stage set, in pipeline order) and `phase` (the
+  literal config echo).
 
 ---
 
-## 7. Operational note: the thread-per-core data plane (unix)
+## Quick checklist
 
-No config change is needed — this is a runtime-topology change, listed here only so what you
-observe after the upgrade is expected. On unix, 1.6.0 runs the data plane as N pinned
-single-threaded runtimes, each with its own `SO_REUSEPORT` listener on the data port; the admin
-plane and background tasks moved to a small control-runtime thread. After upgrading you will see:
-
-- **N threads named `busbar-core-0` … `busbar-core-N-1`** (e.g. in `top -H` or `ps -L`), rather
-  than a pool of tokio workers.
-- **N listen sockets on the data port** in `ss -tlnp` / `netstat` — one per worker, via
-  `SO_REUSEPORT`. This is not a port conflict.
-- **Multiple `busbar listening` log lines** at boot, one per listener, all naming the same
-  address.
-- **`advanced.worker_threads` now sizes the data-plane worker count** (one runtime + listener
-  each), not a tokio thread pool. The default — one per core — and `TOKIO_WORKER_THREADS` as a
-  fallback are unchanged.
-
-Non-unix builds are unchanged: they keep the classic single work-stealing runtime and one
-listener.
+- [ ] Install 1.6.0, `busbar --validate`, start. That is the whole upgrade.
+- [ ] If a log pipeline matches on the leading text of `[error]` / `[warn]` lines, allow for the
+      `BUSBAR-NNNN:` prefix.
+- [ ] If any key's traffic routinely fails over to an OpenAI Chat Completions lane while streaming,
+      expect its spend to rise to what it actually used.
+- [ ] Deprecated env vars: none need moving today; each warns with BUSBAR-3021 until you do.
+- [ ] Hooks spelled `plugin:` or `at:` in config.yaml: run `busbar --migrate-config` once
+      (overlays migrate themselves at boot).
+- [ ] Want MCP, A2A or voice? Add the section; see the guide in the table above.

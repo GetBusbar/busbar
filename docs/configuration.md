@@ -74,7 +74,7 @@ Busbar at config.yaml, taking precedence over `BUSBAR_CONFIG`; `--providers <pat
 `--providers=<path>`) points it at the provider catalog, taking precedence over `providers_file:`.
 See [Operations → Process configuration](operations.md#process-configuration).
 
-**Operational env vars moved into `config.yaml` (1.5.3), removed in 1.6.0.** `BUSBAR_CONFIG_OVERLAY` → `config.overlay.file`, `BUSBAR_WORKER_THREADS` → `advanced.worker_threads`, `BUSBAR_UPSTREAM_HTTP1_ONLY` → `advanced.upstream_http1_only`, `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` → `advanced.upstream_h2_prior_knowledge`, and `BUSBAR_PROVIDERS` → `providers_file:` (or the `--providers` flag). Each was deprecated in 1.5.3, honored for one release, and **removed in 1.6.0** — setting any of them now has no effect; use the config.yaml key. Only `BUSBAR_CONFIG` (bootstrap), secret `{ env: NAME }` references, and `RUST_LOG` remain env-native (`TOKIO_WORKER_THREADS` is still a fallback for `advanced.worker_threads`). See the [`config`](#config) and [`advanced`](#advanced) sections and the [upgrade note](migration-1.5.md#153-config-consolidation).
+**Operational env vars moved into `config.yaml` (1.5.3); the old names are deprecated but still honoured.** `BUSBAR_CONFIG_OVERLAY` → `config.overlay.file`, `BUSBAR_WORKER_THREADS` → `advanced.worker_threads`, `BUSBAR_UPSTREAM_HTTP1_ONLY` → `advanced.upstream_http1_only`, `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` → `advanced.upstream_h2_prior_knowledge`, and `BUSBAR_PROVIDERS` → `providers_file:` (or the `--providers` flag). Each was deprecated in 1.5.3 and is read in 1.6.0 exactly as it was in 1.5.5, with a boot warning (BUSBAR-3021) naming the config.yaml key that replaces it; move each into config.yaml at your convenience. Only `BUSBAR_CONFIG` (bootstrap), secret `{ env: NAME }` references, and `RUST_LOG` are env-native by design (`TOKIO_WORKER_THREADS` is still a fallback for `advanced.worker_threads`). See the [`config`](#config) and [`advanced`](#advanced) sections and the [upgrade note](migration-1.5.md#153-config-consolidation).
 
 ### `config`
 
@@ -833,6 +833,8 @@ pools:
 | `reasoning` | bool | no | the model's value | Per-pool override of the model-level `reasoning` capability flag (member wins), so the same lane can allow thinking in a research pool and refuse it in a latency-critical one. See [Cross-protocol reasoning](#cross-protocol-reasoning-reasoning). |
 | `tier` | string | no | none | Operator-declared routing tier label (e.g. `"primary"`, `"overflow"`, `"large"`, `"small"`). Inert for plain weighted pools (no hooks). Exposed to gate hooks as the `tier` field on each candidate. See [Pool `hooks`](#pool-hooks-ordering-and-gates). |
 | `tags` | list<string> | no | `[]` | Free-form string labels (e.g. `["opus", "large-context"]`). The `restrict` gate verb intersects the candidate set against these tags (compliance pinning). Exposed to gate hooks for tag-based candidate selection. Inert for plain weighted pools. |
+
+The member object above is the canonical form and the one `busbar --migrate-config` preserves as written. A pool whose members carry nothing but a weight may instead list them as bare model names with a pool-level `weights: { <model>: <n> }` map; the two spellings are equivalent, may be mixed, and an inline `weight:` wins over the map for that member. With `weights:` absent and bare names only, the pool is an ordered failover list with the first member as primary.
 
 Selection uses Nginx-style smooth weighted round-robin (SWRR) across the healthy subset. A tripped, dead, or capacity-exhausted member is skipped and its share redistributes to the remaining members automatically. Selection state is isolated per-pool (separate SWRR shard), so unrelated pools that share a lane select independently.
 
@@ -1661,9 +1663,9 @@ Internal tuning knobs, normally omitted; each field defaults to its historical v
 advanced:
   rate_sweep_interval: 256          # rate-limiter stale-entry sweep amortization (every Nth check_rate)
   usage_flush_interval_ms: 100      # write-behind flush cadence for in-memory usage/budget counters
-  worker_threads: 4                 # data-plane worker count — one pinned runtime + listener each (was the tokio pool size pre-1.6.0; was BUSBAR_WORKER_THREADS, removed 1.6.0); omit ⇒ one per core
-  upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (was BUSBAR_UPSTREAM_HTTP1_ONLY, removed 1.6.0)
-  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (was BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE, removed 1.6.0)
+  worker_threads: 4                 # data-plane worker count — one pinned runtime + listener each (was the tokio pool size pre-1.6.0; BUSBAR_WORKER_THREADS is deprecated but still honoured); omit ⇒ one per core
+  upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (BUSBAR_UPSTREAM_HTTP1_ONLY is deprecated but still honoured)
+  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE is deprecated but still honoured)
   response_headers:                 # every busbar-injected response header, opt-in, default OFF
     server_timing: false            # `Server-Timing: busbar;dur=<ms>` (formerly observability.emit_server_timing)
     route_policy: false             # `x-busbar-route-policy` / `x-busbar-route-target`
@@ -1672,8 +1674,8 @@ advanced:
 `worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
 once at process/client construction), so unlike `rate_sweep_interval` / `usage_flush_interval_ms` they are
 not live-mutable via `PUT /config/settings`. A change takes effect on the next restart. The
-`BUSBAR_*` env vars that used to back these knobs were removed in 1.6.0; only `TOKIO_WORKER_THREADS`
-remains, as a fallback for `worker_threads`.
+`BUSBAR_*` env vars that used to back these knobs are deprecated but still honoured (each warns with
+BUSBAR-3021 at boot); `TOKIO_WORKER_THREADS` remains, undeprecated, as a fallback for `worker_threads`.
 
 `response_headers` is likewise **restart-to-apply**: `server_timing` is baked into router middleware
 composition at boot and `route_policy` seeds a process-wide flag, so a live `PUT` stores the new value

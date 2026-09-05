@@ -156,7 +156,7 @@ message = client.messages.create(
 
 The Anthropic SDK appends `/v1/messages` to `base_url`, producing `POST /my-pool/v1/messages`: exactly the ingress route Busbar registers for `anthropic`.
 
-**Note on streaming:** Anthropic ingress receives SSE (`text/event-stream`) from Busbar, regardless of which backend served the response. If the backend is Anthropic, the SSE frames pass through byte-for-byte. If it is any other protocol, Busbar re-frames the translated IR events as Anthropic SSE.
+**Note on streaming:** Anthropic ingress receives SSE (`text/event-stream`) from Busbar, regardless of which backend served the response. If the backend is Anthropic, the SSE frames pass through byte-for-byte. If it is any other protocol, Busbar re-frames the translated IR events as Anthropic SSE, including the `event: ping` frames a real Anthropic stream carries; see [Spec fidelity](#spec-fidelity) for why those stay although the published event union omits them.
 
 ---
 
@@ -215,6 +215,8 @@ POST /v1/responses
 **Model selection:** Same as `openai`: the `"model"` field in the body.
 
 This protocol is the newer OpenAI surface (as distinct from the older Chat Completions shape). Busbar handles it identically to `openai` in terms of routing and auth; the reader/writer pair is specialized to the Responses API's wire format.
+
+**Note on streaming (spec fidelity, 1.6.0):** a translated Responses stream carries every lifecycle frame the published spec declares for a text output: `response.created`, `response.output_item.added`, `response.content_part.added`, the `response.output_text.delta` frames, `response.output_text.done`, `response.content_part.done`, `response.output_item.done` and `response.completed`, with a contiguous `sequence_number` across all of them. 1.5.5 omitted the three `content_part` / `output_text.done` frames on cross-protocol hops; a client that walks the stream by `type` sees the same text and the same terminal event, and one that asserts the full lifecycle now sees it. Same-protocol (Responses-to-Responses) streams were and are byte-for-byte passthrough.
 
 ---
 
@@ -318,6 +320,8 @@ POST /model/{model_id}/converse-stream
 
 **Wire format:** Bedrock uses a binary `application/vnd.amazon.eventstream` framing for streaming, with real CRC32 checksums. Busbar decodes these frames on the egress path (when a Bedrock backend is the upstream) and re-encodes translated events as valid binary eventstream frames for Bedrock-ingress clients. Non-stream responses use JSON.
 
+**Note on streaming (spec fidelity, 1.6.0):** on the ConverseStream wire a text block begins with its first `contentBlockDelta`; `contentBlockStart` is emitted only for a tool-use block, where it carries the `toolUse` start (id and name). 1.5.5 opened every translated text block with an empty `contentBlockStart`, which the botocore model does not allow; 1.6.0 matches what Bedrock itself sends. A client using the AWS SDK's event iterator sees identical text and identical `contentBlockStop` / `messageStop` / `metadata` frames; only a client that counted `contentBlockStart` frames per text block will notice. Same-protocol (Bedrock-to-Bedrock) streams were and are byte-for-byte passthrough.
+
 **SDK wiring (Python):**
 
 ```python
@@ -334,6 +338,47 @@ response = bedrock.converse(
     messages=[{"role": "user", "content": [{"text": "Hello"}]}],
 )
 ```
+
+---
+
+## Spec fidelity
+
+From 1.6.0, every ingress dialect above is held to the provider's **published, machine-readable**
+API specification, the way the MCP and A2A planes are held to theirs: OpenAI's OpenAPI document
+(Chat Completions and Responses), the OpenAPI document Anthropic publishes through its SDK
+pipeline, Google's `generativelanguage` discovery document, the botocore model for
+`bedrock-runtime` (Converse, ConverseStream, the event union and the exceptions) and Cohere's
+OpenAPI document — each pinned by URL and digest, so a verdict cannot move because a provider
+quietly edited a page. Every request the test harness sends, and every buffered, streamed and
+error response Busbar returns, is validated against the dialect's schema: JSON bodies against the
+response schema, each SSE `data:` event against the stream-event union, each Bedrock binary frame
+(both CRCs checked) against the named event member, and each non-2xx body against the error the
+spec declares for that status. The rig lives in `testing/llm-conformance/`.
+
+The rule when 1.5.5's bytes and the spec disagreed was that the spec wins. Two stream shapes
+changed as a result, both on cross-protocol hops only — same-protocol streams are passthrough and
+were never Busbar's to shape:
+
+- **Bedrock:** a translated text block no longer opens with an empty `contentBlockStart`; the
+  frame is emitted for tool-use blocks only, as Bedrock itself does. See the
+  [`bedrock` note on streaming](#bedrock-aws-bedrock-converse-api).
+- **Responses:** a translated stream carries `response.content_part.added`,
+  `response.output_text.done` and `response.content_part.done` with a contiguous
+  `sequence_number`, which 1.5.5 omitted. See the
+  [`responses` note on streaming](#responses-openai-responses-api).
+
+One disagreement is resolved the other way, on purpose. Anthropic's published `MessageStreamEvent`
+union has no `ping` member, although Anthropic's documentation says `ping` events may occur and
+real Anthropic streams carry them. Busbar keeps emitting `event: ping` in translated Anthropic
+streams: it is a documented event, an Anthropic client that cannot take it is not an Anthropic
+client, and dropping it would make a Busbar-fronted stream less like the real thing rather than
+more. The conformance row is recorded as a named gap of the published spec — it is never
+special-cased in the validator — and is re-judged whenever the pinned document is re-pinned; it
+disappears the day the union gains the member.
+
+Anything else you observe that differs from what the provider's own endpoint returns on a
+same-protocol route is a bug, and on a cross-protocol route is either listed under
+[Fields the target protocol cannot express](#fields-the-target-protocol-cannot-express) or a bug.
 
 ---
 
