@@ -11,14 +11,14 @@
  },
  "counts": {
   "bindings": 103,
-  "mapped": 101,
-  "unmapped": 2,
+  "mapped": 102,
+  "unmapped": 1,
   "checks_by_kind": {
    "gate": 8,
    "lint": 5,
-   "oracle-cell": 43,
+   "oracle-cell": 44,
    "oracle-family": 4,
-   "test": 439
+   "test": 441
   }
  },
  "owner_decisions": {
@@ -406,15 +406,26 @@
    "surface": "inbound shed",
    "binding": "`max_inbound_concurrent` covers EVERY data-listener route (`/stats`, `/v1/models`, `/v1beta/models`, `/metrics`, `/metrics/hooks`, `/auth/token`, `/healthz`); the static 503 body + `Retry-After: 1`; the admin listener is never capped",
    "inventory": "routes-admin LST-001, ops §3",
-   "note": "CONTRADICTED by a green test: crates/busbar-core/src/tests/tests.rs test_inbound_over_capacity_queues_fifo_and_serves_when_freed asserts an over-cap arrival queues FIFO and is served 200, not the 503 + Retry-After: 1 the binding requires. Owner decision needed: binding or code.",
-   "status": "unmapped",
-   "suggestion": "axum test: with max_inbound_concurrent=1 every listed data route sheds 503 with Retry-After: 1 while the admin listener answers; plus an http.crosscut cell",
+   "note": "Resolved 2026-09-05: the shed was restored (a5e337b2); proven by crates/busbar/tests/inbound_concurrency_shed.rs, the admission layer test and the concurrency|inbound-shed|n8 cell.",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "axum test: with max_inbound_concurrent=1 every listed data route sheds 503 with Retry-After: 1 while the admin listener answers; plus an http.crosscut cell"
+     "ref": "inbound_cap_sheds_the_excess_and_serves_the_admitted",
+     "status": "mapped",
+     "source": "hand"
+    },
+    {
+     "kind": "test",
+     "ref": "a_saturated_gate_sheds_instead_of_parking_the_caller",
+     "status": "mapped",
+     "source": "hand"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "concurrency|inbound-shed|n8",
+     "status": "mapped",
+     "source": "hand"
     }
    ]
   },

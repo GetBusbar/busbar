@@ -643,7 +643,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
 # A green test that asserts the OPPOSITE of a binding is not a proof; it is a design/code conflict.
 # These are carried on the entry as `note` and never counted as checks.
 NOTES: dict[str, str] = {
-    "PB-7": "CONTRADICTED by a green test: crates/busbar-core/src/tests/tests.rs test_inbound_over_capacity_queues_fifo_and_serves_when_freed asserts an over-cap arrival queues FIFO and is served 200, not the 503 + Retry-After: 1 the binding requires. Owner decision needed: binding or code.",
+    "PB-7": "Resolved 2026-09-05: the shed was restored (a5e337b2); proven by crates/busbar/tests/inbound_concurrency_shed.rs, the admission layer test and the concurrency|inbound-shed|n8 cell.",
     "PB-11": "CONTRADICTED in part by green tests: crates/plugin-loader/src/tests/registry_tests.rs store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4 and supported_abi_store_floor_admits_v2 pin a store window of v2..=v4, where the binding requires v2..=v2 and refuses ABI 3/4. The plugins.load cells prove the trust/skip half only.",
     "PB-84": "OWNER DECISION (1.6.0 rebuild, PR-0): the binding is AMENDED — an auth refusal on a hooked pool DOES fire the completion tap, with the synthetic outcome `rejected_by_auth` and the protocol-native status; hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth pins it and the oracle cell hooks|hooked-pool|unauth records 1.5.5 doing exactly that. Other pre-forward refusals (403/429/413/404) are unchanged.",
     "PB-75": "The mapped goldens pin served == committed today; openapi_doc_is_31_and_v1_prefixed asserts info.version tracks the crate version, which is the opposite of a 1.5.5-verbatim pin. Treat as partial.",
