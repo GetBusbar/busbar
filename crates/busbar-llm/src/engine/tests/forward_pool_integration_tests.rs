@@ -4140,20 +4140,19 @@ async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
     server.shutdown().await;
 }
 
-/// The DEGRADED path (LeastBad/FallbackPool → `forward_once`)
-/// must shape a CROSS-protocol upstream 401/403 into the ingress protocol's native error envelope
-/// with the SAME kind the main `forward_with_pool` path uses — `authentication_error` for 401,
-/// `permission_error` for 403 — NOT the old degraded-path `invalid_request_error`. Anthropic
-/// ingress, OpenAI egress lane (cross-protocol), lane in cooldown so LeastBad routes through
-/// `forward_once`.
+/// The DEGRADED path (LeastBad/FallbackPool) runs the SAME attempt the main path runs, so an
+/// upstream 401/403 rejecting busbar's OWN lane credential gets the main path's treatment: a
+/// hard-down recorded on the lane and the ingress protocol's NATIVE auth-failure envelope
+/// (anthropic: 401 `authentication_error`, the vendor's own copy) — never the upstream's body, and
+/// never the old degraded-path `invalid_request_error`. Anthropic ingress, OpenAI egress lane
+/// (cross-protocol), lane in cooldown so LeastBad routes through the degraded path.
 #[tokio::test]
 async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
     crate::testkit::install_test_seams();
     use busbar_substrate::store::now as store_now;
-    for (upstream_status, want_kind) in [
-        (StatusCode::UNAUTHORIZED, "authentication_error"),
-        (StatusCode::FORBIDDEN, "permission_error"),
-    ] {
+    let (want_status, want_kind) =
+        busbar_substrate::proxy::auth_failure_status_and_kind("anthropic");
+    for upstream_status in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN] {
         let state = Arc::new(MockServerState::new());
         state.push(MockResponse::Auth {
             status: upstream_status,
@@ -4199,9 +4198,10 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
         .await;
 
         assert_eq!(
-            response.status(),
-            upstream_status,
-            "degraded path preserves the upstream status ({upstream_status})"
+            response.status().as_u16(),
+            want_status.as_u16(),
+            "degraded path answers a rejected lane credential ({upstream_status}) with the \
+             ingress-native auth-failure status, as the main path does"
         );
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -4214,6 +4214,13 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
                 v["error"]["type"], want_kind,
                 "degraded path {upstream_status} must map to {want_kind} (matching the main path), not invalid_request_error: {v}"
             );
+        assert!(
+            matches!(
+                app.store.breaker_state_in("leastbad", 0),
+                busbar_substrate::store::BreakerState::Open { .. }
+            ),
+            "a hard-down on the degraded path trips the lane exactly as on the main path"
+        );
         server.shutdown().await;
     }
 }

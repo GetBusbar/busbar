@@ -8,65 +8,12 @@ use busbar_substrate::observability::HOTPATH_LEVEL;
 // The single neutral translate entrypoint (G6 step 4): the non-stream cross-protocol response arm
 // routes its read→prepare_for_ingress→write core through `TranslateCodec::translate_response`.
 use busbar_substrate::diagnostics::{
-    ATTEMPT_TIMEOUT_FAILOVER, CROSSPROTO_BINARY_CODEC_FAILED, CROSSPROTO_JSON_CODEC_FAILED,
-    CROSSPROTO_NONSTREAM_MIDTRANSFER_FAILED, CROSSPROTO_RESPONSE_NOT_TRANSLATABLE,
-    CROSSPROTO_RESPONSE_NOT_TRANSLATABLE_DEGRADED, CROSSPROTO_TRANSLATION_CAP_EXCEEDED,
     DECISION_GATE_REJECTED, DECISION_GATE_RESTRICT_REJECT, DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE,
-    LANE_HARD_DOWN, REWRITE_BODY_MATERIALIZE_FAILED, REWRITE_GATE_REJECTED,
-    REWRITE_RESERIALIZE_FAILED, ROUTING_POLICY_REJECTED, ROUTING_POLICY_RESTRICT_REJECT,
+    REWRITE_BODY_MATERIALIZE_FAILED, REWRITE_GATE_REJECTED, REWRITE_RESERIALIZE_FAILED,
+    ROUTING_POLICY_REJECTED, ROUTING_POLICY_RESTRICT_REJECT,
     ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
 };
-use busbar_substrate::handlers::TranslateCodec;
-use busbar_substrate::{diag_debug, diag_error, diag_warn};
-
-/// Bodies at or above this size run the (pure, synchronous) cross-protocol translate on the
-/// blocking pool instead of inline on the single-threaded worker — see the offload comment at the
-/// call site. 128 KiB: the inline worst case at the boundary is ~1-2 ms (inside the p99 envelope),
-/// and real chat bodies are two orders of magnitude smaller, so the offload branch is statically
-/// dead on the happy path. A constant, not a knob.
-const TRANSLATE_OFFLOAD_THRESHOLD: usize = 128 * 1024;
-
-/// The send stage's three exits, so the attempt-cap and budget-deadline wrappers compose without
-/// nesting error types: a response (or client error), the per-attempt hang cap firing, or the
-/// non-streaming failover budget expiring.
-pub(crate) enum SendOutcome {
-    Sent(Result<http::Response<hyper::body::Incoming>, crate::engine::EgressError>),
-    AttemptTimeout(u64),
-    BudgetTimeout,
-}
-
-/// The unified send error the classification arm reads — the same two-way split the old
-/// reqwest arm made (`is_timeout()` vs everything-else-is-connect), preserved exactly:
-/// * the failover-budget deadline and a connect that exceeded its 10s bound are TIMEOUTS
-///   (reqwest reported both via `is_timeout()`);
-/// * every other client error (refused, TLS failure, reset before headers) is CONNECT class.
-pub(crate) enum EgressSendError {
-    Timeout,
-    Client(crate::engine::EgressError),
-}
-
-impl EgressSendError {
-    pub(crate) fn is_timeout(&self) -> bool {
-        match self {
-            EgressSendError::Timeout => true,
-            // Walk the source chain for an io timeout: hyper surfaces our connector's 10s
-            // connect bound as a connect error wrapping `io::ErrorKind::TimedOut`, which reqwest
-            // classified as timeout — keep that split byte-identical for the breaker.
-            EgressSendError::Client(e) => {
-                let mut src: Option<&(dyn std::error::Error + 'static)> = Some(e);
-                while let Some(cur) = src {
-                    if let Some(io) = cur.downcast_ref::<std::io::Error>() {
-                        if io.kind() == std::io::ErrorKind::TimedOut {
-                            return true;
-                        }
-                    }
-                    src = cur.source();
-                }
-                false
-            }
-        }
-    }
-}
+use busbar_substrate::{diag_debug, diag_error};
 
 /// Forward with pool name context for on_exhausted config lookup.
 /// Thin wrapper: parse the body ONCE for callers that only hold bytes (tests, ad-hoc routes), then
@@ -336,492 +283,6 @@ pub(crate) fn forward_with_pool_parsed<'a>(
     .instrument(span)
 }
 
-/// RAII refund for the headers-time `spend_budget` unit across the BUFFERED forward path's
-/// spend→`read_capped(...).await` window (used by both `forward_with_pool_parsed_inner` here and
-/// its `walk.rs` degraded-path twin). A client disconnect / LB reset parked at that await drops the
-/// handler future without resuming it, so a plain local bool consulted only AFTER the await never
-/// runs the refund (#21) — the streaming path has `FirstByteBody::drop` for this; the buffered path
-/// has no such body wrapper, so it needs its own guard.
-///
-/// Mirrors `select::ProbeGuard`: armed by default, refunds on `Drop` unless disarmed first. Every
-/// exit that must KEEP the charge (a delivered completion, or our own translation-cap truncation)
-/// calls `disarm()` before returning; the exits that must refund (a pre-first-byte-equivalent
-/// transport failure, or an untranslatable 2xx) simply leave it armed and let the `return` unwind
-/// through it — replacing the old inline `if budget_spent { refund_budget(i) }` calls, not
-/// supplementing them (calling both would double-refund).
-pub(crate) struct BudgetSpendGuard<'a> {
-    pub(crate) store: &'a dyn busbar_substrate::store::LaneRuntime,
-    pub(crate) lane: usize,
-    pub(crate) armed: bool,
-}
-
-impl BudgetSpendGuard<'_> {
-    pub(crate) fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for BudgetSpendGuard<'_> {
-    fn drop(&mut self) {
-        if self.armed {
-            self.store.refund_budget(self.lane);
-        }
-    }
-}
-
-/// The SINGLE source of truth for deciding what to do with a non-streaming CROSS-protocol 2xx
-/// response, mirroring [`translate_request_cross_protocol`]'s role on the request side. Both the hot
-/// path ([`forward_with_pool_parsed_inner`]) and the degraded last-resort path
-/// ([`walk::forward_once`], FallbackPool/LeastBad) call THIS function so the two cannot drift apart on
-/// any translation step — exactly the class of bug the request-side unification (see
-/// `translate_request_cross_protocol`'s doc comment) already fixed once on the request side. Before
-/// this extraction the response-side decision tree (TransportError / Truncated / binary-vs-JSON /
-/// Bedrock-eventstream-synthesis / Gemini-array-wrap) was duplicated near-verbatim between the two
-/// call sites, the same shape of risk the request side fixed but the response direction never inherited.
-///
-/// Called ONLY once the caller has already decided `ingress_protocol != egress` and the response is
-/// NOT SSE — every exit from this function is a fully-built `Response`, so the caller's own call site
-/// is always `return translate_response_cross_protocol(...).await;` (or `Ok(...)` around it on the
-/// `Result`-returning degraded path).
-///
-/// Takes ownership of `r` (consumed by `read_capped`), `permit` (dropped once the whole body is in
-/// hand — a buffered response holds no permit) and `usage_sink` (billed at most once, from whichever
-/// exit actually delivers a completion) because every code path through this function returns.
-///
-/// `budget_guard` is borrowed, NOT owned: the caller's existing [`BudgetSpendGuard`] is reused (armed
-/// or disarmed here) rather than a second instance constructed inside this function — a second
-/// instance armed off the same `budget_spent` would refund/not-refund independently of the caller's
-/// own guard and double-refund (or wrongly refund) on `Drop` when the caller's stack frame unwinds.
-///
-/// `chosen_policy_name` is `None` on the degraded path (which has no `chosen_policy_name` in scope —
-/// there is no routing-policy decision on a FallbackPool/LeastBad hop) and threads straight into
-/// [`maybe_attach_route_policy`], which is already a no-op on `None` — so passing `None` reproduces
-/// the degraded path's prior behavior (no `x-busbar-route-*` headers) exactly, rather than needing a
-/// separate branch.
-///
-/// `degraded` selects the few observably different log/warn strings the two call sites always had
-/// (the degraded path's messages note "degraded path" / "degraded cross-protocol"). This extraction
-/// changes no caller's observable HTTP behavior (status/headers/body/breaker/budget accounting are
-/// byte-identical), but it DOES deliberately unify two pieces of tracing output that had drifted
-/// independently and are not worth a THIRD parameter to keep apart:
-///   - the degraded path's "untranslatable" warn previously lacked the `status` field the main path's
-///     twin already carried — a real (if minor) drift this extraction closes rather than preserves;
-///   - the codec-error warns previously spelled the degraded-path distinction into the message text
-///     ("...(read_response, degraded path); ...") — replaced here with a structured `degraded` field
-///     on both call sites (machine-filterable instead of embedded in a format string).
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn translate_response_cross_protocol(
-    host: &Arc<dyn EngineHost>,
-    rt: &Arc<NativeRuntime>,
-    i: usize,
-    ingress_protocol: &str,
-    op: busbar_substrate::handlers::Op,
-    pool: &str,
-    breaker_cfg: &busbar_substrate::store::BreakerCfg,
-    r: axum::http::Response<hyper::body::Incoming>,
-    read_deadline: tokio::time::Instant,
-    permit: Permit,
-    budget_guard: &mut BudgetSpendGuard<'_>,
-    usage_sink: Option<UsageSink>,
-    status: StatusCode,
-    wants_stream: bool,
-    gemini_json_array: bool,
-    upstream_started: std::time::Instant,
-    chosen_policy_name: Option<&'static str>,
-    degraded: bool,
-) -> Response {
-    let egress_name = EngineTables::new(rt).lanes()[i].protocol;
-
-    // Size-capped buffer under the COMPLETION cap (not the tight error-body cap): a legitimate 2xx
-    // completion can far exceed 256 KiB and must be buffered WHOLE to parse+translate. `truncated`
-    // distinguishes "too large to translate" from "genuinely unparseable" so a too-large success is
-    // not mis-reported as a 500.
-    // Bounded by the caller's `read_deadline` (the non-stream budget deadline, or the client-ceiling
-    // re-provision) — reqwest's client-level timeout covered this whole-body buffer too. Expiry is a
-    // failed transfer: the `TransportError` arm below refunds/compensates exactly as a mid-body cut.
-    let (bytes, read_end) = {
-        use http_body_util::BodyExt;
-        let read = read_capped(
-            r.into_body().into_data_stream(),
-            max_translated_body_bytes(),
-        );
-        match tokio::time::timeout_at(read_deadline, read).await {
-            Ok(pair) => pair,
-            Err(_elapsed) => (Bytes::new(), ReadEnd::TransportError),
-        }
-    };
-    // Re-record the upstream RTT now that the WHOLE body has arrived — see the callers' doc comments:
-    // on this buffered cross-protocol path Busbar awaits the entire upstream response before it can
-    // parse+translate, so the body-download time is part of the upstream cost, not Busbar's.
-    record_upstream_rtt(upstream_started.elapsed());
-    drop(permit); // upstream call complete; a non-streamed response holds no permit
-    if read_end == ReadEnd::TransportError {
-        // The transfer failed mid-body. We optimistically recorded breaker success + spent the
-        // budget on the 2xx HEADERS above (shared with the streaming path), but the BODY never
-        // arrived intact: do NOT charge tokens for a corrupt fragment, record a compensating
-        // transient failure so the breaker sees the transfer as failed, AND refund the request budget
-        // unit spent on the headers — no usable response was delivered, so a failed body transfer
-        // must not permanently drain the lane's `max_requests` budget.
-        diag_debug!(
-            CROSSPROTO_NONSTREAM_MIDTRANSFER_FAILED,
-            ingress = %ingress_protocol,
-            egress = %egress_name,
-            "cross-protocol non-stream upstream body failed mid-transfer; \
-             not recording success/usage, refunding budget, returning ingress-native error"
-        );
-        let tripped =
-            host.lane_store()
-                .record_transient_in(pool, i, ERR_NET_TRANSPORT, breaker_cfg, None);
-        // A threshold-based Closed→Open trip here is a breaker trip too (#29).
-        if tripped {
-            emit_breaker_trip(host, rt, pool, i);
-        }
-        // `budget_guard` is still armed here (nothing has disarmed it): dropping it on this `return`
-        // refunds ONLY if the headers-spend actually decremented (#21).
-        return ingress_error(
-            ingress_protocol,
-            StatusCode::BAD_GATEWAY,
-            KIND_API_ERROR,
-            GENERIC_RESPONSE_ERROR_DETAIL,
-        );
-    }
-    if read_end == ReadEnd::Truncated {
-        // The upstream body exceeded OUR translation cap, so we cannot translate it and the client
-        // receives a 500 with NO completion. Token accounting is therefore deliberately NOT done here:
-        // charging the key's TPM/spend budget for a completion the client never received is incorrect.
-        // Unlike TransportError this is OUR cap, not an upstream fault, so the optimistic breaker
-        // success recorded on the 2xx headers stands and the request budget unit is NOT refunded.
-        diag_debug!(
-            CROSSPROTO_TRANSLATION_CAP_EXCEEDED,
-            ingress = %ingress_protocol,
-            egress = %egress_name,
-            cap = max_translated_body_bytes(),
-            "cross-protocol non-stream success body exceeded the translation cap; \
-             cannot translate, not charging tokens, returning ingress-native error"
-        );
-        budget_guard.disarm();
-        return ingress_error(
-            ingress_protocol,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            KIND_API_ERROR,
-            GENERIC_RESPONSE_ERROR_DETAIL,
-        );
-    }
-    // Token accounting deferred to the delivery seam below (#2). A 2xx body whose usage block parses
-    // but whose content shape is unmodeled does NOT reach a translate+return block below: it falls
-    // through to the ingress-native 500 at the end, delivering NO completion. Charging here — before
-    // translation is proven to succeed — would bill the key's TPM/spend for a completion the client
-    // never receives, exactly the inconsistency the Truncated and TransportError branches above
-    // deliberately avoid. So tap usage ONLY once we are inside the block that actually mints and
-    // returns a translated response.
-    let egress_op = busbar_substrate::handlers::request_handler(egress_name)
-        .and_then(|rh| rh.operation_handler(op.operation));
-    // The ingress operation handler that writes the client's dialect (chat delegates to the same
-    // writer vtable — byte-identical). Resolved once, shared by both the opaque and JSON arms.
-    let ingress_op = busbar_substrate::handlers::request_handler(ingress_protocol)
-        .and_then(|rh| rh.operation_handler(op.operation));
-    // OPAQUE (non-JSON) egress body — e.g. binary speech audio: bridge at the BYTE level through the
-    // operation codecs and relay the ingress handler's WireBody (bytes + ITS content-type) verbatim.
-    // JSON bodies take the Value path below. Parse the 2xx body ONCE, then branch on JSON vs opaque.
-    // Every hop's read→prepare_for_ingress→write core routes through the single
-    // `TranslateCodec::translate_response` entrypoint; the engine keeps telemetry, the
-    // untranslatable-metadata warn, billing, budget accounting, native-metrics injection, the
-    // gemini-array wrap, and all response building.
-    let body_json = busbar_substrate::json::parse::<Value>(&bytes);
-    if body_json.is_err() {
-        if let Some(eh) = egress_op {
-            match eh.translate_response(
-                busbar_substrate::handlers::TranslateRespInput::Opaque(&bytes),
-                ingress_op.is_some(),
-                ingress_protocol,
-                &EngineTables::new(rt).lanes()[i].model,
-                now(),
-                false,
-                None,
-            ) {
-                Err(ref e) => {
-                    // A binary/opaque upstream body the egress codec cannot decode: log the CodecError
-                    // so a repeated wall of 500s has a visible root cause instead of only the generic
-                    // warn below.
-                    diag_debug!(
-                        CROSSPROTO_BINARY_CODEC_FAILED,
-                        ingress = %ingress_protocol,
-                        egress = %egress_name,
-                        error = ?e,
-                        degraded,
-                        "cross-protocol binary response failed the egress codec (read_response); returning ingress-native 500",
-                    );
-                }
-                Ok((usage, delivery)) => {
-                    if let busbar_substrate::wire::TranslatedResponse::Typed(wire) = delivery {
-                        // Delivered: bill + disarm the spend guard here (tokens are now committed to
-                        // this key; keep the lane unit too rather than refund it out from under an
-                        // already-billed request).
-                        record_resp_usage(
-                            host,
-                            usage,
-                            &usage_sink,
-                            EngineTables::new(rt).lanes().get(i),
-                        );
-                        budget_guard.disarm();
-                        let rb = Response::builder()
-                            .status(status)
-                            .header(CONTENT_TYPE, wire.content_type);
-                        let rb = maybe_attach_response_request_id(rb, ingress_protocol, None);
-                        let rb = maybe_attach_route_policy(
-                            rb,
-                            chosen_policy_name,
-                            &EngineTables::new(rt).lanes()[i].model,
-                        );
-                        return rb
-                            .body(Body::from(wire.bytes))
-                            .unwrap_or_else(|_| status.into_response());
-                    }
-                    // `Untranslatable` (ingress handler absent): NO client body could be written, so
-                    // this falls through to the ingress-native 500 delivering no completion. Do NOT
-                    // bill, and leave the guard ARMED so its `Drop` refunds the headers-time budget
-                    // unit — a completion the client never receives is not charged, mirroring the
-                    // streaming `FirstByteBody` refund-on-non-delivery.
-                }
-            }
-        }
-    }
-    if let Ok(rv) = &body_json {
-        if let Some(eh) = egress_op {
-            // Gate translation on the ingress having a codec, exactly as the pre-cutover
-            // `protocol_for(ingress_protocol)` guard did; the neutral `translate_response` now takes
-            // the ingress protocol by NAME + a `serves-op` flag and reaches its writer through the
-            // codec cell, so the concrete `ProtocolWriter` is no longer named at this call site.
-            if busbar_substrate::proto::decl_for(ingress_protocol)
-                .is_some_and(|d| d.codec.is_some())
-            {
-                // Read the wall-clock elapsed once for the wants-stream frame-synthesis fork (a
-                // Bedrock ConverseStream client served a buffered Converse body); the JSON-body path
-                // reads its own fresh elapsed for `inject_response_metrics` below, matching the two
-                // independent clock reads the pre-cutover arm made.
-                let stream_elapsed_ms = u64::try_from(upstream_started.elapsed().as_millis()).ok();
-                match eh.translate_response(
-                    busbar_substrate::handlers::TranslateRespInput::Json(rv),
-                    ingress_op.is_some(),
-                    ingress_protocol,
-                    &EngineTables::new(rt).lanes()[i].model,
-                    now(),
-                    wants_stream,
-                    stream_elapsed_ms,
-                ) {
-                    Err(ref e) => {
-                        // A JSON 2xx whose shape the egress codec rejects (e.g. a missing `embedding`
-                        // array): log the CodecError before the generic 500 so the operator can tell a
-                        // broken upstream from a new/renamed response field.
-                        diag_debug!(
-                            CROSSPROTO_JSON_CODEC_FAILED,
-                            ingress = %ingress_protocol,
-                            egress = %egress_name,
-                            error = ?e,
-                            degraded,
-                            "cross-protocol JSON response failed the egress codec (read_response_value); returning ingress-native 500",
-                        );
-                    }
-                    Ok((usage, delivery)) => {
-                        // RESPONSE-side twin of `IrReq::prepare_for_egress`'s dropped-keys warn. The
-                        // reader has just discarded any vendor-scoped response metadata the caller's
-                        // protocol has no shape for (a Bedrock guardrail `trace`, a Gemini
-                        // `safetyRatings`); this is the one place that still holds the upstream body
-                        // AND knows the hop is cross-protocol, so it is where the drop gets named.
-                        // Same-protocol routes never reach this function.
-                        if let Ok(ref upstream_body) = body_json {
-                            busbar_substrate::proto::warn_untranslatable_response_metadata(
-                                egress_name,
-                                ingress_protocol,
-                                upstream_body,
-                            );
-                        }
-                        // Token accounting: bill + disarm the spend guard ONLY when the resolved
-                        // delivery variant actually hands bytes to the client. `IngressUnsupported`
-                        // (renders a 404) and `Untranslatable` (falls through to the ingress-native
-                        // 500) deliver NO completion — for those, leave the guard ARMED so its `Drop`
-                        // refunds the headers-time budget unit, mirroring the streaming `FirstByteBody`
-                        // refund-on-non-delivery. Billing a completion the client never receives is
-                        // exactly the TPM/spend inconsistency the Truncated/TransportError branches
-                        // above already avoid. No FirstByteBody on this buffered path, so a delivered
-                        // response bills here — straight from the IR usage the egress reader decoded
-                        // (captured before `prepare_for_ingress`).
-                        if matches!(
-                            delivery,
-                            busbar_substrate::wire::TranslatedResponse::StreamFrames(_)
-                                | busbar_substrate::wire::TranslatedResponse::Typed(_)
-                                | busbar_substrate::wire::TranslatedResponse::Json(_)
-                        ) {
-                            record_resp_usage(
-                                host,
-                                usage,
-                                &usage_sink,
-                                EngineTables::new(rt).lanes().get(i),
-                            );
-                            budget_guard.disarm();
-                        }
-                        match delivery {
-                            // Bedrock ingress that requested ConverseStream but got a BUFFERED 2xx: a
-                            // native AWS SDK decoder expects binary `eventstream` frames, delivered
-                            // under `application/vnd.amazon.eventstream`.
-                            busbar_substrate::wire::TranslatedResponse::StreamFrames(frames) => {
-                                let rb = Response::builder().status(status).header(
-                                    CONTENT_TYPE,
-                                    crate::engine::ingress_stream_content_type(ingress_protocol)
-                                        .unwrap_or(crate::engine::TEXT_EVENT_STREAM),
-                                );
-                                let rb =
-                                    maybe_attach_response_request_id(rb, ingress_protocol, None);
-                                let rb = maybe_attach_route_policy(
-                                    rb,
-                                    chosen_policy_name,
-                                    &EngineTables::new(rt).lanes()[i].model,
-                                );
-                                return rb
-                                    .body(Body::from(frames))
-                                    .unwrap_or_else(|_| status.into_response());
-                            }
-                            busbar_substrate::wire::TranslatedResponse::IngressUnsupported => {
-                                return ingress_error(
-                                    ingress_protocol,
-                                    StatusCode::NOT_FOUND,
-                                    KIND_NOT_FOUND,
-                                    DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
-                                );
-                            }
-                            // The ingress dialect's response is NOT JSON (binary speech): relay the
-                            // WireBody — bytes + its content-type.
-                            busbar_substrate::wire::TranslatedResponse::Typed(wire) => {
-                                let rb = Response::builder()
-                                    .status(status)
-                                    .header(CONTENT_TYPE, wire.content_type);
-                                let rb =
-                                    maybe_attach_response_request_id(rb, ingress_protocol, None);
-                                let rb = maybe_attach_route_policy(
-                                    rb,
-                                    chosen_policy_name,
-                                    &EngineTables::new(rt).lanes()[i].model,
-                                );
-                                return rb
-                                    .body(Body::from(wire.bytes))
-                                    .unwrap_or_else(|_| status.into_response());
-                            }
-                            busbar_substrate::wire::TranslatedResponse::Json(mut translated) => {
-                                // A native AWS Bedrock Converse (non-stream) response ALWAYS populates
-                                // `metrics.latencyMs`; the bedrock writer's `write_response` emits only
-                                // output/stopReason/usage, so a bedrock-ingress non-stream client would
-                                // read `metrics == None` — the proxy tell the streaming path already
-                                // injects against. Inject the real request elapsed wall-clock, and OMIT
-                                // `metrics` rather than fabricate a tell-tale `0` if timing is missing.
-                                // Neutral seam: the native response-metrics injection is a per-dialect
-                                // computed-codec method (`DialectCodec::inject_response_metrics`),
-                                // reached by protocol NAME through `decl_for(name).dialect()`, so the
-                                // concrete `ProtocolWriter` is no longer named here (G6 A4b).
-                                if let Some(dialect) =
-                                    busbar_substrate::proto::decl_for(ingress_protocol)
-                                        .and_then(|d| d.dialect())
-                                {
-                                    dialect.inject_response_metrics(
-                                        &mut translated,
-                                        u64::try_from(upstream_started.elapsed().as_millis()).ok(),
-                                    );
-                                }
-                                // Gemini JSON-array streaming (`:streamGenerateContent` WITHOUT
-                                // `?alt=sse`) answered by a BUFFERED non-SSE 2xx: the native endpoint
-                                // returns a JSON ARRAY of chunk objects, so a single bare `{...}` is
-                                // undecodable by a Gemini SDK parsing the body as an array. Wrap the
-                                // single translated object in a one-element array.
-                                if gemini_json_array && wants_stream {
-                                    let arr = Value::Array(vec![translated]);
-                                    let rb = Response::builder()
-                                        .status(status)
-                                        .header(CONTENT_TYPE, APPLICATION_JSON);
-                                    let rb = maybe_attach_route_policy(
-                                        rb,
-                                        chosen_policy_name,
-                                        &EngineTables::new(rt).lanes()[i].model,
-                                    );
-                                    return rb
-                                        .body(Body::from(
-                                            busbar_substrate::json::to_vec(&arr)
-                                                .unwrap_or_else(|_| arr.to_string().into_bytes()),
-                                        ))
-                                        .unwrap_or_else(|_| status.into_response());
-                                }
-                                // Content-Type is the INGRESS JSON CT, not the upstream's — the body is
-                                // now in the client's native non-stream shape.
-                                let rb = Response::builder()
-                                    .status(status)
-                                    .header(CONTENT_TYPE, APPLICATION_JSON);
-                                // The ingress writer's vtable attaches its native response request-id
-                                // header. This is the CROSS-protocol translate path (ingress !=
-                                // egress), so there is no upstream id to forward — `None` makes the
-                                // writer synthesize one.
-                                let rb =
-                                    maybe_attach_response_request_id(rb, ingress_protocol, None);
-                                let rb = maybe_attach_route_policy(
-                                    rb,
-                                    chosen_policy_name,
-                                    &EngineTables::new(rt).lanes()[i].model,
-                                );
-                                // sonic-rs: SIMD serialize of the translated client body (the
-                                // response-path hot spot); fall back on the impossible serialize error.
-                                let body_bytes = busbar_substrate::json::to_vec(&translated)
-                                    .unwrap_or_else(|_| translated.to_string().into_bytes());
-                                return rb
-                                    .body(Body::from(body_bytes))
-                                    .unwrap_or_else(|_| status.into_response());
-                            }
-                            // Opaque-only terminal; unreachable on the JSON path.
-                            busbar_substrate::wire::TranslatedResponse::Untranslatable => {}
-                        }
-                    }
-                }
-            }
-        }
-    }
-    // Not translatable (non-JSON / unexpected-but-valid shape / unknown ingress). We reached this
-    // block only because ingress != egress, so relaying the upstream body+Content-Type verbatim would
-    // leak the EGRESS provider's native wire format to a different-protocol client — a foreign-format
-    // response is an immediate proxy tell and a functional failure. Return an ingress-native 500
-    // instead. (Same-protocol passthrough never enters this function.)
-    if degraded {
-        diag_debug!(
-            CROSSPROTO_RESPONSE_NOT_TRANSLATABLE_DEGRADED,
-            ingress = %ingress_protocol,
-            egress = %egress_name,
-            status = status.as_u16(),
-            "degraded cross-protocol response not translatable; returning ingress-native error"
-        );
-    } else {
-        diag_debug!(
-            CROSSPROTO_RESPONSE_NOT_TRANSLATABLE,
-            ingress = %ingress_protocol,
-            egress = %egress_name,
-            status = status.as_u16(),
-            "cross-protocol response not translatable; returning ingress-native error \
-             instead of leaking the upstream's native body"
-        );
-    }
-    // The 2xx headers optimistically recorded a breaker SUCCESS, but an undecodable body is exactly as
-    // much a lane fault as a transport failure — without this, a lane returning undecodable 200s
-    // forever never trips (unlike its TransportError sibling above, which already compensates).
-    let tripped =
-        host.lane_store()
-            .record_transient_in(pool, i, "untranslatable-2xx", breaker_cfg, None);
-    if tripped {
-        emit_breaker_trip(host, rt, pool, i);
-    }
-    // `budget_guard` is still armed here (nothing on this fallthrough disarmed it): dropping it on
-    // this `return` refunds the headers-time unit, symmetric with the TransportError branch above.
-    ingress_error(
-        ingress_protocol,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        KIND_API_ERROR,
-        GENERIC_RESPONSE_ERROR_DETAIL,
-    )
-}
-
 /// The dispatch core behind [`forward_with_pool_parsed`] (the thin wrapper exists only to fire the
 /// response-stage taps around the whole request).
 //
@@ -854,7 +315,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // selection, failover, the breaker, and billing. The engine reads only capabilities off the
     // spec, never its identity; core's `handlers::CHAT` reproduces today's behavior byte-for-byte.
     op: busbar_substrate::handlers::Op,
-    usage_sink: Option<UsageSink>,
+    // `mut`: borrowed by each attempt, consumed only by the one that delivers a body.
+    mut usage_sink: Option<UsageSink>,
     // This request's correlation id, stamped ONCE by the wrapper (`forward_with_pool_parsed`)
     // before this fn was called — carried as a plain `Copy` scalar for the whole dispatch (stored on
     // `RequestCtx::request_id` below, and threaded into every hook projection built in here) rather
@@ -863,7 +325,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // The allowlisted client beta/version headers the caller ACTUALLY SENT, captured at ingress by the
     // neutral `busbar_substrate::proxy::collect_client_headers` against the plane's
     // `forwardable_client_header_names()` set. Stored on `RequestCtx` below so BOTH the hot path here
-    // and the degraded `walk::forward_once` path read the same set for the whole failover walk. Empty ⇒
+    // and the degraded exhaustion paths read the same set for the whole failover walk. Empty ⇒
     // nothing forwarded (byte-identical egress).
     client_fwd: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
 ) -> Response {
@@ -1162,7 +624,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
 
     let mut request_ctx = RequestCtx::new(deadline_secs, request_id);
     // Carry the ingress-collected client beta/version allowlist across the whole failover walk so the
-    // degraded `walk::forward_once` path forwards the same set the hot path does.
+    // degraded exhaustion paths forward the same set the hot path does.
     request_ctx.forwarded_client_headers = client_fwd;
 
     // Apply configured failover exclusions: members named here are excluded from this pool's
@@ -1680,7 +1142,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // dropped because the extra binding cost the coroutine a second 80-byte `Option<LazyBody>` slot
     // held across every await of the attempt loop; wave-8a future-shrink.)
     drop(_prep);
-    for attempt in 0..=max_cap {
+    for attempt_no in 0..=max_cap {
         // Check deadline first (propagated across hops)
         if request_ctx.expired(now()) {
             return ingress_error(
@@ -1725,7 +1187,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // Box::pin: the exhaustion future (~2.1 KB) is COLD (no usable lane), but awaited
                 // inline it alone sets this fn's coroutine union max — boxing it shrinks the
                 // per-request future every happy-path request carries; the alloc only happens on
-                // the already-degraded path. (Same pattern as walk.rs's recursive box.)
+                // the already-degraded path. (Same pattern as the fallback pool's recursive box.)
                 return Box::pin(handle_exhaustion_for_pool(
                     host.clone(),
                     rt.clone(),
@@ -1743,33 +1205,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 .await;
             }
         };
-        // RAII probe release covering the WHOLE dispatch window of THIS attempt, built ONLY when this
-        // pick actually WON a single-flight recovery probe (`probe_epoch == Some`). Mirrors the
-        // degraded `walk::forward_once` path (which already builds this guard): if this request future
-        // is DROPPED mid-dispatch (a client disconnect while `req.send()` / `read_capped_body` is in
-        // flight) NONE of the explicit early-return paths below run, so without a Drop guard the won
-        // probe would strand the cell HalfOpen + `probe_in_flight` forever and single-flight would
-        // bench the lane until the slow out-of-band prober reset it. `ProbeGuard::drop` releases it
-        // OWNER-CHECKED (keyed on the captured epoch, so a stale drop never reverts a NEWER probe a
-        // peer won). It stays ARMED across every early-return error path (each records a transient
-        // first, which already transitions the cell, making the guard's release a safe owner-checked
-        // no-op) and is DISARMED the moment the request records a legitimate SUCCESS
-        // (`record_success_in` below) — from there the dispatched request/stream owns the probe
-        // through its recorded outcome. A `None` pick (a Closed-ready no-op admit, which won no probe)
-        // builds NO guard: it owns nothing to release. This supersedes the previous scattered
-        // `release_probe_in`/`release_probe_owned_in` early-return calls and fixes their TWO bugs at
-        // once: the pre-dispatch sites used the UNOWNED `release_probe_in` (which could revert a peer's
-        // live probe), and NONE of the calls ran on a dropped future (the strand this closes).
-        let mut probe_guard = probe_epoch.map(|epoch| crate::engine::select::ProbeGuard {
-            store: host.lane_store(),
-            pool: pool_name,
-            lane: i,
-            armed: true,
-            probe_epoch: epoch,
-        });
         // LANE_PICK ends here (a lane + permit are in hand).
         drop(_pick);
-        // ATTEMPT_SETUP: per-hop bookkeeping between lane_pick and translate_req — exclude, routing
+        // ATTEMPT_SETUP: per-hop bookkeeping between lane_pick and the attempt — exclude, routing
         // taps (light path: none), metric-pool label, upstream-attempt telemetry.
         let _asetup =
             busbar_substrate::profile::start(busbar_substrate::profile::Stage::AttemptSetup);
@@ -1792,7 +1230,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     at: "routing",
                     model: Some(&EngineTables::new(rt).lanes()[i].model),
                     attempt_number: Some(
-                        u32::try_from(attempt.saturating_add(1)).unwrap_or(u32::MAX),
+                        u32::try_from(attempt_no.saturating_add(1)).unwrap_or(u32::MAX),
                     ),
                     remaining_candidates: Some(remaining),
                     previous_failure: last_failure,
@@ -1807,10 +1245,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // The bounded `pool` LABEL for THIS hop's upstream/failover/breaker metrics.
         // Resolves to the routed lane's model name on the default (`""`) cell so these series
         // correlate with REQUESTS_TOTAL (which labels model-routed traffic by model, not `""`);
-        // the breaker-cell key below stays `pool_name` (`""`) — only the metric LABEL is decoupled.
-        // Held as a borrow; every metric emit below goes through the TELEMETRY BANK (telemetry.rs),
-        // which resolves `(metric_pool, i)` to this generation's pre-registered per-thread slots —
-        // no label allocation and no shared-atomic contention on the walk.
+        // the breaker-cell key stays `pool_name` (`""`) — only the metric LABEL is decoupled.
         let metric_pool: &str = metric_pool_label(rt, pool_name, i);
 
         // count this upstream attempt (re-entrant across failover hops — each is a real attempt).
@@ -1818,297 +1253,52 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         tracing::debug!(pool = %pool_name, lane = %EngineTables::new(rt).lanes()[i].model, "upstream attempt");
 
         let egress_name = EngineTables::new(rt).lanes()[i].protocol;
+        drop(_asetup);
         // Derive a FRESH per-hop body for translation. Each failover hop must translate/rewrite
         // starting from the ORIGINAL request, never from a previous hop's egress-shaped body. Re-PARSE
         // from the pristine `Bytes` (Arc-backed, so cheap to retain) rather than deep-cloning the
         // parsed `Value` tree per hop: a single JSON parse is far cheaper in time and peak heap than
-        // an O(n) `Value::clone` of a large request (long histories / base64 images / big tool
-        // schemas), which under sustained failover compounded to O(n × max_cap) allocations.
-        drop(_asetup);
-        let _xlate =
-            busbar_substrate::profile::start(busbar_substrate::profile::Stage::TranslateReq);
-        // REQUEST SHORT-CIRCUIT WITHOUT A DOM: hop 1 of a SAME-protocol
-        // JSON dispatch whose head projection PROVES no same-proto invalidator (#1-#4, Vertex)
-        // fires re-emits the retained bytes verbatim — the exact bytes the translate seam's own
-        // pristine short-circuit would emit — without ever materializing the `Value` tree.
-        // `head_provably_pristine` is one-sided (see its docs + parity test): any doubt falls
-        // through to the unchanged materialize-and-translate path below, so the wire bytes are
-        // byte-identical on every branch. When the DOM was already materialized (hooks/taps/gates/
-        // path-model ingress), `probe()` IS the (possibly hook-rewritten) DOM and `body` was
-        // re-serialized in lockstep by the rewrite pass — the check stays sound.
+        // an O(n) `Value::clone` of a large request, which under sustained failover compounded to
+        // O(n × max_cap) allocations.
+        //
+        // REQUEST SHORT-CIRCUIT WITHOUT A DOM: hop 1 of a SAME-protocol JSON dispatch whose head
+        // projection PROVES no same-proto invalidator fires re-emits the retained bytes verbatim —
+        // the exact bytes the translate seam's own pristine short-circuit would emit — without ever
+        // materializing the `Value` tree. `head_provably_pristine` is one-sided (see its docs +
+        // parity test): any doubt falls through to the unchanged materialize-and-translate path, so
+        // the wire bytes are byte-identical on every branch. When the DOM was already materialized
+        // (hooks/taps/gates/path-model ingress), `probe()` IS the (possibly hook-rewritten) DOM and
+        // `body` was re-serialized in lockstep by the rewrite pass — the check stays sound.
         let head_pristine = ingress_protocol == egress_name
             && v.as_ref()
                 .is_some_and(|l| head_provably_pristine(rt, i, l.probe()));
-        let payload = if head_pristine {
+        let hop_v: Option<Value> = if head_pristine {
             // Consume the hop-1 body exactly as the translate path does; failover hops 2+ re-parse
-            // from the retained pristine bytes, unchanged. `Bytes::clone` = refcount bump.
+            // from the retained pristine bytes, unchanged.
             v = None;
-            body.clone()
+            None
+        } else if !body_is_json {
+            None // opaque ingress body: byte-level relay/translate; nothing to re-parse.
         } else {
-            let hop_v: Option<Value> = if !body_is_json {
-                None // opaque ingress body: byte-level relay/translate; nothing to re-parse.
-            } else {
-                let parsed = match v.take() {
-                    // First hop: consume the carried body — the memoized DOM when one was
-                    // materialized (hooks/taps/gates/path-model), else ONE parse of the validated
-                    // bytes (the parse the old eager path performed at ingress).
-                    Some(l) => l.into_value(),
-                    // Failover hops: re-parse from the retained pristine bytes (sonic-rs: SIMD parse).
-                    None => busbar_substrate::json::parse(&body).map_err(|_| ()),
-                };
-                match parsed {
-                    Ok(v) => Some(v),
-                    // `body` already validated/parsed once successfully above; this is infallible.
-                    Err(()) => {
-                        // Pre-dispatch bail (no breaker outcome recorded): the armed `probe_guard`
-                        // above releases any single-flight probe this pick won on drop (owner-checked),
-                        // so a recovering lane never wedges HalfOpen on this early exit.
-                        drop(permit);
-                        return ingress_error(
-                            ingress_protocol,
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            KIND_API_ERROR,
-                            DETAIL_INTERNAL_ERROR,
-                        );
-                    }
-                }
+            let parsed = match v.take() {
+                // First hop: consume the carried body — the memoized DOM when one was
+                // materialized (hooks/taps/gates/path-model), else ONE parse of the validated
+                // bytes (the parse the old eager path performed at ingress).
+                Some(l) => l.into_value(),
+                // Failover hops: re-parse from the retained pristine bytes (SIMD parse).
+                None => busbar_substrate::json::parse(&body).map_err(|_| ()),
             };
-            // SINGLE shared cross-protocol request-shaping seam (shared verbatim with `forward_once`'s
-            // degraded path): read→clear-extra→write, shim-key strip, model rewrite, serialize. Both
-            // paths route through `translate_request_cross_protocol` so neither can carry a translation
-            // step the other lacks (the drift class that sharing one seam ends).
-            //
-            // HUGE-BODY OFFLOAD: the translate is a pure synchronous function over owned bytes — no
-            // store, no client shard, no per-worker stripe — and on a single-threaded worker a
-            // maximum-size body (`limits.request_body_max_bytes`, 32 MiB default) is hundreds of
-            // milliseconds of CPU that would head-of-line-block every connection this worker owns.
-            // At or above [`TRANSLATE_OFFLOAD_THRESHOLD`] the SAME call runs on the blocking pool
-            // (the connection never moves; the worker keeps serving while this future waits); below
-            // it, inline exactly as always. The common path pays one length compare — real chat
-            // bodies sit two orders of magnitude under the threshold.
-            let translated = if body.len() >= TRANSLATE_OFFLOAD_THRESHOLD {
-                // Owned host/rt clones (Arc bumps, no heap) moved into the blocking task so the
-                // borrowed forward-loop refs never cross the `spawn_blocking` boundary.
-                let host2 = host.clone();
-                let rt2 = rt.clone();
-                let body2 = body.clone();
-                let ip: String = ingress_protocol.to_string();
-                let ct: String = req_content_type.to_string();
-                let key: String = resolved_gov_key
-                    .map(|k| k.id.as_str())
-                    .unwrap_or("anonymous")
-                    .to_string();
-                let reasoning =
-                    effective_reasoning(&cands, i, EngineTables::new(rt).lanes()[i].reasoning);
-                match tokio::task::spawn_blocking(move || {
-                    translate_request_cross_protocol(
-                        &host2, &rt2, i, &ip, op, hop_v, &ct, reasoning, &body2, &key,
-                    )
-                })
-                .await
-                {
-                    Ok(r) => r,
-                    // The blocking task itself failed (panic/cancel): internal error, same exit
-                    // shape as a parse failure. Pre-dispatch bail — the armed `probe_guard` releases
-                    // any won single-flight probe on drop (owner-checked).
-                    Err(_) => {
-                        drop(permit);
-                        return ingress_error(
-                            ingress_protocol,
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            KIND_API_ERROR,
-                            DETAIL_INTERNAL_ERROR,
-                        );
+            match parsed {
+                Ok(v) => Some(v),
+                // `body` already validated/parsed once successfully above; this is infallible.
+                Err(()) => {
+                    // Pre-dispatch bail (no breaker outcome recorded): nothing was dispatched, so
+                    // any single-flight probe this pick won is released here, owner-checked, and
+                    // a recovering lane never wedges HalfOpen on this early exit.
+                    if let Some(epoch) = probe_epoch {
+                        host.lane_store()
+                            .release_probe_owned_in(pool_name, i, epoch);
                     }
-                }
-            } else {
-                translate_request_cross_protocol(
-                    host,
-                    rt,
-                    i,
-                    ingress_protocol,
-                    op,
-                    hop_v,
-                    req_content_type,
-                    effective_reasoning(&cands, i, EngineTables::new(rt).lanes()[i].reasoning),
-                    &body,
-                    resolved_gov_key
-                        .map(|k| k.id.as_str())
-                        .unwrap_or("anonymous"),
-                )
-            };
-            match translated {
-                Ok(p) => p,
-                Err(resp) => {
-                    // A translation failure also bails before dispatch — the armed `probe_guard`
-                    // releases any won single-flight probe on drop (owner-checked), same
-                    // wedged-HalfOpen leak avoided as the re-parse path above.
-                    drop(permit);
-                    return *resp;
-                }
-            }
-        };
-        // STREAMING-USAGE UPSTREAM INJECTION: busbar bills a
-        // streaming chat call from the token usage it decodes off the upstream stream, but an OpenAI
-        // Chat Completions upstream only emits that usage (in a trailing chunk) when the request
-        // carried `stream_options.include_usage: true`. A client that did not opt in would otherwise
-        // leave the upstream silent on tokens and busbar would bill ZERO. So force
-        // `stream_options.include_usage` on a streaming request to an OpenAI Chat egress.
-        //
-        // PERF: an unconditional injector runs the DOM-parse+re-serialize
-        // for every streaming OpenAI egress, including the same-protocol pristine
-        // passthrough the head short-circuit exists to keep parse-free (the flagship lazy_body win).
-        // Two gates avoid that:
-        //   1. If the CLIENT already opted in (`client_include_usage`), the upstream body ALREADY
-        //      carries `include_usage:true` - injection is a pure no-op re-serialize. Skip it entirely,
-        //      preserving the pristine re-emit for the opted-in same-proto path.
-        //   2. Otherwise inject via the HEAD-GATED byte-level path when the body carries no top-level
-        //      `stream_options` (`!client_has_stream_options`): a single splice after the opening `{`
-        //      that never materializes the DOM, so an opted-out pristine same-proto body stays
-        //      parse-free too. Only the rare body that DOES carry a non-opted-in `stream_options`
-        //      (e.g. `include_usage:false`, or sibling keys only) falls to the DOM injector.
-        // Scoped to egresses that DECLARE `stream_usage_requires_opt_in` (Chat Completions) - every
-        // other dialect's stream reports usage unconditionally, so there is nothing to inject and
-        // this path never learns which dialect that was. The client-facing trailing
-        // chunk is then gated on the CLIENT's own opt-in at the framing seam (both the cross-proto
-        // `on_egress_chunk` un-fold/strip AND the same-proto verbatim strip), so this
-        // injection never leaks an unsolicited usage chunk to an opted-out client.
-        let payload = if wants_stream
-            && body_is_json
-            && busbar_substrate::proto::decl_for(egress_name)
-                .is_some_and(|d| d.stream_usage_requires_opt_in)
-            && !client_include_usage
-        {
-            if client_has_stream_options {
-                inject_openai_stream_include_usage(payload)
-            } else {
-                inject_openai_stream_include_usage_pristine(payload)
-            }
-        } else {
-            payload
-        };
-        // TRANSLATE_REQ ends here (egress payload bytes in hand). CLIENT_BUILD spans the egress auth
-        // + URL/path build + reqwest RequestBuilder construction that follows.
-        drop(_xlate);
-        let _cbuild =
-            busbar_substrate::profile::start(busbar_substrate::profile::Stage::ClientBuild);
-        let _t = busbar_timing::timeit!("egress_client_build");
-        // MEASUREMENT ONLY (busbar-timing, additive): `egress_assemble` sub-scopes everything
-        // below that is NOT the network send — credential select, path/URI build, auth-header
-        // build (itself sub-timed as `egress_sigv4`), and reqwest `RequestBuilder` construction.
-        // Dropped explicitly just before the send so its span never overlaps `egress_send`; the
-        // outer `egress_client_build` (`_t` above) is untouched and should ~= assemble + send.
-        let _asm = busbar_timing::timeit!("egress_assemble");
-
-        // Mode-aware key selection: passthrough uses caller token, others use lane's api_key.
-        // `upstream_creds` was resolved once before the loop (invariant per request).
-        let key = match upstream_creds {
-            // Passthrough forwards the CALLER's credential upstream. When the caller presents NO
-            // credential, fall back to an EMPTY credential — NOT the lane operator's `api_key`
-            // (a SECURITY boundary): borrowing the operator key would let an unauthenticated caller
-            // silently spend on the operator's upstream account. An empty credential makes the
-            // provider return its own 401/403, attributed to the caller (a client-auth fault, no
-            // lane penalty), matching the documented passthrough contract. No-op in canonical
-            // keyless passthrough (lane.api_key already empty); only changes the misconfigured
-            // passthrough+configured-key case.
-            busbar_api::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
-            busbar_api::UpstreamCreds::Own => {
-                EngineTables::new(rt).lanes()[i].api_key.expose_secret()
-            }
-        };
-
-        // per-request auth (SigV4 for Bedrock; static for others) needs the host/path/body.
-        // The operation resolves its own upstream path from this lane: chat delegates to the
-        // writer's stream-aware default (honoring any provider `path` override) — byte-identical to
-        // the previous inline logic. `None` means this lane's protocol does not speak this
-        // operation; unreachable for chat (every protocol speaks it), and impossible once the
-        // router filters candidates by operation support, but the engine still bails safely rather
-        // than dispatch to a wrong path — releasing any single-flight probe this lane won so it
-        // cannot wedge HalfOpen (same contract as the re-parse/translate guards above).
-        // The (operation × stream) egress target — wire URL and SigV4 canonical URI — was
-        // precomputed at boot on the lane (pure functions of lane-constant config; see
-        // `egress::build_egress_targets`, which also owns the sign-what-you-send encoding rule),
-        // so this is a table read instead of a per-request path render + encode + URL parse. A
-        // lookup miss is the exact condition the old `upstream_path` `None` arm caught: the
-        // lane's protocol has no registered handler — bail safely, releasing any single-flight
-        // probe this lane won so it cannot wedge HalfOpen.
-        let Some(target) =
-            EngineTables::new(rt).lanes()[i].egress_target(op.operation, wants_stream)
-        else {
-            // Pre-dispatch bail (protocol has no handler for this op): the armed `probe_guard`
-            // releases any won single-flight probe on drop (owner-checked).
-            drop(permit);
-            return ingress_error(
-                ingress_protocol,
-                StatusCode::INTERNAL_SERVER_ERROR,
-                KIND_API_ERROR,
-                DETAIL_INTERNAL_ERROR,
-            );
-        };
-        let _cb_auth = busbar_substrate::profile::start(busbar_substrate::profile::Stage::CbAuth);
-        // ONE wall-clock read for this attempt's assemble stage: the SigV4 timestamp here plus the
-        // deadline-remaining reads at the timeout sites below. All three are second-granularity and
-        // no await separates them (pick → translate → auth → build → send is one synchronous run),
-        // so a shared read changes no observable value — the SigV4 timestamp is still taken INSIDE
-        // the attempt loop, per attempt (the 5-minute-skew rule), never hoisted out of it.
-        let attempt_wall = now();
-        let signing_ctx = busbar_substrate::proto::SigningContext {
-            host: &EngineTables::new(rt).lanes()[i].signing_host,
-            canonical_uri: &target.canonical_uri,
-            body: &payload,
-            timestamp_epoch: attempt_wall,
-            upstream_creds: EngineTables::new(rt).upstream_creds(),
-        };
-        // Own-mode dispatch on a lane-constant credential takes the boot-prebuilt header map (one
-        // buffer copy, byte-identical to the live build — see `Lane::prebuilt_auth`). Passthrough
-        // carries the CALLER's key and a non-constant credential (OAuth / SigV4) reads the request,
-        // so both build live, exactly as before.
-        // MEASUREMENT ONLY: `egress_sigv4` isolates the live auth-header build (SigV4 signing on
-        // Bedrock; a cheap static/bearer build on other non-prebuilt arms, where this reads ~0).
-        let egress_auth = match (
-            &EngineTables::new(rt).lanes()[i].prebuilt_auth,
-            upstream_creds,
-        ) {
-            (Some(pre), busbar_api::UpstreamCreds::Own) => pre.clone(),
-            _ => convert_headers(busbar_timing::scope("egress_sigv4", || {
-                lane_auth_headers(&EngineTables::new(rt).lanes()[i], key, &signing_ctx)
-            })),
-        };
-        drop(_cb_auth);
-
-        // Egress request Content-Type: JSON bodies stay JSON (chat byte-identical). An OPAQUE body
-        // relays the caller's own CT same-protocol (multipart boundary preserved verbatim) and uses
-        // the EGRESS operation handler's declared wire CT cross-protocol (its write_request built
-        // that wire — e.g. openai transcription's fixed-boundary multipart).
-        let egress_ct: &str = if body_is_json {
-            APPLICATION_JSON
-        } else if ingress_protocol == egress_name {
-            req_content_type
-        } else {
-            busbar_substrate::handlers::request_handler(egress_name)
-                .and_then(|rh| rh.operation_handler(op.operation))
-                .map(|h| h.egress_request_content_type())
-                .unwrap_or(APPLICATION_JSON)
-        };
-        let _cb_reqwest =
-            busbar_substrate::profile::start(busbar_substrate::profile::Stage::CbReqwest);
-        // Assemble the egress request from PRECOMPUTED parts: the lane's boot-parsed
-        // `http::Uri`, the prebuilt/live auth map extended in place with the three per-request
-        // constants, and the body as one owned buffer. No builder machinery, no per-send URL
-        // parse. Header ORDER matches the old builder exactly (auth, then CT/UA/Accept).
-        let mut egress_headers = egress_auth;
-        // Egress Content-Type: the JSON arm is a static constant; the two rare opaque-relay arms
-        // carry bytes that arrived as a validated inbound header, so the parse cannot fail in
-        // practice — a hostile impossibility maps to the same internal-error exit as a failed
-        // translate rather than a panic.
-        let ct_value = if body_is_json {
-            axum::http::HeaderValue::from_static(APPLICATION_JSON)
-        } else {
-            match axum::http::HeaderValue::from_str(egress_ct) {
-                Ok(v) => v,
-                Err(_) => {
-                    // Pre-dispatch bail: the armed `probe_guard` releases any won single-flight probe
-                    // on drop (owner-checked).
                     drop(permit);
                     return ingress_error(
                         ingress_protocol,
@@ -2119,795 +1309,73 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 }
             }
         };
-        egress_headers.insert(CONTENT_TYPE, ct_value);
-        // Native-SDK User-Agent for the egress protocol. The shared client sets none, so without
-        // this the backend sees a UA-less request — a proxy fingerprint. `from_static`: a
-        // protocol-declaration constant.
-        egress_headers.insert(
-            USER_AGENT,
-            axum::http::HeaderValue::from_static(crate::engine::egress_user_agent(egress_name)),
-        );
-        // Native-SDK Accept for the egress protocol (eventstream/json/SSE by stream intent) — a
-        // declaration constant, chosen by the operation; not part of SigV4 SignedHeaders.
-        egress_headers.insert(
-            ACCEPT,
-            axum::http::HeaderValue::from_static(op.egress_accept(egress_name, wants_stream)),
-        );
-        // CLIENT-HEADER FIDELITY: forward the allowlisted client beta/version headers the caller
-        // actually sent, SCOPED to THIS egress dialect (no cross-dialect leak) via the plane's
-        // per-destination allowlist. The neutral mechanism forwards exactly the name set it is given; a
-        // no-op when the caller sent none, so the money-path oracles stay byte-identical.
-        busbar_substrate::proxy::apply_client_headers(
-            &mut egress_headers,
-            &request_ctx.forwarded_client_headers,
-            &crate::engine::client_header_names_for_egress(egress_name),
-        );
-        let hreq = crate::engine::egress_request(target.uri.clone(), egress_headers, payload);
-        drop(_cb_reqwest);
-        // TIMEOUT RE-PROVISION (was reqwest's per-request/client-level `.timeout()`, which bounded
-        // the ENTIRE lifecycle — connect, response headers, body). ONE deadline per attempt:
-        //   * NON-streaming: the failover-budget remainder, on the send AND every buffered read —
-        //     reqwest's per-request timeout, exactly.
-        //   * STREAMING: the client-level ceiling (`limits.upstream_request_timeout_secs`),
-        //     anchored HERE at send start and carried into the stream body's own ceiling below —
-        //     reqwest's client-level envelope, exactly. Bounding a stream with the (much shorter)
-        //     failover budget would truncate healthy long generations; bounding it with NOTHING
-        //     let a black-holed upstream hold the send open forever with no breaker signal (audit
-        //     finding F1: connect+TLS completed, headers never sent → indefinite hang). Expiry on
-        //     either arm classifies as a transport timeout — what reqwest's is_timeout() reported.
-        let send_deadline = tokio::time::Instant::now()
-            + std::time::Duration::from_secs(if wants_stream {
-                EngineTables::new(rt)
-                    .client_settings()
-                    .upstream_request_timeout_secs
-                    .max(1)
-            } else {
-                request_ctx.remaining(attempt_wall).max(1)
-            });
-        // CLIENT_BUILD ends here (the request is fully assembled). UPSTREAM_SEND spans the
-        // client round-trip to response headers.
-        drop(_cbuild);
-        // MEASUREMENT ONLY: `egress_assemble` ends here — everything above this point was
-        // assembly (credential select, path/header/request build); everything below is the send.
-        // Only compiled under `timing`: with the feature off `_asm` is a zero-sized no-op guard
-        // (`()`), and `drop`ping a `Copy` value does nothing — the `dropping_copy_types` lint.
-        #[cfg(feature = "timing")]
-        drop(_asm);
-        let _send =
-            busbar_substrate::profile::start(busbar_substrate::profile::Stage::UpstreamSend);
-        // MEASUREMENT ONLY: `egress_send` spans ONLY the send round-trip below
-        // (both the attempt-capped and uncapped arms), dropped right after the match resolves.
-        let _snd = busbar_timing::timeit!("egress_send");
-        // Wall-clock start of the upstream call, for the `metrics.latencyMs` a native bedrock
-        // ConverseStream `metadata` frame carries on the buffered-synthesis path below.
-        let upstream_started = std::time::Instant::now();
-        // PER-ATTEMPT time-to-response-headers cap (`attempt_timeout_ms` — the hang detector). The
-        // pool-member override wins over the model-level value; either is floored by the remaining
-        // request budget. The send resolves when RESPONSE HEADERS arrive, so wrapping it bounds the
-        // hang (connect + headers) without bounding a healthy long stream's BODY — the stream
-        // rationale above is untouched. Expiry maps to the same transport-error arm as any
-        // transport timeout: transient → breaker failure → fail over WITHIN this request.
-        let attempt_ms = effective_attempt_timeout_ms(
-            &cands,
-            i,
-            EngineTables::new(rt).lanes()[i].attempt_timeout_ms,
-        );
-        // The non-stream budget deadline wraps BOTH send arms (reqwest applied it to the whole
-        // request; the attempt cap, when smaller, still fires first inside). An expired budget
-        // classifies as a transport timeout — exactly what reqwest's `is_timeout()` reported.
-        let send_fut = async {
-            let send = EngineTables::new(rt).client().get().request(hreq);
-            match attempt_ms {
-                Some(ms) => {
-                    let cap = attempt_cap(ms, request_ctx.remaining(attempt_wall));
-                    match tokio::time::timeout(cap, send).await {
-                        Ok(r) => SendOutcome::Sent(r),
-                        Err(_elapsed) => SendOutcome::AttemptTimeout(ms),
+
+        // THE ONE ATTEMPT: assemble, send, classify, deliver — the same function the degraded
+        // exhaustion paths run. This loop only decides what a failed attempt means for the walk.
+        let outcome = attempt(AttemptInput {
+            hop: Hop {
+                host,
+                rt,
+                lane: i,
+                pool_cell: pool_name,
+                cands: &cands,
+                body: &body,
+                pristine: head_pristine,
+                body_is_json,
+                req_content_type,
+                ingress_protocol,
+                egress_name,
+                op,
+                wants_stream,
+                client_include_usage,
+                client_has_stream_options,
+                gemini_json_array,
+                caller_token,
+                upstream_creds,
+                resolved_gov_key,
+                remaining_secs: request_ctx.remaining(now()),
+                breaker_cfg: &breaker_cfg,
+                client_fwd: &request_ctx.forwarded_client_headers,
+                chosen_policy_name,
+                metric_pool,
+                degraded: false,
+            },
+            permit,
+            probe_epoch,
+            hop_v,
+            usage_sink: &mut usage_sink,
+        })
+        .await;
+        match outcome {
+            AttemptOutcome::Response(resp) | AttemptOutcome::Bail(resp) => return resp,
+            AttemptOutcome::Failed {
+                disposition,
+                err_type,
+                ..
+            } => {
+                if matches!(disposition, Disposition::ContextLength) {
+                    // The request is too large for THIS model's context window: exclude every
+                    // candidate whose known `context_max` is at or below the failed lane's (they
+                    // share or undercut the limit that just failed), so failover lands on a
+                    // larger-context or unknown-context member. An unknown limit on the failed lane
+                    // excludes only the failed lane itself (already excluded above).
+                    let failed_context_max = EngineTables::new(rt).lanes()[i].context_max;
+                    for cand in &cands {
+                        if let (Some(cand_context_max), Some(failed_limit)) = (
+                            EngineTables::new(rt).lanes()[cand.idx].context_max,
+                            failed_context_max,
+                        ) {
+                            if cand_context_max <= failed_limit {
+                                request_ctx.exclude(cand.idx);
+                            }
+                        }
                     }
                 }
-                None => SendOutcome::Sent(send.await),
-            }
-        };
-        let outcome = match tokio::time::timeout_at(send_deadline, send_fut).await {
-            Ok(o) => o,
-            Err(_elapsed) => SendOutcome::BudgetTimeout,
-        };
-        let res = match outcome {
-            SendOutcome::Sent(r) => r.map_err(EgressSendError::Client),
-            SendOutcome::BudgetTimeout => Err(EgressSendError::Timeout),
-            SendOutcome::AttemptTimeout(ms) => {
-                // Mirror the transport-timeout arm below EXACTLY (breaker record, trip emit,
-                // failure + failover metrics, permit drop) — the only deltas are the distinct
-                // `attempt_timeout` disposition/reason labels so operators can see hang-hops as
-                // their own series, and the warn naming the cap.
-                record_upstream_rtt(upstream_started.elapsed());
-                let tripped = host.lane_store().record_transient_in(
-                    pool_name,
-                    i,
-                    ERR_NET_TIMEOUT,
-                    &breaker_cfg,
-                    None,
-                );
-                if tripped {
-                    emit_breaker_trip(host, rt, pool_name, i);
-                }
-                host.telemetry_upstream_failure(metric_pool, i, DISPOSITION_ATTEMPT_TIMEOUT);
-                host.telemetry_failover(metric_pool, DISPOSITION_ATTEMPT_TIMEOUT);
-                diag_debug!(
-                    ATTEMPT_TIMEOUT_FAILOVER,
-                    pool = %pool_name,
-                    lane = %EngineTables::new(rt).lanes()[i].model,
-                    attempt_timeout_ms = ms,
-                    "no response headers within the attempt cap; failing over"
-                );
-                last_failure = Some(DISPOSITION_ATTEMPT_TIMEOUT);
-                drop(permit);
-                continue;
-            }
-        };
-        // MEASUREMENT ONLY: `egress_send` ends here, matching `UPSTREAM_SEND` below exactly.
-        // Only compiled under `timing` — see the `drop(_asm)` note above (feature-off `_snd` is `()`).
-        #[cfg(feature = "timing")]
-        drop(_snd);
-        // UPSTREAM_SEND ends here (response headers received or transport error).
-        drop(_send);
-        record_upstream_rtt(upstream_started.elapsed());
-
-        // Every BUFFERED read of this response below (error bodies, the cross-protocol translate
-        // buffer) rides the SAME deadline as the send — the budget remainder (non-stream) or the
-        // client-ceiling envelope anchored at send start (stream-intent responses read buffered
-        // anyway, e.g. a non-2xx error body). One instant, one envelope, exactly reqwest's.
-        let read_deadline = send_deadline;
-
-        // POST_SEND: the last uncounted span inside `busbar;dur` — response status/StatusClass
-        // classification + 2xx/failover branch selection, up to the RecordSuccess boundary on the
-        // success arm (dropped there). On a failover `continue` it records that attempt's classify.
-        let _postsend =
-            busbar_substrate::profile::start(busbar_substrate::profile::Stage::PostSend);
-        match res {
-            Err(e) => {
-                // Pre-response error: classify and potentially failover
-                let err_type = if e.is_timeout() {
-                    ERR_NET_TIMEOUT
-                } else {
-                    ERR_NET_CONNECT
-                };
-                let tripped = host.lane_store().record_transient_in(
-                    pool_name,
-                    i,
-                    err_type,
-                    &breaker_cfg,
-                    None,
-                );
-                // A threshold-based Closed→Open trip is a breaker trip for this (pool, lane) — emit
-                // BREAKER_TRIPS_TOTAL once, mirroring the HardDown arm (#29). `record_transient_in`
-                // returns `true` only on a logical trip (not a HalfOpen reopen or already-Open no-op),
-                // so the counter is not multi-counted per cell or per cooldown bump.
-                if tripped {
-                    emit_breaker_trip(host, rt, pool_name, i);
-                }
-                host.telemetry_upstream_failure(metric_pool, i, DISPOSITION_TRANSIENT);
+                // Every failed attempt on this walk is a failover to the next candidate; the
+                // routing-stage tap on the next hop tells the story of why.
                 host.telemetry_failover(metric_pool, err_type);
                 last_failure = Some(err_type);
-                drop(permit);
                 continue;
-            }
-            Ok(r) => {
-                let status = r.status();
-
-                // For non-2xx responses, read the body to classify (failover allowed)
-                if !status.is_success() {
-                    // caveat: passthrough 401/403 is caller's key failing, not busbar's
-                    // Do NOT trip breaker / change member health; relay verbatim to caller
-                    let is_passthrough_40x = upstream_creds
-                        == busbar_api::UpstreamCreds::Passthrough
-                        && (status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN);
-
-                    // Clone headers before consuming r with bytes(). The upstream `Retry-After`
-                    // header (whole seconds) must be captured here — the per-protocol
-                    // `extract_error` only sees the body, so the cooldown floor would otherwise be
-                    // silently dropped on a 429 carrying an explicit retry hint.
-                    let ct = r.headers().get(CONTENT_TYPE).cloned();
-                    let retry_after_secs =
-                        busbar_substrate::breaker::parse_retry_after(r.headers());
-                    // A real AWS Bedrock endpoint sends `x-amzn-requestid` and `x-amzn-errortype` on
-                    // EVERY response, including 4xx. First-party AWS SDKs read `x-amzn-errortype`
-                    // BEFORE the body `__type` for typed-exception dispatch; their absence on a
-                    // same-protocol Bedrock→Bedrock error relay is a detectable indistinguishability
-                    // tell. Capture them here (before `r` is consumed) so the same-protocol passthrough
-                    // branches below can forward them verbatim on a bedrock-ingress relay.
-                    let upstream_amzn_headers: Vec<(
-                        axum::http::HeaderName,
-                        axum::http::HeaderValue,
-                    )> = if ingress_relays_amzn_headers(ingress_protocol) {
-                        ingress_relayed_response_header_names(ingress_protocol)
-                            .iter()
-                            .filter_map(|name| {
-                                let v = r.headers().get(*name)?.clone();
-                                let n = axum::http::HeaderName::from_static(name);
-                                Some((n, v))
-                            })
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-                    // For a NON-amzn same-protocol error relay (anthropic), capture the upstream's
-                    // PRIMARY relayed id (`request-id`) so it can be forwarded verbatim — or synthesized
-                    // if the upstream omitted it — mirroring `forward_once`'s same-proto error relay.
-                    // Empty for protocols with no relayed header name.
-                    let upstream_error_relay_id: Option<String> =
-                        ingress_relayed_response_header_names(ingress_protocol)
-                            .first()
-                            .and_then(|name| r.headers().get(*name))
-                            .and_then(|h| h.to_str().ok())
-                            .map(|s| s.to_string());
-                    // Size-capped read: a hostile/misconfigured upstream must not force an unbounded
-                    // heap allocation for a non-2xx body before the breaker classification runs.
-                    let bytes = read_capped_body(r, read_deadline).await;
-
-                    if is_passthrough_40x {
-                        // Verbatim relay of the upstream 401/403 body+CT is correct ONLY on the
-                        // same-protocol path, where the upstream error is already in the client's
-                        // native shape. On a CROSS-protocol boundary (e.g. an Anthropic-ingress client
-                        // routed to an OpenAI backend that 401s) relaying the egress provider's native
-                        // error envelope and Content-Type to a different-protocol SDK is a
-                        // foreign-format leak — the SDK fails to decode it into its typed
-                        // exception, an immediate proxy tell. Reshape into the ingress protocol's
-                        // native envelope instead, deriving the kind from the status (the sibling
-                        // ClientFault branch does the same). The passthrough breaker invariant is
-                        // unchanged either way: no breaker penalty for a caller-key auth failure.
-                        if ingress_protocol != egress_name {
-                            // A passthrough 401/403 is the CALLER's own key failing — no breaker
-                            // penalty — so no failure outcome is recorded to clear `probe_in_flight`.
-                            // The still-armed `probe_guard` releases any won recovery probe on this
-                            // return (owner-checked), so the lane never wedges HalfOpen.
-                            // Reshape via the shared finalizer so the kind→native-envelope mapping
-                            // (401→authentication_error, 403→permission_error, …) is identical on the
-                            // main path, the degraded path, and the ClientFault branch below.
-                            return shape_cross_protocol_error(ingress_protocol, status, &bytes);
-                        }
-                        // Same-protocol passthrough 401/403: caller-key auth failure carries no
-                        // breaker penalty, so nothing clears `probe_in_flight`. The still-armed
-                        // `probe_guard` releases any won probe on this return (owner-checked) before
-                        // the verbatim relay, so the lane never wedges HalfOpen.
-                        use axum::body::Body;
-                        let mut rb = Response::builder().status(status);
-                        if let Some(ct) = ct {
-                            rb = rb.header(CONTENT_TYPE, ct);
-                        }
-                        // Forward the native response request-id header(s) on a same-protocol relay so
-                        // the SDK's `request_id()` matches a real endpoint. Bedrock: both
-                        // `x-amzn-requestid` + `x-amzn-errortype` VERBATIM. Anthropic: `request-id`
-                        // upstream-or-synth (a native Anthropic 4xx always carries it). Mirrors forward_once.
-                        if ingress_relays_amzn_headers(ingress_protocol) {
-                            for (name, value) in &upstream_amzn_headers {
-                                rb = rb.header(name, value);
-                            }
-                        } else {
-                            rb = maybe_attach_response_request_id(
-                                rb,
-                                ingress_protocol,
-                                upstream_error_relay_id.as_deref(),
-                            );
-                        }
-                        // Re-create response from bytes for same-protocol passthrough relay
-                        return rb
-                            .body(Body::from(bytes))
-                            .unwrap_or_else(|_| status.into_response());
-                    }
-
-                    // Two-stage pipeline: Stage 1a (the cell's `extract_error`) → RawUpstreamError
-                    //                     Stage 1b (normalize_raw_error + error_map) → CanonicalSignal
-                    //                     Stage 2 (breaker::classify_disposition) → Disposition
-                    //
-                    // Stage 1a asks the CELL that spoke to this upstream — the EGRESS protocol's
-                    // codec for the operation being served, framed by the channel the attempt rode —
-                    // rather than the lane's chat vtable. For the six LLM protocols the answer is
-                    // identical (their cells all read the one envelope their protocol defines), and
-                    // an operation whose upstream is not a lane at all is attributed the same way.
-                    let mut raw = busbar_substrate::handlers::op_for(
-                        egress_name,
-                        op.operation,
-                        busbar_substrate::transport::Transport::Http,
-                    )
-                    .map(|cell| cell.extract_error(status.as_u16(), &bytes))
-                    .unwrap_or_else(|| {
-                        busbar_substrate::breaker::RawUpstreamError::from_status(status.as_u16())
-                    });
-                    // Inject the Retry-After header (which the body-only extract_error can't see) so
-                    // normalize_raw_error propagates it into CanonicalSignal.retry_after and the
-                    // store honors it as a cooldown floor.
-                    raw.retry_after_secs = retry_after_secs;
-                    let sig =
-                        normalize_raw_error(&raw, &EngineTables::new(rt).lanes()[i].error_map);
-                    let disposition = classify_disposition(&sig);
-
-                    // Exhaustive match on Disposition - no `_` arm, so a new disposition breaks the build
-                    match disposition {
-                        Disposition::ClientFault => {
-                            // ADR-0002: Client fault (caller's bad input) → no breaker penalty.
-                            // Track client_fault separately from upstream err.
-                            host.lane_store().record_client_fault(i);
-                            // `record_client_fault` only bumps an observability counter — it does NOT
-                            // clear `probe_in_flight`. Both ClientFault exits below (cross-protocol
-                            // reshape and same-protocol verbatim relay) return without recording any
-                            // breaker outcome, so the still-armed `probe_guard` is what releases any
-                            // won recovery probe on those returns (owner-checked) — leaving the lane
-                            // immediately re-probeable rather than wedged HalfOpen.
-                            // Same-protocol passthrough relays the upstream 4xx body + CT verbatim
-                            // (it is already in the client's native shape). Cross-protocol must
-                            // RESHAPE the error into the ingress protocol's native envelope —
-                            // relaying the EGRESS protocol's error body to a different-protocol
-                            // client is an immediate proxy tell (e.g. an OpenAI-shaped 400 reaching
-                            // an Anthropic SDK). The human message is lifted from the upstream body
-                            // where available; the kind is derived from the classified StatusClass.
-                            if ingress_protocol != egress_name {
-                                let kind = client_fault_kind(sig.class);
-                                let msg = extract_error_message(&bytes)
-                                    .unwrap_or_else(|| GENERIC_REJECTED_DETAIL.to_string());
-                                return ingress_error(ingress_protocol, status, kind, &msg);
-                            }
-                            use axum::body::Body;
-                            let mut rb = Response::builder().status(status);
-                            if let Some(ct) = ct {
-                                rb = rb.header(CONTENT_TYPE, ct);
-                            }
-                            // Same as the passthrough-40x branch: preserve the native response
-                            // request-id header on a same-protocol client-fault relay — bedrock's
-                            // `x-amzn-*` verbatim, anthropic's `request-id` upstream-or-synth.
-                            if ingress_relays_amzn_headers(ingress_protocol) {
-                                for (name, value) in &upstream_amzn_headers {
-                                    rb = rb.header(name, value);
-                                }
-                            } else {
-                                rb = maybe_attach_response_request_id(
-                                    rb,
-                                    ingress_protocol,
-                                    upstream_error_relay_id.as_deref(),
-                                );
-                            }
-                            return rb
-                                .body(Body::from(bytes))
-                                .unwrap_or_else(|_| status.into_response());
-                        }
-                        Disposition::TransientUpstream => {
-                            // Transient upstream failure → cooldown + err counter
-                            // Record based on specific error type (exhaustive over remaining variants)
-                            let tripped = if matches!(sig.class, StatusClass::RateLimit) {
-                                host.lane_store().record_rate_limit_in(
-                                    pool_name,
-                                    i,
-                                    now(),
-                                    &breaker_cfg,
-                                    sig.retry_after,
-                                )
-                            } else {
-                                let what = match sig.class {
-                                    StatusClass::ServerError => "5xx",
-                                    StatusClass::Timeout => ERR_NET_TIMEOUT,
-                                    StatusClass::Network => "network",
-                                    StatusClass::Overloaded => KIND_OVERLOADED,
-                                    StatusClass::RateLimit => {
-                                        // Should have been handled above but Rust needs exhaustive match
-                                        "rate_limit"
-                                    }
-                                    // No-panic-on-request-path invariant: `breaker::classify` does not
-                                    // currently map Auth/Billing/ClientError/ContextLength to
-                                    // TransientUpstream, but encoding that as `unreachable!()` would
-                                    // panic a Tokio worker (dropping every in-flight request on it) the
-                                    // first time a future classifier change made one of them reachable.
-                                    // Record a generic transient label instead — correct under today's
-                                    // mapping and graceful if it ever changes.
-                                    StatusClass::Auth
-                                    | StatusClass::Billing
-                                    | StatusClass::ClientError
-                                    | StatusClass::ContextLength => "transient",
-                                };
-                                host.lane_store().record_transient_in(
-                                    pool_name,
-                                    i,
-                                    what,
-                                    &breaker_cfg,
-                                    sig.retry_after,
-                                )
-                            };
-                            // A threshold-based Closed→Open trip is a breaker trip for this (pool,
-                            // lane) — emit BREAKER_TRIPS_TOTAL once, mirroring the HardDown arm (#29).
-                            if tripped {
-                                emit_breaker_trip(host, rt, pool_name, i);
-                            }
-                            host.telemetry_upstream_failure(metric_pool, i, DISPOSITION_TRANSIENT);
-                            host.telemetry_failover(metric_pool, DISPOSITION_TRANSIENT);
-                            last_failure = Some(DISPOSITION_TRANSIENT);
-                            drop(permit);
-                            continue;
-                        }
-                        Disposition::HardDown => {
-                            // Hard down → permanent dead state (with probe recovery per)
-                            // Only Billing and Auth reach this arm per breaker::classify
-                            let reason = match sig.class {
-                                StatusClass::Billing => {
-                                    "billing / insufficient balance".to_string()
-                                }
-                                StatusClass::Auth => {
-                                    format!("auth rejected (HTTP {})", status.as_u16())
-                                }
-                                // No-panic-on-request-path invariant: `breaker::classify` only maps
-                                // Auth/Billing to HardDown today, but `unreachable!()` here would panic
-                                // the worker the first time a classifier change routed another class to
-                                // HardDown. Fall back to a generic reason (carrying the HTTP status for
-                                // diagnostics) instead — graceful and robust to future mapping changes.
-                                StatusClass::RateLimit
-                                | StatusClass::Overloaded
-                                | StatusClass::ServerError
-                                | StatusClass::Timeout
-                                | StatusClass::Network
-                                | StatusClass::ClientError
-                                | StatusClass::ContextLength => {
-                                    format!("request rejected (HTTP {})", status.as_u16())
-                                }
-                            };
-                            // A hard-down (auth rejection / billing exhaustion) is a property of the
-                            // SHARED upstream, not of one routing pool: trip the lane in EVERY cell
-                            // (default "" cell that `named`/`adhoc`/direct routes read AND every
-                            // per-pool cell), mirroring `recover_lane`'s all-cells reach. Tripping
-                            // only `pool_name`'s cell left the same dead upstream Closed in the other
-                            // cells, so legacy/cross-protocol routes kept hammering it until the
-                            // out-of-band prober caught it (the asymmetry this fixes).
-                            let newly_tripped =
-                                host.lane_store().record_hard_down_all_cells(i, &reason);
-                            // A hard-down is a breaker trip for this lane — but only count a LOGICAL
-                            // Closed→Open trip. A persistently-dead auth/billing lane re-enters this arm
-                            // on every recovery-probe cycle (a HalfOpen reopen, not a fresh trip); gating
-                            // on `newly_tripped` stops BREAKER_TRIPS_TOTAL inflating once per cooldown
-                            // for a stuck lane (the metric's "once per logical trip" contract).
-                            // Gate the warn on the LOGICAL Closed→Open trip, mirroring the
-                            // BREAKER_TRIPS_TOTAL gating just above: a persistently-dead lane re-enters
-                            // this arm on every recovery-probe cycle, so an ungated warn spams once per
-                            // cooldown for a stuck lane. Warn on the fresh trip; the recurring
-                            // still-down probe logs at `debug!`.
-                            if newly_tripped {
-                                host.telemetry_breaker_trip(metric_pool, i);
-                                diag_warn!(LANE_HARD_DOWN, pool = %pool_name, lane = %EngineTables::new(rt).lanes()[i].model, reason = %reason, "lane hard-down (breaker trip)");
-                            } else {
-                                diag_debug!(LANE_HARD_DOWN, pool = %pool_name, lane = %EngineTables::new(rt).lanes()[i].model, reason = %reason, "lane still hard-down (recovery probe re-tripped)");
-                            }
-                            host.telemetry_upstream_failure(metric_pool, i, DISPOSITION_HARD_DOWN);
-                            drop(permit);
-
-                            // For auth failures: return error to caller. In NON-passthrough mode the
-                            // rejected credential is busbar's OWN configured lane key, so the
-                            // upstream's auth-rejection body is busbar-internal context (account
-                            // ids, internal request ids, key hints) — do NOT leak it to an external
-                            // caller. Return a normalized envelope instead. (Passthrough 401/403 is
-                            // the caller's own key and is relayed verbatim earlier, before this.)
-                            if matches!(sig.class, StatusClass::Auth) {
-                                // Route through ingress_error so the body is the INGRESS protocol's
-                                // NATIVE error envelope (Bedrock `{"__type":"AccessDeniedException",...}`,
-                                // Gemini `{"error":{"status":"UNAUTHENTICATED",...}}`, etc.), not a
-                                // hard-coded OpenAI-shaped body. The wire MESSAGE is the
-                                // vendor-plausible auth-failure copy for the ingress protocol — NOT
-                                // busbar-internal vocabulary. The previous "upstream rejected the lane
-                                // credential" leaked the internal "lane" concept (no real vendor uses
-                                // that word), a deterministic proxy tell; and in non-passthrough mode
-                                // the rejected key is busbar's OWN, so the upstream's auth-rejection
-                                // body must never be relayed either. The native error kind carries the
-                                // auth signal; the message just reads like the real vendor's copy.
-                                // Pass the INGRESS-protocol-native auth-failure status and kind, NOT
-                                // the upstream's raw HTTP status. A real Bedrock auth failure is HTTP
-                                // 403 AccessDeniedException and a real Gemini bad-key is HTTP 400
-                                // INVALID_ARGUMENT — neither vendor ever returns 401 for auth. Echoing
-                                // the egress backend's raw `status` (e.g. an Anthropic backend's 401)
-                                // to a Bedrock/Gemini ingress client is a protocol-distinguishability
-                                // tell and breaks SDK auth-retry/credential-refresh logic that keys off
-                                // the native status. The canonical mapping lives in `auth.rs`
-                                // (`auth_failure_status_and_kind`) so this path cannot drift from the
-                                // pre-routing auth path.
-                                let (auth_status, auth_kind) =
-                                    busbar_substrate::proxy::auth_failure_status_and_kind(
-                                        ingress_protocol,
-                                    );
-                                return ingress_error(
-                                    ingress_protocol,
-                                    auth_status,
-                                    auth_kind,
-                                    busbar_substrate::proto::vendor_auth_failure_message(
-                                        ingress_protocol,
-                                    ),
-                                );
-                            }
-
-                            // For billing hard downs: continue to next lane (failover)
-                            host.telemetry_failover(metric_pool, DISPOSITION_HARD_DOWN);
-                            last_failure = Some(DISPOSITION_HARD_DOWN);
-                            continue;
-                        }
-                        Disposition::ContextLength => {
-                            // the request is too large for THIS model's context window.
-                            // exclude from this request any candidate lane whose context_max
-                            // is Some(c) with c <= failed_lane_context_max (and the failed lane itself).
-                            // Rationale: those lanes share or undercut the limit that just failed,
-                            // so don't waste attempts on them — failover lands on a larger-context
-                            // (or unknown-context) member. If failed lane's context_max is None,
-                            // exclude only the failed lane.
-                            let failed_context_max = EngineTables::new(rt).lanes()[i].context_max;
-
-                            // Exclude candidates that cannot handle this request due to context limits.
-                            for cand in &cands {
-                                if let Some(cand_context_max) =
-                                    EngineTables::new(rt).lanes()[cand.idx].context_max
-                                {
-                                    // If this candidate has a known limit <= failed lane's limit, exclude it.
-                                    if let Some(failed_limit) = failed_context_max {
-                                        if cand_context_max <= failed_limit {
-                                            request_ctx.exclude(cand.idx);
-                                        }
-                                    }
-                                }
-                            }
-
-                            host.telemetry_upstream_failure(
-                                metric_pool,
-                                i,
-                                DISPOSITION_CONTEXT_LENGTH,
-                            );
-                            host.telemetry_failover(metric_pool, DISPOSITION_CONTEXT_LENGTH);
-                            // ContextLength is a client-fault variant (the request is too large for
-                            // THIS lane's window) — no breaker penalty, so nothing records an outcome
-                            // to clear `probe_in_flight`. The still-armed `probe_guard` releases any
-                            // won recovery probe when it drops at this iteration's end (owner-checked),
-                            // so this `continue` leaves the lane immediately probe-eligible again for
-                            // normal-size requests rather than wedged HalfOpen.
-                            last_failure = Some(DISPOSITION_CONTEXT_LENGTH);
-                            drop(permit);
-                            continue;
-                        }
-                    }
-                }
-
-                // POST_SEND ends here (success arm reached); RECORD_SUCCESS begins.
-                drop(_postsend);
-                // RECORD_SUCCESS: the post-2xx breaker/latency/budget bookkeeping (store lock ops).
-                let _rec = busbar_substrate::profile::start(
-                    busbar_substrate::profile::Stage::RecordSuccess,
-                );
-                // SUCCESS case: the upstream served a 2xx. Record the success for this lane (feeds
-                // the per-lane `ok` counter and the breaker's success window) and consume one unit
-                // of its lifetime request budget (the `max_requests` cost cap; `usable()` stops
-                // admitting the lane once it reaches 0).
-                host.lane_store().record_success_in(pool_name, i);
-                // DISARM the probe guard: `record_success_in` recorded this dispatch's legitimate
-                // outcome (HalfOpen→Closed, probe cleared), so the request now owns the probe through
-                // to that outcome. From here the streamed/buffered success body (or its own mid-stream
-                // failure recording) is responsible for the cell, and the guard must NOT also release
-                // it on drop (buffered return, cross-protocol translate handoff, or FirstByteBody
-                // handoff below). No-op when no guard was built (a Closed-ready no-op admit).
-                if let Some(g) = probe_guard.as_mut() {
-                    g.armed = false;
-                }
-                // Fold this request's time-to-headers into the lane's latency EWMA (the routing
-                // `fastest` signal). Measured to the upstream RESPONSE HEADERS (`req.send().await`
-                // completion) — a cheap, bounded proxy that does NOT wait out an unbounded streaming
-                // body. Lane-global + off the selection path; a no-op unless a `route: fastest` (or a
-                // webhook/script policy reading `latency_ms`) consults it.
-                host.lane_store().record_latency_in(
-                    pool_name,
-                    i,
-                    upstream_started.elapsed().as_secs_f64() * 1000.0,
-                );
-                // BIND the spend result (#21): the post-success spend is COST accounting, not the
-                // admission gate (that was `lane_admissible`/`usable` before dispatch). It can no
-                // longer over-spend; `false` means this lane was already at 0 (the next admission
-                // check rejects it) OR that the spend was a no-op. The paired post-headers body
-                // TransportError below refunds the budget, but `refund_budget` UNCONDITIONALLY
-                // fetch_adds — so a refund of a no-op spend would push the budget ABOVE its cap. Guard
-                // the refund on this bool. `budget_spent` is `true` for an unlimited lane (the spend
-                // is a no-op success there) and `refund_budget` is likewise a no-op there, so an
-                // unlimited lane neither over-counts nor under-counts.
-                let budget_spent = host.lane_store().spend_budget(i);
-                // Guards the buffered path's spend→`read_capped(...).await` window (#21): armed
-                // now, disarmed at every exit below that must KEEP the charge. Disarmed (without
-                // refunding) just before the streaming builder, which hands the same `budget_spent`
-                // value to `FirstByteBody` for its own cancellation-safe refund.
-                let mut budget_guard = BudgetSpendGuard {
-                    store: host.lane_store(),
-                    lane: i,
-                    armed: budget_spent,
-                };
-                // RECORD_SUCCESS ends; RESP_BUILD spans everything from here to the returned Response
-                // (usage/CT capture, SSE-vs-buffered branch, FirstByteBody wiring, response builder).
-                drop(_rec);
-                let _resp =
-                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RespBuild);
-                // RB_PRE sub-stage: header/CT/relay-id capture + SSE detection + translate resolution,
-                // up to `FirstByteBody::new`. (The cross-protocol buffered branch returns before the
-                // streaming builder, so on that path RB_PRE covers the pre-buffer work only.)
-                let _rb_pre =
-                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbPre);
-
-                // stream the response body incrementally with first-byte boundary tracking
-                let ct = r.headers().get(CONTENT_TYPE).cloned();
-                // Capture the upstream PRIMARY relayed id (if any) BEFORE consuming `r` into the body
-                // stream, keyed off the ingress writer's `ingress_relayed_response_header_names` (so
-                // this names no protocol module). On a SAME-PROTOCOL streaming passthrough we forward
-                // the real upstream id verbatim — `x-amzn-RequestId` for bedrock (a native
-                // ConverseStream response carries it), `request-id` for anthropic; on a CROSS-PROTOCOL
-                // stream the backend supplied none, so the attach helper synthesizes one below. Either
-                // way a bedrock/anthropic-ingress stream must carry the header (matching a real
-                // endpoint and the error path).
-                let upstream_relay_id = ingress_relayed_response_header_names(ingress_protocol)
-                    .first()
-                    .and_then(|name| r.headers().get(*name))
-                    .and_then(|h| h.to_str().ok())
-                    .map(|s| s.to_string());
-                let is_sse = ct
-                    .as_ref()
-                    .map(|h| is_streaming_content_type(h.to_str().unwrap_or("")))
-                    .unwrap_or(false);
-
-                // non-streaming cross-protocol response → buffer the whole JSON and
-                // translate egress.read_response → IR → ingress.write_response. (Streaming
-                // cross-protocol is handled in FirstByteBody below; same-protocol passes through.)
-                if ingress_protocol != EngineTables::new(rt).lanes()[i].protocol && !is_sse {
-                    // Box::pin: the buffered cross-protocol translate future (~2.4 KB — the
-                    // whole-body read + codec arms) is COLD relative to the pinned hot path (the
-                    // same-protocol passthrough never enters, nor does any streaming response),
-                    // and the path it serves already buffers the entire upstream body and
-                    // materializes a DOM to translate — one boxed future is noise there. Awaited
-                    // inline it set this fn's coroutine union max, so every same-proto request
-                    // carried its bytes as await-boundary memcpy. (Same cold-arm pattern as the
-                    // exhaustion boxes below and the boxed path-model ingress arms in
-                    // `ingress::dispatch`.)
-                    return Box::pin(translate_response_cross_protocol(
-                        host,
-                        rt,
-                        i,
-                        ingress_protocol,
-                        op,
-                        pool_name,
-                        &breaker_cfg,
-                        r,
-                        read_deadline,
-                        permit,
-                        &mut budget_guard,
-                        usage_sink,
-                        status,
-                        wants_stream,
-                        gemini_json_array,
-                        upstream_started,
-                        chosen_policy_name,
-                        false, // main hot path, not the degraded FallbackPool/LeastBad path
-                    ))
-                    .await;
-                }
-
-                // Use FirstByteBody wrapper to track first byte and emit SSE error events on mid-stream failures
-                // on a cross-protocol SSE response, translate egress frames → ingress frames.
-                let egress_name_for_translate = EngineTables::new(rt).lanes()[i].protocol;
-                // ONE registry-resolved factory, IDENTICAL to the degraded `walk.rs` path (extracted so
-                // the two cannot drift): same-protocol SSE builds the verbatim same-proto translator
-                // (byte-exact re-emit + IR usage A-tap; billing sources `translate.usage()`, no IR
-                // bypass), cross-protocol builds the reframing translator, `!is_sse`/unknown-protocol
-                // yields `None` → legacy raw-chunk passthrough.
-                //
-                // Named DIRECTLY from this crate, not through the substrate's installable
-                // `new_stream_translator` pointer: that seam exists for consumers outside the dialect
-                // crate, and when nothing has installed it (a production composition root that never
-                // wires it) it silently returns `None`, which turns EVERY streaming response into a
-                // raw passthrough — no cross-protocol reframing, no usage tap, and therefore no
-                // stream-end metering. The engine lives beside the concrete translator, so it must
-                // never depend on that install having happened.
-                let translate = crate::proto_stream::new_stream_translator(
-                    ingress_protocol,
-                    egress_name_for_translate,
-                    is_sse,
-                );
-                // Thread the client's streaming-usage opt-in to the framing. Busbar
-                // always injected `include_usage` UPSTREAM, so the upstream stream carries a trailing
-                // usage chunk; the OpenAI-ingress framing surfaces it to the client ONLY when the client
-                // itself opted in, and STRIPS it otherwise so an opted-out client never sees the
-                // unsolicited `{choices:[], usage}` chunk. No-op for every non-OpenAI ingress framing.
-                let translate = translate.map(|mut t| {
-                    t.set_client_include_usage(client_include_usage);
-                    t
-                });
-                // Gemini non-`alt=sse` ingress: engage the JSON-array framer (only when this is in
-                // fact a streamed SSE response — a same-protocol non-stream gemini response never
-                // reaches the streaming builder).
-                let json_array = (gemini_json_array && is_sse)
-                    .then(|| {
-                        busbar_substrate::proto::decl_for(ingress_protocol)
-                            .and_then(|d| d.dialect())
-                            .and_then(|dc| dc.make_array_stream_framer())
-                    })
-                    .flatten();
-                // Handing the budget-refund decision to `FirstByteBody` (via `budget_spent` below,
-                // which owns the cancellation case) — disarm the local guard so it does not ALSO refund
-                // when this stack frame unwinds.
-                budget_guard.disarm();
-                // RB_PRE ends; RB_BODY spans the FirstByteBody wiring + response builder + return.
-                drop(_rb_pre);
-                let _rb_body =
-                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbBody);
-                let _rb_new =
-                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbNew);
-                let upstream_stream = {
-                    use http_body_util::BodyExt;
-                    r.into_body().into_data_stream()
-                };
-                let guarded_body = FirstByteBody::new(
-                    upstream_stream,
-                    is_sse,
-                    ingress_protocol,
-                    op,
-                    permit,
-                    send_deadline,
-                    host.clone(),
-                    rt.clone(),
-                    i,
-                    breaker_cfg.clone(),
-                    pool_name,
-                    translate,
-                    json_array,
-                    usage_sink,
-                    budget_spent,
-                );
-                let axum_body = guarded_body.into_body();
-                drop(_rb_new);
-                let _rb_finish =
-                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbFinish);
-
-                let _rbf_build =
-                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBuild);
-                let mut rb = Response::builder().status(status);
-                // Cross-protocol streaming: the body is reframed to the client's format, so the CT
-                // must be the ingress client's, not the upstream's. Same-protocol passthrough keeps
-                // the upstream CT verbatim..
-                let cross_protocol = ingress_protocol != EngineTables::new(rt).lanes()[i].protocol;
-                if gemini_json_array && is_sse {
-                    // JSON-array streaming body: a `[ {...}, {...} ]` document, not SSE.
-                    rb = rb.header(CONTENT_TYPE, APPLICATION_JSON);
-                } else {
-                    match (cross_protocol && is_sse)
-                        .then(|| ingress_stream_content_type(ingress_protocol))
-                        .flatten()
-                    {
-                        Some(client_ct) => {
-                            rb = rb.header(CONTENT_TYPE, client_ct);
-                        }
-                        None => {
-                            if let Some(ct) = ct {
-                                rb = rb.header(CONTENT_TYPE, ct);
-                            }
-                        }
-                    }
-                }
-                drop(_rbf_build);
-                let _rbf_attach =
-                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfAttach);
-                // Bedrock-ingress streaming 2xx must carry `x-amzn-RequestId` (a real ConverseStream
-                // always does, preferring the captured same-protocol upstream id else synthesizing);
-                // anthropic-ingress streaming 2xx must carry `request-id` (the SDK reads it into
-                // `Message._request_id`). The writer vtable selects the correct header+value per
-                // protocol from the captured upstream id; non-relaying ingress: omit.
-                rb = maybe_attach_response_request_id(
-                    rb,
-                    ingress_protocol,
-                    upstream_relay_id.as_deref(),
-                );
-                // TRANSPARENCY: stamp which routing policy chose this target (no-op on the default
-                // path / when the policy Abstained). Covers same-protocol passthrough + all streaming.
-                rb = maybe_attach_route_policy(
-                    rb,
-                    chosen_policy_name,
-                    &EngineTables::new(rt).lanes()[i].model,
-                );
-                drop(_rbf_attach);
-                let _rbf_body =
-                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBody);
-                return rb
-                    .body(axum_body)
-                    .unwrap_or_else(|_| status.into_response());
             }
         }
     }
@@ -2929,108 +1397,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         usage_sink,
     ))
     .await
-}
-
-/// Force `stream_options.include_usage: true` on an OpenAI Chat Completions streaming request body so
-/// the upstream emits token usage busbar can bill. Parses `payload`, sets the nested flag
-/// (creating `stream_options` if absent, overwriting a `false`), and re-serializes. On any parse/shape
-/// failure the ORIGINAL bytes are returned unchanged — a malformed body is the upstream's to reject,
-/// not busbar's to mangle, and the worst case is the pre-existing zero-usage billing gap rather than a
-/// corrupted request. A body that already opted in re-serializes identically in effect.
-fn inject_openai_stream_include_usage(payload: Bytes) -> Bytes {
-    let mut v: Value = match busbar_substrate::json::parse(&payload) {
-        Ok(v) => v,
-        Err(_) => return payload,
-    };
-    let Some(obj) = v.as_object_mut() else {
-        return payload;
-    };
-    let so = obj
-        .entry("stream_options".to_string())
-        .or_insert_with(|| Value::Object(serde_json::Map::new()));
-    let Some(so_obj) = so.as_object_mut() else {
-        // `stream_options` present but not an object: leave the body untouched (the upstream will 400
-        // on the malformed field; busbar must not silently reshape a caller's value).
-        return payload;
-    };
-    so_obj.insert("include_usage".to_string(), Value::Bool(true));
-    match busbar_substrate::json::to_vec(&v) {
-        Ok(bytes) => Bytes::from(bytes),
-        Err(_) => payload,
-    }
-}
-
-/// Cheap forward substring scan (needle is a short constant `"stream_options"` key literal). Avoids
-/// pulling a dependency for the one idempotency check below; the haystack is a request body scanned
-/// at most once, so the naive O(n*m) walk is well within the byte-level path's budget.
-fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return needle.is_empty();
-    }
-    haystack.windows(needle.len()).any(|w| w == needle)
-}
-
-/// PRISTINE-PRESERVING variant of [`inject_openai_stream_include_usage`] for a body the head
-/// projection already proved carries NO top-level `stream_options` key. Splices
-/// `"stream_options":{"include_usage":true},` in immediately after the opening `{` instead of
-/// parsing + re-serializing the whole DOM, so a same-protocol pristine passthrough body stays
-/// parse-free while still forcing the upstream to emit billable token usage.
-///
-/// SOUNDNESS: the caller gates entry on `!client_has_stream_options`, but that decision was captured
-/// off the PRE-rewrite ingress body; a `prompt: rw` hook that injects a top-level `stream_options`
-/// key leaves it STALE (`false`), and a blind leading-member splice would then produce a DUPLICATE
-/// top-level `stream_options`. Under JSON last-wins the rewrite's copy would be honored and busbar's
-/// injected `include_usage` silently discarded, so the upstream emits no usage and busbar bills ZERO
-/// tokens for the stream. To stay correct regardless of what a rewrite did, this injector is itself
-/// IDEMPOTENT: it first scans the (post-any-rewrite) body being sent for the `"stream_options"` key
-/// bytes and, if present, defers to the DOM injector [`inject_openai_stream_include_usage`], which is
-/// duplicate-safe via `entry()` (it upgrades the existing object in place). The substring scan is
-/// conservative: a body that merely mentions `stream_options` inside a string value would also defer
-/// (a rare, harmless extra DOM parse, never a correctness or duplicate-key issue). The common
-/// no-rewrite pristine path carries no such bytes, so it still takes the cheap byte-splice with no
-/// DOM parse. The splice is a LEADING member, so it never lands after the object's final key without
-/// a comma, and the object is known non-empty on the streaming path (`stream` at minimum). Any body
-/// that is not a JSON object starting with `{` (or the degenerate empty `{}`) falls back to the DOM
-/// injector, which itself returns the bytes unchanged on a non-object - so a malformed/edge body is
-/// never corrupted.
-fn inject_openai_stream_include_usage_pristine(payload: Bytes) -> Bytes {
-    const INSERT: &[u8] = br#""stream_options":{"include_usage":true},"#;
-    // IDEMPOTENCY GUARD: if the body being sent already carries a `stream_options` key (e.g. a rewrite
-    // hook injected one after the caller's has-stream_options decision was captured), a blind splice
-    // would duplicate the top-level key and last-wins would drop busbar's include_usage, billing
-    // zero. Defer to the duplicate-safe DOM injector. Cheap byte scan; the no-rewrite fast path (no
-    // such bytes present) is unaffected and still takes the splice below.
-    if contains_subslice(&payload, br#""stream_options""#) {
-        return inject_openai_stream_include_usage(payload);
-    }
-    // Find the first `{`, skipping only leading ASCII whitespace (the sole bytes JSON permits before
-    // the top-level value). Anything else at the front is not a plain object body - defer to the DOM
-    // injector rather than splice blindly.
-    let mut i = 0usize;
-    while i < payload.len() && payload[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    // The byte AFTER the brace must begin a KEY (`"`) for the leading-member splice to stay valid
-    // JSON; on `{}` (next non-space is `}`) or any non-object body, fall back to the DOM path.
-    let opens_object = payload.get(i) == Some(&b'{');
-    let next = {
-        let mut j = i + 1;
-        while j < payload.len() && payload[j].is_ascii_whitespace() {
-            j += 1;
-        }
-        payload.get(j).copied()
-    };
-    if !opens_object || next != Some(b'"') {
-        return inject_openai_stream_include_usage(payload);
-    }
-    // Splice: [ .. up to and including `{` ] + INSERT + [ first key .. end ]. `i+1` is the byte just
-    // past the brace; the retained tail is byte-for-byte the caller's, so nothing else is disturbed.
-    let brace_end = i + 1;
-    let mut out = Vec::with_capacity(payload.len() + INSERT.len());
-    out.extend_from_slice(&payload[..brace_end]);
-    out.extend_from_slice(INSERT);
-    out.extend_from_slice(&payload[brace_end..]);
-    Bytes::from(out)
 }
 
 /// GLOBAL TAP (observe) stage of the forward pipeline. Fires the global request-stage `kind: tap`

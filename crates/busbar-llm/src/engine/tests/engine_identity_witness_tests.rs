@@ -29,7 +29,46 @@ fn engine_never_branches_on_operation_identity() {
             include_str!("../response_body.rs"),
         ),
         ("src/engine/pipeline.rs", include_str!("../pipeline.rs")),
-        ("src/engine/walk.rs", include_str!("../walk.rs")),
+        (
+            "src/engine/attempt/mod.rs",
+            include_str!("../attempt/mod.rs"),
+        ),
+        (
+            "src/engine/attempt/assemble.rs",
+            include_str!("../attempt/assemble.rs"),
+        ),
+        (
+            "src/engine/attempt/send.rs",
+            include_str!("../attempt/send.rs"),
+        ),
+        (
+            "src/engine/attempt/classify.rs",
+            include_str!("../attempt/classify.rs"),
+        ),
+        (
+            "src/engine/attempt/respond.rs",
+            include_str!("../attempt/respond.rs"),
+        ),
+        (
+            "src/engine/attempt/buffered.rs",
+            include_str!("../attempt/buffered.rs"),
+        ),
+        (
+            "src/engine/exhaustion/mod.rs",
+            include_str!("../exhaustion/mod.rs"),
+        ),
+        (
+            "src/engine/exhaustion/queue.rs",
+            include_str!("../exhaustion/queue.rs"),
+        ),
+        (
+            "src/engine/exhaustion/fallback.rs",
+            include_str!("../exhaustion/fallback.rs"),
+        ),
+        (
+            "src/engine/exhaustion/least_bad.rs",
+            include_str!("../exhaustion/least_bad.rs"),
+        ),
     ];
     let forbidden = [
         "op.name() ==",
