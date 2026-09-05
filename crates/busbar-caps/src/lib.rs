@@ -79,9 +79,9 @@ pub use hold::{
     HoldAccrual, HoldCell, HoldCellState, Posted, PostingFlags,
 };
 pub use step::{
-    Admit, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Decode, Encode, Frame,
-    LaneId, Meter, MeterClassId, OpClassId, PrincipalId, Route, RoutePlan, ScopeFacts, Step,
-    StepName, UnitKey, Verify,
+    Admit, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Authenticated,
+    Challenge, Decode, Encode, Frame, LaneId, Meter, MeterClassId, OpClassId, PrincipalId, Route,
+    RoutePlan, ScopeFacts, Step, StepName, UnitKey, Verify,
 };
 pub use token::{
     AdminToken, AdmitToken, DurabilityToken, EgressAuthToken, ExitToken, KernelSeal, LedgerToken,

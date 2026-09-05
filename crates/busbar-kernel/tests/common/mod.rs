@@ -47,6 +47,8 @@ pub struct TestUnits {
     pub refused_door: AtomicBool,
     /// Whether the door for a unit that DID pass was used.
     pub admitted_door: AtomicBool,
+    /// Answer the authenticate step with a challenge instead of an identity.
+    pub challenge: bool,
 }
 
 impl Default for TestUnits {
@@ -57,6 +59,7 @@ impl Default for TestUnits {
             door: Door::Own(1_000),
             evidence: Evidence::default(),
             spend: 0,
+            challenge: false,
             refused_door: AtomicBool::new(false),
             admitted_door: AtomicBool::new(false),
         }
@@ -198,13 +201,16 @@ impl Units for TestUnits {
         token: &UnitToken<Authenticate>,
         _ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
-        step!(
-            self,
-            token,
-            Authenticate,
-            StepName::Authenticate,
-            principal()
-        )
+        let facts = if self.challenge {
+            busbar_caps::Authenticated::Challenge(busbar_contract::Challenge {
+                bytes: b"nonce".to_vec(),
+                state: busbar_contract::ChallengeState(Vec::new()),
+                rounds_left: 2,
+            })
+        } else {
+            busbar_caps::Authenticated::Principal(principal())
+        };
+        step!(self, token, Authenticate, StepName::Authenticate, facts)
     }
 
     fn verify(

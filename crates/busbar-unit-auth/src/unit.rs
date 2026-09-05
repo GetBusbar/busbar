@@ -3,7 +3,7 @@
 
 //! The sealed answer: the unit the loop calls at the authenticate step.
 
-use busbar_caps::{Authenticate, Decision, ReasonCode, Refusal, UnitToken};
+use busbar_caps::{Authenticate, Authenticated, Decision, ReasonCode, Refusal, UnitToken};
 
 use crate::cache::CredentialCache;
 use crate::chain::{AuthChain, ChainVerdict, KeyVerifier, RevocationView};
@@ -29,20 +29,6 @@ pub struct AuthRequest<'a> {
     pub now: u64,
     /// Whether this is a NEW unit, and therefore whether the revocation set applies.
     pub new_unit: bool,
-}
-
-/// What the unit hands back.
-///
-/// Two arms, because the loop's own answer type has room for a principal or a refusal and none for
-/// a challenge: a challenge is not a decision about this unit, it is a request for one more round
-/// before a decision can be made. The kernel delivers it as the handshake unit's delivery leg and
-/// asks again when the proof arrives.
-// contract: when the kernel's answer type grows a challenge arm, this enum collapses into it.
-pub enum Resolved {
-    /// The sealed answer for the step.
-    Decided(Decision<Authenticate>),
-    /// A bounded challenge to deliver before the question can be settled.
-    Challenge(Challenge),
 }
 
 /// The authenticate unit.
@@ -83,14 +69,11 @@ impl Auth {
         revocations: Option<&dyn RevocationView>,
         pending: Option<Challenge>,
         token: &UnitToken<Authenticate>,
-    ) -> Resolved {
+    ) -> Decision<Authenticate> {
         // 1. The plane may only narrow within what the claim declared.
         if let Some(scheme) = req.scheme {
             if !req.declared_schemes.contains(&scheme) {
-                return Resolved::Decided(Decision::refuse(
-                    token,
-                    Refusal::new(ReasonCode::SchemeNotDeclared),
-                ));
+                return Decision::refuse(token, Refusal::new(ReasonCode::SchemeNotDeclared));
             }
         }
 
@@ -99,12 +82,9 @@ impl Auth {
         if let Some(challenge) = pending {
             if req.in_handshake {
                 if challenge.exhausted() {
-                    return Resolved::Decided(Decision::refuse(
-                        token,
-                        Refusal::new(ReasonCode::ChallengeExhausted),
-                    ));
+                    return Decision::refuse(token, Refusal::new(ReasonCode::ChallengeExhausted));
                 }
-                return Resolved::Challenge(challenge);
+                return Decision::proceed(token, Authenticated::Challenge((&challenge).into()));
             }
         }
 
@@ -117,29 +97,29 @@ impl Auth {
         if req.new_unit {
             if let (Some(r), Some(cred)) = (revocations, req.candidate) {
                 if r.is_revoked(cred) {
-                    return Resolved::Decided(Decision::refuse(
-                        token,
-                        Refusal::new(ReasonCode::Revoked),
-                    ));
+                    return Decision::refuse(token, Refusal::new(ReasonCode::Revoked));
                 }
             }
         }
 
-        Resolved::Decided(match verdict {
+        match verdict {
             ChainVerdict::Identified { principal, .. } => {
                 // A module may not synthesize an identity in reserved space.
                 if Principal::id_is_reserved(&principal.id) {
                     Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
                 } else {
-                    Decision::proceed(token, (&principal).into())
+                    Decision::proceed(token, Authenticated::Principal((&principal).into()))
                 }
             }
             // The open front door admits with the anonymous principal: no bucket, and an actor id
             // that reads as the plain word everywhere it is written.
-            ChainVerdict::Open => Decision::proceed(token, (&Principal::anonymous()).into()),
+            ChainVerdict::Open => Decision::proceed(
+                token,
+                Authenticated::Principal((&Principal::anonymous()).into()),
+            ),
             ChainVerdict::Denied => {
                 Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
             }
-        })
+        }
     }
 }

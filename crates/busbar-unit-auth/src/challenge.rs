@@ -63,3 +63,19 @@ impl Challenge {
         Some(self)
     }
 }
+
+/// The challenge as the loop carries it forward.
+///
+/// The exchange's BYTE budget stays here: it is this unit's own accounting of how much of the
+/// bounds one exchange has spent, and nothing downstream of the authenticate step can act on it.
+/// What crosses is what the kernel has to deliver — the bytes, the state the next round's proof
+/// carries back, and how many rounds are left before the exchange is refused.
+impl From<&Challenge> for busbar_contract::Challenge {
+    fn from(c: &Challenge) -> Self {
+        busbar_contract::Challenge {
+            bytes: c.bytes.clone(),
+            state: busbar_contract::ChallengeState(Vec::new()),
+            rounds_left: c.rounds_left.min(u32::from(u8::MAX)) as u8,
+        }
+    }
+}

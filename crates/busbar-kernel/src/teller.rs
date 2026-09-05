@@ -36,11 +36,11 @@
 //! "every unit posts exactly once" has to be readable in the shape of the code, not just true.
 
 use busbar_caps::{
-    Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Canary, Decision, Decode,
-    DurabilityLost, Encode, ExitToken, Hold, HoldCell, KernelSeal, LedgerToken, Meter,
-    MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags, PrincipalId, QuantitySource,
-    ReasonCode, Refusal, Route, SessionId, StepName, UnitEnd, UnitKey, UnitToken, Usage, UsageLine,
-    UsageToken, VerifiedDestination, Verify,
+    Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Authenticated, Canary,
+    Decision, Decode, DurabilityLost, Encode, ExitToken, Hold, HoldCell, KernelSeal, LedgerToken,
+    Meter, MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags, PrincipalId,
+    QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName, UnitEnd, UnitKey, UnitToken,
+    Usage, UsageLine, UsageToken, VerifiedDestination, Verify,
 };
 
 use crate::registry::Generation;
@@ -487,33 +487,43 @@ pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_
                 .authenticate(&UnitToken::<Authenticate>::mint(seal), ctx)
                 .into_result(seal)
         })
-        .and_then(|principal| {
-            units
+        // A challenge is not a decision about this unit: it is a request for one more round before
+        // one can be made. The kernel delivers it and asks again, and the round itself is a
+        // handshake unit — it reaches no destination, is scoped against nothing and opens no
+        // reservation, which is exactly the zero-hold admission. Only an established identity walks
+        // on to verify.
+        .and_then(|authenticated| match authenticated {
+            Authenticated::Challenge(_) => Ok(Admission::ZeroHold),
+            Authenticated::Principal(principal) => units
                 .verify(&UnitToken::<Verify>::mint(seal), ctx, &principal)
                 .into_result(seal)
                 .map(|destinations| (principal, destinations))
-        })
-        .and_then(|(principal, destinations)| {
-            units
-                .approve(
-                    &UnitToken::<Approve>::mint(seal),
-                    ctx,
-                    &principal,
-                    &destinations,
+                .and_then(
+                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
+                        units
+                            .approve(
+                                &UnitToken::<Approve>::mint(seal),
+                                ctx,
+                                &principal,
+                                &destinations,
+                            )
+                            .into_result(seal)
+                            .map(|_| (principal, destinations))
+                    },
                 )
-                .into_result(seal)
-                .map(|_| (principal, destinations))
-        })
-        .and_then(|(principal, destinations)| {
-            units
-                .admit(
-                    &UnitToken::<Admit>::mint(seal),
-                    &AdmitToken::<Admit>::mint(seal),
-                    ctx,
-                    &principal,
-                    &destinations,
-                )
-                .into_result(seal)
+                .and_then(
+                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
+                        units
+                            .admit(
+                                &UnitToken::<Admit>::mint(seal),
+                                &AdmitToken::<Admit>::mint(seal),
+                                ctx,
+                                &principal,
+                                &destinations,
+                            )
+                            .into_result(seal)
+                    },
+                ),
         });
 
     match opened {

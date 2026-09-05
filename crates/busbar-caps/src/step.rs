@@ -145,9 +145,9 @@ step_marker!(
     true
 );
 step_marker!(
-    /// Step 1 — who is calling.
+    /// Step 1 — who is calling, or one more round before that can be said.
     Authenticate,
-    PrincipalId,
+    Authenticated,
     false
 );
 step_marker!(
@@ -200,6 +200,34 @@ step_marker!(
 // it recognised, which is the part of the draft every later step reads, while the draft itself
 // stays with the kernel.
 pub use busbar_contract::{
-    ArrivalRecord, AuditFacts, Frame, LaneId, MeterClassId, OpClassId, PrincipalId, RoutePlan,
-    ScopeFacts, UnitKey,
+    ArrivalRecord, AuditFacts, Challenge, Frame, LaneId, MeterClassId, OpClassId, PrincipalId,
+    RoutePlan, ScopeFacts, UnitKey,
 };
+
+/// What passing the authenticate step carries forward.
+///
+/// Two arms, because a challenge is not a decision about this unit — it is a request for one more
+/// round before a decision can be made. The design says the step's answer may yield a challenge,
+/// and this is where it does: the decision stays two-armed (proceed or refuse) and it is the FACTS
+/// that are either an identity or another round, so no other step gains an arm it has no use for.
+///
+/// The kernel delivers a challenge as the handshake unit's delivery leg and asks the unit again
+/// when the proof arrives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Authenticated {
+    /// Established: this is who is calling.
+    Principal(PrincipalId),
+    /// Not yet: deliver this and ask again.
+    Challenge(Challenge),
+}
+
+impl Authenticated {
+    /// The principal, where the step settled on one.
+    #[must_use]
+    pub fn principal(&self) -> Option<&PrincipalId> {
+        match self {
+            Self::Principal(p) => Some(p),
+            Self::Challenge(_) => None,
+        }
+    }
+}

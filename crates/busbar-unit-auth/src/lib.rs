@@ -61,7 +61,7 @@ pub use detect::{protocol_id, Rung, LADDER};
 pub use exchange::{BrowserAction, AUTH_TOKEN_PATH};
 pub use module::{AuthModule, AuthOutcome};
 pub use principal::{Principal, ANONYMOUS};
-pub use unit::{Auth, AuthRequest, Resolved};
+pub use unit::{Auth, AuthRequest};
 
 #[cfg(test)]
 #[path = "tests/mod.rs"]

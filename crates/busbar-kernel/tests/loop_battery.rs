@@ -55,6 +55,39 @@ fn every_step_runs_once_in_order() {
     assert!(matches!(ended, Ended::Settled { .. }));
 }
 
+/// A challenge round is a handshake unit: the authenticate step answers "one more round" rather
+/// than an identity, so verify, approve and admit are never asked and no reservation is opened.
+/// The design says the step's decision may yield a challenge; this is what the loop does with one.
+#[test]
+fn a_challenge_round_reaches_no_destination_and_opens_no_reservation() {
+    let kernel = Kernel::new();
+    let units = TestUnits {
+        challenge: true,
+        ..TestUnits::passing()
+    };
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    let ended = run(&units, &kernel, &cell, &canary);
+
+    assert_eq!(
+        units.called(),
+        vec![
+            StepName::Arrival,
+            StepName::Decode,
+            StepName::Authenticate,
+            StepName::Route,
+            StepName::Meter,
+            StepName::Audit,
+            StepName::Encode,
+        ],
+        "a challenge settles nothing about where the unit may go or whether it may be admitted"
+    );
+    assert!(
+        matches!(ended, Ended::Settled { .. }),
+        "the round still ends once, through the one exit"
+    );
+}
+
 #[test]
 fn a_refusal_stops_the_chain_at_the_step_that_raised_it() {
     for (index, step) in ORDER.iter().enumerate().take(6) {

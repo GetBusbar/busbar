@@ -11,7 +11,7 @@ use crate::chain::AuthChain;
 use crate::challenge::{Challenge, ChallengeBounds};
 use crate::module::AuthOutcome;
 use crate::principal::{Principal, ANONYMOUS};
-use crate::unit::{Auth, AuthRequest, Resolved};
+use crate::unit::{Auth, AuthRequest};
 
 fn request<'a>() -> AuthRequest<'a> {
     AuthRequest {
@@ -39,12 +39,13 @@ fn anonymous_renders_as_the_literal_word() {
         candidate: None,
         ..request()
     };
-    let Resolved::Decided(d) = auth.resolve(&req, None, None, None, None, &token) else {
-        panic!("the open door decides rather than challenging");
-    };
+    let d = auth.resolve(&req, None, None, None, None, &token);
     let principal = d.into_result(&seal).expect("the open door admits");
     assert_eq!(
-        principal.as_str(),
+        principal
+            .principal()
+            .expect("the open door settles on an identity")
+            .as_str(),
         ANONYMOUS,
         "the anonymous caller renders as the plain word on every surface"
     );
@@ -58,9 +59,7 @@ fn a_denied_chain_refuses_at_the_authenticate_step() {
         vec![entry("a", Box::new(Canned::new("a", AuthOutcome::Pass)))],
         false,
     ));
-    let Resolved::Decided(d) = auth.resolve(&request(), None, None, None, None, &token) else {
-        panic!("expected a decision");
-    };
+    let d = auth.resolve(&request(), None, None, None, None, &token);
     let refusal = d.into_result(&seal).expect_err("an all-pass chain denies");
     assert_eq!(refusal.reason(), ReasonCode::Unauthenticated);
     assert_eq!(
@@ -80,9 +79,7 @@ fn a_plane_may_only_narrow_within_the_claims_alternatives() {
         declared_schemes: &["bearer", "signature"],
         ..request()
     };
-    let Resolved::Decided(d) = auth.resolve(&req, None, None, None, None, &token) else {
-        panic!("expected a decision");
-    };
+    let d = auth.resolve(&req, None, None, None, None, &token);
     let refusal = d
         .into_result(&seal)
         .expect_err("an undeclared scheme is refused");
@@ -95,9 +92,7 @@ fn a_plane_may_only_narrow_within_the_claims_alternatives() {
         declared_schemes: &["bearer", "signature"],
         ..request()
     };
-    let Resolved::Decided(d) = auth.resolve(&req, None, None, None, None, &token) else {
-        panic!("expected a decision");
-    };
+    let d = auth.resolve(&req, None, None, None, None, &token);
     assert!(d.into_result(&seal).is_ok());
 }
 
@@ -113,24 +108,22 @@ fn a_challenge_is_only_offered_inside_a_handshake_unit() {
     ));
 
     // Inside a handshake unit the challenge is handed back for delivery.
-    let (_seal, token) = seal_and_token();
+    let (seal, token) = seal_and_token();
     let req = AuthRequest {
         in_handshake: true,
         ..request()
     };
     let pending = Challenge::open(b"nonce".to_vec(), bounds);
-    assert!(matches!(
-        auth.resolve(&req, None, None, None, Some(pending), &token),
-        Resolved::Challenge(_)
-    ));
+    let offered = auth
+        .resolve(&req, None, None, None, Some(pending), &token)
+        .into_result(&seal)
+        .expect("a handshake unit is offered the round");
+    assert!(matches!(offered, busbar_caps::Authenticated::Challenge(_)));
 
     // Outside one, the chain's own verdict stands.
     let (seal, token) = seal_and_token();
     let pending = Challenge::open(b"nonce".to_vec(), bounds);
-    let Resolved::Decided(d) = auth.resolve(&request(), None, None, None, Some(pending), &token)
-    else {
-        panic!("a challenge outside a handshake unit is not offered");
-    };
+    let d = auth.resolve(&request(), None, None, None, Some(pending), &token);
     assert_eq!(
         d.into_result(&seal).expect_err("all-pass denies").reason(),
         ReasonCode::Unauthenticated
@@ -153,9 +146,7 @@ fn an_exhausted_exchange_ends_the_unit() {
         },
     );
     assert!(spent.exhausted(), "one round, and it was spent opening");
-    let Resolved::Decided(d) = auth.resolve(&req, None, None, None, Some(spent), &token) else {
-        panic!("an exhausted exchange decides rather than continuing");
-    };
+    let d = auth.resolve(&req, None, None, None, Some(spent), &token);
     assert_eq!(
         d.into_result(&seal).expect_err("exhausted").reason(),
         ReasonCode::ChallengeExhausted
@@ -205,11 +196,7 @@ fn revocation_gates_a_new_unit_and_not_one_in_flight() {
     ));
 
     let (seal, token) = seal_and_token();
-    let Resolved::Decided(d) =
-        auth.resolve(&request(), None, None, Some(&AllRevoked), None, &token)
-    else {
-        panic!("expected a decision");
-    };
+    let d = auth.resolve(&request(), None, None, Some(&AllRevoked), None, &token);
     assert_eq!(
         d.into_result(&seal)
             .expect_err("a new unit is gated")
@@ -222,14 +209,12 @@ fn revocation_gates_a_new_unit_and_not_one_in_flight() {
         new_unit: false,
         ..request()
     };
-    let Resolved::Decided(d) =
-        auth.resolve(&in_flight, None, None, Some(&AllRevoked), None, &token)
-    else {
-        panic!("expected a decision");
-    };
+    let d = auth.resolve(&in_flight, None, None, Some(&AllRevoked), None, &token);
     assert_eq!(
         d.into_result(&seal)
             .expect("a unit already in flight runs to its end")
+            .principal()
+            .expect("and settles on an identity")
             .as_str(),
         "alice"
     );
@@ -249,9 +234,7 @@ fn a_module_may_not_synthesize_a_reserved_identity() {
             )],
             false,
         ));
-        let Resolved::Decided(d) = auth.resolve(&request(), None, None, None, None, &token) else {
-            panic!("expected a decision");
-        };
+        let d = auth.resolve(&request(), None, None, None, None, &token);
         assert_eq!(
             d.into_result(&seal)
                 .expect_err("a reserved id is refused")
