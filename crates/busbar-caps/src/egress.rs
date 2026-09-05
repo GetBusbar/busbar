@@ -9,7 +9,7 @@
 //! never shows what they carry.
 
 use crate::step::{LaneId, UnitKey};
-use crate::token::{AdminToken, EgressAuthToken, TransportKeyToken};
+use crate::token::{AdminToken, EgressAuthToken};
 
 /// A destination the trust unit judged and sealed.
 ///
@@ -116,33 +116,13 @@ impl AuthDecoration {
     }
 }
 
-/// An opaque stand-in for resolved transport key material.
+/// The handle that stands for resolved transport key material.
 ///
-/// It is a registry handle and never the key itself: the transport-key unit resolves the secret,
-/// keeps it, and hands out one of these. Nothing downstream can turn a handle back into bytes, and
-/// its `Debug` says so.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct TransportKeyHandle {
-    id: u64,
-}
-
-impl TransportKeyHandle {
-    /// Hand out a handle for a resolved key. Transport-key unit only.
-    pub fn issue(_token: &TransportKeyToken, id: u64) -> Self {
-        TransportKeyHandle { id }
-    }
-
-    /// The registry id the handle stands for. Not key material.
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-}
-
-impl std::fmt::Debug for TransportKeyHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TransportKeyHandle(#{} <no material>)", self.id)
-    }
-}
+/// Defined once, in `busbar-contract`, because the transports and the egress unit consume it and
+/// may not name this crate; re-exported here because the transport-key unit that builds it is lent
+/// its [`crate::TransportKeyToken`] by the loop. `TransportKeyHandle::issue` takes that token, so this is
+/// one type with one constructor rather than two types that nothing bridges.
+pub use busbar_contract::TransportKeyHandle;
 
 /// A minted secret that may appear exactly once, at one declared place, in one unit.
 ///

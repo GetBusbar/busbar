@@ -103,6 +103,16 @@ macro_rules! plain_token {
                 f.write_str(stringify!($name))
             }
         }
+
+        // A token is also what opens the contract's own kernel-built views — the unit a plane
+        // reads, a verified destination, a transport key handle. The contract sits below this
+        // crate and cannot name a token, so the seam is the other way round: the token satisfies
+        // the contract's marker, and a call site reads `issue(&TransportKeyToken, ..)`.
+        impl busbar_contract::KernelSeal for $name {
+            fn seal_origin(&self) -> &'static str {
+                stringify!($name)
+            }
+        }
     };
 }
 
@@ -121,6 +131,12 @@ macro_rules! step_token {
         impl<S: Step> std::fmt::Debug for $name<S> {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, concat!(stringify!($name), "<{}>"), S::NAME)
+            }
+        }
+
+        impl<S: Step> busbar_contract::KernelSeal for $name<S> {
+            fn seal_origin(&self) -> &'static str {
+                stringify!($name)
             }
         }
     };

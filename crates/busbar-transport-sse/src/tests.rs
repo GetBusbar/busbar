@@ -14,7 +14,7 @@ impl KernelSeal for FixtureSeal {
     }
 }
 fn fixture_key() -> TransportKeyHandle {
-    TransportKeyHandle::seal(&FixtureSeal, 0, "test")
+    TransportKeyHandle::issue(&FixtureSeal, 0, "test")
 }
 
 fn upstream_dest(uri: &str) -> busbar_contract::VerifiedDestination {

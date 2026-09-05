@@ -39,7 +39,7 @@ impl busbar_contract::KernelSeal for FixtureSeal {
 }
 
 fn fixture_key() -> busbar_contract::TransportKeyHandle {
-    busbar_contract::TransportKeyHandle::seal(&FixtureSeal, 0, "test")
+    busbar_contract::TransportKeyHandle::issue(&FixtureSeal, 0, "test")
 }
 
 async fn bound_pair() -> (StdArc<TcpTransport>, Listener, StdArc<TcpTransport>) {

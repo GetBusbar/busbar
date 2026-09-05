@@ -9,6 +9,7 @@ use crate::bounded::{ArenaBytes, BoundedVec, MAX_LEGS};
 use crate::ids::{LaneId, OpClassId, RecordSchemaId, SchemeKey, StreamId, UpstreamIdx};
 use crate::plugin::KernelSeal;
 use crate::wire::TransportEnvelope;
+use core::fmt;
 
 /// How a client leg delivers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
@@ -336,16 +337,21 @@ pub enum AuthDecoration<'u> {
 /// Resolved by the transport-key unit through the secret plugin at listen, dial and upgrade, and
 /// journaled as an access entry each time. The handle carries no bytes a caller can read: only the
 /// three units the design names can expose a secret, and a transport is not one of them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct TransportKeyHandle {
     slot: u64,
     fingerprint: &'static str,
 }
 
 impl TransportKeyHandle {
-    /// Hand out a handle. Transport-key-unit-only; the seal is what says so.
+    /// Hand out a handle for resolved key material. Transport-key-unit-only.
+    ///
+    /// The token is what says so: the capability crate lends a `TransportKeyToken` to the
+    /// transport-key unit and to nothing else, so this is the one place a handle comes from. There
+    /// is no second spelling of this type — the transports, the egress unit and the unit that
+    /// resolves the key all name this one.
     #[must_use]
-    pub fn seal(_seal: &dyn KernelSeal, slot: u64, fingerprint: &'static str) -> Self {
+    pub fn issue(_token: &dyn KernelSeal, slot: u64, fingerprint: &'static str) -> Self {
         Self { slot, fingerprint }
     }
 
@@ -359,5 +365,17 @@ impl TransportKeyHandle {
     #[must_use]
     pub fn fingerprint(&self) -> &'static str {
         self.fingerprint
+    }
+}
+
+impl fmt::Debug for TransportKeyHandle {
+    /// Says what the handle is and what it is not. A handle is a registry entry, never bytes, and
+    /// a log line that printed material would be the one leak the whole indirection exists to stop.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "TransportKeyHandle(slot {}, {} <no material>)",
+            self.slot, self.fingerprint
+        )
     }
 }

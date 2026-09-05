@@ -21,7 +21,7 @@ fn test_key_handle() -> busbar_contract::TransportKeyHandle {
             "test"
         }
     }
-    busbar_contract::TransportKeyHandle::seal(&Seal, 0, "test")
+    busbar_contract::TransportKeyHandle::issue(&Seal, 0, "test")
 }
 
 fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination {

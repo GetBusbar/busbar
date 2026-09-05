@@ -408,10 +408,10 @@ fn the_kernels_own_types_are_sealed_and_readable() {
 #[test]
 fn the_egress_capabilities_never_print_what_they_carry() {
     let k = Kernel::new();
-    let handle = TransportKeyHandle::issue(&TransportKeyToken::mint(&k.seal), 11);
+    let handle = TransportKeyHandle::issue(&TransportKeyToken::mint(&k.seal), 11, "sha256:ab");
     assert_eq!(
         format!("{handle:?}"),
-        "TransportKeyHandle(#11 <no material>)"
+        "TransportKeyHandle(slot 11, sha256:ab <no material>)"
     );
 
     let once = SecretOnce::mint(

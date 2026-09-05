@@ -167,18 +167,32 @@ fn missing_secret_is_refused_and_not_journaled() {
 }
 
 /// The opaque handle: `issue_handle` returns a handle whose `Debug` never shows key material (there
-/// is none to show — it carries only the registry id), and equal ids compare equal.
+/// is none to show — it carries only the slot and the fingerprint), and equal slots compare equal.
 #[test]
-fn issue_handle_is_opaque_and_id_addressed() {
+fn issue_handle_is_opaque_and_slot_addressed() {
     use busbar_caps::{KernelSeal, TransportKeyToken};
     let seal = KernelSeal::acquire_for_kernel();
-    let a = issue_handle(&TransportKeyToken::mint(&seal), 7);
-    let b = issue_handle(&TransportKeyToken::mint(&seal), 7);
-    let c = issue_handle(&TransportKeyToken::mint(&seal), 8);
+    let a = issue_handle(&TransportKeyToken::mint(&seal), 7, "fp");
+    let b = issue_handle(&TransportKeyToken::mint(&seal), 7, "fp");
+    let c = issue_handle(&TransportKeyToken::mint(&seal), 8, "fp");
     assert_eq!(a, b);
     assert_ne!(a, c);
+    assert_eq!(a.slot(), 7);
+    assert_eq!(a.fingerprint(), "fp");
     let debug = format!("{a:?}");
     assert!(debug.contains('7'));
     assert!(!debug.to_lowercase().contains("pem"));
     assert!(!debug.to_lowercase().contains("key-----"));
+}
+
+/// The handle a transport receives is the same type the unit issued. This is the whole of CG-19:
+/// before it, the unit produced one `TransportKeyHandle` and every transport consumed a different
+/// one, with nothing in the tree bridging them.
+#[test]
+fn the_handle_the_unit_issues_is_the_one_a_transport_consumes() {
+    use busbar_caps::{KernelSeal, TransportKeyToken};
+    let seal = KernelSeal::acquire_for_kernel();
+    let issued = issue_handle(&TransportKeyToken::mint(&seal), 3, "fp");
+    let consumed: &busbar_contract::TransportKeyHandle = &issued;
+    assert_eq!(consumed.slot(), 3);
 }

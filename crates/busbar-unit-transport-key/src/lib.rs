@@ -5,7 +5,7 @@
 //!
 //! `Transport::listen` / `dial` / `upgrade` each need key material exactly once, resolved through
 //! the secret plugin, journaled as an `Access` entry, and handed back as an opaque
-//! [`TransportKeyHandle`] (`busbar-caps`) rather than as bytes — nothing downstream of this unit can
+//! [`TransportKeyHandle`] (`busbar-contract`, re-exported by `busbar-caps`) rather than as bytes — nothing downstream of this unit can
 //! turn a handle back into key material. This crate is that resolution step, standing alone from
 //! the transport it serves: given a [`SecretSource`] (the abstract "read this named secret" seam a
 //! real deployment's secret plugin sits behind) and an [`AccessJournal`] (the "record that this
@@ -219,10 +219,17 @@ pub fn build_server_config(material: &TlsMaterial) -> Result<ServerConfig, Strin
 
 /// Hand out an opaque handle for resolved key material. The transport-key unit is the only caller —
 /// `TransportKeyHandle::issue` demands a [`TransportKeyToken`], which only the kernel lends to this
-/// unit. `registry_id` is whatever local key the caller keeps the actual material under; nothing
-/// about the material itself is recoverable from the handle.
-pub fn issue_handle(token: &TransportKeyToken, registry_id: u64) -> TransportKeyHandle {
-    TransportKeyHandle::issue(token, registry_id)
+/// unit. `slot` is whatever local slot the caller keeps the actual material under, and
+/// `fingerprint` is what the journal's access entry records; nothing about the material itself is
+/// recoverable from the handle. The handle is the contract's own, which is what the transports and
+/// the egress unit consume, so the unit that resolves a key and the code that dials with it now
+/// name one type.
+pub fn issue_handle(
+    token: &TransportKeyToken,
+    slot: u64,
+    fingerprint: &'static str,
+) -> TransportKeyHandle {
+    TransportKeyHandle::issue(token, slot, fingerprint)
 }
 
 #[cfg(test)]

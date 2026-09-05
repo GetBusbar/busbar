@@ -18,7 +18,7 @@ impl KernelSeal for FixtureSeal {
 }
 
 fn fixture_key(slot: u64) -> TransportKeyHandle {
-    TransportKeyHandle::seal(&FixtureSeal, slot, "test")
+    TransportKeyHandle::issue(&FixtureSeal, slot, "test")
 }
 
 struct TestCfg {

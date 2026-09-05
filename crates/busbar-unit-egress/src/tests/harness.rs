@@ -1112,5 +1112,5 @@ pub fn sealed(lane: &'static str) -> VerifiedDestination {
 
 /// The transport key material handle.
 pub fn keys() -> TransportKeyHandle {
-    TransportKeyHandle::seal(&TestSeal, 0, "test-fingerprint")
+    TransportKeyHandle::issue(&TestSeal, 0, "test-fingerprint")
 }
