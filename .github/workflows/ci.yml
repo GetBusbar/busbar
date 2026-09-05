@@ -90,7 +90,9 @@ jobs:
               echo "### CI tier: FAST"
               echo ""
               echo "Push to a non-promotion branch (\`$REF\`), so this run proved:"
-              echo "structure lint, fmt/clippy/build/test, config-stability, public-hygiene."
+              echo "structure lint, fmt/clippy/build/test, config-stability, public-hygiene,"
+              echo "generated-artifact-drift, shadow-oracle, llm-conformance, design-bindings"
+              echo "(construction-gate ran and reported, but is not yet a blocking gate)."
               echo ""
               echo "It did NOT run: openapi-schema, migration-corpus, executable-config,"
               echo "no-default-features, no-plugins-gate, txn-guards, timing, windows."
@@ -1400,6 +1402,176 @@ jobs:
             target/oracle/reports/ci/owed-gaps.txt
             target/oracle/reports/ci/ledger.tsv
           if-no-files-found: warn
+      # THE HEAD RECORDING, HANDED ON. The `llm-conformance` job below judges the SAME candidate
+      # recording this job just made against the providers' published specs, so it is uploaded here
+      # rather than re-recorded there (a second recording would need a second release build and
+      # could disagree with the one the oracle diffed). `if: always()` so a replay divergence above
+      # does not withhold the recording: "differs from 1.5.5" and "violates the spec" are two
+      # independent facts about the commit. The two busbar/mock logs are left out: the validator
+      # reads only the per-cell bodies, the ledger and the metadata.
+      - name: Upload the candidate recording (consumed by llm-conformance)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-oracle-candidate-recording
+          path: |
+            target/oracle/recordings/candidate
+            !target/oracle/recordings/candidate/busbar.log
+            !target/oracle/recordings/candidate/mock.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  # LLM SPEC CONFORMANCE — the LLM plane held to the providers' PUBLISHED, machine-readable specs
+  # (OpenAI, Anthropic, Google, AWS Bedrock, Cohere), the way mcp-conformance and a2a-tck hold the
+  # other two planes to theirs. Before this, the LLM plane was only ever compared with busbar itself
+  # (goldens, hand-derived field lists); this compares it with the wire the vendor documents. FAST
+  # tier: it reads the candidate recording the shadow-oracle job uploads (no toolchain, no build
+  # here), and it is RED on any schema violation, any owed row missing, or zero rows.
+  #
+  # The specs are NOT in the repository; testing/llm-conformance/spec-digests.tsv pins them by URL
+  # and sha256 and vendor.sh refuses a mismatch. The cache is keyed on that digest file alone, so a
+  # re-pin is the only thing that invalidates it and every other run is offline.
+  #
+  # `--out` IS DELIBERATELY NOT PASSED. The shared verdict (testing/fleet-fixtures/verdict.sh) changes
+  # directory before it reads the ledger, so a RELATIVE --out makes the ledger unreadable and the run
+  # reports VACUOUS (zero rows) instead of the real verdict. run.sh's default output directory is
+  # absolute (target/llm-conformance/candidate under the repo), which is what the artifact upload
+  # below collects.
+  llm-conformance:
+    name: llm spec conformance (HEAD recording vs the published provider specs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: shadow-oracle
+    # Runs whether the shadow oracle passed or FAILED (a replay divergence must not hide a spec
+    # verdict), but not when the run was cancelled. If the oracle died before it recorded, the
+    # download step below fails and names the missing artifact — a red with a reason, not a skip.
+    if: ${{ !cancelled() }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download the candidate recording (made by shadow-oracle on this commit)
+        uses: actions/download-artifact@v4
+        with:
+          name: shadow-oracle-candidate-recording
+          path: target/oracle/recordings/candidate
+      - name: The recording is real (a ledger with rows, not an empty download)
+        run: |
+          set -euo pipefail
+          led=target/oracle/recordings/candidate/ledger.tsv
+          [ -s "$led" ] || { echo "::error::no candidate ledger at $led — the shadow-oracle job did not record HEAD"; exit 1; }
+          echo "candidate recording: $(wc -l <"$led" | tr -d ' ') ledger rows"
+      - name: Cache the provider specs (by pinned digest; a re-pin is the only invalidation)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/busbar-llm-specs
+          key: llm-specs-${{ hashFiles('testing/llm-conformance/spec-digests.tsv') }}
+      # PyYAML is needed the FIRST time the two YAML specs (openai, cohere) are parsed; after that the
+      # parsed document is cached as JSON beside the spec. Pinned, so the parse that defines
+      # "conformant" cannot move because a parser release did.
+      - name: PyYAML (pinned) for the first parse of the YAML specs
+        run: python3 -c "import yaml" 2>/dev/null || pip install --quiet 'pyyaml==6.0.2'
+      - name: LLM spec conformance self-test (the rig cannot pass vacuously)
+        run: bash testing/llm-conformance/selftest.sh
+      - name: LLM spec conformance — HEAD recording vs the published specs
+        run: bash testing/llm-conformance/run.sh --recording target/oracle/recordings/candidate
+      - name: Upload the conformance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-conformance-report
+          path: target/llm-conformance/
+          if-no-files-found: warn
+
+  # THE CONSTRUCTION GATE — measures how the tree is BUILT against docs/design/ARCHITECTURE.md with
+  # the ceilings in qa/construction.toml (one function sends the upstream attempt, request-path
+  # functions stay readable, planes reach the kernel through the ABI only, every installable seam is
+  # installed, the neutral crates know no dialect, one request terminal). Pure bash + stdlib python:
+  # FAST tier, no toolchain. Self-test FIRST — every rule must prove it sees its own planted
+  # violation before its verdict on the tree is believed.
+  #
+  # REPORT-ONLY FOR NOW, AND SAID SO. The gate is RED on HEAD by design (three rows over their
+  # ceilings) while the construction work it measures is in flight. So this job runs, fails its
+  # check step honestly, publishes the report, and hands the umbrella a named `verdict` output —
+  # but `continue-on-error: true` keeps it from turning the umbrella red, and the umbrella prints
+  # the verdict as information rather than counting it. THE FLIP: when `--check` is green on HEAD
+  # (every row within its ceiling), delete `continue-on-error: true` from this job and move
+  # `construction-gate` into the umbrella's RESULTS list as a `fast` row. Nothing else changes.
+  construction-gate:
+    name: construction gate (how the tree is built vs ARCHITECTURE.md — report-only until green)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Construction gate self-test (every rule proves it sees its planted violation)
+        run: scripts/construction-gate.sh --selftest
+      - name: Construction gate (RED by design today; see the job comment for the flip)
+        id: check
+        run: |
+          set -uo pipefail
+          mkdir -p target/construction
+          scripts/construction-gate.sh --check; rc=$?
+          echo "$rc" > target/construction/rc
+          exit "$rc"
+      - name: Name the verdict for the umbrella
+        id: verdict
+        if: always()
+        run: |
+          set -u
+          rc="$(cat target/construction/rc 2>/dev/null || echo unknown)"
+          if [ "$rc" = "0" ]; then v=green; elif [ "$rc" = "unknown" ]; then v=did-not-run; else v=red; fi
+          echo "verdict=$v" >> "$GITHUB_OUTPUT"
+          echo "construction gate verdict: $v (exit $rc)"
+          if [ -f target/construction/report.md ]; then
+            { echo "## Construction gate: $v"; echo; cat target/construction/report.md; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload the construction report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: construction-report
+          path: target/construction/report.md
+          if-no-files-found: warn
+
+  # DESIGN BINDINGS — "is what we built compliant with what we designed?" qa/design-bindings.json maps
+  # every ARCHITECTURE.md Appendix B binding to the checks that prove it (tests, oracle cells, lints,
+  # gates). Two things are asserted here, no toolchain needed (stdlib python + bash):
+  #   1. EXISTENCE (`--check`, plain mode): every referenced check still exists in the tree. A
+  #      vanished test or cell is RED. An UNMAPPED binding is a named gap — listed, not red; the
+  #      strict form that makes gaps red is scripts/verify-1.6.0-done.sh's, the DONE claim.
+  #   2. REGEN-CLEAN: the committed qa/design-bindings.json + qa/DESIGN-BINDINGS.md are what
+  #      `design-bindings.py --write` derives from Appendix B today. Same class as the openapi,
+  #      config-schema and inventory drift guards: a hand-edit that skips the regen lands a stale
+  #      generated artifact. The derivation writes into target/ and is diffed against the committed
+  #      files; the script has no --check flag, so the diff IS the check.
+  # Self-test FIRST, as everywhere else in this file.
+  design-bindings:
+    name: design bindings (every Appendix B binding proven by a check that exists · regen-clean)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Design bindings self-test (the gate proves itself before it judges the tree)
+        run: scripts/design-bindings.sh --selftest
+      - name: Design bindings check (existence; unmapped bindings listed as named gaps)
+        run: scripts/design-bindings.sh --check
+      - name: Design bindings regen-clean (committed ledger == fresh derivation from Appendix B)
+        run: |
+          set -euo pipefail
+          mkdir -p target/design-bindings
+          python3 scripts/design-bindings.py --write --out-json target/design-bindings/fresh.json --out-md target/design-bindings/fresh.md
+          stale=0
+          diff -u qa/design-bindings.json target/design-bindings/fresh.json || stale=1
+          diff -u qa/DESIGN-BINDINGS.md target/design-bindings/fresh.md || stale=1
+          if [ "$stale" -ne 0 ]; then
+            # The regen command is spelled without its directory on purpose: scripts/full-gate.sh
+            # discovers gates from this file's run lines, and a literal path here would make it run
+            # the --write (rewriting the committed ledger locally) as if it were a gate.
+            echo "::error::qa/design-bindings.json or qa/DESIGN-BINDINGS.md is stale. Regenerate with design-bindings.sh --write (under scripts/) and commit both files."
+            exit 1
+          fi
+          echo "design bindings: committed ledger matches a fresh derivation"
 
   ci-umbrella:
     name: ci umbrella
@@ -1421,9 +1593,17 @@ jobs:
       - windows
       - perf-build-gate
       - shadow-oracle
+      - llm-conformance
+      - design-bindings
+      # In `needs` so the umbrella waits for it and can print its verdict, but NOT in RESULTS below:
+      # the job is report-only (continue-on-error) until its check is green on HEAD. See the job.
+      - construction-gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
+      # Report-only: printed, never counted. Flip condition is on the construction-gate job.
+      CONSTRUCTION_VERDICT: ${{ needs.construction-gate.outputs.verdict }}
+      CONSTRUCTION_RESULT: ${{ needs.construction-gate.result }}
       # 'true' on any run where the full tier is expected to execute: every event except a push,
       # plus pushes to the three promotion branches. Mirrors the `if:` on the full-tier jobs above,
       # so "expected to run" and "required to have run" cannot drift apart.
@@ -1437,6 +1617,8 @@ jobs:
         generated-artifact-drift|fast|${{ needs.generated-artifact-drift.result }}
         public-hygiene|fast|${{ needs.public-hygiene.result }}
         shadow-oracle|fast|${{ needs.shadow-oracle.result }}
+        llm-conformance|fast|${{ needs.llm-conformance.result }}
+        design-bindings|fast|${{ needs.design-bindings.result }}
         openapi-schema|full|${{ needs.openapi-schema.result }}
         migration-corpus|full|${{ needs.migration-corpus.result }}
         executable-config-lint|full|${{ needs.executable-config-lint.result }}
@@ -1468,6 +1650,12 @@ jobs:
             fi
             printf '  %-24s %s\n' "$job" "$status"
           done <<< "$RESULTS"
+          # The construction gate: shown, not scored. A red here is the instrument working on a
+          # tree still under construction; it becomes a scored row when its job is flipped.
+          printf '  %-24s %s\n' "construction-gate" "REPORT-ONLY: verdict=${CONSTRUCTION_VERDICT:-unset} (job result ${CONSTRUCTION_RESULT:-unset}; not counted until flipped)"
+          if [ "${CONSTRUCTION_VERDICT:-}" != "green" ]; then
+            echo "::warning::construction gate is ${CONSTRUCTION_VERDICT:-unset} on this ref — report-only, not blocking; see the construction-report artifact."
+          fi
           if [ "$fails" -ne 0 ]; then
             echo "::error::ci umbrella: RED — ${fails} required job(s) did not pass on this ref."
             echo "::error::A skipped, failed, or cancelled required job is NOT a pass. DO NOT PROMOTE."
