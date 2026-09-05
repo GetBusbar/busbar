@@ -3,24 +3,27 @@
 //! parser tests ported alongside `proto` itself.
 
 use super::*;
-use busbar_contract::KernelSeal;
 use busbar_transport_http::ClientSettings;
 use futures::StreamExt;
 
-struct FixtureSeal;
-impl KernelSeal for FixtureSeal {
-    fn seal_origin(&self) -> &'static str {
-        "busbar-transport-sse test fixture"
-    }
+/// The seal these fixtures build kernel-side values with: the capability crate's own token.
+///
+/// A fixture that declared a private type and implemented the contract's sealing trait on it was
+/// forging kernel evidence in order to test something else, and it read as if that were the
+/// ordinary way to obtain one. The ordinary way is a token the loop lends out, so the fixture uses
+/// that and the transport under test receives exactly what a deployment hands it.
+fn fixture_seal() -> busbar_caps::TransportKeyToken {
+    busbar_caps::TransportKeyToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel())
 }
+
 fn fixture_key() -> TransportKeyHandle {
-    TransportKeyHandle::issue(&FixtureSeal, 0, "test")
+    TransportKeyHandle::issue(&fixture_seal(), 0, "test")
 }
 
 fn upstream_dest(uri: &str) -> busbar_contract::VerifiedDestination {
     let host: &'static str = Box::leak(uri.to_string().into_boxed_str());
     busbar_contract::VerifiedDestination::seal(
-        &FixtureSeal,
+        &fixture_seal(),
         busbar_contract::DestinationFacts::Upstream {
             transport: "sse",
             address: busbar_contract_transport::dest::UpstreamAddress::socket(host),

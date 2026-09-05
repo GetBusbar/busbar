@@ -3,7 +3,8 @@
 //! the frame-meta honesty check.
 
 use super::*;
-use busbar_contract::{ConfigView, KernelSeal};
+use busbar_contract::plugin::KernelSeal;
+use busbar_contract::ConfigView;
 use futures::StreamExt;
 use std::sync::Arc as StdArc;
 

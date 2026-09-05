@@ -659,16 +659,20 @@ fn the_pin_carries_the_first_admissible_address_and_the_scheme_it_was_judged_und
 //   THE CHECK OVER A SEALED DESTINATION: the precedence rule, the denylist, the base+path re-check.
 // =================================================================================================
 
+/// The seal these tests build sealed values with: the capability crate's own trust token.
+///
+/// A test that declared a private type and implemented the contract's sealing trait on it was
+/// forging kernel evidence to test something else, and it read as if that were the ordinary way in.
+/// The token is the ordinary way in — the loop lends one to the trust unit for the length of a
+/// verify call — so a test that seals with one is testing the seam the deployment uses.
+fn trust_token() -> busbar_caps::TrustToken {
+    busbar_caps::TrustToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel())
+}
+
 /// A sealed destination naming `authority`, as a plane proposed it and the trust unit sealed it.
 fn dest(authority: &'static str) -> busbar_contract::VerifiedDestination {
-    struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
-        fn seal_origin(&self) -> &'static str {
-            "busbar-unit-trust network guard test"
-        }
-    }
     busbar_contract::VerifiedDestination::seal(
-        &Seal,
+        &trust_token(),
         busbar_contract::DestinationFacts::Upstream {
             transport: "https",
             address: busbar_contract_transport::dest::UpstreamAddress::socket(authority),
@@ -853,14 +857,8 @@ fn a_bare_authority_is_judged_as_a_secure_one() {
 /// pinned, rather than a guard being run over an address that does not exist.
 #[test]
 fn a_program_destination_has_no_address_to_judge() {
-    struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
-        fn seal_origin(&self) -> &'static str {
-            "busbar-unit-trust network guard test"
-        }
-    }
     let program = busbar_contract::VerifiedDestination::seal(
-        &Seal,
+        &trust_token(),
         busbar_contract::DestinationFacts::Upstream {
             transport: "stdio",
             address: busbar_contract_transport::dest::UpstreamAddress::Program {
@@ -902,14 +900,8 @@ fn a_destination_is_resolved_exactly_once_and_the_pin_is_what_was_judged() {
 /// Only an upstream is dialled at an address; every other destination kind is answered elsewhere.
 #[test]
 fn a_destination_that_is_not_an_upstream_has_no_address_check() {
-    struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
-        fn seal_origin(&self) -> &'static str {
-            "busbar-unit-trust network guard test"
-        }
-    }
     let verb = busbar_contract::VerifiedDestination::seal(
-        &Seal,
+        &trust_token(),
         busbar_contract::DestinationFacts::KernelVerb { verb: "status" },
         "http",
         None,
@@ -918,4 +910,61 @@ fn a_destination_that_is_not_an_upstream_has_no_address_check() {
         check_destination(&verb, &[], &NeverAsked, strict(), &Denylist::default()),
         Err(NetworkRefusal::NotAnUpstream)
     );
+}
+
+/// The sealed door and the facts door are one implementation, not two that agree today.
+///
+/// `check_destination` is a projection onto `check_destination_facts`, so this cannot drift the way
+/// the composition root's own copy did. It is asserted rather than assumed because "these two agree"
+/// is exactly the claim that was false before the projection existed.
+///
+/// The metadata row is spelled as a URL on purpose: the denylist's host extraction strips a scheme
+/// first and answers `None` for a string that carries none, so a schemeless `169.254.169.254:80`
+/// would pass that arm and prove nothing about the arm under test.
+#[test]
+fn the_sealed_door_and_the_facts_door_are_one_implementation() {
+    let cases: [busbar_contract::DestinationFacts; 4] = [
+        busbar_contract::DestinationFacts::Upstream {
+            transport: "https",
+            address: busbar_contract_transport::dest::UpstreamAddress::socket(
+                "https://169.254.169.254/latest/meta-data",
+            ),
+            lane: busbar_contract::LaneId::new("test"),
+        },
+        busbar_contract::DestinationFacts::Upstream {
+            transport: "https",
+            address: busbar_contract_transport::dest::UpstreamAddress::socket(
+                "https://private.example/",
+            ),
+            lane: busbar_contract::LaneId::new("test"),
+        },
+        busbar_contract::DestinationFacts::Upstream {
+            transport: "stdio",
+            address: busbar_contract_transport::dest::UpstreamAddress::Program {
+                path: "/usr/local/bin/server",
+                args: &[],
+                env: &[],
+            },
+            lane: busbar_contract::LaneId::new("test"),
+        },
+        busbar_contract::DestinationFacts::KernelVerb { verb: "status" },
+    ];
+    for facts in cases {
+        let sealed = busbar_contract::VerifiedDestination::seal(&trust_token(), facts, "https", None);
+        let resolver = ScriptedResolver::new(vec![Ok(vec![ip("127.0.0.1")])]);
+        let through_the_seal =
+            check_destination(&sealed, &[], &resolver, strict(), &Denylist::default());
+        let facts_resolver = ScriptedResolver::new(vec![Ok(vec![ip("127.0.0.1")])]);
+        let through_the_facts = check_destination_facts(
+            &facts,
+            &[],
+            &facts_resolver,
+            strict(),
+            &Denylist::default(),
+        );
+        assert_eq!(
+            through_the_seal, through_the_facts,
+            "the two doors disagree about {facts:?}"
+        );
+    }
 }

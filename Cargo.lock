@@ -1025,6 +1025,7 @@ dependencies = [
 name = "busbar-transport-sse"
 version = "1.6.0"
 dependencies = [
+ "busbar-caps",
  "busbar-contract",
  "busbar-contract-transport",
  "busbar-transport-http",

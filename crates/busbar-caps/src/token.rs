@@ -108,7 +108,7 @@ macro_rules! plain_token {
         // reads, a verified destination, a transport key handle. The contract sits below this
         // crate and cannot name a token, so the seam is the other way round: the token satisfies
         // the contract's marker, and a call site reads `issue(&TransportKeyToken, ..)`.
-        impl busbar_contract::KernelSeal for $name {
+        impl busbar_contract::plugin::KernelSeal for $name {
             fn seal_origin(&self) -> &'static str {
                 stringify!($name)
             }
@@ -134,7 +134,7 @@ macro_rules! step_token {
             }
         }
 
-        impl<S: Step> busbar_contract::KernelSeal for $name<S> {
+        impl<S: Step> busbar_contract::plugin::KernelSeal for $name<S> {
             fn seal_origin(&self) -> &'static str {
                 stringify!($name)
             }

@@ -52,7 +52,11 @@ pub use kinds::{
 pub use plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
-pub use plugin::{AbiVersion, KernelSeal, Kind, KindMarker, Plugin, STORE_ABI};
+// `KernelSeal` is deliberately absent: it is reachable as `plugin::KernelSeal` and nowhere else, so
+// it is not among the names this crate offers as the plugin-visible ABI. It cannot be made private
+// — the capability crate implements it on every token and sits above this one — so the scan named
+// in its own documentation is what holds the in-tree side.
+pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};
 pub use transport::{
     check_composition, CompositionError, Fut, Registered, Transport, TransportConfigView,
     TransportMeta, TRANSPORT_ABI,

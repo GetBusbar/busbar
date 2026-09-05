@@ -49,7 +49,7 @@ impl busbar_contract::TransportConfigView for BindTo {
 
 fn test_key_handle() -> busbar_contract::TransportKeyHandle {
     struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
+    impl busbar_contract::plugin::KernelSeal for Seal {
         fn seal_origin(&self) -> &'static str {
             "test"
         }
@@ -59,7 +59,7 @@ fn test_key_handle() -> busbar_contract::TransportKeyHandle {
 
 fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination {
     struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
+    impl busbar_contract::plugin::KernelSeal for Seal {
         fn seal_origin(&self) -> &'static str {
             "test"
         }
@@ -444,7 +444,7 @@ async fn the_destinations_method_is_the_path_the_call_opens_against() {
 
     let host: &'static str = Box::leak(addr.into_boxed_str());
     struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
+    impl busbar_contract::plugin::KernelSeal for Seal {
         fn seal_origin(&self) -> &'static str {
             "test"
         }

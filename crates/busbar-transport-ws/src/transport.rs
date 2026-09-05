@@ -543,7 +543,7 @@ impl Drop for PoisonGuard<'_> {
 /// naming no slot is the honest way to say that rather than passing one this layer never reads.
 static NO_KEYS: std::sync::LazyLock<TransportKeyHandle> = std::sync::LazyLock::new(|| {
     struct NoKeySeal;
-    impl busbar_contract::KernelSeal for NoKeySeal {
+    impl busbar_contract::plugin::KernelSeal for NoKeySeal {
         fn seal_origin(&self) -> &'static str {
             "busbar-transport-ws: an upgrade reads no key of its own"
         }

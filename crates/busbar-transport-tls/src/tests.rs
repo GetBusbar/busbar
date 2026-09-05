@@ -4,7 +4,8 @@
 //! opaque key handle's slot).
 
 use super::*;
-use busbar_contract::{ConfigView, KernelSeal};
+use busbar_contract::plugin::KernelSeal;
+use busbar_contract::ConfigView;
 use futures::StreamExt;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};

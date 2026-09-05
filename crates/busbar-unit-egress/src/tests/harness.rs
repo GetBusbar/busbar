@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use busbar_contract::{
     AdmitFacts, ArenaBytes, AuditFacts, ContentFacts, CredentialLocator, Ctx, DestinationFacts,
-    EgressBody, Frame, Ingress, Ir, KernelSeal, Kind, Labels, LaneId, PlaneFacts, Plugin, Progress,
+    EgressBody, Frame, Ingress, Ir, Kind, Labels, LaneId, PlaneFacts, Plugin, Progress,
     Refusal, RoutePlan, ScopeFacts, SlabBytes, StreamId, TransportEnvelope, TransportKeyHandle,
     Unit, UnitEnd, UsageLocators, VerifiedDestination,
 };
@@ -43,7 +43,7 @@ use crate::ports::{
 /// The kernel-side marker the fixtures present to build the views a plane reads.
 pub struct TestSeal;
 
-impl KernelSeal for TestSeal {
+impl busbar_contract::plugin::KernelSeal for TestSeal {
     fn seal_origin(&self) -> &'static str {
         "busbar-unit-egress::tests"
     }

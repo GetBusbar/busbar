@@ -162,9 +162,48 @@ pub trait Plugin: Send + Sync + 'static {
 /// constructors take a reference to one, the capability crate's tokens implement it, and a plugin
 /// crate cannot name that crate at all under the manifest allow-list.
 ///
-/// This is honest rather than airtight. The trait is public, so nothing in the type system stops a
-/// plugin from implementing it on a type of its own; what stops it is the manifest allow-list and
-/// the no-stub scan, both of which run in the gate.
+/// This is honest rather than airtight, and the honesty is worth spelling out because the shape of
+/// it decides what may be claimed elsewhere. The trait has to be public: the capability crate sits
+/// ABOVE this one and implements it on every token, and there is no Rust construct for "a trait
+/// implementable by exactly one other crate" — a private supertrait would lock that crate out too.
+///
+/// So what stops each population is different, and none of it is the type system:
+///
+/// - An out-of-tree plugin cannot obtain a token, because the manifest allow-list refuses a plugin
+///   crate that names the capability crate at all. It CAN implement this trait on a type of its own.
+///   A loaded plugin is signature-verified, operator-installed, trusted code, so that is not a line
+///   this system draws.
+/// - An in-tree crate is held by a source scan, `kernel-seal-impls` in the construction gate, which
+///   forbids implementing this trait anywhere outside the capability crate.
+///
+/// What this crate does contribute is that the trait is not on its ROOT surface: it is reachable
+/// only as `busbar_contract::plugin::KernelSeal`, so it is not in the list of names a plugin author
+/// reads as the ABI. That is a smaller claim than "removed", and it is the true one.
+///
+/// The root spelling does not resolve:
+///
+/// ```compile_fail,E0432
+/// use busbar_contract::KernelSeal;
+/// ```
+///
+/// The module spelling does, and still builds a destination — stated here so this fixture is never
+/// misread as a claim that the trait cannot be implemented:
+///
+/// ```
+/// struct FakeSeal;
+/// impl busbar_contract::plugin::KernelSeal for FakeSeal {
+///     fn seal_origin(&self) -> &'static str {
+///         "a crate of my own"
+///     }
+/// }
+/// let forged = busbar_contract::VerifiedDestination::seal(
+///     &FakeSeal,
+///     busbar_contract::DestinationFacts::KernelVerb { verb: "status" },
+///     "http",
+///     None,
+/// );
+/// assert_eq!(forged.transport(), "http");
+/// ```
 pub trait KernelSeal {
     /// Which kernel-side crate the seal came from, for the journal's access entry.
     fn seal_origin(&self) -> &'static str;

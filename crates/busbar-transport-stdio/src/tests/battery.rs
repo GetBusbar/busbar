@@ -266,7 +266,7 @@ async fn transport_meta_matches_the_architecture_row() {
 
 fn test_key_handle() -> busbar_contract::TransportKeyHandle {
     struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
+    impl busbar_contract::plugin::KernelSeal for Seal {
         fn seal_origin(&self) -> &'static str {
             "test"
         }
@@ -329,7 +329,7 @@ fn program_dest(
     env: &'static [(&'static str, &'static str)],
 ) -> busbar_contract::VerifiedDestination {
     struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
+    impl busbar_contract::plugin::KernelSeal for Seal {
         fn seal_origin(&self) -> &'static str {
             "test"
         }
