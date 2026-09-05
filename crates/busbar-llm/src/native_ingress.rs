@@ -439,7 +439,7 @@ pub async fn operation_resolved(
     )
     .await
 }
-fn usage_sink(
+pub(crate) fn usage_sink(
     host: &Arc<dyn EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
     pool: &str,

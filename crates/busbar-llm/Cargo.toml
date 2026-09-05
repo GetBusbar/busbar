@@ -84,7 +84,7 @@ webhook-receiver = ["dep:busbar-plugin"]
 # plane ABI rather than a reach into the kernel. `busbar-kernel` is deliberately NOT named here: the
 # type that implements the loop's step seam lives in the composition root, and these files are the
 # per-step bodies it delegates to.
-teller-waist = ["dep:busbar-caps"]
+teller-waist = ["dep:busbar-caps", "dep:busbar-contract"]
 
 [dependencies]
 # NO `busbar-core` HERE, ON PURPOSE. A plane is a plugin on the plane ABI: the ONLY surface between
@@ -150,6 +150,9 @@ busbar-plugin = { path = "../busbar-plugin", optional = true }
 # The capability vocabulary the `teller-waist` step files are typed in (see the feature above).
 # Optional so the default dependency graph — and therefore the default build — is unchanged.
 busbar-caps = { path = "../busbar-caps", optional = true }
+# The other half of the plugin-visible pair: the meter class direction the Meter step's usage lines
+# carry lives in the contract and nowhere else. Optional, and enabled only by `teller-waist`.
+busbar-contract = { path = "../busbar-contract", optional = true }
 
 [dev-dependencies]
 # THE NEUTRAL TEST KIT (`busbar_substrate::testkit`: the built-app seam the money-path tests forward
