@@ -71,7 +71,8 @@ use claims::Dialect;
 /// One configured upstream this plane may dial or pair a claim against.
 ///
 /// Borrowed for the life of the program, the same way `busbar-plane-llm::Upstream` is: the
-/// composition root reads configuration once and hands over names that outlive it.
+/// composition root interns every config-derived key once through
+/// [`busbar_contract::ids::Registration`] and hands over names that outlive it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Upstream {
     /// The priced lane this upstream is reached on.

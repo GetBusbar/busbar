@@ -317,3 +317,57 @@ pub struct Estimate {
     /// One line per class the unit may consume.
     pub per_class: crate::bounded::BoundedVec<ClassEstimate, { crate::bounded::MAX_USAGE_LINES }>,
 }
+
+/// The one place a configured string becomes a declared key.
+///
+/// Every identifier on this surface is a borrowed static string, because the declarations that
+/// carry them are associated constants and a constant cannot own a heap allocation. But lanes,
+/// hosts, dialects and models are CONFIGURED: they are read at boot, and a value read at boot is
+/// not static on its own. Something has to bridge those two facts, and until now nothing named
+/// what — so four planes coped with a const table the composition root was expected to seal
+/// somehow, and one transport leaked a fresh string on every dial, which is a leak per request.
+///
+/// This is that bridge, and it is the composition root's. The root builds one of these at boot,
+/// interns every config-derived open-vocabulary key through it, and hands the resulting static
+/// names to the registrations that declare them. The set is finite because configuration is finite;
+/// it is leaked ONCE because interning is idempotent; and its size is a fixed term of the node's
+/// resident memory rather than a term that grows with traffic. Nothing outside registration may
+/// intern: a key minted per unit would be exactly the leak this replaces.
+#[derive(Debug, Default)]
+pub struct Registration {
+    interned: std::collections::HashSet<&'static str>,
+}
+
+impl Registration {
+    /// A registration with nothing interned yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The static name for one configured key, interned if it is new and reused if it is not.
+    ///
+    /// Idempotent: interning the same value twice yields the same name and leaks once.
+    pub fn key(&mut self, value: &str) -> &'static str {
+        if let Some(existing) = self.interned.get(value) {
+            return existing;
+        }
+        let leaked: &'static str = Box::leak(value.to_owned().into_boxed_str());
+        self.interned.insert(leaked);
+        leaked
+    }
+
+    /// How many distinct keys this registration has interned.
+    ///
+    /// The fixed resident-memory term is counted from here, so it is readable rather than inferred.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.interned.len()
+    }
+
+    /// Whether nothing has been interned.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.interned.is_empty()
+    }
+}

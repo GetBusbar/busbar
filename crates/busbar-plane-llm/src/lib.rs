@@ -38,9 +38,11 @@ use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
 /// One configured upstream this plane may name.
 ///
 /// Every string is borrowed for the life of the program, because a plane's declarations are read at
-/// registration and sealed. Configured names reach here the way the design says a dynamically
-/// declared key reaches a registry: the composition root reads the configuration once, hands over
-/// names that outlive it, and nothing after that can vary them.
+/// registration and sealed. Configured names reach here through the seam that says so:
+/// [`busbar_contract::ids::Registration`]. The composition root builds one at boot, interns every
+/// config-derived key through it exactly once, and hands over names that outlive it — so nothing
+/// after registration can vary them, and the memory the names occupy is a fixed term rather than
+/// one that grows with traffic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Upstream {
     /// The priced lane this upstream is reached on.
