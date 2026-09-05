@@ -108,9 +108,14 @@ impl RequestCtx {
 /// own. It is stateful by nature — the smoothness IS the memory — so it belongs to the unit and
 /// not to a request. The credit is kept per pool as well as per member, because the same
 /// destination in two pools is two independent rotations.
+///
+/// Keyed two levels deep rather than on a `(String, DestinationId)` pair: the pool is a borrowed
+/// `&str` for the whole walk, and a pair key would make a turn own a fresh copy of that name once
+/// per offered member, on the request path, every hop. Two levels hashes and owns the name once —
+/// on first sight of the pool — and every member lookup after that borrows.
 #[derive(Debug, Default)]
 pub struct WeightedFloor {
-    credits: Mutex<HashMap<(String, DestinationId), i64>>,
+    credits: Mutex<HashMap<String, HashMap<DestinationId, i64>>>,
 }
 
 impl WeightedFloor {
@@ -120,12 +125,28 @@ impl WeightedFloor {
         Self::default()
     }
 
+    /// How many owned pool names the floor is holding, and how many credits.
+    ///
+    /// The bound made observable: the first number is what the pool name costs, and it is a
+    /// function of the number of pools alone.
+    pub(crate) fn tracked(&self) -> (usize, usize) {
+        let credits = self.credits.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            credits.len(),
+            credits.values().map(HashMap::len).sum::<usize>(),
+        )
+    }
+
     /// One turn of the rotation over exactly these members.
     ///
     /// Every member offered here has already passed the filter — non-zero weight, usable
     /// destination, ready cell — so a turn is only ever spent on a member that could have taken
     /// the request. Returns `None` when nothing was offered.
-    fn take_turn(&self, pool: &str, offered: &[(DestinationId, u32)]) -> Option<DestinationId> {
+    pub(crate) fn take_turn(
+        &self,
+        pool: &str,
+        offered: &[(DestinationId, u32)],
+    ) -> Option<DestinationId> {
         if offered.is_empty() {
             return None;
         }
@@ -137,11 +158,17 @@ impl WeightedFloor {
         if total <= 0 {
             return None;
         }
+        // The pool name is owned once, here, and only on first sight of the pool. Every member
+        // lookup below borrows it.
+        if !credits.contains_key(pool) {
+            credits.insert(pool.to_string(), HashMap::new());
+        }
+        let pool_credits = credits
+            .get_mut(pool)
+            .expect("the pool was just put in the map");
         let mut best: Option<(DestinationId, i64)> = None;
         for (destination, weight) in offered {
-            let entry = credits
-                .entry((pool.to_string(), *destination))
-                .or_insert(0_i64);
+            let entry = pool_credits.entry(*destination).or_insert(0_i64);
             *entry = entry.saturating_add(i64::from(*weight));
             let current = *entry;
             // Ties go to the earlier member in the offered order, which is the operator's own
@@ -151,7 +178,7 @@ impl WeightedFloor {
             }
         }
         let (winner, _) = best?;
-        if let Some(entry) = credits.get_mut(&(pool.to_string(), winner)) {
+        if let Some(entry) = pool_credits.get_mut(&winner) {
             *entry = entry.saturating_sub(total);
         }
         Some(winner)
