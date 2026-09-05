@@ -311,6 +311,151 @@ impl LedgerView for UnopenedLedger {
     }
 }
 
+/// The views over the figures THIS node holds.
+///
+/// The default [`UnopenedLedger`] is an honest answer for a node that has no ledger; it is the wrong
+/// answer for one that does, because "no rows" and "no rows I was wired to read" are indistinguishable
+/// from outside and only the first is a fact about the deployment.
+///
+/// ## What it holds, and why it is a handle rather than a copy
+///
+/// A handle on the node's own durability, behind the node's own lock. Not a snapshot taken when the
+/// node was composed: that would freeze the served figures at boot, and a stale figure that still
+/// looks like a current one is worse for an operator than an empty table. The snapshot is taken HERE,
+/// per request, under the same lock a settlement holds — so no view can catch a unit half-settled,
+/// with the ledger moved and the journal not yet appended.
+///
+/// ## Why it still cannot write
+///
+/// The lock is taken and a VALUE comes back out; nothing behind [`LedgerView`] hands out a `&mut` to
+/// anything, and the four methods take no argument. The dual write is reached through
+/// [`LegacyRowsRead`], which is the read half of a seam whose write half lives inside the ledger. So
+/// "read-only administrative surface" stays a property of the types rather than of this comment.
+///
+/// ## The row width the node actually keeps
+///
+/// The reconciliation's row is `(bucket, day, lane, provider)`, because that is the width the
+/// previous release's usage rows are queried at and the width a discrepancy can hide inside. A live
+/// node's books are narrower: the ledger's cells are keyed by bucket and window, and the postings the
+/// dual write produces carry the same two and no more — the serving lane and its provider are facts
+/// about the request, and neither the books nor the row this crate writes retain them.
+///
+/// So both sides are read at the width the node keeps, with the lane and the provider EMPTY, and
+/// that is not a narrowing of the check: the two snapshots are read at the same width, so a posting
+/// the dual write lost is still a residual naming its bucket and its day. What it does mean is that
+/// two lanes inside one bucket-day cannot cancel here the way the identity's full width forbids —
+/// which is why the release's own gate on that identity is the test over both pricing paths, and
+/// this view is the operator's read of the node rather than a second gate.
+///
+/// The fee count is zero on both sides for the same reason and it is zero on BOTH, never on one:
+/// neither the books nor the previous release's posting carry one at this width, so the count half of
+/// the identity compares two absences and reports nothing. A view that put a count on one side and a
+/// zero on the other would report every row on a healthy node as out.
+pub struct NodeLedger {
+    durability: Arc<Mutex<crate::root::durability::Durability>>,
+    legacy: Arc<dyn LegacyRowsRead>,
+}
+
+impl std::fmt::Debug for NodeLedger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeLedger").finish_non_exhaustive()
+    }
+}
+
+impl NodeLedger {
+    /// Bind the views to a node's durability and to the read half of its dual write.
+    #[must_use]
+    pub fn new(
+        durability: Arc<Mutex<crate::root::durability::Durability>>,
+        legacy: Arc<dyn LegacyRowsRead>,
+    ) -> Self {
+        NodeLedger { durability, legacy }
+    }
+
+    /// The lock, taken the way every other reader of it takes it.
+    ///
+    /// A poisoned lock is read through rather than refused. The panic that poisoned it happened
+    /// somewhere else; the four things behind this lock are append-only, so what a reader sees is a
+    /// prefix of the truth rather than a corrupted one, and refusing to serve an operator a figure
+    /// because an unrelated unit panicked is the wrong trade on a diagnostic surface.
+    fn lock(&self) -> std::sync::MutexGuard<'_, crate::root::durability::Durability> {
+        self.durability.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+/// The lane and the provider a live node's books do not retain. See [`NodeLedger`].
+const WIDTH_THE_NODE_KEEPS: &str = "";
+
+impl LedgerView for NodeLedger {
+    fn ledger_rows(&self) -> crate::root::ledger_identity::LedgerSnapshot {
+        use crate::root::ledger_identity::{LedgerRow, RowKey};
+
+        let durability = self.lock();
+        let mut rows = crate::root::ledger_identity::LedgerSnapshot::new();
+        for ((key, window), totals) in durability.ledger.book().iter() {
+            // A cell nothing has settled against is not a row. The books carry a cell as soon as a
+            // hold opens on it, and serving those as rows of zero would put a line in front of an
+            // operator for every key that was ever admitted and never billed.
+            if totals.settled <= 0 {
+                continue;
+            }
+            let row = RowKey::new(
+                key.bucket.as_str(),
+                *window,
+                WIDTH_THE_NODE_KEEPS,
+                WIDTH_THE_NODE_KEEPS,
+            );
+            let entry = rows.entry(row).or_insert_with(LedgerRow::default);
+            // The books hold a signed figure because an adjustment can move one down; the identity's
+            // side of it is unsigned. A negative settled total is not a row that was posted, so it is
+            // the branch above rather than a saturating cast that would report it as zero.
+            entry.priced_nanos = entry
+                .priced_nanos
+                .saturating_add(totals.settled.unsigned_abs());
+        }
+        rows
+    }
+
+    fn legacy_rows(&self) -> crate::root::ledger_identity::LegacySnapshot {
+        use crate::root::ledger_identity::{LegacyRow, RowKey};
+
+        // Nano-units accumulate per row and the projection to micro-units happens ONCE over the sum,
+        // which is the ledger side's rule and has to be this side's too — projecting each posting
+        // first would floor every sub-micro posting to nothing and report a busy row as short.
+        let mut nanos: std::collections::BTreeMap<RowKey, u128> = std::collections::BTreeMap::new();
+        for posting in self.legacy.postings() {
+            let row = RowKey::new(
+                posting.bucket.as_str(),
+                posting.window_start,
+                WIDTH_THE_NODE_KEEPS,
+                WIDTH_THE_NODE_KEEPS,
+            );
+            let entry = nanos.entry(row).or_default();
+            *entry = entry.saturating_add(u128::from(posting.settled));
+        }
+        nanos
+            .into_iter()
+            .map(|(row, nanos)| {
+                (
+                    row,
+                    LegacyRow {
+                        spend_micros: busbar_unit_cost::micros_of(nanos),
+                        billable_requests: 0,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn checkpoints(&self) -> Vec<busbar_unit_ledger::checkpoint::Checkpoint> {
+        self.lock().checkpoints.clone()
+    }
+
+    fn migration_marker(&self) -> Option<busbar_unit_ledger::migration::MigrationMarker> {
+        self.lock().migration_marker()
+    }
+}
+
 /// The read half of the dual write.
 ///
 /// [`busbar_unit_ledger::legacy::LegacyRows`] is a WRITE trait and deliberately so — the unit's job

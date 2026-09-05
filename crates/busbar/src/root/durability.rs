@@ -124,6 +124,18 @@ pub struct Durability {
     pub record: AuditChain,
     /// The previous release's administrative mutation chain, moved rather than rewritten.
     pub legacy: AuditLog,
+    /// The seals this node made, oldest first.
+    ///
+    /// Retained here rather than re-read off the journal, because the journal does not keep enough
+    /// to rebuild one: [`checkpoint_body`] carries the seal's digest and its shape — how many
+    /// balances, which watermarks — and deliberately not the balances themselves, so a chain that
+    /// verifies stays a fixed size per seal. A reader wanting the sealed figures has to be handed
+    /// the checkpoint, so the node keeps the checkpoints it sealed.
+    ///
+    /// Appended by [`Durability::journal_checkpoint`] and by nothing else, and only after the
+    /// journal has taken the record: a seal this node kept but never got onto the chain would be a
+    /// figure with no position, which is the one thing the journal exists to prevent.
+    pub checkpoints: Vec<Checkpoint>,
 }
 
 impl std::fmt::Debug for Durability {
@@ -199,7 +211,30 @@ impl Durability {
     ) -> Result<JournalAck, DurabilityLost> {
         let entry =
             Entry::new(RecordClass::Checkpoint, checkpoint_body(checkpoint)).at(checkpoint.wall, 0);
-        self.journal.append(token, at, &[entry])
+        let ack = self.journal.append(token, at, &[entry])?;
+        self.checkpoints.push(checkpoint.clone());
+        Ok(ack)
+    }
+
+    /// The newest migration marker on the chain, if this deployment has migrated.
+    ///
+    /// The same replay [`JournalMigrationRecords::read_marker`] does, reachable without a durability
+    /// token — because reading the chain is not a write and a reader that had to hold the credential
+    /// for writing one would be a read seam holding a write capability. The migration step keeps its
+    /// own path because it needs the token anyway for the marker it may then seal.
+    ///
+    /// A journal that will not read back answers `None` here rather than an error. That is the right
+    /// answer for a READ of the marker — a view says what it can see — and it is deliberately not
+    /// the answer the migration step gets, which distinguishes "unreadable" from "absent" because
+    /// treating one as the other there is how a deployment re-opens balances it already opened.
+    #[must_use]
+    pub fn migration_marker(&self) -> Option<MigrationMarker> {
+        let replayed = self.journal.replay().ok()?.ok()?;
+        replayed
+            .iter()
+            .filter(|r| r.class == RecordClass::Migration)
+            .max_by_key(|r| r.node_seq)
+            .and_then(|r| migration_marker_from(&r.body))
     }
 
     /// Settle a hold and put what it produced on the journal, in that order.
@@ -589,6 +624,7 @@ pub fn build_for_node(
         ledger: Ledger::dual_writing(legacy_rows),
         record: AuditChain::new(),
         legacy: AuditLog::new(),
+        checkpoints: Vec::new(),
     })
 }
 
