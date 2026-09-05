@@ -169,17 +169,27 @@ fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() 
         Some(r#"{"model":"test-model","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}"#),
         Some(&token),
     );
-    // The scrape (key-authenticated on the data listener in 1.5.5).
-    let (status, body) = http_request(
-        &format!("127.0.0.1:{data_port}"),
-        "GET",
-        "/metrics",
-        None,
-        Some(&token),
-    );
+    // The scrape (key-authenticated on the data listener in 1.5.5). Until the recorder is installed
+    // the scrape is REFUSED with 503 (never an empty 200); that window is milliseconds, so the test
+    // retries through it and then holds the answer to exactly 200 with a full exposition.
+    let mut attempt = 0;
+    let (status, body) = loop {
+        let (status, body) = http_request(
+            &format!("127.0.0.1:{data_port}"),
+            "GET",
+            "/metrics",
+            None,
+            Some(&token),
+        );
+        if status != 503 || attempt >= 200 {
+            break (status, body);
+        }
+        attempt += 1;
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
     assert_eq!(
         status, 200,
-        "GET /metrics must answer 200 on a 1.5.5-shaped config; got:\n{body}"
+        "GET /metrics must answer 200 on a 1.5.5-shaped config once the recorder is installed; got:\n{body}"
     );
     assert!(
         body.contains("busbar_"),
