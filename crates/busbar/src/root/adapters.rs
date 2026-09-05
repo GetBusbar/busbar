@@ -45,6 +45,7 @@
 //!    crates have no common dependency that could hold one, and putting an open-vocabulary key
 //!    where the kernel could compare against it is the thing the lean-core scan exists to catch.
 
+use busbar_caps::{Route, UnitToken};
 use busbar_contract::StatusClass;
 use busbar_unit_breaker::cfg::BreakerCfg;
 use busbar_unit_breaker::{Breaker as BreakerUnitTrait, BreakerUnit, DestinationId};
@@ -190,9 +191,15 @@ impl Breaker for BreakerAdapter {
         }
     }
 
-    fn ready(&self, pool: &str, destination: DestinationId, now: u64) -> bool {
+    fn ready(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &UnitToken<Route>,
+    ) -> bool {
         matches!(
-            self.unit.state(pool, destination, now),
+            self.unit.state(pool, destination, now, token),
             busbar_unit_breaker::LaneState::Ready
         )
     }
@@ -200,12 +207,19 @@ impl Breaker for BreakerAdapter {
     fn admissible(&self, destination: DestinationId) -> bool {
         // The destination-scoped fact the breaker unit holds is the lifetime budget. Whether a
         // destination is administratively down is declared configuration, which is the egress and
-        // configuration layer's to know and not this unit's.
+        // configuration layer's to know and not this unit's. Answered from `budget_remaining`
+        // alone, never from the sealed `state`/`observe`, so no token crosses here.
         self.unit.budget_remaining(destination) != Some(0)
     }
 
-    fn cooldown_remaining(&self, pool: &str, destination: DestinationId, now: u64) -> u64 {
-        match self.unit.state(pool, destination, now) {
+    fn cooldown_remaining(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &UnitToken<Route>,
+    ) -> u64 {
+        match self.unit.state(pool, destination, now, token) {
             busbar_unit_breaker::LaneState::Suppressed { until } => until.saturating_sub(now),
             _ => 0,
         }
@@ -227,7 +241,14 @@ impl Breaker for BreakerAdapter {
         }
     }
 
-    fn observe(&self, pool: &str, destination: DestinationId, outcome: Outcome, now: u64) -> bool {
+    fn observe(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        outcome: Outcome,
+        now: u64,
+        token: &UnitToken<Route>,
+    ) -> bool {
         // THE point of this adapter. The port carries no configuration, the unit requires it, and
         // the ladder is what decides how long a tripped lane stays down. A pool nobody configured
         // gets nothing recorded rather than a default ladder applied in its name: a wrong cooldown
@@ -236,7 +257,7 @@ impl Breaker for BreakerAdapter {
             return false;
         };
         self.unit
-            .observe(pool, destination, to_breaker_outcome(outcome), cfg, now)
+            .observe(pool, destination, to_breaker_outcome(outcome), cfg, now, token)
     }
 
     fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, now: u64) {
@@ -356,6 +377,16 @@ pub fn check_label_banks() -> Result<(), LabelDrift> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use busbar_caps::KernelSeal;
+
+    /// A fresh `UnitToken<Route>` for one `observe`/`ready`/`cooldown_remaining` call — test-only,
+    /// minted through the kernel seal exactly as CG-29 says a real deployment would
+    /// (`KernelSeal::acquire_for_kernel` is `// contract:` kernel-only outside test modules; the
+    /// production adapter above never mints one of its own — it forwards the borrow its caller
+    /// lent it).
+    fn route_token() -> UnitToken<Route> {
+        UnitToken::mint(&KernelSeal::acquire_for_kernel())
+    }
 
     /// A ladder that is visibly not the default on both axes a cooldown is decided by: it trips on
     /// the first failure rather than on an error rate, and it holds the lane down for five minutes
@@ -386,7 +417,7 @@ mod tests {
     fn a_fresh_destination_is_ready_and_admits() {
         let breaker = adapter_for("pool");
         let dest = DestinationId::new(3);
-        assert!(breaker.ready("pool", dest, 0));
+        assert!(breaker.ready("pool", dest, 0, &route_token()));
         assert!(breaker.admissible(dest));
         assert_eq!(
             breaker.try_admit("pool", dest, 0),
@@ -407,20 +438,20 @@ mod tests {
 
         let configured = adapter_for("pool");
         assert!(
-            configured.observe("pool", dest, failure, 0),
+            configured.observe("pool", dest, failure, 0, &route_token()),
             "the configured ladder trips on the first failure"
         );
-        let under_configured = configured.cooldown_remaining("pool", dest, 0);
+        let under_configured = configured.cooldown_remaining("pool", dest, 0, &route_token());
 
         let defaulted = BreakerAdapter::new(
             BreakerUnit::new(),
             BreakerPolicy::new().with_pool("pool", BreakerCfg::default()),
         );
         assert!(
-            !defaulted.observe("pool", dest, failure, 0),
+            !defaulted.observe("pool", dest, failure, 0, &route_token()),
             "the default ladder waits for an error rate and logs no trip on one failure"
         );
-        let under_default = defaulted.cooldown_remaining("pool", dest, 0);
+        let under_default = defaulted.cooldown_remaining("pool", dest, 0, &route_token());
 
         // Both bench the lane, and that is the trap: the difference is not "down" versus "up" but
         // HOW LONG, which nothing on the request path will ever tell anybody about.
@@ -439,9 +470,9 @@ mod tests {
         let breaker = BreakerAdapter::new(BreakerUnit::new(), BreakerPolicy::new());
         let dest = DestinationId::new(2);
 
-        assert!(!breaker.observe("unknown-pool", dest, Outcome::HardDown, 0));
+        assert!(!breaker.observe("unknown-pool", dest, Outcome::HardDown, 0, &route_token()));
         assert!(
-            breaker.ready("unknown-pool", dest, 0),
+            breaker.ready("unknown-pool", dest, 0, &route_token()),
             "nothing was recorded, so nothing tripped"
         );
     }
@@ -455,8 +486,8 @@ mod tests {
             BreakerPolicy::new().with_default_cell(a_slow_ladder()),
         );
         let dest = DestinationId::new(4);
-        assert!(breaker.observe("", dest, Outcome::HardDown, 0));
-        assert!(breaker.cooldown_remaining("", dest, 0) > 0);
+        assert!(breaker.observe("", dest, Outcome::HardDown, 0, &route_token()));
+        assert!(breaker.cooldown_remaining("", dest, 0, &route_token()) > 0);
     }
 
     /// The classification comes back through the adapter with the destination's own declared error

@@ -110,11 +110,14 @@ fn a_purely_saturated_pool_gets_the_floor_and_never_the_bare_one_second() {
 #[test]
 fn an_empty_candidate_set_gets_the_floor_too() {
     let node = Node::with_lanes(&[]);
+    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let token: busbar_caps::UnitToken<busbar_caps::Route> = busbar_caps::UnitToken::mint(&seal);
     let wait = crate::exhaustion::retry_after_secs(
         node.breaker.as_ref(),
         &[],
         "unknown-pool",
         node.clock.now_secs(),
+        &token,
     );
     assert_eq!(
         wait, AT_CAPACITY_RETRY_AFTER_SECS,

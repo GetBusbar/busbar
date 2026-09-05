@@ -271,7 +271,13 @@ impl Breaker for TestBreaker {
         })
     }
 
-    fn ready(&self, _pool: &str, destination: DestinationId, _now: u64) -> bool {
+    fn ready(
+        &self,
+        _pool: &str,
+        destination: DestinationId,
+        _now: u64,
+        _token: &busbar_caps::UnitToken<busbar_caps::Route>,
+    ) -> bool {
         let health = self.health_of(destination);
         !health.dead
             && !health.budget_exhausted
@@ -284,7 +290,13 @@ impl Breaker for TestBreaker {
         !health.dead && !health.budget_exhausted
     }
 
-    fn cooldown_remaining(&self, _pool: &str, destination: DestinationId, _now: u64) -> u64 {
+    fn cooldown_remaining(
+        &self,
+        _pool: &str,
+        destination: DestinationId,
+        _now: u64,
+        _token: &busbar_caps::UnitToken<busbar_caps::Route>,
+    ) -> u64 {
         self.health_of(destination).cooldown
     }
 

@@ -150,6 +150,11 @@ impl Node {
         members: &[Member],
         ctx: &mut RequestCtx,
     ) -> Option<crate::select::Picked> {
+        // Test-only: mints the capability token through the kernel seal exactly as CG-29 says a
+        // real deployment would (`KernelSeal::acquire_for_kernel` is `// contract:` kernel-only
+        // outside test modules), matching `route_with`'s own minting above.
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let token: busbar_caps::UnitToken<busbar_caps::Route> = busbar_caps::UnitToken::mint(&seal);
         crate::select::pick_among(
             &crate::select::PickInput {
                 breaker: self.breaker.as_ref(),
@@ -160,6 +165,7 @@ impl Node {
                 affinity: self.affinity,
                 preference: self.preference.as_deref(),
                 now: self.clock.now_secs(),
+                token: &token,
             },
             ctx,
         )

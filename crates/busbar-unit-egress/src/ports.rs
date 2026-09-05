@@ -181,15 +181,31 @@ pub trait Breaker: Send + Sync {
 
     /// Side-effect-free: could this cell take a request right now? The order's own filter, and the
     /// same predicate the weighted walk applies before its credit walk.
-    fn ready(&self, pool: &str, destination: DestinationId, now: u64) -> bool;
+    ///
+    /// `token` is threaded through for the same reason `observe`'s is (see its own doc): this
+    /// peek is answered from the breaker unit's own sealed `state(.., token)`, and outside a test
+    /// module nothing but the loop's own route step can mint one.
+    fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &UnitToken<Route>)
+        -> bool;
 
     /// Side-effect-free: is this destination usable at all — not administratively down, and with
     /// lifetime budget left? This is a property of the destination, not of one pool's cell, which
-    /// is why it takes no pool.
+    /// is why it takes no pool. It answers from the destination's lifetime budget alone, never from
+    /// the breaker unit's sealed `state`/`observe`, so it takes no token.
     fn admissible(&self, destination: DestinationId) -> bool;
 
     /// Side-effect-free: how many whole seconds of genuine cooldown this cell has left, or zero.
-    fn cooldown_remaining(&self, pool: &str, destination: DestinationId, now: u64) -> u64;
+    ///
+    /// `token` is threaded through for the same reason `observe`'s is (see its own doc): this
+    /// peek is answered from the breaker unit's own sealed `state(.., token)`, and outside a test
+    /// module nothing but the loop's own route step can mint one.
+    fn cooldown_remaining(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &UnitToken<Route>,
+    ) -> u64;
 
     /// Turn one upstream answer into a disposition and a breaker outcome.
     ///

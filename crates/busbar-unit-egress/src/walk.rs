@@ -138,6 +138,7 @@ pub async fn walk(request: &RouteRequest<'_>, ctx: &mut RequestCtx) -> RouteOutc
                 affinity: request.affinity,
                 preference: request.preference,
                 now,
+                token: request.token,
             },
             ctx,
         );

@@ -116,9 +116,15 @@ impl Breaker for BreakerAdapter {
         }
     }
 
-    fn ready(&self, pool: &str, destination: DestinationId, now: u64) -> bool {
+    fn ready(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &UnitToken<Route>,
+    ) -> bool {
         matches!(
-            self.0.state(pool, destination, now, &route_token()),
+            self.0.state(pool, destination, now, token),
             busbar_unit_breaker::LaneState::Ready
         )
     }
@@ -130,8 +136,14 @@ impl Breaker for BreakerAdapter {
         self.0.budget_remaining(destination) != Some(0)
     }
 
-    fn cooldown_remaining(&self, pool: &str, destination: DestinationId, now: u64) -> u64 {
-        match self.0.state(pool, destination, now, &route_token()) {
+    fn cooldown_remaining(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &UnitToken<Route>,
+    ) -> u64 {
+        match self.0.state(pool, destination, now, token) {
             busbar_unit_breaker::LaneState::Suppressed { until } => until.saturating_sub(now),
             _ => 0,
         }
@@ -191,7 +203,7 @@ impl Breaker for BreakerAdapter {
 #[test]
 fn a_fresh_destination_is_ready_and_admits() {
     let breaker = BreakerAdapter::new();
-    assert!(breaker.ready("pool", DestinationId::new(3), 0));
+    assert!(breaker.ready("pool", DestinationId::new(3), 0, &route_token()));
     assert!(breaker.admissible(DestinationId::new(3)));
     assert_eq!(
         breaker.try_admit("pool", DestinationId::new(3), 0),
@@ -248,17 +260,17 @@ fn a_hard_down_trip_suppresses_a_later_admit_with_the_cooldown_the_port_expects(
     let breaker = BreakerAdapter::new();
     // Touch the "pool" cell before the trip — `hard_down_all` fans out only to pools already
     // known for this destination (the default `""` cell is always included).
-    assert!(breaker.ready("pool", DestinationId::new(4), 0));
+    assert!(breaker.ready("pool", DestinationId::new(4), 0, &route_token()));
     let tripped = breaker.observe("pool", DestinationId::new(4), Outcome::HardDown, 0, &route_token());
     assert!(tripped);
 
-    assert!(!breaker.ready("pool", DestinationId::new(4), 10));
+    assert!(!breaker.ready("pool", DestinationId::new(4), 10, &route_token()));
     let err = breaker
         .try_admit("pool", DestinationId::new(4), 10)
         .unwrap_err();
     assert_eq!(err, Unavailable::BreakerOpen { until: 1800 });
     assert_eq!(
-        breaker.cooldown_remaining("pool", DestinationId::new(4), 10),
+        breaker.cooldown_remaining("pool", DestinationId::new(4), 10, &route_token()),
         1790
     );
 }
@@ -278,7 +290,7 @@ fn probe_release_crosses_the_seam() {
     let breaker = BreakerAdapter::new();
     // Trip and let the cooldown expire so the next admit wins a half-open recovery probe. Touch
     // "pool" first, same as above: `hard_down_all` only fans out to pools already known.
-    breaker.ready("pool", DestinationId::new(5), 0);
+    breaker.ready("pool", DestinationId::new(5), 0, &route_token());
     breaker.observe("pool", DestinationId::new(5), Outcome::HardDown, 0, &route_token());
     let admit = breaker
         .try_admit("pool", DestinationId::new(5), 100_000)
