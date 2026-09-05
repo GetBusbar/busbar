@@ -191,6 +191,10 @@ pub mod config;
 // historical `busbar_core::hooks::` paths; the reply-side normalizers stay core-side.
 pub mod hooks;
 
+// THE TELLER: the one governed request loop every plane rides — the sealed step markers, the
+// token-sealed capability types, the per-step plane trait and the single `run_unit` loop.
+pub mod teller;
+
 // THE NEUTRAL TEST-APP SEAM the plane test-kits drive the engine's test fixture through, so a plane
 // crate builds/reaches the test App without naming `busbar_core::state::App`/`test_support::TestApp`.
 // Revealed only under the test surface (core implements it for `TestApp`), like the sibling doubles.
