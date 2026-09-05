@@ -1,1 +1,49 @@
-{"applied":["hdr.date","hdr.etag"],"body":{"json":{"changed":true,"config_version":2,"reset":"root"}},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"content-length":"50","content-type":"application/json","etag":"<ETAG>"},"status":200}
+{
+  "applied": [
+    "hdr.date",
+    "hdr.etag"
+  ],
+  "body": {
+    "json": {
+      "changed": true,
+      "config_version": 2,
+      "reset": "root"
+    }
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "overlay.reset",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "applied",
+          "resource": "overlay:root"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "body": {
+          "json": {
+            "applied": false,
+            "config_version": 2,
+            "settings": {}
+          }
+        },
+        "path": "/api/v1/admin/config/settings",
+        "status": 200
+      }
+    ]
+  },
+  "headers": {
+    "content-length": "50",
+    "content-type": "application/json",
+    "etag": "<ETAG>"
+  },
+  "status": 200
+}

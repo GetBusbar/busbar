@@ -1,1 +1,52 @@
-{"applied":["audit.hash","hdr.date"],"body":{"json":{"revoked":"vk_<KEY>"}},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"content-length":"49","content-type":"application/json"},"status":200}
+{
+  "applied": [
+    "audit.hash",
+    "hdr.date",
+    "hdr.length"
+  ],
+  "body": {
+    "json": {
+      "revoked": "vk_<KEY>"
+    }
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "key.revoke",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "applied",
+          "resource": "key:vk_<KEY>"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "body": {
+          "json": {
+            "allowed_pools": null,
+            "created_at": 0,
+            "enabled": false,
+            "group": "broke",
+            "id": "vk_<KEY>",
+            "labels": {},
+            "name": "oracle-broke",
+            "state": "revoked"
+          }
+        },
+        "path": "/api/v1/admin/keys/vk_<KEY>",
+        "status": 200
+      }
+    ]
+  },
+  "headers": {
+    "content-length": "<LEN>",
+    "content-type": "application/json"
+  },
+  "status": 200
+}

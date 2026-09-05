@@ -1,1 +1,48 @@
-{"applied":["hdr.date"],"body":{"text":""},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{},"status":204}
+{
+  "applied": [
+    "audit.hash",
+    "hdr.date"
+  ],
+  "body": {
+    "text": ""
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "key.delete",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "applied",
+          "resource": "key:vk_<KEY>"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "body": {
+          "json": {
+            "allowed_pools": [
+              "oracle-unused"
+            ],
+            "created_at": 0,
+            "enabled": false,
+            "group": "oracle",
+            "id": "vk_<KEY>",
+            "labels": {},
+            "name": "oracle-noscope",
+            "state": "tombstoned"
+          }
+        },
+        "path": "/api/v1/admin/keys/vk_<KEY>",
+        "status": 200
+      }
+    ]
+  },
+  "headers": {},
+  "status": 204
+}

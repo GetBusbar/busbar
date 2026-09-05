@@ -34,8 +34,6 @@
     "usage": {},
     "readback": [
       {
-        "path": "/api/v1/admin/plugins",
-        "status": 400,
         "body": {
           "json": {
             "error": {
@@ -43,7 +41,9 @@
               "message": "unknown plugin type ``: expected `auth`, `hooks`, `secret`, or `store`"
             }
           }
-        }
+        },
+        "path": "/api/v1/admin/plugins",
+        "status": 400
       }
     ]
   },

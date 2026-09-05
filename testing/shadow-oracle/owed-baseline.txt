@@ -303,7 +303,9 @@ boot.refusal|BOOT-051|validate
 boot.refusal|BOOT-052|validate
 boot.refusal|BOOT-053|validate
 boot.refusal|BOOT-054|validate
+boot.refusal|BOOT-055|validate
 boot.refusal|BOOT-056|validate
+boot.refusal|BOOT-057|validate
 boot.refusal|BOOT-058a|validate
 boot.refusal|BOOT-058b|validate
 boot.refusal|BOOT-059b|validate
@@ -362,6 +364,7 @@ boot.refusal|BOOT-110|validate
 boot.refusal|BOOT-120|validate
 boot.refusal|BOOT-121|validate
 boot.refusal|BOOT-122|validate
+boot.refusal|BOOT-123|validate
 boot.refusal|BOOT-124|validate
 boot.refusal|BOOT-125|validate
 boot.refusal|BOOT-130|boot
@@ -372,10 +375,13 @@ boot.refusal|BOOT-134|boot
 boot.refusal|BOOT-135|boot
 boot.refusal|BOOT-136|boot
 boot.refusal|BOOT-137a|boot
+boot.refusal|BOOT-137b|boot
 boot.refusal|BOOT-137c|boot
 boot.refusal|BOOT-138a|boot
+boot.refusal|BOOT-138b|boot
 boot.refusal|BOOT-138c|boot
 boot.refusal|BOOT-139a|boot
+boot.refusal|BOOT-139b|boot
 boot.refusal|BOOT-140|boot
 boot.refusal|BOOT-141|boot
 boot.refusal|BOOT-150|validate
@@ -441,6 +447,9 @@ boot.warning|BOOT-W17|boot
 boot.warning|BOOT-W18|boot
 boot.warning|BOOT-W19|boot
 boot.warning|BOOT-W20|boot
+boot.warning|BOOT-W21|boot
+boot.warning|BOOT-W22|boot
+boot.warning|BOOT-W23|boot
 boot.warning|BOOT-W25|boot
 boot.warning|BOOT-W30|validate
 boot.warning|BOOT-W31|boot

@@ -1,1 +1,54 @@
-{"applied":["hdr.date","hdr.etag"],"body":{"json":{"applied":true,"config_version":1,"configured":true,"modules":["admin-tokens"],"note":"live until the next config reload/restart returns to disk truth; persist by updating config.yaml"}},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"content-length":"186","content-type":"application/json","etag":"<ETAG>"},"status":200}
+{
+  "applied": [
+    "hdr.date",
+    "hdr.etag"
+  ],
+  "body": {
+    "json": {
+      "applied": true,
+      "config_version": 1,
+      "configured": true,
+      "modules": [
+        "admin-tokens"
+      ],
+      "note": "live until the next config reload/restart returns to disk truth; persist by updating config.yaml"
+    }
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "auth.admin_chain_put",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "applied",
+          "resource": "auth:admin_auth"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "body": {
+          "json": {
+            "configured": true,
+            "modules": [
+              "admin-tokens"
+            ]
+          }
+        },
+        "path": "/api/v1/admin/admin-auth",
+        "status": 200
+      }
+    ]
+  },
+  "headers": {
+    "content-length": "186",
+    "content-type": "application/json",
+    "etag": "<ETAG>"
+  },
+  "status": 200
+}

@@ -1,1 +1,44 @@
-{"applied":["hdr.date","hdr.etag"],"body":{"text":""},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"etag":"<ETAG>"},"status":204}
+{
+  "applied": [
+    "hdr.date",
+    "hdr.etag"
+  ],
+  "body": {
+    "text": ""
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "exporter.delete",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "applied",
+          "resource": "exporter:oracle-log"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "body": {
+          "json": {
+            "error": {
+              "code": "not_found",
+              "message": "exporter `oracle-log` not found"
+            }
+          }
+        },
+        "path": "/api/v1/admin/export/oracle-log",
+        "status": 404
+      }
+    ]
+  },
+  "headers": {
+    "etag": "<ETAG>"
+  },
+  "status": 204
+}

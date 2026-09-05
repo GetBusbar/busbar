@@ -1,1 +1,55 @@
-{"applied":["hdr.date","hdr.etag"],"body":{"json":{"module":"request-log-file","name":"oracle-log","settings_keys":["path","rotate_mb"]}},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"content-length":"86","content-type":"application/json","etag":"<ETAG>"},"status":200}
+{
+  "applied": [
+    "hdr.date",
+    "hdr.etag"
+  ],
+  "body": {
+    "json": {
+      "module": "request-log-file",
+      "name": "oracle-log",
+      "settings_keys": [
+        "path",
+        "rotate_mb"
+      ]
+    }
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "exporter.settings",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "applied",
+          "resource": "exporter:oracle-log"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "body": {
+          "json": {
+            "module": "request-log-file",
+            "name": "oracle-log",
+            "settings_keys": [
+              "path",
+              "rotate_mb"
+            ]
+          }
+        },
+        "path": "/api/v1/admin/export/oracle-log",
+        "status": 200
+      }
+    ]
+  },
+  "headers": {
+    "content-length": "86",
+    "content-type": "application/json",
+    "etag": "<ETAG>"
+  },
+  "status": 200
+}

@@ -39,8 +39,6 @@
     "usage": {},
     "readback": [
       {
-        "path": "/api/v1/admin/hooks/oracle-webreq",
-        "status": 200,
         "body": {
           "json": {
             "at": null,
@@ -58,7 +56,9 @@
             },
             "user": "no"
           }
-        }
+        },
+        "path": "/api/v1/admin/hooks/oracle-webreq",
+        "status": 200
       }
     ]
   },

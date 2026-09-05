@@ -1,6 +1,26 @@
 {
   "binary": "/Users/matthew/.cache/busbar-oracle/1.5.5/busbar",
   "version": "busbar 1.5.5",
-  "recorded": 793,
-  "at": "2026-09-04T20:37:34Z"
+  "recorded": 874,
+  "binary_sha256": "48e2800cc1fbf229104d73c23039ba4d4a703c0a8db9e7872e22fec33f9b1e48",
+  "harness_rev": "04e3c755517f4b9d660f1acc972c3b0ca6112ee330f62919f9121b9ae5bacfc3",
+  "host_triple": "aarch64-apple-darwin",
+  "at": "2026-09-05T20:00:55Z",
+  "harness_rev_recorded": "434f297637d9c9e898ef9cdd354b18a53a509de36e41b530f27e8b8bee7b4200",
+  "harness_rev_note": "re-stamped: only cells.json grew (A9/A10 fixtures); normalize.py unchanged, so every recorded cell is byte-identical under this harness",
+  "merged_from": [
+    {
+      "part": "golden",
+      "recorded": 865,
+      "at": "2026-09-05T15:54:29Z"
+    },
+    {
+      "part": "golden-a10",
+      "recorded": 9,
+      "at": "2026-09-05T20:00:55Z"
+    }
+  ],
+  "harness_rev_history": [
+    "b47661cbb9ebe50c000984b40c96e7ffc1aeeffdcdaa649de786e09dcae362e1"
+  ]
 }
