@@ -759,11 +759,73 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
         // Dispatching through the pool the client asked for after charging a different one is the
         // bug this ordering makes impossible.
         let destination = self.walk.effective_pool(&self.model());
-        // The kernel's accrual meter is left at zero deliberately. What this unit spends is spent on
-        // the governance ledger, by the walk's own tap, in the window the arrival epoch pinned — and
-        // it is settled there. Accruing a second copy of it here would put one spend on two ledgers.
+        // THE METER IS LEFT UNBOUND, deliberately. What this unit spends is spent on the governance
+        // ledger, by the walk's own tap, in the window the arrival epoch pinned — and it is settled
+        // there. Accruing a second copy of it here would put one spend on two ledgers, so the
+        // kernel's meter reads zero, the headroom it offers reads zero with it, and any excess the
+        // hold cannot back is carried rather than charged twice.
         Box::pin(async move { self.walk.route(token, &destination).await })
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The exit arm
+// ---------------------------------------------------------------------------------------------
+
+/// The balance an LLM unit's kernel posting moves: the caller's own, in nano-units, unscoped.
+///
+/// The caller rather than the pool, because the kernel's posting is the unit's — what the POOL spent
+/// is the governance ledger's figure and is already moved there by the walk's tap. Two figures, two
+/// books, neither a second spelling of the other.
+fn balance(principal: &PrincipalId) -> busbar_unit_ledger::totals::TotalsKey {
+    busbar_unit_ledger::totals::TotalsKey::new(
+        busbar_unit_ledger::totals::BucketId::new(principal.as_str()),
+        busbar_unit_ledger::totals::CapDimension::NanoUnits,
+        busbar_unit_ledger::totals::BucketScope::All,
+    )
+}
+
+/// **THE EXIT ARM.** Move the books for what this unit posted, and put the posting on the journal.
+///
+/// The loop's exit path takes the hold out of its cell, applies what the unit spent and settles it —
+/// that is where the hold stops existing. What comes back is the POSTING, and until it reaches here
+/// it has moved no balance and left no record. So this is the far end of the reservation's life, and
+/// on this plane it is the far end of a reservation the door opened at zero: the spend is the
+/// governance ledger's and what settles here is the kernel's own record that a unit ran and ended.
+///
+/// The window comes off the unit's pinned arrival epoch, never a fresh clock read, so a request that
+/// straddled a boundary posts in the window it was admitted in — the same epoch every charge and
+/// every refund this unit made was landed in.
+///
+/// # Errors
+///
+/// The journal could not make the record durable. The books have already moved: value was delivered,
+/// and a settlement is not rolled back because a write failed.
+pub fn settle(
+    durability: &mut crate::root::durability::Durability,
+    principal: &PrincipalId,
+    charged_at: u64,
+    token: &busbar_caps::DurabilityToken,
+    posted: busbar_caps::Posted,
+) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
+    let key = balance(principal);
+    let at = crate::root::durability::Settling {
+        key: &key,
+        window: busbar_unit_admission::budget_window(
+            busbar_unit_admission::window::WINDOW_DAY,
+            charged_at,
+        ),
+        durability: token,
+        // The loop has no exit step of its own; the figure this posting is OF is the metering step's,
+        // and that is the step a durability loss here is attributed to.
+        step: busbar_caps::StepName::Meter,
+        stamp: crate::root::durability::PostingStamp {
+            rate_card_version: 0,
+            wall: charged_at,
+            mono: charged_at,
+        },
+    };
+    durability.settle_posted(&at, posted)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1002,6 +1064,7 @@ mod tests {
     use axum::body::Bytes;
     use axum::http::HeaderMap;
     use busbar_core::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+    use busbar_kernel::teller::Ended;
 
     /// The one dialect these fixtures speak. Same-protocol openai→openai, so a divergence is about
     /// the PATH rather than about a translation.
@@ -1426,6 +1489,137 @@ mod tests {
         Fixture::PoolAcl,
         Fixture::UnknownModel,
     ];
+
+    /// The unit-arrival epoch this proof pins, so the window a posting lands in is a fixed one.
+    const EPOCH: u64 = 1_700_000_000;
+
+    /// **THE EXIT ARM, END TO END.** The reservation the door opened reaches the journal.
+    ///
+    /// The loop's exit path is where a hold stops existing, and what it hands back is a POSTING that
+    /// has moved no balance and left no record until something settles it. Before this arm was bound
+    /// nothing on this plane did, so a unit ran, ended, posted — and posted into a value that was
+    /// dropped. This drives the REAL loop over the real steps, takes the end it sealed, and puts the
+    /// posting on a journal it then reads back.
+    ///
+    /// The figures are this plane's own: the door opens the kernel's hold at zero, because the spend
+    /// is the governance ledger's and the walk's tap already moved it. So what this proves is not a
+    /// price — it is that the kernel's record of a unit having run reaches a durable record.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
+        let rig = rig(Fixture::BufferedOk).await;
+        let node = LlmNode::new();
+        let ended = drive_to_end(&rig, &node, Fixture::BufferedOk).await;
+        rig.server.shutdown().await;
+
+        let Ended::Settled { end, .. } = ended else {
+            panic!("the exit path settles the unit");
+        };
+        let posted = end.into_posted().expect("the usage report fits the record");
+        assert_eq!(
+            posted.reserved(),
+            0,
+            "this plane's door opens the kernel's hold at zero; the spend is the governance ledger's"
+        );
+
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let mut durability = crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open");
+        let who = PrincipalId::new("acct:llm");
+        let settled = settle(
+            &mut durability,
+            &who,
+            EPOCH,
+            &busbar_caps::DurabilityToken::mint(&seal),
+            posted,
+        )
+        .expect("the memory-buffered journal takes it");
+        assert!(settled.overdraft.is_none(), "nothing to carry out");
+
+        let window =
+            busbar_unit_admission::budget_window(busbar_unit_admission::window::WINDOW_DAY, EPOCH);
+        let figures = durability.ledger.book().get(&balance(&who), window);
+        assert_eq!(figures.overdraft_carried_out, 0);
+        let replayed = durability
+            .journal
+            .replay()
+            .expect("reads back")
+            .expect("verifies");
+        assert_eq!(replayed.len(), 1, "one posting, one record");
+    }
+
+    /// One request, driven through the real loop, answering with the END rather than the bytes.
+    ///
+    /// The same drive [`LlmNode::answer`] performs — the same table, the same slot, the same
+    /// `run_unit_async` — kept apart only because the entry point answers a client and this answers
+    /// the exit arm's proof.
+    async fn drive_to_end(rig: &Rig, node: &LlmNode, fixture: Fixture) -> Ended {
+        let arrival = WalkArrival {
+            host: rig.host(),
+            gov: rig.gov(),
+            proto: PROTO,
+            operation: busbar_api::operation::Operation::CHAT,
+            caller_token: None,
+            headers: json_headers(),
+            body: fixture.body(),
+            lanes: node.lanes(),
+        };
+        let key = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
+        let principal = authenticate::principal_id(&arrival.gov);
+        let unit = LlmUnit {
+            node,
+            op_class: OpClassId::new(arrival.operation.name()),
+            model_hint: None,
+            started: Instant::now(),
+            charged_at: EPOCH,
+            deferred: Mutex::new(None),
+            model: Mutex::new(String::new()),
+            walk: Walk::open(arrival),
+        };
+        let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal);
+        let slot = node
+            .inflight
+            .insert(busbar_kernel::inflight::Enter {
+                key,
+                origin: OriginKind::Client,
+                session: None,
+                admin_listener: false,
+                provider_of_open_session: false,
+                zero_hold_tick: false,
+                arrival: hold,
+            })
+            .expect("the uncapped table takes the unit");
+        let ctx = UnitCtx {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        let mut leases = busbar_kernel::slice::LeaseSet::new();
+        let meter = AccrualMeter::new();
+        let ended = busbar_kernel::teller::run_unit_async(
+            &node.kernel,
+            &unit,
+            &ctx,
+            busbar_kernel::teller::Run {
+                cell: slot.cell(),
+                parent: None,
+                leases: &mut leases,
+                gauge: &node.gauge,
+                canary: &node.canary,
+                meter: &meter,
+            },
+            &unit,
+        )
+        .await;
+        node.inflight.remove(key);
+        ended
+    }
 
     /// THE SWITCH. Same fixture in, same bytes and same counters out — through the shipped entry
     /// point and through the kernel's loop over the step files.
