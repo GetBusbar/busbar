@@ -13,11 +13,15 @@
 //! generation it started at and keeps calling the same plugins all the way to its end, even while a
 //! replacement is being installed underneath it.
 //!
-//! **Claims.** A claim says "these bytes are mine". Two claims that could both match the same bytes
-//! make routing a coin toss, so the question is asked at boot, over every pair, and a node that
-//! cannot answer "no" refuses to start. [`overlaps`] is deliberately CONSERVATIVE: where the shapes
-//! are not comparable it answers "yes, they might", because the cost of a false yes is a
-//! configuration error at boot and the cost of a false no is two planes fighting over live bytes.
+//! **Claims.** A claim says "these bytes are mine". The question is asked at boot, over every pair,
+//! and [`overlaps`] is deliberately CONSERVATIVE: where the shapes are not comparable it answers
+//! "yes, they might", because the cost of a false yes is a question asked at boot and the cost of a
+//! false no is two planes fighting over live bytes.
+//!
+//! An overlap is a question, not yet a verdict. [`seal_claims`] answers it in the order the claims
+//! are already sealed in: where two claims sit at different precedence the more specific one takes
+//! the bytes both describe, which is a decision and is recorded as one. Only where the precedence
+//! ties does the order run out of things to say, and only there does a node refuse to start.
 
 use std::sync::Arc;
 
@@ -222,48 +226,207 @@ pub struct PlaneClaim {
     pub claim: Claim,
 }
 
-/// Two claims that could both match.
+/// Two claims that could both match, at a precedence that cannot tell them apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimConflict {
     /// The first claim.
     pub left: PlaneClaim,
     /// The second.
     pub right: PlaneClaim,
+    /// Why the pair could not be settled by the order.
+    pub reason: ConflictReason,
+}
+
+/// Why an overlapping pair is a refusal rather than a resolved precedence question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictReason {
+    /// The two claims sit at the same precedence, so the sealed order has nothing to say about
+    /// which of them owns the bytes and the route would be decided by declaration accident.
+    EqualPrecedence,
 }
 
 impl std::fmt::Display for ClaimConflict {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "claims of {} and {} on transport {} can both match",
-            self.left.plane, self.right.plane, self.left.claim.transport
-        )
+        match self.reason {
+            ConflictReason::EqualPrecedence => write!(
+                f,
+                "claims of {} and {} on transport {} can both match at equal precedence, so nothing \
+                 decides which owns the bytes",
+                self.left.plane, self.right.plane, self.left.claim.transport
+            ),
+        }
     }
 }
 
 impl std::error::Error for ClaimConflict {}
 
-/// Check every pair of claims across planes, and answer at boot.
+/// One overlapping pair the sealed order settled, and which side won it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedOverlap {
+    /// The first claim, by index into the claim slice.
+    pub left: usize,
+    /// The second, by index.
+    pub right: usize,
+    /// Which of the two the order puts first, and therefore which one takes bytes both match.
+    pub winner: usize,
+}
+
+/// One overlapping pair the sealed order could not settle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedOverlap {
+    /// The first claim, by index into the claim slice.
+    pub left: usize,
+    /// The second, by index.
+    pub right: usize,
+    /// Why the pair is a refusal.
+    pub reason: ConflictReason,
+}
+
+/// What sealing the claim set produced.
+///
+/// Three answers, not one. The ORDER is the walk every arriving connection is matched against.
+/// The RESOLVED list is every cross-plane pair that could both match and was settled by that order:
+/// they are recorded rather than refused, because most-specific-wins is a decision and not a
+/// coincidence — recording them is what lets an operator read off which plane wins a shape two
+/// planes both describe. The REFUSED list is the pairs the order cannot settle, and it is the only
+/// one of the three that stops a boot.
+#[derive(Debug, Clone, Default)]
+pub struct SealedClaims {
+    /// Indices into the claim slice, most specific first, ties broken by declaration order.
+    pub order: Vec<usize>,
+    /// Every cross-plane overlap the order settled, with the winner named.
+    pub resolved: Vec<ResolvedOverlap>,
+    /// Every cross-plane overlap the order could not settle.
+    pub refused: Vec<RefusedOverlap>,
+}
+
+/// Seal the claim set: order it, settle what the order settles, and collect what it cannot.
 ///
 /// Within ONE plane the claims are an ordered pattern set with most-specific-wins precedence, so
-/// two of a plane's own claims are allowed to overlap; across planes they are not.
-pub fn check_claims(claims: &[PlaneClaim]) -> Result<(), Box<ClaimConflict>> {
+/// two of a plane's own claims are allowed to overlap and are not examined here at all.
+///
+/// Across planes the question used to be "do these overlap?", and any yes was a refusal. That is
+/// too blunt for the shapes the planes actually declare: a detection ladder written out of
+/// `PathContains` and `PathSuffix` rungs conservatively overlaps every mounted route of every other
+/// plane, so no configuration would ever seal. The rule the sealed order already carries answers
+/// almost all of it. An overlap between two claims of DIFFERENT precedence is settled by the order —
+/// the more specific claim takes the bytes both describe, and the pair is recorded as resolved. An
+/// overlap at EQUAL precedence is a genuine ambiguity: nothing in the order distinguishes them, so
+/// which plane owns the request would fall to the accident of declaration order, and that is the
+/// refusal. Claims whose scheme sets are disjoint never overlap at all, because one request carries
+/// one credential — the contract's [`Claim::overlaps`] holds that half.
+#[must_use]
+pub fn seal_claims(claims: &[PlaneClaim]) -> SealedClaims {
+    let mut sealed = SealedClaims {
+        order: precedence_order(claims),
+        ..SealedClaims::default()
+    };
     for (i, left) in claims.iter().enumerate() {
-        for right in &claims[i + 1..] {
-            if left.plane == right.plane {
+        for (offset, right) in claims[i + 1..].iter().enumerate() {
+            let j = i + 1 + offset;
+            if left.plane == right.plane || !claims_overlap(&left.claim, &right.claim) {
                 continue;
             }
-            if left.claim.transport == right.claim.transport
-                && overlaps(&left.claim.selector, &right.claim.selector)
-            {
-                return Err(Box::new(ClaimConflict {
-                    left: left.clone(),
-                    right: right.clone(),
-                }));
+            let (a, b) = (
+                precedence(&left.claim.selector),
+                precedence(&right.claim.selector),
+            );
+            match a.cmp(&b) {
+                std::cmp::Ordering::Equal => sealed.refused.push(RefusedOverlap {
+                    left: i,
+                    right: j,
+                    reason: ConflictReason::EqualPrecedence,
+                }),
+                std::cmp::Ordering::Greater => sealed.resolved.push(ResolvedOverlap {
+                    left: i,
+                    right: j,
+                    winner: i,
+                }),
+                std::cmp::Ordering::Less => sealed.resolved.push(ResolvedOverlap {
+                    left: i,
+                    right: j,
+                    winner: j,
+                }),
             }
         }
     }
-    Ok(())
+    sealed
+}
+
+/// Whether two claims could ever match the same arriving bytes.
+///
+/// Three conditions, and all three have to hold: bytes arrive on ONE transport; the two scheme sets
+/// have to be answerable by one credential, which is [`schemes_compatible`]; and the selectors have
+/// to be able to match one request, which is [`overlaps`].
+///
+/// The selector half is asked of the kernel's own [`overlaps`] rather than of the contract's,
+/// because the design puts that decision here — the two answer the same question and the kernel's
+/// is the one the boot count is measured against.
+#[must_use]
+pub fn claims_overlap(left: &Claim, right: &Claim) -> bool {
+    left.transport == right.transport
+        && schemes_compatible(left, right)
+        && overlaps(&left.selector, &right.selector)
+}
+
+/// Whether one arriving request could satisfy both claims' credential declarations.
+///
+/// A claim's scheme SET is the scheme it declares together with the alternatives it may be narrowed
+/// to at the authenticate step — the whole range of credentials a unit of this claim can turn out to
+/// carry. Two sets that share nothing describe two disjoint populations of requests: a caller
+/// presenting a credential in one of them is presenting one in neither of the other's, so the two
+/// claims are never in contention over the same bytes however alike their selectors read.
+///
+/// A claim that declares NO scheme has no set at all, and is compatible with every other claim. It
+/// reads no credential, so it rules nothing out: an open surface and an authenticated one on one
+/// selector are exactly the ambiguity the boot check exists to catch.
+#[must_use]
+pub fn schemes_compatible(left: &Claim, right: &Claim) -> bool {
+    let (Some(mine), Some(theirs)) = (left.scheme, right.scheme) else {
+        return true;
+    };
+    let holds = |claim: &Claim, name: &str| {
+        claim.scheme.is_some_and(|s| s == name) || claim.scheme_alternatives.contains(&name)
+    };
+    holds(right, mine)
+        || holds(left, theirs)
+        || left.scheme_alternatives.iter().any(|a| holds(right, a))
+}
+
+/// Check every pair of claims across planes, and answer at boot.
+///
+/// The first refusal [`seal_claims`] found, as an error. Kept as the one-answer form for callers
+/// that only need to know whether the set seals.
+///
+/// # Errors
+///
+/// Two claims of different planes could both match at equal precedence.
+pub fn check_claims(claims: &[PlaneClaim]) -> Result<(), Box<ClaimConflict>> {
+    match seal_claims(claims).refused.first() {
+        None => Ok(()),
+        Some(refused) => Err(Box::new(ClaimConflict {
+            left: claims[refused.left].clone(),
+            right: claims[refused.right].clone(),
+            reason: refused.reason,
+        })),
+    }
+}
+
+/// How a claim ranks in the sealed order: how specific its selector is, and whether the selector is
+/// anchored to an end of what it reads.
+///
+/// The second component only ever separates two selectors the first component ties, and it says one
+/// thing the first cannot. [`crate::grammar::specificity`] scores a fragment form by the length of
+/// its literal, which puts `PathSuffix(s)` and `PathContains(t)` at the same rank whenever `s` and
+/// `t` happen to be the same length — two unrelated fragments tied by a coincidence of spelling. A
+/// suffix is ANCHORED: it matches a strict subset of what the same literal would match floating, so
+/// it is never the less specific of the two. Ranking it above the floating form is the same
+/// principle the first component already applies — a whole path beats a fragment of one — carried
+/// one step further, and it is the only thing that separates them.
+#[must_use]
+pub fn precedence(selector: &Selector) -> (u32, u32) {
+    let anchored = u32::from(matches!(selector, Selector::PathSuffix(_)));
+    (crate::grammar::specificity(selector), anchored)
 }
 
 /// One plane's claims in the order they are tried: most specific first, and ties broken by the
@@ -271,8 +434,8 @@ pub fn check_claims(claims: &[PlaneClaim]) -> Result<(), Box<ClaimConflict>> {
 pub fn precedence_order(claims: &[PlaneClaim]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..claims.len()).collect();
     order.sort_by(|a, b| {
-        crate::grammar::specificity(&claims[*b].claim.selector)
-            .cmp(&crate::grammar::specificity(&claims[*a].claim.selector))
+        precedence(&claims[*b].claim.selector)
+            .cmp(&precedence(&claims[*a].claim.selector))
             .then(a.cmp(b))
     });
     order

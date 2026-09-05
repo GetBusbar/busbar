@@ -16,33 +16,38 @@
 //!
 //! ## The two checks, and what each catches
 //!
-//! `check_claims` is the cross-plane overlap rule: within one plane, claims are an ordered pattern
-//! set with most-specific-wins precedence, so two of a plane's own claims may overlap; across
-//! planes they may not, because there would be no principled way to decide which plane owns the
-//! bytes. It is answered at boot, with both claims named, rather than at the first request.
+//! `seal_claims` is the cross-plane overlap rule. Within one plane, claims are an ordered pattern
+//! set with most-specific-wins precedence, so two of a plane's own claims may overlap and are not
+//! compared here. Across planes, an overlap is a question the same order answers: where the two
+//! claims sit at different precedence the more specific one takes the bytes, and the pair is
+//! RESOLVED — recorded, with the winner named. Where the precedence ties there is no principled way
+//! to decide which plane owns the bytes, and that is the REFUSAL, answered at boot with both claims
+//! named rather than at the first request. Claims whose scheme sets are disjoint never overlap at
+//! all: one request carries one credential.
 //!
 //! `check_composition` is the transport rule, in both directions: every layer a transport declares
 //! it can be built over must be registered, and every layer the root actually built it over must be
 //! one it declares. Neither half implies the other — a transport can declare a layer nobody
 //! registered, and a root can compose a transport over a layer it never declared.
 //!
-//! ## The declared claim set does not seal today, and this is where that is measured
+//! ## The declared claim set seals, and this is where that is measured
 //!
-//! Running the check over the five planes as they stand is a refusal, and not by a narrow margin:
 //! **209 of the cross-plane pairs overlap** — 90 across selector families and 119 within the path
 //! family. Both numbers follow from the overlap rule as the design writes it. Cross-family pairs
 //! overlap conservatively, because a request has both a path and a header and nothing proves they
 //! cannot coincide. Within the path family, a `PathContains` or `PathSuffix` claim overlaps any
 //! other claim on that family, which is stated as the rule and is what makes the reference plane's
 //! protocol-detection ladder — `PathContains("/v1/messages")`, `PathSuffix("/v1/embeddings")` and
-//! the rest — collide with every other plane's mounted routes.
+//! the rest — read as colliding with every other plane's mounted routes.
 //!
-//! Nothing here papers over that. `seal` calls the check and returns the refusal, which is the
-//! behaviour the design asks for; the tests below pin both counts, so the numbers move visibly when
-//! the claim declarations are reconciled, and the reconciliation itself belongs to the planes and
-//! the claim grammar rather than to the root. A root that skipped the check to get a node running
-//! would be choosing which plane owns a request by accident of registration order, which is the one
-//! thing the check exists to prevent.
+//! All 209 are settled by the sealed order, and none of them is a refusal. That is not the check
+//! being softened: every one of the 209 is a pair whose two claims sit at different precedence, so
+//! the order already says which plane takes bytes both describe, and the pair is recorded in
+//! `resolved` with its winner named. The tests below pin the count at 209, the refusal count at
+//! zero and the sealed order itself, so a declaration change that turns a resolved pair into a tie —
+//! the shape nothing can decide — has to say so here. A root that skipped the check to get a node
+//! running would be choosing which plane owns a request by accident of registration order, which is
+//! the one thing the check exists to prevent.
 //!
 //! ## The shape that would pass both checks and still refuse every connection
 //!
@@ -59,7 +64,7 @@ use busbar_contract::plane::PlaneMeta;
 use busbar_contract::transport::TransportMeta;
 use busbar_contract::{check_composition, CompositionError, Plugin, Registered, Transport};
 use busbar_kernel::registry::{
-    check_claims, precedence_order, ClaimConflict, PlaneClaim, Registry,
+    seal_claims, ClaimConflict, ConflictReason, PlaneClaim, Registry, ResolvedOverlap,
 };
 use busbar_plane_a2a::A2aPlane;
 use busbar_plane_admin::AdminPlane;
@@ -149,6 +154,10 @@ pub struct BootRegistry {
     /// Indices into `claims`, most specific first, ties broken by declaration order so the walk is
     /// stable across boots.
     pub precedence: Vec<usize>,
+    /// Every cross-plane pair that could both match and was settled by that order, with the winning
+    /// claim named. Not a warning list: it is the record of which plane owns a shape two planes both
+    /// describe, answered once at boot rather than per request.
+    pub resolved: Vec<ResolvedOverlap>,
     /// Every transport as the composition check read it.
     pub registered: Vec<Registered>,
     /// The concrete handles the root keeps.
@@ -264,8 +273,14 @@ pub fn seal(client_settings: ClientSettings) -> Result<BootRegistry, BootRefusal
     let registry = register_all(&transports)?;
 
     let claims = plane_claims();
-    check_claims(&claims).map_err(BootRefusal::ClaimOverlap)?;
-    let precedence = precedence_order(&claims);
+    let sealed = seal_claims(&claims);
+    if let Some(refused) = sealed.refused.first() {
+        return Err(BootRefusal::ClaimOverlap(Box::new(ClaimConflict {
+            left: claims[refused.left].clone(),
+            right: claims[refused.right].clone(),
+            reason: refused.reason,
+        })));
+    }
 
     let registered = registered_rows();
     check_composition(&registered).map_err(BootRefusal::Composition)?;
@@ -274,7 +289,8 @@ pub fn seal(client_settings: ClientSettings) -> Result<BootRegistry, BootRefusal
     Ok(BootRegistry {
         registry,
         claims,
-        precedence,
+        precedence: sealed.order,
+        resolved: sealed.resolved,
         registered,
         transports,
     })
@@ -347,7 +363,64 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
 #[cfg(test)]
 mod tests {
     use super::*;
-    use busbar_kernel::registry::PluginKind;
+    use busbar_contract::grammar::{Claim, Selector};
+    use busbar_kernel::registry::{check_claims, claims_overlap, PluginKind};
+
+    /// The sealed walk over the forty-nine declared claims, most specific first.
+    ///
+    /// Pinned as text rather than as indices so that a diff of it reads as a routing change. See
+    /// the test that reads it for what a change to this array means.
+    const SEALED_ORDER: &[&str] = &[
+        "mcp ExactPath(\"/.well-known/oauth-protected-resource/mcp\")",
+        "a2a ExactPath(\"/.well-known/oauth-protected-resource/a2a\")",
+        "a2a ExactPath(\"/.well-known/agent-card.json\")",
+        "a2a ExactPath(\"/a2a/extendedAgentCard\")",
+        "a2a ExactPath(\"/a2a/message:stream\")",
+        "a2a ExactPath(\"/a2a/message:send\")",
+        "a2a ExactPath(\"/a2a/tasks\")",
+        "a2a ExactPath(\"/a2a/push\")",
+        "a2a ExactPath(\"/a2a/\")",
+        "mcp ExactPath(\"/mcp\")",
+        "mcp ExactPath(\"/mcp\")",
+        "a2a ExactPath(\"/a2a\")",
+        "a2a PathPattern([Lit(\"a2a\"), Lit(\"tasks\"), Var, Lit(\"pushNotificationConfigs\"), Var])",
+        "a2a PathPattern([Lit(\"a2a\"), Lit(\"tasks\"), Var, Lit(\"pushNotificationConfigs\")])",
+        "admin PathPattern([Lit(\"api\"), Lit(\"v1\"), Lit(\"admin\"), Tail])",
+        "llm PathPattern([Lit(\"model\"), Var, Lit(\"invoke\")])",
+        "a2a PathPattern([Lit(\"a2a\"), Lit(\"tasks\"), Var])",
+        "a2a PathPattern([Lit(\"a2a\"), Lit(\"agents\"), Var])",
+        "llm PathPattern([Lit(\"v1\"), Lit(\"models\"), Tail])",
+        "llm PathPattern([Lit(\"v1beta\"), Lit(\"models\"), Tail])",
+        "a2a PathPattern([Lit(\"lf.a2a.v1.A2AService\"), Var])",
+        "voice PrefixOneLevel(\"/twilio\")",
+        "llm HeaderPrefix(\"authorization\", \"AWS4-HMAC-SHA256\")",
+        "llm HeaderPresent(\"anthropic-version\")",
+        "llm HeaderPresent(\"anthropic-beta\")",
+        "llm HeaderPresent(\"x-goog-api-key\")",
+        "llm HeaderPresent(\"x-api-key\")",
+        "voice PathSuffix(\"/v1/audio/transcriptions\")",
+        "llm PathContains(\":streamGenerateContent\")",
+        "llm PathSuffix(\"/v1/chat/completions\")",
+        "llm PathContains(\":batchEmbedContents\")",
+        "voice PathContains(\"BidiGenerateContent\")",
+        "voice PathSuffix(\"/v1/audio/speech\")",
+        "llm PathContains(\":generateContent\")",
+        "llm PathSuffix(\"/v1/moderations\")",
+        "llm PathSuffix(\"/v1/embeddings\")",
+        "llm PathSuffix(\"/v1/responses\")",
+        "llm PathContains(\":embedContent\")",
+        "voice PathSuffix(\"/v1/realtime\")",
+        "llm PathContains(\"/v1/messages\")",
+        "llm PathContains(\"/v1/images/\")",
+        "llm PathSuffix(\"/v2/rerank\")",
+        "llm PathContains(\"/v1/audio/\")",
+        "llm PathSuffix(\"/v2/embed\")",
+        "llm PathContains(\"/converse\")",
+        "llm PathSuffix(\"/v2/chat\")",
+        "llm PathSuffix(\"/v1/chat\")",
+        "llm PathContains(\":predict\")",
+        "mcp StreamName(\"mcp\")",
+    ];
 
     /// Every transport and every plane goes into one registry, and both counts are what the design
     /// says they are. This is the half of the seal that does not depend on the claims.
@@ -386,10 +459,8 @@ mod tests {
         assert_eq!(claims.len(), 49);
     }
 
-    /// **The finding.** The forty-nine claims as declared do not seal, and the check refuses the
-    /// boot rather than picking a winner. Both counts are pinned so the numbers move visibly when
-    /// the claim declarations are reconciled — this test is expected to fail on that day, and its
-    /// failure is the signal, not a regression.
+    /// The measured overlap, split the way the rule splits it. Both counts are pinned because both
+    /// are what a reader checks the design's own account against.
     ///
     /// The two numbers come apart deliberately. The cross-family pairs are the conservative arm of
     /// the totality rule: a request has both a path and a header, so nothing proves a header claim
@@ -397,7 +468,7 @@ mod tests {
     /// `PathContains` or `PathSuffix` claim overlaps any other claim on the path family, and the
     /// reference plane's protocol-detection ladder is built out of exactly those two forms.
     #[test]
-    fn the_declared_claims_do_not_seal_and_the_boot_refuses() {
+    fn two_hundred_and_nine_cross_plane_pairs_overlap() {
         use busbar_kernel::grammar::family;
 
         let claims = plane_claims();
@@ -405,10 +476,7 @@ mod tests {
         let mut same_family = 0usize;
         for (i, left) in claims.iter().enumerate() {
             for right in &claims[i + 1..] {
-                if left.plane == right.plane || left.claim.transport != right.claim.transport {
-                    continue;
-                }
-                if !busbar_kernel::registry::overlaps(&left.claim.selector, &right.claim.selector) {
+                if left.plane == right.plane || !claims_overlap(&left.claim, &right.claim) {
                     continue;
                 }
                 if family(&left.claim.selector) == family(&right.claim.selector) {
@@ -420,21 +488,157 @@ mod tests {
         }
         assert_eq!(cross_family, 90);
         assert_eq!(same_family, 119);
+    }
 
-        match seal(ClientSettings::default()) {
-            Err(BootRefusal::ClaimOverlap(_)) => {}
-            Err(other) => panic!("expected a claim overlap, got {other}"),
-            Ok(_) => panic!("the declared claims collide; the seal must refuse"),
+    /// **The finding, answered.** Every one of those 209 overlaps is settled by the sealed order,
+    /// and none of them is a refusal.
+    ///
+    /// The resolved count is pinned against the overlap count above, so the two cannot drift apart
+    /// silently: a pair that stops being resolved has either stopped overlapping or become a tie,
+    /// and each of those is a different thing to have to explain. The refusal list is pinned empty,
+    /// which is the whole claim of this file — the declared set of five planes seals.
+    #[test]
+    fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
+        let claims = plane_claims();
+        let sealed = seal_claims(&claims);
+
+        assert_eq!(sealed.resolved.len(), 209);
+        assert!(
+            sealed.refused.is_empty(),
+            "the declared claims do not seal: {:?}",
+            sealed.refused
+        );
+
+        // The winner of a resolved pair is one of its two sides, and it is the side the order puts
+        // first. Said as a property rather than as 209 assertions.
+        let rank = |i: usize| {
+            sealed
+                .order
+                .iter()
+                .position(|c| *c == i)
+                .expect("the order is a permutation")
+        };
+        for pair in &sealed.resolved {
+            assert!(pair.winner == pair.left || pair.winner == pair.right);
+            let loser = pair.left + pair.right - pair.winner;
+            assert!(
+                rank(pair.winner) < rank(loser),
+                "the winner of {pair:?} is not the one the order tries first"
+            );
         }
     }
 
+    /// The sealed order of the forty-nine, written out.
+    ///
+    /// A snapshot, and deliberately a verbose one: the walk every arriving connection is matched
+    /// against is the thing this file produces, and a change to it is a change to which plane
+    /// answers which request. Each row is the plane and the selector, so a diff of this array reads
+    /// as a routing change rather than as a permutation of opaque indices. A claim added, removed or
+    /// respelled has to update it, on purpose, with the new order visible in the same diff.
+    #[test]
+    fn the_sealed_order_of_the_forty_nine_claims_is_pinned() {
+        let claims = plane_claims();
+        let sealed = seal_claims(&claims);
+        let walk: Vec<String> = sealed
+            .order
+            .iter()
+            .map(|i| format!("{} {:?}", claims[*i].plane, claims[*i].claim.selector))
+            .collect();
+        assert_eq!(walk, SEALED_ORDER, "the sealed claim order moved");
+    }
+
+    /// The refusal is still the point of the check. Two planes claiming one path at the same
+    /// precedence is a composition nobody can resolve — the order has nothing to say about it — and
+    /// the node says so at boot with both planes named rather than picking a winner at the first
+    /// request.
+    #[test]
+    fn a_planted_equal_precedence_collision_refuses_at_boot() {
+        let admin = plane_claims()
+            .into_iter()
+            .find(|c| c.plane == "admin")
+            .expect("the admin plane claims one path");
+        let impostor = PlaneClaim {
+            plane: "impostor",
+            claim: admin.claim,
+        };
+        // A clean two-claim base, so the refusal that comes back is the one that was planted and
+        // not one the declared set already carries.
+        let sealed = seal_claims(&[admin, impostor]);
+        assert!(sealed.resolved.is_empty());
+        assert_eq!(sealed.refused.len(), 1);
+        assert_eq!(sealed.refused[0].reason, ConflictReason::EqualPrecedence);
+    }
+
+    /// And the other half of the same rule: the same two planes, one of them naming a tighter
+    /// selector, is not a refusal at all. The exact path is more specific than the pattern that
+    /// swallows it, so the order decides, the pair is recorded, and the boot goes on.
+    #[test]
+    fn a_planted_overlap_at_different_precedence_resolves_rather_than_refusing() {
+        let admin = plane_claims()
+            .into_iter()
+            .find(|c| c.plane == "admin")
+            .expect("the admin plane claims one path");
+        let mut tighter = admin.claim;
+        tighter.selector = Selector::ExactPath("/api/v1/admin/keys");
+        let claims = vec![
+            admin,
+            PlaneClaim {
+                plane: "impostor",
+                claim: tighter,
+            },
+        ];
+        let sealed = seal_claims(&claims);
+        assert!(sealed.refused.is_empty());
+        assert_eq!(sealed.resolved.len(), 1);
+        assert_eq!(
+            sealed.resolved[0].winner, 1,
+            "the exact path is the tighter"
+        );
+    }
+
+    /// Two claims whose scheme sets share nothing never overlap, however alike their selectors read:
+    /// one request carries one credential, and no credential answers both sets. Planted on the one
+    /// selector pair that is otherwise the hardest collision there is — the same exact path.
+    #[test]
+    fn claims_with_disjoint_scheme_sets_do_not_collide() {
+        let one = PlaneClaim {
+            plane: "one",
+            claim: Claim {
+                transport: "http",
+                selector: Selector::ExactPath("/shared"),
+                scheme: Some("one-key"),
+                scheme_alternatives: &["bearer"],
+                idempotency: None,
+            },
+        };
+        let two = PlaneClaim {
+            plane: "two",
+            claim: Claim {
+                transport: "http",
+                selector: Selector::ExactPath("/shared"),
+                scheme: Some("two-key"),
+                scheme_alternatives: &["request-signature"],
+                idempotency: None,
+            },
+        };
+        assert!(one.claim.selector.overlaps(&two.claim.selector));
+        assert!(!claims_overlap(&one.claim, &two.claim));
+        let sealed = seal_claims(&[one.clone(), two.clone()]);
+        assert!(sealed.refused.is_empty());
+        assert!(sealed.resolved.is_empty());
+
+        // And the moment one alternative is shared, the same pair is the collision it looks like.
+        let mut shared = two;
+        shared.claim.scheme_alternatives = &["bearer"];
+        assert_eq!(seal_claims(&[one, shared]).refused.len(), 1);
+    }
+
     /// Every claim is ordered, most specific first, and the order is a permutation of the claims —
-    /// no claim is dropped from the walk and none is tried twice. Read off the claim slice directly,
-    /// because the seal cannot get far enough to produce one.
+    /// no claim is dropped from the walk and none is tried twice.
     #[test]
     fn the_precedence_order_is_a_permutation_of_every_claim() {
         let claims = plane_claims();
-        let mut seen = precedence_order(&claims);
+        let mut seen = seal_claims(&claims).order;
         seen.sort_unstable();
         assert_eq!(seen, (0..claims.len()).collect::<Vec<_>>());
     }
@@ -446,7 +650,7 @@ mod tests {
         use busbar_kernel::grammar::specificity;
 
         let claims = plane_claims();
-        let order = precedence_order(&claims);
+        let order = seal_claims(&claims).order;
         for pair in order.windows(2) {
             let earlier = specificity(&claims[pair[0]].claim.selector);
             let later = specificity(&claims[pair[1]].claim.selector);
@@ -454,11 +658,11 @@ mod tests {
         }
     }
 
-    /// The refusal is the point of the check. A sixth plane that claims a path the admin plane
-    /// already owns is a composition nobody can resolve, and the node says so at boot with both
-    /// planes named rather than picking a winner at the first request.
+    /// The one-answer form of the same check, over the two claims the planted collision uses: a
+    /// caller that only needs to know whether a set seals gets the first refusal, with both planes
+    /// named in the message an operator reads.
     #[test]
-    fn a_planted_cross_plane_overlap_refuses_at_boot() {
+    fn the_one_answer_form_names_both_planes() {
         let admin = plane_claims()
             .into_iter()
             .find(|c| c.plane == "admin")
@@ -467,13 +671,12 @@ mod tests {
             plane: "impostor",
             claim: admin.claim,
         };
-        // A clean two-claim base, so the refusal that comes back is the one that was planted and
-        // not one the declared set already carries.
         let conflict =
             check_claims(&[admin, impostor]).expect_err("two planes cannot own one path");
         let planes = [conflict.left.plane, conflict.right.plane];
         assert!(planes.contains(&"admin"));
         assert!(planes.contains(&"impostor"));
+        assert!(conflict.to_string().contains("equal precedence"));
     }
 
     /// A plane's own claims may overlap: within one plane they are an ordered pattern set with
@@ -572,7 +775,10 @@ mod tests {
     /// because neither the kernel's claim check nor the contract's composition check can see both
     /// halves, and the answer it gives is a refusal at boot with both names in it.
     ///
-    /// Called directly rather than through `seal`, because the claim overlap answers first today.
+    /// Now that the claims seal, it is also the refusal `seal` itself gives: the claim check no
+    /// longer answers ahead of it, so this is the one thing standing between the declared
+    /// composition and a node that boots, and the two are asserted together so neither can be
+    /// mistaken for the other.
     #[test]
     fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
         let refusal = check_claim_transports(&plane_claims(), &registered_rows())
@@ -584,6 +790,15 @@ mod tests {
                 transport: "twilio-media",
             }
         ));
+
+        match seal(ClientSettings::default()) {
+            Err(BootRefusal::UnregisteredClaimTransport {
+                plane: "voice",
+                transport: "twilio-media",
+            }) => {}
+            Err(other) => panic!("the claims seal; the transport is what is left: got {other}"),
+            Ok(_) => panic!("`twilio-media` has no crate; the seal must refuse"),
+        }
     }
 
     /// And the same check, over the claims of the four planes whose transports all exist: nothing

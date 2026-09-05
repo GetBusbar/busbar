@@ -4,7 +4,14 @@
 //! them — decide, at boot, whether two claims could ever match the same arriving bytes. The
 //! decision has to be total: there is no "unknown" answer, because an unknown answer at boot is an
 //! ambiguous route at run time. Where the grammar cannot prove two forms disjoint, the answer is
-//! that they overlap, and the boot refuses. Conservative in the direction of refusing to start.
+//! that they overlap. Conservative in the direction of answering yes.
+//!
+//! An overlap is not by itself a refusal. Two claims that overlap at DIFFERENT precedence are
+//! settled by the sealed most-specific-wins order — the more specific one wins the bytes, and the
+//! pair is recorded as resolved. Only an overlap at EQUAL precedence is a refusal, because there
+//! the order has nothing to say and the route would be decided by declaration accident. The kernel
+//! owns that decision; what lives here is the two facts it reads — whether the selectors overlap,
+//! and whether the two claims' scheme sets could be answered by one credential.
 
 use core::fmt;
 
@@ -347,6 +354,12 @@ impl Claim {
     ///
     /// Claims on different transports cannot collide, because bytes arrive on one transport. On
     /// the same transport the answer is the selectors' answer.
+    ///
+    /// This is the SELECTOR-and-transport half of the question. The other half — whether two claims'
+    /// scheme sets could be answered by one credential, which is what makes two claims with disjoint
+    /// sets never collide however alike their selectors read — is the kernel's, alongside the
+    /// precedence rule that decides what an overlap MEANS. A claim carries the declaration; it does
+    /// not carry the boot decision over it.
     #[must_use]
     pub fn overlaps(&self, other: &Claim) -> bool {
         self.transport == other.transport && self.selector.overlaps(&other.selector)
