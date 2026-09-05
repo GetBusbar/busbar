@@ -703,7 +703,7 @@ impl ProtocolWriter for ResponsesWriter {
                 // Carry this stream's id forward so the terminal events (and any failure) replay
                 // the SAME `response.id` — a native stream never changes its id mid-flight.
                 self.set_response_id(&id);
-                let created_at = created.unwrap_or_else(now_unix_secs);
+                let created_at = created.unwrap_or(self.stamped_created_at);
                 // Carry this stream's `created_at` forward so the terminal events (and any failure)
                 // replay the SAME timestamp — a native stream's `created_at` is constant across
                 // every event.
@@ -1179,9 +1179,9 @@ impl ProtocolWriter for ResponsesWriter {
                 resp_obj.insert("object".to_string(), serde_json::json!(OBJ_RESPONSE));
                 // Replay the `created_at` captured on this stream's opening `MessageStart` so the
                 // terminal event carries the SAME timestamp as `response.created`. The IR
-                // `MessageDelta` carries no identity, so a direct `now_unix_secs()` here would emit
-                // a later wall-clock value than the opening event — a detectable proxy tell. Fall
-                // back to the current time only if the cell was never populated.
+                // `MessageDelta` carries no identity, so stamping a fresh reading here would emit
+                // a later value than the opening event — a detectable proxy tell. Fall back to the
+                // caller's stamped reading only if the cell was never populated.
                 resp_obj.insert(
                     "created_at".to_string(),
                     serde_json::json!(self.carried_created_at()),
@@ -1488,7 +1488,7 @@ impl ProtocolWriter for ResponsesWriter {
         // protocol-correct `resp_` id and the current unix time so the body stays SDK-valid.
         // `created_at` is the Responses field name (the official SDK's `Response.created_at`).
         let id = resp.id.clone().unwrap_or_else(synthesize_response_id);
-        let created_at = resp.created.unwrap_or_else(now_unix_secs);
+        let created_at = resp.created.unwrap_or(self.stamped_created_at);
         obj.insert("id".to_string(), serde_json::json!(id));
         obj.insert("object".to_string(), serde_json::json!(OBJ_RESPONSE));
         obj.insert("created_at".to_string(), serde_json::json!(created_at));

@@ -342,14 +342,21 @@ fn synthesize_item_id(prefix: &str) -> String {
     format!("{prefix}_{}", synth_token::<ITEM_ID_TOKEN_LEN>())
 }
 
-/// Current unix epoch seconds, or 0 if the clock is before the epoch (never on a sane host).
-/// Kept panic-free for the request path: no `unwrap`/`expect` on `SystemTime`.
-fn now_unix_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
+// THE CREATION TIME IS AN INPUT, NOT A CLOCK READ.
+//
+// This writer used to call `SystemTime::now()` for the `created_at` it stamps when the answer it is
+// writing carries none — the only clock read in the codecs, and the thing that made this writer's
+// output different on two identical calls. A codec that reads a clock cannot be checked against a
+// frozen output and cannot live in a pure kind, so the reading became a value the caller supplies:
+//
+//   * the buffered path fills `IrResponse::created` in the answer-normalization pass
+//     (`chat_handle::chat_prepare_for_ingress`, whose `now_epoch` argument is exactly this), so the
+//     writer reads it off the answer;
+//   * the streaming path has no answer to carry it, so the value rides the writer instance
+//     (`ResponsesWriter::stamped_at`), set once by whoever opened the stream.
+//
+// With neither supplied the writer stamps `UNSTAMPED_CREATED_AT`, which is what a caller that never
+// offered a time asked for. Nothing here reads a clock.
 
 /// Build the Responses API `usage` object from the neutral [`crate::ir::IrUsage`] with ALL fields the
 /// official SDKs require. `openai-python`'s `ResponseUsage` and `openai-node`'s
@@ -1094,6 +1101,12 @@ fn read_cached_tokens(usage_val: &serde_json::Value) -> Option<u64> {
 /// so the counter is stream-scoped by construction and the increments are plain `&self` atomics on
 /// that one owned instance — no thread affinity, so the counter follows the stream across Tokio
 /// worker migrations.
+/// The `created_at` a Responses answer wears when NO caller supplied a creation time.
+///
+/// Zero, and deliberately so: it is the unix epoch, it is obviously not a real reading, and it says
+/// "nobody offered one" without the writer having to invent an answer by reading a clock.
+pub const UNSTAMPED_CREATED_AT: u64 = 0;
+
 pub struct ResponsesWriter {
     /// Per-stream `sequence_number` counter. Reset to 0 on the stream's opening `MessageStart`
     /// (`response.created`) and advanced once per emitted event for the rest of the stream.
@@ -1123,6 +1136,11 @@ pub struct ResponsesWriter {
     /// `response_id`; a poisoned lock degrades to the synthesize-fresh (`now_unix_secs`) fallback
     /// rather than panicking on the request path.
     created_at: std::sync::Mutex<Option<u64>>,
+    /// The creation time the CALLER supplied for this writer, in unix seconds — the streaming
+    /// path's counterpart of the buffered path's `IrResponse::created`. Set once, at the point the
+    /// stream is opened, by whoever holds a clock; a plain value, never a clock read of its own.
+    /// `UNSTAMPED_CREATED_AT` means the caller offered none.
+    stamped_created_at: u64,
     /// Per-stream `response.model`. Captured on the opening `MessageStart` (the model written into
     /// `response.created`, after the DEFAULT_MODEL fallback) and replayed verbatim onto EVERY
     /// subsequent lifecycle event (`response.completed`/`response.incomplete`/`response.failed`). A
@@ -1270,6 +1288,7 @@ pub const ResponsesWriter: ResponsesWriter = ResponsesWriter {
     sequence: AtomicU64::new(0),
     response_id: std::sync::Mutex::new(None),
     created_at: std::sync::Mutex::new(None),
+    stamped_created_at: UNSTAMPED_CREATED_AT,
     model: std::sync::Mutex::new(None),
     open_tool_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
     open_text_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
@@ -1293,6 +1312,7 @@ impl Clone for ResponsesWriter {
         // panicking on the request path.
         ResponsesWriter {
             sequence: AtomicU64::new(self.sequence.load(Ordering::Relaxed)),
+            stamped_created_at: self.stamped_created_at,
             response_id: std::sync::Mutex::new(
                 self.response_id.lock().map(|id| id.clone()).unwrap_or(None),
             ),
@@ -1478,12 +1498,26 @@ impl ResponsesWriter {
     /// unix time if it was never set (a malformed stream whose terminal event preceded
     /// `MessageStart`, or a poisoned lock). Replaying the captured value keeps every event's
     /// `created_at` identical, matching a native Responses stream.
-    fn carried_created_at(&self) -> u64 {
+    pub fn carried_created_at(&self) -> u64 {
         self.created_at
             .lock()
             .ok()
             .and_then(|c| *c)
-            .unwrap_or_else(now_unix_secs)
+            .unwrap_or(self.stamped_created_at)
+    }
+
+    /// This writer, stamped with the creation time the caller read.
+    ///
+    /// The streaming path has no answer object to carry a creation time on, so it rides the writer:
+    /// whoever opens the stream reads its own clock once and hands the reading here, and every
+    /// event this writer emits stamps that one value. Two writers stamped with the same reading
+    /// produce the same bytes.
+    #[must_use]
+    pub fn stamped_at(created_at_unix: u64) -> ResponsesWriter {
+        ResponsesWriter {
+            stamped_created_at: created_at_unix,
+            ..ResponsesWriter
+        }
     }
 
     /// Store the per-stream `model` captured on `MessageStart` so terminal events replay it
