@@ -94,3 +94,45 @@ fn trailing_detail_sub_buckets_merge_some_wins() {
     assert_eq!(acc.detail.cache_creation_1h_input_tokens, Some(2));
     assert_eq!(acc.detail.search_units, Some(3));
 }
+
+/// EVERY `IrUsageDetail` bucket rides the Some-wins fold, not just the handful that had a bug filed
+/// against them. The fold is written as a no-`..` destructure of the detail struct precisely so a
+/// future field cannot be added without landing here; this test pins the current full census so a
+/// silently-dropped bucket is a red test rather than an attribution hole a customer finds on a bill.
+#[test]
+fn trailing_detail_merge_is_exhaustive_over_every_bucket() {
+    let full = crate::ir::IrUsageDetail {
+        reasoning_tokens: Some(1),
+        cache_creation_5m_input_tokens: Some(2),
+        cache_creation_1h_input_tokens: Some(3),
+        search_units: Some(4),
+        web_search_requests: Some(5),
+        service_tier: Some("priority".to_string()),
+        input_audio_tokens: Some(6),
+        output_audio_tokens: Some(7),
+        accepted_prediction_tokens: Some(8),
+        rejected_prediction_tokens: Some(9),
+        tool_use_prompt_tokens: Some(10),
+        billed_input_tokens: Some(11),
+        billed_output_tokens: Some(12),
+        billed_classifications: Some(13),
+    };
+    let mut acc = usage(0, 0, None, None);
+    let mut trailing = usage(50, 20, None, None);
+    trailing.detail = full.clone();
+    merge_trailing_usage(&mut acc, &trailing);
+    assert_eq!(
+        acc.detail, full,
+        "every trailing detail bucket must land on the accumulator"
+    );
+
+    // The mirror direction: a trailing chunk with NO detail never clobbers what the accumulator
+    // already carried, for every bucket.
+    let mut acc = usage(50, 20, None, None);
+    acc.detail = full.clone();
+    merge_trailing_usage(&mut acc, &usage(0, 0, None, None));
+    assert_eq!(
+        acc.detail, full,
+        "an empty trailing detail must clobber no bucket"
+    );
+}

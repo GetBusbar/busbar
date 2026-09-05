@@ -298,27 +298,7 @@ impl StreamTranslate {
         // include_usage, Gemini, Bedrock, Cohere) is never overwritten.
         if let crate::ir::IrStreamEvent::MessageDelta { usage, .. } = &mut ev {
             if let Some(start) = &self.start_usage {
-                if usage.input_tokens == 0 {
-                    usage.input_tokens = start.input_tokens;
-                }
-                if usage.cache_creation_input_tokens.is_none() {
-                    usage.cache_creation_input_tokens = start.cache_creation_input_tokens;
-                }
-                if usage.cache_read_input_tokens.is_none() {
-                    usage.cache_read_input_tokens = start.cache_read_input_tokens;
-                }
-                // The separately-priced cache-tier SUB-BUCKETS ride the same fill-if-absent
-                // rule as their parent `cache_creation_input_tokens` above: Anthropic reports
-                // them only at stream start, and a backfill that restored the parent while
-                // dropping the tiers would make the split irreconcilable on the terminal frame.
-                if usage.detail.cache_creation_5m_input_tokens.is_none() {
-                    usage.detail.cache_creation_5m_input_tokens =
-                        start.detail.cache_creation_5m_input_tokens;
-                }
-                if usage.detail.cache_creation_1h_input_tokens.is_none() {
-                    usage.detail.cache_creation_1h_input_tokens =
-                        start.detail.cache_creation_1h_input_tokens;
-                }
+                backfill_from_start_usage(usage, start);
             }
             // A-tap capture (Change A): accumulate the terminal IR usage AFTER the start-usage
             // backfill, so `last_usage` reports the real prompt+completion counts for every
@@ -601,22 +581,16 @@ impl StreamTranslate {
                 );
             }
             if let crate::ir::IrStreamEvent::MessageDelta { usage, .. } = &ev {
-                // Mirror translate_event's terminal-usage accumulation (post start-usage backfill).
-                let (mut input, output) = (usage.input_tokens, usage.output_tokens);
-                let (mut cache_creation, mut cache_read) = (
-                    usage.cache_creation_input_tokens,
-                    usage.cache_read_input_tokens,
-                );
+                // The EXACT accumulation `translate_event` runs: the same start-usage backfill, then
+                // the same one shared Some-wins fold. This arm used to hand-roll a four-field copy of
+                // the totals, which meant the same-protocol A-tap silently discarded every
+                // `IrUsageDetail` bucket the reader had just decoded — so a same-protocol stream
+                // reported no attribution while its buffered twin reported all of it (and a streamed
+                // Cohere call metered the RAW totals where the buffered one meters `billed_units`).
+                // Sharing the fold makes a third accumulation rule impossible to drift.
+                let mut trailing = usage.clone();
                 if let Some(start) = &self.start_usage {
-                    if input == 0 {
-                        input = start.input_tokens;
-                    }
-                    if cache_creation.is_none() {
-                        cache_creation = start.cache_creation_input_tokens;
-                    }
-                    if cache_read.is_none() {
-                        cache_read = start.cache_read_input_tokens;
-                    }
+                    backfill_from_start_usage(&mut trailing, start);
                 }
                 let acc = self.last_usage.get_or_insert(crate::ir::IrUsage {
                     input_tokens: 0,
@@ -625,18 +599,7 @@ impl StreamTranslate {
                     cache_read_input_tokens: None,
                     detail: crate::ir::IrUsageDetail::default(),
                 });
-                if input != 0 {
-                    acc.input_tokens = input;
-                }
-                if output != 0 {
-                    acc.output_tokens = output;
-                }
-                if cache_creation.is_some() {
-                    acc.cache_creation_input_tokens = cache_creation;
-                }
-                if cache_read.is_some() {
-                    acc.cache_read_input_tokens = cache_read;
-                }
+                merge_trailing_usage(acc, &trailing);
             }
         }
     }
@@ -1391,6 +1354,36 @@ mod rewrite_frame_strip_usage_tests;
 /// trailing chunk overrides the (typically zero) terminal value; a zero/`None` trailing field leaves
 /// the terminal value intact, so a protocol that already carried usage on its terminal delta is never
 /// clobbered by an absent trailing chunk.
+/// Restore onto a terminal `MessageDelta`'s usage the input/cache fields the egress protocol only
+/// ever reported at STREAM START (Anthropic): the delta arrives with `input_tokens == 0` and no
+/// cache splits, so without this the ingress writer emits — and billing reads — a zero prompt-token
+/// count. Fills ONLY fields the delta itself left empty, so a protocol that DOES carry input on its
+/// terminal delta (OpenAI `include_usage`, Gemini, Bedrock, Cohere) is never overwritten.
+///
+/// Shared by the cross-protocol translate path and the same-protocol usage side-channel so the two
+/// cannot disagree about what a stream's prompt tokens were.
+fn backfill_from_start_usage(usage: &mut crate::ir::IrUsage, start: &crate::ir::IrUsage) {
+    if usage.input_tokens == 0 {
+        usage.input_tokens = start.input_tokens;
+    }
+    if usage.cache_creation_input_tokens.is_none() {
+        usage.cache_creation_input_tokens = start.cache_creation_input_tokens;
+    }
+    if usage.cache_read_input_tokens.is_none() {
+        usage.cache_read_input_tokens = start.cache_read_input_tokens;
+    }
+    // The separately-priced cache-tier SUB-BUCKETS ride the same fill-if-absent rule as their parent
+    // `cache_creation_input_tokens` above: Anthropic reports them only at stream start, and a
+    // backfill that restored the parent while dropping the tiers would make the split irreconcilable
+    // on the terminal frame.
+    if usage.detail.cache_creation_5m_input_tokens.is_none() {
+        usage.detail.cache_creation_5m_input_tokens = start.detail.cache_creation_5m_input_tokens;
+    }
+    if usage.detail.cache_creation_1h_input_tokens.is_none() {
+        usage.detail.cache_creation_1h_input_tokens = start.detail.cache_creation_1h_input_tokens;
+    }
+}
+
 fn merge_trailing_usage(acc: &mut crate::ir::IrUsage, trailing: &crate::ir::IrUsage) {
     if trailing.input_tokens > 0 {
         acc.input_tokens = trailing.input_tokens;
@@ -1404,40 +1397,94 @@ fn merge_trailing_usage(acc: &mut crate::ir::IrUsage, trailing: &crate::ir::IrUs
     if trailing.cache_read_input_tokens.is_some() {
         acc.cache_read_input_tokens = trailing.cache_read_input_tokens;
     }
-    // The DETAIL sub-buckets ride the same Some-wins rule as the cache fields. Left out, a
-    // streamed `/v1/responses` call over an OpenAI-chat reasoning egress answered
-    // `output_tokens_details.reasoning_tokens: 0` while the identical buffered call answered the
-    // real value — the trailing usage-only chunk is the ONLY place those egresses report the
-    // sub-buckets, and the fold merged only the four totals.
-    if trailing.detail.reasoning_tokens.is_some() {
-        acc.detail.reasoning_tokens = trailing.detail.reasoning_tokens;
+    merge_trailing_usage_detail(&mut acc.detail, &trailing.detail);
+}
+
+/// The DETAIL half of the fold: every [`crate::ir::IrUsageDetail`] bucket rides the same Some-wins
+/// rule as the cache fields above. Left out, a streamed `/v1/responses` call over an OpenAI-chat
+/// reasoning egress answered `output_tokens_details.reasoning_tokens: 0` while the identical
+/// buffered call answered the real value — the trailing usage-only chunk is the ONLY place those
+/// egresses report the sub-buckets, and the fold merged only the four totals.
+///
+/// The trailing detail is destructured with NO `..` REST PATTERN on purpose. Every field is a
+/// per-dialect attribution carrier added one batch at a time (the Anthropic web-search/service-tier
+/// pair, the four OpenAI audio/predicted-outputs slices, Gemini's tool-use prompt bucket, Cohere's
+/// billed trio), and each batch that landed on the struct without landing here reopened the same
+/// stream-versus-buffered attribution hole for its own dialect. Naming every field makes the NEXT
+/// such field a compile error at this line instead of a number a customer finds missing from a bill.
+fn merge_trailing_usage_detail(
+    acc: &mut crate::ir::IrUsageDetail,
+    trailing: &crate::ir::IrUsageDetail,
+) {
+    let crate::ir::IrUsageDetail {
+        reasoning_tokens,
+        cache_creation_5m_input_tokens,
+        cache_creation_1h_input_tokens,
+        search_units,
+        web_search_requests,
+        service_tier,
+        input_audio_tokens,
+        output_audio_tokens,
+        accepted_prediction_tokens,
+        rejected_prediction_tokens,
+        tool_use_prompt_tokens,
+        billed_input_tokens,
+        billed_output_tokens,
+        billed_classifications,
+    } = trailing;
+
+    if reasoning_tokens.is_some() {
+        acc.reasoning_tokens = *reasoning_tokens;
     }
-    if trailing.detail.cache_creation_5m_input_tokens.is_some() {
-        acc.detail.cache_creation_5m_input_tokens = trailing.detail.cache_creation_5m_input_tokens;
+    if cache_creation_5m_input_tokens.is_some() {
+        acc.cache_creation_5m_input_tokens = *cache_creation_5m_input_tokens;
     }
-    if trailing.detail.cache_creation_1h_input_tokens.is_some() {
-        acc.detail.cache_creation_1h_input_tokens = trailing.detail.cache_creation_1h_input_tokens;
+    if cache_creation_1h_input_tokens.is_some() {
+        acc.cache_creation_1h_input_tokens = *cache_creation_1h_input_tokens;
     }
-    if trailing.detail.search_units.is_some() {
-        acc.detail.search_units = trailing.detail.search_units;
+    if search_units.is_some() {
+        acc.search_units = *search_units;
     }
-    // busbar 1.6.x field-coverage carry: the Gemini tool-use prompt sub-bucket rides the same
-    // Some-wins rule — a streamed Gemini egress reports `toolUsePromptTokenCount` only on the
-    // trailing usage-bearing chunk, so folding only the four totals would zero its attribution.
-    if trailing.detail.tool_use_prompt_tokens.is_some() {
-        acc.detail.tool_use_prompt_tokens = trailing.detail.tool_use_prompt_tokens;
+    // Anthropic reports the server-side web-search count and the tier that actually served the turn
+    // on its usage-bearing frames; both are separately-metered/attribution values invisible in a
+    // token total that reconciles perfectly, so an unmerged one is a silent attribution loss.
+    if web_search_requests.is_some() {
+        acc.web_search_requests = *web_search_requests;
+    }
+    if service_tier.is_some() {
+        acc.service_tier = service_tier.clone();
+    }
+    // The four OpenAI-family slices arrive on the trailing `include_usage` chunk — the only frame of
+    // an OpenAI stream that carries a usage object at all — so folding only the four totals reported
+    // them as absent at `stream:true` and real at `stream:false` for the same request.
+    if input_audio_tokens.is_some() {
+        acc.input_audio_tokens = *input_audio_tokens;
+    }
+    if output_audio_tokens.is_some() {
+        acc.output_audio_tokens = *output_audio_tokens;
+    }
+    if accepted_prediction_tokens.is_some() {
+        acc.accepted_prediction_tokens = *accepted_prediction_tokens;
+    }
+    if rejected_prediction_tokens.is_some() {
+        acc.rejected_prediction_tokens = *rejected_prediction_tokens;
+    }
+    // A streamed Gemini egress reports `toolUsePromptTokenCount` only on the trailing usage-bearing
+    // chunk, so folding only the four totals would zero its attribution.
+    if tool_use_prompt_tokens.is_some() {
+        acc.tool_use_prompt_tokens = *tool_use_prompt_tokens;
     }
     // Cohere `billed_units.{input,output}_tokens`/`classifications` ride the same Some-wins rule: a
     // streamed Cohere call reports them only on the terminal `message-end.delta.usage`, so the fold
     // must carry them or a streamed call under-reports the billed attribution its buffered twin has.
-    if trailing.detail.billed_input_tokens.is_some() {
-        acc.detail.billed_input_tokens = trailing.detail.billed_input_tokens;
+    if billed_input_tokens.is_some() {
+        acc.billed_input_tokens = *billed_input_tokens;
     }
-    if trailing.detail.billed_output_tokens.is_some() {
-        acc.detail.billed_output_tokens = trailing.detail.billed_output_tokens;
+    if billed_output_tokens.is_some() {
+        acc.billed_output_tokens = *billed_output_tokens;
     }
-    if trailing.detail.billed_classifications.is_some() {
-        acc.detail.billed_classifications = trailing.detail.billed_classifications;
+    if billed_classifications.is_some() {
+        acc.billed_classifications = *billed_classifications;
     }
 }
 

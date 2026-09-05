@@ -268,6 +268,16 @@
         "headers"
       ],
       "rationale": "A stream: true request whose routed lane is Responses-shaped is now served as text/event-stream carrying the ingress door's own translated stream frames (Cohere v2 SSE, Gemini's SSE framing, OpenAI chat.completion.chunk SSE); 1.5.5 answered it as a buffered application/json body regardless of the door that received it. The Anthropic- and Bedrock-door cells for the same egress already carry this fix under S-4's and S-1's broader per-door wildcards; this entry covers the three doors (Cohere, Gemini, OpenAI chat) whose own required-member registrations (S-5; none was needed for Cohere/Gemini, which had zero required-member violations) did not include the ok_stream outcome. Metered identically (250 cents / 18 tokens)."
+    },
+    {
+      "id": "S-8 streamed usage carries the same attribution buckets as buffered",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-05 llm-codec audit",
+      "cells": "^llm\\|[a-z_]+\\|[a-z_]+\\|request\\|ok_stream$",
+      "classes": [
+        "body"
+      ],
+      "rationale": "streamed usage carries the same attribution buckets as buffered. A stream's usage object now reports every per-dialect attribution sub-bucket the provider sent (reasoning tokens, the two Anthropic cache-creation TTL tiers and its web-search/service-tier pair, the four OpenAI audio and predicted-outputs slices, Gemini's tool-use prompt slice, Cohere's separately-metered billed_units trio), instead of reporting them only when the same request was made with stream:false. 1.5.5 carried NO sub-buckets on either path, so nothing a 1.5.5 client read has changed value or disappeared — the buckets are additive members that were absent before; 1.6.0 recovered them on the buffered path and this closes the streamed half of the same gap, so the two answers for one request finally agree. The totals are untouched: billable_tokens ignores the whole attribution struct. CAVEAT for a future re-record: Cohere's billed_units trio is the one bucket that is NOT a slice of the totals — to_token_usage lets billed_input/billed_output win over the raw counts — so a Cohere backend that reports billed_units on a STREAM will move that stream's ledgered figures to the same numbers its buffered twin already ledgers. No recorded cell exercises it (the oracle mock sends no billed_units on a stream), so this entry accepts `body` only; should a fixture ever start sending it, the effects.usage delta must be re-registered as kind=breaking with a CHANGELOG line rather than folded in here."
     }
   ]
 }
