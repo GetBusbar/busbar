@@ -178,7 +178,7 @@ async fn a_declared_length_body_cut_short_at_eof_is_a_framing_error() {
     let writer = tokio::spawn(async move {
         let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
         let mut wire = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 1000\r\n\r\n".to_vec();
-        wire.extend_from_slice(&vec![b'a'; 200]);
+        wire.extend_from_slice(&[b'a'; 200]);
         tokio::io::AsyncWriteExt::write_all(&mut client, &wire)
             .await
             .unwrap();
@@ -689,9 +689,57 @@ impl busbar_contract::Arena for TestArena {
 #[tokio::test]
 async fn every_transport_error_is_mapped_on_dial() {
     let transport = HttpTransport::new(ClientSettings::default());
+
+    // The dial's own refusals: an address that is not one, and a destination that is not upstream.
     let bad = upstream_dest("not a uri at all");
     let err = transport.dial(&bad, &fixture_key()).await.unwrap_err();
     assert_eq!(err, TransportError::AddressRefused);
+
+    // EVERY arm of the mapper this crate shares with its whole ingress and egress path, one
+    // io::Error per arm. The name of this cell claims exhaustiveness; before this, swapping two
+    // arms of map_io_err left it green, which is the definition of an unpinned mapping. `http`
+    // dials through a pooled client rather than a socket of its own, so the connect-time kinds
+    // cannot be provoked through `dial` the way `tcp`'s sibling cell provokes them — the mapper is
+    // driven directly instead, which is the same claim with nothing left implicit.
+    for (kind, expected) in [
+        (io::ErrorKind::ConnectionRefused, TransportError::Refused),
+        (io::ErrorKind::TimedOut, TransportError::Timeout),
+        (io::ErrorKind::ConnectionReset, TransportError::Reset),
+        (io::ErrorKind::ConnectionAborted, TransportError::Reset),
+        (
+            io::ErrorKind::AddrNotAvailable,
+            TransportError::AddressRefused,
+        ),
+        (io::ErrorKind::InvalidInput, TransportError::AddressRefused),
+        (io::ErrorKind::BrokenPipe, TransportError::Closed),
+        (io::ErrorKind::NotFound, TransportError::Closed),
+    ] {
+        let mapped = HttpTransport::map_io_err(&io::Error::new(kind, "fixture"));
+        assert_eq!(
+            mapped, expected,
+            "io::ErrorKind::{kind:?} maps to {expected:?}"
+        );
+    }
+
+    // And a real refusal off a real closed port, so the mapper's Refused arm is not only pinned
+    // against a fabricated error: the exchange runs inside `write`, so that is where it surfaces.
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = closed.local_addr().unwrap();
+    drop(closed);
+    let uri: &'static str = Box::leak(format!("http://{addr}/").into_boxed_str());
+    let conn = transport
+        .dial(&upstream_dest(uri), &fixture_key())
+        .await
+        .expect("dialling is address parsing here; the socket comes later");
+    let err = transport
+        .write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransportError::Refused);
 }
 
 #[test]
