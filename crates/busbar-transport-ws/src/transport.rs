@@ -30,6 +30,12 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::conn::{ConnState, LowerIo, Sock, WsConnHandle};
 
+/// How long a courtesy Close frame may take to reach the peer before this transport gives up on
+/// it. A peer whose receive window is full can never accept one, and a send with no bound would
+/// hold the writer lock — and the socket — for the process's lifetime, because `close` has already
+/// dropped the only handle that could cancel it.
+pub(crate) const CLOSE_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
+
 type FrameStream =
     std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
 
@@ -494,9 +500,16 @@ impl Transport for WsTransport {
     fn close(&self, conn: Conn, _reason: CloseReason) {
         let id = conn.id();
         if let Some(state) = self.conns.lock().unwrap().remove(&id) {
+            // The Close frame is a courtesy, and the connection is already finalised: the state has
+            // left the registry, so nothing can cancel the task that sends it. It therefore cancels
+            // itself. A peer whose receive window is full never accepts the frame, and without this
+            // budget the task, the writer lock and the socket would outlive the connection.
             tokio::spawn(async move {
-                let mut w = state.writer.lock().await;
-                let _ = futures::SinkExt::send(&mut *w, Message::Close(None)).await;
+                let _ = tokio::time::timeout(CLOSE_BUDGET, async {
+                    let mut w = state.writer.lock().await;
+                    let _ = futures::SinkExt::send(&mut *w, Message::Close(None)).await;
+                })
+                .await;
             });
         }
     }

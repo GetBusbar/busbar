@@ -415,3 +415,37 @@ fn a_bracketed_ipv6_authority_parses_with_and_without_a_port() {
         (true, "host".to_string(), 443, "/p".to_string())
     );
 }
+
+/// A courtesy Close frame must not be able to outlive the process. `close` hands the send to a
+/// detached task and keeps no handle to cancel it, so a peer whose receive window is full would
+/// pin the writer lock — and the socket — forever. The budget is what makes the task terminate.
+#[tokio::test]
+async fn close_gives_up_on_a_peer_that_never_reads() {
+    let t = Arc::new(WsTransport::new());
+    // A duplex with no room left: the peer end is never read, so a Close frame cannot be sent.
+    let (a, _b) = pair(&t, 8).await;
+    let stuffing = vec![b'z'; 1_000_000];
+    let t2 = t.clone();
+    let a2 = a.clone();
+    let stuffer =
+        tokio::spawn(async move { t2.write(&a2, StreamId(0), ArenaBytes::new(&stuffing)).await });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!stuffer.is_finished(), "the duplex must be full");
+    stuffer.abort();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // The only handle on the connection state, besides the one `close` hands its detached task.
+    let state = t.state_of(a.id()).expect("the connection is live");
+    t.close(a, CloseReason::Normal);
+
+    let gave_up = tokio::time::timeout(crate::transport::CLOSE_BUDGET * 8, async {
+        while Arc::strong_count(&state) > 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(
+        gave_up.is_ok(),
+        "the detached close task must give up within its budget and drop the socket"
+    );
+}
