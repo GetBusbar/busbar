@@ -428,11 +428,7 @@ impl Transport for TcpTransport {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
             {
                 let mut guard = inner.write.lock().await;
-                guard
-                    .write_all(bytes.as_slice())
-                    .await
-                    .map_err(|e| Self::map_connect_err(&e))?;
-                let _ = guard.flush().await;
+                deliver_refusal(&mut *guard, bytes.as_slice()).await?;
             }
             self.conns
                 .lock()
@@ -441,6 +437,24 @@ impl Transport for TcpTransport {
             Ok(())
         })
     }
+}
+
+/// Put a Unit 0 refusal's bytes on the wire and report whether they actually left.
+///
+/// `write_all` only proves the bytes reached the writer's own buffer. The kernel is told a refusal
+/// was delivered, and a refusal is the client-visible answer to an authentication failure, so the
+/// flush is the evidence and its failure is reported the same way the ordinary write path reports
+/// one rather than being swallowed.
+async fn deliver_refusal<W>(w: &mut W, bytes: &[u8]) -> Result<(), TransportError>
+where
+    W: tokio::io::AsyncWrite + Unpin + ?Sized,
+{
+    w.write_all(bytes)
+        .await
+        .map_err(|e| TcpTransport::map_connect_err(&e))?;
+    w.flush()
+        .await
+        .map_err(|e| TcpTransport::map_connect_err(&e))
 }
 
 #[cfg(test)]

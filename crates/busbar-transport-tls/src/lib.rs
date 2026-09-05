@@ -612,11 +612,10 @@ impl Transport for TlsTransport {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
             {
                 let mut guard = inner.write.lock().await;
-                let result = match &mut *guard {
-                    InnerWrite::Server(w) => w.write_all(bytes.as_slice()).await,
-                    InnerWrite::Client(w) => w.write_all(bytes.as_slice()).await,
-                };
-                result.map_err(|e| Self::map_io_err(&e))?;
+                match &mut *guard {
+                    InnerWrite::Server(w) => deliver_refusal(w, bytes.as_slice()).await?,
+                    InnerWrite::Client(w) => deliver_refusal(w, bytes.as_slice()).await?,
+                }
             }
             self.conns.lock().expect("poisoned").remove(&conn.id());
             Ok(())
@@ -653,6 +652,23 @@ fn split_address(
         }
         None => Err(TransportError::AddressRefused),
     }
+}
+
+/// Put a Unit 0 refusal's bytes on the wire and report whether they actually left.
+///
+/// `write_all` on a TLS stream only proves the plaintext reached rustls's own buffer; the ciphertext
+/// may never have reached the socket. The kernel is told a refusal was delivered, and a refusal is
+/// the client-visible answer to an authentication failure, so the flush is the evidence — the same
+/// evidence the ordinary write path already takes — and its failure is reported rather than
+/// swallowed.
+async fn deliver_refusal<W>(w: &mut W, bytes: &[u8]) -> Result<(), TransportError>
+where
+    W: tokio::io::AsyncWrite + Unpin + ?Sized,
+{
+    w.write_all(bytes)
+        .await
+        .map_err(|e| TlsTransport::map_io_err(&e))?;
+    w.flush().await.map_err(|e| TlsTransport::map_io_err(&e))
 }
 
 #[cfg(test)]

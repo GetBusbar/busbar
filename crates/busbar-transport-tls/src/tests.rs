@@ -973,3 +973,78 @@ mod cg_49_sni {
         );
     }
 }
+
+/// A writer that accepts every byte and then fails to flush: the exact shape a Unit 0 refusal must
+/// not be able to report as delivered. `write_all` succeeds, so only the flush leg can catch it.
+struct FlushFailsWriter {
+    written: Vec<u8>,
+}
+
+impl tokio::io::AsyncWrite for FlushFailsWriter {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        self.written.extend_from_slice(buf);
+        std::task::Poll::Ready(Ok(buf.len()))
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        std::task::Poll::Ready(Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "the peer went away before the refusal reached it",
+        )))
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn an_undelivered_unit0_refusal_is_an_error() {
+    let mut w = FlushFailsWriter {
+        written: Vec::new(),
+    };
+    let err = deliver_refusal(&mut w, b"refused")
+        .await
+        .expect_err("a refusal whose flush failed was never delivered and must not report Ok");
+    assert_eq!(err, TransportError::Reset);
+    assert_eq!(w.written.as_slice(), b"refused");
+}
+
+#[tokio::test]
+async fn a_unit0_refusal_reaches_a_healthy_peer() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+    server
+        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .await
+        .unwrap();
+
+    let mut frames = client.frames(client_conn);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"refused");
+}
