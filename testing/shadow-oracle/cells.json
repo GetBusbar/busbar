@@ -43,16 +43,16 @@
     }
   ],
   "counts": {
-    "total": 2280,
+    "total": 2283,
     "by_plane": {
       "a2a": 468,
-      "core": 766,
+      "core": 769,
       "llm": 134,
       "mcp": 912
     },
     "by_family": {
       "a2a": 468,
-      "admin.ops": 231,
+      "admin.ops": 234,
       "auth.lifecycle": 3,
       "billing": 11,
       "boot.refusal": 205,
@@ -7248,6 +7248,34 @@
       "why": "no credential -> 401 envelope"
     },
     {
+      "id": "admin.ops|GetUsage|no-usage-after-mutation",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/api/v1/admin/groups",
+            "listener": "admin",
+            "auth": "admin",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"config\":{\"limits\":[{\"budget\":5,\"per\":\"day\"}]},\"name\":\"oracle-added\"}"
+          }
+        ]
+      },
+      "why": "admin operations are never billed: one PostGroups mutation leaves /api/v1/admin/usage at its fresh-boot zero shape"
+    },
+    {
       "id": "admin.ops|GetUsage|ok",
       "plane": "core",
       "family": "admin.ops",
@@ -8164,6 +8192,23 @@
         ]
       },
       "why": "200 ConfigReloadView; re-reads the on-disk config.yaml/providers.yaml and swaps. No body. Rate class Config."
+    },
+    {
+      "id": "admin.ops|PostConfigReload|rate-limit",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/config/reload",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "repeat": 11
+      },
+      "why": "the 11th Config-class mutation inside one boot's 60s window is refused (429) before the reload itself runs -- CONFIG_CLASS_RULES, not the crate's own Crud placeholder"
     },
     {
       "id": "admin.ops|PostConfigReload|unauth",
@@ -9885,6 +9930,24 @@
         "listener": "admin"
       },
       "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|admin-token|wrong-destination",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}",
+        "auth": "admin",
+        "listener": "data"
+      },
+      "why": "the admin operator credential is not a valid signed vkey on the data-plane chain (keys); refused before Admit ever draws a budget bucket"
     },
     {
       "id": "auth.lifecycle|key-expiry",

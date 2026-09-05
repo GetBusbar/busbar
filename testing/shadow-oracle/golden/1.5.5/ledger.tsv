@@ -692,8 +692,11 @@ admin.ops|PutIdentityProvidersName|if-match-malformed	PASS	HTTP 400; usage Δ {}
 admin.ops|PutIdentityProvidersName|if-match-stale	PASS	HTTP 200; usage Δ {}	
 admin.ops|PutIdentityProvidersName|not-found	PASS	HTTP 200; usage Δ {}	
 admin.ops|PutIdentityProvidersName|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|PutIdentityProvidersName|unauth	PASS	HTTP 401; usage Δ {}	
-billing|admin-usage|after-2	PASS	HTTP 200; usage Δ {}	
+admin.ops|PutIdentityProvidersName|unauth	PASS	HTTP 401; usage Δ {}
+admin.ops|admin-token|wrong-destination	PASS	HTTP 401; usage Δ {}
+admin.ops|PostConfigReload|rate-limit	PASS	HTTP 429; usage Δ {}
+admin.ops|GetUsage|no-usage-after-mutation	PASS	HTTP 200; usage Δ {}
+billing|admin-usage|after-2	PASS	HTTP 200; usage Δ {}
 billing|admin-usage|past-day	PASS	HTTP 200; usage Δ {}	
 billing|group-usage|after-2	PASS	HTTP 200; usage Δ {}	
 billing|group-usage|broke-after-prime	PASS	HTTP 200; usage Δ {}	
