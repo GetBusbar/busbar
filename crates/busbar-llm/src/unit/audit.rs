@@ -53,6 +53,11 @@ use crate::engine::POOL_LABEL_UNRESOLVED;
 /// `charged` is the door's own answer, carried through Route unchanged: an admission that
 /// fail-opened without charging must not refund, because the refund is a decrement of a shared
 /// window and there is nothing of this unit's in it.
+// Plumbing function: each parameter is an independent piece of the unit's own evidence — who was
+// calling, on what wire, to what destination, since when, charged or not, and what it is being
+// answered with. Grouping them into a struct would name a shape nothing else in the plane has, and
+// the terminal it forwards to takes them one by one anyway.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn audit(
     host: &Arc<dyn EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
@@ -85,14 +90,7 @@ pub(crate) fn audit_refused(
     charged_at: u64,
     resp: Response,
 ) -> Response {
-    host.finish_rejected(
-        gov,
-        proto,
-        POOL_LABEL_UNRESOLVED,
-        started,
-        charged_at,
-        resp,
-    )
+    host.finish_rejected(gov, proto, POOL_LABEL_UNRESOLVED, started, charged_at, resp)
 }
 
 /// THE AUDIT-STEP IDENTITY HARNESS: this step against the live terminal it was lifted from.
