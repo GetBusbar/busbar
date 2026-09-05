@@ -117,9 +117,7 @@ snapshot() {  # snapshot <dir> <key-id>
   curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" \
     "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/audit?limit=1000" -o "$d/audit.json" 2>/dev/null || rm -f "$d/audit.json"
   # /metrics on the data listener is key-authed in 1.5.5 (RouteAuth::Key): present the OK client key.
-  curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_TOKEN_OK}" "http://127.0.0.1:${LISTEN_PORT}/metrics" -o "$d/metrics.txt" 2>/dev/null \
-    || curl -fsS -m 5 "http://127.0.0.1:${LISTEN_PORT}/metrics" -o "$d/metrics.txt" 2>/dev/null \
-    || rm -f "$d/metrics.txt"
+  oracle_scrape_metrics "$LISTEN_PORT" "$ORACLE_TOKEN_OK" "$d/metrics.txt" || true
 }
 
 # The providers catalog a migrated corpus config should be validated against — mirrors `providers_for`

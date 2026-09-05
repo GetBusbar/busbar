@@ -258,3 +258,23 @@ oracle_mint_keys() {  # <admin_port>
   export ORACLE_AWS_AKID_OK ORACLE_AWS_SECRET_OK ORACLE_AWS_AKID_BROKE ORACLE_AWS_SECRET_BROKE ORACLE_AWS_AKID_NOSCOPE ORACLE_AWS_SECRET_NOSCOPE
   [ -n "$ORACLE_TOKEN_OK" ] && [ -n "$ORACLE_TOKEN_BROKE" ] && [ -n "$ORACLE_TOKEN_NOSCOPE" ]
 }
+
+# Scrape /metrics into <out>, retrying through the boot window in which the recorder is not yet
+# installed (a candidate answers 503 + Retry-After there, never an empty 200). Key-authed first
+# (1.5.5's RouteAuth::Key on the data listener), then unauthenticated; absent after 3 s.
+oracle_scrape_metrics() {  # <listen-port> <token> <out-file>
+  local port="$1" token="$2" out="$3" i=0 code
+  while [ $i -lt 60 ]; do
+    code="$(curl -sS -m 5 -H "Authorization: Bearer ${token}" "http://127.0.0.1:${port}/metrics" -o "$out" -w '%{http_code}' 2>/dev/null || echo 000)"
+    # 1.5.5 can answer an empty 200 from a worker whose recorder has described nothing yet (the
+    # cold-worker window a candidate refuses with 503 instead); an exposition with no series is
+    # not a scrape, so it retries like the refusal does
+    [ "$code" = 200 ] && grep -q '^# ' "$out" 2>/dev/null && return 0
+    # 401: the just-minted key is not visible to this worker yet (write-behind); 503: the recorder
+    # is not installed yet; 000: the listener is not answering yet. All three are boot-window
+    # transients on one binary or the other, so all three retry; anything else is the answer.
+    case "$code" in 200|401|503|000) ;; *) break ;; esac
+    sleep 0.05; i=$((i+1))
+  done
+  rm -f "$out"; return 1
+}

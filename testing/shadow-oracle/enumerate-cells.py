@@ -651,7 +651,7 @@ def crosscut_traps_cells() -> list[dict]:
             "path is a diff, not a silent pass through the normal hdr.date strip"))
     fo_body = chat("oracle-fo")
     trap = http("crosscut.traps|exhausted-retry-after-floor", F, "POST", "/v1/chat/completions", body=fo_body,
-                 keep={"headers": ["retry-after"]},
+                 keep={"headers_min": {"retry-after": 2}},
                  why="every member of pool oracle-fo is driven down (mock `down` verb, same technique as "
                      "route.failover|fo|all-down): the on_exhausted 503's Retry-After is pinned instead of "
                      "blanked to <RETRY>, so the report can show its actual value and a regression that "

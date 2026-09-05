@@ -16754,9 +16754,9 @@
       },
       "why": "every member of pool oracle-fo is driven down (mock `down` verb, same technique as route.failover|fo|all-down): the on_exhausted 503's Retry-After is pinned instead of blanked to <RETRY>, so the report can show its actual value and a regression that floors it below 2 seconds (the breaker's own base_cooldown_secs is 15s, jittered) is a visible diff, not hidden inside the usual retry-after normalization (PB-4)",
       "keep": {
-        "headers": [
-          "retry-after"
-        ]
+        "headers_min": {
+          "retry-after": 2
+        }
       },
       "mock_control": {
         "m-openai-chat": "down",

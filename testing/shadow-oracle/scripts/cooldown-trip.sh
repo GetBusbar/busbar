@@ -77,7 +77,7 @@ snap() {  # snap <dir>
     "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${ORACLE_KEY_OK}/usage" -o "$d/usage.json" 2>/dev/null || rm -f "$d/usage.json"
   curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" \
     "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/audit?limit=1000" -o "$d/audit.json" 2>/dev/null || rm -f "$d/audit.json"
-  curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_TOKEN_OK}" "http://127.0.0.1:${LISTEN_PORT}/metrics" -o "$d/metrics.txt" 2>/dev/null || rm -f "$d/metrics.txt"
+  oracle_scrape_metrics "$LISTEN_PORT" "$ORACLE_TOKEN_OK" "$d/metrics.txt" || true
 }
 snap "$before_dir"
 
