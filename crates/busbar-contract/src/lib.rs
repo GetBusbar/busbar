@@ -51,7 +51,10 @@ pub use plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 pub use plugin::{AbiVersion, KernelSeal, Kind, KindMarker, Plugin, STORE_ABI};
-pub use transport::{Fut, Transport, TransportConfigView, TransportMeta};
+pub use transport::{
+    check_composition, CompositionError, Fut, Registered, Transport, TransportConfigView,
+    TransportMeta, TRANSPORT_ABI,
+};
 pub use unit::{
     AbortBy, AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FailureReason, FinishClass, LegResult,
     Origin, Refusal, RefusalReason, ResourceLocator, ScopeFacts, SessionView, Step, TransportView,

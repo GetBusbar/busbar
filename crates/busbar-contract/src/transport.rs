@@ -15,6 +15,7 @@ use crate::wire::{
     ArrivalRecord, CloseReason, Conn, Frame, Handoff, HandshakeTrigger, Listener, StatusAt,
     TransportError,
 };
+use core::fmt;
 use futures::Stream;
 use std::future::Future;
 use std::pin::Pin;
@@ -28,6 +29,14 @@ pub type Fut<'a, T> = Pin<Box<dyn Future<Output = Result<T, TransportError>> + S
 /// The frame pump's own type: a stream of framed bytes tagged with the stream they arrived on.
 pub type FrameStream =
     Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
+
+/// The transport kind's ABI generation.
+///
+/// Transports are in-tree and never dynamically loaded, so there is no loader window to police —
+/// but the ABI-surface scan needs something to compare against, and a constant every transport
+/// names is the difference between one generation and each crate having invented its own. It sits
+/// beside the store's for the same reason: a kind's ABI is the kind's, not a plugin's.
+pub const TRANSPORT_ABI: crate::plugin::AbiVersion = crate::plugin::AbiVersion(1);
 
 /// Everything a transport declares about itself.
 pub trait TransportMeta {
@@ -71,6 +80,109 @@ pub trait TransportMeta {
 pub trait TransportConfigView: ConfigView {
     /// The address this transport should bind to.
     fn bind(&self) -> Option<&str>;
+}
+
+/// One registered transport, as the registry holds it for the boot check.
+///
+/// The declarations are associated constants, which a trait object cannot read; this is them as
+/// data, recorded at registration by the composition root that named the transport. Nothing here is
+/// derived — every field is what the crate declared or what the root wired — because a check that
+/// re-derived its own inputs would agree with itself for free.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Registered {
+    /// The transport's registry key.
+    pub key: &'static str,
+    /// The layers it declares it can be built over.
+    pub composes_over: &'static [&'static str],
+    /// The layer it was ACTUALLY built over, where the root composed it over one.
+    pub composed_over: Option<&'static str>,
+}
+
+/// A composition the registry will not boot on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompositionError {
+    /// A transport declares it composes over a layer no registered transport provides.
+    ///
+    /// A declaration nothing checks is the frame-honesty problem one layer up: the stack a node
+    /// reports is the stack its declarations describe, and a name that resolves to nothing means
+    /// the description was never true.
+    UnregisteredLayer {
+        /// The transport that declared it.
+        transport: &'static str,
+        /// The layer it named.
+        layer: &'static str,
+    },
+    /// A transport was composed over a layer it does not declare.
+    ///
+    /// The other direction of the same rule: a declared composition must be the one actually used,
+    /// or the declaration describes a node nobody is running.
+    UndeclaredComposition {
+        /// The transport that was composed.
+        transport: &'static str,
+        /// What it was actually built over.
+        used: &'static str,
+    },
+    /// Two transports registered under one key.
+    DuplicateKey(&'static str),
+}
+
+impl fmt::Display for CompositionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnregisteredLayer { transport, layer } => write!(
+                f,
+                "transport `{transport}` composes over `{layer}`, which no registered transport \
+                 provides"
+            ),
+            Self::UndeclaredComposition { transport, used } => write!(
+                f,
+                "transport `{transport}` was composed over `{used}`, which it does not declare"
+            ),
+            Self::DuplicateKey(key) => {
+                write!(f, "two transports registered under the key `{key}`")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CompositionError {}
+
+/// The boot check over a registry's transports: every declared layer exists, and every composition
+/// that happened was declared.
+///
+/// Run once, at boot, after configuration is read. Both halves matter and neither implies the
+/// other: a transport can declare a layer nobody registered, and a root can compose a transport
+/// over a layer it never declared. Before this ran, `COMPOSES_OVER` was a comment with a type.
+///
+/// # Errors
+///
+/// Two transports share a key, a declared layer names no registered transport, or a transport was
+/// built over a layer it does not declare.
+pub fn check_composition(registered: &[Registered]) -> Result<(), CompositionError> {
+    for (i, r) in registered.iter().enumerate() {
+        if registered[..i].iter().any(|other| other.key == r.key) {
+            return Err(CompositionError::DuplicateKey(r.key));
+        }
+    }
+    for r in registered {
+        for layer in r.composes_over {
+            if !registered.iter().any(|other| other.key == *layer) {
+                return Err(CompositionError::UnregisteredLayer {
+                    transport: r.key,
+                    layer,
+                });
+            }
+        }
+        if let Some(used) = r.composed_over {
+            if !r.composes_over.contains(&used) {
+                return Err(CompositionError::UndeclaredComposition {
+                    transport: r.key,
+                    used,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// How bytes move.
@@ -141,6 +253,15 @@ pub trait Transport: Plugin + Send + Sync + 'static {
     /// hand nothing up.
     fn detach(&self, conn: &Conn) -> Option<crate::wire::RawStream> {
         let _ = conn;
+        None
+    }
+
+    /// The layer this instance was actually built over, where it was built over one.
+    ///
+    /// What the registry's boot check compares against `COMPOSES_OVER`. A transport that opens its
+    /// own socket answers `None` and is checked only on what it declares; a composed one names the
+    /// layer under it, and a name that is not in its declaration refuses the boot.
+    fn composed_over(&self) -> Option<&'static str> {
         None
     }
 

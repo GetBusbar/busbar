@@ -159,12 +159,7 @@ impl Plugin for StdioTransport {
         Kind::Transport
     }
     fn abi(&self) -> AbiVersion {
-        // No transport-kind ABI constant is declared anywhere in `busbar-contract` today (only
-        // `STORE_ABI` exists for the store kind). `1` is this crate's own first generation,
-        // recorded here rather than invented per-call; a real ABI constant belongs on
-        // `busbar_contract::transport` if the design wants one, which is an open question this
-        // report flags rather than silently answers.
-        AbiVersion(1)
+        busbar_contract::TRANSPORT_ABI
     }
 }
 

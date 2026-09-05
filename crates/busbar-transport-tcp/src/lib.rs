@@ -182,7 +182,7 @@ impl Plugin for TcpTransport {
         Kind::Transport
     }
     fn abi(&self) -> busbar_contract::AbiVersion {
-        busbar_contract::AbiVersion(1)
+        busbar_contract::TRANSPORT_ABI
     }
 }
 

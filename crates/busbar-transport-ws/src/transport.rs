@@ -188,9 +188,7 @@ impl Plugin for WsTransport {
         Kind::Transport
     }
     fn abi(&self) -> AbiVersion {
-        // See `busbar-transport-stdio`'s identical note: no transport-kind ABI constant is
-        // declared in `busbar-contract` today.
-        AbiVersion(1)
+        busbar_contract::TRANSPORT_ABI
     }
 }
 
@@ -449,6 +447,10 @@ impl Transport for WsTransport {
             let stream = tokio_util::compat::FuturesAsyncReadCompatExt::compat(raw.into_io());
             self.handshake(Box::new(stream), true, "", &peer, chain).await
         })
+    }
+
+    fn composed_over(&self) -> Option<&'static str> {
+        self.lower.as_ref().map(|l| l.key())
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {

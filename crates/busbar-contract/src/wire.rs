@@ -7,6 +7,7 @@
 use crate::bounded::{ArenaBytes, BoundedVec, SlabBytes, MAX_KEYS};
 use crate::ids::StreamId;
 use core::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Which way bytes are moving.
@@ -362,27 +363,48 @@ pub struct Handoff {
 ///
 /// The kernel holds it; a plane never sees one. The handle is opaque because what is behind it is
 /// the transport's business and nothing else's.
+///
+/// The identity is the contract's, minted here at construction and never by a transport, because a
+/// node always holds at least two listeners — data and admin — and the only thing that told them
+/// apart was a bound address string a configuration is free to duplicate. A transport keying its
+/// own per-listener state on that string was keying it on something two listeners could share.
 #[derive(Clone)]
-pub struct Listener(Arc<dyn ListenerHandle>);
+pub struct Listener {
+    id: u64,
+    handle: Arc<dyn ListenerHandle>,
+}
+
+/// The next listener identity. Node-local and monotonic; nothing outside the node ever sees one.
+static NEXT_LISTENER_ID: AtomicU64 = AtomicU64::new(1);
 
 impl Listener {
-    /// Wrap a transport's own listener.
+    /// Wrap a transport's own listener, giving it an identity nothing else holds.
     #[must_use]
     pub fn new(handle: Arc<dyn ListenerHandle>) -> Self {
-        Self(handle)
+        Self {
+            id: NEXT_LISTENER_ID.fetch_add(1, Ordering::Relaxed),
+            handle,
+        }
+    }
+
+    /// The listener's node-local identity.
+    #[must_use]
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     /// The local address the listener is bound to.
     #[must_use]
     pub fn local_addr(&self) -> String {
-        self.0.local_addr()
+        self.handle.local_addr()
     }
 }
 
 impl fmt::Debug for Listener {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Listener")
-            .field("local_addr", &self.0.local_addr())
+            .field("id", &self.id)
+            .field("local_addr", &self.handle.local_addr())
             .finish()
     }
 }

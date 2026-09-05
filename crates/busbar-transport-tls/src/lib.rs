@@ -266,7 +266,7 @@ impl Plugin for TlsTransport {
         Kind::Transport
     }
     fn abi(&self) -> busbar_contract::AbiVersion {
-        busbar_contract::AbiVersion(1)
+        busbar_contract::TRANSPORT_ABI
     }
 }
 

@@ -99,7 +99,7 @@ impl Plugin for GrpcTransport {
         Kind::Transport
     }
     fn abi(&self) -> AbiVersion {
-        AbiVersion(1)
+        busbar_contract::TRANSPORT_ABI
     }
 }
 
@@ -283,6 +283,10 @@ impl Transport for GrpcTransport {
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
         Box::pin(async move { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn composed_over(&self) -> Option<&'static str> {
+        self.lower.as_ref().map(|l| l.key())
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {

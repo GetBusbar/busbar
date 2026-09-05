@@ -146,6 +146,30 @@ async fn a_composed_round_trip_over_the_layers_below() {
     assert_eq!(frame.bytes.as_slice(), b"hello over the layers below");
 }
 
+/// The layer this instance reports is the one it was built over, and it is one the crate declares
+/// — which is what the registry's boot check compares. A composition nobody declared refuses the
+/// boot rather than running as a stack the declarations do not describe.
+#[tokio::test]
+async fn the_layer_reported_is_one_the_transport_declares() {
+    use busbar_contract::TransportMeta;
+
+    let over_http = WsTransport::over(Arc::new(busbar_transport_http::HttpTransport::new(
+        busbar_transport_http::ClientSettings::default(),
+    )));
+    let over_tcp = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
+    assert_eq!(over_http.composed_over(), Some("http"));
+    assert_eq!(over_tcp.composed_over(), Some("tcp"));
+    assert_eq!(WsTransport::new().composed_over(), None);
+
+    for used in [over_http.composed_over(), over_tcp.composed_over()] {
+        let used = used.unwrap();
+        assert!(
+            <WsTransport as TransportMeta>::COMPOSES_OVER.contains(&used),
+            "`{used}` is a layer this crate declares it composes over"
+        );
+    }
+}
+
 /// With no layer under it this transport has no socket to reach for, and inventing one is exactly
 /// what the composition exists to stop.
 #[tokio::test]
