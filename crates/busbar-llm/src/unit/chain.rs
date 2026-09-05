@@ -112,6 +112,15 @@ mod rehearsal {
         /// least-bad disposition. A FAILED TRANSFER — the fee does not post and the fee base is
         /// refunded, while the admission slot the door drew is kept.
         UpstreamFailure,
+        /// A STREAM CUT MID-BODY: 2xx headers, one real frame relayed to the client, and then the
+        /// connection dies. The end no status line can name — the client saw a 200 and did not get
+        /// the answer — and the reason the tap has to report a class rather than a status.
+        StreamCut,
+        /// A TRANSFER THAT FAILED after the upstream's 2xx headers and before a single byte of the
+        /// answer: the client is given the headers and then a broken body. Nothing was delivered, so
+        /// the end is an error rather than a truncated answer, and the lane's request-budget unit is
+        /// refunded where the cut-after-first-byte case keeps it.
+        StreamFailedTransfer,
     }
 
     impl Fixture {
@@ -126,7 +135,10 @@ mod rehearsal {
 
         /// Whether the caller asked for a stream.
         fn streamed(self) -> bool {
-            matches!(self, Fixture::StreamedOk)
+            matches!(
+                self,
+                Fixture::StreamedOk | Fixture::StreamCut | Fixture::StreamFailedTransfer
+            )
         }
 
         /// The pools the key is restricted to, or `None` for a key that may reach every pool.
@@ -153,6 +165,17 @@ mod rehearsal {
                     events: sse_events(),
                     abort_at_index: None,
                 },
+                // A TRUE transport cut, not a clean in-band error frame: the upstream relays one
+                // real chunk and then the connection drops mid-body. The client has bytes and the
+                // answer never finished, which is exactly the end a 200 cannot describe.
+                Fixture::StreamCut => MockResponse::SseTransportError {
+                    ok_events: vec![sse_events()[0].clone()],
+                },
+                // The same cut with nothing relayed first: 2xx headers, then the transfer fails
+                // before the first byte of the answer.
+                Fixture::StreamFailedTransfer => {
+                    MockResponse::SseTransportError { ok_events: vec![] }
+                }
                 Fixture::UpstreamFailure => MockResponse::ServerError {
                     status: reqwest::StatusCode::BAD_GATEWAY,
                     body: serde_json::json!({"error": {"message": "upstream refused the transfer",
@@ -626,6 +649,15 @@ mod rehearsal {
         /// The fee the step says posts, and the refund it says is owed.
         fee_count: u32,
         refund: bool,
+        /// What the METER step was bound to, as the Route step handed it over: the serving lane, the
+        /// reported split, and whether those figures are evidence rather than a charge. Empty while
+        /// the answer was still in flight when the step ran, which is every stream.
+        bound: (Option<usize>, Option<(u64, u64)>, bool),
+        /// How the AUDIT step sealed the end, at the moment it really runs.
+        finish: Option<busbar_contract::FinishClass>,
+        /// What the walk's tap reported, read AFTER the body was drained — which for a stream is the
+        /// only moment any of it exists.
+        tap: Option<crate::engine::TapReport>,
     }
 
     impl Metering {
@@ -636,8 +668,16 @@ mod rehearsal {
                 posted_here: false,
                 fee_count: 0,
                 refund: false,
+                bound: (None, None, false),
+                finish: None,
+                tap: None,
             }
         }
+    }
+
+    /// The two token figures of a report, as a pair, so a fixture can spell what it expects.
+    fn split(usage: Option<&busbar_substrate::billing::TokenUsage>) -> Option<(u64, u64)> {
+        usage.map(|u| (u.input, u.output))
     }
 
     /// The chained leg: every step file, in the loop's order, each fed from the one before it.
@@ -674,7 +714,12 @@ mod rehearsal {
         )
         .await;
 
+        // THE TAP'S CELL, taken off the response before the body is consumed and read after. For a
+        // buffered end it is already filled here; for a stream it fills while `observe` drains the
+        // body, which is the whole point — the figures do not exist until then.
+        let cell = resp.extensions().get::<crate::engine::TapCell>().cloned();
         let observed = observe(&rig, resp).await;
+        metering.tap = cell.and_then(|c| c.get().cloned());
         rig.server.shutdown().await;
         (observed, metering)
     }
@@ -893,6 +938,13 @@ mod rehearsal {
         metering.posted_here = metered.row.is_some();
         metering.fee_count = metered.fee_count;
         metering.refund = metered.refund;
+        // What the step was actually BOUND to, read off the facts rather than off the response: the
+        // three figures Route folds out of the tap where the tap had already finished.
+        metering.bound = (
+            facts.lane,
+            split(facts.usage.as_ref()),
+            facts.billing_failed,
+        );
         // The hold reaches no exit path in this rehearsal: the exit is the kernel's, and there is no
         // plane-side settle. Held to the end of the unit so the accounting is not silently dropped.
         let _hold = metered.hold;
@@ -903,13 +955,17 @@ mod rehearsal {
         // leaves through the admitted terminal, exactly as the legacy tail leaves it. The Route step's
         // own answer says which of the two ends this was; both end here.
         let _ = route_decision;
-        audit::audit(
+        let audited = audit::audit(
             &UnitToken::mint(seal),
             &audit_ctx(host, gov, &effective, started, charged_at),
             response,
             charged,
-        )
-        .response
+        );
+        // The sealed end, read back at the moment the terminal really runs — which for a stream is
+        // while the body is still flowing, so it is the client-facing status the terminal names and
+        // not the class the tap will report later.
+        metering.finish = audited.decision.into_result(seal).ok().map(|f| f.finish);
+        audited.response
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -952,6 +1008,179 @@ mod rehearsal {
             CASES.len(),
             failures.join("\n")
         );
+    }
+
+    /// THE TWO ENDS ONLY THE TAP CAN NAME — kept out of [`CASES`] deliberately, so the six fixtures
+    /// the rehearsal was built on are compared on exactly the values they always were.
+    const TAP_CASES: [Fixture; 2] = [Fixture::StreamCut, Fixture::StreamFailedTransfer];
+
+    /// A CUT STREAM AND A FAILED TRANSFER, through both legs, with the report-back read afterwards.
+    ///
+    /// Both fixtures are served on 2xx headers and neither delivers the answer, so the status line
+    /// says the same thing about both and about a stream that succeeded — which is precisely why the
+    /// tap has to report a CLASS. The cut relayed a frame and stopped: `Partial`. The failed transfer
+    /// relayed nothing at all: `Error`. Both bill zero tokens, both name the lane that served them,
+    /// and the legacy plane and the chained steps still leave a client and an operator looking at the
+    /// same thing on both.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_tap_reports_the_end_a_status_line_cannot() {
+        use busbar_contract::FinishClass;
+
+        let mut failures: Vec<String> = Vec::new();
+        for fixture in TAP_CASES {
+            // The same identity the six are held to: same fixture in, same bytes and same counters
+            // out through the legacy plane and through the steps.
+            let legacy = leg_legacy(fixture).await;
+            let (chained, metering) = leg_chain_metered(fixture).await;
+            for ((field, want), (_, got)) in legacy.0.iter().zip(chained.0.iter()) {
+                if want != got {
+                    failures.push(format!(
+                        "{fixture:?}: field `{field}` diverges\n  legacy: {want}\n  chain:  {got}"
+                    ));
+                }
+            }
+
+            let report = metering
+                .tap
+                .as_ref()
+                .unwrap_or_else(|| panic!("{fixture:?}: the tap reported nothing at all"));
+            let want_finish = match fixture {
+                Fixture::StreamCut => crate::engine::TapFinish::Partial,
+                _ => crate::engine::TapFinish::Error,
+            };
+            assert_eq!(
+                report.finish, want_finish,
+                "{fixture:?}: the tap names the end the response actually reached"
+            );
+            assert_eq!(
+                report.lane, 0,
+                "{fixture:?}: and the lane that served it, which is what the accrual is keyed on"
+            );
+            assert!(
+                report.billing_failed,
+                "{fixture:?}: an answer that never finished bills zero — the figures are evidence"
+            );
+
+            // And nothing was billed, on either leg: the ledger and the metering series are empty
+            // for a token charge that the report says must not be made.
+            fn field(o: &Observed, k: &str) -> String {
+                o.0.iter()
+                    .find(|(f, _)| *f == k)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            }
+            assert_eq!(field(&chained, "ledger_tokens"), "0", "{fixture:?}");
+            assert_eq!(field(&chained, "metering_rows"), "", "{fixture:?}");
+            assert_eq!(
+                field(&legacy, "ledger_tokens"),
+                field(&chained, "ledger_tokens"),
+                "{fixture:?}: the legacy plane bills what the chain bills"
+            );
+
+            // THE TERMINAL'S TIMING IS UNCHANGED, and this is the half that is easy to break: the
+            // record is written where the older release writes it — at the head, while the body is
+            // still flowing — so the class it seals there is still the client-facing status's. The
+            // tap's class is what a reader of the SAME response gets once the body has ended, which
+            // the next assertion shows.
+            assert_eq!(
+                metering.finish,
+                Some(FinishClass::Complete),
+                "{fixture:?}: the terminal ran at the head, on a 2xx, exactly as it always has"
+            );
+            assert_eq!(
+                (metering.bound.0, metering.bound.1),
+                (None, None),
+                "{fixture:?}: and the Meter step was bound to nothing, because nothing existed yet"
+            );
+        }
+        assert!(
+            failures.is_empty(),
+            "{} divergence(s) across the two tap fixtures:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// THE SEALED END, WRITTEN AT THE TAP'S COMPLETION. The same response, audited after its body has
+    /// ended rather than at its head, seals the class the tap reported — `Partial` for the cut,
+    /// `Error` for the failed transfer — and never the `Complete` its 2xx status line says.
+    ///
+    /// This is the whole difference the report-back buys the terminal, and it is asserted on the
+    /// REAL step: `audit::audit` reads the cell off the response it is handed, so a driver that seals
+    /// a stream's end at the end of the stream gets the truer class for free, and one that seals it
+    /// at the head gets the older release's answer with the older release's timing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_stream_audited_at_its_end_seals_the_class_the_tap_reported() {
+        use busbar_contract::FinishClass;
+
+        for (fixture, want) in [
+            (Fixture::StreamedOk, FinishClass::Complete),
+            (Fixture::StreamCut, FinishClass::Partial),
+            (Fixture::StreamFailedTransfer, FinishClass::Error),
+        ] {
+            let rig = rig(fixture).await;
+            let (host, rt) = crate::engine::test_host_rt(&rig.app);
+            let gov = rig.gov();
+            let headers = json_headers();
+            let seal = kernel_seal();
+            let body = request_body(fixture);
+            let routed = route::route(
+                &UnitToken::mint(&seal),
+                route::RouteInput {
+                    host: &host,
+                    rt: &rt,
+                    proto: PROTO,
+                    op: crate::test_support::CHAT,
+                    destination: POOL,
+                    headers: &headers,
+                    body: body.clone(),
+                    parsed: crate::engine::LazyBody::parse(&body).ok(),
+                    caller_token: None,
+                    resolved_gov_key: None,
+                    usage_sink: None,
+                    model_not_found_message: None,
+                    lanes: &LANES,
+                },
+            )
+            .await;
+            let _ = routed.decision;
+            assert_eq!(
+                routed.response.status().as_u16(),
+                200,
+                "{fixture:?}: every one of these is served on 2xx headers"
+            );
+
+            // DRAIN FIRST. The body is the tap: until it has ended there is nothing to seal, which
+            // is why a stream's record cannot be a head-time reading of its status.
+            let (parts, stream) = routed.response.into_parts();
+            let bytes = axum::body::to_bytes(stream, usize::MAX)
+                .await
+                .unwrap_or_default();
+            tokio::task::yield_now().await;
+            let drained = Response::from_parts(parts, axum::body::Body::from(bytes));
+
+            let audited = audit::audit(
+                &UnitToken::mint(&seal),
+                &audit_ctx(&host, &gov, POOL, Instant::now(), rig.charged_at),
+                drained,
+                true,
+            );
+            let facts = audited
+                .decision
+                .into_result(&seal)
+                .expect("the terminal seals rather than refuses");
+            assert_eq!(
+                facts.finish, want,
+                "{fixture:?}: the end the tap saw, not the end the status line claims"
+            );
+            assert_ne!(
+                facts.finish,
+                FinishClass::TurnComplete,
+                "{fixture:?}: no dialect on this plane ends a turn of a continuing session"
+            );
+            let _ = axum::body::to_bytes(audited.response.into_body(), usize::MAX).await;
+            rig.server.shutdown().await;
+        }
     }
 
     /// The ENDS are what the fixtures claim they are. Without this the rehearsal above could be green

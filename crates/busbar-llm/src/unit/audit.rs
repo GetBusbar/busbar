@@ -661,6 +661,83 @@ mod tests {
         assert_eq!(host.pool_label("no-such-pool"), POOL_LABEL_UNRESOLVED);
     }
 
+    /// THE FOUR ENDS THE TERMINAL CAN SEAL, and where each comes from.
+    ///
+    /// Without a tap the class is the client-facing status and only two values are reachable — which
+    /// is the whole of what this step could say before, and is still what it says while a response is
+    /// in flight. With a tap the class is the tap's, and a 2xx stream that died mid-body seals
+    /// `Partial` rather than the `Complete` its status line claims. `TurnComplete` appears in neither
+    /// column: it names one turn of a duplex exchange whose session continues, and no dialect this
+    /// plane speaks has one.
+    #[tokio::test]
+    async fn the_sealed_end_is_the_taps_where_there_is_one_and_the_status_where_there_is_not() {
+        crate::testkit::install_test_seams();
+        busbar_core::metrics::init();
+        let (app, keys) = governed([&unique("finish-a"), &unique("finish-b")]);
+        let (host, _rt) = crate::engine::test_host_rt(&app);
+        let at = busbar_substrate::store::now();
+        let gov = busbar_api::PlaneRequestCtx {
+            key: Some(Arc::new(keys[0].clone())),
+        };
+        let (seal, token) = tokens();
+
+        // A report the tap could have made, on a response the status line calls a success. One cell
+        // per case, because a cell is filled once and a second report is a no-op by design.
+        let tapped = |finish| {
+            let cell = crate::engine::TapCell::new();
+            cell.report(crate::engine::TapReport {
+                lane: 0,
+                usage: None,
+                billing_failed: !matches!(finish, crate::engine::TapFinish::Complete),
+                finish,
+            });
+            let mut resp = (StatusCode::OK, "ok").into_response();
+            resp.extensions_mut().insert(cell);
+            resp
+        };
+
+        for (resp, want, why) in [
+            (
+                tapped(crate::engine::TapFinish::Complete),
+                FinishClass::Complete,
+                "the whole answer arrived",
+            ),
+            (
+                tapped(crate::engine::TapFinish::Partial),
+                FinishClass::Partial,
+                "a 2xx stream that died mid-body — the end no status line can name",
+            ),
+            (
+                tapped(crate::engine::TapFinish::Error),
+                FinishClass::Error,
+                "a transfer that failed after the upstream's 2xx headers",
+            ),
+            (
+                (StatusCode::OK, "ok").into_response(),
+                FinishClass::Complete,
+                "no tap: the client-facing status, exactly as before",
+            ),
+            (
+                (StatusCode::BAD_GATEWAY, "no").into_response(),
+                FinishClass::Error,
+                "no tap, non-2xx: still the status",
+            ),
+        ] {
+            let audited = audit(&token, &ctx(&host, &gov, "p", at), resp, true);
+            let facts = audited
+                .decision
+                .into_result(&seal)
+                .expect("the terminal seals rather than refuses");
+            assert_eq!(facts.finish, want, "{why}");
+            assert_ne!(
+                facts.finish,
+                FinishClass::TurnComplete,
+                "{why}: this plane opens no session, so no unit of it ends a turn of one"
+            );
+            let _ = axum::body::to_bytes(audited.response.into_body(), usize::MAX).await;
+        }
+    }
+
     /// The step is the `Units::audit` row's shape, as a value: a mismatch in the token, the context
     /// or the answer stops compiling here rather than at the root.
     #[test]

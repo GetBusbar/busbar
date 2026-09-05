@@ -982,6 +982,79 @@ mod tests {
         );
     }
 
+    /// THE THREE FIGURES ROUTE COULD NOT FILL, filled — on the one end where the tap has already
+    /// finished by the time the step returns.
+    ///
+    /// A buffered cross-protocol answer is read WHOLE, translated, and only then handed back, so its
+    /// completion tap runs inside the walk and its report is on the response the walk returns. The
+    /// Route step folds it, and the facts the Meter step is bound to name the serving lane, carry the
+    /// split the dialect's reader found, and say the figures are a charge rather than evidence —
+    /// where before the fix all three were `None`/`false` by construction.
+    ///
+    /// The literals are the fixture's own: lane 0, three uncached input tokens and two output.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn route_reports_the_taps_figures_for_an_answer_that_finished() {
+        crate::testkit::install_test_seams();
+        let state = Arc::new(MockServerState::new());
+        state.push(mock_response(Fixture::Ok, crate::proto_codec::PROTO_OPENAI));
+        let server = MockServer::new(state).await;
+        // CROSS-PROTOCOL and non-streaming: an anthropic caller over an openai lane takes the
+        // buffered path, which is the path whose tap completes before the walk returns.
+        let ingress = crate::proto_codec::PROTO_ANTHROPIC;
+        let app = TestApp::new()
+            .lane(
+                LaneSpec::new("m", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                    .provider("test"),
+            )
+            .pool("p", &[(0, 1)])
+            .build();
+        let (host, rt) = crate::engine::test_host_rt(&app);
+        let body = Bytes::from(request_body(ingress, "p"));
+        let headers = HeaderMap::new();
+        let (_seal, token) = tokens();
+        let routed = route(
+            &token,
+            RouteInput {
+                host: &host,
+                rt: &rt,
+                proto: ingress,
+                op: crate::test_support::CHAT,
+                destination: "p",
+                headers: &headers,
+                body: body.clone(),
+                parsed: LazyBody::parse(&body).ok(),
+                caller_token: None,
+                resolved_gov_key: None,
+                usage_sink: None,
+                model_not_found_message: None,
+                lanes: &LANES,
+            },
+        )
+        .await;
+        assert_eq!(routed.facts.status, 200, "the answer was delivered");
+        assert_eq!(
+            routed.facts.lane,
+            Some(0),
+            "the serving lane the tap named, not the `None` the step used to report"
+        );
+        assert_eq!(
+            routed.facts.usage.as_ref().map(|u| (u.input, u.output)),
+            Some((3, 2)),
+            "the split the dialect's reader found, carried to the step that reports it"
+        );
+        assert!(
+            !routed.facts.billing_failed,
+            "an answer that finished is a charge, not evidence"
+        );
+        assert!(
+            !routed.facts.accrued,
+            "the walk held no meter half on this fixture, so the Meter step is the posting — and it \
+             now has a lane and a split to post"
+        );
+        let _ = axum::body::to_bytes(routed.response.into_body(), usize::MAX).await;
+        server.shutdown().await;
+    }
+
     /// An in-process tap capture, so the completion tap can be counted.
     struct CaptureTap {
         fired: std::sync::atomic::AtomicUsize,
