@@ -1452,6 +1452,13 @@ busbar is a byte-governance router.
 - **CG-06 config-derived open-vocabulary keys are leaked exactly once at registration** by the
   composition root and counted in §10's fixed RSS term (the `&'static str` ids stay). A per-dial leak
   is a defect.
+- **CG-22 / CG-05 (2026-09-05, second decision): the contract pair stays under 3.5k by crate boundary, not by
+  leaving proofs in planes.** The closed JSON span grammar (the kernel's scanner, ~300 surface lines) becomes
+  `busbar-grammar`, std-only, ceiling 0.5k, re-exported by `busbar-contract` and named by the kernel, so the
+  four plane copies collapse to one. The transport-facing contract (the `Transport` trait, wire types, the
+  upstream address, the reserved fact keys) becomes `busbar-contract-transport`, ceiling 1k: a plane author
+  never reads it (transports are in-tree), which is what the pair's ceiling measures. `busbar-contract` +
+  `busbar-caps` stay at 3.5k of plane-visible surface.
 - **CG-51 the network guard is the trust unit's check** over `VerifiedDestination`, applied before any
   transport `dial`; transports do no resolution policy of their own.
 
