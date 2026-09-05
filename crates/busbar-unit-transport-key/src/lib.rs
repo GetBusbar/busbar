@@ -236,5 +236,88 @@ pub fn issue_handle(
     TransportKeyHandle::issue(token, slot, fingerprint)
 }
 
+/// Where one listener's material is kept, and what the journal records it as.
+///
+/// The two travel together because they name one thing from two sides: the slot is what a transport
+/// looks a config up by, and the fingerprint is what the access entry says was read. Neither is the
+/// material, and neither can be turned back into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Slot {
+    /// The node-local slot the config is registered under.
+    pub index: u64,
+    /// What the journal's access entry records.
+    pub fingerprint: &'static str,
+}
+
+/// Where one listener's TLS material is resolved from, as the secret source spells it.
+///
+/// `client_ca` present means mTLS: the client MUST present a certificate chaining to that CA or the
+/// handshake fails. Absent means server-only TLS. The grammar of each location is the caller's and
+/// its own secret source's; this unit never interprets one.
+#[derive(Debug, Clone, Copy)]
+pub struct TlsLocations<'a> {
+    /// The certificate chain, leaf first.
+    pub cert: &'a str,
+    /// The private key.
+    pub key: &'a str,
+    /// The CA bundle a presented client certificate is verified against, where mTLS is configured.
+    pub client_ca: Option<&'a str>,
+}
+
+/// What a transport that speaks TLS offers this unit: somewhere to put the material it resolved.
+///
+/// A transport is handed an opaque handle and looks a config up by its slot. Something has to have
+/// put the config there, and it cannot be the transport — a transport may not read a secret. This
+/// is that seam, and the whole of it: the unit resolves, journals and registers, and the transport
+/// only ever sees a slot number.
+pub trait TlsConfigSink {
+    /// Take the server-side config for a slot.
+    fn register_server_config(&self, slot: u64, cfg: Arc<ServerConfig>);
+    /// Take the client-side config for a slot.
+    fn register_client_config(&self, slot: u64, cfg: Arc<rustls::ClientConfig>);
+}
+
+/// Resolve a listener's TLS material, journal the access, register the config, and hand back the
+/// handle the transport will present at `listen`, `accept` and every adoption over it.
+///
+/// This is the one call a composition root makes, and it is the whole path the design draws: the
+/// secret plugin is read here and nowhere else, the `Access` entry is written for every secret
+/// actually read, the config lands in the transport's slot, and what leaves this function carries
+/// no material at all. Before it existed the only thing that ever registered a config was the
+/// transport's own tests, which meant a production listener had no key.
+///
+/// # Errors
+///
+/// The material could not be resolved through the secret source, or it did not parse into a usable
+/// certificate and key. The message names the secret's SOURCE, never its bytes.
+pub fn provision_server(
+    source: &dyn SecretSource,
+    journal: &dyn AccessJournal,
+    sink: &dyn TlsConfigSink,
+    token: &TransportKeyToken,
+    slot: Slot,
+    at: &TlsLocations<'_>,
+) -> Result<TransportKeyHandle, String> {
+    let material = resolve_tls_material(source, journal, at.cert, at.key, at.client_ca)?;
+    sink.register_server_config(slot.index, Arc::new(build_server_config(&material)?));
+    Ok(issue_handle(token, slot.index, slot.fingerprint))
+}
+
+/// The dial-side half: register the client config a transport presents when it dials, and hand back
+/// the handle naming its slot.
+///
+/// The trust roots are the caller's, because which authorities a node will accept upstream is a
+/// deployment's statement and not this unit's. Nothing is read through the secret source here —
+/// a public root store is not a secret — so nothing is journaled either.
+pub fn provision_client(
+    sink: &dyn TlsConfigSink,
+    token: &TransportKeyToken,
+    slot: Slot,
+    cfg: Arc<rustls::ClientConfig>,
+) -> TransportKeyHandle {
+    sink.register_client_config(slot.index, cfg);
+    issue_handle(token, slot.index, slot.fingerprint)
+}
+
 #[cfg(test)]
 mod tests;

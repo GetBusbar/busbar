@@ -7,10 +7,11 @@
 //! (`SESSION_BOUND = true`): once a TLS handshake completes, the session's principal is cached
 //! rather than re-derived per unit. Key material never lives in this crate's own state as bytes a
 //! caller can read: [`busbar_contract::TransportKeyHandle`] is opaque, so this crate keeps a
-//! slot-keyed registry of already-built `rustls` configs and looks one up by the handle's slot —
-//! the seam a real transport-key unit would populate at `listen`/`dial`/`upgrade`, journaling the
-//! `Access` entry the design requires. Tests populate it directly, which is the ambiguity named in
-//! this crate's own delivery notes: nothing here resolves a `SecretRef` itself.
+//! slot-keyed registry of already-built `rustls` configs and looks one up by the handle's slot. The
+//! transport-key unit is what fills that registry, through
+//! [`busbar_unit_transport_key::TlsConfigSink`], at the moment it resolves the material and writes
+//! the `Access` entry the design requires — so a production listener has a key for the same reason
+//! a test one does, and nothing in this crate ever resolves a `SecretRef` or sees a byte of one.
 //!
 //! ## Composition
 //!
@@ -143,8 +144,11 @@ impl TlsTransport {
         }
     }
 
-    /// Register the server-side rustls config a [`TransportKeyHandle`]'s slot resolves to. The
-    /// seam a real transport-key unit populates at `listen`/`upgrade`; tests populate it directly.
+    /// Register the server-side rustls config a [`TransportKeyHandle`]'s slot resolves to.
+    ///
+    /// The transport-key unit is what calls this, through [`busbar_unit_transport_key::TlsConfigSink`],
+    /// at the moment it resolves the material and journals the access. Nothing here reads a secret;
+    /// this end of the seam only ever sees an already-built config and a slot number.
     pub fn register_server_config(&self, slot: u64, cfg: Arc<rustls::ServerConfig>) {
         self.server_configs.lock().expect("poisoned").insert(slot, cfg);
     }
@@ -239,6 +243,16 @@ impl TlsTransport {
 /// A stand-in fingerprint: the SHA-256 of the DER bytes, formatted for [`CertFacts`]. Not a trust
 /// decision — the trust decision already happened inside the rustls handshake; this is evidence
 /// carried alongside it.
+impl busbar_unit_transport_key::TlsConfigSink for TlsTransport {
+    fn register_server_config(&self, slot: u64, cfg: Arc<rustls::ServerConfig>) {
+        TlsTransport::register_server_config(self, slot, cfg);
+    }
+
+    fn register_client_config(&self, slot: u64, cfg: Arc<rustls::ClientConfig>) {
+        TlsTransport::register_client_config(self, slot, cfg);
+    }
+}
+
 fn ring_fingerprint(der: &[u8]) -> Vec<u8> {
     use ring::digest;
     digest::digest(&digest::SHA256, der).as_ref().to_vec()

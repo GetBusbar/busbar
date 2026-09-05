@@ -945,8 +945,10 @@ dependencies = [
 name = "busbar-transport-tls"
 version = "1.6.0"
 dependencies = [
+ "busbar-caps",
  "busbar-contract",
  "busbar-transport-tcp",
+ "busbar-unit-transport-key",
  "futures",
  "rcgen",
  "ring",

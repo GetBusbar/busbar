@@ -295,6 +295,137 @@ async fn a_handoff_from_an_undeclared_layer_is_a_mismatch() {
     server.close(server_conn, CloseReason::Normal);
 }
 
+/// The transport-key unit is the registrant, and a listener has a key because the unit put one
+/// there.
+///
+/// Before this path existed the only thing that ever registered a config was this crate's own
+/// tests: the unit built a `ServerConfig` and had no way to reach a transport, so a production
+/// listener resolved a slot to nothing and refused every connection for want of a key. The whole
+/// path runs here — the secret source is read, the access is journaled once per secret, the config
+/// lands in the slot the handle names, and a real client completes a handshake against it.
+#[tokio::test]
+async fn the_transport_key_unit_is_what_gives_a_listener_its_key() {
+    use busbar_unit_transport_key::{AccessJournal, AccessPurpose, SecretSource};
+    use std::sync::Mutex as StdMutex;
+
+    struct MapSource(std::collections::HashMap<&'static str, Vec<u8>>);
+    impl SecretSource for MapSource {
+        fn resolve(&self, location: &str) -> Result<Vec<u8>, String> {
+            self.0
+                .get(location)
+                .cloned()
+                .ok_or_else(|| format!("no secret at {location}"))
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingJournal(StdMutex<Vec<(String, AccessPurpose)>>);
+    impl AccessJournal for RecordingJournal {
+        fn record_access(&self, location: &str, purpose: AccessPurpose) {
+            self.0.lock().unwrap().push((location.to_string(), purpose));
+        }
+    }
+
+    busbar_unit_transport_key::install_crypto_provider();
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+            .unwrap();
+    let cert_pem = cert.pem();
+    let key_pem = signing_key.serialize_pem();
+
+    let source = MapSource(
+        [
+            ("secret://tls/cert", cert_pem.clone().into_bytes()),
+            ("secret://tls/key", key_pem.into_bytes()),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let journal = RecordingJournal::default();
+
+    // The transport offers somewhere to put a config; the unit is what puts one there.
+    let server = StdArc::new(TlsTransport::new());
+    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let keys = busbar_unit_transport_key::provision_server(
+        &source,
+        &journal,
+        &*server,
+        &busbar_caps::TransportKeyToken::mint(&seal),
+        busbar_unit_transport_key::Slot {
+            index: 0,
+            fingerprint: "fixture",
+        },
+        &busbar_unit_transport_key::TlsLocations {
+            cert: "secret://tls/cert",
+            key: "secret://tls/key",
+            client_ca: None,
+        },
+    )
+    .expect("the unit resolves, journals and registers");
+
+    assert_eq!(keys.slot(), 0);
+    assert_eq!(
+        journal.0.lock().unwrap().as_slice(),
+        &[
+            ("secret://tls/cert".to_string(), AccessPurpose::Cert),
+            ("secret://tls/key".to_string(), AccessPurpose::Key),
+        ],
+        "one access entry per secret actually read, in the order they were read"
+    );
+
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = server
+        .listen(&cfg, &keys)
+        .await
+        .expect("the slot the handle names now resolves to a config");
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+
+    // A real client, trusting exactly the certificate the unit resolved.
+    let mut roots = rustls::RootCertStore::empty();
+    for c in CertificateDer::pem_slice_iter(cert_pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    {
+        roots.add(c).unwrap();
+    }
+    let client_cfg = StdArc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    );
+    let client = StdArc::new(TlsTransport::new());
+    let client_keys = busbar_unit_transport_key::provision_client(
+        &*client,
+        &busbar_caps::TransportKeyToken::mint(&seal),
+        busbar_unit_transport_key::Slot {
+            index: 0,
+            fingerprint: "fixture-client",
+        },
+        client_cfg,
+    );
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &client_keys)
+        .await
+        .expect("the handshake completes against the unit's material");
+    let server_conn = accept_fut.await.unwrap();
+
+    let payload = b"served under a key the unit resolved";
+    server
+        .write(&server_conn, StreamId(0), ArenaBytes::new(payload))
+        .await
+        .unwrap();
+    let mut frames = client.frames(client_conn.clone());
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), payload);
+    client.close(client_conn, CloseReason::Normal);
+}
+
 /// The destination names the certificate's own DNS name, and that is what the handshake offers —
 /// not the address it was pinned to. Before the address shape closed, the only name available was
 /// the connect address's IP, so a certificate issued for a DNS name could never match.
