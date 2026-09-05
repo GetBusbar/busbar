@@ -477,6 +477,7 @@ async fn with_no_declared_name_the_address_itself_stands_in() {
     // "the address is the name": rustls does not send a server_name extension for an IP.
     assert_eq!(server.arrival(&server_conn).sni, None);
     client.close(client_conn, CloseReason::Normal);
+}
 
 /// The registration check: every reserved key this transport publishes is one it declares.
 ///
