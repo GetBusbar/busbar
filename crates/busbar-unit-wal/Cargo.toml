@@ -1,0 +1,27 @@
+# busbar-unit-wal — the write-ahead log unit.
+#
+# WHY A CRATE OF ITS OWN. The log is the only part of the money path that touches a disk, and the
+# rule it enforces — a durable write that was observed to fail poisons its segment and the node
+# stops pretending the record exists — has to be enforceable in one place a reviewer can read end
+# to end. Folding it into the ledger would mix "what the money is" with "how the bytes landed".
+#
+# DEPENDENCIES. `busbar-caps`, because the one thing the log hands back on a failure is a
+# `DurabilityLost`, and only a holder of the durability token may mint one. `sha2`, because a torn
+# tail is truncated at recovery to the last record whose digest verifies, and a digest is not a
+# thing to hand-roll. Nothing else: no async runtime, no serializer, no allocator opinion.
+[package]
+name = "busbar-unit-wal"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The write-ahead log unit: fixed-size records with overflow continuation, group commit, torn-tail truncation at recovery, poison-on-sync-error, and a memory-buffered mode that touches no disk."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_unit_wal"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-caps = { path = "../busbar-caps" }
+sha2 = { workspace = true }

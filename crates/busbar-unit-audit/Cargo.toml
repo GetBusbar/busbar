@@ -1,0 +1,36 @@
+# busbar-unit-audit — the audit unit.
+#
+# TWO STREAMS, ONE CRATE, AND THEY DO NOT MERGE. The previous release's admin mutation chain is kept
+# and appended, byte for byte, so that everything reading it continues to read exactly what it read
+# before; the new fixed audit record sits BESIDE it. Merging them would be the one change that
+# cannot be made quietly — a digest that moved would make every deployed chain report its own history
+# as tampered at the next boot.
+#
+# DEPENDENCIES.
+#   busbar-caps  the audit unit is a unit; sealing a record takes the token for the audit step.
+#   sha2         the chain digest. The formula is a WIRE FACT of records already on disk.
+#   serde        the previous release's record is serialised onto a wire with eight fields and one
+#                skipped provenance flag. That is part of what "unchanged" means, so the derives
+#                travel with the record rather than being reimplemented at the boundary.
+[package]
+name = "busbar-unit-audit"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The audit unit: the fixed audit record every plane contributes to, the previous release's admin mutation chain kept unchanged, and the access and adjustment amendments."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_unit_audit"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-caps = { path = "../busbar-caps" }
+sha2 = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+# The wire shape of the previous release's record — eight fields, one of them skipped — is a claim
+# about what an encoder produces, so the test encodes it rather than reading the derive attributes.
+serde_json = { workspace = true }
