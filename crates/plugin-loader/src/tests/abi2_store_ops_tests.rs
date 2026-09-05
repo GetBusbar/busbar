@@ -29,10 +29,10 @@ use std::sync::{Arc, Mutex};
 /// Every `tracing` event that fired on this thread while a subscriber built from this was
 /// installed, rendered as `LEVEL message field=value ...`.
 #[derive(Clone, Default)]
-struct EventLog(Arc<Mutex<Vec<String>>>);
+pub(super) struct EventLog(Arc<Mutex<Vec<String>>>);
 
 impl EventLog {
-    fn lines(&self) -> Vec<String> {
+    pub(super) fn lines(&self) -> Vec<String> {
         self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 }
