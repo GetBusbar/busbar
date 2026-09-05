@@ -256,8 +256,14 @@ impl Breaker for BreakerAdapter {
         let Some(cfg) = self.policy.for_pool(pool) else {
             return false;
         };
-        self.unit
-            .observe(pool, destination, to_breaker_outcome(outcome), cfg, now, token)
+        self.unit.observe(
+            pool,
+            destination,
+            to_breaker_outcome(outcome),
+            cfg,
+            now,
+            token,
+        )
     }
 
     fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, now: u64) {
