@@ -800,6 +800,14 @@ impl busbar_contract::Transport for TestTransport {
         Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
+    fn detach(&self, _conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+        None
+    }
+
+    fn composed_over(&self) -> Option<&'static str> {
+        None
+    }
+
     fn close(&self, _conn: Conn, _reason: busbar_contract_transport::wire::CloseReason) {
         *self.closed.lock().unwrap_or_else(|e| e.into_inner()) += 1;
     }

@@ -173,21 +173,16 @@ pub trait Transport: Plugin + Send + Sync + 'static {
     /// written to here again. `None` when the connection is unknown, when a reader still holds it
     /// (an upgrade never races an in-flight read, by the at-most-one-upgrade-in-flight rule; a
     /// caller that violates that ordering sees `None` rather than a torn stream), or when this
-    /// transport has no raw stream to give — the default, because most layers are the bottom one or
-    /// hand nothing up.
-    fn detach(&self, conn: &Conn) -> Option<crate::wire::RawStream> {
-        let _ = conn;
-        None
-    }
+    /// transport has no raw stream to give — which every implementor that is a bottom layer or
+    /// hands nothing up must still answer, explicitly, as `None`.
+    fn detach(&self, conn: &Conn) -> Option<crate::wire::RawStream>;
 
     /// The layer this instance was actually built over, where it was built over one.
     ///
     /// What the registry's boot check compares against `COMPOSES_OVER`. A transport that opens its
     /// own socket answers `None` and is checked only on what it declares; a composed one names the
     /// layer under it, and a name that is not in its declaration refuses the boot.
-    fn composed_over(&self) -> Option<&'static str> {
-        None
-    }
+    fn composed_over(&self) -> Option<&'static str>;
 
     /// Close a connection.
     fn close(&self, conn: Conn, reason: CloseReason);

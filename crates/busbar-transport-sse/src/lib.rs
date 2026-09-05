@@ -234,6 +234,12 @@ impl Transport for SseTransport {
         self.http.detach(conn)
     }
 
+    fn composed_over(&self) -> Option<&'static str> {
+        // `sse` holds no socket of its own — `new` takes the `http` it is composed over, and that
+        // is the only way one is ever built.
+        Some(self.http.key())
+    }
+
     fn close(&self, conn: Conn, reason: CloseReason) {
         self.http.close(conn, reason);
     }

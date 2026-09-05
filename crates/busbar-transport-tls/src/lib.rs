@@ -574,6 +574,13 @@ impl Transport for TlsTransport {
         ))
     }
 
+    fn composed_over(&self) -> Option<&'static str> {
+        // `tls` opens its own socket at `listen`/`dial` (a direct TLS listener over the raw TCP it
+        // binds itself); the STARTTLS handoff `adopt` answers is a per-connection upgrade, not a
+        // property of this instance, so there is no lower-layer instance to name here.
+        None
+    }
+
     fn close(&self, conn: Conn, _reason: CloseReason) {
         self.conns.lock().expect("poisoned").remove(&conn.id());
     }

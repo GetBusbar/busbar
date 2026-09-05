@@ -387,6 +387,11 @@ impl Transport for TcpTransport {
         ))
     }
 
+    fn composed_over(&self) -> Option<&'static str> {
+        // `tcp` IS the bottom: it opens its own socket and nothing built it over a lower layer.
+        None
+    }
+
     fn close(&self, conn: Conn, _reason: CloseReason) {
         // Dropping the halves closes the socket (sends FIN); nothing here is fallible in a way
         // the caller can act on, so this stays synchronous per the trait's own shape.

@@ -306,6 +306,13 @@ impl Transport for GrpcTransport {
         Box::pin(async move { Err(TransportError::HandoffMismatch) })
     }
 
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+        // Nothing upgrades in-band over `grpc` (`UPGRADES_TO` is empty), so there is no raw stream
+        // this layer ever hands up.
+        let _ = conn;
+        None
+    }
+
     fn composed_over(&self) -> Option<&'static str> {
         self.lower.as_ref().map(|l| l.key())
     }

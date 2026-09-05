@@ -28,14 +28,19 @@ fn declared(
 
 #[test]
 fn the_real_stack_boots() {
-    // `tcp → tls → http → ws`, with `grpc` beside `ws` — the design's own table, wired the way the
-    // crates are actually built.
+    // `tcp → tls → http → { sse, ws, grpc }`, with `stdio` standing on its own — the seven
+    // transports' actual `TransportMeta::COMPOSES_OVER` declarations and `Transport::composed_over`
+    // answers, side by side. `tcp`, `tls` and `http` each open their own socket and answer `None`
+    // regardless of what they declare; `sse`, `ws` and `grpc` are only ever built by holding (or
+    // being handed) another instance, so they name it; `stdio` composes over nothing at all.
     let registry = [
         declared("tcp", &[], None),
         declared("tls", &["tcp"], None),
         declared("http", &["tcp", "tls"], None),
+        declared("sse", &["http"], Some("http")),
         declared("ws", &["http", "tcp"], Some("http")),
         declared("grpc", &["http", "tcp"], Some("tcp")),
+        declared("stdio", &[], None),
     ];
     assert_eq!(check_composition(&registry), Ok(()));
 }

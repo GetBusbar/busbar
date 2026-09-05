@@ -407,6 +407,14 @@ impl Transport for FixtureTransport {
         Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
+    fn detach(&self, _conn: &Conn) -> Option<busbar_contract::wire::RawStream> {
+        None
+    }
+
+    fn composed_over(&self) -> Option<&'static str> {
+        None
+    }
+
     fn close(&self, _conn: Conn, _reason: CloseReason) {}
 
     fn unit0_refusal<'a>(
