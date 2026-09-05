@@ -251,9 +251,21 @@
       "cells": "^llm\\|responses\\|responses\\|request\\|ok_stream$",
       "classes": [
         "body",
+        "headers",
+        "norm.rules"
+      ],
+      "rationale": "A stream: true request on the Responses door is served as text/event-stream with the ResponseStreamEvent sequence; 1.5.5 answered the same-dialect case with a buffered JSON body. Metered identically (250 cents / 18 tokens). The buffered 1.5.5 body carried a synthesized content-length with no transfer-encoding; the SSE body is chunked, so the normalizer's header-shape rule fires where it did not before (norm.rules) -- a byproduct of the same content-type change, not a separate behavior."
+    },
+    {
+      "id": "E7-1 non-Responses doors stream when the backend is Responses-shaped",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-04 E7 conformance-rig triage",
+      "cells": "^llm\\|(cohere|gemini|openai)\\|responses\\|request\\|ok_stream$",
+      "classes": [
+        "body",
         "headers"
       ],
-      "rationale": "A stream: true request on the Responses door is served as text/event-stream with the ResponseStreamEvent sequence; 1.5.5 answered the same-dialect case with a buffered JSON body. Metered identically (250 cents / 18 tokens)."
+      "rationale": "A stream: true request whose routed lane is Responses-shaped is now served as text/event-stream carrying the ingress door's own translated stream frames (Cohere v2 SSE, Gemini's SSE framing, OpenAI chat.completion.chunk SSE); 1.5.5 answered it as a buffered application/json body regardless of the door that received it. The Anthropic- and Bedrock-door cells for the same egress already carry this fix under S-4's and S-1's broader per-door wildcards; this entry covers the three doors (Cohere, Gemini, OpenAI chat) whose own required-member registrations (S-5; none was needed for Cohere/Gemini, which had zero required-member violations) did not include the ok_stream outcome. Metered identically (250 cents / 18 tokens)."
     }
   ]
 }

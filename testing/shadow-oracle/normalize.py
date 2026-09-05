@@ -104,8 +104,10 @@ ID_RULES = [
     (re.compile(r"-(aarch64|x86_64)-(apple-darwin|unknown-linux-gnu|pc-windows-msvc)"), "-<TRIPLE>"),  # plugin tarball names carry the host triple
 ]
 TS_KEYS = {"created", "timestamp", "ts", "at", "sealed_at", "opened_at", "closed_at", "time", "as_of", "expires_at", "created_at", "updated_at", "last_used_at", "started_at"}
-# JSON keys whose value is a measured latency, never a contract (admin pool views)
-TIMING_KEYS = {"latency_ms"}
+# JSON keys whose value is a measured latency, never a contract (admin pool views; `latencyMs` is
+# AWS Bedrock's own spelling on Converse's `metrics` member — S-3's "latencyMs is timing and
+# normalized" decision, extended to every cell that carries it, not only the same-dialect one)
+TIMING_KEYS = {"latency_ms", "latencyMs"}
 VERSION_RX = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$")
 POOL_LINE = re.compile(r"^\s+pool /\S+ = ")
 ERROR_BULLET = re.compile(r"^  - ")

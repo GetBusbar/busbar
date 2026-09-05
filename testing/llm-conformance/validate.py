@@ -655,7 +655,11 @@ def load_cells(path):
     with open(path) as f:
         doc = json.load(f)
     cells = doc["cells"] if isinstance(doc, dict) else doc
-    return [c for c in cells if c.get("plane") == "llm"]
+    # `plane == "llm"` alone is no longer selective enough: cells.json also carries the "teller"
+    # family (billing-pipeline script cells) under the same plane. This rig judges the LLM WIRE
+    # dialects against their published specs, so restrict to that family explicitly rather than
+    # crashing on a teller cell's missing `ingress_dialect`/`outcome` shape below.
+    return [c for c in cells if c.get("plane") == "llm" and c.get("family") == "llm.wire"]
 
 
 def owed_ids(cells):
