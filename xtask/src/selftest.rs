@@ -44,7 +44,12 @@ fn check(
         fails.push(format!("{label}: fixture manifest missing at {}", manifest.display()));
         return;
     }
-    let pc = PureCrate { name: manifest_name.to_string(), dir: dir.clone(), kind: "plane".to_string() };
+    let pc = PureCrate {
+        name: manifest_name.to_string(),
+        dir: dir.clone(),
+        kind: "plane".to_string(),
+        report_name: manifest_name.to_string(),
+    };
     let hits = denylist::run_on(&manifest, vec![pc], &banned, &fragments);
 
     if expect_offenders.is_empty() {
@@ -116,6 +121,7 @@ fn check_test_code_excluded(fails: &mut Vec<String>) {
         name: "xtask-fixture-dirty-src".to_string(),
         dir: dir.clone(),
         kind: "plane".to_string(),
+        report_name: "xtask-fixture-dirty-src".to_string(),
     };
     let hits = denylist::run_on(&manifest, vec![pc], &banned, &fragments);
     if hits.iter().any(|h| h.offender.contains("std::env")) {

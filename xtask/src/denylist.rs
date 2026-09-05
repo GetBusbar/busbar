@@ -98,9 +98,15 @@ fn glob_match(pattern: &str, candidate: &str) -> bool {
 }
 
 pub struct PureCrate {
+    /// The `[package] name` — what `cargo metadata` calls it, used to find its node.
     pub name: String,
     pub dir: PathBuf,
     pub kind: String,
+    /// The crate directory's basename — what `scripts/construction-gate/rules.py` calls it
+    /// (`_crate_name(d)`), used for every reported `Hit.crate_name` so the two tools' row/TSV keys
+    /// agree even where the manifest name differs from the directory (`crates/auth-static-plugin`
+    /// ships as `busbar-auth-static-plugin`).
+    pub report_name: String,
 }
 
 /// Every crate under `crates/*` matching one of the PURE kinds' globs in
@@ -126,7 +132,12 @@ pub fn pure_crates(root: &Path) -> Vec<PureCrate> {
             let name = dir.file_name().unwrap().to_string_lossy().to_string();
             let candidate = format!("crates/{name}");
             if globs.iter().any(|g| glob_match(g, &candidate)) && dir.join("Cargo.toml").exists() {
-                out.push(PureCrate { name: crate_manifest_name(dir), dir: dir.clone(), kind: kind.clone() });
+                out.push(PureCrate {
+                    name: crate_manifest_name(dir),
+                    dir: dir.clone(),
+                    kind: kind.clone(),
+                    report_name: name,
+                });
             }
         }
     }
@@ -430,7 +441,7 @@ fn own_src_hits(scan_root: &Path, pc: &PureCrate, banned: &BannedLists, fragment
             for pat in &banned.std_paths {
                 if code.contains(pat.as_str()) {
                     hits.push(Hit {
-                        crate_name: pc.name.clone(),
+                        crate_name: pc.report_name.clone(),
                         offender: pat.clone(),
                         via: format!("own src at {rel}:{lineno}"),
                     });
@@ -484,7 +495,7 @@ pub fn run(root: &Path) -> Report {
     let mut hits = Vec::new();
     for pc in &crates {
         if let Some(id) = find_package_id(&meta, &pc.dir, &pc.name) {
-            hits.extend(closure_hits(&meta, &id, &pc.name, &banned));
+            hits.extend(closure_hits(&meta, &id, &pc.report_name, &banned));
         } else {
             eprintln!(
                 "xtask denylist: warning: {} ({}) not found in `cargo metadata` output; skipped",
@@ -511,7 +522,7 @@ pub fn run_on(
     let mut hits = Vec::new();
     for pc in &crates {
         if let Some(id) = find_package_id(&meta, &pc.dir, &pc.name) {
-            hits.extend(closure_hits(&meta, &id, &pc.name, banned));
+            hits.extend(closure_hits(&meta, &id, &pc.report_name, banned));
         } else {
             eprintln!(
                 "xtask denylist: warning: {} not found in `cargo metadata` output; skipped",
