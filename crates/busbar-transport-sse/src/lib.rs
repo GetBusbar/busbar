@@ -10,6 +10,12 @@
 //! re-segments the byte stream `http` already assembled at the SSE frame terminator (a blank
 //! line), using the parser [`proto`] carries — ported from `busbar_substrate::proto` per the
 //! design's rule that a transport's own wire pieces live in the transport crate.
+//!
+//! The re-segmentation buffer is held to the design's per-connection reading budget
+//! (`MAX_CURSOR_BYTES`). Upstream bytes are untrusted, and this is the one accumulator with no cap
+//! a layer above it: the served door's request-body limit does not reach a streamed response body.
+//! An upstream that opens an event stream and never writes a blank line ends it with `Framing`
+//! rather than growing this buffer for the life of the connection.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -196,6 +202,17 @@ impl Transport for SseTransport {
                             }
                         }
                         st.scanned = st.buf.len();
+                        if st.buf.len() > busbar_contract::MAX_CURSOR_BYTES {
+                            // What is left after every complete frame has been drained is ONE
+                            // frame's prefix, and the design's per-connection reading budget is
+                            // what one frame is allowed to be. Upstream bytes are untrusted and
+                            // this buffer has no cap a layer up — a streamed response body is
+                            // exactly what the served door's body limit does not reach — so an
+                            // upstream that never ends a frame would grow it for the life of the
+                            // connection. Ended here instead.
+                            st.done = true;
+                            return Some((Err(TransportError::Framing), st));
+                        }
                         if !st.pending.is_empty() {
                             continue;
                         }

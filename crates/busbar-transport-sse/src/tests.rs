@@ -208,6 +208,67 @@ async fn byte_at_a_time_delivery_segments_identically_to_one_shot_delivery() {
     );
 }
 
+/// An upstream that never ends a frame is refused at the cursor budget, not accumulated forever.
+///
+/// Upstream response bytes are untrusted input, and unlike the request body there is no cap one
+/// layer up for this buffer: a streamed response body is exactly what the served door's body limit
+/// does not apply to. So a provider — or anything wearing one's address — that opens a
+/// `text/event-stream` and then writes without ever emitting a blank line grows this buffer for the
+/// life of the connection. The design's per-connection reading budget is the right instrument and
+/// `Framing` is the right answer; no real provider frame comes close to it, which the fixtures
+/// above pin.
+#[tokio::test]
+async fn an_upstream_frame_past_the_cursor_budget_ends_the_stream() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let filler = busbar_contract::MAX_CURSOR_BYTES * 2;
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0_u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+        let mut body = b"data: ".to_vec();
+        // Not one blank line anywhere in it.
+        body.extend_from_slice(&vec![b'x'; filler]);
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes())
+            .await
+            .unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut stream, &body)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+
+    let uri = format!("http://{addr}/");
+    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let sse = SseTransport::new(http);
+    let conn = sse
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    sse.write(
+        &conn,
+        StreamId(0),
+        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+    )
+    .await
+    .unwrap();
+
+    let mut frames = sse.frames(conn);
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the stream answers rather than accumulating")
+        .expect("the stream yields the framing error");
+    assert_eq!(
+        first.unwrap_err(),
+        TransportError::Framing,
+        "an unterminated frame past the cursor budget is refused, not buffered"
+    );
+}
+
 #[test]
 fn frame_meta_honesty_holds_for_sse_frames() {
     let raw = b"data: x\n\n";
