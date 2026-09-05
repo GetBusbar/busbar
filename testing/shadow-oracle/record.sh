@@ -68,6 +68,14 @@ wait_for_http "http://127.0.0.1:${MOCK_PORT}/" 8 || fail_setup "mock upstream di
 # ── busbar under the oracle config ──────────────────────────────────────────────────────────────
 oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || fail_setup "oracle config could not be written"
 oracle_env "$BIN" --validate >"$WORK/validate.log" 2>&1 || fail_setup "busbar rejected the oracle config (run selftest.sh)" "$(tail -c 400 "$WORK/validate.log")"
+# The hooks variant loads the published first-party plugins, which a candidate can only verify with
+# the release public key embedded at build time (BUSBAR_RELEASE_PUBKEY). A binary built without it
+# refuses every hooks-variant boot, so that is judged ONCE here instead of as 29 failed cells.
+if ORACLE_VARIANT=hooks oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" 2>/dev/null; then
+  oracle_env "$BIN" --validate >"$WORK/validate-hooks.log" 2>&1 \
+    || fail_setup "busbar rejected the hooks-variant config: a candidate must be built with BUSBAR_RELEASE_PUBKEY exported (see plugin-sign)" "$(tail -c 400 "$WORK/validate-hooks.log")"
+  oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || fail_setup "oracle config could not be written"
+fi
 
 BUSBAR_PID="" CUR_VARIANT=""
 boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three keys, prime the BROKE key
