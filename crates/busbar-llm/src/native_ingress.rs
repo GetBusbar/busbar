@@ -23,7 +23,10 @@ use busbar_substrate::plane_host::EngineHost;
 
 use crate::engine::{native_runtime_arc, EngineTables, NativeRuntime, WeightedLane};
 
-fn multipart_model(body: &[u8]) -> Option<String> {
+// `pub(crate)` rather than private so the Decode step can CALL this rung of the model ladder instead
+// of carrying a second copy of it. A copy would be a second reading of the same wire, and two
+// readings of one wire are two answers waiting to disagree.
+pub(crate) fn multipart_model(body: &[u8]) -> Option<String> {
     // 64 KiB is far larger than any plausible run of text form fields preceding the audio blob.
     const HEAD: usize = 64 * 1024;
     let head = &body[..body.len().min(HEAD)];
