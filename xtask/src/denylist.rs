@@ -41,6 +41,11 @@ pub struct Hit {
 pub struct Report {
     pub hits: Vec<Hit>,
     pub crates_scanned: usize,
+    /// Reasons the run could not be TRUSTED, as distinct from reasons it found something. A gate
+    /// whose own input vanished — the rule table renamed away, the crates directory unreadable, no
+    /// crate matched at all — has proven nothing, and printing "0 hits" for it would publish that
+    /// nothing as a pass. Any entry here makes the report RED with no hits at all.
+    pub defects: Vec<String>,
 }
 
 /// `hyper-util` is not named in ARCHITECTURE.md section 1.2's own list (`reqwest`, `hyper`,
@@ -115,15 +120,39 @@ pub struct PureCrate {
 /// `qa/construction.toml`'s `[gate.plugin_kinds]`, restricted to the kind list
 /// `[rules.source-denylist].kinds` names (section 1.2's own scoping: I/O kinds — store, secret,
 /// export, network-backed auth — own their I/O by definition and are out of scope here).
-pub fn pure_crates(root: &Path) -> Vec<PureCrate> {
-    let doc = toml_lite::parse(&root.join("qa/construction.toml"));
-    let kinds = doc.table("rules.source-denylist").get_list("kinds");
+///
+/// Returns `Err` — never an empty list — when the SCOPING itself is missing: no `kinds`, no
+/// `patterns`, or a `crates/` directory that will not list. `toml_lite` has no failing accessor, so
+/// a renamed or deleted `[rules.source-denylist]` table reads as an empty list and an unreadable
+/// directory reads as no entries; both then produce zero hits over zero crates, which the report
+/// would otherwise print as a pass. The construction.toml comment that an empty match list is
+/// nothing-to-check is about a KIND GLOB matching no directory (a kind with no crate yet, which is
+/// genuinely nothing to check), not about the rule's own configuration disappearing.
+pub fn pure_crates(root: &Path) -> Result<Vec<PureCrate>, String> {
+    let config = root.join("qa/construction.toml");
+    let doc = toml_lite::parse(&config);
+    let rule = doc.table("rules.source-denylist");
+    let kinds = rule.get_list("kinds");
+    if kinds.is_empty() {
+        return Err(format!(
+            "{}: [rules.source-denylist].kinds is missing or empty — the denylist has no kinds to \
+             scope itself to, so it can prove nothing",
+            config.display()
+        ));
+    }
+    if rule.get_list("patterns").is_empty() {
+        return Err(format!(
+            "{}: [rules.source-denylist].patterns is missing or empty — the denylist has nothing \
+             to ban, so it can prove nothing",
+            config.display()
+        ));
+    }
     let plugin_kinds = doc.table("gate.plugin_kinds");
     let mut out = Vec::new();
     let crates_dir = root.join("crates");
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(&crates_dir)
-        .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).collect())
-        .unwrap_or_default();
+    let listing = std::fs::read_dir(&crates_dir)
+        .map_err(|e| format!("cannot list {}: {e}", crates_dir.display()))?;
+    let mut entries: Vec<PathBuf> = listing.filter_map(|e| e.ok()).map(|e| e.path()).collect();
     entries.sort();
     for kind in &kinds {
         let globs = plugin_kinds.get_list(kind);
@@ -143,7 +172,7 @@ pub fn pure_crates(root: &Path) -> Vec<PureCrate> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// The `[package] name = "..."` a crate's Cargo.toml actually declares — this can differ from its
@@ -786,7 +815,30 @@ fn fully_waived_pairs(
 pub fn run(root: &Path) -> Report {
     let banned = load_banned_lists(root);
     let allowed = load_allowlist(root);
-    let crates = pure_crates(root);
+    let crates = match pure_crates(root) {
+        Ok(crates) if crates.is_empty() => {
+            // Every pure kind's glob matched nothing. On a tree that has planes, hooks and auth
+            // crates this can only mean the scan was pointed somewhere it was not meant to be, and
+            // a scan of nothing is not a clean bill of health.
+            return Report {
+                hits: Vec::new(),
+                crates_scanned: 0,
+                defects: vec![format!(
+                    "no crate under {}/crates matched any pure kind's glob — nothing was scanned, \
+                     so nothing was proven",
+                    root.display()
+                )],
+            };
+        }
+        Ok(crates) => crates,
+        Err(defect) => {
+            return Report {
+                hits: Vec::new(),
+                crates_scanned: 0,
+                defects: vec![defect],
+            }
+        }
+    };
 
     let meta_json = run_cargo_metadata(&root.join("Cargo.toml"));
     let meta = parse_metadata(&meta_json);
@@ -811,6 +863,7 @@ pub fn run(root: &Path) -> Report {
     Report {
         hits,
         crates_scanned: crates.len(),
+        defects: Vec::new(),
     }
 }
 
@@ -893,13 +946,29 @@ pub fn load_test_fragments_pub(config_root: &Path) -> Vec<String> {
 /// SAME `source-denylist:<crate>` row the FAST-tier own-src scan already produces, rather than
 /// adding a second row for the same invariant.
 pub fn print_report_tsv(report: &Report) -> bool {
+    // A defect goes to stderr, not into the hit rows: the row format is `<crate>\t<offender>\t<via>`
+    // and a reader keys it by crate name, so a fake crate name would either be dropped silently or
+    // invent a crate. The non-zero exit is what carries the refusal.
+    for d in &report.defects {
+        eprintln!("xtask denylist: RED — {d}");
+    }
     for h in &report.hits {
         println!("{}\t{}\t{}", h.crate_name, h.offender, h.via);
     }
-    report.hits.is_empty()
+    report.defects.is_empty() && report.hits.is_empty()
 }
 
 pub fn print_report(report: &Report) -> bool {
+    if !report.defects.is_empty() {
+        println!(
+            "xtask denylist: RED — the scan could not be trusted, so it reports no result rather \
+             than a pass:"
+        );
+        for d in &report.defects {
+            println!("  {d}");
+        }
+        return false;
+    }
     if report.hits.is_empty() {
         println!(
             "xtask denylist: OK — {} pure-kind crate(s) scanned, 0 banned transitive source(s)",

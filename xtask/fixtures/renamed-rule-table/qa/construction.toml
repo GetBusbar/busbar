@@ -1,0 +1,25 @@
+# FIXTURE: a construction.toml in which the table that SCOPES the denylist has been renamed away.
+#
+# `[rules.source-denylist]` is gone (here it is spelled `[rules.source-denylist-v2]`, the shape a
+# rename or a merge conflict actually produces). Everything else is intact, and the tree below it
+# holds a genuinely dirty pure crate — `crates/busbar-plane-demo` depends directly on `libc`.
+#
+# The point of the fixture is that the tool must NOT answer "OK — 0 pure-kind crate(s) scanned" when
+# its own scoping input vanished: a gate that goes green because it lost its configuration is worse
+# than no gate, because it reads as a proof.
+[gate]
+test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
+
+[gate.plugin_kinds]
+plane = ["crates/busbar-plane-*"]
+hook = ["crates/hook*"]
+pure_auth = ["crates/auth-*"]
+egress_auth = ["crates/egress-auth-*"]
+
+[rules.source-denylist-v2]
+patterns = [
+  'std::net', 'std::fs', 'std::process', 'std::os', 'std::env',
+  'tokio::net', 'tokio::fs', 'tokio::process',
+  'async_std', 'libc', 'reqwest', 'hyper',
+]
+kinds = ["plane", "hook", "pure_auth", "egress_auth"]
