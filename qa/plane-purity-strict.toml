@@ -1,0 +1,40 @@
+# qa/plane-purity-strict.toml — ceilings for `scripts/plane-purity-lint.sh --strict`.
+#
+# WHY. `--check` only ever looked at PRODUCTION code in the neutral crates and the plane crates.
+# Test code was invisible to it on purpose (a plane's own test fixtures legitimately name its own
+# types), but that also means test code can quietly accumulate the very side channels --check bans
+# in production — most visibly a plane crate's tests reaching into `busbar_core::` internals, which
+# pins the plane to core's private shape just as surely as production code would. `--strict` makes
+# that debt visible and ratchets it down, the same ratchet shape as qa/construction.toml.
+#
+# HOW A CEILING WORKS. Every number below is the count MEASURED ON THE TREE the day this file was
+# written (so `--strict` is GREEN today). It is a ceiling, not a target: `--strict` fails RED only
+# when the measured count goes ABOVE it. Lower a number by hand as the debt is paid down — the gate
+# never lowers it for you, and a lowered number that goes stale (measurement now below it) still
+# passes, so tightening is always safe to do eagerly.
+#
+# [categories] — the same six side-channel classes --check already enforces in PRODUCTION scope
+# (PATH-INCLUDE/SYMBOL/TYPE/KEY/DIALECT/BACKWARDS), now counted across PRODUCTION + TEST scope
+# combined. Production is already 0 for every one of these (that is what makes --check green), so
+# today each ceiling equals the TEST-scope count only.
+[categories]
+PATH-INCLUDE = 0
+SYMBOL = 61
+TYPE = 13
+KEY = 378
+DIALECT = 449
+BACKWARDS = 570
+
+# [test-reach] — the BACKWARDS class broken out per plane crate (bare plane key, matching
+# scripts/plane-keys.sh), test scope only: how many lines under crates/busbar-<key>/src's OWN test
+# code (files under /tests/, *_tests.rs, or a #[cfg(test)] mod block) name `busbar_core::`. This is
+# the same measurement scripts/construction-gate.sh reports per crate as `ports-only-tests:<crate>`
+# (qa/construction.toml carries llm=565, mcp=1, a2a=3, voice=0); this file's llm figure differs by
+# one measured method (awk line-scan here vs. the ported python tree-scanner there) — both agree to
+# within a single line and neither claims exactness beyond "test code reaching busbar_core:: is
+# visible and ratchets down", which is the point of both gates.
+[test-reach]
+llm = 566
+mcp = 1
+a2a = 3
+voice = 0

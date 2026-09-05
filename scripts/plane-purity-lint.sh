@@ -94,6 +94,24 @@
 #   So: the SELF-TEST is green (it proves the scanner), the tree is clean, and `--check` is the
 #   permanent hard gate that keeps it that way — with nothing to edit in this file.
 #
+# ── A THIRD MODE: --strict (the same six classes, TEST scope too) ──────────────────────────────────
+#   --check only ever looked at PRODUCTION code. A plane's own TEST code (files under /tests/,
+#   *_tests.rs, and #[cfg(test)] modules) can quietly accumulate the same side channels --check bans
+#   in production — most visibly a plane crate's tests reaching into `busbar_core::` internals.
+#   --strict makes that visible and ratchets it down, using the SAME `scan()` function with its
+#   test-scope gate FLIPPED (testscope=1) rather than a second scanner:
+#
+#     --strict            BLOCKING. Prints the category table (PATH-INCLUDE/SYMBOL/TYPE/KEY/DIALECT/
+#                          BACKWARDS), production + test scope combined, PLUS a per-plane-crate
+#                          TEST-REACH breakdown (busbar_core:: named in that crate's own test code).
+#                          Decides RED/GREEN against ceilings in qa/plane-purity-strict.toml — a
+#                          ratchet the owner lowers by hand, defaulting to today's measured counts so
+#                          it is green on day one.
+#     --strict --baseline INFORMATIONAL, like plain --baseline: prints both tables, ALWAYS exits 0.
+#
+#   Plain `--check` (and `--selftest`/`--baseline`) are BYTE-IDENTICAL to before --strict existed —
+#   they always call `scan()` with testscope=0, which is the untouched, original code path.
+#
 # No external deps beyond bash 3.2 + POSIX awk (macOS/Linux) — the same bare-runner posture as the
 # sibling lints (structure-lint.sh, release-script-lint.sh, response-header-lint.sh).
 set -uo pipefail
@@ -127,10 +145,17 @@ plane_files()   { find $PLANE_ROOTS   -name '*.rs' 2>/dev/null | sort; }
 # excludes test code (a `*/tests/*` or `*_test(s).rs` file, and a `#[cfg(test)] mod … { … }` block).
 # The PATH-INCLUDE rule is scanned UNCONDITIONALLY, test scope included: the witness `#[path]` include
 # is an instant fail wherever it lives.
+#
+# testscope: 0 (default, used by --selftest/--baseline/--check) is BYTE-IDENTICAL to the original
+#   scanner — production scope only, test code excluded from (b)/(c)/BACKWARDS exactly as before.
+#   1 (used only by --strict) FLIPS the gate instead of dropping it: it reports ONLY what test scope
+#   contains (PATH-INCLUDE restricted to test-scope hits too, so a testscope=0 + testscope=1 run never
+#   double-counts a hit). This is the one extension --strict needed — no second scanner, no duplicated
+#   comment/test stripper; the same `intest`/`frozen` bookkeeping just gets asked the opposite question.
 scan() {
-  local mode="$1"; shift
+  local mode="$1" testscope="${2:-0}"; shift 2
   [ "$#" -gt 0 ] || return 0
-  awk -v mode="$mode" '
+  awk -v mode="$mode" -v testscope="$testscope" '
     # Strip comments + block-comments, respecting string literals. inblk persists across lines
     # (block comments span lines); instr is per-line (Rust string literals are overwhelmingly
     # single-line, and resetting each line guards against a raw-string/char-literal desync).
@@ -199,17 +224,23 @@ scan() {
 
       if (mode == "reverse") {
         # No backwards reach: a plane crate must not name busbar_core:: implementation items.
-        if (!intest && code ~ /busbar_core::/) emit("BACKWARDS", code)
+        # testscope=0 (--check/--baseline/--selftest): production only, byte-identical to before.
+        # testscope=1 (--strict only): the complementary TEST-scope reach, never both at once.
+        reach = (code ~ /busbar_core::/)
+        if (testscope) { if (reach && intest) emit("BACKWARDS", code) }
+        else           { if (reach && !intest) emit("BACKWARDS", code) }
         next
       }
 
       # ── forward: neutral-crate side channels ──
       # (a) PATH-INCLUDE — unconditional, test scope included (instant fail). NEVER excusable by the
       #     frozen-wire pragma below: a witness `#[path]` include is a STRUCTURAL side channel, not a
-      #     grammar token, so no config-freeze can justify it.
-      if (code ~ /#\[[[:space:]]*path[[:space:]]*=[[:space:]]*"[^"]*busbar-(llm|mcp|a2a|voice)\//) emit("PATH-INCLUDE", code)
+      #     grammar token, so no config-freeze can justify it. In testscope=1 (--strict) mode this is
+      #     restricted to test-scope hits so it is never double-counted against the testscope=0 pass.
+      pathinclude = (code ~ /#\[[[:space:]]*path[[:space:]]*=[[:space:]]*"[^"]*busbar-(llm|mcp|a2a|voice)\//)
+      if (pathinclude && (!testscope || intest)) emit("PATH-INCLUDE", code)
 
-      if (intest) next                                    # (b)/(c) exclude test code
+      if (testscope) { if (!intest) next } else { if (intest) next }  # (b)/(c): which scope this pass reports
 
       # (b) SYMBOL — a plane-crate symbol path. ALSO never excusable by the frozen-wire pragma: a
       #     frozen config FIELD/TYPE never requires naming `busbar_{llm,mcp,a2a,voice}::` — that is a
@@ -264,7 +295,7 @@ pub struct McpFoo;
 fn route() { let plane_key = "mcp"; let dialect = "anthropic"; }
 RED
   local out cat_count
-  out="$(scan forward "$tmp/neutral_red.rs")"
+  out="$(scan forward 0 "$tmp/neutral_red.rs")"
   cat_count() { printf '%s\n' "$out" | awk -F'\t' -v c="$1" '$1==c{n++} END{print n+0}'; }
   local need ok=1
   for need in PATH-INCLUDE SYMBOL TYPE KEY DIALECT; do
@@ -284,7 +315,7 @@ use busbar_voice::runtime::Session;
 pub struct VoiceFoo;
 fn route() { let plane_key = "voice"; }
 REDV
-  out="$(scan forward "$tmp/neutral_red_voice.rs")"
+  out="$(scan forward 0 "$tmp/neutral_red_voice.rs")"
   local voice_ok=1
   for need in PATH-INCLUDE SYMBOL TYPE KEY; do
     if [ "$(printf '%s\n' "$out" | awk -F'\t' -v c="$need" '$1==c{n++} END{print n+0}')" -ge 1 ]; then
@@ -315,7 +346,7 @@ mod tests {
     fn t() { let _ = McpCallRecord::default(); let k = "mcp"; let d = "anthropic"; }
 }
 GREEN
-  out="$(scan forward "$tmp/neutral_green.rs")"
+  out="$(scan forward 0 "$tmp/neutral_green.rs")"
   if [ -z "$out" ]; then
     note "GREEN neutral: flagged none of the ABI / comment / block-comment / cfg(test) fixtures"
   else
@@ -336,7 +367,7 @@ pub(crate) struct McpEndpointSection(Option<Box<dyn PlaneEndpointCfg>>); // plan
         errors.push("ok");
     }
 FZG
-  out="$(scan forward "$tmp/frozen_green.rs")"
+  out="$(scan forward 0 "$tmp/frozen_green.rs")"
   if [ -z "$out" ]; then
     note "frozen-wire GREEN: trailing AND standalone-above pragmas both exempt KEY/TYPE (flagged none)"
   else
@@ -348,7 +379,7 @@ FZG
     pub(crate) mcp: McpEndpointSection, // plane-purity: frozen-wire DeployCfg mcp: key + snapshot type
     pub(crate) other: McpDemotionRow,
 FZB
-  out="$(scan forward "$tmp/frozen_bleed.rs")"
+  out="$(scan forward 0 "$tmp/frozen_bleed.rs")"
   if printf '%s\n' "$out" | awk -F'\t' '$1=="TYPE" && $2 ~ /:2$/{n++} END{exit !n}'; then
     note "frozen-wire BLEED CONTROL: a trailing pragma did NOT exempt the following line"
   else
@@ -359,7 +390,7 @@ FZB
   cat >"$tmp/frozen_control.rs" <<'FZC'
     pub(crate) mcp: McpEndpointSection,
 FZC
-  out="$(scan forward "$tmp/frozen_control.rs")"
+  out="$(scan forward 0 "$tmp/frozen_control.rs")"
   if printf '%s\n' "$out" | awk -F'\t' '$1=="KEY"{k++} $1=="TYPE"{t++} END{exit !(k&&t)}'; then
     note "frozen-wire CONTROL: the same line WITHOUT the pragma still flags KEY+TYPE"
   else
@@ -371,7 +402,7 @@ FZC
 #[path = "../../../busbar-mcp/src/witness.rs"] mod w; // plane-purity: frozen-wire (abuse: must NOT excuse)
 use busbar_mcp::Thing; // plane-purity: frozen-wire (abuse: must NOT excuse)
 FZA
-  out="$(scan forward "$tmp/frozen_abuse.rs")"
+  out="$(scan forward 0 "$tmp/frozen_abuse.rs")"
   if [ "$(printf '%s\n' "$out" | awk -F'\t' '$1=="PATH-INCLUDE"{n++} END{print n+0}')" -ge 1 ] \
    && [ "$(printf '%s\n' "$out" | awk -F'\t' '$1=="SYMBOL"{n++} END{print n+0}')" -ge 1 ]; then
     note "frozen-wire ABUSE: the pragma did NOT launder PATH-INCLUDE or SYMBOL (both still flagged)"
@@ -384,7 +415,7 @@ FZA
 use busbar_core::internal::foo;
 fn f() { let _ = busbar_core::proto::PROTO_ANTHROPIC; }
 RRED
-  out="$(scan reverse "$tmp/plane_red.rs")"
+  out="$(scan reverse 0 "$tmp/plane_red.rs")"
   if [ "$(printf '%s\n' "$out" | awk -F'\t' '$1=="BACKWARDS"{n++} END{print n+0}')" -ge 1 ]; then
     note "RED reverse: flagged the busbar_core:: backwards reach"
   else
@@ -398,11 +429,72 @@ use busbar_api::store::PlaneRecord;
 // busbar_core:: named only in a comment is not a reach
 GREEN
 RGREEN
-  out="$(scan reverse "$tmp/plane_green.rs")"
+  out="$(scan reverse 0 "$tmp/plane_green.rs")"
   if [ -z "$out" ]; then
     note "GREEN reverse: a plane crate naming only the substrate/api ABI is clean"
   else
     fail=1; note "GREEN reverse FAILED: expected 0, got:"; printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+
+  # ── STRICT MODE (testscope=1): a violation planted ONLY inside test scope must be INVISIBLE to
+  # testscope=0 (the exact scan `--check` runs) and VISIBLE to testscope=1 (what `--strict` adds).
+  # This is the property the task requires: "a planted test-scope violation turns strict RED while
+  # plain --check stays green" — proven here at the scanner level, then again at the decision level
+  # (strict_decide) just below, so both halves of --strict are covered by the self-test.
+  #
+  # (1) forward/neutral: a #[cfg(test)] mod naming a TYPE/KEY/DIALECT (reusing neutral_green.rs's
+  #     own cfg(test) block, which the GREEN-neutral fixture above already proved is invisible to
+  #     testscope=0 — i.e. to `--check`).
+  out="$(scan forward 1 "$tmp/neutral_green.rs")"
+  if [ "$(printf '%s\n' "$out" | awk -F'\t' '$1=="TYPE"{n++} END{print n+0}')" -ge 1 ] \
+   && [ "$(printf '%s\n' "$out" | awk -F'\t' '$1=="KEY"{n++} END{print n+0}')" -ge 1 ] \
+   && [ "$(printf '%s\n' "$out" | awk -F'\t' '$1=="DIALECT"{n++} END{print n+0}')" -ge 1 ]; then
+    note "STRICT forward: a cfg(test) TYPE/KEY/DIALECT invisible to --check (testscope=0) is flagged at testscope=1"
+  else
+    fail=1; note "STRICT forward FAILED: cfg(test) vocabulary not flagged at testscope=1 (got: $out)"
+  fi
+
+  # (2) reverse/plane: a #[cfg(test)] mod in a plane crate reaching `busbar_core::` — invisible to
+  #     testscope=0 (the reverse scan --check's total is built from), flagged at testscope=1.
+  cat >"$tmp/plane_red_test.rs" <<'PRT'
+pub fn ok() {}
+#[cfg(test)]
+mod tests {
+    fn t() { let _ = busbar_core::internal::foo(); }
+}
+PRT
+  local prod_hits strict_hits
+  prod_hits="$(scan reverse 0 "$tmp/plane_red_test.rs")"
+  strict_hits="$(scan reverse 1 "$tmp/plane_red_test.rs")"
+  if [ -z "$prod_hits" ] \
+   && [ "$(printf '%s\n' "$strict_hits" | awk -F'\t' '$1=="BACKWARDS"{n++} END{print n+0}')" -ge 1 ]; then
+    note "STRICT reverse: a cfg(test) busbar_core:: reach is invisible at testscope=0 (--check stays green)"
+    note "STRICT reverse: the SAME reach is flagged BACKWARDS at testscope=1 (--strict goes RED)"
+  else
+    fail=1; note "STRICT reverse FAILED: expected testscope=0 clean + testscope=1 flagged, got prod=[$prod_hits] strict=[$strict_hits]"
+  fi
+
+  # (3) decision level: strict_decide must actually turn this into RED against a ceiling, proving
+  # the whole --strict pipeline (scan → count → compare to qa/plane-purity-strict.toml), not just
+  # the scanner. A ceiling of 0 for a plane key the fixture's count (1) exceeds must fail; the SAME
+  # count against a ceiling that already covers it (>=1) must pass — the ratchet, not a fixed gate.
+  local decide_tmp; decide_tmp="$(mktemp -d)"
+  printf 'a2a\t1\n' >"$decide_tmp/crates.tsv"
+  : >"$decide_tmp/cats.tsv"
+  local save_toml="$STRICT_TOML"
+  STRICT_TOML="$decide_tmp/ceilings.toml"
+  printf '[test-reach]\na2a = 0\n' >"$STRICT_TOML"
+  strict_decide "$decide_tmp/cats.tsv" "$decide_tmp/crates.tsv"
+  local red_at_zero="$STRICT_FAIL"
+  printf '[test-reach]\na2a = 1\n' >"$STRICT_TOML"
+  strict_decide "$decide_tmp/cats.tsv" "$decide_tmp/crates.tsv"
+  local green_at_one="$STRICT_FAIL"
+  STRICT_TOML="$save_toml"
+  rm -rf "$decide_tmp"
+  if [ "$red_at_zero" -eq 1 ] && [ "$green_at_one" -eq 0 ]; then
+    note "STRICT decide: a test-reach above its ceiling is RED; the same count at/under its ceiling is GREEN"
+  else
+    fail=1; note "STRICT decide FAILED: expected RED-then-GREEN, got fail@ceiling0=$red_at_zero fail@ceiling1=$green_at_one"
   fi
 
   if [ "$fail" -ne 0 ]; then
@@ -423,9 +515,9 @@ run_report() {
 
   : >"$tmp/hits"
   # shellcheck disable=SC2086
-  [ -n "$nf" ] && scan forward $nf >>"$tmp/hits"
+  [ -n "$nf" ] && scan forward 0 $nf >>"$tmp/hits"
   # shellcheck disable=SC2086
-  [ -n "$pf" ] && scan reverse $pf >>"$tmp/hits"
+  [ -n "$pf" ] && scan reverse 0 $pf >>"$tmp/hits"
 
   local total; total="$(wc -l <"$tmp/hits" | tr -d ' ')"
   REPORT_TOTAL="$total"
@@ -449,6 +541,117 @@ run_report() {
 
   # Keep the hit list available for callers that want the full detail.
   cp "$tmp/hits" "${PLANE_PURITY_HITS_OUT:-/dev/null}" 2>/dev/null || true
+}
+
+# ── STRICT MODE (--strict / --strict --baseline) ────────────────────────────────────────────────────
+# --check only ever looked at PRODUCTION scope. --strict additionally scans TEST scope (same
+# definition as everywhere else in this file: a `/tests/` path, a `*_tests.rs` file, or a
+# `#[cfg(test)] mod { … }` block) for the same six classes, using the SAME `scan()` function with
+# testscope=1 — no second scanner. It reports:
+#   (1) the category table, PRODUCTION + TEST combined (production is already 0, enforced by
+#       `--check`, so today each number is exactly the test-scope count).
+#   (2) BACKWARDS (a plane's `busbar_core::` reach) broken out per plane crate as TEST-REACH, test
+#       scope only — the same measurement `construction-gate.sh` reports as `ports-only-tests:<crate>`.
+# Ceilings live in qa/plane-purity-strict.toml (a ratchet the owner tightens by hand, never this
+# script). `--strict --baseline` prints the same two tables and ALWAYS exits 0 (no ceiling applied,
+# mirroring `--baseline`'s relationship to `--check`); plain `--strict` applies the ceilings and
+# decides RED/GREEN.
+STRICT_TOML="qa/plane-purity-strict.toml"
+
+# ceiling_of NAME — look up NAME's ceiling in STRICT_TOML. Section headers ([categories]/[test-reach])
+# have no `=` so they never match; this is intentionally not a real TOML parser (no external deps
+# beyond bash + awk), just a `key = value` line reader that ignores comments and whitespace.
+ceiling_of() {
+  awk -F'=' -v k="$1" '
+    { key = $1; gsub(/^[ \t]+|[ \t]+$/, "", key) }
+    key == k {
+      val = $2; sub(/#.*/, "", val); gsub(/^[ \t]+|[ \t]+$/, "", val); print val; exit
+    }
+  ' "$STRICT_TOML"
+}
+
+# run_strict_report — populates $tmp/strict-cats.tsv (CATEGORY<TAB>count) and
+# $tmp/strict-crates.tsv (plane-key<TAB>count) and prints both tables. Uses the same neutral_files /
+# plane_files file lists as run_report, so "which files" is single-sourced with `--check` too.
+run_strict_report() {
+  local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
+  local nf pf
+  nf="$(neutral_files)"; pf="$(plane_files)"
+
+  : >"$tmp/prod_fwd"; : >"$tmp/test_fwd"; : >"$tmp/prod_rev"; : >"$tmp/test_rev"
+  # shellcheck disable=SC2086
+  [ -n "$nf" ] && scan forward 0 $nf >"$tmp/prod_fwd"
+  # shellcheck disable=SC2086
+  [ -n "$nf" ] && scan forward 1 $nf >"$tmp/test_fwd"
+  # shellcheck disable=SC2086
+  [ -n "$pf" ] && scan reverse 0 $pf >"$tmp/prod_rev"
+  # shellcheck disable=SC2086
+  [ -n "$pf" ] && scan reverse 1 $pf >"$tmp/test_rev"
+
+  hdr "STRICT NEUTRAL-PURITY report — production + test scope combined"
+  note "neutral roots: $NEUTRAL_ROOTS"
+  note "plane roots:   $PLANE_ROOTS"
+
+  hdr "by category (production + test scope combined; ceilings in $STRICT_TOML)"
+  local c n_prod n_test n total_all=0
+  : >"$tmp/strict-cats.tsv"
+  for c in PATH-INCLUDE SYMBOL TYPE KEY DIALECT; do
+    n_prod="$(awk -F'\t' -v c="$c" '$1==c{n++} END{print n+0}' "$tmp/prod_fwd")"
+    n_test="$(awk -F'\t' -v c="$c" '$1==c{n++} END{print n+0}' "$tmp/test_fwd")"
+    n=$((n_prod + n_test))
+    printf '  %-13s %6d\n' "$c" "$n"
+    printf '%s\t%d\n' "$c" "$n" >>"$tmp/strict-cats.tsv"
+    total_all=$((total_all + n))
+  done
+  n_prod="$(wc -l <"$tmp/prod_rev" | tr -d ' ')"
+  n_test="$(wc -l <"$tmp/test_rev" | tr -d ' ')"
+  n=$((n_prod + n_test))
+  printf '  %-13s %6d\n' "BACKWARDS" "$n"
+  printf 'BACKWARDS\t%d\n' "$n" >>"$tmp/strict-cats.tsv"
+  total_all=$((total_all + n))
+  printf '  %-13s %6d\n' "TOTAL" "$total_all"
+
+  hdr "TEST-REACH by plane crate (that crate's OWN test code naming busbar_core::, test scope only)"
+  local k crate_total=0
+  : >"$tmp/strict-crates.tsv"
+  for k in $PLANE_KEYS; do
+    n="$(awk -F'\t' -v pat="^crates/busbar-${k}/" '$2 ~ pat{n++} END{print n+0}' "$tmp/test_rev")"
+    printf '  %-13s %6d\n' "$k" "$n"
+    printf '%s\t%d\n' "$k" "$n" >>"$tmp/strict-crates.tsv"
+    crate_total=$((crate_total + n))
+  done
+  printf '  %-13s %6d\n' "TOTAL" "$crate_total"
+
+  cp "$tmp/strict-cats.tsv"   "${STRICT_CATS_OUT:-/dev/null}"   2>/dev/null || true
+  cp "$tmp/strict-crates.tsv" "${STRICT_CRATES_OUT:-/dev/null}" 2>/dev/null || true
+}
+
+# strict_decide — reads the two TSVs run_strict_report wrote and compares each row to its ceiling in
+# $STRICT_TOML. Sets $STRICT_FAIL to 1 if anything exceeds its ceiling, 0 otherwise. Never used by
+# `--strict --baseline` (informational, no ceiling applied); only by plain `--strict`.
+STRICT_FAIL=0
+strict_decide() {
+  local cats="$1" crates="$2"
+  STRICT_FAIL=0
+  local name n ceiling
+  while IFS=$'\t' read -r name n; do
+    [ -n "$name" ] || continue
+    ceiling="$(ceiling_of "$name")"
+    [ -n "$ceiling" ] || { ceiling=0; note "no ceiling for category $name in $STRICT_TOML — defaulting to 0"; }
+    if [ "$n" -gt "$ceiling" ]; then
+      STRICT_FAIL=1
+      note "RED category $name: $n > ceiling $ceiling"
+    fi
+  done <"$cats"
+  while IFS=$'\t' read -r name n; do
+    [ -n "$name" ] || continue
+    ceiling="$(ceiling_of "$name")"
+    [ -n "$ceiling" ] || { ceiling=0; note "no ceiling for test-reach $name in $STRICT_TOML — defaulting to 0"; }
+    if [ "$n" -gt "$ceiling" ]; then
+      STRICT_FAIL=1
+      note "RED test-reach $name: $n > ceiling $ceiling"
+    fi
+  done <"$crates"
 }
 
 # ── modes ─────────────────────────────────────────────────────────────────────────────────────────
@@ -487,11 +690,45 @@ case "${1:-}" in
     note "  BACKWARDS    → a plane may name the substrate/api ABI, never busbar_core:: implementation."
     exit 1
     ;;
+  --strict)
+    STRICT_CATS_OUT="$(mktemp)"; STRICT_CRATES_OUT="$(mktemp)"
+    trap 'rm -f "$STRICT_CATS_OUT" "$STRICT_CRATES_OUT"' EXIT
+    [ -f "$STRICT_TOML" ] || { red "plane-purity --strict: ceilings file not found: $STRICT_TOML"; exit 2; }
+    case "${2:-}" in
+      --baseline)
+        # INFORMATIONAL, like plain --baseline: prints both tables, NEVER applies a ceiling, always
+        # exits 0 — visible on every push without gating on it.
+        run_strict_report
+        hdr "verdict"
+        note "strict --baseline is informational: measurements only, no ceiling applied."
+        note "The ratchet gate is \`--strict\` (no --baseline), decided against $STRICT_TOML."
+        exit 0
+        ;;
+      "")
+        # BLOCKING: decides RED/GREEN against the ceilings in qa/plane-purity-strict.toml.
+        run_strict_report
+        hdr "verdict"
+        strict_decide "$STRICT_CATS_OUT" "$STRICT_CRATES_OUT"
+        if [ "$STRICT_FAIL" -eq 0 ]; then
+          grn "plane-purity strict gate: PASS — every category and every plane crate's test-reach is within its ceiling"
+          exit 0
+        fi
+        red "plane-purity strict gate: FAIL — a category or a plane crate's test-reach rose above its ceiling"
+        note "Ceilings are ratchets, not targets: lower one in $STRICT_TOML as the debt named above is paid down."
+        note "Never raise a ceiling to launder a regression — explain why in the commit if one must move."
+        exit 1
+        ;;
+      *)
+        echo "usage: $0 --strict [--baseline]" >&2
+        exit 2
+        ;;
+    esac
+    ;;
   -h | --help)
     sed -n '2,60p' "$0"
     ;;
   *)
-    echo "usage: $0 [--selftest | --baseline | --check]" >&2
+    echo "usage: $0 [--selftest | --baseline | --check | --strict [--baseline]]" >&2
     exit 2
     ;;
 esac
