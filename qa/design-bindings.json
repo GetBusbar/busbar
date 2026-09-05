@@ -11,14 +11,14 @@
  },
  "counts": {
   "bindings": 103,
-  "mapped": 85,
-  "unmapped": 18,
+  "mapped": 89,
+  "unmapped": 14,
   "checks_by_kind": {
    "gate": 7,
    "lint": 3,
    "oracle-cell": 41,
    "oracle-family": 4,
-   "test": 412
+   "test": 426
   }
  },
  "owner_decisions": {
@@ -2058,14 +2058,35 @@
    "surface": "`in_flight_reserve`",
    "binding": "0 unless a claimed transport declares `SESSION = true`; a 1.5.5 config sheds at exactly `max_inbound_concurrent`; the reserve is drawn only against session Unit 0 arrivals",
    "inventory": "config CFG-134",
-   "status": "unmapped",
-   "suggestion": "unit test: in_flight_reserve is 0 without a SESSION transport and shedding happens exactly at max_inbound_concurrent",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "unit test: in_flight_reserve is 0 without a SESSION transport and shedding happens exactly at max_inbound_concurrent"
+     "ref": "the_reserve_is_a_tenth_of_the_table_and_only_where_sessions_exist",
+     "proves": "the reserve is a tenth of the table where a claimed transport opens sessions and exactly 0 where none does",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "the_administrative_listener_and_the_heartbeat_are_outside_the_cap",
+     "proves": "with a reserve of 0 the table sheds at exactly the cap, and the admin listener and the zero-hold tick are outside it",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "a_full_table_sheds_new_arrivals_before_it_sheds_an_open_session",
+     "proves": "the reserved slots are drawn only by a provider frame of a session already open; a new client arrival is refused InFlightCap at Arrival",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "the_cap_holds_when_everything_arrives_at_once",
+     "proves": "sixteen concurrent arrivals against a cap of four admit exactly four, so the shed point is the cap and not an approximation of it",
+     "source": "hand",
+     "status": "mapped"
     }
    ]
   },
@@ -2186,14 +2207,21 @@
    "binding": "the `max_unit_duration` sweep alarms only; the unit's only timers are PB-8's — a stream is cut only by the `upstream_request_timeout_secs` TOTAL reqwest deadline (default 300 s, `main.rs:3179-3181`); there is no idle timer",
    "inventory": "proxy-hooks §2.8, ops §3.6",
    "note": "max_unit_duration does not exist in crates/; the stall sweep is not built, so the binding is vacuously true.",
-   "status": "unmapped",
-   "suggestion": "engine unit test: max_unit_duration only alarms; a stream is cut only by the total reqwest deadline",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "engine unit test: max_unit_duration only alarms; a stream is cut only by the total reqwest deadline"
+     "ref": "a_slow_unit_is_not_a_lost_one",
+     "proves": "the max_unit_duration sweep on a protocol with no idle bound returns AlarmOnly, and settling an AlarmOnly verdict takes no hold and ends no unit; the kernel half of the binding (the total egress deadline is the engine's)",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "a_lost_task_is_settled_within_one_tick",
+     "proves": "the sweep ends a unit only when the drop guard MARKED it, never merely for being silent",
+     "source": "hand",
+     "status": "mapped"
     }
    ]
   },
@@ -2509,14 +2537,35 @@
    "binding": "on every 1.5.5-shaped deployment an ADMITTED `http`/`sse` unit is never ended for money: no `Aborted(Kernel { OverBudget })`, no `Aborted(Kernel { OverdraftCeiling })`; the overdraft ceiling is unbounded (flag-only) on every Migration-sealed bucket; `OverdraftCeiling` and `StaleSlice` are never refusal reasons on a 1.5.5 config; token overshoot is bounded only by the in-flight admitted requests, exactly as at the tag",
    "inventory": "governance 3.3.5, 3.3.11; proxy-hooks §2.8–2.9",
    "note": "OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.",
-   "status": "unmapped",
-   "suggestion": "governance unit test: an admitted unit is never aborted for OverBudget or OverdraftCeiling on a migration-sealed bucket",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "governance unit test: an admitted unit is never aborted for OverBudget or OverdraftCeiling on a migration-sealed bucket"
+     "ref": "running_past_the_reservation_posts_the_overdraft_rather_than_refusing",
+     "proves": "an admitted unit that spends past its reservation runs to its end and posts the full amount flagged Overdraft; the loop has no path that ends an admitted unit for money",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "running_out_mid_unit_carries_rather_than_refusing",
+     "proves": "the overdraft rule below the ceiling is continue-and-carry, and a total window is continue-with-no-carry; neither refuses",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "only_the_dimensions_that_accrue_mid_unit_can_overdraw",
+     "proves": "requests and concurrency are decided at the door, so only nano-units and class quantities can end a unit owing anything",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "the_leases_go_back_on_every_end_whatever_it_was",
+     "proves": "the exit path releases the unit's concurrency leases on every end, so no admitted unit is held open by an accounting failure",
+     "source": "hand",
+     "status": "mapped"
     }
    ]
   },
@@ -2615,14 +2664,35 @@
    "binding": "a request body is accepted up to `request_body_max_bytes` (default 32 MiB, ceiling 1 GiB) regardless of chunk count; `MAX_NEEDMORE_FRAMES` never applies to body spooling",
    "inventory": "config CFG-131",
    "note": "MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.",
-   "status": "unmapped",
-   "suggestion": "ingress test: a chunked body up to request_body_max_bytes is accepted regardless of chunk count",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "ingress test: a chunked body up to request_body_max_bytes is accepted regardless of chunk count"
+     "ref": "a_body_is_bounded_by_its_bytes_and_never_by_its_chunk_count",
+     "proves": "a body arriving in four thousand chunks is spooled and opens its unit; the only bound applied is the byte budget, and the frame bound is never consulted",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "the_spill_budget_refuses_rather_than_growing",
+     "proves": "the spool's one refusal is the node-global byte budget, counted in actual bytes",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "a_body_opens_its_unit_only_once_the_deepest_pointer_has_resolved",
+     "proves": "a declared pointer is never read off a truncated prefix; the unit opens when the bytes holding it have arrived",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "a_body_over_a_mebibyte_with_the_lane_key_last_still_resolves",
+     "proves": "a body over a mebibyte whose lane key is serialised last resolves byte-identically",
+     "source": "hand",
+     "status": "mapped"
     }
    ]
   },

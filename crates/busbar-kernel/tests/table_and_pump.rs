@@ -133,6 +133,57 @@ fn an_unsolicited_push_refused_at_the_cap_still_posts_the_floor_line() {
 }
 
 #[test]
+fn the_cap_holds_when_everything_arrives_at_once() {
+    // The table's size is the bound the crash-exposure figure is computed from, so "is there room?"
+    // and "take the room" have to be one step. Sixteen arrivals racing for four slots must produce
+    // four admissions, however the threads interleave.
+    let kernel = Kernel::new();
+    for _ in 0..200 {
+        let table = std::sync::Arc::new(InFlight::new(4, 0));
+        let mut racers = Vec::new();
+        for key in 0..16u64 {
+            let table = std::sync::Arc::clone(&table);
+            let entering = enter(&kernel, key, OriginKind::Client);
+            racers.push(std::thread::spawn(move || {
+                table.insert(entering).map(|_| ()).is_ok()
+            }));
+        }
+        let admitted = racers
+            .into_iter()
+            .filter(|_| true)
+            .map(|racer| racer.join().expect("the thread finished"))
+            .filter(|ok| *ok)
+            .count();
+        assert_eq!(admitted, 4, "the table admitted {admitted} units over 4");
+        assert_eq!(table.len(), 4);
+    }
+}
+
+#[test]
+fn a_session_pairs_no_ninth_upstream_however_the_dials_interleave() {
+    let kernel = Kernel::new();
+    for _ in 0..200 {
+        let sessions = Sessions::new(4);
+        let slot = sessions
+            .open(kernel.session_id(1), Binding::Bound, 0)
+            .expect("the budget has room");
+        let mut racers = Vec::new();
+        for _ in 0..16 {
+            let slot = std::sync::Arc::clone(&slot);
+            racers.push(std::thread::spawn(move || slot.add_upstream().is_ok()));
+        }
+        let paired = racers
+            .into_iter()
+            .filter(|_| true)
+            .map(|racer| racer.join().expect("the thread finished"))
+            .filter(|ok| *ok)
+            .count();
+        assert_eq!(paired, 8, "{paired} upstreams were paired");
+        assert_eq!(slot.upstreams(), 8);
+    }
+}
+
+#[test]
 fn the_table_empties_as_units_leave() {
     let kernel = Kernel::new();
     let table = InFlight::new(4, 0);
@@ -177,6 +228,33 @@ fn an_interrupt_is_one_compare_and_set_and_only_before_the_meter() {
         !other.step().supersede(),
         "a unit that has priced what it did is too late to replace"
     );
+}
+
+#[test]
+fn a_step_advancing_can_never_undo_the_interrupt() {
+    // The interrupt runs on another task. A step that read "running" a moment before the barge-in
+    // landed must not put the superseded unit back on the loop: that is two units relaying one
+    // direction under two holds.
+    let kernel = Kernel::new();
+    for _ in 0..2_000 {
+        let table = InFlight::new(4, 0);
+        let slot = table
+            .insert(enter(&kernel, 1, OriginKind::Client))
+            .map_err(|_| ())
+            .expect("under the cap");
+        let advancing = std::sync::Arc::clone(&slot);
+        let interrupting = std::sync::Arc::clone(&slot);
+        let advance = std::thread::spawn(move || advancing.step().advance_to(StepName::Route));
+        let supersede = std::thread::spawn(move || interrupting.step().supersede());
+        advance.join().expect("the thread finished");
+        if supersede.join().expect("the thread finished") {
+            assert_eq!(
+                slot.step().get(),
+                Progression::Superseded,
+                "a step advance overwrote the interrupt"
+            );
+        }
+    }
 }
 
 #[test]
@@ -388,6 +466,38 @@ fn a_body_opens_its_unit_only_once_the_deepest_pointer_has_resolved() {
     spool.push(tail, &budget).expect("within the budget");
     assert!(spool.try_resolve("/lane"), "the key has arrived");
     assert!(spool.ready());
+}
+
+#[test]
+fn a_body_is_bounded_by_its_bytes_and_never_by_its_chunk_count() {
+    // The frame bound belongs to handshakes, not to bodies. A client that dribbles its body a byte
+    // at a time is served exactly as one that sends it whole: the only thing counted here is bytes,
+    // and it is counted in real bytes against the node's own budget.
+    let budget = SpillBudget::new(1 << 20);
+    let mut spool = BodySpool::new(None, DeepestPointer::Offset(0));
+
+    let head = br#"{"padding":""#;
+    spool.push(head, &budget).expect("within the budget");
+    for _ in 0..4_000 {
+        spool.push(b"x", &budget).expect("no bound on chunk count");
+        assert!(!spool.try_resolve("/lane"), "the key has not arrived yet");
+    }
+    spool
+        .push(br#"","lane":"gold"}"#, &budget)
+        .expect("within the budget");
+
+    assert!(
+        spool.try_resolve("/lane"),
+        "the key arrived after 4,000 chunks"
+    );
+    assert!(spool.ready());
+    assert_eq!(spool.len(), head.len() + 4_000 + 16);
+    assert_eq!(budget.used(), spool.len(), "charged in actual bytes");
+
+    // And the bytes go back when the unit ends, so a long-running node does not leak the budget.
+    let spooled = spool.len();
+    spool.release(&budget);
+    assert_eq!(budget.used(), 0, "{spooled} bytes were returned");
 }
 
 #[test]

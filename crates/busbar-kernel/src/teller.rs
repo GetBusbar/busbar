@@ -289,7 +289,9 @@ pub struct FeeEvidence {
     /// Whether the kernel relayed the first response frame to the client. A status frame with an
     /// empty body counts.
     pub relayed_first_response_frame: bool,
-    /// Where this transport reports its status, if it reports one.
+    /// Where this transport reports its status, if it reports one. `None` means the transport
+    /// contributes no status leg at all and the plane's finish decides alone; `Some` with no
+    /// `status` below means the frame that would have carried it never arrived.
     pub status_at: Option<StatusAt>,
     /// The status class at the frame the transport reports it on.
     pub status: Option<StatusClass>,
@@ -304,21 +306,39 @@ pub struct FeeEvidence {
 /// moment it started. Where the transport reports a status AND the plane reports a finish, the two
 /// have to agree; where they do not, the LOWER count is posted and the posting is disputed, which
 /// is what makes a plane that lies about its finish visible rather than profitable.
+///
+/// A transport that says WHERE its status is reported and then reports none has lost the evidence:
+/// the stream ended before the frame carrying it. Nothing is billed, and a plane claiming a clean
+/// finish over a status that never arrived is disputed.
 pub fn fee_count(evidence: &FeeEvidence) -> (u32, PostingFlags) {
     let eligible = evidence.client_open_or_one_shot
         && evidence.selected_upstream
         && evidence.relayed_first_response_frame;
     let by_status = evidence.status.map(|status| status == StatusClass::Success);
     let by_finish = evidence.finish.map(|finish| finish != FinishClass::Error);
-    match (eligible, by_status, by_finish) {
-        (false, _, _) => (0, PostingFlags::NONE),
-        (true, Some(status_ok), Some(finish_ok)) if status_ok != finish_ok => {
+    // A transport that declares WHERE its status is reported and then does not report one is a
+    // stream that died before the frame carrying it — most often a trailer. The status is the
+    // evidence the fee is decided from, so a missing one posts nothing; a plane that says the unit
+    // finished cleanly anyway is the second source disagreeing, and that is a dispute.
+    let missing_status = evidence.status_at.is_some() && evidence.status.is_none();
+    // A plane that reports a PARTIAL answer against a missing status is telling the same story the
+    // transport is: the stream stopped early. A plane that reports a WHOLE one is not, and that
+    // disagreement is what the dispute flag is for.
+    let claims_whole = matches!(
+        evidence.finish,
+        Some(FinishClass::Complete | FinishClass::TurnComplete)
+    );
+    match (eligible, missing_status, by_status, by_finish) {
+        (false, _, _, _) => (0, PostingFlags::NONE),
+        (true, true, _, _) if claims_whole => (0, PostingFlags::METER_DISPUTED),
+        (true, true, _, _) => (0, PostingFlags::NONE),
+        (true, _, Some(status_ok), Some(finish_ok)) if status_ok != finish_ok => {
             (0, PostingFlags::METER_DISPUTED)
         }
-        (true, Some(true), _) => (1, PostingFlags::NONE),
-        (true, Some(false), _) => (0, PostingFlags::NONE),
-        (true, None, Some(finish_ok)) => (u32::from(finish_ok), PostingFlags::NONE),
-        (true, None, None) => (1, PostingFlags::NONE),
+        (true, _, Some(true), _) => (1, PostingFlags::NONE),
+        (true, _, Some(false), _) => (0, PostingFlags::NONE),
+        (true, _, None, Some(finish_ok)) => (u32::from(finish_ok), PostingFlags::NONE),
+        (true, _, None, None) => (1, PostingFlags::NONE),
     }
 }
 
@@ -551,11 +571,23 @@ pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_
                 let _bytes = units
                     .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
                     .into_result(seal);
+                // The child opened no reservation of its own, but the table minted it an arrival
+                // hold like every other unit, and that hold is in a cell the sweep also has a key
+                // to. Emptying the cell HERE is what makes the child's end final: leaving it full
+                // would leave the sweep free to settle a unit that already finished, and the
+                // parent's posting already contains this spend.
+                let taken = run.cell.take(&ExitToken::mint(seal));
                 run.leases.release_all(run.gauge);
-                run.canary.settled();
-                Ended::AccruedIntoParent {
-                    amount: accrual.amount(),
-                    outcome,
+                match taken {
+                    None => Ended::AlreadySettled,
+                    Some(arrival) => {
+                        drop_arrival(arrival);
+                        run.canary.settled();
+                        Ended::AccruedIntoParent {
+                            amount: accrual.amount(),
+                            outcome,
+                        }
+                    }
                 }
             }
             // A zero-priced unit: the heartbeat, the sweep, a handshake. It holds nothing, so there

@@ -254,6 +254,25 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
     let counts = canary.counts();
     assert_eq!((counts.drafts, counts.holds, counts.accruals), (1, 0, 1));
     assert_eq!(canary.balanced(), Ok(()));
+
+    // The child opened no reservation, but it entered the table with an arrival hold like every
+    // other unit, and its cell is emptied at its end. Leaving it full would leave the sweep — the
+    // other holder of a key to that cell — free to settle a unit that has already finished, and its
+    // spend is already inside the parent's posting.
+    assert_eq!(child_cell.state(), busbar_caps::HoldCellState::Taken);
+    let swept = busbar_kernel::tick::sweep_settle(
+        &kernel,
+        &child_cell,
+        busbar_kernel::tick::Sweep::TaskLost {
+            at: StepName::Route,
+        },
+        &Evidence::default(),
+        &canary,
+        &mut LeaseSet::new(),
+        &ConcurrencyGauge::new(),
+    );
+    assert!(swept.is_none(), "the child was settled a second time");
+    assert_eq!(canary.counts().settlements, 1);
 }
 
 #[test]

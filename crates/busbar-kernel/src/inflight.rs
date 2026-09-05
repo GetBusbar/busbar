@@ -105,13 +105,26 @@ impl StepState {
 
     /// Move to a step. Refused once the unit has been superseded or has ended, so a step cannot
     /// resurrect a unit somebody else already closed.
+    ///
+    /// Compare-and-set rather than read-then-write: the interrupt runs on another task, and a plain
+    /// store would let a step that read "running" a moment ago overwrite a supersede that landed in
+    /// between — putting a unit somebody already replaced back on the loop, with two units relaying
+    /// one direction under two holds.
     pub fn advance_to(&self, step: StepName) -> bool {
-        let current = self.0.load(Ordering::Acquire);
-        if current == SUPERSEDED || current == ENDED {
-            return false;
+        let wanted = step_index(step);
+        let mut current = self.0.load(Ordering::Acquire);
+        loop {
+            if current == SUPERSEDED || current == ENDED {
+                break false;
+            }
+            match self
+                .0
+                .compare_exchange_weak(current, wanted, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => break true,
+                Err(seen) => current = seen,
+            }
         }
-        self.0.store(step_index(step), Ordering::Release);
-        true
     }
 
     /// Mark the unit ended.
@@ -371,22 +384,50 @@ impl InFlight {
         self.reserve
     }
 
-    /// Would this unit fit right now?
-    pub fn admits(&self, request: &Enter) -> bool {
+    /// The ceiling this unit is measured against: the whole table for a provider frame of a session
+    /// that is already open and for the exempt origins, the table less the reserve for everything
+    /// else.
+    fn ceiling(&self, request: &Enter) -> Option<usize> {
         if request.admin_listener || request.zero_hold_tick {
-            return true;
-        }
-        let ceiling = if request.provider_of_open_session {
-            self.cap
+            None
+        } else if request.provider_of_open_session {
+            Some(self.cap)
         } else {
-            self.cap - self.reserve
-        };
-        self.len() < ceiling
+            Some(self.cap - self.reserve)
+        }
+    }
+
+    /// Would this unit fit right now?
+    ///
+    /// A question, not a reservation: [`InFlight::insert`] asks it and takes the slot in one atomic
+    /// step, because two units that both read "there is room" and then both entered is exactly how
+    /// the table stops being the bound the crash-exposure figure is computed from.
+    pub fn admits(&self, request: &Enter) -> bool {
+        match self.ceiling(request) {
+            None => true,
+            Some(ceiling) => self.len() < ceiling,
+        }
+    }
+
+    /// Take a slot for a unit whose ceiling is `ceiling`, or say the table is full.
+    fn claim_slot(&self, ceiling: Option<usize>) -> bool {
+        match ceiling {
+            None => {
+                self.count.fetch_add(1, Ordering::AcqRel);
+                true
+            }
+            Some(ceiling) => self
+                .count
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                    (n < ceiling).then_some(n + 1)
+                })
+                .is_ok(),
+        }
     }
 
     /// Put a unit in the table, or hand its hold back with the refusal.
     pub fn insert(&self, request: Enter) -> Result<Arc<UnitSlot>, CapRefused> {
-        if !self.admits(&request) {
+        if !self.claim_slot(self.ceiling(&request)) {
             return Err(CapRefused {
                 step: cap_refusal_step(request.origin),
                 reason: ReasonCode::InFlightCap,
@@ -407,7 +448,6 @@ impl InFlight {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(request.key, Arc::clone(&slot));
-        self.count.fetch_add(1, Ordering::AcqRel);
         Ok(slot)
     }
 
@@ -541,13 +581,15 @@ impl SessionSlot {
     }
 
     /// Pair another upstream connection with this session.
+    ///
+    /// The count is taken in one atomic step: two frames dialling at once must not both read the
+    /// eighth slot as free.
     pub fn add_upstream(&self) -> Result<usize, ReasonCode> {
-        let index = self.upstreams.load(Ordering::Acquire);
-        if index >= MAX_SESSION_UPSTREAMS {
-            return Err(ReasonCode::SessionBudget);
-        }
-        self.upstreams.store(index + 1, Ordering::Release);
-        Ok(index)
+        self.upstreams
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < MAX_SESSION_UPSTREAMS).then_some(n + 1)
+            })
+            .map_err(|_| ReasonCode::SessionBudget)
     }
 
     /// How many upstreams it has paired.

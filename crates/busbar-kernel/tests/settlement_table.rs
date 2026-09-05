@@ -10,7 +10,7 @@ use busbar_caps::OriginKind;
 use busbar_caps::{Outcome, PostingFlags, ReasonCode, StepName};
 use busbar_kernel::teller::{
     fee_count, requests_drawn, requests_settled, settle_amount, Evidence, FeeEvidence, FinishClass,
-    StatusClass,
+    StatusAt, StatusClass,
 };
 
 fn live_end() -> Outcome {
@@ -283,6 +283,41 @@ fn with_no_transport_status_the_planes_finish_decides_alone() {
         ..billable()
     };
     assert_eq!(fee_count(&errored), (0, PostingFlags::NONE));
+}
+
+#[test]
+fn a_stream_that_dies_before_its_status_trailer_posts_nothing() {
+    // The transport reports its status on the terminal frame, and the stream ended before it.
+    let no_trailer = FeeEvidence {
+        status_at: Some(StatusAt::Terminal),
+        status: None,
+        finish: Some(FinishClass::Partial),
+        ..billable()
+    };
+    assert_eq!(fee_count(&no_trailer), (0, PostingFlags::NONE));
+
+    // The plane says the answer was whole against a status that never arrived. That is the second
+    // source disagreeing with the first, so it is the lower figure and a dispute.
+    let claiming_complete = FeeEvidence {
+        status_at: Some(StatusAt::Terminal),
+        status: None,
+        finish: Some(FinishClass::Complete),
+        ..billable()
+    };
+    assert_eq!(
+        fee_count(&claiming_complete),
+        (0, PostingFlags::METER_DISPUTED)
+    );
+
+    // The trailer that did arrive still bills, on both kinds of transport.
+    for at in [StatusAt::FirstFrame, StatusAt::Terminal] {
+        let arrived = FeeEvidence {
+            status_at: Some(at),
+            status: Some(StatusClass::Success),
+            ..billable()
+        };
+        assert_eq!(fee_count(&arrived), (1, PostingFlags::NONE));
+    }
 }
 
 // ── the request slot ─────────────────────────────────────────────────────────────────────────────

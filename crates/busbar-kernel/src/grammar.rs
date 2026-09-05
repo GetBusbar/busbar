@@ -557,10 +557,15 @@ fn next_json_char(raw: &[u8], at: &mut usize) -> Option<char> {
     let c = *raw.get(*at)?;
     if c != b'\\' {
         // The key is UTF-8 by definition of the format; a malformed byte compares unequal, which is
-        // the safe answer for a lookup.
-        let rest = &raw[*at..];
-        let ch = std::str::from_utf8(rest).ok()?.chars().next()?;
-        *at += ch.len_utf8();
+        // the safe answer for a lookup. Only the ONE character's own bytes are validated: reading
+        // the whole remainder here would make matching a key quadratic in its length, and "never
+        // looks at a byte twice" is the scanner's budget, not a figure of speech.
+        let width = utf8_width(c)?;
+        let ch = std::str::from_utf8(raw.get(*at..*at + width)?)
+            .ok()?
+            .chars()
+            .next()?;
+        *at += width;
         return Some(ch);
     }
     let esc = *raw.get(*at + 1)?;
@@ -594,6 +599,18 @@ fn next_json_char(raw: &[u8], at: &mut usize) -> Option<char> {
     })
 }
 
+/// How many bytes the character starting with this byte occupies, or nothing if it is not a
+/// leading byte at all.
+fn utf8_width(lead: u8) -> Option<usize> {
+    match lead {
+        0x00..=0x7F => Some(1),
+        0xC2..=0xDF => Some(2),
+        0xE0..=0xEF => Some(3),
+        0xF0..=0xF4 => Some(4),
+        _ => None,
+    }
+}
+
 /// Four hex digits as a number.
 fn hex4(raw: &[u8], at: usize) -> Option<u16> {
     let mut value = 0u16;
@@ -616,8 +633,12 @@ fn next_token_char(token: &mut &[u8]) -> Option<char> {
             _ => None,
         };
     }
-    let ch = std::str::from_utf8(token).ok()?.chars().next()?;
-    *token = &token[ch.len_utf8()..];
+    let width = utf8_width(c)?;
+    let ch = std::str::from_utf8(token.get(..width)?)
+        .ok()?
+        .chars()
+        .next()?;
+    *token = &token[width..];
     Some(ch)
 }
 
