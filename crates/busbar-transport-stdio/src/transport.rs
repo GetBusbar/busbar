@@ -29,12 +29,37 @@ use busbar_contract_transport::wire::TransportError;
 use busbar_contract_transport::wire::Unit0Trigger;
 use busbar_contract_transport::AbiVersion;
 
-use crate::conn::{ConnState, StdioConnHandle};
+use crate::conn::{ConnState, ReaderSlot, StdioConnHandle};
 
 /// stdio's own frame stream: bytes split one line at a time, exactly the "duplex framed" shape the
 /// architecture's stdio row names.
 type FrameStream =
     std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
+
+/// The read-side counterpart of [`PoisonGuard`]: the reader slot is put back where the connection
+/// keeps it however this future ends, including a drop mid-read.
+///
+/// Without it a cancelled read left the slot empty and the next `frames()` call read that hole as a
+/// clean EOF — on a session transport, the same answer as the peer closing. The slot's lock is free
+/// by construction here (the guard is built after the lock is released and the slot is put back
+/// before anything else can take it), so a `try_lock` that somehow failed would mean a second pump
+/// held the connection, and fencing is the honest answer to that rather than dropping the reader on
+/// the floor.
+struct ReaderGuard {
+    state: Arc<ConnState>,
+    slot: Option<ReaderSlot>,
+}
+
+impl Drop for ReaderGuard {
+    fn drop(&mut self) {
+        if let Some(slot) = self.slot.take() {
+            match self.state.reader.try_lock() {
+                Ok(mut held) => *held = Some(slot),
+                Err(_) => self.state.poisoned.store(true, Ordering::Release),
+            }
+        }
+    }
+}
 
 /// Poisons a connection unless disarmed — the "cancel mid-frame" fence. A write that never reaches
 /// its clean-completion disarm, for ANY reason (an I/O error via the early-return `?`, or this
@@ -267,24 +292,34 @@ impl Transport for StdioTransport {
                 if done || state.is_poisoned() {
                     return None;
                 }
-                let mut guard = state.reader.lock().await;
-                let Some(mut buf) = guard.take() else {
+                let mut lock = state.reader.lock().await;
+                let Some(taken) = lock.take() else {
                     // Another `frames()` call already consumed this connection's reader — a
                     // transport connection is read by exactly one pump, matching every other
                     // in-tree transport's `frames` contract.
                     return None;
                 };
-                drop(guard);
-                let mut line: Vec<u8> = Vec::new();
+                drop(lock);
+                // The reader belongs to the connection, not to this future. Holding it in a guard
+                // is what makes a cancelled read the same non-event a cancelled poll of any other
+                // stream is: the guard's `Drop` runs whether this future completes or is dropped
+                // mid-read, so the next pump reads on — with the read-ahead and any partial line
+                // intact — rather than seeing a reader-shaped hole it would report as a clean EOF.
+                let mut held = ReaderGuard {
+                    state: state.clone(),
+                    slot: Some(taken),
+                };
+                let slot = held.slot.as_mut().expect("held for the guard's lifetime");
                 let item = loop {
-                    line.clear();
-                    match read_line(&mut buf, &mut line).await {
+                    match read_line(&mut slot.reader, &mut slot.partial).await {
                         Ok(0) => break None, // EOF: the session ends
                         Ok(_) => {
-                            if line.iter().all(u8::is_ascii_whitespace) {
+                            if slot.partial.iter().all(u8::is_ascii_whitespace) {
+                                slot.partial.clear();
                                 continue; // a blank line carries no frame
                             }
-                            let bytes = SlabBytes::new(Arc::<[u8]>::from(line.clone()));
+                            let bytes = SlabBytes::new(Arc::<[u8]>::from(slot.partial.clone()));
+                            slot.partial.clear();
                             let meta = FrameMeta {
                                 bytes: bytes.len() as u64,
                                 transport_units: None,
@@ -303,9 +338,9 @@ impl Transport for StdioTransport {
                         Err(_) => break Some(Err(TransportError::Reset)),
                     }
                 };
-                // Hand the SAME `BufReader` back (readahead intact) so the NEXT poll of this
-                // stream keeps reading exactly where this one left off.
-                *state.reader.lock().await = Some(buf);
+                // Hand the SAME slot back (read-ahead intact) so the NEXT poll of this stream
+                // keeps reading exactly where this one left off.
+                drop(held);
                 match item {
                     None => None,
                     Some(result) => {

@@ -259,6 +259,33 @@ async fn cancel_mid_frame_fences_the_connection() {
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::Framing);
+
+    // The read arm of the same cell. A `frames()` future dropped while suspended in the socket
+    // read must leave the connection readable: the reader belongs to the connection, not to the
+    // future that was polling it, so the next pump sees the frame that arrived rather than a
+    // silent end-of-stream indistinguishable from the peer closing.
+    let t = Arc::new(WsTransport::new());
+    let (a, b) = pair(&t, 64 * 1024).await;
+    {
+        let mut frames = t.frames(b.clone());
+        let first = frames.next();
+        tokio::pin!(first);
+        let raced = tokio::time::timeout(Duration::from_millis(1), first.as_mut()).await;
+        assert!(
+            raced.is_err(),
+            "the read must still be suspended when dropped"
+        );
+    }
+    t.write(&a, StreamId(0), ArenaBytes::new(b"after the cancel"))
+        .await
+        .unwrap();
+    let mut frames = t.frames(b);
+    let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("a cancelled read must not lose the reader")
+        .expect("the stream must not end")
+        .expect("and must not be a fenced error");
+    assert_eq!(frame.bytes.as_slice(), b"after the cancel");
 }
 
 #[tokio::test]

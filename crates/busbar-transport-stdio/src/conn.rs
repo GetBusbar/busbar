@@ -30,15 +30,26 @@ impl ConnHandle for StdioConnHandle {
     }
 }
 
+/// Everything the read side of one connection carries between polls of `frames()`.
+///
+/// The `BufReader` is here rather than the raw reader because a `BufReader` reads ahead of the line
+/// it returns, and destroying it between polls would silently drop already-buffered bytes belonging
+/// to the NEXT frame. `partial` is here for the same reason one poll further out: `read_until` is
+/// not cancellation-safe, so a `frames()` future dropped mid-line has already consumed bytes from
+/// the reader, and the only place they can survive is the connection.
+pub(crate) struct ReaderSlot {
+    pub(crate) reader: BufReader<Box<dyn AsyncRead + Send + Unpin>>,
+    /// Bytes of a line read but not yet terminated by a newline.
+    pub(crate) partial: Vec<u8>,
+}
+
 /// One connection's real state: a boxed reader (taken exactly once by `frames()`), a boxed writer
 /// behind the single write lock every outbound frame passes through, and the child process this
 /// connection owns, where it is a dialled one.
 pub(crate) struct ConnState {
-    /// The `BufReader` itself, not just the raw reader, is what persists across polls of
-    /// `frames()`: a `BufReader` can read ahead of the line it returns, and destroying it between
-    /// polls to keep only the inner reader would silently drop already-buffered bytes belonging to
-    /// the NEXT frame. See the crate's own report for the bug this shape closes.
-    pub(crate) reader: AsyncMutex<Option<BufReader<Box<dyn AsyncRead + Send + Unpin>>>>,
+    /// Taken by whichever `frames()` pump is reading, and put back when it stops — see
+    /// [`ReaderSlot`] for why the whole slot, not just the raw reader, is what travels.
+    pub(crate) reader: AsyncMutex<Option<ReaderSlot>>,
     pub(crate) writer: AsyncMutex<Box<dyn AsyncWrite + Send + Unpin>>,
     pub(crate) child: AsyncMutex<Option<tokio::process::Child>>,
     /// Set by a write that did not run to completion — a cancelled or errored write leaves no
@@ -54,7 +65,10 @@ impl ConnState {
         child: Option<tokio::process::Child>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            reader: AsyncMutex::new(Some(BufReader::new(reader))),
+            reader: AsyncMutex::new(Some(ReaderSlot {
+                reader: BufReader::new(reader),
+                partial: Vec::new(),
+            })),
             writer: AsyncMutex::new(writer),
             child: AsyncMutex::new(child),
             poisoned: AtomicBool::new(false),

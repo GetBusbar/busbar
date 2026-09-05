@@ -371,9 +371,19 @@ impl Transport for WsTransport {
                 if done || state.is_poisoned() {
                     return None;
                 }
-                let mut guard = state.reader.lock().await;
-                let mut reader = guard.take()?;
-                drop(guard);
+                let mut slot = state.reader.lock().await;
+                let taken = slot.take()?;
+                drop(slot);
+                // The reader belongs to the connection, not to this future. Holding it in a guard
+                // is what makes a cancelled read the same non-event a cancelled poll of any other
+                // stream is: the guard's `Drop` runs whether this future completes or is dropped
+                // mid-read, so the next pump reads on rather than seeing a reader-shaped hole it
+                // would report as a clean end of session.
+                let mut held = ReaderGuard {
+                    state: state.clone(),
+                    reader: Some(taken),
+                };
+                let reader = held.reader.as_mut().expect("held for the guard's lifetime");
                 let item = loop {
                     match reader.next().await {
                         None => break None, // the peer closed the socket
@@ -425,7 +435,7 @@ impl Transport for WsTransport {
                         Some(Err(_)) => break Some(Err(TransportError::Reset)),
                     }
                 };
-                *state.reader.lock().await = Some(reader);
+                drop(held);
                 match item {
                     None => None,
                     Some(result) => {
@@ -554,6 +564,31 @@ impl Transport for WsTransport {
             self.close(conn, CloseReason::Normal);
             Ok(())
         })
+    }
+}
+
+/// The read-side counterpart of [`PoisonGuard`]: the reader is put back where the connection keeps
+/// it however this future ends, including a drop mid-read.
+///
+/// Without it a cancelled read left the slot empty and the next `frames()` call read that hole as a
+/// clean end of session — on a session transport, the same answer as the peer closing. The slot's
+/// lock is free by construction here (the guard is built after the lock is released and the reader
+/// is put back before anything else can take it), so a `try_lock` that somehow failed would mean a
+/// second pump held the connection, and fencing is the honest answer to that rather than dropping
+/// the reader on the floor.
+struct ReaderGuard {
+    state: Arc<ConnState>,
+    reader: Option<futures::stream::SplitStream<Sock>>,
+}
+
+impl Drop for ReaderGuard {
+    fn drop(&mut self) {
+        if let Some(reader) = self.reader.take() {
+            match self.state.reader.try_lock() {
+                Ok(mut slot) => *slot = Some(reader),
+                Err(_) => self.state.poisoned.store(true, Ordering::Release),
+            }
+        }
     }
 }
 
