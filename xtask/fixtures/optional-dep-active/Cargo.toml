@@ -1,0 +1,14 @@
+# The positive control for `optional-dep-inactive`: the SAME shape (an optional `libc` dependency
+# behind a feature), but this fixture's root crate turns the feature ON — proving `edge_is_active`
+# does not ALSO suppress a genuinely-activated optional dependency.
+[workspace]
+members = [".", "mid"]
+
+[package]
+name = "xtask-fixture-optional-dep-active"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+xtask-fixture-optional-mid-2 = { path = "mid", features = ["with-libc"] }

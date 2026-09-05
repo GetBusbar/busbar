@@ -29,6 +29,16 @@
 # missing `reason`/`owner`. Without `via`, a `dep` entry waives every path to that dependency
 # unconditionally, exactly as before `via` existed.
 #
+# `via` may name more than one crate, comma-separated (`via = "cpufeatures, getrandom"`), for the
+# case where the SAME offender is genuinely reached through more than one reviewed, non-I/O edge:
+# a path counts as covered if it passes through ANY of the named crates, and the waiver still fails
+# to apply if even one path reaches `dep` through NONE of them.
+#
+# `cargo metadata`'s resolve graph also lists an edge for an OPTIONAL dependency whose enabling
+# feature is off for every consumer in the workspace — `xtask/src/denylist.rs::edge_is_active`
+# filters those out before either the closure scan or `via`'s bypass check see them, so a `via`
+# waiver only ever has to account for edges the crate actually compiles.
+#
 # [[allow]]
 # crate = "busbar-plane-example"
 # dep = "libc"
@@ -61,8 +71,8 @@ owner = "orchestrator, 2026-09-05"
 [[allow]]
 crate = "busbar-plane-llm"
 dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
+via = "cpufeatures, getrandom"
+reason = "Two reviewed, non-I/O edges reach libc from this plane, both closed once the xtask/denylist.rs phantom-optional-dependency fix (edge_is_active) dropped the third, unreal one (sonic_rs -> faststr -> rkyv -> uuid_1 -> getrandom -> libc: faststr's rkyv dependency is optional and its 'rkyv' feature is active nowhere in the workspace -- confirmed against the real rustc invocation for busbar-plane-llm, which carries no --cfg feature=\"rkyv\" and no --extern rkyv). (1) cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable through this edge. (2) getrandom uses libc only to issue the getentropy(2)/getrandom(2) syscall (busbar-llm-codec's own direct `getrandom = { workspace = true }` dependency, drawn by synth_rng.rs's thread-local entropy pool); this is a syscall wrapper, not a socket/file/process primitive. This edge is NOT yet what ARCHITECTURE.md section 1.2 wants of a pure plane (entropy should arrive through Ctx, not be drawn by the codec itself) -- verified that busbar_llm_codec::write_error_envelope, the one codec entry point busbar-plane-llm calls that touches entropy, unconditionally calls the anthropic writer's error_envelope() (which mints via synth_rng::fill_entropy/getrandom) even on the call path where the caller supplies its own entropy and the drawn value is immediately overwritten and discarded. Feature-gating that draw (an `os-entropy` feature, default-on for busbar-llm/the engine, off for the plane) needs a source change in crates/busbar-llm-codec/src/{lib.rs,synth_rng.rs,anthropic/writer.rs} outside this waiver's file scope, AND would not by itself clear this xtask report: `cargo metadata`'s resolve graph unifies features across the WHOLE workspace (confirmed: busbar_llm_codec's single metadata node already shows `test-support` active workspace-wide even though busbar-plane-llm's own [dependencies] line never requests it), so a plane-only feature attenuation cannot be distinguished from the engine's own default-on request in this tool's model. Tracked as follow-up debt, not fixed here; re-review if any OTHER path to libc appears."
 owner = "orchestrator, 2026-09-05"
 
 [[allow]]

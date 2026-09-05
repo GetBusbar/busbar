@@ -18,6 +18,17 @@
 //! * `xtask-fixture-via-bypass` — the same shape PLUS a second, direct dependency on `libc`. The
 //!   SAME `via = "xtask-fixture-via-mid"` waiver must leave it RED, proving a bypassing path
 //!   defeats the narrowing rather than being silently forgiven alongside the covered one.
+//! * `xtask-fixture-optional-dep-inactive` — a pure crate whose local `mid` dependency declares an
+//!   OPTIONAL `libc` dependency that no feature anywhere in the fixture's workspace turns on.
+//!   `cargo metadata`'s resolve graph lists the `mid -> libc` edge regardless (an optional
+//!   dependency shows up as soon as some version of it is lock-resolvable, not only when its
+//!   enabling feature is active) — this fixture proves the walk does NOT report `libc` for an edge
+//!   nothing actually compiles, matching the real phantom edge found in `busbar-plane-llm`'s
+//!   closure (`sonic_rs -> faststr -> rkyv -> uuid_1 -> getrandom -> libc`, where `rkyv` is an
+//!   optional `faststr` dependency active nowhere in the real workspace).
+//! * `xtask-fixture-optional-dep-active` — the SAME shape, but the root crate turns the `mid`
+//!   dependency's feature ON. Must be RED on `libc`, proving the phantom-edge filter does not ALSO
+//!   swallow a genuinely-activated optional dependency.
 //!
 //! Each fixture is its own tiny standalone Cargo workspace (`[workspace]` with no members other
 //! than itself, or itself plus a local `mid` path-dependency) so `cargo metadata --manifest-path`
@@ -133,6 +144,21 @@ pub fn run() -> bool {
     check_test_code_excluded(&mut fails);
     check_via_only(&mut fails);
     check_via_bypass(&mut fails);
+    check(
+        "pure crate with an inactive optional dependency",
+        "optional-dep-inactive",
+        "xtask-fixture-optional-dep-inactive",
+        &[],
+        &mut fails,
+    );
+    check(
+        "pure crate with an activated optional dependency",
+        "optional-dep-active",
+        "xtask-fixture-optional-dep-active",
+        &["libc"],
+        &mut fails,
+    );
+    check_via_multi(&mut fails);
 
     if fails.is_empty() {
         println!("\nxtask denylist --selftest: ALL GREEN");
@@ -267,6 +293,74 @@ fn check_via_bypass(fails: &mut Vec<String>) {
             "via-bypass: expected `libc` to stay red under the via-narrowed waiver (a direct \
              dependency bypasses `via`), but it was fully waived"
                 .to_string(),
+        );
+    }
+}
+
+/// `xtask-fixture-via-multi` reaches `libc` through TWO SEPARATE crates
+/// (`xtask-fixture-via-multi-a` and `-b`). A comma-separated `via` naming BOTH must go fully
+/// GREEN; naming only one must stay RED (the other path bypasses it) — proving the multi-`via`
+/// list requires every real path to be covered by SOME named crate, not just the first one tried.
+fn check_via_multi(fails: &mut Vec<String>) {
+    let root = workspace_root();
+    let banned = denylist::load_banned_lists(&root);
+    let fragments = denylist::load_test_fragments_pub(&root);
+    let dir = fixtures_dir().join("via-multi");
+    let manifest = dir.join("Cargo.toml");
+    if !manifest.exists() {
+        fails.push(format!(
+            "via-multi: fixture manifest missing at {}",
+            manifest.display()
+        ));
+        return;
+    }
+    let pc = || PureCrate {
+        name: "xtask-fixture-via-multi".to_string(),
+        dir: dir.clone(),
+        kind: "plane".to_string(),
+        report_name: "xtask-fixture-via-multi".to_string(),
+    };
+
+    let partial_allow = vec![(
+        "xtask-fixture-via-multi",
+        "libc",
+        Some("xtask-fixture-via-multi-a"),
+    )];
+    let partial_hits =
+        denylist::run_on_with_allow(&manifest, vec![pc()], &banned, &fragments, partial_allow);
+    if partial_hits.iter().any(|h| h.offender == "libc") {
+        println!(
+            "  RED    via-multi: `libc` stays red naming only ONE of the two via crates, as \
+             expected"
+        );
+    } else {
+        fails.push(
+            "via-multi: expected `libc` to stay red naming only one via crate (the other path \
+             bypasses it), but it was fully waived"
+                .to_string(),
+        );
+    }
+
+    let full_allow = vec![(
+        "xtask-fixture-via-multi",
+        "libc",
+        Some("xtask-fixture-via-multi-a, xtask-fixture-via-multi-b"),
+    )];
+    let full_hits =
+        denylist::run_on_with_allow(&manifest, vec![pc()], &banned, &fragments, full_allow);
+    if full_hits.iter().any(|h| h.offender == "libc") {
+        fails.push(format!(
+            "via-multi: expected 0 `libc` hits naming BOTH via crates, got: {}",
+            full_hits
+                .iter()
+                .map(|h| h.offender.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    } else {
+        println!(
+            "  GREEN  via-multi: `libc` fully waived by `via = \"xtask-fixture-via-multi-a, \
+             xtask-fixture-via-multi-b\"`"
         );
     }
 }
