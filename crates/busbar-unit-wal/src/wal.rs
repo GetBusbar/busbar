@@ -215,6 +215,20 @@ impl Wal {
         &self.lost_batch
     }
 
+    /// Give up on the `count` oldest records the log still owes, and hand them back.
+    ///
+    /// The log does not decide to do this on its own, and there is no bound in here that could make
+    /// it. What it owes is bounded by whoever is writing to it — the journal, which holds the buffer
+    /// bound and seals a break naming exactly what this call returned. Putting the drop here and the
+    /// decision there is the point: a log that could quietly forget a durable write would be a log
+    /// whose poison rule means nothing.
+    ///
+    /// Oldest first, because what is nearest the head is what a reader is most likely to need.
+    pub fn forget_owed(&mut self, count: usize) -> Vec<Record> {
+        let count = usize::min(count, self.lost_batch.len());
+        self.lost_batch.drain(0..count).collect()
+    }
+
     /// How many segments have been used, poisoned ones included.
     pub fn segments_used(&self) -> u64 {
         self.segments_used
