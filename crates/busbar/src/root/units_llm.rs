@@ -41,6 +41,18 @@
 //! it belongs. The bytes a client sees are the released ones; the step a record names is the step
 //! that refused.
 //!
+//! ## What the switch costs while the loop is synchronous, and why it is off by default
+//!
+//! `run_unit` is a synchronous function and the walk it drives is an upstream call, so a unit on
+//! this path occupies one blocking-pool thread for as long as the upstream takes to answer. On the
+//! admin surface that is nothing — a handful of short operations. On the DATA surface it is a real
+//! bound: the in-flight ceiling becomes the runtime's blocking-pool size, each in-flight request
+//! costs a thread stack, and a `spawn_blocking` task cannot be cancelled, so a client that goes away
+//! mid-request no longer drops the future it was waiting on. None of that changes a byte the client
+//! is answered with, which is why the oracle is silent about it and why this note is here instead.
+//! It is the one thing standing between this feature and being on by default, and closing it is the
+//! loop's business — an asynchronous step seam — not this file's.
+//!
 //! ## What is deliberately not here
 //!
 //! No wire shaping, no money rule and no second reading of anything. Every judgement below belongs
