@@ -541,6 +541,69 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
         &self.draft
     }
 
+    /// The balance one unit of this plane settles into: the caller's own attribution bucket, in
+    /// nano-units, across every pool.
+    ///
+    /// The plane names the balance because the plane is what knows which pot its traffic belongs
+    /// in; the ledger keeps it. An uncapped attribution bucket is still a balance, which is the
+    /// point — a deployment that configured no group still has one figure per principal.
+    #[must_use]
+    pub fn balance(principal: &PrincipalId) -> busbar_unit_ledger::totals::TotalsKey {
+        busbar_unit_ledger::totals::TotalsKey::new(
+            busbar_unit_ledger::totals::BucketId::new(principal.as_str()),
+            busbar_unit_ledger::totals::CapDimension::NanoUnits,
+            busbar_unit_ledger::totals::BucketScope::All,
+        )
+    }
+
+    /// **The exit arm.** Move the books for what this unit posted, and put the posting on the
+    /// journal.
+    ///
+    /// The loop's exit path takes the hold out of its cell, applies what the unit spent and settles
+    /// it — that is where the hold stops existing. What comes back is the POSTING, and until it
+    /// reaches here it has moved no balance and left no record. So this is the far end of the
+    /// reservation's life: the door opened it sized off the estimate, the route and metering steps
+    /// accrued against it, and the settlement here releases the residual and carries out whatever
+    /// nothing could back.
+    ///
+    /// The window comes off the unit's pinned arrival epoch, never a fresh clock read, so a request
+    /// that straddled a boundary posts in the window it was admitted in.
+    ///
+    /// # Errors
+    ///
+    /// The journal could not make the record durable. The books have already moved: value was
+    /// delivered, and a settlement is not rolled back because a write failed.
+    pub fn settle(
+        &self,
+        principal: &PrincipalId,
+        posted: busbar_caps::Posted,
+        token: &busbar_caps::DurabilityToken,
+    ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
+        let key = Self::balance(principal);
+        let at = crate::root::durability::Settling {
+            key: &key,
+            window: busbar_unit_admission::budget_window(
+                busbar_unit_admission::window::WINDOW_DAY,
+                self.bindings.now,
+            ),
+            durability: token,
+            // The loop has no exit step of its own; the figure this posting is OF is the metering
+            // step's, and that is the step a durability loss here is attributed to.
+            step: busbar_caps::StepName::Meter,
+            stamp: crate::root::durability::PostingStamp {
+                rate_card_version: 0,
+                wall: self.bindings.now,
+                mono: self.bindings.now,
+            },
+        };
+        let mut durability = self
+            .bindings
+            .durability
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        durability.settle_posted(&at, posted)
+    }
+
     /// The verify judgement, without the seal.
     ///
     /// Everything the trust unit decides about where this unit may go, in the order that makes the
