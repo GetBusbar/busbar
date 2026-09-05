@@ -244,6 +244,9 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/alarm_silence_tests.rs"]
 mod alarm_silence_tests;
+#[cfg(test)]
+#[path = "tests/key_revoke_tombstone_tests.rs"]
+mod key_revoke_tombstone_tests;
 
 pub use appbuild::{
     build_app_from_config, inert_durable_keys_banner, load_config_from_disk, open_relay_banner,

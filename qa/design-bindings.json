@@ -11,14 +11,14 @@
  },
  "counts": {
   "bindings": 103,
-  "mapped": 89,
-  "unmapped": 14,
+  "mapped": 101,
+  "unmapped": 2,
   "checks_by_kind": {
-   "gate": 7,
-   "lint": 3,
-   "oracle-cell": 42,
+   "gate": 8,
+   "lint": 5,
+   "oracle-cell": 43,
    "oracle-family": 4,
-   "test": 426
+   "test": 439
   }
  },
  "owner_decisions": {
@@ -46,7 +46,7 @@
    "**maximum-spec-compliance (owner rule):** where the published 1.5.5 bytes deviate from a provider's own published spec, the spec wins and the difference is registered in `accepted-differences.json` as `improvement` (owner sign-off, named in the CHANGELOG) rather than reproduced as a bug — first cases: Bedrock text content blocks emitted without a `contentBlockStart` frame, the Responses door's lifecycle frames, the required response/stream members added on every dialect, and every stream request on the Responses door answered as an actual stream (never plain JSON)",
    "the Anthropic cross-protocol `ping` STAYS (a named, accepted gap against the published spec, not a defect to fix)",
    "a fallback-lane stream is billed the same as a hot-path stream — `stream_options.include_usage` injection is unified onto the degraded/fallback path so a fallback stream to an affected lane no longer bills zero tokens — registered as `improvement` (owner sign-off; money-affecting)",
-   "busbar is a byte-governance router."
+   "busbar is a byte-governance router. ### Decisions 2026-09-05 (orchestrator, resolving the consolidated contract gaps in `docs/design/1.6.0-contract-gaps.md`) - **CG-20 `KernelSeal` means one thing.** The caps unit struct. The contract's public trait of the same name is removed; every contract-side sealed constructor is reachable only through a `busbar-caps` token, so §3.7's \"compile-time\" line for sealed constructors is literally true. - **CG-28 `busbar-caps` depends on `busbar-contract`.** One spelling of every seam type; the caps stand-ins are deleted. §3.1's \"std and nothing more\" for caps is amended to \"std and the contract\". - **CG-37 the store trait is typed after the published ABI-2 store protocol** (the request/response shapes the shadow oracle already proves against the released stores), extended with the 1.6.0-only operations §1.4 names. No signature is inferred from prose. - **CG-17 the MCP mount is fixed at `/mcp`.** A configured canonical address naming another path is a boot refusal at config validation. Claims stay compile-time constants; there is no registration-time selector. - **CG-22 ceilings count surface code**: non-blank, non-comment `src/` lines excluding test modules. Proofs (totality tables, lint data, fixtures) live under `tests/` or `fixtures/`. If contract + caps still exceed 3k after the move, §1.1's figure for the pair is amended to the measured number rounded up to the next 500, and the per-file table stays. - **CG-41 an unreconciled amount is a move out of settled**, not a parallel tally: `unreconciled += A; settled -= A`. §4.2's identity closes with no special case and nothing is reported as settled that the store has not confirmed. - **CG-56 the seventeen 1.6.0 kernel verbs bind as `<kebab-case-verb>` under the admin prefix**: POST for every mutating verb, GET for `verify` and `plane_facts`. - **CG-55 the anthropic error envelope's minted request id keeps its native shape and entropy**, and the entropy comes from the kernel through `Ctx`; a plane still reads no random source of its own. - **CG-06 config-derived open-vocabulary keys are leaked exactly once at registration** by the composition root and counted in §10's fixed RSS term (the `&'static str` ids stay). A per-dial leak is a defect. - **CG-51 the network guard is the trust unit's check** over `VerifiedDestination`, applied before any transport `dial`; transports do no resolution policy of their own. **2026-09-05 — the contract/caps LOC ceiling counts surface, not proofs.** The ceiling in §1.1 is a budget for what a plugin author has to read: non-blank, non-comment code lines under `src/`, with `#[cfg(test)]` modules and `src/tests/` excluded. Data that exists only to PROVE a property — the overlap totality table over the selector-form pairs, the lint symbol lists, the compile-fail fixtures and their positive companions, the honesty tables kept as documentation — is a proof, not surface, and lives in the crate's `tests/` or `fixtures/`. Measured that way and with the lint lists moved out of `src/`, the pair is 3,281 lines, so the ceiling is amended from 3k to **3.5k**. The reason it does not fit in 3k is the design's own requirement, not slack: `Selector::overlaps` must be TOTAL over the cross-product of the thirteen selector forms — 169 pairs — with no catch-all that panics, and the loop's step order is carried by types: ten step markers, and twelve token types that name the step or the unit they entitle. Totality and type-level step order are what the surface costs."
   ]
  },
  "dropped_since_last_write": [],
@@ -56,14 +56,14 @@
    "surface": "master rule",
    "binding": "EVERY row of every inventory file under `inventory/` is a parity binding and an oracle cell, whether or not it is restated below: the 1.5.5 behaviour it cites is reproduced byte for byte on every 1.5.5-reachable surface. Appendix B restates only the rows where a sentence in §1–§9 needed an explicit override or where a reviewer found the transcription worth pinning; absence of a row from this table binds nothing looser. Where a binding paraphrases its row imprecisely, the row wins (PB-72). Consequently the reviewer's question for §1–§9 is only: does a body sentence introduce a user-observable behaviour that contradicts an inventory row without an override here?",
    "inventory": "every row of every inventory file under docs/design/inventory/",
-   "status": "unmapped",
-   "suggestion": "oracle-family coverage gate: every row id of docs/design/inventory/*.md appears in at least one cells.json cell (a derived cell-count test, red on any inventory row with no cell)",
+   "status": "mapped",
    "checks": [
     {
-     "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "oracle-family coverage gate: every row id of docs/design/inventory/*.md appears in at least one cells.json cell (a derived cell-count test, red on any inventory row with no cell)"
+     "kind": "gate",
+     "ref": "scripts/inventory-coverage.sh",
+     "proves": "every docs/design/inventory/*.md row id either has a citing shadow-oracle cell or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns the check red",
+     "source": "curated",
+     "status": "mapped"
     }
    ]
   },
@@ -1746,14 +1746,19 @@
    "surface": "ABI-2 store adapter fallback",
    "binding": "`call_with_legacy_default` verbatim: only `TransportErrorKind::Unsupported` opens a default, on `append_audit` / `list_audit` / `list_audit_tail` / `list_denylist`; everything else propagates",
    "inventory": "plugins-stores §5.8",
-   "status": "unmapped",
-   "suggestion": "store adapter unit test: only Unsupported opens a default on the four audit/denylist methods",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "store adapter unit test: only Unsupported opens a default on the four audit/denylist methods"
+     "ref": "unsupported_alone_opens_the_inert_default_on_every_defaulting_verb",
+     "status": "mapped",
+     "source": "hand"
+    },
+    {
+     "kind": "test",
+     "ref": "every_other_failure_shape_propagates_on_every_verb",
+     "status": "mapped",
+     "source": "hand"
     }
    ]
   },
@@ -1931,14 +1936,13 @@
    "surface": "boot store probe",
    "binding": "a migrated config boots on 1.5.5's read-only hydrate (BOOT-172/173 only); no write-read-back, so a read-only replica or grant-restricted DB boots exactly as on 1.5.5; the write probe exists only with `data_dir` or `peers:`",
    "inventory": "config BOOT-172/173",
-   "status": "unmapped",
-   "suggestion": "boot test against a read-only store fixture: boots with hydrate only, no write probe",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "boot test against a read-only store fixture: boots with hydrate only, no write probe"
+     "ref": "hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one",
+     "status": "mapped",
+     "source": "hand"
     }
    ]
   },
@@ -3097,14 +3101,13 @@
    "surface": "ingress server posture",
    "binding": "ALPN `http/1.1` only (no h2 served); hyper `header_read_timeout` 30 s; `limits.request_body_read_timeout_secs` 30; `tls_handshake_timeout_secs` 10; header size and count limits as hyper's defaults; the 64 KiB cursor / credential budgets never refuse a request 1.5.5 accepted (PB-18)",
    "inventory": "auth-secrets :2171; routes-admin :511; config :272-273",
-   "status": "unmapped",
-   "suggestion": "server posture unit test: ALPN http/1.1 only, header_read_timeout 30 s, body read timeout 30 s, handshake timeout 10 s",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "server posture unit test: ALPN http/1.1 only, header_read_timeout 30 s, body read timeout 30 s, handshake timeout 10 s"
+     "ref": "server_posture_matches_the_1_5_5_defaults",
+     "status": "mapped",
+     "source": "hand"
     }
    ]
   },
@@ -3113,14 +3116,25 @@
    "surface": "scrape shape",
    "binding": "`/metrics` on a 1.5.5 config exposes NO 1.6.0 series (ledger series live on the ledger endpoints); the pre-registered `.absolute(0)` counters and the `describe_*` absences per PB-53; the `busbar_request_duration_seconds` quantile set is NOT in the repo (exporter defaults; ops UNVERIFIED #1) — Phase −1 scrapes the 1.5.5 binary, records the set here as the resolution of that item, and the oracle diffs it",
    "inventory": "ops O3 (:1123-1130)",
-   "status": "unmapped",
-   "suggestion": "ops.scrape|metrics cell on a 1.5.5 config diffs the series set; add a unit test that no ledger series is registered without data_dir",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "ops.scrape|metrics cell on a 1.5.5 config diffs the series set; add a unit test that no ledger series is registered without data_dir"
+     "ref": "a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in",
+     "status": "mapped",
+     "source": "hand"
+    },
+    {
+     "kind": "test",
+     "ref": "no_ledger_series_and_no_keyset_lines_without_data_dir",
+     "status": "mapped",
+     "source": "hand"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "ops.scrape|metrics|no-ledger-series",
+     "status": "mapped",
+     "source": "hand"
     }
    ]
   },
@@ -3129,6 +3143,7 @@
    "surface": "documented behaviour",
    "binding": "the 27 README (:1047-1073) and 29 CHANGELOG (:1087-1115) claims, the two CONTRADICTED rows (:1061, :1099) each with an explicit cell of the ops cross-check are pinned as code-wins: each row's actual behaviour is the parity target, not the documented one; one §8.1 cell family (`documented-vs-actual`)",
    "inventory": "ops §8",
+   "note": "The suggested documented-vs-actual cell family requires individually re-verifying all 27 README (:1047-1073) and 29 CHANGELOG (:1087-1115) claims against current behaviour (56 checks), two of which ARCHITECTURE.md already names as CONTRADICTED (:1061, :1099) and pins as code-wins. That corpus does not exist as a cell family or test suite anywhere in the tree today, and authoring one honestly is exactly that 56-claim audit, not a small addition. Left unmapped rather than mapped to a partial or asserted-green stand-in.",
    "status": "unmapped",
    "suggestion": "documented-vs-actual cell family (27 README + 29 CHANGELOG claims) with the two contradicted rows pinned as code-wins",
    "checks": [
@@ -3145,14 +3160,13 @@
    "surface": "inventory precedence for bindings",
    "binding": "where a binding paraphrases an inventory row, the row (and the code at the tag behind it) wins; a binding found to misread its row is corrected, never the row — the round-3 corrections to PB-1, PB-4, PB-22, PB-26, PB-35, PB-38, PB-39, PB-52, PB-57 are the precedent",
    "inventory": "1.5.5-BEHAVIOUR precedence",
-   "status": "unmapped",
-   "suggestion": "lint: every PB row's inventory column resolves to an existing inventory file and anchor (a docs consistency lint, red on a dangling ref)",
+   "status": "mapped",
    "checks": [
     {
      "kind": "lint",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "lint: every PB row's inventory column resolves to an existing inventory file and anchor (a docs consistency lint, red on a dangling ref)"
+     "ref": "scripts/inventory-ref-lint.py",
+     "status": "mapped",
+     "source": "hand"
     }
    ]
   },
@@ -3340,14 +3354,13 @@
    "surface": "`revoke_key` on a tombstoned key",
    "binding": "gated on `get_key().is_some()` (not `is_live()`): a tombstoned key returns `200 {\"revoked\":\"<id>\"}` and writes a `key.revoke` / `applied` audit row",
    "inventory": "auth-secrets :618-624 (`admin/mod.rs:1687`)",
-   "status": "unmapped",
-   "suggestion": "admin unit test: revoke on a tombstoned key returns 200 {revoked} and writes key.revoke/applied",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "admin unit test: revoke on a tombstoned key returns 200 {revoked} and writes key.revoke/applied"
+     "ref": "revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied",
+     "status": "mapped",
+     "source": "hand"
     }
    ]
   },
@@ -3735,14 +3748,13 @@
    "surface": "usage locators are plane-normalized",
    "binding": "the four token classes are read through the plane's §5.1 normalization, not a raw pointer (PB-82); the kernel never re-derives a class from the wire",
    "inventory": "dialects §5.1",
-   "status": "unmapped",
-   "suggestion": "busbar-llm unit test: the four token classes read through the plane normalization, no raw wire pointer in the kernel (a lint on the kernel crate)",
+   "status": "mapped",
    "checks": [
     {
      "kind": "lint",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "busbar-llm unit test: the four token classes read through the plane normalization, no raw wire pointer in the kernel (a lint on the kernel crate)"
+     "ref": "scripts/kernel-token-wire-purity-lint.sh",
+     "status": "mapped",
+     "source": "hand"
     }
    ]
   },
@@ -3804,14 +3816,19 @@
    "surface": "migrated hook `on_error`",
    "binding": "`default_on_error() = ON_ERROR_NOTHING`: a failing or timed-out migrated gate does NOT participate (the request is served); natives keep their 1.5.5 timeouts; `on_failure: closed` is for 1.6.0-native hooks only",
    "inventory": "`config/mod.rs:1796-1799`; proxy-hooks §2.4–2.5",
-   "status": "unmapped",
-   "suggestion": "config unit test: default_on_error is nothing and a failing migrated gate does not participate",
+   "status": "mapped",
    "checks": [
     {
-     "kind": "gate",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "config unit test: default_on_error is nothing and a failing migrated gate does not participate"
+     "kind": "test",
+     "ref": "the_serde_default_is_nothing",
+     "status": "mapped",
+     "source": "hand"
+    },
+    {
+     "kind": "test",
+     "ref": "nothing_resolves_to_the_same_terminal_as_weighted",
+     "status": "mapped",
+     "source": "hand"
     }
    ]
   },
@@ -3887,14 +3904,13 @@
    "surface": "`VirtualKey.expires_at`",
    "binding": "a stored, UNENFORCED field: the `keys` arm reads only the token `exp` (signature → `exp` → denylist → `by_id` generation); rotate re-mints at 90 d; nothing refuses on `expires_at`",
    "inventory": "auth-secrets :151-161, :380, :389; 1.5.5-BEHAVIOUR §2 trap",
-   "status": "unmapped",
-   "suggestion": "auth unit test: a key with expires_at in the past still verifies (only token exp is enforced)",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "auth unit test: a key with expires_at in the past still verifies (only token exp is enforced)"
+     "ref": "a_key_row_whose_expires_at_is_in_the_past_still_verifies",
+     "status": "mapped",
+     "source": "hand"
     }
    ]
   },
@@ -3903,14 +3919,19 @@
    "surface": "1.6.0-only store ops on an ABI-2 store",
    "binding": "the ABI-2 adapter answers every 1.6.0-only operation (`append_batch`, `record_put/get/scan`, `session_*`, `reserve/release`, `heads`, keyset seal) with a NODE-LOCAL in-memory shim (consistent with PB-13: the keyset is ephemeral and unused on such a deployment) — never an error, never a log line, never a boot refusal — so boot and serving on a 1.5.5 sqlite/postgres/mysql/valkey store are byte-identical; the journal on such a deployment is memory-buffered exactly as PB-13 states for `data_dir` unset; durability = the legacy rows' durability, the 1.5.5 rule",
    "inventory": "plugins-stores §5.8; governance 7.5.3",
-   "status": "unmapped",
-   "suggestion": "store adapter unit test: every 1.6.0-only op on an ABI-2 store answers from the node-local shim with no error and no log line",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "store adapter unit test: every 1.6.0-only op on an ABI-2 store answers from the node-local shim with no error and no log line"
+     "ref": "unsupported_alone_opens_the_inert_default_on_every_defaulting_verb",
+     "status": "mapped",
+     "source": "hand"
+    },
+    {
+     "kind": "test",
+     "ref": "a_real_answer_passes_through_untouched",
+     "status": "mapped",
+     "source": "hand"
     }
    ]
   },
@@ -4454,14 +4475,13 @@
    "surface": "alarms and the disputes report",
    "binding": "an alarm and a disputes-report entry are LEDGER-ENDPOINT rows only: no log event, no metric series, no stderr line on a 1.5.5 deployment (ops §5.3's event-field sweep and the closed 25-metric set are byte-identical); the `max_unit_duration` stall alarm on a long stream, the lane-mismatch alarm, the accrual-bound alarm and the `single`-posture mutation alarms all obey this",
    "inventory": "ops §5.3, O3",
-   "status": "unmapped",
-   "suggestion": "ops unit test: an alarm emits no log event, metric or stderr line on a 1.5.5 config; ops.scrape cell diffs the closed 25-metric set",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "",
-     "status": "unmapped",
-     "suggestion": "ops unit test: an alarm emits no log event, metric or stderr line on a 1.5.5 config; ops.scrape cell diffs the closed 25-metric set"
+     "ref": "a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric",
+     "status": "mapped",
+     "source": "hand"
     }
    ]
   }

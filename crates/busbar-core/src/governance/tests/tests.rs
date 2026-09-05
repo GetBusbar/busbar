@@ -2682,6 +2682,86 @@ fn test_hydrate_budgets_propagates_store_error() {
     );
 }
 
+/// Binding: boot hydration is READ-ONLY. `hydrate_budgets` — the whole of what a normal boot does
+/// against the durable store before serving (BOOT-172/173 are its two failure literals) — never
+/// issues a single WRITE. A read-only replica or a grant-restricted DB (which fails every write but
+/// serves every read) must therefore boot exactly as a fully-writable one does; the separate
+/// write-read-back probe (PB-13) only exists at all when `data_dir` or `peers:` is configured. This
+/// wraps a real, seeded `MemoryStore` in a store whose every write method panics, and proves
+/// `hydrate_budgets` completes successfully and restores the persisted ledger — enforcement resumes
+/// from it exactly as [`test_hydrate_budgets_restores_group_buckets`] proves for a writable store —
+/// without ever tripping one of those panics.
+#[test]
+fn hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one() {
+    use busbar_api::{MeteringDelta, StoreResult, UsageLedger, VirtualKey};
+
+    /// Every READ delegates to the shared `inner` store; every WRITE panics — a read-only replica /
+    /// grant-restricted DB fixture. If boot hydration ever grows a write, this test goes from green
+    /// to a panic, not a silent pass.
+    struct ReadOnlyStore {
+        inner: Arc<MemoryStore>,
+    }
+    impl Store for ReadOnlyStore {
+        fn put_key(&self, _key: &VirtualKey) -> StoreResult<()> {
+            panic!("boot hydration must never write a key row");
+        }
+        fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+            self.inner.get_key(id)
+        }
+        fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+            self.inner.list_keys()
+        }
+        fn delete_key(&self, _id: &str) -> StoreResult<()> {
+            panic!("boot hydration must never delete a key row");
+        }
+        fn get_usage(&self, bucket_id: &str, window: u64) -> StoreResult<UsageLedger> {
+            self.inner.get_usage(bucket_id, window)
+        }
+        fn put_usage(&self, _b: &str, _w: u64, _l: &UsageLedger) -> StoreResult<()> {
+            panic!("boot hydration must never write a usage row (no write-read-back probe)");
+        }
+        fn add_metering(&self, _delta: &MeteringDelta) -> StoreResult<()> {
+            panic!("boot hydration must never write a metering row");
+        }
+        fn list_metering(&self, bucket: u64) -> StoreResult<Vec<busbar_api::MeteringRow>> {
+            self.inner.list_metering(bucket)
+        }
+    }
+
+    let card = || card_and_group_cost("m", 100.0, &[("team", 25, "total", None)]);
+    let mem = Arc::new(MemoryStore::new());
+    let mut k = sample_key("vk_ro", "ro_h");
+    k.group = Some("team".to_string());
+    let writable: Arc<dyn Store> = mem.clone();
+    writable.put_key(&k).unwrap();
+    let at = 1_700_000_000u64;
+    {
+        // Seed the group's durable ledger through a normal, fully-writable GovState — this is the
+        // durable data a restart against a now-read-only replica must still hydrate from.
+        let gov = GovState::new(writable, None).unwrap();
+        gov.record_usage(&card(), &k, "", "m", &tt(2_500), at);
+        gov.flush_budgets();
+    }
+
+    // Re-open the SAME durable rows, this time only through the read-only wrapper.
+    let ro: Arc<dyn Store> = Arc::new(ReadOnlyStore { inner: mem });
+    let gov2 = GovState::new(ro, None).unwrap();
+    gov2.hydrate_budgets(&card(), at)
+        .expect("hydrate_budgets must succeed against a read-only store: it never writes");
+    match gov2.try_admit(&card(), &k, "", at).unwrap_err() {
+        LimitBlocked::Limit {
+            group,
+            metric: "budget",
+            ..
+        } => assert_eq!(
+            group, "team",
+            "post-restart enforcement resumes from the persisted ledger on a read-only store, \
+             exactly as it does on a writable one"
+        ),
+        other => panic!("expected the hydrated group budget to block, got {other:?}"),
+    }
+}
+
 /// `hydrate_budgets` must trust the persisted `billable_requests` EXACTLY as stored, never
 /// re-derive it from `requests`. An earlier version of this function tried to detect a "pre-split
 /// legacy row" via `billable_requests == 0 && requests > 0` and re-seeded `billable_requests` from

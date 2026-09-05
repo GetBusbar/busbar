@@ -69,6 +69,9 @@ FAMILY_COLLAPSE_MIN = 6
 # check pins, because most bindings are omnibus rows and a single test rarely covers all of one.
 # Add here (or directly in the JSON) when a proof lands.
 SEED: dict[str, list[tuple[str, str, str]]] = {
+    "PB-0": [
+        ("gate", "scripts/inventory-coverage.sh", "every docs/design/inventory/*.md row id either has a citing shadow-oracle cell or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns the check red"),
+    ],
     "PB-1": [
         ("test", "enforce_restricts_reapplies_compliance_tags_across_pools", "a Reject restrict with no eligible lane fails closed; the Weighted arm passes candidates unchanged"),
         ("test", "multi_restrict_disjoint_intersection_fails_closed", "two restricts intersecting to empty produce a 503 (status only, not the literal body)"),
@@ -652,6 +655,7 @@ NOTES: dict[str, str] = {
     "PB-60": "oversized_request_413_is_reshaped_on_the_live_stack documents that the body cap fires before auth buffers the body on the admin leg; the binding says the cap is enforced inside the handler after auth. Worth an owner read; the http.crosscut 413 cells diff the real order against 1.5.5.",
     "PB-58": "OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.",
     "PB-61": "MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.",
+    "PB-71": "The suggested documented-vs-actual cell family requires individually re-verifying all 27 README (:1047-1073) and 29 CHANGELOG (:1087-1115) claims against current behaviour (56 checks), two of which ARCHITECTURE.md already names as CONTRADICTED (:1061, :1099) and pins as code-wins. That corpus does not exist as a cell family or test suite anywhere in the tree today, and authoring one honestly is exactly that 56-claim audit, not a small addition. Left unmapped rather than mapped to a partial or asserted-green stand-in.",
 }
 
 # ── Suggestions for unmapped bindings: what check would prove it ─────────────────────────────────

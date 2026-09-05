@@ -9,15 +9,15 @@ and carries the check that would prove it -- that list is the owner's post-check
 ## Summary
 
 - bindings: **103**  (PB-0 master rule + 102 table rows)
-- mapped: **89**
-- unmapped: **14**
-- checks by kind: gate 7, lint 3, oracle-cell 42, oracle-family 4, test 426
+- mapped: **101**
+- unmapped: **2**
+- checks by kind: gate 8, lint 5, oracle-cell 43, oracle-family 4, test 439
 
 ## Bindings
 
 | # | Surface | Status | Checks |
 |---|---|---|---|
-| PB-0 | master rule | unmapped | _none_ |
+| PB-0 | master rule | mapped | gate: `scripts/inventory-coverage.sh` |
 | PB-1 | hook `on_empty` | mapped | test: `enforce_restricts_reapplies_compliance_tags_across_pools`<br>test: `multi_restrict_disjoint_intersection_fails_closed` |
 | PB-2 | per-lane `max_concurrent` | mapped | test: `excluded_reasons_records_at_capacity`<br>test: `at_capacity_reject_sheds_503_not_queued`<br>test: `queue_dispatches_when_permit_frees_before_deadline`<br>test: `queue_times_out_to_503_when_capacity_never_frees`<br>gate: `scripts/release-check.sh` |
 | PB-3 | tripped / budget-exhausted / at-capacity lanes | mapped | test: `ordered_walk_skips_tripped_preferred_to_next`<br>test: `ordered_walk_skips_excluded_preferred`<br>test: `at_capacity_plus_tripped_member_rejects_503`<br>test: `least_bad_never_reaches_an_excluded_member`<br>test: `strengthened_lane_availability_invariant` |
@@ -54,12 +54,12 @@ and carries the check that would prove it -- that list is the owner's post-check
 | PB-34 | secret-ref timing and value semantics | mapped | test: `admin_token_secret_ref_re_resolves_on_apply`<br>test: `signing_key_secret_ref_re_resolves_on_apply_and_fails_closed`<br>test: `blank_admin_token_refuses_to_start`<br>test: `env_module_resolves_and_fails_closed`<br>test: `file_module_resolves_and_fails_closed`<br>test: `malformed_builtin_refs_error_precisely`<br>test: `literal_wrapper_opts_a_setting_out_of_secret_coercion`<br>test: `unresolvable_secret_ref_setting_fails_closed_naming_field`<br>test: `secret_ref_builtin_modules_pass_with_empty_registry`<br>test: `secret_ref_wrong_kind_plugin_fails_at_preflight` |
 | PB-35 | auth chain and credential cache | mapped | oracle-cell: `http.crosscut\|bearer-and-x-api-key`<br>test: `test_empty_chain_is_open_front_door`<br>test: `test_nonempty_chain_fails_closed_on_all_pass`<br>test: `test_keys_in_chain_sets_flag_not_module`<br>test: `test_chain_identifies_with_module_and_principal`<br>test: `test_extract_client_token_precedence_is_authorization_first`<br>test: `test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key`<br>test: `test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key`<br>test: `verdict_rules_and_expiry`<br>test: `bounded_eviction`<br>test: `module_partitions_and_flush`<br>test: `an_unauthenticated_chain_admits_nothing_to_the_cache`<br>test: `test_admin_v1_credential_cache_and_flush_endpoint` |
 | PB-36 | `admin_auth: []` | mapped | test: `admin_scope_resolution` |
-| PB-37 | ABI-2 store adapter fallback | unmapped | _none_ |
+| PB-37 | ABI-2 store adapter fallback | mapped | test: `unsupported_alone_opens_the_inert_default_on_every_defaulting_verb`<br>test: `every_other_failure_shape_propagates_on_every_verb` |
 | PB-38 | memory-store sweeps | mapped | test: `add_usage_sweeps_stale_windows`<br>test: `add_usage_sweep_boundary_is_exact`<br>test: `add_metering_sweeps_stale_buckets`<br>test: `add_metering_sweep_boundary_is_exact`<br>test: `put_key_sweeps_stale_tombstones`<br>test: `put_credential_sweeps_stale_revoked_creds`<br>test: `test_budget_sweep_staleness_boundary_is_exact`<br>test: `test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps`<br>test: `test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap` |
 | PB-39 | reload scope | mapped | test: `test_admin_v1_config_settings_process_level_flagged_reload_to_apply`<br>test: `test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_apply`<br>test: `test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_apply`<br>test: `test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_to_apply`<br>test: `test_admin_v1_export_put_that_adds_a_route_reports_restart_required`<br>test: `test_admin_v1_config_reload_swaps_disk_truth_and_carries_health` |
 | PB-40 | unknown-key refusal | mapped | gate: `scripts/config-stability-gate.sh`<br>test: `test_plugins_trust_allow_unsigned_injection_already_fails_via_deny_unknown_fields` |
 | PB-41 | 1.6.0 warnings on 1.5.5 configs | mapped | oracle-cell: `ops.scrape\|metrics\|no-ledger-series`<br>test: `no_ledger_series_and_no_keyset_lines_without_data_dir` |
-| PB-42 | boot store probe | unmapped | _none_ |
+| PB-42 | boot store probe | mapped | test: `hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one` |
 | PB-43 | operational routes | mapped | oracle-cell: `hooks\|metrics-hooks`<br>oracle-cell: `ops.scrape\|metricshooks\|key`<br>oracle-cell: `ops.scrape\|metrics\|key`<br>oracle-cell: `ops.scrape\|stats\|key`<br>test: `test_is_ready_any_cell_false_when_every_cell_open`<br>test: `test_is_ready_any_cell_true_when_a_pool_cell_is_ready`<br>test: `test_is_ready_is_side_effect_free`<br>test: `healthz_returns_a_real_response_not_the_default`<br>test: `thread_per_core_boots_and_serves_healthz`<br>test: `counter_renders_with_hook_label_and_verbatim_name`<br>test: `histogram_renders_as_summary`<br>test: `busbar_prefix_is_reserved`<br>test: `type_conflict_for_shared_name_is_dropped`<br>test: `test_stats_reports_at_capacity_when_lane_saturated`<br>test: `test_stats_limit_is_numeric_alias_of_max_concurrent`<br>test: `test_recovery_hint_ms` |
 | PB-44 | `in_flight_reserve` | mapped | test: `the_reserve_is_a_tenth_of_the_table_and_only_where_sessions_exist`<br>test: `the_administrative_listener_and_the_heartbeat_are_outside_the_cap`<br>test: `a_full_table_sheds_new_arrivals_before_it_sheds_an_open_session`<br>test: `the_cap_holds_when_everything_arrives_at_once` |
 | PB-45 | revoke / rotate | mapped | test: `a_failed_read_does_not_close_the_staleness_window`<br>test: `a_successful_read_unions_and_closes_the_window`<br>test: `a_hung_store_does_not_park_the_reactor`<br>test: `test_key_state_distinguishes_disable_revoke_and_tombstone`<br>test: `local_revoke_rejects_the_very_next_auth_attempt` |
@@ -86,16 +86,16 @@ and carries the check that would prove it -- that list is the owner's post-check
 | PB-66 | request and response headers | mapped | test: `non_allowlisted_client_header_is_not_forwarded`<br>test: `test_egress_accept_matches_native_sdk`<br>test: `test_egress_ua_versions_are_pinned_and_present`<br>test: `test_ingress_stream_content_type_by_protocol`<br>test: `test_bedrock_ingress_success_carries_amzn_request_id`<br>test: `test_forward_once_bedrock_error_relays_amzn_headers`<br>test: `test_anthropic_ingress_success_carries_request_id_header`<br>test: `test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_once`<br>test: `test_synth_anthropic_request_id_is_well_formed` |
 | PB-67 | per-dialect error mapping | mapped | test: `test_cross_protocol_error_kind_mapping`<br>test: `test_shape_cross_protocol_error_auth_kinds`<br>test: `test_ingress_error_bedrock_amzn_headers`<br>test: `test_vendor_auth_failure_message_is_plausible_per_proto`<br>test: `test_bedrock_ingress_wrong_token_is_403_native_envelope`<br>test: `error_kind_to_bedrock_type_covers_ingress_emitted_kinds`<br>test: `test_openai_classify`<br>test: `write_error_kind_vocabulary_mapping` |
 | PB-68 | network guard | mapped | test: `test_ssrf_blocks_metadata_denylist_by_default`<br>test: `test_ssrf_blocked_returns_exact_host_string`<br>test: `test_reject_cidr_metadata_entries`<br>test: `test_global_allow_overrides_blocked_metadata_hosts`<br>test: `test_allow_all_metadata_beats_nonempty_blocked_list`<br>test: `test_ssrf_allows_private_and_loopback_by_default`<br>test: `test_validate_rejects_non_https_base_url`<br>test: `test_validate_token_url_ssrf_and_scheme`<br>test: `the_shared_internal_predicate_covers_every_range_any_plane_ever_checked` |
-| PB-69 | ingress server posture | unmapped | _none_ |
-| PB-70 | scrape shape | unmapped | _none_ |
+| PB-69 | ingress server posture | mapped | test: `server_posture_matches_the_1_5_5_defaults` |
+| PB-70 | scrape shape | mapped | test: `a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in`<br>test: `no_ledger_series_and_no_keyset_lines_without_data_dir`<br>oracle-cell: `ops.scrape\|metrics\|no-ledger-series` |
 | PB-71 | documented behaviour | unmapped | _none_ |
-| PB-72 | inventory precedence for bindings | unmapped | _none_ |
+| PB-72 | inventory precedence for bindings | mapped | lint: `scripts/inventory-ref-lint.py` |
 | PB-73 | `advanced.response_headers` | mapped | test: `server_timing_header_absent_by_default_present_when_enabled`<br>test: `route_policy_headers_absent_by_default_on_the_live_stack`<br>test: `route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled`<br>test: `route_policy_headers_present_only_when_both_gates_open`<br>test: `test_emit_server_timing_moved_to_advanced_response_headers`<br>lint: `scripts/response-header-lint.sh` |
 | PB-74 | reserved-name sets | mapped | test: `reserved_hook_names_are_frozen`<br>test: `test_validate_allows_api_prefixed_but_boundary_safe_names`<br>gate: `scripts/config-stability-gate.sh` |
 | PB-75 | served OpenAPI document | mapped | test: `openapi_json_matches_committed_file`<br>test: `served_openapi_equals_committed_file` |
 | PB-76 | admin listener route set | mapped | oracle-cell: `http.crosscut\|admin-outside-prefix\|admin`<br>oracle-cell: `http.crosscut\|admin-unknown\|admin`<br>oracle-cell: `ops.scrape\|metrics\|admin-listener`<br>test: `split_admin_listener_no_double_exposure`<br>test: `auth_token_absent_from_admin_router`<br>test: `admin_auth_route_is_absent_from_the_data_listener`<br>test: `test_api_root_unmatched_paths_speak_the_admin_envelope` |
 | PB-77 | `POST /signing-key/rotate` | mapped | test: `test_signing_key_rotate_reports_kid_and_revoke_all` |
-| PB-78 | `revoke_key` on a tombstoned key | unmapped | _none_ |
+| PB-78 | `revoke_key` on a tombstoned key | mapped | test: `revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied` |
 | PB-79 | admission refusal identity | mapped | test: `missing_group_fails_closed`<br>test: `disabled_group_freezes_the_chain`<br>test: `chain_and_parent_blocks_child_and_charges_nothing`<br>test: `total_window_blocks_without_retry_after`<br>test: `test_try_admit_rejects_at_group_cap`<br>test: `test_chain_enforcement_rejects_naming_the_blocking_group`<br>test: `test_governance_rate_limit_429_native_envelope_all_ingress`<br>test: `test_budget_over_quota_bedrock_envelope` |
 | PB-80 | breaker arithmetic | mapped | oracle-cell: `route.failover\|fo\|primary-429`<br>test: `backoff_saturates_not_wraps_at_high_streak`<br>test: `test_cooldown_jitter_is_symmetric`<br>test: `test_retry_after_exceeds_max_cooldown`<br>test: `test_probe_failure_honors_retry_after_floor`<br>test: `test_retry_after_not_honored_ignores_server_value`<br>test: `test_hard_down_long_cooldown_and_recovery`<br>test: `test_single_flight_probe`<br>test: `test_floor_prevents_trip`<br>test: `test_trip_on_error_rate`<br>test: `test_consecutive_trip_mode`<br>test: `hard_down_all_cells_records_a_logical_trip`<br>test: `test_escalating_cooldown_on_repeated_trips` |
 | PB-81 | plugin call deadlines | mapped | test: `hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline`<br>test: `dlopen_slow_gate_hits_the_deadline`<br>test: `dlopen_plugin_panic_is_fail_closed_err`<br>lint: `scripts/blocking-ffi-lint.sh` |
@@ -103,14 +103,14 @@ and carries the check that would prove it -- that list is the owner's post-check
 | PB-83 | breaker scope | mapped | oracle-cell: `route.failover\|fb\|member-401`<br>test: `test_pool_breaker_isolation`<br>test: `test_record_hard_down_all_cells_trips_default_and_every_pool`<br>test: `test_budget_is_lane_global_across_pools`<br>test: `test_unbounded_lane_skips_the_semaphore_bounded_still_enforces` |
 | PB-84 | response-stage taps | mapped | test: `completion_tap_reports_ok_outcome`<br>test: `completion_tap_fires_synthetic_rejected_by_gate`<br>test: `completion_tap_fires_synthetic_rejected_by_auth`<br>oracle-cell: `hooks\|hooked-pool\|unauth` |
 | PB-85 | `max_tokens` injection | mapped | test: `per_model_then_global_then_4096`<br>test: `test_requires_max_tokens_per_protocol`<br>test: `test_openai_explicit_max_tokens_preserved_over_lane_default`<br>test: `test_openai_omits_max_tokens_injects_fallback_for_anthropic` |
-| PB-86 | usage locators are plane-normalized | unmapped | _none_ |
+| PB-86 | usage locators are plane-normalized | mapped | lint: `scripts/kernel-token-wire-purity-lint.sh` |
 | PB-87 | non-chat billing classes | mapped | test: `rerank_resp_billing_is_flat`<br>test: `rerank_resp_billing_flat_regardless_of_search_units` |
 | PB-88 | dialect pairs never refuse | mapped | test: `bad_request_reject_keeps_the_unchanged_generic_400`<br>test: `req_bedrock_to_cohere`<br>test: `resp_responses_to_gemini` |
-| PB-89 | migrated hook `on_error` | unmapped | _none_ |
+| PB-89 | migrated hook `on_error` | mapped | test: `the_serde_default_is_nothing`<br>test: `nothing_resolves_to_the_same_terminal_as_weighted` |
 | PB-90 | unmapped 1.5.5 config keys | mapped | test: `every_shipped_config_migrates_to_a_valid_current_config`<br>test: `every_patch_mirrors_every_field_of_its_section`<br>test: `resolved_billing_and_limits_config_is_byte_stable`<br>gate: `scripts/config-stability-gate.sh` |
 | PB-91 | fee basis | mapped | oracle-cell: `route.failover\|fo\|primary-cut-body`<br>test: `refund_returns_the_fee_but_never_the_requests_limit_slot`<br>test: `test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx` |
-| PB-92 | `VirtualKey.expires_at` | unmapped | _none_ |
-| PB-93 | 1.6.0-only store ops on an ABI-2 store | unmapped | _none_ |
+| PB-92 | `VirtualKey.expires_at` | mapped | test: `a_key_row_whose_expires_at_is_in_the_past_still_verifies` |
+| PB-93 | 1.6.0-only store ops on an ABI-2 store | mapped | test: `unsupported_alone_opens_the_inert_default_on_every_defaulting_verb`<br>test: `a_real_answer_passes_through_untouched` |
 | PB-94 | upstream credential mode | mapped | test: `test_passthrough_forwards_caller_token`<br>test: `sign_request_resolves_ambiguous_credential_to_single_header_by_mode`<br>test: `override_present_runs_full_lookup`<br>test: `golden_migrate_auth_upstream_credentials_moves_to_pools` |
 | PB-95 | migrated tap stages | mapped | test: `attempt_tap_carries_attempt_story`<br>test: `route_tap_reports_surviving_candidates` |
 | PB-96 | streaming byte layout (D2) | mapped | test: `test_translate_anthropic_egress_to_openai_ingress`<br>test: `test_translate_openai_egress_to_anthropic_ingress`<br>test: `bedrock_stream_framing_emits_one_metadata_delta_then_guards_duplicate`<br>test: `test_translate_openai_include_usage_egress_to_bedrock_ingress_single_metadata`<br>test: `test_duplicate_terminal_message_delta_after_stop_is_dropped`<br>test: `test_tool_id_remap_is_a_stable_reversible_bijection`<br>test: `cohere_tool_ids_pass_through_verbatim_no_decode`<br>test: `strip_same_proto_usage_fires_without_object_field` |
@@ -119,7 +119,7 @@ and carries the check that would prove it -- that list is the owner's post-check
 | PB-99 | legacy rows, hydrate and erasure | mapped | test: `test_metering_accumulates_split_per_key_model_and_bucket`<br>test: `test_record_metering_from_ir_usage_and_flat`<br>test: `test_additive_flush_carries_refund_deltas`<br>test: `delete_key_tombstones_and_cascades_usage_and_creds`<br>test: `scrub_key_requires_tombstone_first` |
 | PB-100 | admin wire details | mapped | oracle-family: `admin.ops` (44/231 cells cite it)<br>oracle-cell: `http.crosscut\|OPTIONS\|chat`<br>oracle-cell: `http.crosscut\|auth-token\|POST-empty`<br>oracle-cell: `ops.scrape\|v1models\|openai-fp`<br>test: `test_admin_v1_key_idempotent_mint_and_if_match`<br>test: `test_admin_v1_overlay_reset_hooks_reverts_to_base`<br>test: `keys_error_surface_is_byte_stable`<br>test: `admin_error_surface_witnesses_every_declared_response`<br>test: `declared_error_set_is_exactly_what_the_handlers_emit`<br>test: `record_list_get_and_bound`<br>test: `exchange_ok_body_includes_base_url_equal_to_public_url`<br>test: `begin_sets_httponly_secure_cookie_and_redirects`<br>test: `callback_state_mismatch_400`<br>test: `callback_nonce_mismatch_rejected`<br>test: `execute_hop_refuses_non_allowlisted_host`<br>test: `vet_hop_url_enforces_https_allowlist_and_blocks_metadata`<br>test: `execute_hop_does_not_follow_redirect`<br>test: `refresh_rotates_key_and_revokes_the_old_one` |
 | PB-101 | inbound auth details | mapped | test: `test_verify_sigv4_ingress_credential_unsigned_payload_rejected`<br>test: `test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits`<br>test: `test_verify_sigv4_ingress_credential_tampered_body_rejected`<br>test: `test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch`<br>test: `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`<br>test: `a_fast_large_upload_is_not_killed_by_the_throughput_floor`<br>test: `total_deadline_trips_on_a_body_that_stays_above_the_floor_forever`<br>test: `body_read_timeout_trips_on_stalled_body`<br>test: `mtls_valid_client_cert_gets_200`<br>test: `mtls_rejects_bad_client_then_serves_valid` |
-| PB-102 | alarms and the disputes report | unmapped | _none_ |
+| PB-102 | alarms and the disputes report | mapped | test: `a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric` |
 
 ## Findings: bindings in conflict with the tree
 
@@ -135,6 +135,7 @@ A green test that asserts the opposite of a binding is not a proof. These need a
 - **PB-60** (oversize body): oversized_request_413_is_reshaped_on_the_live_stack documents that the body cap fires before auth buffers the body on the admin leg; the binding says the cap is enforced inside the handler after auth. Worth an owner read; the http.crosscut 413 cells diff the real order against 1.5.5.
 - **PB-61** (chunked bodies): MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.
 - **PB-66** (request and response headers): CONTRADICTED in part by green tests: crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs client_anthropic_beta_reaches_matching_anthropic_upstream and client_openai_beta_reaches_matching_openai_upstream assert an allowlisted anthropic-beta / OpenAI-Beta client header DOES ride upstream, where the binding says NO client request header is forwarded. Owner decision needed.
+- **PB-71** (documented behaviour): The suggested documented-vs-actual cell family requires individually re-verifying all 27 README (:1047-1073) and 29 CHANGELOG (:1087-1115) claims against current behaviour (56 checks), two of which ARCHITECTURE.md already names as CONTRADICTED (:1061, :1099) and pins as code-wins. That corpus does not exist as a cell family or test suite anywhere in the tree today, and authoring one honestly is exactly that 56-claim audit, not a small addition. Left unmapped rather than mapped to a partial or asserted-green stand-in.
 - **PB-75** (served OpenAPI document): The mapped goldens pin served == committed today; openapi_doc_is_31_and_v1_prefixed asserts info.version tracks the crate version, which is the opposite of a 1.5.5-verbatim pin. Treat as partial.
 - **PB-84** (response-stage taps): OWNER DECISION (1.6.0 rebuild, PR-0): the binding is AMENDED — an auth refusal on a hooked pool DOES fire the completion tap, with the synthetic outcome `rejected_by_auth` and the protocol-native status; hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth pins it and the oracle cell hooks\|hooked-pool\|unauth records 1.5.5 doing exactly that. Other pre-forward refusals (403/429/413/404) are unchanged.
 
@@ -142,20 +143,8 @@ A green test that asserts the opposite of a binding is not a proof. These need a
 
 Each line is the check that would move the binding to `mapped`.
 
-- **PB-0** (master rule): oracle-family coverage gate: every row id of docs/design/inventory/*.md appears in at least one cells.json cell (a derived cell-count test, red on any inventory row with no cell)
 - **PB-7** (inbound shed): axum test: with max_inbound_concurrent=1 every listed data route sheds 503 with Retry-After: 1 while the admin listener answers; plus an http.crosscut cell
-- **PB-37** (ABI-2 store adapter fallback): store adapter unit test: only Unsupported opens a default on the four audit/denylist methods
-- **PB-42** (boot store probe): boot test against a read-only store fixture: boots with hydrate only, no write probe
-- **PB-69** (ingress server posture): server posture unit test: ALPN http/1.1 only, header_read_timeout 30 s, body read timeout 30 s, handshake timeout 10 s
-- **PB-70** (scrape shape): ops.scrape\|metrics cell on a 1.5.5 config diffs the series set; add a unit test that no ledger series is registered without data_dir
 - **PB-71** (documented behaviour): documented-vs-actual cell family (27 README + 29 CHANGELOG claims) with the two contradicted rows pinned as code-wins
-- **PB-72** (inventory precedence for bindings): lint: every PB row's inventory column resolves to an existing inventory file and anchor (a docs consistency lint, red on a dangling ref)
-- **PB-78** (`revoke_key` on a tombstoned key): admin unit test: revoke on a tombstoned key returns 200 {revoked} and writes key.revoke/applied
-- **PB-86** (usage locators are plane-normalized): busbar-llm unit test: the four token classes read through the plane normalization, no raw wire pointer in the kernel (a lint on the kernel crate)
-- **PB-89** (migrated hook `on_error`): config unit test: default_on_error is nothing and a failing migrated gate does not participate
-- **PB-92** (`VirtualKey.expires_at`): auth unit test: a key with expires_at in the past still verifies (only token exp is enforced)
-- **PB-93** (1.6.0-only store ops on an ABI-2 store): store adapter unit test: every 1.6.0-only op on an ABI-2 store answers from the node-local shim with no error and no log line
-- **PB-102** (alarms and the disputes report): ops unit test: an alarm emits no log event, metric or stderr line on a 1.5.5 config; ops.scrape cell diffs the closed 25-metric set
 
 ## Running the checks (a slower tier)
 
