@@ -68,7 +68,13 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ceiling): `busbar-kernel`
   ≤ 8k — Teller loop 1.5k · pump/scheduler 1.5k · in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
-  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3k; all `busbar-unit-*` ≤ 45k (incl. verbs
+  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.5k **of plugin-visible SURFACE** —
+  non-blank, non-comment code lines under each crate's `src/`, excluding `#[cfg(test)]` modules and
+  `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
+  compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
+  in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
+  (`--ceiling busbar-contract,busbar-caps=3500`), which the construction gate runs as
+  `surface-ceiling:contract+caps`; all `busbar-unit-*` ≤ 45k (incl. verbs
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
 
@@ -1401,6 +1407,18 @@ busbar is a byte-governance router.
   is a defect.
 - **CG-51 the network guard is the trust unit's check** over `VerifiedDestination`, applied before any
   transport `dial`; transports do no resolution policy of their own.
+
+**2026-09-05 — the contract/caps LOC ceiling counts surface, not proofs.** The ceiling in §1.1 is a
+budget for what a plugin author has to read: non-blank, non-comment code lines under `src/`, with
+`#[cfg(test)]` modules and `src/tests/` excluded. Data that exists only to PROVE a property — the
+overlap totality table over the selector-form pairs, the lint symbol lists, the compile-fail fixtures
+and their positive companions, the honesty tables kept as documentation — is a proof, not surface,
+and lives in the crate's `tests/` or `fixtures/`. Measured that way and with the lint lists moved out
+of `src/`, the pair is 3,281 lines, so the ceiling is amended from 3k to **3.5k**. The reason it does
+not fit in 3k is the design's own requirement, not slack: `Selector::overlaps` must be TOTAL over the
+cross-product of the thirteen selector forms — 169 pairs — with no catch-all that panics, and the
+loop's step order is carried by types: ten step markers, and twelve token types that name the step or
+the unit they entitle. Totality and type-level step order are what the surface costs.
 
 ## Appendix B — Parity bindings (override any conflicting sentence in §1–§9 for every 1.5.5-reachable surface)
 

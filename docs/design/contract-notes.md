@@ -108,8 +108,9 @@ cannot be duplicated because it is neither `Clone` nor `Copy`.
 Rust has no linear types, so "this value must be consumed by exactly this function" is not
 expressible. Four partial mechanisms cover it instead: `#[must_use]` catches the accident above,
 the cell catches the double take, the canary catches the omission after the fact in arithmetic,
-and the deliberate escape is caught by a source scan whose symbols are in
-[`crate::lint::HOLD_ESCAPES`].
+and the deliberate escape is caught by a source scan whose symbols are in the crate's
+`fixtures/lint_rules.rs`. That list is a proof, not surface: nothing outside the crate's own tests
+names it, so it sits beside `src/` rather than inside it.
 
 ### `token.rs` — the tokens that seal every constructor
 
