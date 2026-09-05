@@ -1,0 +1,50 @@
+# busbar-plane-llm — THE LLM PLANE, as an ADAPTER and nothing else.
+#
+# WHAT THIS CRATE IS. One implementation of the plugin contract's plane kind for the LLM protocol.
+# Every method is a thin adapter over a codec that already exists in `busbar-llm`: the dialect
+# readers and writers, the intermediate representation, the cross-dialect translator, the stream
+# translator and the dialect-shaped error envelopes. No wire format is written twice. If a byte
+# differs between what this crate produces and what the existing codec produces, the existing codec
+# is the answer and this crate has the bug.
+#
+# WHAT THIS CRATE IS NOT. There is no governance here, no breaker, no hook seat, and no metering
+# arithmetic. Those are units, and a unit is on the other side of the kernel from a plane. The
+# metering method returns LOCATORS — where the numbers are — and never a number the ledger would
+# post. The routing method returns a plan, never a connection.
+#
+# THE DEPENDENCY EDGE, STATED HONESTLY. The contract crate is the surface a plugin is written
+# against and it stands alone. `busbar-llm` is named here for the codecs only, and it is a heavier
+# crate than a pure plane's dependency rule would like: it carries an HTTP stack and an async
+# runtime for the engine that still lives beside its codecs. That is a finding about where the
+# codecs sit today, not a decision taken here — the adapter itself names no runtime, opens nothing
+# and reads no clock but the one the context hands it.
+[package]
+name = "busbar-plane-llm"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# One pinned number, set to what CI verifies — the same rationale every other member states.
+rust-version = "1.97"
+description = "The LLM plane for busbar: the plugin contract's plane kind implemented as a thin adapter over the busbar-llm dialect codecs."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_plane_llm"
+path = "src/lib.rs"
+
+# NO FEATURES, ON PURPOSE. A plane compiled two ways is two planes, and the kernel would have no way
+# to tell which one it registered. The contract crate holds itself to the same rule and asserts it.
+
+[dependencies]
+# THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
+busbar-contract = { path = "../busbar-contract" }
+# THE CODECS. Read-only from here: this crate calls the dialect readers, writers, translator and
+# error-envelope builders and edits none of them.
+busbar-llm = { path = "../busbar-llm" }
+# The object notation the codecs speak. The adapter hands values across the seam and never invents
+# a second parser.
+serde_json = { workspace = true }
+# The SAME serializer the codecs use. Byte-identity is the point: a document serialized by a second
+# library would differ in escaping and in number formatting, and the difference would show up as a
+# changed request on the wire rather than as a failing test.
+sonic-rs = { workspace = true }
