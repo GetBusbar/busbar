@@ -60,7 +60,6 @@ use busbar_kernel::inflight::ArrivalDoor;
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
 use busbar_unit_admission::{Door, InMemoryCells};
 use busbar_unit_auth::{Auth, AuthChain};
-use busbar_unit_breaker::BreakerUnit;
 use busbar_unit_egress::EgressUnit;
 use busbar_unit_trust::Trust;
 
@@ -187,7 +186,15 @@ impl ProductionUnits {
     ) -> Self {
         ProductionUnits {
             door: Door::new(InMemoryCells::new()),
-            breaker: crate::root::adapters::BreakerAdapter::new(BreakerUnit::new(), breaker_policy),
+            // The breaker unit's one diagnostic reaches the node's own logging rather than the
+            // noop the crate defaults to. What an operator gets out of the binding is the line
+            // saying an `error_map` entry they wrote names a class that does not exist; what the
+            // request path gets is nothing at all, because the mapping was ignored before the
+            // binding and is ignored after it.
+            breaker: crate::root::adapters::BreakerAdapter::with_diagnostics(
+                crate::root::adapters::root_diagnostics(),
+                breaker_policy,
+            ),
             egress: EgressUnit::new(),
             auth: Auth::new(auth_chain),
             trust: Trust,
@@ -506,6 +513,90 @@ mod tests {
         assert!(!durability.on_disk());
         assert!(durability.ledger.is_dual_writing());
         assert!(units.scope_policy.is_empty());
+    }
+
+    /// The breaker unit the root assembles reports an unrecognized `error_map` class rather than
+    /// swallowing it.
+    ///
+    /// The unit's own default sink is a noop, which is 1.5.5's behaviour for the classification
+    /// RESULT and also for the warning — the mapping is ignored either way, and before this
+    /// binding nothing said so. What is asserted here is the composition: the sink the root builds
+    /// is reached from the unit the root assembled, through the port the egress unit classifies
+    /// over, without any test double standing in for either side.
+    ///
+    /// The sink is a recording one rather than the tracing one, because what needs proving is that
+    /// the value ARRIVES; where it goes afterwards is `adapters::TracingDiagnostics`, and asserting
+    /// on a log line would be asserting on the subscriber a test happened to install.
+    #[test]
+    fn an_unrecognized_error_map_class_reaches_the_roots_sink() {
+        #[derive(Debug, Default)]
+        struct RecordingSink(Mutex<Vec<String>>);
+
+        impl busbar_unit_breaker::classify::Diagnostics for RecordingSink {
+            fn unrecognized_error_map_value(&self, value: &str) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push(value.to_string());
+            }
+        }
+
+        let durability = crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open");
+
+        let kernel = new_kernel();
+        let mut units = ProductionUnits::new(
+            &kernel,
+            AuthChain::new(Vec::new(), false),
+            durability,
+            crate::root::adapters::BreakerPolicy::new(),
+            crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
+            crate::root::policy::ScopePolicy::new(),
+            crate::root::units_admin::AdminBinding::new(Arc::new(
+                crate::root::units_admin::RefusingDispatch,
+            )),
+            Arc::new(crate::root::units_admin::RefusingStore),
+        );
+
+        // The same assembly the constructor performs, over a sink this test can read back. The
+        // production sink is `adapters::root_diagnostics()`; the width is the same one, which is
+        // what makes the substitution a substitution rather than a different composition.
+        let sink = Arc::new(RecordingSink::default());
+        units.breaker = crate::root::adapters::BreakerAdapter::with_diagnostics(
+            Arc::clone(&sink) as crate::root::adapters::DiagnosticsSink,
+            crate::root::adapters::BreakerPolicy::new(),
+        );
+
+        let destination = busbar_unit_breaker::DestinationId::new(11);
+        units.breaker.unit().set_error_map(
+            destination,
+            std::collections::HashMap::from([("503".to_string(), "rate_limt".to_string())]),
+        );
+
+        let classified = busbar_unit_egress::ports::Breaker::classify(
+            &units.breaker,
+            destination,
+            busbar_unit_egress::ports::UpstreamStatus {
+                code: Some(503),
+                class: None,
+                retry_after: None,
+            },
+        );
+
+        assert_eq!(
+            sink.0.lock().expect("sink lock").as_slice(),
+            ["rate_limt".to_string()],
+            "the unrecognized class reached the sink the root bound"
+        );
+        assert_eq!(
+            classified.disposition,
+            busbar_unit_egress::ports::Disposition::TransientUpstream,
+            "and the mapping stayed ignored: the 503 classified from its HTTP status"
+        );
     }
 
     /// The interner is idempotent, which is what makes "leaked exactly once" a property of the

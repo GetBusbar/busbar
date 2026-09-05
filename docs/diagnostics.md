@@ -428,6 +428,17 @@ One of the 1.5.x environment overrides (BUSBAR_PROVIDERS, BUSBAR_CONFIG_OVERLAY,
 
 **What to do:** Move the value to the named config.yaml key and unset the variable. Nothing changes until you do.
 
+<a id="config-error-map-class-unrecognized"></a>
+### BUSBAR-3022 — error_map maps an error to an unrecognized status class (the mapping is ignored)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-error-map-class-unrecognized`
+
+A provider's `error_map` maps an upstream error code or structured type to a string that is not one of busbar's status classes (rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length). The mapping is IGNORED and the error is classified from its HTTP status instead, so a typo'd entry (`rate_limt`) silently never takes effect. Reported once per distinct unrecognized value for the life of the process, on the first error that reaches it — never at boot, so a deployment whose providers never fail never sees this line.
+
+**What to do:** Correct the named `error_map` value to one of the nine status classes, or remove the entry if the built-in HTTP-status classification is what you want.
+
 ## 4xxx — Auth & identity
 
 <a id="token-exchange-mint-failed"></a>

@@ -48,11 +48,14 @@
 use busbar_caps::{Route, UnitToken};
 use busbar_contract::StatusClass;
 use busbar_unit_breaker::cfg::BreakerCfg;
+use busbar_unit_breaker::classify::Diagnostics;
+use busbar_unit_breaker::journal::NoopJournal;
 use busbar_unit_breaker::{Breaker as BreakerUnitTrait, BreakerUnit, DestinationId};
 use busbar_unit_egress::ports::{
     Admit, Breaker, Classified, Disposition, Outcome, Unavailable, UpstreamStatus,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// The per-pool breaker configuration the adapter closes over.
 ///
@@ -95,26 +98,85 @@ impl BreakerPolicy {
     }
 }
 
+/// The breaker unit's `error_map` diagnostic sink, as the root holds one.
+///
+/// A shared trait object rather than a concrete type, so the sink a deployment binds and the sink a
+/// test asserts against are the same shape and the breaker unit's type parameter does not become a
+/// parameter of everything that holds a [`BreakerAdapter`]. The breaker crate already implements
+/// its own trait for `Arc<S>`, which is what makes the handle usable on both sides at once.
+pub type DiagnosticsSink = Arc<dyn Diagnostics + Send + Sync>;
+
+/// The breaker unit as this root composes it: no journal, and a real diagnostics sink.
+pub type RootBreakerUnit = BreakerUnit<NoopJournal, DiagnosticsSink>;
+
+/// The breaker unit's one diagnostic, delivered through the node's own logging.
+///
+/// The breaker crate takes no logging dependency, so the warning an unrecognized `error_map` class
+/// deserves has to be raised by something that does. This is that something, and it is deliberately
+/// nothing more: it formats no policy, decides no disposition, and cannot change what the mapping
+/// classified as — the mapping is ignored either way, exactly as the previous release ignored it.
+/// What it adds is the line saying so.
+///
+/// The line is a `WARN` carrying the catalog's `diag` field, which is the same tracing path every
+/// other operator-facing configuration warning takes, so an operator greps for the code and lands on
+/// the entry that explains it. It fires on the first upstream error that reaches an unrecognized
+/// mapping and never at boot — which is why a configuration the previous release booted silently
+/// still boots with exactly the lines it booted with then.
+///
+/// Warned ONCE per distinct value: the dedup is the breaker crate's own `WarnOnceDiagnostics`, which
+/// [`root_diagnostics`] wraps this in, rather than a second copy of the same set here.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TracingDiagnostics;
+
+impl Diagnostics for TracingDiagnostics {
+    fn unrecognized_error_map_value(&self, value: &str) {
+        tracing::warn!(
+            diag = %busbar_substrate::diagnostics::CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED.banner(),
+            error_map_value = value,
+            "error_map maps an error to an unrecognized status class; the mapping is IGNORED and \
+             classification falls through to HTTP status. Valid classes: rate_limit, overloaded, \
+             server_error, timeout, network, auth, billing, client_error, context_length"
+        );
+    }
+}
+
+/// The sink the root binds the breaker unit to: the node's logging, warned once per distinct value.
+#[must_use]
+pub fn root_diagnostics() -> DiagnosticsSink {
+    Arc::new(busbar_unit_breaker::classify::WarnOnceDiagnostics::new(
+        TracingDiagnostics,
+    ))
+}
+
 /// The egress unit's breaker port, bound to the breaker unit.
 ///
 /// A thin wrapper with no policy of its own beyond the two folds the module doc names. What it must
 /// never do is decide anything: a disposition is the breaker unit's data and a route is the egress
 /// unit's walk, and an adapter that split the difference would be a third opinion nobody asked for.
 pub struct BreakerAdapter {
-    unit: BreakerUnit,
+    unit: RootBreakerUnit,
     policy: BreakerPolicy,
 }
 
 impl BreakerAdapter {
     /// Bind the egress port to a breaker unit, under a declared per-pool policy.
     #[must_use]
-    pub fn new(unit: BreakerUnit, policy: BreakerPolicy) -> Self {
+    pub fn new(unit: RootBreakerUnit, policy: BreakerPolicy) -> Self {
         BreakerAdapter { unit, policy }
+    }
+
+    /// Bind the egress port to a breaker unit built over one diagnostics sink, under a declared
+    /// per-pool policy. The one-call form of [`BreakerAdapter::new`] for a caller that has a sink
+    /// rather than a unit — which is every caller in this root, because the unit has no other
+    /// configuration to make here.
+    #[must_use]
+    pub fn with_diagnostics(diagnostics: DiagnosticsSink, policy: BreakerPolicy) -> Self {
+        BreakerAdapter::new(BreakerUnit::with_diagnostics(diagnostics), policy)
     }
 
     /// The breaker unit behind the port, for the boot-time hydration the root does before serving.
     #[must_use]
-    pub fn unit(&self) -> &BreakerUnit {
+    pub fn unit(&self) -> &RootBreakerUnit {
         &self.unit
     }
 
@@ -394,6 +456,72 @@ mod tests {
         UnitToken::mint(&KernelSeal::acquire_for_kernel())
     }
 
+    /// A sink for a test that is about a ladder rather than about a diagnostic. The breaker crate's
+    /// own noop, at the shared handle's width, so the unit under test is the production one.
+    fn silent_sink() -> DiagnosticsSink {
+        Arc::new(busbar_unit_breaker::classify::NoopDiagnostics)
+    }
+
+    /// A sink that keeps what it was told, so a test can ask whether the value reached it.
+    #[derive(Debug, Default)]
+    struct RecordingSink(std::sync::Mutex<Vec<String>>);
+
+    impl RecordingSink {
+        fn values(&self) -> Vec<String> {
+            self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        }
+    }
+
+    impl Diagnostics for RecordingSink {
+        fn unrecognized_error_map_value(&self, value: &str) {
+            self.0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(value.to_string());
+        }
+    }
+
+    /// The binding, end to end at the adapter's own width: a destination whose operator `error_map`
+    /// names a class busbar has no such thing as, one upstream error that hits it, and the value on
+    /// the sink the adapter's unit was built over. Without the binding this is the silently-ignored
+    /// mapping the previous release had; with it the value is reportable.
+    ///
+    /// The classification itself is unchanged either way — the mapping is ignored and the error is
+    /// classified from its HTTP status — which is the half that keeps the legacy path byte-identical.
+    #[test]
+    fn an_unrecognized_error_map_class_reaches_the_bound_sink() {
+        let sink = Arc::new(RecordingSink::default());
+        let breaker = BreakerAdapter::with_diagnostics(
+            Arc::clone(&sink) as DiagnosticsSink,
+            BreakerPolicy::new().with_pool("pool", a_slow_ladder()),
+        );
+        let dest = DestinationId::new(9);
+        breaker.unit().set_error_map(
+            dest,
+            HashMap::from([("503".to_string(), "rate_limt".to_string())]),
+        );
+
+        let classified = breaker.classify(
+            dest,
+            UpstreamStatus {
+                code: Some(503),
+                class: None,
+                retry_after: None,
+            },
+        );
+
+        assert_eq!(
+            sink.values(),
+            vec!["rate_limt".to_string()],
+            "the operator's typo reached the sink the root bound"
+        );
+        assert_eq!(
+            classified.disposition,
+            Disposition::TransientUpstream,
+            "the mapping is still ignored: a 503 classifies from its HTTP status"
+        );
+    }
+
     /// A ladder that is visibly not the default on both axes a cooldown is decided by: it trips on
     /// the first failure rather than on an error rate, and it holds the lane down for five minutes
     /// rather than fifteen seconds.
@@ -411,8 +539,8 @@ mod tests {
     }
 
     fn adapter_for(pool: &str) -> BreakerAdapter {
-        BreakerAdapter::new(
-            BreakerUnit::new(),
+        BreakerAdapter::with_diagnostics(
+            silent_sink(),
             BreakerPolicy::new().with_pool(pool, a_slow_ladder()),
         )
     }
@@ -449,8 +577,8 @@ mod tests {
         );
         let under_configured = configured.cooldown_remaining("pool", dest, 0, &route_token());
 
-        let defaulted = BreakerAdapter::new(
-            BreakerUnit::new(),
+        let defaulted = BreakerAdapter::with_diagnostics(
+            silent_sink(),
             BreakerPolicy::new().with_pool("pool", BreakerCfg::default()),
         );
         assert!(
@@ -473,7 +601,7 @@ mod tests {
     /// name. A lane that never trips is visible; a lane that trips for the wrong duration is not.
     #[test]
     fn an_unconfigured_pool_records_nothing_rather_than_guessing() {
-        let breaker = BreakerAdapter::new(BreakerUnit::new(), BreakerPolicy::new());
+        let breaker = BreakerAdapter::with_diagnostics(silent_sink(), BreakerPolicy::new());
         let dest = DestinationId::new(2);
 
         assert!(!breaker.observe("unknown-pool", dest, Outcome::HardDown, 0, &route_token()));
@@ -487,8 +615,8 @@ mod tests {
     /// declaration of its own rather than a pool that happens to be missing.
     #[test]
     fn the_default_cell_takes_its_own_declared_ladder() {
-        let breaker = BreakerAdapter::new(
-            BreakerUnit::new(),
+        let breaker = BreakerAdapter::with_diagnostics(
+            silent_sink(),
             BreakerPolicy::new().with_default_cell(a_slow_ladder()),
         );
         let dest = DestinationId::new(4);
