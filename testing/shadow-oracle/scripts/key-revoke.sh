@@ -24,7 +24,7 @@ here="$(cd "$(dirname "$0")/.." && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
 source "${repo}/testing/fleet-fixtures/lib.sh"
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
-LP="${REVOKE_LISTEN_PORT:-48851}" AP="${REVOKE_ADMIN_PORT:-48852}" MP="${REVOKE_MOCK_PORT:-48795}"
+LP="${REVOKE_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48851}}" AP="${REVOKE_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48852}}" MP="${REVOKE_MOCK_PORT:-${SCRIPT_MOCK_PORT:-48795}}"
 W="$RAW/revoke-work"; mkdir -p "$W"
 
 for p in "$LP" "$AP" "$MP"; do

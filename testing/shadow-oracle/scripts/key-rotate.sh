@@ -26,7 +26,7 @@ here="$(cd "$(dirname "$0")/.." && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
 source "${repo}/testing/fleet-fixtures/lib.sh"
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
-LP="${ROTATE_LISTEN_PORT:-48861}" AP="${ROTATE_ADMIN_PORT:-48862}" MP="${ROTATE_MOCK_PORT:-48796}"
+LP="${ROTATE_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48861}}" AP="${ROTATE_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48862}}" MP="${ROTATE_MOCK_PORT:-${SCRIPT_MOCK_PORT:-48796}}"
 W="$RAW/rotate-work"; mkdir -p "$W"
 
 for p in "$LP" "$AP" "$MP"; do

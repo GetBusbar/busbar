@@ -392,7 +392,9 @@ while IFS= read -r cell; do
     sname="$(jq -r .script.name <<<"$cell")"
     local_args=(); while IFS= read -r a; do [ -n "$a" ] && local_args+=("$a"); done < <(jq -r '.script.args[]? // empty' <<<"$cell")
     stop_busbar   # a script cell never needs the recording busbar; free its ports and CPU
+    # the script reuses this recording's own (now free) ports so two recordings never collide
     BUSBAR_BIN="$BIN" RAW="$raw" WORK="$WORK" ORACLE_ADMIN_TOKEN="$ORACLE_ADMIN_TOKEN" \
+      SCRIPT_LISTEN_PORT="$LISTEN_PORT" SCRIPT_ADMIN_PORT="$ADMIN_PORT" SCRIPT_MOCK_PORT="$MOCK_PORT" \
       bash "${here}/scripts/${sname}" "${local_args[@]}" >"$raw/script.log" 2>&1
     [ -s "$raw/captured.json" ] || { record "$id" FAIL "script ${sname} produced no captured.json" "$(tail -c 300 "$raw/script.log")"; continue; }
     python3 "${here}/normalize.py" "$raw/captured.json" >"$OUT/cells/$safe.json" 2>"$raw/normalize.err" \
@@ -451,6 +453,7 @@ PY
     mc="$(jq -c '.mock_control // empty' <<<"$cell")"
     [ -z "$mc" ] || [ "$mc" = "{}" ] || printf '%s' "$mc" >"$CONTROL"
     settle_then_snapshot "$raw/before" "$kid"
+    ls "$WORK/egress" 2>/dev/null | sort >"$raw/egress.before"
     k=1
     while [ "$k" -le "$repeat" ]; do
       status="$(curl -sS -m 30 -N "${local_m[@]}" "http://127.0.0.1:${port}${path}" "${hdr_args[@]}" \

@@ -24,7 +24,7 @@ here="$(cd "$(dirname "$0")/.." && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
 source "${repo}/testing/fleet-fixtures/lib.sh"
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
-LP="${EXPIRY_LISTEN_PORT:-48871}" AP="${EXPIRY_ADMIN_PORT:-48872}" MP="${EXPIRY_MOCK_PORT:-48797}"
+LP="${EXPIRY_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48871}}" AP="${EXPIRY_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48872}}" MP="${EXPIRY_MOCK_PORT:-${SCRIPT_MOCK_PORT:-48797}}"
 W="$RAW/expiry-work"; mkdir -p "$W"
 
 for p in "$LP" "$AP" "$MP"; do

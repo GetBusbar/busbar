@@ -28,7 +28,7 @@ source "${repo}/testing/fleet-fixtures/lib.sh"
 source "${here}/oracle-config.sh"
 
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"
-LISTEN_PORT="${COOLDOWN_LISTEN_PORT:-48861}" ADMIN_PORT="${COOLDOWN_ADMIN_PORT:-48862}" MOCK_PORT="${COOLDOWN_MOCK_PORT:-48796}"
+LISTEN_PORT="${COOLDOWN_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48861}}" ADMIN_PORT="${COOLDOWN_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48862}}" MOCK_PORT="${COOLDOWN_MOCK_PORT:-${SCRIPT_MOCK_PORT:-48796}}"
 fail() { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"$1\"}}" >"$RAW/captured.json"; exit 0; }
 for p in "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT"; do assert_port_free "$p" || fail "port $p busy"; done
 

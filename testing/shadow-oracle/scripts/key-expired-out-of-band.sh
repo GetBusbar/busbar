@@ -28,7 +28,7 @@ repo="$(cd "${here}/../.." && pwd)"
 # shellcheck source=../../fleet-fixtures/lib.sh
 source "${repo}/testing/fleet-fixtures/lib.sh"
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
-LP="${EXPIRED_OOB_LISTEN_PORT:-49201}" AP="${EXPIRED_OOB_ADMIN_PORT:-49202}" MP="${EXPIRED_OOB_MOCK_PORT:-49211}"
+LP="${EXPIRED_OOB_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-49201}}" AP="${EXPIRED_OOB_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-49202}}" MP="${EXPIRED_OOB_MOCK_PORT:-${SCRIPT_MOCK_PORT:-49211}}"
 W="$RAW/expired-oob-work"; mkdir -p "$W/plugins"
 
 for p in "$LP" "$AP" "$MP"; do
