@@ -10,6 +10,32 @@ fn cannot_restart_when_no_channel_is_published() {
     );
 }
 
+/// A composition with an exit path takes the drain OUT of the handler: the ask is recorded, and the
+/// exit path releases it once. "Once" is the property that matters — a second release would be a
+/// second drain for one restart, and a release with nothing asked must not drain a process nobody
+/// asked to restart.
+///
+/// Safe to declare in this shared-process binary: no test publishes a shutdown channel (the test
+/// above pins that), so `begin_drain` moves nothing either way here, and the exit-path release is
+/// the only observer of the ask.
+#[test]
+fn a_drain_asked_for_is_released_by_the_exit_path_exactly_once() {
+    assert!(
+        !release_asked_drain(),
+        "nothing asked ⇒ nothing released; a bare exit path never drains a process"
+    );
+    drain_released_at_exit();
+    begin_drain();
+    assert!(
+        release_asked_drain(),
+        "the ask the handler recorded is the drain the exit path releases"
+    );
+    assert!(
+        !release_asked_drain(),
+        "one restart is one drain — the release is taken, not repeated"
+    );
+}
+
 /// Supervisor detection reads the markers systemd and Kubernetes stamp. Absence is not proof — a
 /// `docker run --restart` container sets neither — which is why the handler asks for confirmation
 /// rather than refusing when this is false.
