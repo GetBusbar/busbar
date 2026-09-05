@@ -125,6 +125,12 @@ impl Transport for SseTransport {
         struct State {
             inner: FrameStream,
             buf: Vec<u8>,
+            /// How much of `buf` has already been proven not to hold a frame terminator. The scan
+            /// resumes from here (rewound by three, the most of a four-byte terminator a previous
+            /// look can have left straddling the boundary) instead of starting over on every
+            /// arriving chunk, which for one large trickled frame is the difference between a pass
+            /// over the frame and a pass per chunk.
+            scanned: usize,
             pending: VecDeque<(
                 Vec<u8>,
                 Option<busbar_contract_transport::wire::StatusClass>,
@@ -136,6 +142,7 @@ impl Transport for SseTransport {
         let state = State {
             inner,
             buf: Vec::new(),
+            scanned: 0,
             pending: VecDeque::new(),
             status: None,
             status_attached: false,
@@ -170,9 +177,14 @@ impl Transport for SseTransport {
                             continue;
                         }
                         st.buf.extend_from_slice(http_frame.bytes.as_slice());
-                        while let Some((offset, term_len)) = proto::find_frame_terminator(&st.buf) {
+                        while let Some((offset, term_len)) =
+                            proto::find_frame_terminator_from(&st.buf, st.scanned.saturating_sub(3))
+                        {
                             let end = offset + term_len;
                             let raw: Vec<u8> = st.buf.drain(..end).collect();
+                            // The buffer moved under the scan: what is left is a fresh frame's
+                            // worth of bytes, none of it yet proven.
+                            st.scanned = 0;
                             if proto::parse_sse_frame(&raw).is_some() {
                                 let status = if st.status_attached {
                                     None
@@ -183,6 +195,7 @@ impl Transport for SseTransport {
                                 st.pending.push_back((raw, status));
                             }
                         }
+                        st.scanned = st.buf.len();
                         if !st.pending.is_empty() {
                             continue;
                         }
