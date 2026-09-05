@@ -22,6 +22,19 @@
 //! its legacy-rows path from it. So this step adds no new dependency to the boot; it adds one read
 //! and one seal between two steps that already exist.
 //!
+//! ## Where the marker goes
+//!
+//! On the journal, beside the opening checkpoint it is a marker for. It used to go into the store
+//! adapter's node-local shim, which was the honest place for it while there was nowhere else — but
+//! the shim holds it for the life of a process only, so a node with a data directory re-read the
+//! previous release's rows on every single boot and the one record that says "this deployment has
+//! already opened its balances" was the one record with nowhere durable to live.
+//!
+//! It still does not go into the rows that were READ. Those may be on a read-only replica, and a
+//! marker written beside somebody else's data is a migration that has quietly taken ownership of a
+//! schema it does not own. The journal is this release's own record, which is exactly what the
+//! ledger unit's records seam asked for.
+//!
 //! ## What the root decides and what it does not
 //!
 //! The root decides WHICH rows are read, because it is the only thing that has both the loaded store
@@ -91,6 +104,29 @@ pub fn run(
     wall: u64,
     secret: Option<&dyn CheckpointSecret>,
 ) -> Result<Migration, MigrationError> {
+    let mut records = adapter.migration_records();
+    run_with(adapter, &mut records, cfg, wall, secret)
+}
+
+/// [`run`] over records the caller names, which is how the marker reaches the journal.
+///
+/// The rows are still read through the adapter — they are the previous release's and nobody else has
+/// them — but WHERE the marker goes is the caller's to decide, and on a node built by
+/// [`crate::root::durability::build_for_node`] it goes on the one journal beside the opening
+/// checkpoint it is a marker for. That is the difference between a marker that survives a restart
+/// on a node with a data directory and one that does not: the adapter's node-local shim never
+/// could, so every boot re-read the previous release's rows.
+///
+/// # Errors
+///
+/// As [`run`].
+pub fn run_with(
+    adapter: &StoreAdapter,
+    records: &mut dyn MigrationRecords,
+    cfg: &MigrationConfig,
+    wall: u64,
+    secret: Option<&dyn CheckpointSecret>,
+) -> Result<Migration, MigrationError> {
     let (plan, key_rows_unreadable) =
         match adapter.key_bucket_plan(cfg.window, &cfg.group_buckets, &cfg.metering_days) {
             Ok(plan) => (plan, None),
@@ -108,8 +144,7 @@ pub fn run(
         };
 
     let rows = adapter.legacy_ledger_rows(plan);
-    let mut records = adapter.migration_records();
-    let outcome = seal_opening(&rows, &mut records, cfg, wall, secret)?;
+    let outcome = seal_opening(&rows, records, cfg, wall, secret)?;
     Ok(Migration {
         outcome,
         key_rows_unreadable,
@@ -237,6 +272,55 @@ mod tests {
         assert!(after_first > 0);
 
         let second = seal_opening(&rows, &mut records, &cfg(), 1_700_000_100, None).expect("no-op");
+        assert!(!second.sealed_now());
+        assert_eq!(rows.reads.get(), after_first);
+        assert_eq!(second.marker(), first.marker());
+    }
+
+    /// The marker goes on the JOURNAL, and a second boot reading the same journal finds it there and
+    /// touches the previous release's rows not at all.
+    ///
+    /// The same claim as `the_second_boot_reads_nothing` above, made over the seam the root actually
+    /// binds: the node-local records that test uses are the ledger unit's own honest default, and
+    /// this one proves the root does not settle for it.
+    #[test]
+    fn the_marker_is_sealed_on_the_journal() {
+        use crate::root::durability::{build_for_node, DurabilityConfig};
+        use busbar_caps::{DurabilityToken, KernelSeal, StepName};
+        use busbar_unit_wal::{NullShipper, RecordClass};
+
+        let rows = rows();
+        let token = DurabilityToken::mint(&KernelSeal::acquire_for_kernel());
+        let mut durability = build_for_node(
+            &DurabilityConfig { data_dir: None },
+            1,
+            Box::new(NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open");
+
+        let first = {
+            let mut records = durability.migration_records(&token, StepName::Meter);
+            seal_opening(&rows, &mut records, &cfg(), 1_700_000_000, None).expect("seals")
+        };
+        assert!(first.sealed_now());
+        let after_first = rows.reads.get();
+        assert!(after_first > 0);
+
+        // The marker is a record on the chain, of the class the contract names for it.
+        let replayed = durability
+            .journal
+            .replay()
+            .expect("the journal reads back")
+            .expect("and verifies");
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(replayed[0].class, RecordClass::Migration);
+
+        // And the second boot over the same journal reads nothing at all.
+        let second = {
+            let mut records = durability.migration_records(&token, StepName::Meter);
+            seal_opening(&rows, &mut records, &cfg(), 1_700_000_100, None).expect("no-op")
+        };
         assert!(!second.sealed_now());
         assert_eq!(rows.reads.get(), after_first);
         assert_eq!(second.marker(), first.marker());
