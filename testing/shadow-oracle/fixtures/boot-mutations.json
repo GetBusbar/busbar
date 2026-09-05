@@ -4141,26 +4141,71 @@
       "family": "boot.refusal",
       "mode": "boot",
       "target": "config",
-      "op": null,
+      "op": [
+        {
+          "set": "plugins.enabled",
+          "value": true
+        },
+        {
+          "plugin_dir": [
+            "auth-oidc"
+          ]
+        },
+        {
+          "set": "identity-providers.oidc",
+          "value": {
+            "module": "oidc",
+            "settings": {}
+          }
+        },
+        {
+          "set": "auth.chain",
+          "value": [
+            "oidc"
+          ]
+        }
+      ],
       "expect": {
         "exit": 1,
         "stderr_contains": "auth chain construction failed:",
         "stdout_contains": null
       },
-      "notes": "\u00a73.3 BOOT-162 (main.rs:3074). needs an auth plugin fixture that loads but fails construction (bad settings)."
+      "notes": "\u00a73.3 BOOT-162 (main.rs:3074). A10b (2026-09-05): does NOT need durable store state \u2014 the published busbar-auth-oidc-plugin loads but fails its own `open()` on empty settings (`missing field \\`issuer\\``), which is exactly an auth plugin that LOADS but fails CONSTRUCTION, single boot. Verified against the live 1.5.5 binary: `auth chain construction failed: auth.chain module 'oidc' could not be loaded as a \\`kind: auth\\` plugin: plugin 'busbar-auth-oidc-plugin' open failed: invalid oidc plugin config: missing field \\`issuer\\` at line 1 column 2`."
     },
     {
       "id": "BOOT-170",
       "family": "boot.refusal",
       "mode": "boot",
       "target": "config",
-      "op": null,
+      "op": [
+        {
+          "set": "plugins.enabled",
+          "value": true
+        },
+        {
+          "plugin_dir": [
+            "store-sqlite"
+          ]
+        },
+        {
+          "set": "store",
+          "value": {
+            "module": "sqlite",
+            "settings": {
+              "db_path": "/nonexistent-boot170-dir/db.sqlite",
+              "license_key": {
+                "env": "ORACLE_UNSET_STORE_SECRET_BOOT170"
+              }
+            }
+          }
+        }
+      ],
       "expect": {
         "exit": 1,
         "stderr_contains": "settings:",
         "stdout_contains": null
       },
-      "notes": "\u00a73.3 BOOT-170 (main.rs:3449) `store '{}' settings: {e}`. needs a store plugin fixture (plugins on + signed store tarball) so store.settings are resolved for the plugin itself."
+      "notes": "\u00a73.3 BOOT-170 (main.rs:3449) `store '{}' settings: {e}`. A10b (2026-09-05): does NOT need durable store state \u2014 `config::secret::resolve_settings` runs on `cfg.store.settings` BEFORE the store is ever opened (the db_path is never touched), so an unresolvable SecretRef in a real store plugin's settings fails this on a single boot. Verified against the live 1.5.5 binary: `[error] store 'sqlite' settings: plugin setting 'license_key' is a secret reference that did not resolve: secret env:ORACLE_UNSET_STORE_SECRET_BOOT170 cannot resolve: environment variable 'ORACLE_UNSET_STORE_SECRET_BOOT170' is unset` (exit 1). ORACLE_UNSET_STORE_SECRET_BOOT170 must stay unexported by the recorder."
     },
     {
       "id": "BOOT-171",
@@ -4205,7 +4250,7 @@
         "stderr_contains": "governance boot: budget hydration failed (",
         "stdout_contains": null
       },
-      "notes": "\u00a73.3 BOOT-172 (main.rs:3479-3483). needs a durable-store fixture whose ledger read fails."
+      "notes": "\u00a73.3 BOOT-172 (main.rs:3479-3483). needs a durable-store fixture whose ledger read fails. A10b (2026-09-05): op stays null (no single-exec mutation can produce this \u2014 a fresh durable store's ledger is always readable at first boot); fixture lives at scripts/durable-governance-precondition.sh budget-hydration, wired to this id in enumerate-cells.py's BOOT_SCRIPT_CELLS (driver: script). Boots real busbar-store-sqlite-plugin state, then flips one byte of the durable store's `usage_windows` table root page and reboots against it. Verified against the live 1.5.5 binary: `governance boot: budget hydration failed (store error: database disk image is malformed); refusing to start with an unenforced (reset) ledger. Fix the durable store and restart.` (exit 1)."
     },
     {
       "id": "BOOT-173",
@@ -4218,7 +4263,7 @@
         "stderr_contains": "governance boot: could not read stored keys to validate budget_group references (",
         "stdout_contains": null
       },
-      "notes": "\u00a73.3 BOOT-173 (main.rs:3492-3497). needs a durable-store fixture whose key table is unreadable."
+      "notes": "\u00a73.3 BOOT-173 (main.rs:3492-3497, `gs.all_keys()`). A10b (2026-09-05) FINDING, left as a named gap, not forced: `GovState::all_keys()` is `self.store.list_keys()` \u2014 the IDENTICAL call `Self::load()` already makes one step earlier inside the SAME `GovState::new_with_signer()` (appbuild.rs:1104-1109), against the same unchanged-between-the-two-calls durable file. Investigated by corrupting the `keys` table's own root page (the only lever available): that always fails `Self::load()` first, surfacing as BOOT-175 (`governance init failed`) before `all_keys()` at line 1129 is ever reached \u2014 verified against the live 1.5.5 binary (see BOOT-175's notes). No store-corruption technique can make the second call fail while the first one, querying the same table through the same method, succeeds. The code path (`could not read stored keys to validate budget_group references`) appears to be dead on the current sqlite plugin; the inventory row is not reproducible with the tools available here."
     },
     {
       "id": "BOOT-174",
@@ -4231,7 +4276,7 @@
         "stderr_contains": "which does not exist in the top-level groups block.",
         "stdout_contains": null
       },
-      "notes": "\u00a73.3 BOOT-174 (main.rs:3501-3505). needs a durable-store fixture holding a virtual key bound to a group absent from config."
+      "notes": "\u00a73.3 BOOT-174 (main.rs:3501-3505). needs a durable-store fixture holding a virtual key bound to a group absent from config. A10b (2026-09-05): op stays null (no store corruption needed here at all \u2014 just two boots against the SAME durable store where the second config no longer defines the group); fixture lives at scripts/durable-governance-precondition.sh dangling-group, wired to this id in enumerate-cells.py's BOOT_SCRIPT_CELLS (driver: script). Verified against the live 1.5.5 binary: `virtual key 'vk_\u2026' names group 'oracle', which does not exist in the top-level groups block.` (exit 1, paste-ready fix included)."
     },
     {
       "id": "BOOT-175",
@@ -4244,7 +4289,7 @@
         "stderr_contains": "governance init failed:",
         "stdout_contains": null
       },
-      "notes": "\u00a73.3 BOOT-175 (main.rs:3529). needs a durable-store fixture that fails governance initialization."
+      "notes": "\u00a73.3 BOOT-175 (main.rs:3529). needs a durable-store fixture that fails governance initialization. A10b (2026-09-05): op stays null (no single-exec mutation can produce this \u2014 a fresh durable store's own reads are always clean at first boot); fixture lives at scripts/durable-governance-precondition.sh governance-init, wired to this id in enumerate-cells.py's BOOT_SCRIPT_CELLS (driver: script). Boots real busbar-store-sqlite-plugin state, then flips one byte of the durable store's `keys` table root page and reboots against it \u2014 DROPping the table instead does NOT work, the plugin's own schema migration silently heals it on open and boots clean, so this needs real page-level corruption. Verified against the live 1.5.5 binary: `governance init failed: store error: database disk image is malformed` (exit 1)."
     },
     {
       "id": "BOOT-180",
@@ -4485,7 +4530,7 @@
         "stderr_contains": "does not name the `keys` verifier \u2014 those keys are INERT and NOT enforced",
         "stdout_contains": null
       },
-      "notes": "\u00a73.4 W13 (main.rs:495-500, :3524-3525). needs a durable-store fixture already holding minted keys, booted with auth.chain lacking `keys`."
+      "notes": "\u00a73.4 W13 (main.rs:495-500, :3524-3525). needs a durable-store fixture already holding minted keys, booted with auth.chain lacking `keys`. A10b (2026-09-05): op stays null; fixture lives at scripts/durable-governance-precondition.sh inert-keys, wired to this id in enumerate-cells.py's BOOT_SCRIPT_CELLS (driver: script). Boots real busbar-store-sqlite-plugin state with `auth.chain: [keys]`, mints one key, then reboots the SAME store with `auth.chain: []`. Verified against the live 1.5.5 binary: exit 0 (stays up on /healthz) with `durable governance store contains 1 key(s) but auth.chain does not name the \\`keys\\` verifier \u2014 those keys are INERT and NOT enforced (...)`."
     },
     {
       "id": "BOOT-W14",
@@ -4716,7 +4761,7 @@
         "stderr_contains": "plugins.fetch: miss on reload; keeping current artifact",
         "stdout_contains": null
       },
-      "notes": "\u00a73.4 W24 (main.rs:2754-2758) is reload-only. needs a reload fixture (a booted process + POST /plugins/reload with a failing plugins.fetch entry)."
+      "notes": "\u00a73.4 W24 (main.rs:2754-2758) is reload-only. needs a reload fixture (a booted process + POST /plugins/reload with a failing plugins.fetch entry). A10b (2026-09-05): op stays null; fixture lives at scripts/plugins-fetch-reload-miss.sh, wired to this id in enumerate-cells.py's BOOT_SCRIPT_CELLS (driver: script). Boots with `plugins.fetch: [{url: <throwaway local file server>/<real published tarball>}]` (boot-time fetch must succeed, fatal_on_miss), kills the file server, then `POST /plugins/reload` \u2014 the SAME url now misses but reload's fatal_on_miss=false only warns. Verified against the live 1.5.5 binary: reload responds 200 and the log carries `plugins.fetch: miss on reload; keeping current artifact url=\"...\" error=\"download failed: ...\"`."
     },
     {
       "id": "BOOT-W25",
@@ -4747,13 +4792,30 @@
       "family": "boot.warning",
       "mode": "boot",
       "target": "config",
-      "op": null,
+      "op": [
+        {
+          "set": "plugins.enabled",
+          "value": true
+        },
+        {
+          "set": "plugins.dir",
+          "value": "/nonexistent/oracle-plugins-w26"
+        },
+        {
+          "overlay": {
+            "version": 1,
+            "plugin_versions": {
+              "oracle-plugin": "not-semver"
+            }
+          }
+        }
+      ],
       "expect": {
         "exit": 0,
         "stderr_contains": "this pin REPLACES the binary-version floor, so the plugin is refused unconditionally until this is fixed",
         "stdout_contains": null
       },
-      "notes": "\u00a73.4 W26 (config/mod.rs:3003-3010): `plugins.first_party_floors` is #[serde(skip)] \u2014 derived from persisted plugin_versions rollback pins. needs an overlay/store fixture carrying a non-semver rollback pin."
+      "notes": "\u00a73.4 W26 (config/mod.rs:3003-3010): `plugins.first_party_floors` is #[serde(skip)] \u2014 derived from persisted plugin_versions rollback pins. A10b (2026-09-05): does NOT need a running process or POST /admin/plugins/rollback \u2014 the `overlay` op (apply-mutation.py, already used for BOOT-W21/W22/W23) writes the persisted `plugin_versions` pin directly, which `apply_plugin_versions_to_deploy` applies onto `first_party_floors` on THIS boot; no prior rollback call needed. plugins.enabled so the plugins block is evaluated; an empty/missing dir loads nothing, so boot proceeds (same missing-dir caveat as BOOT-W25). Verified against the live 1.5.5 binary: exit 0, `[warn] ... anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading 'v'); it cannot be satisfied, so this plugin will be refused \u2014 and this pin REPLACES the binary-version floor, so the plugin is refused unconditionally until this is fixed ... key=plugins.first_party_floors['oracle-plugin'] value=not-semver`."
     },
     {
       "id": "BOOT-W30",

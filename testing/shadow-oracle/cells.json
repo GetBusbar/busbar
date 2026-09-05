@@ -12881,7 +12881,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b auth chain construction failed:",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-170|boot",
@@ -12896,7 +12896,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b settings:",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-171|boot",
@@ -12917,16 +12917,15 @@
       "id": "boot.refusal|BOOT-172|boot",
       "plane": "core",
       "family": "boot.refusal",
-      "driver": "exec",
+      "driver": "script",
       "outcome": "ok",
-      "exec": {
-        "args": [],
-        "mode": "boot",
-        "config": "mutation:BOOT-172",
-        "env": {}
+      "script": {
+        "name": "durable-governance-precondition.sh",
+        "args": [
+          "budget-hydration"
+        ]
       },
-      "why": "expect exit 1; stderr \u220b governance boot: budget hydration failed (",
-      "needs_fixture": true
+      "why": "expect exit 1; stderr \u220b governance boot: budget hydration failed ("
     },
     {
       "id": "boot.refusal|BOOT-173|boot",
@@ -12947,31 +12946,29 @@
       "id": "boot.refusal|BOOT-174|boot",
       "plane": "core",
       "family": "boot.refusal",
-      "driver": "exec",
+      "driver": "script",
       "outcome": "ok",
-      "exec": {
-        "args": [],
-        "mode": "boot",
-        "config": "mutation:BOOT-174",
-        "env": {}
+      "script": {
+        "name": "durable-governance-precondition.sh",
+        "args": [
+          "dangling-group"
+        ]
       },
-      "why": "expect exit 1; stderr \u220b which does not exist in the top-level groups block.",
-      "needs_fixture": true
+      "why": "expect exit 1; stderr \u220b which does not exist in the top-level groups block."
     },
     {
       "id": "boot.refusal|BOOT-175|boot",
       "plane": "core",
       "family": "boot.refusal",
-      "driver": "exec",
+      "driver": "script",
       "outcome": "ok",
-      "exec": {
-        "args": [],
-        "mode": "boot",
-        "config": "mutation:BOOT-175",
-        "env": {}
+      "script": {
+        "name": "durable-governance-precondition.sh",
+        "args": [
+          "governance-init"
+        ]
       },
-      "why": "expect exit 1; stderr \u220b governance init failed:",
-      "needs_fixture": true
+      "why": "expect exit 1; stderr \u220b governance init failed:"
     },
     {
       "id": "boot.refusal|BOOT-180|boot",
@@ -13860,16 +13857,15 @@
       "id": "boot.warning|BOOT-W13|boot",
       "plane": "core",
       "family": "boot.warning",
-      "driver": "exec",
+      "driver": "script",
       "outcome": "ok",
-      "exec": {
-        "args": [],
-        "mode": "boot",
-        "config": "mutation:BOOT-W13",
-        "env": {}
+      "script": {
+        "name": "durable-governance-precondition.sh",
+        "args": [
+          "inert-keys"
+        ]
       },
-      "why": "expect exit 0; stderr \u220b does not name the `keys` verifier \u2014 those keys are INERT and NOT enforced",
-      "needs_fixture": true
+      "why": "expect exit 0; stderr \u220b does not name the `keys` verifier \u2014 those keys are INERT and NOT enforced"
     },
     {
       "id": "boot.warning|BOOT-W14|boot",
@@ -14025,16 +14021,13 @@
       "id": "boot.warning|BOOT-W24|boot",
       "plane": "core",
       "family": "boot.warning",
-      "driver": "exec",
+      "driver": "script",
       "outcome": "ok",
-      "exec": {
-        "args": [],
-        "mode": "boot",
-        "config": "mutation:BOOT-W24",
-        "env": {}
+      "script": {
+        "name": "plugins-fetch-reload-miss.sh",
+        "args": []
       },
-      "why": "expect exit 0; stderr \u220b plugins.fetch: miss on reload; keeping current artifact",
-      "needs_fixture": true
+      "why": "expect exit 0; stderr \u220b plugins.fetch: miss on reload; keeping current artifact"
     },
     {
       "id": "boot.warning|BOOT-W25|boot",
@@ -14064,7 +14057,7 @@
         "env": {}
       },
       "why": "expect exit 0; stderr \u220b this pin REPLACES the binary-version floor, so the plugin is refused uncondition",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.warning|BOOT-W30|validate",

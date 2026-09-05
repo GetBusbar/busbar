@@ -84,12 +84,12 @@
       "id": "F-013 download error wording",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^boot\\.refusal\\|BOOT-141\\|boot$",
+      "cells": "^boot\\.(refusal|warning)\\|BOOT-(141|W24)\\|boot$",
       "classes": [
         "body",
         "effects.stderr"
       ],
-      "rationale": "The plugin download failure quotes the HTTP client's newer error text (connect error) for the same refusal. NARROWED 2026-09-05 (G6): the two neutrality unknown-key cells dropped — NEUT-U-top's top-level list and NEUT-U-auth's auth: list are byte-identical to 1.5.5 again, because the 1.6.0-additive keys (the plane sections, and auth.policy) are lifted off the document before the frozen 1.5.5-shaped parse. Neither cell has a divergence left to waive."
+      "rationale": "The plugin download failure quotes the HTTP client's newer error text (connect error) for the same refusal. NARROWED 2026-09-05 (G6): the two neutrality unknown-key cells dropped — NEUT-U-top's top-level list and NEUT-U-auth's auth: list are byte-identical to 1.5.5 again, because the 1.6.0-additive keys (the plane sections, and auth.policy) are lifted off the document before the frozen 1.5.5-shaped parse. Neither cell has a divergence left to waive. WIDENED 2026-09-05 (A10b): BOOT-W24's `plugins.fetch: miss on reload` warning quotes the SAME reqwest connect-error text change on the SAME download-failure path (`error sending request for url (...)` -> `client error (Connect): tcp connect error: Connection refused (os error 61)`); its `diag=BUSBAR-6001` prefix is D-1 (already covered) and reaches this class only because both fire on the same line."
     },
     {
       "id": "F-003 CLI text",
