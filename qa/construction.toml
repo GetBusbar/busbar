@@ -326,7 +326,7 @@ consulted when present to widen the same check to transitive path/workspace deps
 # closed JSON span grammar the contract itself is written on and re-exports as `spans`, so naming it
 # directly is naming a piece of the contract rather than reaching past it; the rest are ordinary
 # third-party crates.
-reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-grammar"]
+reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-mcp-codec", "busbar-a2a-codec", "busbar-voice-codec", "busbar-grammar"]
 # busbar-llm-codec: the pure codec half of the split llm crate (no I/O in its closure); the plane adapts it.
 # Per-crate additions beyond the global list above, each a one-line review.
 [rules.manifest-allowlist.reviewed_extra]
