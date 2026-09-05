@@ -2428,3 +2428,45 @@ Appendix B has grown from 25 to 102 bindings in five revisions while the misread
 roughly one in four new bindings. The appendix is converging on "do what the inventory says" row by
 row, which is what PB-0 now states outright. The loop is stopped here pending the owner's decision
 on build strategy (see the session report).
+
+## Parity revision 8 (v1.29 → v1.30) — owner decisions against `qa/DESIGN-BINDINGS.md`'s conflicts
+
+`qa/DESIGN-BINDINGS.md`'s "Findings: bindings in conflict with the tree" section carried four
+bindings that green, code-backed tests contradicted. The owner ruled code wins on all four; the
+document is amended to say what was decided so the ledger stops listing them as contradictions:
+
+- **PB-11** (plugin trust and ABI windows): the store plugin ABI window is `v2..=v4`, not `v2..=v2`
+  — the published-1.5.5 floor (ABI 2) still loads, and ABI-4 stores (a later release) load too;
+  `store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4` and
+  `supported_abi_store_floor_admits_v2` pin it. `supported_abi(kind)` now prints `v2..=v4` for a
+  store.
+- **PB-66** (request and response headers): an allow-listed `anthropic-beta` / `anthropic-version`
+  (to a matching `anthropic` upstream) or `OpenAI-Beta` (to a matching `openai`/`responses`
+  upstream) client header DOES ride upstream, scoped per egress dialect against cross-protocol leak;
+  every other client header is still dropped. `client_anthropic_beta_reaches_matching_anthropic_upstream`,
+  `client_openai_beta_reaches_matching_openai_upstream` and `non_allowlisted_client_header_is_not_forwarded`
+  pin the rule as implemented (`engine/egress.rs` `FORWARDED_CLIENT_HEADERS`).
+- **PB-75** (served OpenAPI document): `GET /admin/openapi.json`'s `info.version` reports the
+  running binary's version (`CARGO_PKG_VERSION`, 1.6.0) — the same rule `GET /admin/info` (ADM-042)
+  already applies — not a 1.5.5-verbatim pin; every other byte of the document stays VERBATIM.
+  `openapi_doc_is_31_and_v1_prefixed` pins the version tracking the crate version.
+- **PB-84** (response-stage taps): a pre-forward auth refusal (401) on a hooked pool DOES fire the
+  completion tap once, with the synthetic outcome `rejected_by_auth` and the protocol-native status,
+  so operators see refused requests in their taps; the published 1.5.5 binary does the same. Every
+  other pre-forward refusal (403/429/413/404) is unchanged and still never taps.
+  `completion_tap_fires_synthetic_rejected_by_auth` and oracle cell `hooks|hooked-pool|unauth` pin
+  it (already the substance of the PR-0 owner decision recorded against PB-84 in revision 7; this
+  revision moves the Appendix B row and its §1.4 hook-seat sentence into agreement with it).
+
+Also recorded in Appendix A, not tied to a single PB row: the **maximum-spec-compliance** rule
+(where the published 1.5.5 bytes deviate from a provider's own published spec, the spec wins and the
+difference is registered as `improvement` in `accepted-differences.json` with owner sign-off — first
+cases: Bedrock text blocks without a `contentBlockStart` frame, the Responses door's lifecycle
+frames, the required members added on every dialect, and every Responses-door stream request
+actually streamed); the **Anthropic `ping` stays** decision (a named, accepted gap against the
+published spec); and the **fallback-lane streams are billed** decision (`stream_options.include_usage`
+unified onto the degraded/fallback path so a fallback stream bills tokens like a hot-path stream,
+registered as `improvement`, money-affecting, owner sign-off).
+
+No inventory row was edited; these are Appendix A/B text changes only, made so the design says what
+the owner decided rather than what an earlier draft assumed.
