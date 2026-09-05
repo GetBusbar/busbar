@@ -1,0 +1,24 @@
+# busbar-unit-trust — the verify step, as a unit.
+#
+# WHY IT DEPENDS ON NOTHING BUT THE CAPABILITY CRATE. The only thing this unit can build that
+# matters is a sealed destination, and the only way to build one is to hold the trust token for the
+# length of one verify call. That seal is worth exactly as much as the crate's inability to reach
+# around it: no kernel, no transport, no store. Everything it has to read — the breaker, the lane
+# table, the key's allow-list, the pool's fallback policy — arrives as a trait the caller implements.
+[package]
+name = "busbar-unit-trust"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The verify step as a unit: the destination guards, the per-kind rules, the exclusion rule, and the candidate-ordering natives."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_unit_trust"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-caps = { path = "../busbar-caps" }
+
+# Temporary standalone root while the workspace members land in parallel.
