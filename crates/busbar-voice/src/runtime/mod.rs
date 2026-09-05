@@ -17,8 +17,8 @@ pub mod tools;
 
 pub use carrier::Carrier;
 pub use metering::{
-    HostLease, HostMeteringPort, LeaseCloseGuard, LeaseState, LocalLease, LocalMeteringPort,
-    MeteringLease, MeteringPort,
+    cap_nanos_from_buckets, principal_cap_nanos, HostLease, HostMeteringPort, LeaseCloseGuard,
+    LeaseState, LocalLease, LocalMeteringPort, MeteringLease, MeteringPort,
 };
 pub use scope::{SessionHandle, VoiceSessionRow};
 pub use session::{Outbound, SessionCore, UplinkForwarder, VoiceSession};
@@ -139,14 +139,14 @@ impl VoiceRuntime {
 ///
 /// WHAT IS WIRED, AND WHAT REMAINS A DEV DEFAULT. This entry reads the REAL `streams:` config (session
 /// posture / ceilings, via `with_streams`) and binds the [`LocalMeteringPort`] — the faithful in-process
-/// metering stand-in the runtime/topology tests and the conformance governance leg drive. Turn PRICING
-/// is REAL, not deferred: the production composition root calls [`build_runtime_hosted`] instead, binding
-/// the host lease that prices each turn against the deployment rate card (`MeteringHost::price_usage`);
-/// only the DEV/TEST path here prices at zero (HARD RULE 4). What is still a dev default is the durable
-/// engine (a fresh [`DurableHandleEngine`]) and the tool executor ([`EchoToolExecutor`]): deriving the
-/// config-driven engine/tool set is a SEPARATE, tracked slice. `prior` (carry-over) is ignored today; the
-/// signature is the real one so binding those config-derived dependencies is a body change, not an ABI
-/// change.
+/// metering stand-in the runtime/topology tests and the conformance governance leg drive. It is the
+/// PRE-HOST default only: every mounted route rebinds the money hop onto the live host lease through
+/// [`build_runtime_hosted`] the moment a request hands it an engine host, so a served session prices
+/// each turn against the deployment rate card (`MeteringHost::price_usage`) rather than the dev-default
+/// zero. What is still a dev default is the durable engine (a fresh [`DurableHandleEngine`]) and the
+/// tool executor ([`EchoToolExecutor`]): deriving the config-driven engine/tool set is a SEPARATE,
+/// tracked slice. `prior` (carry-over) is ignored today; the signature is the real one so binding those
+/// config-derived dependencies is a body change, not an ABI change.
 pub fn build_runtime(
     section: &dyn std::any::Any,
     _prior: Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
@@ -159,33 +159,40 @@ pub fn build_runtime(
         .downcast_ref::<crate::config::StreamsCfg>()
         .cloned()
         .unwrap_or_default();
-    // The DEV / TEST default binds [`LocalMeteringPort`] (HARD RULE 4): the runtime/topology tests and
-    // the conformance governance leg drive the faithful in-process lease. The PRODUCTION composition root
-    // — which holds an `Arc<dyn EngineHost>`/`MeteringHost` for the live grant — calls
-    // [`build_runtime_hosted`] instead, binding the REAL host lease so the D2 money hop PRICES each turn's
-    // usage against the deployment rate card (`MeteringHost::price_usage`) rather than the dev-default zero.
-    // The frozen `PlaneDecl::build_runtime` fn-pointer signature carries no host, so the hosted entry is a
-    // sibling rather than a body branch.
+    // The PRE-HOST default binds [`LocalMeteringPort`] (HARD RULE 4): the runtime/topology tests and the
+    // conformance governance leg drive the faithful in-process lease. A SERVED session never keeps it —
+    // the mounted routes hold the live `Arc<dyn EngineHost>` and rebind the money hop through
+    // [`build_runtime_hosted`], so the D2 hop PRICES each turn's usage against the deployment rate card
+    // (`MeteringHost::price_usage`) rather than the dev-default zero. The frozen
+    // `PlaneDecl::build_runtime` fn-pointer signature carries no host, so the hosted entry is a sibling
+    // rather than a body branch.
     build_runtime_with_metering(Arc::new(LocalMeteringPort), &streams)
 }
 
-/// THE PRODUCTION composition entry — build the voice runtime with the REAL host metering lease bound as
-/// its D2 money hop. The composition root (which holds the live `Arc<dyn EngineHost>` — it upcasts into
-/// the narrow [`MeteringHost`](busbar_substrate::plane_host::MeteringHost) slice) calls this so a live
-/// voice session reserves/settles/exhausts against the caller's real grant, not the in-process
-/// [`LocalLease`] stand-in. Every other dependency matches [`build_runtime`]'s dev defaults for now (the
-/// config-derived engine/tools are a separate slice — see [`build_runtime`]).
+/// THE PRODUCTION composition entry — take a generation's runtime and rebind its D2 money hop onto the
+/// REAL host metering lease. Called by every mounted route the moment the live host is in hand (the
+/// route layer is where an `Arc<dyn EngineHost>` first exists — the per-generation slot is built
+/// before any request), so a live voice session reserves / settles / exhausts against the caller's
+/// real grant rather than the in-process [`LocalLease`] stand-in.
+///
+/// Everything but the metering port is SHARED with `base`, not rebuilt: the same durable-handle engine
+/// (so a session opened on one request is the same durable working set another request sees), the same
+/// tool executor, the same denial set, and the same operator session posture and ceilings.
 #[must_use]
 pub fn build_runtime_hosted(
+    base: &VoiceRuntime,
     host: Arc<dyn busbar_substrate::plane_host::MeteringHost>,
-) -> Arc<dyn std::any::Any + Send + Sync> {
-    // The hosted entry carries the live metering host but no config section (the fn-pointer that carries
-    // the section is `build_runtime`); the config-derived session posture is seeded there. Until the
-    // composition root threads both together, the hosted path opens with the plane default posture.
-    build_runtime_with_metering(
-        Arc::new(metering::HostMeteringPort::new(host)),
-        &crate::config::StreamsCfg::default(),
-    )
+) -> VoiceRuntime {
+    VoiceRuntime {
+        engine: Arc::clone(&base.engine),
+        metering: Arc::new(metering::HostMeteringPort::new(host)),
+        tools: Arc::clone(&base.tools),
+        denied_destinations: base.denied_destinations.clone(),
+        session_defaults: base.session_defaults.clone(),
+        session_max_secs: base.session_max_secs,
+        context_window_tokens: base.context_window_tokens,
+        max_output_tokens: base.max_output_tokens,
+    }
 }
 
 /// The shared composition body: assemble the per-generation [`VoiceRuntime`] over the given metering

@@ -1123,6 +1123,20 @@ async fn run(data_workers: usize) {
     // driven by `.block_on(run())` (this file, in `main()`), so it is polled on the MAIN thread, not
     // on a Tokio worker — there is no worker to park; (2) this precedes the `tokio::join!` over
     // `serve_listener` below, so neither listener has been bound, let alone is accepting.
+    // THE VOICE PLANE'S EGRESS CREDENTIAL, read off the deployment's ORDINARY provider catalog.
+    // The voice plane's `streams:` grammar carries no credential field, so its realtime provider is
+    // the one already serving the model that section targets: `streams.session.model` names a model,
+    // the model names its provider, and that provider entry carries the origin and the secret
+    // reference every other lane's key is declared as. Captured here — before `cfg` moves into the
+    // build — and handed to the plane below, once the resolver that turns a reference into a
+    // credential exists. A deployment with no `streams:` block pins no model and captures nothing, so
+    // nothing about it changes.
+    #[cfg(feature = "plane-voice")]
+    let voice_provider = busbar_voice::config::configured_session_model()
+        .and_then(|model| cfg.models.get(&model).map(|m| m.provider.clone()))
+        .and_then(|provider| cfg.providers.get(&provider))
+        .map(|p| (p.base_url.clone(), p.api_key.clone()));
+
     let (boot_app, _boot_gov_rotate) = build_app_from_config(
         cfg,
         plugins_cfg,
@@ -1134,6 +1148,41 @@ async fn run(data_workers: usize) {
     )
     .unwrap_or_else(|e| die(e));
     let app = Arc::new(boot_app);
+
+    // COMPOSE the voice plane's realtime provider: hand the plane the origin + the secret reference
+    // captured above and the deployment's own secret resolver, so the plane resolves its credential
+    // through the same seam every provider key is resolved through and its mint / SDP routes serve
+    // instead of answering "no provider composed". Silent on a deployment that captured nothing (no
+    // `streams:` block, no model pinned, or no such model/provider in the catalog) — the only line
+    // this can emit is a fail-closed warning when a reference the operator DID declare will not
+    // resolve, which is worth saying rather than leaving the routes mysteriously uncomposed.
+    #[cfg(feature = "plane-voice")]
+    if let Some((base_url, api_key)) = voice_provider {
+        if let Err(e) =
+            busbar_voice::mount::compose_provider(base_url.clone(), &api_key, &*app.secret_resolver)
+        {
+            tracing::warn!(
+                "voice: the realtime provider credential did not resolve, so the voice mint and SDP \
+                 routes stay uncomposed: {e}"
+            );
+        }
+        // K4: THE GEMINI LIVE ROUTE'S PROVIDER, composed under its OWN endpoint (a separate set-once
+        // slot, `x-goog-api-key` scheme) rather than reusing the OpenAI one's — a deployment cannot
+        // silently point one dialect's traffic at the other's credential. `streams:` still names ONE
+        // model, so today both endpoints are composed from the SAME resolved (origin, reference) pair;
+        // a deployment that fronts Gemini Live through a distinct provider entry needs a second
+        // `streams:` knob to name it, which is not this cycle's grammar change (see docs/voice.md).
+        if let Err(e) = busbar_voice::mount::compose_gemini_provider(
+            base_url,
+            &api_key,
+            &*app.secret_resolver,
+        ) {
+            tracing::warn!(
+                "voice: the Gemini Live provider credential did not resolve, so the Gemini route \
+                 stays uncomposed: {e}"
+            );
+        }
+    }
 
     // Record the BOOT snapshot as version 0 so the version history always has a rollback floor
     // (the pre-any-mutation state).

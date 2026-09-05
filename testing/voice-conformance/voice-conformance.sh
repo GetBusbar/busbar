@@ -45,6 +45,12 @@
 #   metering-lease     a session's money hop is the HOST's reserve-then-settle lease, capped by the
 #                      presenting principal's own remaining budget.
 #   session-scope      the plane's declared `session` scope kind, enforced at session open.
+#   gemini-live-route  (K4) the Gemini Live dialect has a MOUNTED WS-accept route (claim, admission,
+#                      arrival, and the wire handshake itself), not just a codec the spec/cross-parity
+#                      legs exercise off to the side.
+#   provider-dial      (K5) a session actually DIALS the composed provider through a real (loopback)
+#                      socket via `topology::dial_provider`, and its D2 metering lease settles the
+#                      usage that arrived over it — the WS legs' upstream dial is no longer uncomposed.
 #   governance         the 5 vision checkpoints (incl. D2 hard-close-on-exhaustion). GOVERNANCE IS
 #                      NOT A CONFORMANCE RESULT — it can never move the conformance verdict, exactly
 #                      as `testing/a2a-governance/` can never contribute to the A2A verdict.
@@ -83,14 +89,17 @@ VOICE_LEGS_DIR="${VOICE_LEGS_DIR:-$HERE/legs}"
 
 # A FLOOR on the declared-leg count, for the same reason the python verdict linter has one: every
 # equality below would hold for a battery that had been gutted to a single leg, so the count is
-# checked first. Four legs ship today (three conformance + governance).
+# checked first. Nine legs ship today (spec-per-dialect, replay, cross-parity, provider-credential,
+# metering-lease, session-scope, gemini-live-route, provider-dial, plus governance).
 MIN_LEGS="${VOICE_MIN_LEGS:-3}"
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf '%s\n' "$*" >&2; }
 die()  { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,80p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+# The whole leading comment block, read to wherever it now ends rather than to a line number a later
+# edit to the header would silently walk past.
+usage() { sed -n '2,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
 # ── the leg contract ────────────────────────────────────────────────────────────────────────────
 #

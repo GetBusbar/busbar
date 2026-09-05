@@ -161,6 +161,39 @@ impl busbar_substrate::plane::config::PlaneCfg for StreamsCfg {
     }
 }
 
+/// THE LAST `streams:` SECTION THIS PROCESS PARSED — the plane's own copy of its operator posture.
+///
+/// The engine's resolved config carries the named-map plane registries forward, but a SINGULAR plane
+/// section like `streams:` is read at deserialize time and not re-handed to the plane afterwards: the
+/// voice dispatch slot is built from `public_url` alone, and nothing calls the plane's runtime-build
+/// hook. So the plane keeps what it parsed, here, and the mount reads it back when it assembles a
+/// generation's runtime. A config reload re-parses and replaces it, so this always holds the posture
+/// of the most recently loaded config rather than a boot-frozen one. Absent (no `streams:` block in
+/// the file, so nothing was parsed) reads back as the plane's own defaults — byte-identical to what a
+/// deployment that writes nothing already got.
+static PARSED_SECTION: std::sync::RwLock<Option<StreamsCfg>> = std::sync::RwLock::new(None);
+
+/// The operator's `streams:` posture, or the plane's defaults when no block was written. Read by the
+/// mount when it builds a generation's session runtime, and by the composition root when it resolves
+/// the realtime provider credential for the session's configured model.
+#[must_use]
+pub fn configured() -> StreamsCfg {
+    PARSED_SECTION
+        .read()
+        .ok()
+        .and_then(|held| held.clone())
+        .unwrap_or_default()
+}
+
+/// The upstream model the configured session posture targets (`streams.session.model`), or `None`
+/// when the operator pinned none. This is the ONE name the composition root looks up in the
+/// deployment's existing model/provider catalog to find the realtime provider credential to compose —
+/// the voice grammar declares no credential field of its own and gains none here.
+#[must_use]
+pub fn configured_session_model() -> Option<String> {
+    configured().session.model
+}
+
 /// PLANE_DECL.parse_section — deserialize `streams:` through the plane's own typed shape, boxed as the
 /// neutral [`busbar_substrate::plane::config::PlaneCfg`]. Mirror of `mcp_parse_section` /
 /// `a2a_parse_section`. UNCONDITIONAL (outside the `runtime` gate): config parse/validate is needed
@@ -168,9 +201,14 @@ impl busbar_substrate::plane::config::PlaneCfg for StreamsCfg {
 pub fn streams_parse_section(
     v: &serde_yaml::Value,
 ) -> Result<Box<dyn busbar_substrate::plane::config::PlaneCfg>, String> {
-    serde_yaml::from_value::<StreamsCfg>(v.clone())
-        .map(|c| Box::new(c) as Box<dyn busbar_substrate::plane::config::PlaneCfg>)
-        .map_err(|e| e.to_string())
+    let parsed = serde_yaml::from_value::<StreamsCfg>(v.clone()).map_err(|e| e.to_string())?;
+    // Keep what we just parsed (see `PARSED_SECTION`). Only a SUCCESSFUL parse is kept, so a refused
+    // config never replaces the posture a good one installed. A poisoned lock is ignored rather than
+    // panicking here — the read side then falls back to the plane defaults.
+    if let Ok(mut held) = PARSED_SECTION.write() {
+        *held = Some(parsed.clone());
+    }
+    Ok(Box::new(parsed) as Box<dyn busbar_substrate::plane::config::PlaneCfg>)
 }
 
 /// PLANE_DECL.default_section — the empty `streams:` (mirror of `mcp_default_section` /

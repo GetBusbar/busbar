@@ -170,11 +170,20 @@ fn build_binds_the_audience_from_public_url_and_none_without() {
 
     // The claim is the ONE audience-checked base every voice route sits under, spoken in the first
     // dialect — so `/v1/realtime/*` is audience-checked by segment-boundary match (R1's invariant).
+    // K4: a SECOND claim for the Gemini Live route, under its own dialect label — the A2A precedent of
+    // more than one `(path, wire)` pair per plane, so the Gemini leg's traffic is never mislabelled
+    // under the OpenAI constant.
     let claims = voice_claims(slot.as_ref());
     assert_eq!(
         claims,
-        vec![(MOUNT_PATH.to_string(), crate::OPENAI_REALTIME)],
-        "the plane claims exactly its one audience-checked base"
+        vec![
+            (MOUNT_PATH.to_string(), crate::OPENAI_REALTIME),
+            (
+                "/v1/realtime/gemini".to_string(),
+                crate::GEMINI_LIVE
+            ),
+        ],
+        "the plane claims one audience-checked base per dialect route"
     );
 
     // The admission BINDS the audience derived from `public_url` — the confused-deputy defence: a token
@@ -194,7 +203,7 @@ fn build_binds_the_audience_from_public_url_and_none_without() {
 }
 
 #[test]
-fn the_four_ingress_doors_mount_audience_checked_across_the_http_and_ws_seams() {
+fn the_five_ingress_doors_mount_audience_checked_across_the_http_and_ws_seams() {
     let slot = slot_from_public_url(Some(PUBLIC_URL)).expect("a public_url ⇒ a dispatch slot");
 
     // The TWO one-shot HTTP doors ride the buffered-body `routes` seam: ek_ mint + SDP broker.
@@ -239,8 +248,13 @@ fn the_four_ingress_doors_mount_audience_checked_across_the_http_and_ws_seams() 
                 RouteAuth::Key,
                 crate::PLANE_DECL.key
             ),
+            (
+                "/v1/realtime/gemini/{call_id}".to_string(),
+                RouteAuth::Key,
+                crate::PLANE_DECL.key
+            ),
         ],
-        "the two WS-accept doors declare through the neutral seam, RouteAuth::Key under the plane's key"
+        "the THREE WS-accept doors declare through the neutral seam, RouteAuth::Key under the plane's key"
     );
 
     // No receiving side ⇒ no HTTP routes, exactly as it claims and admits nothing.
@@ -302,7 +316,7 @@ async fn arrival_runs_run_gauntlet_session_refusing_a_denied_destination_before_
     // through `open_governed`; the Sideband/Telephony WS legs route through `ws_accept` (the inbound
     // WS-accept seam) — their governed open + operator-gate screening is proven by
     // `hook_gate_tests::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade` and their
-    // route mounting by `the_four_ingress_doors_mount_audience_checked_across_the_http_and_ws_seams`.
+    // route mounting by `the_five_ingress_doors_mount_audience_checked_across_the_http_and_ws_seams`.
     let allowed = runtime_for("allowed-model", &["blocked-model"]);
     for ingress in [Ingress::Mint, Ingress::Sdp] {
         let opened = open_governed(governed_open(

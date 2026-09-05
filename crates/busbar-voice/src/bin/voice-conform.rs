@@ -3,11 +3,12 @@
 
 //! THE VOICE CONFORMANCE HARNESS — the real driver behind the `testing/voice-conformance/` battery.
 //!
-//! Each of the four legs (`spec-per-dialect`, `replay`, `cross-parity`, `governance`) shells out to
-//! ONE subcommand of this bin, which reuses THIS crate's production codecs
-//! ([`OpenAiRealtimeCodec`] / [`GeminiLiveCodec`]) and the T2 runtime ([`SessionCore`] /
-//! [`LocalMeteringPort`] hard-close) to decode / encode the captured fixtures and diff. The legs never
-//! reimplement a codec in shell — every conformance claim below is proven against the plane's own code.
+//! Each leg (`spec-per-dialect`, `replay`, `cross-parity`, the three composition legs, and
+//! `governance`) shells out to ONE subcommand of this bin, which reuses THIS crate's production
+//! codecs ([`OpenAiRealtimeCodec`] / [`GeminiLiveCodec`]), the T2 runtime ([`SessionCore`] /
+//! [`LocalMeteringPort`] hard-close) and the plane's own composition seams to decode / encode the
+//! captured fixtures and diff. The legs never reimplement a codec — or a gate — in shell: every
+//! conformance claim below is proven against the plane's own code.
 //!
 //! Output contract (the leg runner greps `^RESULT `): each asserted item prints exactly one line
 //!   RESULT <slice> <PASS|FAIL> <detail>
@@ -1106,13 +1107,532 @@ fn gov_v4() -> (&'static str, String) {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+// LEGS 5-7 — composition: the three seams that decide whether a MOUNTED voice door can actually
+// serve, meter and authorize a session on a real deployment. Each is a conformance leg of its own,
+// because each fails on its own: a door with no provider credential answers "nothing to dial", a door
+// with no host lease bills nobody a ceiling, and a door with no grant check admits anyone holding a
+// token for its audience.
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// A stand-in for a deployment's secret resolver: answers ONE declared reference and refuses every
+/// other, so the probe can tell "resolved through the seam" apart from "guessed".
+struct OneSecretResolver {
+    expect: busbar_api::SecretRef,
+    value: String,
+}
+
+impl busbar_api::SecretResolve for OneSecretResolver {
+    fn resolve(&self, secret: &busbar_api::SecretRef) -> Result<Vec<u8>, String> {
+        self.resolve_string(secret).map(String::into_bytes)
+    }
+    fn resolve_string(&self, secret: &busbar_api::SecretRef) -> Result<String, String> {
+        if secret == &self.expect {
+            Ok(self.value.clone())
+        } else {
+            Err("no such secret reference in this deployment".to_string())
+        }
+    }
+}
+
+/// One bucket of a caller's budget chain, with `remaining` micro-units (`None` = uncapped).
+fn budget_bucket(id: &str, remaining: Option<i64>) -> busbar_api::BudgetBucketState {
+    busbar_api::BudgetBucketState {
+        bucket_id: id.to_string(),
+        budget_group: None,
+        pool: None,
+        spend_micros_at_current_rate: 0,
+        remaining_micros: remaining,
+        window_start: 0,
+        budget_period: "day".to_string(),
+    }
+}
+
+/// A key carrying an EXPLICIT scope list (exhaustive across kinds — whatever is absent is not granted).
+fn key_with_scopes(id: &str, scopes: Vec<busbar_api::ScopeRef>) -> busbar_api::VirtualKey {
+    busbar_api::VirtualKey {
+        id: id.to_string(),
+        name: id.to_string(),
+        allowed_scopes: Some(scopes),
+        ..Default::default()
+    }
+}
+
+fn composition(slice: &str) -> i32 {
+    let (verdict, detail) = match slice {
+        "provider-credential" => probe_provider_credential(),
+        "metering-lease" => probe_metering_lease(),
+        "session-scope" => probe_session_scope(),
+        "gemini-live-route" => probe_gemini_live_route(),
+        "provider-dial" => probe_provider_dial(),
+        other => ("FAIL", format!("unknown composition slice '{other}'")),
+    };
+    println!("RESULT {slice} {verdict} {detail}");
+    i32::from(verdict == "FAIL")
+}
+
+/// K-gap 1 — the realtime provider credential reaches the plane from the deployment's own catalog:
+/// the composition root hands over an origin plus the secret REFERENCE the provider entry declares,
+/// and the plane resolves it through the deployment's secret resolver. Without this, the mint and SDP
+/// passes are governed but have nothing to dial.
+fn probe_provider_credential() -> (&'static str, String) {
+    if busbar_voice::mount::provider_composed() {
+        return (
+            "FAIL",
+            "a provider was already composed before the probe ran".into(),
+        );
+    }
+    let reference = busbar_api::SecretRef::env("REALTIME_PROVIDER_KEY");
+    let resolver = OneSecretResolver {
+        expect: reference.clone(),
+        value: "sk-realtime-key-held-server-side".to_string(),
+    };
+    // Fail closed: a reference this deployment does not declare composes nothing.
+    let undeclared = busbar_api::SecretRef::env("NOT_DECLARED_HERE");
+    if busbar_voice::mount::compose_provider("https://api.example.com", &undeclared, &resolver)
+        .is_ok()
+        || busbar_voice::mount::provider_composed()
+    {
+        return (
+            "FAIL",
+            "an unresolvable credential reference still composed a provider".into(),
+        );
+    }
+    // The declared reference resolves and composes the endpoint the mint / SDP passes read.
+    match busbar_voice::mount::compose_provider("https://api.example.com", &reference, &resolver) {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                "FAIL",
+                "the first compose reported an existing endpoint".into(),
+            )
+        }
+        Err(e) => {
+            return (
+                "FAIL",
+                format!("the declared credential did not resolve: {e}"),
+            )
+        }
+    }
+    if !busbar_voice::mount::provider_composed() {
+        return ("FAIL", "composing left the plane with no provider".into());
+    }
+    if busbar_voice::mount::composed_provider_base_url() != Some("https://api.example.com") {
+        return ("FAIL", "the composed origin is not the declared one".into());
+    }
+    // Set-once: a later caller cannot silently swap the deployment's credential out.
+    if busbar_voice::mount::compose_provider("https://other.example.com", &reference, &resolver)
+        != Ok(false)
+        || busbar_voice::mount::composed_provider_base_url() != Some("https://api.example.com")
+    {
+        return ("FAIL", "a second compose swapped the endpoint".into());
+    }
+    (
+        "PASS",
+        "the declared provider reference resolves through the deployment's secret resolver and \
+         composes the endpoint the mint / SDP passes serve under (set-once; an unresolvable \
+         reference composes nothing)"
+            .into(),
+    )
+}
+
+/// K-gap 2 — a session's money hop is the HOST's reserve-then-settle lease, capped by the presenting
+/// principal's own remaining budget. Without this, a live session reserves an uncapped in-process cell
+/// and no caller's budget can ever hard-close it.
+fn probe_metering_lease() -> (&'static str, String) {
+    let base = busbar_voice::runtime::VoiceRuntime::new(
+        Arc::new(busbar_substrate::plane::handle_engine::DurableHandleEngine::new()),
+        Arc::new(LocalMeteringPort),
+        Arc::new(EchoToolExecutor),
+    );
+    let host = Arc::new(ConformHost::default()) as Arc<dyn MeteringHost>;
+    let rt = busbar_voice::runtime::build_runtime_hosted(&base, host);
+
+    // The ceiling is the caller's tightest remaining bucket, widened from micro-units to nanodollars.
+    let chain = [
+        budget_bucket("vk", Some(9_000)),
+        budget_bucket("group:team@day", Some(4)),
+    ];
+    let cap = busbar_voice::runtime::cap_nanos_from_buckets(&chain);
+    if cap != Some(4_000) {
+        return (
+            "FAIL",
+            format!("wrong session ceiling from the chain: {cap:?}"),
+        );
+    }
+    // An unbudgeted caller has no ceiling to impose; a spent one yields a refuse-all ceiling.
+    if busbar_voice::runtime::cap_nanos_from_buckets(&[budget_bucket("vk", None)]).is_some() {
+        return ("FAIL", "an unbudgeted caller was given a ceiling".into());
+    }
+    if busbar_voice::runtime::cap_nanos_from_buckets(&[budget_bucket("vk", Some(0))]) != Some(0) {
+        return ("FAIL", "a spent budget did not refuse all".into());
+    }
+
+    // A spent caller never opens a session: the host denies the reserve at the door.
+    if rt.open_lease(1_000, 0, Some(0)).is_some() {
+        return (
+            "FAIL",
+            "a session opened for a caller whose budget is spent".into(),
+        );
+    }
+    // A caller with budget opens, settles exactly, and hard-closes the moment the ceiling is reached.
+    let Some(lease) = rt.open_lease(1_000, 0, cap) else {
+        return ("FAIL", "a budgeted caller could not open a session".into());
+    };
+    let live = lease.settle(1_500);
+    let dry = lease.settle(2_500);
+    if live != LeaseState::Live || dry != LeaseState::Exhausted {
+        return (
+            "FAIL",
+            format!("settles did not exhaust at the caller's ceiling: {live:?} then {dry:?}"),
+        );
+    }
+    if lease.settled_nanos() != 4_000 {
+        return (
+            "FAIL",
+            format!(
+                "the host did not account the exact increments: {}",
+                lease.settled_nanos()
+            ),
+        );
+    }
+    (
+        "PASS",
+        "the session reserves on the host's own lease, capped by the tightest bucket in the \
+         caller's budget chain: a spent caller is denied at the door, and a live one exhausts at \
+         that ceiling after exact settles"
+            .into(),
+    )
+}
+
+/// K-gap 3 — the plane's declared `session` scope kind is enforced at session open. Without this, any
+/// key valid for the voice audience opens a session, and the declared vocabulary is inert.
+fn probe_session_scope() -> (&'static str, String) {
+    let pool_scope = busbar_api::ScopeRef::pool("fast");
+    let session_here = busbar_api::ScopeRef {
+        kind: "session".to_string(),
+        value: "voice-server".to_string(),
+    };
+    let session_elsewhere = busbar_api::ScopeRef {
+        kind: "session".to_string(),
+        value: "some-other-pool".to_string(),
+    };
+
+    // A wildcard principal (no list at all) is granted every kind, as on every other plane.
+    let wildcard = busbar_api::VirtualKey {
+        id: "vk-wildcard".to_string(),
+        ..Default::default()
+    };
+    if !busbar_voice::mount::session_scope_allowed(&wildcard) {
+        return ("FAIL", "a wildcard principal was refused a session".into());
+    }
+    // An explicit grant on the voice pool admits.
+    if !busbar_voice::mount::session_scope_allowed(&key_with_scopes(
+        "vk-granted",
+        vec![session_here.clone()],
+    )) {
+        return ("FAIL", "an explicit session grant was refused".into());
+    }
+    // Everything else with an explicit list is refused: a model-plane key, a session grant aimed at
+    // another pool, and an empty list.
+    for (name, scopes) in [
+        ("a model-plane key", vec![pool_scope]),
+        ("a session grant for another pool", vec![session_elsewhere]),
+        ("an empty grant list", Vec::new()),
+    ] {
+        if busbar_voice::mount::session_scope_allowed(&key_with_scopes("vk-ungranted", scopes)) {
+            return ("FAIL", format!("{name} was admitted a voice session"));
+        }
+    }
+    (
+        "PASS",
+        "the declared session scope is enforced against the presenting key's own grant: granted \
+         and wildcard keys open, a key without it (or with it aimed elsewhere) is refused"
+            .into(),
+    )
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+// LEG 8 (K4) — gemini-live-route: the Gemini Live dialect has a MOUNTED route, not just a codec the
+// spec/cross-parity legs exercise off to the side. Proves, on the plane's own PUBLIC functions (the
+// same ones the composition root calls, and the same `WsArrivalSpec` a real deployment mounts):
+//
+//   * the dispatch slot CLAIMS a Gemini-labelled base distinct from the OpenAI one (`voice_claims`)
+//   * the plane still ADMITS exactly one audience for both dialects (`voice_admission`)
+//   * a Gemini WS-accept arrival is actually declared, keyed to this plane's own slot (`voice_ws_arrivals`)
+//   * the wire handshake itself: a `setupComplete` frame from the far side (what a dialed provider
+//     sends) is relayed to the client verbatim through a `SessionCore<GeminiLiveCodec>` — the EXACT
+//     codec type the mounted route's `WsArrivalSpec` closure closes over, not a stand-in.
+//
+// WAS RED: `PLANE_DECL.wire_format_names` named `gemini_live`, the codec existed and passed the
+// spec/cross-parity battery, but no ingress route spoke it — `voice_claims`/`voice_ws_arrivals` named
+// only the OpenAI base, so a caller had no path to reach the Gemini dialect at all.
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+fn probe_gemini_live_route() -> (&'static str, String) {
+    let unit = ();
+    let ctx = busbar_substrate::plane::registry::BuildCtx {
+        mcp_slot: None,
+        agent_defs: &unit,
+        public_url: Some("https://gw.conform.example.com"),
+        prior: None,
+    };
+    let Some(slot) = busbar_voice::mount::voice_build(&ctx) else {
+        return ("FAIL", "voice_build produced no dispatch slot".into());
+    };
+
+    let claims = busbar_voice::mount::voice_claims(slot.as_ref());
+    if !claims.contains(&("/v1/realtime/gemini".to_string(), busbar_voice::GEMINI_LIVE)) {
+        return (
+            "FAIL",
+            format!("the Gemini base is not claimed under its own dialect: {claims:?}"),
+        );
+    }
+    if !claims.contains(&("/v1/realtime".to_string(), busbar_voice::OPENAI_REALTIME)) {
+        return (
+            "FAIL",
+            format!("the OpenAI base is no longer claimed alongside Gemini: {claims:?}"),
+        );
+    }
+
+    let Some(admission) = busbar_voice::mount::voice_admission(slot.as_ref()) else {
+        return (
+            "FAIL",
+            "a plane that claims paths must admit (R2): admission is None".into(),
+        );
+    };
+    if !admission.audience.ends_with("/v1/realtime") {
+        return ("FAIL", format!("unexpected audience: {}", admission.audience));
+    }
+
+    let arrivals = busbar_voice::mount::voice_ws_arrivals();
+    let Some(gemini) = arrivals
+        .iter()
+        .find(|a| a.path == "/v1/realtime/gemini/{call_id}")
+    else {
+        return (
+            "FAIL",
+            format!(
+                "no Gemini WS-accept arrival mounted; declared paths: {:?}",
+                arrivals.iter().map(|a| &a.path).collect::<Vec<_>>()
+            ),
+        );
+    };
+    if gemini.slot_key != busbar_voice::PLANE_DECL.key {
+        return (
+            "FAIL",
+            format!(
+                "the Gemini arrival is keyed to '{}', not the plane's own slot '{}'",
+                gemini.slot_key,
+                busbar_voice::PLANE_DECL.key
+            ),
+        );
+    }
+
+    // THE HANDSHAKE ITSELF, over the exact runtime type the mounted route is generic over: a provider's
+    // `setupComplete` answers the client's `setup` by relaying verbatim (`IrServerEvent::SessionCreated`
+    // is a pass-through in `SessionCore::on_server_frame`) — the same relay the Gemini WS accept's
+    // provider leg drives once a session is dialed (see the `provider-dial` leg for the live-socket
+    // proof; this leg proves the PLANE'S side of that relay against the mounted codec).
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let lease = LocalMeteringPort
+        .reserve(1_000, 0, None)
+        .expect("an uncapped lease always opens");
+    let core = SessionCore::new(
+        GeminiLiveCodec,
+        lease,
+        None,
+        Arc::new(EchoToolExecutor),
+        Carrier::sideband(),
+        None,
+    );
+    let setup_complete = serde_json::json!({ "setupComplete": {} });
+    let outbound = rt.block_on(core.on_server_frame(wire_of(&setup_complete)));
+    if outbound.downlink.len() != 1 {
+        return (
+            "FAIL",
+            format!(
+                "expected exactly one relayed downlink frame from setupComplete, got {}",
+                outbound.downlink.len()
+            ),
+        );
+    }
+    let got = val_of(&outbound.downlink[0]);
+    if got.get("setupComplete").is_none() {
+        return (
+            "FAIL",
+            format!("the relayed downlink frame was not setupComplete: {got}"),
+        );
+    }
+
+    (
+        "PASS",
+        "the Gemini Live route is mounted under its own claim, admits the same audience, declares a \
+         WS-accept arrival keyed to the plane's slot, and the mounted codec relays a provider's \
+         setupComplete handshake to the client verbatim"
+            .into(),
+    )
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+// LEG 9 (K5) — provider-dial: `topology::dial_provider` is a library function nothing calls in
+// production without a composed provider; this leg proves a session actually dials one end to end.
+// A loopback WS "provider" stands in for a real realtime upstream (no network, no vendor credential
+// needed): the harness binds it on an ephemeral port, `dial_provider` dials it through the SAME
+// net-guarded path the mounted WS-accept legs now call, the loopback sends one usage frame, and the
+// session's own metering lease settles it — proving the wiring from a live socket to the D2 lease, not
+// just the codec math the other legs already cover.
+//
+// WAS RED: `topology::dial_provider` existed, breaker/net-guarded, but nothing in the mounted routes
+// called it — a session never dialed a live socket, so no leg drove one.
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// A minimal [`busbar_substrate::plane_host::BreakerHost`] — `dial_provider` reads only the breaker
+/// slice of the host seam (never the rest of `EngineHost`), so the loopback leg needs only this much:
+/// admit always, record nothing, no cooldown. Not a plane-private breaker implementation — it lives
+/// only in this dev-only conformance binary, mirroring `ConformHost`'s role for the governance probes.
+#[derive(Default)]
+struct AlwaysAdmitBreakerHost;
+
+impl busbar_substrate::plane_host::BreakerHost for AlwaysAdmitBreakerHost {
+    fn breaker_admit(
+        &self,
+        scope: &busbar_substrate::plane_host::DispatchScope,
+        _pool: &[u8],
+        _lane: u32,
+    ) -> Result<busbar_plugin::hot::AdmissionId, busbar_substrate::store::Unavailable> {
+        Ok(scope.register_admission(Box::new(())))
+    }
+    fn breaker_settle(
+        &self,
+        scope: &busbar_substrate::plane_host::DispatchScope,
+        admission: busbar_plugin::hot::AdmissionId,
+        signal: &busbar_plugin::hot::Signal,
+    ) -> busbar_plugin::hot::StatusClass {
+        scope
+            .settle_admission(admission, signal)
+            .unwrap_or(busbar_plugin::hot::StatusClass::Refused)
+    }
+    fn breaker_record_success(&self, _pool: &str, _lane: usize) {}
+    fn breaker_record_signal(
+        &self,
+        _pool: &str,
+        _lane: usize,
+        _sig: &busbar_substrate::breaker::CanonicalSignal,
+    ) {
+    }
+    fn breaker_retry_after_secs(&self, _pool: &str, _lane: usize) -> u64 {
+        0
+    }
+}
+
+fn probe_provider_dial() -> (&'static str, String) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    rt.block_on(async move {
+        // THE LOOPBACK PROVIDER: bind an ephemeral port, accept ONE connection, upgrade it to a bare WS
+        // server (no TLS — the dial below opts into plaintext for this loopback target only), read
+        // whatever the client sends (ignored — this leg proves the DOWNLINK leg settles, not the uplink
+        // shape), then send one `response.done` usage frame and close.
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+            Ok(l) => l,
+            Err(e) => return ("FAIL", format!("loopback provider could not bind: {e}")),
+        };
+        let addr = listener.local_addr().expect("a bound listener has a local addr");
+        let server = tokio::spawn(async move {
+            let (tcp, _peer) = listener.accept().await.expect("one loopback connection");
+            let mut ws = tokio_tungstenite::accept_async(tcp)
+                .await
+                .expect("the loopback WS handshake completes");
+            let usage = usage_frame(9).to_string();
+            let _ = futures::SinkExt::send(
+                &mut ws,
+                tokio_tungstenite::tungstenite::Message::text(usage),
+            )
+            .await;
+            let _ = futures::SinkExt::close(&mut ws).await;
+        });
+
+        let host = AlwaysAdmitBreakerHost;
+        let url = format!("ws://{addr}");
+        let policy = busbar_substrate::net_guard::GuardPolicy {
+            allow_private: true,
+            allow_plaintext: true,
+            ..busbar_substrate::net_guard::GuardPolicy::default()
+        };
+        let (mut provider_in, _provider_out) = match busbar_voice::topology::dial_provider(
+            &host,
+            "stream:conform-loopback",
+            0,
+            &url,
+            policy,
+        )
+        .await
+        {
+            Ok(pair) => pair,
+            Err(e) => return ("FAIL", format!("dial_provider could not reach the loopback: {e}")),
+        };
+
+        // ONE SESSION END TO END: the dialed frame drives the SAME `SessionCore` the mounted route
+        // opens, and the D2 lease it holds must settle the usage the loopback sent. A REAL priced host
+        // (the same `ConformHost` the governance probes drive, 1 nano/reserved unit) rather than the
+        // in-process `LocalMeteringPort`, whose dev-default price is always zero — this leg is about
+        // whether the dialed usage reaches the lease at all, and a zero-priced lease would settle
+        // "successfully" whether or not the frame ever arrived.
+        let priced_host = Arc::new(ConformHost::default()) as Arc<dyn MeteringHost>;
+        let lease = HostMeteringPort::new(priced_host)
+            .reserve(1_000, 0, None)
+            .expect("an uncapped lease always opens");
+        let core = SessionCore::new(
+            OpenAiRealtimeCodec,
+            lease,
+            None,
+            Arc::new(EchoToolExecutor),
+            Carrier::sideband(),
+            None,
+        );
+        let Some(frame) = futures::StreamExt::next(&mut provider_in).await else {
+            return (
+                "FAIL",
+                "the loopback provider closed before sending its usage frame".into(),
+            );
+        };
+        let _ = core
+            .on_server_frame(WireEvent(Bytes::from(frame)))
+            .await;
+        let _ = server.await;
+
+        if core.settled_nanos() == 9 {
+            (
+                "PASS",
+                "one session dialed the loopback provider through `dial_provider`'s net-guarded path \
+                 end to end, and its D2 metering lease settled the usage the loopback sent (9 nanos)"
+                    .into(),
+            )
+        } else {
+            (
+                "FAIL",
+                format!(
+                    "the lease did not settle the dialed usage: {} nanos",
+                    core.settled_nanos()
+                ),
+            )
+        }
+    })
+}
+
 // ── entry point ─────────────────────────────────────────────────────────────────────────────────────
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let usage = || -> ! {
         eprintln!(
-            "usage:\n  voice-conform spec <openai|gemini> <fixtures_dir>\n  voice-conform replay <fixtures_root>\n  voice-conform cross <oo|og|go|gg> <openai_dir> <gemini_dir> <map.json>\n  voice-conform governance <checkpoint>"
+            "usage:\n  voice-conform spec <openai|gemini> <fixtures_dir>\n  voice-conform replay <fixtures_root>\n  voice-conform cross <oo|og|go|gg> <openai_dir> <gemini_dir> <map.json>\n  voice-conform governance <checkpoint>\n  voice-conform composition <provider-credential|metering-lease|session-scope|gemini-live-route|provider-dial>"
         );
         std::process::exit(2);
     };
@@ -1177,6 +1697,10 @@ fn main() {
         Some("governance") => {
             let cp = args.get(2).unwrap_or_else(|| usage());
             governance(cp)
+        }
+        Some("composition") => {
+            let slice = args.get(2).unwrap_or_else(|| usage());
+            composition(slice)
         }
         _ => usage(),
     };

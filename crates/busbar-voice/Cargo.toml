@@ -78,7 +78,18 @@ serde_yaml = { workspace = true }
 # OPTIONAL dep the `runtime` feature turns on (HARD RULE 4: the async surface stays feature-gated, not compiled into the default build).
 async-trait = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["rt", "sync", "macros", "time"], optional = true }
+# `net` + `rt-multi-thread`: the voice CONFORMANCE HARNESS's `provider-dial` / `gemini-live-route` legs
+# stand up a tiny in-process loopback WS provider (a stand-in for a real realtime provider) and drive
+# `topology::dial_provider` at it end to end — the harness needs a real listener + a runtime that can
+# accept a connection while the dial races it, not just the single-threaded task/timer primitives the
+# rest of the plane's async surface needs. The PRODUCTION runtime never binds a listener of its own
+# (see `crate::mount::voice_start`), so this is pure harness/test weight, still `runtime`-gated.
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "net", "rt-multi-thread"], optional = true }
+# THE LOOPBACK PROVIDER's WS ACCEPT SIDE — `topology::dial_provider` (and the substrate egress dialer
+# it rides) already pulls `tokio-tungstenite` transitively through `busbar-substrate/runtime`; this is
+# the harness's OWN direct dep for the ACCEPT half (`accept_async`), which the substrate crate has no
+# reason to expose. Same feature set as the substrate's own use (handshake only, no TLS/connector).
+tokio-tungstenite = { workspace = true, optional = true }
 # THE NEUTRAL ROUTE-ENUM ABI (`RouteAuth`/`RouteMethod`) the plane names to describe its data routes as
 # `PlaneRouteSpec`s (`PLANE_DECL.routes`), the SAME crate busbar-a2a names for its own routes. OPTIONAL,
 # pulled only by `runtime`: the default feature-off build mounts no routes and names no route enum.
@@ -111,7 +122,7 @@ metrics = { workspace = true, optional = true }
 # net-guard-pinned egress dialer): the plane SELECTS `Transport::WebSocket` and lets the substrate open
 # the socket, so the provider sideband WSS dials THROUGH `net_guard` and the plane holds no socket
 # plumbing of its own. Turned on in lock-step with the plane's own async runtime.
-runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "dep:busbar-plugin", "dep:url", "dep:tracing", "dep:http", "dep:http-body-util", "dep:hyper", "dep:metrics", "busbar-substrate/runtime"]
+runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "dep:tokio-tungstenite", "dep:busbar-plugin", "dep:url", "dep:tracing", "dep:http", "dep:http-body-util", "dep:hyper", "dep:metrics", "busbar-substrate/runtime"]
 # THE OPENAPI-SCHEMA EDGE, mirroring busbar-mcp/busbar-a2a: `PlaneDecl::openapi_schemas` is a field the
 # substrate struct gates on its own `openapi-schema` feature, so this forwards to substrate to keep the
 # `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step. The plane

@@ -20,6 +20,13 @@ name: Voice conformance
 #   spec-per-dialect   the voice spec battery, per dialect. MATRIX: openai, gemini.
 #   replay             captured-transcript replay (both dialect goldens).
 #   cross-parity       the 4 ordered OpenAI<->Gemini pairs, judged against the cross-dialect map.
+#   composition        the seams a MOUNTED door needs to actually serve on a real deployment: the
+#                      provider credential the mint / SDP passes dial under, the host-backed per-key
+#                      metering lease a session reserves on, the session-scope grant, and (K4) the
+#                      Gemini Live route's own mount shape.
+#   provider-dial      (K5) a session actually dials the composed provider through a loopback socket,
+#                      and its D2 metering lease settles the usage that arrived over it. Its own job
+#                      (not folded into `composition`) because it is the one leg that opens a socket.
 #   governance-probe   the 5 vision checkpoints (incl. D2 hard-close-on-exhaustion). NOT A
 #                      CONFORMANCE RESULT — separated in the runner, exactly as a2a-governance is.
 #
@@ -171,6 +178,62 @@ jobs:
           path: voice-cross-parity.log
           if-no-files-found: warn
 
+  provider-dial:
+    name: "provider-dial · a session dials the composed provider (K5)"
+    needs: gate-selftest
+    runs-on: ubuntu-latest
+    env:
+      VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the voice conformance harness
+        run: cargo build -p busbar-voice --features runtime --bin voice-conform
+      # Its own job (not folded into `composition`) because it is the one leg here that opens a real
+      # socket: a loopback WS "provider" this leg stands up itself, dialed through
+      # `topology::dial_provider`'s own net-guarded path — no external network, no vendor credential.
+      - name: Run the provider-dial leg
+        run: |
+          set -euo pipefail
+          bash testing/voice-conformance/voice-conformance.sh --leg provider-dial | tee voice-provider-dial.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: voice-provider-dial
+          path: voice-provider-dial.log
+          if-no-files-found: warn
+
+  composition:
+    name: "composition · provider credential, per-key lease, session scope, gemini route"
+    needs: gate-selftest
+    runs-on: ubuntu-latest
+    env:
+      VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the voice conformance harness
+        run: cargo build -p busbar-voice --features runtime --bin voice-conform
+      # The seams that decide whether a MOUNTED door can serve, meter and authorize a session on a
+      # real deployment, PLUS the Gemini Live route's own mount shape (K4: claim/admission/arrival and
+      # the wire handshake, over the plane's public functions). Each is its own leg because each fails
+      # on its own; they run in one job because they share a build and none of them touches the
+      # network (K5's `provider-dial`, which DOES open a loopback socket, is its own job below).
+      - name: Run the composition legs
+        run: |
+          set -euo pipefail
+          for leg in provider-credential metering-lease session-scope gemini-live-route; do
+            bash testing/voice-conformance/voice-conformance.sh --leg "$leg"
+          done | tee voice-composition.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: voice-composition
+          path: voice-composition.log
+          if-no-files-found: warn
+
   boot-validate:
     name: "boot --features plane-voice parses the owned streams: section"
     needs: gate-selftest
@@ -237,6 +300,8 @@ jobs:
       - spec-per-dialect
       - replay
       - cross-parity
+      - composition
+      - provider-dial
       - boot-validate
       - governance-probe
     steps:
@@ -251,6 +316,8 @@ jobs:
           SPEC_PER_DIALECT: ${{ needs.spec-per-dialect.result }}
           REPLAY: ${{ needs.replay.result }}
           CROSS_PARITY: ${{ needs.cross-parity.result }}
+          COMPOSITION: ${{ needs.composition.result }}
+          PROVIDER_DIAL: ${{ needs.provider-dial.result }}
           BOOT_VALIDATE: ${{ needs.boot-validate.result }}
           GOVERNANCE_PROBE: ${{ needs.governance-probe.result }}
         run: |
@@ -268,6 +335,8 @@ jobs:
           strict spec-per-dialect  "$SPEC_PER_DIALECT"
           strict replay            "$REPLAY"
           strict cross-parity      "$CROSS_PARITY"
+          strict composition       "$COMPOSITION"
+          strict provider-dial     "$PROVIDER_DIAL"
           strict boot-validate     "$BOOT_VALIDATE"
           strict governance-probe  "$GOVERNANCE_PROBE"
 

@@ -113,6 +113,57 @@ where
     })
 }
 
+/// POST-ADMIT variant of [`begin_telephony`], for a caller that ALREADY ran the open-pass gauntlet
+/// (the inbound WS-accept seam, `accept_gauntlet`) — mirrors [`crate::topology::open_admitted_session`]'s
+/// contract exactly: no gauntlet runs here, so a caller that already admitted the destination does not
+/// re-run (or double-charge) it. Used for BOTH the g711 telephony leg and the Gemini Live thin-duplex
+/// leg — the wiring is identical; only the codec and the locked config differ, and both are the
+/// caller's to choose.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn open_admitted_telephony<C>(
+    rt: &VoiceRuntime,
+    codec: C,
+    owner: impl Into<String>,
+    call_id: impl Into<String>,
+    locked_config: SessionConfig,
+    budget: SessionBudget,
+    meter: Option<crate::runtime::metering::TurnMeter>,
+    now: u64,
+) -> Result<TelephonyProxy<C>, StartError>
+where
+    C: DuplexReader + DuplexWriter + Send + Sync + 'static,
+{
+    let (downlink_tx, downlink_rx) = unbounded::<Vec<u8>>();
+    let carrier = Carrier::with_downlink(downlink_tx);
+
+    let (core, handle, guard) = crate::topology::open_admitted_session(
+        rt,
+        codec,
+        owner,
+        call_id,
+        Some(locked_config),
+        carrier,
+        budget,
+        meter,
+        now,
+    )?;
+
+    let (upstream_tx, upstream_rx) = unbounded::<Vec<u8>>();
+    let downlink_plane = Arc::new(VoiceSession::new(Arc::clone(&core)));
+    let uplink_plane = Arc::new(UplinkForwarder::new(Arc::clone(&core), upstream_tx.clone()));
+
+    Ok(TelephonyProxy {
+        core,
+        handle,
+        guard,
+        downlink_plane,
+        uplink_plane,
+        upstream_rx,
+        upstream_tx,
+        downlink_rx,
+    })
+}
+
 impl<C> TelephonyProxy<C>
 where
     C: DuplexReader + DuplexWriter + Send + Sync + 'static,

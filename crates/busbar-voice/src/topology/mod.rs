@@ -32,7 +32,7 @@ use busbar_substrate::egress::duplex_ws::{self, DialError};
 use busbar_substrate::net_guard::GuardPolicy;
 use busbar_substrate::plane::handle_engine::HandleEngineError;
 use busbar_substrate::plane_host::{
-    run_gauntlet_session, DispatchScope, EngineHost, GauntletPlane, GauntletRequest, VerifyOutcome,
+    run_gauntlet_session, BreakerHost, DispatchScope, GauntletPlane, GauntletRequest, VerifyOutcome,
 };
 use busbar_substrate::transport::{Transport, UpstreamWireKind};
 use futures::{Sink, Stream};
@@ -118,7 +118,7 @@ fn dial_signal(e: &DialError) -> CanonicalSignal {
 /// cell hard-down; a connect/TLS/handshake blip is transient). `pool` is the plane's breaker-cell key
 /// (see [`stream_breaker_key`]); `lane` is the member position (0 for a degenerate cell).
 pub async fn dial_provider(
-    host: &dyn EngineHost,
+    host: &dyn BreakerHost,
     pool: &str,
     lane: usize,
     url: &str,
@@ -126,7 +126,7 @@ pub async fn dial_provider(
 ) -> Result<
     (
         impl Stream<Item = Vec<u8>> + Unpin,
-        impl Sink<Vec<u8>> + Unpin + Send + 'static,
+        impl Sink<Vec<u8>, Error = ()> + Unpin + Send + 'static,
     ),
     DialProviderError,
 > {
@@ -159,9 +159,16 @@ pub async fn dial_provider(
     };
 
     match duplex_ws::dial(url, policy).await {
-        Ok(pair) => {
+        Ok((stream, sink)) => {
             host.breaker_record_success(pool, lane);
-            Ok(pair)
+            // `sink_map_err(|_| ())`: the substrate dialer's own Sink `Error` associated type is an
+            // opaque `impl Trait` detail with no `Send` bound of its own (it happens to be `Send` today,
+            // but nothing in its signature promises that) — and `TelephonyProxy::run` (the one consumer)
+            // needs `POut::Error: Send` to spawn the drain task. Discarding the write-failure detail into
+            // a bare `()` is a small, honest price: a write failure already means the socket is going
+            // away (the pump's own EOF/close handling is what actually tears the session down), so no
+            // caller of this fn reads the write error's content today.
+            Ok((stream, futures::SinkExt::sink_map_err(sink, |_| ())))
         }
         Err(e) => {
             host.breaker_record_signal(pool, lane, &dial_signal(&e));
