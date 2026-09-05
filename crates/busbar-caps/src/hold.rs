@@ -139,6 +139,21 @@ pub enum Accrual {
     },
 }
 
+/// What one spend did to the reservation.
+///
+/// Three figures rather than an outcome enum, because all three can be non-zero at once: a spend
+/// that runs past the end is part covered by a top-up and part carried, and a report that named only
+/// the larger half would be a report the identity cannot close against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Spend {
+    /// What was spent, in full. Always the amount asked for: a spend is never trimmed.
+    pub accrued: u64,
+    /// How much the reservation grew by to cover it.
+    pub topped_up: u64,
+    /// How much of it nothing could back, and the unit therefore carries out.
+    pub overdraft: u64,
+}
+
 impl Hold {
     /// Open the unit's hold at the door, sized at `reserved` nano-units.
     pub fn open<S: Step>(_token: &AdmitToken<S>, principal: PrincipalId, reserved: u64) -> Self {
@@ -208,6 +223,41 @@ impl Hold {
                 shortfall: self.accrued.saturating_sub(self.reserved()),
             }
         }
+    }
+
+    /// Spend `amount` against the reservation, growing the reservation to cover it as far as
+    /// `headroom` allows and recording whatever nothing could back.
+    ///
+    /// This is the whole accounting act in one call, and it has no failure arm on purpose. The door
+    /// has already said yes; the reservation is the size of a guess, and a guess being too small is
+    /// not a reason to take back an admission. So the spend always lands: it accrues in full, the
+    /// reservation grows by whatever the caller says is still drawable, and the remainder is an
+    /// overdraft the unit carries out. `headroom` is what the admission unit found left in the
+    /// principal's slice — `u64::MAX` where no cap applies, zero where the window is spent.
+    pub fn spend(&mut self, amount: u64, headroom: u64) -> Spend {
+        let already = self.overdraft;
+        let mut spend = Spend {
+            accrued: amount,
+            topped_up: 0,
+            overdraft: 0,
+        };
+        if let Accrual::Exhausted { shortfall } = self.accrue(amount) {
+            // The shortfall is cumulative, so what THIS spend left unbacked is whatever of it is
+            // not already carried. Subtracting first is what keeps a second spend past the end from
+            // recording the first one's overdraft a second time.
+            let uncovered = shortfall.saturating_sub(already);
+            let drawn = uncovered.min(headroom);
+            if drawn > 0 {
+                self.top_up(drawn);
+                spend.topped_up = drawn;
+            }
+            let unbacked = uncovered.saturating_sub(drawn);
+            if unbacked > 0 {
+                self.record_overdraft(unbacked);
+                spend.overdraft = unbacked;
+            }
+        }
+        spend
     }
 
     /// Add a slice draw to the reservation. Returns what is now left.
@@ -600,6 +650,12 @@ impl Posted {
     /// How much of what was posted had no reservation behind it.
     pub fn overdraft(&self) -> u64 {
         self.overdraft
+    }
+
+    /// The residual: reserved and never used, and therefore released back to the slice it was drawn
+    /// from. A hold that ran past its reservation releases nothing, which is what the floor says.
+    pub fn released(&self) -> u64 {
+        self.reserved.saturating_sub(self.settled)
     }
 
     /// How far the posting is believed.

@@ -660,3 +660,79 @@ fn an_outstanding_accrual_becomes_a_hold_of_its_own_at_the_parents_exit() {
     );
     assert_eq!(posted.overdraft(), 0);
 }
+
+#[test]
+fn a_spend_inside_the_reservation_neither_tops_up_nor_carries() {
+    let k = Kernel::new();
+    let mut hold = Hold::open(&k.admit_token(), who("acct-1"), 1_000);
+    let spend = hold.spend(400, u64::MAX);
+    assert_eq!(
+        spend,
+        Spend {
+            accrued: 400,
+            topped_up: 0,
+            overdraft: 0
+        }
+    );
+    assert_eq!(hold.reserved(), 1_000);
+    assert_eq!(hold.remaining(), 600);
+}
+
+#[test]
+fn a_spend_past_the_reservation_grows_it_out_of_the_headroom_it_is_given() {
+    let k = Kernel::new();
+    let mut hold = Hold::open(&k.admit_token(), who("acct-1"), 1_000);
+    let spend = hold.spend(1_500, 900);
+    assert_eq!(spend.topped_up, 500, "the shortfall fits inside the headroom");
+    assert_eq!(spend.overdraft, 0);
+    assert_eq!(hold.reserved(), 1_500);
+    assert_eq!(hold.overdraft(), 0);
+}
+
+#[test]
+fn a_spend_no_headroom_can_cover_is_carried_and_never_refused() {
+    let k = Kernel::new();
+    let mut hold = Hold::open(&k.admit_token(), who("acct-1"), 1_000);
+    let spend = hold.spend(1_500, 0);
+    // The whole point: the spend lands in full even though nothing could back the last of it.
+    assert_eq!(spend.accrued, 1_500);
+    assert_eq!(spend.overdraft, 500);
+    assert_eq!(hold.accrued(), 1_500);
+    assert_eq!(hold.overdraft(), 500);
+    let posted = Posted::settle(hold, &usage_of(&k, 1_500), &k.ledger_token());
+    assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
+    assert_eq!(posted.overdraft(), 500);
+    assert_eq!(posted.released(), 0);
+}
+
+#[test]
+fn a_second_spend_past_the_end_carries_only_its_own_share() {
+    let k = Kernel::new();
+    let mut hold = Hold::open(&k.admit_token(), who("acct-1"), 100);
+    assert_eq!(hold.spend(250, 0).overdraft, 150);
+    // Not 400: what the first spend already carried is not carried a second time.
+    assert_eq!(hold.spend(250, 0).overdraft, 250);
+    assert_eq!(hold.overdraft(), 400);
+    assert_eq!(hold.accrued(), 500);
+}
+
+#[test]
+fn a_part_covered_spend_reports_both_halves() {
+    let k = Kernel::new();
+    let mut hold = Hold::open(&k.admit_token(), who("acct-1"), 100);
+    let spend = hold.spend(400, 120);
+    assert_eq!(spend.topped_up, 120);
+    assert_eq!(spend.overdraft, 180);
+    assert_eq!(hold.reserved(), 220);
+    assert_eq!(hold.accrued(), 400);
+}
+
+#[test]
+fn the_residual_of_an_underspent_hold_is_what_settlement_releases() {
+    let k = Kernel::new();
+    let mut hold = Hold::open(&k.admit_token(), who("acct-1"), 1_000);
+    hold.spend(250, u64::MAX);
+    let posted = Posted::settle(hold, &usage_of(&k, 250), &k.ledger_token());
+    assert_eq!(posted.released(), 750);
+    assert_eq!(posted.overdraft(), 0);
+}

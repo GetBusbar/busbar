@@ -76,7 +76,7 @@ pub use decision::{Decision, ReasonCode, Refusal};
 pub use egress::{AuthDecoration, SecretOnce, SecretSlot, TransportKeyHandle, VerifiedDestination};
 pub use hold::{
     Accrual, AccrualRefused, Admission, AdmitRejected, CellError, DurabilityLost, Hold,
-    HoldAccrual, HoldCell, HoldCellState, Posted, PostingFlags,
+    HoldAccrual, HoldCell, HoldCellState, Posted, PostingFlags, Spend,
 };
 pub use step::{
     Admit, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Authenticated,
