@@ -625,3 +625,296 @@ async fn accept_serves_the_slot_the_listener_was_provisioned_with() {
     assert_eq!(served_fp, fp_7, "accept served the slot-7 certificate, byte for byte");
     assert_ne!(served_fp, fp_0, "slot 0's certificate must not be what accept served");
 }
+
+/// CG-49: multi-certificate SNI on one listener.
+///
+/// The transport-key unit's `provision_server_named` resolves a name's material, journals it, and
+/// (unlike `provision_server`) builds one `ServerConfig` whose `ResolvesServerCert` picks the
+/// certified key per `ClientHello` — so this crate needs no second registry and no change to
+/// `listen`/`accept` at all: a listener provisioned this way is just a listener whose one
+/// registered config happens to serve more than one identity.
+mod cg_49_sni {
+    use super::*;
+    use busbar_unit_transport_key::{
+        AccessJournal, AccessPurpose, NamedTlsLocations, SecretSource, Slot, TlsLocations,
+    };
+    use std::collections::HashMap as StdHashMap;
+    use std::sync::Mutex as StdMutex;
+
+    /// A permissive `ServerCertVerifier` that only checks the presented chain parses — no root-of-
+    /// trust check, no hostname check. Used only for the two edge-case tests where the server
+    /// deliberately serves a certificate that does not match the name the client asked for (no SNI
+    /// at all, or an unrecognised one): a conformant client would refuse such a certificate, which
+    /// is correct behaviour but not what those two tests are checking. What they check is which
+    /// certificate the *resolver* served, read off the connection's own peer-cert fact — the same
+    /// fingerprint assertion the honest-name tests make, just without asking rustls to also agree
+    /// the name matches.
+    #[derive(Debug)]
+    struct AcceptAnyServerCert;
+    impl rustls::client::danger::ServerCertVerifier for AcceptAnyServerCert {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &rustls_pki_types::ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: rustls_pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
+    fn accept_any_client_config() -> StdArc<rustls::ClientConfig> {
+        StdArc::new(
+            rustls::ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(StdArc::new(AcceptAnyServerCert))
+                .with_no_client_auth(),
+        )
+    }
+
+    struct MapSource(StdHashMap<&'static str, Vec<u8>>);
+    impl SecretSource for MapSource {
+        fn resolve(&self, location: &str) -> Result<Vec<u8>, String> {
+            self.0
+                .get(location)
+                .cloned()
+                .ok_or_else(|| format!("no secret at {location}"))
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingJournal(StdMutex<Vec<(String, AccessPurpose)>>);
+    impl AccessJournal for RecordingJournal {
+        fn record_access(&self, location: &str, purpose: AccessPurpose) {
+            self.0.lock().unwrap().push((location.to_string(), purpose));
+        }
+    }
+
+    /// A fresh self-signed cert/key for `name`, its PEM (for the fake secret source), its leaf DER
+    /// (to compute the fingerprint a test expects), and a client trust store trusting exactly it.
+    fn named_identity(name: &str) -> (String, String, Vec<u8>, StdArc<rustls::ClientConfig>) {
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec![name.to_string()]).unwrap();
+        let cert_pem = cert.pem();
+        let key_pem = signing_key.serialize_pem();
+        let cert_der = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let leaf_der = cert_der[0].as_ref().to_vec();
+        let mut roots = rustls::RootCertStore::empty();
+        for c in cert_der {
+            roots.add(c).unwrap();
+        }
+        let client_cfg = StdArc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        (cert_pem, key_pem, leaf_der, client_cfg)
+    }
+
+    fn dial_dest(addr: &str, sni: &str) -> busbar_contract::VerifiedDestination {
+        let leaked_addr: &'static str = Box::leak(addr.to_string().into_boxed_str());
+        let leaked_sni: &'static str = Box::leak(sni.to_string().into_boxed_str());
+        busbar_contract::VerifiedDestination::seal(
+            &FixtureSeal,
+            busbar_contract::DestinationFacts::Upstream {
+                transport: "tls",
+                address: busbar_contract_transport::dest::UpstreamAddress::Socket {
+                    authority: leaked_addr,
+                    sni: Some(leaked_sni),
+                },
+                lane: busbar_contract::LaneId::new("test"),
+            },
+            "tls",
+            None,
+        )
+    }
+
+    /// One listener, provisioned with two names plus a default; a fixture bundling the three
+    /// identities and the journal that recorded provisioning it.
+    struct Fixture {
+        server: StdArc<TlsTransport>,
+        listener: Listener,
+        addr: String,
+        fp_a: String,
+        fp_b: String,
+        fp_default: String,
+        client_a: StdArc<rustls::ClientConfig>,
+        client_b: StdArc<rustls::ClientConfig>,
+        journal: RecordingJournal,
+    }
+
+    async fn provisioned_listener() -> Fixture {
+        busbar_unit_transport_key::install_crypto_provider();
+        let (cert_a, key_a, der_a, client_a) = named_identity("a.example");
+        let (cert_b, key_b, der_b, client_b) = named_identity("b.example");
+        let (cert_d, key_d, der_d, _client_default) = named_identity("default.example");
+
+        let source = MapSource(
+            [
+                ("cert-a", cert_a.into_bytes()),
+                ("key-a", key_a.into_bytes()),
+                ("cert-b", cert_b.into_bytes()),
+                ("key-b", key_b.into_bytes()),
+                ("cert-default", cert_d.into_bytes()),
+                ("key-default", key_d.into_bytes()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let journal = RecordingJournal::default();
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+
+        let server = StdArc::new(TlsTransport::new());
+        let handle = busbar_unit_transport_key::provision_server_named(
+            &source,
+            &journal,
+            &*server,
+            &busbar_caps::TransportKeyToken::mint(&seal),
+            Slot {
+                index: 0,
+                fingerprint: "fixture",
+            },
+            &[
+                NamedTlsLocations {
+                    sni: "a.example",
+                    cert: "cert-a",
+                    key: "key-a",
+                },
+                NamedTlsLocations {
+                    sni: "b.example",
+                    cert: "cert-b",
+                    key: "key-b",
+                },
+            ],
+            &TlsLocations {
+                cert: "cert-default",
+                key: "key-default",
+                client_ca: None,
+            },
+        )
+        .expect("names and default all resolve");
+
+        let cfg = TestCfg {
+            bind: "127.0.0.1:0".to_string(),
+        };
+        let listener = server.listen(&cfg, &handle).await.unwrap();
+        let addr = listener.local_addr();
+
+        Fixture {
+            server,
+            listener,
+            addr,
+            fp_a: format!("{:x?}", ring_fingerprint(&der_a)),
+            fp_b: format!("{:x?}", ring_fingerprint(&der_b)),
+            fp_default: format!("{:x?}", ring_fingerprint(&der_d)),
+            client_a,
+            client_b,
+            journal,
+        }
+    }
+
+    async fn served_fingerprint(
+        fx: &Fixture,
+        sni: Option<&str>,
+        client_cfg: StdArc<rustls::ClientConfig>,
+    ) -> String {
+        let accept_fut = tokio::spawn({
+            let server = fx.server.clone();
+            let listener = fx.listener.clone();
+            async move { server.accept(&listener).await.unwrap() }
+        });
+        let client = StdArc::new(TlsTransport::new());
+        client.register_client_config(0, client_cfg);
+        let dest = match sni {
+            Some(name) => dial_dest(&fx.addr, name),
+            None => upstream_dest(&fx.addr),
+        };
+        let client_conn = client
+            .dial(&dest, &fixture_key(0))
+            .await
+            .expect("handshake completes");
+        let _server_conn = accept_fut.await.unwrap();
+        let record = client.arrival(&client_conn);
+        record
+            .peer_cert
+            .expect("client sees the server's certificate")
+            .fingerprint
+    }
+
+    #[tokio::test]
+    async fn each_named_client_sees_its_own_names_fingerprint() {
+        let fx = provisioned_listener().await;
+
+        let served_a = served_fingerprint(&fx, Some("a.example"), fx.client_a.clone()).await;
+        assert_eq!(served_a, fx.fp_a, "a.example got a.example's certificate");
+        assert_ne!(served_a, fx.fp_b);
+        assert_ne!(served_a, fx.fp_default);
+
+        let served_b = served_fingerprint(&fx, Some("b.example"), fx.client_b.clone()).await;
+        assert_eq!(served_b, fx.fp_b, "b.example got b.example's certificate");
+        assert_ne!(served_b, fx.fp_a);
+        assert_ne!(served_b, fx.fp_default);
+
+        assert_eq!(
+            fx.journal.0.lock().unwrap().as_slice(),
+            &[
+                ("cert-a".to_string(), AccessPurpose::Cert),
+                ("key-a".to_string(), AccessPurpose::Key),
+                ("cert-b".to_string(), AccessPurpose::Cert),
+                ("key-b".to_string(), AccessPurpose::Key),
+                ("cert-default".to_string(), AccessPurpose::Cert),
+                ("key-default".to_string(), AccessPurpose::Key),
+            ],
+            "one access entry per secret actually read, in the order provisioned: names then default"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_offering_no_sni_gets_the_default() {
+        let fx = provisioned_listener().await;
+        let served = served_fingerprint(&fx, None, accept_any_client_config()).await;
+        assert_eq!(served, fx.fp_default, "no SNI offered: the default is served");
+    }
+
+    /// 1.5.5 (`v1.5.5:crates/busbar/src/tls.rs`) never read `ClientHello::server_name` at all — it
+    /// built exactly one `ServerConfig::with_single_cert` per listener and served it unconditionally
+    /// regardless of what a client offered. Falling through to the default for a *recognised-format
+    /// but unregistered* name, rather than refusing the handshake, is the parity choice: a client
+    /// naming any name at all still gets *a* certificate, exactly as it would have from 1.5.5's one
+    /// cert.
+    #[tokio::test]
+    async fn an_unknown_name_gets_the_default() {
+        let fx = provisioned_listener().await;
+        let served = served_fingerprint(
+            &fx,
+            Some("nobody-provisioned-this.example"),
+            accept_any_client_config(),
+        )
+        .await;
+        assert_eq!(served, fx.fp_default, "unknown name: the default is served, not a refusal");
+    }
+}
