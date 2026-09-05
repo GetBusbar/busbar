@@ -18,7 +18,7 @@ use busbar_kernel::tick::{
     FleetAction, SessionTick, Sweep, SESSION_IDLE_MAX_MS,
 };
 
-use common::principal;
+use common::{principal, TestDoor};
 
 fn record(dispatched: bool, checkpointed: u64) -> HoldRecord {
     HoldRecord {
@@ -132,7 +132,7 @@ fn a_lost_task_is_settled_within_one_tick() {
             admin_listener: false,
             provider_of_open_session: false,
             zero_hold_tick: false,
-            arrival: arrival_hold(&kernel, principal()),
+            arrival: arrival_hold(&kernel, &TestDoor, principal()),
         })
         .map_err(|_| ())
         .expect("under the cap");
@@ -203,7 +203,7 @@ fn a_slow_unit_is_not_a_lost_one() {
             admin_listener: false,
             provider_of_open_session: false,
             zero_hold_tick: false,
-            arrival: arrival_hold(&kernel, principal()),
+            arrival: arrival_hold(&kernel, &TestDoor, principal()),
         })
         .map_err(|_| ())
         .expect("under the cap");
@@ -225,7 +225,7 @@ fn a_slow_unit_is_not_a_lost_one() {
         Sweep::AlarmOnly
     );
 
-    let cell = HoldCell::new(arrival_hold(&kernel, principal()));
+    let cell = HoldCell::new(arrival_hold(&kernel, &TestDoor, principal()));
     let canary = Canary::new();
     let gauge = ConcurrencyGauge::new();
     let mut leases = LeaseSet::new();

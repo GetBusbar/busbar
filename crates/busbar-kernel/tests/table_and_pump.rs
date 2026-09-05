@@ -20,7 +20,7 @@ use busbar_kernel::pump::{
 };
 use busbar_kernel::teller::{settle_amount, Evidence, Kernel};
 
-use common::principal;
+use common::{principal, TestDoor};
 
 fn enter(kernel: &Kernel, key: u64, origin: OriginKind) -> Enter {
     Enter {
@@ -30,7 +30,7 @@ fn enter(kernel: &Kernel, key: u64, origin: OriginKind) -> Enter {
         admin_listener: false,
         provider_of_open_session: false,
         zero_hold_tick: false,
-        arrival: arrival_hold(kernel, principal()),
+        arrival: arrival_hold(kernel, &TestDoor, principal()),
     }
 }
 

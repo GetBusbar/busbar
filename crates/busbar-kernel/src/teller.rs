@@ -79,14 +79,13 @@ impl Kernel {
         SessionId::mint(&self.seal, id)
     }
 
-    /// The door's token.
+    /// The door's token, as the loop lends it.
     ///
-    /// The admission unit is handed one of these by the loop for the length of its call, and that
-    /// is how nearly every hold in the system is opened. This method exists for the two places
-    /// inside the kernel that need one outside a step call — the in-flight table, which mints a
-    /// unit's arrival hold as it enters, and the batteries, which drive the door directly to prove
-    /// what the cell does under a race. It is a named symbol precisely so the source scan can see
-    /// every use of it.
+    /// The admission unit is handed one of these for the length of its call, and that is how every
+    /// hold in the system is opened — including the arrival hold, which the in-flight table now
+    /// asks the door for rather than opening itself. This is the seam that hands the unit its
+    /// token, and it is a named symbol precisely so the source scan can see every use of it. The
+    /// batteries name it too, to drive the door directly and prove what the cell does under a race.
     pub fn admit_token(&self) -> AdmitToken<Admit> {
         AdmitToken::<Admit>::mint(&self.seal)
     }

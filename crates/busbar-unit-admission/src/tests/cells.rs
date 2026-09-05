@@ -630,3 +630,27 @@ fn a_mixed_tier_chain_is_a_boot_refusal() {
         }
     }
 }
+
+/// The arrival hold is the door's, not the table's.
+///
+/// The design says a hold cannot exist without this unit's own token. The in-flight table used to
+/// open the arrival hold through the kernel, which was the one place that claim was untrue; it now
+/// asks the door, and this is the door's answer.
+#[test]
+fn the_door_opens_the_arrival_hold_and_it_reserves_nothing() {
+    let seal = KernelSeal::acquire_for_kernel();
+    let admit_token: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let hold = crate::arrival_hold(PrincipalId::new("acct-1"), &admit_token);
+    assert_eq!(
+        hold.reserved(),
+        0,
+        "a unit refused at the gate has spent nothing"
+    );
+    assert_eq!(hold.principal(), &PrincipalId::new("acct-1"));
+    let _ = busbar_caps::Posted::settle(
+        hold,
+        &busbar_caps::Usage::report(&busbar_caps::UsageToken::mint(&seal), Vec::new())
+            .expect("an empty report is within the bound"),
+        &busbar_caps::LedgerToken::mint(&seal),
+    );
+}

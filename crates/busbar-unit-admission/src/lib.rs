@@ -88,6 +88,19 @@ pub trait Admission {
     ) -> Decision<Admit>;
 }
 
+/// Open a unit's arrival hold.
+///
+/// The hold a unit carries into the in-flight table before it has reached the door. It reserves
+/// nothing — a unit refused at the gate has spent nothing — and its whole point is that even a
+/// refusal is an event with a cell of its own to settle.
+///
+/// It lives here, in the door, rather than in the table that carries it, because the design's claim
+/// is that a hold cannot exist without this unit's own token. The kernel lends the token for the
+/// length of this call, exactly as the loop does at step 4; the constructor is called here.
+pub fn arrival_hold(principal: PrincipalId, admit_token: &AdmitToken<Admit>) -> Hold {
+    Hold::open(admit_token, principal, 0)
+}
+
 /// The door, bound to one request.
 ///
 /// The decision needs three things the trait shape has nowhere to put: which pool the request is

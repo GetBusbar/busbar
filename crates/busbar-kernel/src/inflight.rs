@@ -26,7 +26,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_caps::{
-    Hold, HoldCell, OriginKind, PrincipalId, ReasonCode, SessionId, StepName, UnitKey,
+    step::Admit, AdmitToken, Hold, HoldCell, OriginKind, PrincipalId, ReasonCode, SessionId,
+    StepName, UnitKey,
 };
 
 use crate::pump::{Direction, StreamId};
@@ -304,15 +305,26 @@ pub struct CapRefused {
     pub hold: Hold,
 }
 
+/// The door, as the in-flight table asks it for a unit's arrival hold.
+///
+/// The kernel does not open the hold. It lends the door its token for the length of one call —
+/// exactly as the loop does at the admission step — and the door is what calls the constructor.
+/// That is what makes "a hold exists only because the admission unit opened it" true of the arrival
+/// hold as well as of the reservation the door later swaps in; while the table minted its own, that
+/// claim had one place it was not true.
+pub trait ArrivalDoor {
+    /// Open the unit's arrival hold. It reserves nothing, and the door is the only thing that can
+    /// open it.
+    fn arrival_hold(&self, principal: PrincipalId, token: &AdmitToken<Admit>) -> Hold;
+}
+
 /// The in-memory hold a unit carries into the table, before it has reached the door.
 ///
 /// It reserves nothing: a unit that is refused at the gate has spent nothing, and the point of the
 /// arrival hold is that even a refusal is an event with a cell of its own to settle. The door swaps
 /// it for the real reservation, once.
-// contract: the admission unit mints this with its own token at step 0 and hands it over; the
-// table calls through the kernel here while the two crates land side by side.
-pub fn arrival_hold(kernel: &Kernel, principal: PrincipalId) -> Hold {
-    Hold::open(&kernel.admit_token(), principal, 0)
+pub fn arrival_hold(kernel: &Kernel, door: &dyn ArrivalDoor, principal: PrincipalId) -> Hold {
+    door.arrival_hold(principal, &kernel.admit_token())
 }
 
 /// Which step an in-flight-cap refusal is stamped at, by origin.

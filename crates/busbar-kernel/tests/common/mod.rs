@@ -136,6 +136,20 @@ pub fn encoded_frame() -> busbar_caps::Frame {
     }
 }
 
+/// The door, as the table asks it for an arrival hold. The real one is the admission unit; what
+/// the battery needs is only that the hold is opened by whoever holds the token, not by the table.
+pub struct TestDoor;
+
+impl busbar_kernel::inflight::ArrivalDoor for TestDoor {
+    fn arrival_hold(
+        &self,
+        principal: PrincipalId,
+        token: &busbar_caps::AdmitToken<busbar_caps::Admit>,
+    ) -> Hold {
+        Hold::open(token, principal, 0)
+    }
+}
+
 pub fn principal() -> PrincipalId {
     PrincipalId::new("acct:battery")
 }
