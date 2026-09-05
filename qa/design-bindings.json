@@ -16,7 +16,7 @@
   "checks_by_kind": {
    "gate": 7,
    "lint": 3,
-   "oracle-cell": 41,
+   "oracle-cell": 42,
    "oracle-family": 4,
    "test": 426
   }
@@ -43,6 +43,9 @@
    "**residual risk accepted under `single`: a single admin can change prices, destination allow-lists, hook destination steering, unpriced admission, fail-open hook policy, revocation grace, and adjustments below `adjust_threshold`, `set_overdraft_ceiling` and `grace_slices_per_window` (the two knobs that let money move past a cap), `set_dispute_max_age` (which can hide overdue disputes), and `tier_bp` (which moves every posting in its chain, bounded ≤ 10×, a ledger-endpoint line (PB-16)) — journaled, alarmed and shown on the ledger endpoint (PB-16); and on an upgraded fleet, until the operator-key ceremony runs, `set_operator_key` is admitted with the admin credential alone and the binary-digest set is `any` (the root of trust and the binary attestation are open to whoever holds admin during that window, and `export_keyset` seals the keyset to any recipient key that admin names — journaled, alarmed, on the ledger endpoint (PB-16)); and hooks migrated from 1.5.5 keep their unbounded price and destination influence; migrated planes' `unpriced_classes` serve at 0 until priced; and under BOTH postures ANY token-exchange principal mints `user:*` template instances without a second approver, unbounded when `max_auto_provisioned_groups = 0`**",
    "the default anchor is self-attestation and says so",
    "the ledger posts the lower evidence and reports within `dispute_max_age`",
+   "**maximum-spec-compliance (owner rule):** where the published 1.5.5 bytes deviate from a provider's own published spec, the spec wins and the difference is registered in `accepted-differences.json` as `improvement` (owner sign-off, named in the CHANGELOG) rather than reproduced as a bug — first cases: Bedrock text content blocks emitted without a `contentBlockStart` frame, the Responses door's lifecycle frames, the required response/stream members added on every dialect, and every stream request on the Responses door answered as an actual stream (never plain JSON)",
+   "the Anthropic cross-protocol `ping` STAYS (a named, accepted gap against the published spec, not a defect to fix)",
+   "a fallback-lane stream is billed the same as a hot-path stream — `stream_options.include_usage` injection is unified onto the degraded/fallback path so a fallback stream to an affected lane no longer bills zero tokens — registered as `improvement` (owner sign-off; money-affecting)",
    "busbar is a byte-governance router."
   ]
  },
@@ -182,6 +185,13 @@
    "inventory": "proxy-hooks §2.11 (`walk.rs:49-65`, `:176-334`), config CFG-096..100",
    "status": "mapped",
    "checks": [
+    {
+     "kind": "oracle-cell",
+     "ref": "crosscut.traps|exhausted-retry-after-floor",
+     "status": "mapped",
+     "why": "every member of pool oracle-fo is driven down (mock `down` verb, same technique as route.failover|fo|all-down): the on_exhausted 503's Retry-After is pinned instead of blanked to <RETRY>, so the report can show its actual value and a regression that floors it below 2 seconds (the breaker's own base_cooldown_secs is 15s, jittered) is a visible diff, not hidden inside the usual retry-after normalization (PB-4)",
+     "source": "cells.json why"
+    },
     {
      "kind": "oracle-cell",
      "ref": "route.failover|fo|all-down",
@@ -579,7 +589,7 @@
   {
    "id": "PB-11",
    "surface": "plugin trust and ABI windows",
-   "binding": "`plugins.trust` verbatim: publishers allow-list, embedded first-party key, `allow_unsigned` / `allow_third_party` (default false; unsigned or unknown-publisher plugin LOGGED and SKIPPED with the literal messages, never dlopened), `UntrustedFloored` never relaxed, catalog verdict strings; the operator-key digest set is an ADDITIVE 1.6.0 layer; every 1.5.5 plugin within its kind's 1.5.5 window (store [2,2], auth [1,2], hook [1,1], export [2,2], secret [1,1]) loads through its ABI adapter (no \"floor 5\" precondition anywhere); `supported_abi(kind)` REPORTS the 1.5.5 window — boot, `--validate` and `POST /plugins/inspect` print `v2..=v2` for a store, never `v2..=v5`; ABI 3/4 tarballs never load; `plugin-pack --abi-version` defaults to the 1.5.5 max; `TRANSPORT_VERSION = 1` is checked FIRST in `wire_up_raw` and stays 1 with the six kind-neutral symbols; `plugins.fetch` runs before preflight at boot (`fatal_on_miss`) and on reload (warn-and-keep), verify-before-write, never under `--validate`; a manifest OUTSIDE that window is refused with 1.5.5's literal `manifest abi_version {n} is not supported for kind '{kind}' by this binary (supported range v{floor}..=v{max})` printing the 1.5.5 range, never `PluginAbiTooOld`",
+   "binding": "`plugins.trust` verbatim: publishers allow-list, embedded first-party key, `allow_unsigned` / `allow_third_party` (default false; unsigned or unknown-publisher plugin LOGGED and SKIPPED with the literal messages, never dlopened), `UntrustedFloored` never relaxed, catalog verdict strings; the operator-key digest set is an ADDITIVE 1.6.0 layer; every plugin within its kind's 1.6.0 window (store [2,4] — OWNER DECISION: widened past the published-1.5.5 floor of [2,2] because ABI-4 stores are a later release and must load on this binary too, not a 1.5.5-parity constraint; auth [1,2], hook [1,1], export [2,2], secret [1,1] unchanged) loads through its ABI adapter (no \"floor 5\" precondition anywhere); `supported_abi(kind)` REPORTS the current window — boot, `--validate` and `POST /plugins/inspect` print `v2..=v4` for a store, never `v2..=v2` and never `v2..=v5`; a published-1.5.5 store (ABI 2) and an ABI-4 store both load; ABI 3 remains inside the window; `plugin-pack --abi-version` defaults to the 1.5.5 max; `TRANSPORT_VERSION = 1` is checked FIRST in `wire_up_raw` and stays 1 with the six kind-neutral symbols; `plugins.fetch` runs before preflight at boot (`fatal_on_miss`) and on reload (warn-and-keep), verify-before-write, never under `--validate`; a manifest OUTSIDE that window is refused with 1.5.5's literal `manifest abi_version {n} is not supported for kind '{kind}' by this binary (supported range v{floor}..=v{max})` printing the CURRENT range, never `PluginAbiTooOld`",
    "inventory": "config CFG-184/185, plugins-stores :195, :224, :2000 (`plugin-sign/src/lib.rs:611-615`)",
    "note": "CONTRADICTED in part by green tests: crates/plugin-loader/src/tests/registry_tests.rs store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4 and supported_abi_store_floor_admits_v2 pin a store window of v2..=v4, where the binding requires v2..=v2 and refuses ABI 3/4. The plugins.load cells prove the trust/skip half only.",
    "status": "mapped",
@@ -2875,8 +2885,8 @@
   {
    "id": "PB-66",
    "surface": "request and response headers",
-   "binding": "NO client request header is forwarded upstream; egress headers are the four-group construction (credential, three-case `content-type`, pinned native-SDK `user-agent`, `accept` with the Bedrock eventstream override); on the response `retry-after` is busbar-SET (no dialect parses an upstream `Retry-After`); `content-type` is the upstream's VERBATIM on a same-protocol relay (`engine/mod.rs:2300-2321`) and otherwise the three cases of dialects :1304 — `application/json` for buffered and error responses, `writer.streaming_content_type()` when reframed (SSE, the gemini JSON array, bedrock `application/vnd.amazon.eventstream`), upstream verbatim same-protocol, and the relayed set is PER INGRESS WRITER — `ingress_relayed_response_header_names()`: bedrock `[\"x-amzn-requestid\", \"x-amzn-errortype\"]` (UUID v4 when absent), anthropic `[\"request-id\"]` (synthesized `req_01<24 base62>` when absent), every other dialect `[]`; everything else stripped; `advanced.response_headers.*` injections per PB-73 are outside this list",
-   "inventory": "dialects §8.1–8.4 (:1305-1316; `proto/mod.rs:695-697`), §6.5 (:997)",
+   "binding": "OWNER DECISION: an ALLOW-LISTED client request header rides upstream verbatim, scoped per egress dialect so a beta header sent for one dialect never leaks to a different one on a cross-protocol route or failover — `anthropic-beta` and `anthropic-version` only to a matching `anthropic` upstream, `OpenAI-Beta` only to a matching `openai` or `responses` upstream; every OTHER client request header is dropped, never forwarded; egress headers are otherwise the four-group construction (credential, three-case `content-type`, pinned native-SDK `user-agent`, `accept` with the Bedrock eventstream override) plus the allow-listed set above; on the response `retry-after` is busbar-SET (no dialect parses an upstream `Retry-After`); `content-type` is the upstream's VERBATIM on a same-protocol relay (`engine/mod.rs:2300-2321`) and otherwise the three cases of dialects :1304 — `application/json` for buffered and error responses, `writer.streaming_content_type()` when reframed (SSE, the gemini JSON array, bedrock `application/vnd.amazon.eventstream`), upstream verbatim same-protocol, and the relayed set is PER INGRESS WRITER — `ingress_relayed_response_header_names()`: bedrock `[\"x-amzn-requestid\", \"x-amzn-errortype\"]` (UUID v4 when absent), anthropic `[\"request-id\"]` (synthesized `req_01<24 base62>` when absent), every other dialect `[]`; everything else stripped; `advanced.response_headers.*` injections per PB-73 are outside this list",
+   "inventory": "dialects §8.1–8.4 (:1305-1316; `proto/mod.rs:695-697`), §6.5 (:997); `engine/egress.rs` `FORWARDED_CLIENT_HEADERS`",
    "note": "CONTRADICTED in part by green tests: crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs client_anthropic_beta_reaches_matching_anthropic_upstream and client_openai_beta_reaches_matching_openai_upstream assert an allowlisted anthropic-beta / OpenAI-Beta client header DOES ride upstream, where the binding says NO client request header is forwarded. Owner decision needed.",
    "status": "mapped",
    "checks": [
@@ -3230,7 +3240,7 @@
   {
    "id": "PB-75",
    "surface": "served OpenAPI document",
-   "binding": "`GET /admin/openapi.json` (ADM-052, one of the 66) returns the 1.5.5 blob VERBATIM (`info.version` included); the 1.6.0 verbs are described at a new path (`/api/v1/admin/ledger/openapi.json`) — \"admin API a superset\" means routes, not the legacy document's bytes",
+   "binding": "`GET /admin/openapi.json` (ADM-052, one of the 66) returns the 1.5.5 blob byte-identical EXCEPT `info.version`: OWNER DECISION — `info.version` reports the running binary's version (`CARGO_PKG_VERSION`, 1.6.0), the same rule `GET /admin/info` (ADM-042) already applies, not a 1.5.5-verbatim pin; every other byte — every path, schema, description and the document's shape — is VERBATIM; the 1.6.0 verbs are described at a new path (`/api/v1/admin/ledger/openapi.json`) — \"admin API a superset\" means routes, not the legacy document's bytes",
    "inventory": "routes-admin ADM-052 (:409), :266-284",
    "note": "The mapped goldens pin served == committed today; openapi_doc_is_31_and_v1_prefixed asserts info.version tracks the crate version, which is the opposite of a 1.5.5-verbatim pin. Treat as partial.",
    "status": "mapped",
@@ -3648,8 +3658,8 @@
   {
    "id": "PB-84",
    "surface": "response-stage taps",
-   "binding": "the `response` stage fires ONCE per request that reaches the forward path (a streaming response taps at response-head time); pre-forward refusals (401/403/429/413/404) never tap; `outcome ∈ {ok, failed, rejected_by_gate}` is the only synthetic field — detached, fire-and-forget, under `MAX_INFLIGHT_TAP_NOTIFICATIONS = 1024`",
-   "inventory": "proxy-hooks §7.2 (`engine/mod.rs:198-221`, `hooks.rs:1407-1417`)",
+   "binding": "OWNER DECISION (1.6.0 rebuild, PR-0; amends the prior \"pre-forward refusals never tap\" text): the `response` stage fires ONCE per request that reaches the forward path (a streaming response taps at response-head time) OR is refused by auth on a hooked pool (401, pre-forward) — that refusal ALSO fires the completion tap once, with the synthetic outcome `rejected_by_auth` and the protocol-native status, so operators see refused requests in their taps; the 1.5.5 binary does the same (oracle cell `hooks|hooked-pool|unauth` pins it); every OTHER pre-forward refusal (403/429/413/404) never taps; `outcome ∈ {ok, failed, rejected_by_gate, rejected_by_auth}` is the only synthetic-field set — detached, fire-and-forget, under `MAX_INFLIGHT_TAP_NOTIFICATIONS = 1024`",
+   "inventory": "proxy-hooks §7.2 (`engine/mod.rs:198-221`, `hooks.rs:1407-1417`); `hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth`",
    "note": "OWNER DECISION (1.6.0 rebuild, PR-0): the binding is AMENDED — an auth refusal on a hooked pool DOES fire the completion tap, with the synthetic outcome `rejected_by_auth` and the protocol-native status; hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth pins it and the oracle cell hooks|hooked-pool|unauth records 1.5.5 doing exactly that. Other pre-forward refusals (403/429/413/404) are unchanged.",
    "status": "mapped",
    "checks": [
@@ -4235,8 +4245,8 @@
      "kind": "oracle-family",
      "ref": "admin.ops",
      "status": "mapped",
-     "cites": 40,
-     "family_size": 227,
+     "cites": 44,
+     "family_size": 231,
      "source": "cells.json why"
     },
     {
