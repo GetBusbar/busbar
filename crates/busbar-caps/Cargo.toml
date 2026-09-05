@@ -1,0 +1,29 @@
+# busbar-caps — the capability types and the tokens that seal them.
+#
+# WHY A SEPARATE CRATE. A capability type is not sealed by visibility, it is sealed by a TOKEN: the
+# only way to build one is to already hold the proof that you are the unit entitled to build it.
+# That trick only works if the constructors and the tokens live in ONE crate that nothing below the
+# kernel depends on, so `pub(crate)` means "the kernel and the units, and no one else". Put these
+# types in the contract crate and every plugin can name them; put them in the kernel and the units
+# cannot. Hence a crate of its own, between the two.
+#
+# NO DEPENDENCIES. Not a convenience — a property. This crate is the thing everything else trusts,
+# so its trusted computing base is `std` and nothing more. It has no async runtime, no serializer,
+# no error library and no allocator opinion. A future need to serialize a capability belongs in the
+# crate that writes the journal, not here.
+[package]
+name = "busbar-caps"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+rust-version = "1.97"
+description = "Capability types and the tokens that seal them: steps, decisions, holds, the hold cell, postings and the one unit-end. Kernel and units only."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_caps"
+path = "src/lib.rs"
+
+[dependencies]
+# Deliberately empty. See the header.

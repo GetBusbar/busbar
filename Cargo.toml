@@ -9,6 +9,8 @@ members = [
     "crates/busbar-a2a",
     "crates/busbar-voice",
     "crates/busbar-substrate",
+    "crates/busbar-caps",
+    "crates/busbar-contract",
     "crates/api",
     "crates/busbar-plugin",
     "crates/plugin-sdk",
