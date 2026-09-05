@@ -57,11 +57,16 @@ use busbar_unit_verbs::{KernelVerb, VerbScope, LEGACY_VERBS, NAMED_SURFACES, NEW
 /// admin verb carries.
 const ADMIN_TRANSPORT: &str = "http";
 
-/// The scheme the admin claim declares, and the only one this plane's units narrow to.
+/// The scheme the admin claim declares, and the one this plane's units narrow to.
 const ADMIN_SCHEME: &str = "admin-token";
 
-/// The alternatives the admin claim declares beside its own scheme.
-const ADMIN_SCHEME_ALTERNATIVES: &[&str] = &["bearer"];
+/// Every scheme the admin claim DECLARES — its own, and the alternative beside it.
+///
+/// The auth unit's first check is that the plane narrowed to a scheme the claim actually offered,
+/// and it asks that question of this list. A list holding only the alternatives would say the claim
+/// never declared its own scheme, which would refuse every request on the plane before a credential
+/// was looked at — so the claim's own scheme belongs in it, first, exactly as the claim states it.
+const ADMIN_DECLARED_SCHEMES: &[&str] = &[ADMIN_SCHEME, "bearer"];
 
 /// One admin request, exactly as it arrived.
 ///
@@ -632,7 +637,7 @@ pub(crate) fn authenticate(
         &AuthRequest {
             candidate: request.credential.as_deref(),
             scheme: Some(ADMIN_SCHEME),
-            declared_schemes: ADMIN_SCHEME_ALTERNATIVES,
+            declared_schemes: ADMIN_DECLARED_SCHEMES,
             expected_aud: None,
             in_handshake: false,
             now: request.at,
@@ -725,9 +730,13 @@ pub(crate) fn admit(
     let Some(verb) = kernel_verb(&resolved) else {
         return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
     };
-    if mutation_class(verb) == MutationClass::Forbidden {
-        return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
-    }
+    // The class is read here — that is the binding — and read is ALL it is. `Forbidden` in this
+    // vocabulary does not mean the verb is refused; it means the verb is not a mutation and the
+    // mutation budget therefore does not apply to it, which is why the unit's own admission
+    // short-circuits past the limiter on it rather than denying. Reading it as a refusal turned
+    // every read on the surface into a 403, which is exactly the kind of thing a vocabulary shared
+    // between two crates invites.
+    let _class = mutation_class(verb);
     Decision::proceed(token, Admission::ZeroHold)
 }
 
@@ -1313,13 +1322,38 @@ pub fn mount(
     build_units: impl FnOnce(Arc<dyn AdminDispatch>) -> crate::root::kernel::ProductionUnits,
 ) -> axum::Router {
     let runtime = tokio::runtime::Handle::current();
-    let dispatch: Arc<dyn AdminDispatch> = Arc::new(RouterDispatch::new(inner, runtime));
+    let dispatch: Arc<dyn AdminDispatch> = Arc::new(RouterDispatch::new(inner.clone(), runtime));
     let node = Arc::new(AdminNode::new(kernel, build_units(dispatch)));
 
     axum::Router::new().fallback(axum::routing::any(
         move |req: axum::http::Request<axum::body::Body>| {
             let node = Arc::clone(&node);
+            let inner = inner.clone();
             async move {
+                use tower::ServiceExt;
+
+                // THE CLAIM IS WHAT DECIDES. The admin plane claims one path pattern and nothing
+                // else, and this listener carries routes that are deliberately outside it: the
+                // health probe answers on both listeners with the auth chain bypassed entirely, and
+                // it is not an administrative verb. Walking those through a loop whose decode step
+                // reads a table they were never in would refuse a route that has always answered.
+                // So the claim is asked first, and a path outside it goes straight to the surface it
+                // already reached.
+                let path = req.uri().path().to_string();
+                let claimed = path.starts_with(busbar_contract::surface::ADMIN_PREFIX);
+
+                // AND THE TABLE IS WHAT DECIDES WHICH UNIT. Inside the claim, the plane declares a
+                // closed table of operations, and a method-and-path pair outside it is not a unit
+                // this plane has — it is a request the surface's own fallback already answers, with
+                // the 404 or the 405 that release pinned. Manufacturing a status here for a pair
+                // this plane never claimed would be the root inventing an answer it has no basis
+                // for, and the whole point of the seam is that it never does that.
+                let declared =
+                    busbar_plane_admin::verbs::resolve(req.method().as_str(), &path).is_some();
+                if !claimed || !declared {
+                    return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
+                }
+
                 let (parts, body) = req.into_parts();
                 let bytes = axum::body::to_bytes(body, usize::MAX)
                     .await
@@ -1483,9 +1517,18 @@ mod tests {
             mutation_class(KernelVerb::PostPluginsInspect),
             MutationClass::PluginInspect
         );
+        // `Forbidden` names a verb the MUTATION budget does not apply to — every read is one. It is
+        // not a refusal, and an admit step that read it as one turned every read on the surface into
+        // a 403. That is the hazard a vocabulary shared between two crates invites, so the reading
+        // is pinned here rather than left to the name.
         assert_eq!(
             mutation_class(KernelVerb::GetAudit),
             MutationClass::Forbidden
+        );
+        assert_eq!(MutationClass::Forbidden.limit(), 0);
+        assert!(
+            busbar_unit_scope::admin_required_scope("GET", "/api/v1/admin/audit")
+                == Scope::ReadOnly
         );
     }
 
