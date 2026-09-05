@@ -67,9 +67,20 @@ pub fn normalise(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out = String::with_capacity(input.len());
     let mut i = 0usize;
+    // The `>` that closes whatever tag opens at or after the cursor, remembered rather than
+    // re-derived. The cursor only ever moves FORWARD, so this answer is refreshed only once the
+    // cursor passes it, and each refresh resumes where the last one stopped — every byte of the
+    // input is examined by this scan at most once across the whole call. Re-scanning `bytes[i..]`
+    // for every `<` instead would answer identically and cost O(n^2) on input an untrusted upstream
+    // chooses, which is the shape `<a<a<a…` has. `None` is terminal and must stay terminal: with no
+    // `>` left after the cursor, no later `<` can close either, so there is nothing to look for.
+    let mut next_tag_end = find_tag_end(bytes, 0);
     while i < bytes.len() {
         if bytes[i] == b'<' && starts_tag(bytes, i) {
-            if let Some(end) = find_tag_end(bytes, i) {
+            if next_tag_end.is_some_and(|end| end < i) {
+                next_tag_end = find_tag_end(bytes, i);
+            }
+            if let Some(end) = next_tag_end {
                 i = end + 1;
                 continue;
             }

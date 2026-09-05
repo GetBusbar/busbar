@@ -158,3 +158,43 @@ fn semantic_injection_survives_and_that_is_the_documented_limit() {
          makes the limit a claim the suite defends rather than a caveat in prose."
     );
 }
+
+/// AN UNTERMINATED `<` MUST NOT COST MORE THAN THE BYTES IT ARRIVED IN.
+///
+/// Tool output and `resources/read` content are bytes an upstream MCP server chose, and this is the
+/// module that exists because of that. Re-scanning the whole tail for every `<letter` turns a 200 KB
+/// body into billions of byte comparisons on a served request — cheap to send, expensive to receive.
+/// The output assertion is the correctness half (nothing is dropped, nothing is rewritten); the
+/// wall-clock bound is the half that fails the moment the scan goes quadratic again.
+#[test]
+fn unterminated_tags_are_kept_verbatim_without_rescanning_the_tail() {
+    let hostile = "<a".repeat(100_000);
+    let started = std::time::Instant::now();
+    let out = normalise(&hostile);
+    let elapsed = started.elapsed();
+    assert_eq!(
+        out, hostile,
+        "with no `>` anywhere in the input, every `<` is a dangling `<`, i.e. ordinary text"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "normalising {} bytes of `>`-less input took {elapsed:?}: the tag scan is re-reading the \
+         tail for every `<` instead of remembering that no `>` remains",
+        hostile.len()
+    );
+}
+
+/// The same monotone scan must not change WHICH bytes leave: tags interleaved with dangling `<`
+/// still strip exactly, and the first unterminated `<` does not swallow the tail behind it.
+#[test]
+fn a_dangling_bracket_after_real_tags_still_strips_only_the_tags() {
+    assert_eq!(
+        normalise("<b>keep</b> a < b <system>x</system>"),
+        "keep a < b x"
+    );
+    assert_eq!(
+        normalise("<b>keep</b> then <system without a close"),
+        "keep then <system without a close"
+    );
+    assert_eq!(normalise("<a<b>tail"), "tail");
+}
