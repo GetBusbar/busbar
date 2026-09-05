@@ -391,7 +391,12 @@ boot.refusal|BOOT-150|validate
 boot.refusal|BOOT-151|validate
 boot.refusal|BOOT-152|validate
 boot.refusal|BOOT-153|boot
+boot.refusal|BOOT-162|boot
+boot.refusal|BOOT-170|boot
 boot.refusal|BOOT-171|boot
+boot.refusal|BOOT-172|boot
+boot.refusal|BOOT-174|boot
+boot.refusal|BOOT-175|boot
 boot.refusal|BOOT-180|boot
 boot.refusal|BOOT-181|boot
 boot.refusal|BOOT-184|boot
@@ -443,6 +448,7 @@ boot.warning|BOOT-W04|validate
 boot.warning|BOOT-W10|boot
 boot.warning|BOOT-W11|boot
 boot.warning|BOOT-W12|boot
+boot.warning|BOOT-W13|boot
 boot.warning|BOOT-W14|boot
 boot.warning|BOOT-W15|boot
 boot.warning|BOOT-W16|boot
@@ -453,7 +459,9 @@ boot.warning|BOOT-W20|boot
 boot.warning|BOOT-W21|boot
 boot.warning|BOOT-W22|boot
 boot.warning|BOOT-W23|boot
+boot.warning|BOOT-W24|boot
 boot.warning|BOOT-W25|boot
+boot.warning|BOOT-W26|boot
 boot.warning|BOOT-W30|validate
 boot.warning|BOOT-W31|boot
 boot.warning|BOOT-W32|boot
