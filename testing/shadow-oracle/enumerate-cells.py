@@ -13,6 +13,8 @@ Sources (GENERATED or pinned, all already gated):
   qa/field-inventory.json   -- LLM: the dialects + directions + streaming flag
   tests/migration-corpus/   -- every real config.yaml shipped since v0.10 (config.migrate family)
   fixtures/openapi-1.5.5.json + fixtures/admin-bodies.json -- the 66 admin operations (admin.ops)
+  fixtures/admin-readback.json -- the follow-up GET each mutating admin op is checked against, so a
+    write's SIDE EFFECT is part of the golden, not just its own response
   fixtures/boot-mutations.json -- one config mutation per inventoried boot refusal/warning
   the routes inventory (docs/design/inventory/1.5.5-routes-admin.md) -- pinned here as literals for
     the cross-cutting HTTP surfaces (ops.scrape, http.crosscut) and the CLI (cli)
@@ -242,7 +244,11 @@ def crosscut_cells() -> list[dict]:
 # an unauthenticated cell, and where the fixture provides them a bad-body, a not-found, a stale
 # If-Match, a malformed If-Match and an idempotent-replay cell. Every cell boots fresh, so the
 # `order` of the fixture is turned into per-op PREREQUISITES (the earlier ops on the same resource).
+# Every MUTATING op's happy cell (and its idempotent-replay copy) also carries a `request.post`: the
+# follow-up GET named in fixtures/admin-readback.json, recorded as `effects.readback` after the write
+# — so a 200 that wrote nothing shows up as a diff, not a pass.
 ADMIN_BODIES = FIXTURES / "admin-bodies.json"
+ADMIN_READBACK = FIXTURES / "admin-readback.json"
 BOOT_MUTATIONS = FIXTURES / "boot-mutations.json"
 # resource → the ops that must precede an op on it within one boot (create before update/delete)
 ADMIN_PRE = {
@@ -268,6 +274,25 @@ def _req_of(op: dict, variant: dict, *, auth="admin") -> dict:
             "headers": variant.get("headers") or {}, "auth": auth, "listener": "admin",
             "body": (json.dumps(variant["body"], separators=(",", ":"), sort_keys=True)
                      if isinstance(variant.get("body"), (dict, list)) else variant.get("body"))}
+
+
+def _readback_post(opid: str, write_path: str) -> list[dict] | None:
+    """Turn this op's fixtures/admin-readback.json entry into a `request.post` follow-up GET (or
+    None for a `none` entry / an op the file does not mention). See that file for the kind vocabulary
+    -- `resource` paths keep their literal `{RESP:/pointer}` placeholder; record.sh fills it in from
+    the write's own captured response at record time."""
+    if not ADMIN_READBACK.exists():
+        return None
+    spec = json.loads(ADMIN_READBACK.read_text())["readback"].get(opid)
+    if not spec or spec["kind"] == "none":
+        return None
+    if spec["kind"] == "same":
+        path = write_path
+    elif spec["kind"] == "parent":
+        path = write_path.rsplit("/", 1)[0]
+    else:  # fixed | resource: the spec names the path outright
+        path = spec["path"]
+    return [{"method": "GET", "path": path, "headers": {}, "auth": "admin", "listener": "admin"}]
 
 
 def admin_cells() -> list[dict]:
@@ -301,14 +326,21 @@ def admin_cells() -> list[dict]:
             pre = pre_chain(opid)
             if pre:
                 c["request"]["pre"] = pre
+            if op.get("mutating"):
+                post = _readback_post(opid, c["request"]["path"])
+                if post:
+                    c["request"]["post"] = post
             cells.append(c)
             if op.get("idempotent"):
+                # the SAME read-back: a replayed write must show the same state as the first write did.
                 c2 = json.loads(json.dumps(c)); c2["id"] = f"admin.ops|{opid}|idempotent-replay"
                 c2["request"]["repeat"] = 2; c2["why"] = "same Idempotency-Key twice: the replay returns the first response (PB-21)"
                 cells.append(c2)
             if op.get("if_match") and stale:
                 for kind in ("stale", "malformed"):
+                    # a stale/malformed If-Match is a REFUSED write (409/400): no read-back, nothing changed
                     c3 = json.loads(json.dumps(c)); c3["id"] = f"admin.ops|{opid}|if-match-{kind}"
+                    c3["request"].pop("post", None)
                     c3["request"]["headers"] = {**c3["request"]["headers"], stale.get("header", "If-Match"): stale[kind]}
                     c3["why"] = f"If-Match {kind}: {stale.get(kind + '_expect')} (PB-100)"
                     cells.append(c3)
@@ -457,12 +489,97 @@ def hooks_cells() -> list[dict]:
     ]
 
 
+def concurrent(id_: str, family: str, method: str, path: str, n: int, *, auth: str = "ok", listener: str = "data",
+               headers: dict | None = None, body: str | None = None, why: str = "", **extra) -> dict:
+    """A `driver: concurrent` cell: N parallel copies of the same request (record.sh fires them all
+    at once and records the sorted multiset of statuses + the usage/metrics delta — see record.sh's
+    `record_concurrent_cell`), never a single response."""
+    id_ = id_.replace("/", "")
+    c = {"id": id_, "plane": "core", "family": family, "driver": "concurrent", "outcome": "ok",
+         "request": {"method": method, "path": path, "headers": headers or {}, "body": body,
+                     "auth": auth, "listener": listener},
+         "concurrent": {"n": n}, "why": why}
+    c.update(extra)
+    return c
+
+
+def concurrency_cells() -> list[dict]:
+    """Inbound/lane concurrency has no cell without a threaded mock and a `concurrent` driver: N
+    parallel copies of the same request, judged on the sorted multiset of statuses they come back
+    with plus the usage delta. Every cell boots fresh — in-flight permits must never leak from an
+    earlier cell into this one's count."""
+    F = "concurrency"
+    ok_body = json.dumps({"model": "m-openai-chat", "messages": [{"role": "user", "content": "ping"}]},
+                          separators=(",", ":"), sort_keys=True)
+    lc1_body = json.dumps({"model": "oracle-lc1", "messages": [{"role": "user", "content": "ping"}]},
+                           separators=(",", ":"), sort_keys=True)
+    return [
+        concurrent("concurrency|ok|n8", F, "POST", "/v1/chat/completions", 8, body=ok_body, fresh=True,
+                   why="8 parallel requests against an UNBOUNDED lane: all 200, usage = 8x — "
+                       "concurrency alone must never perturb billing"),
+        # `mock_control: slow` holds every admitted request open for the mock's whole sleep (~8s):
+        # without it the mock answers so fast that N "parallel" curls (forked one at a time by the
+        # shell, microseconds apart) mostly slip through serially instead of ever genuinely
+        # overlapping — the shed/AtCapacity arm below needs real, sustained in-flight overlap to fire.
+        concurrent("concurrency|inbound-shed|n8", F, "POST", "/v1/chat/completions", 8, body=ok_body, fresh=True,
+                   config_variant="inbound-concurrency-2", mock_control={"*": "slow"},
+                   why="limits.max_inbound_concurrent: 2 sheds the excess immediately (never queued) "
+                       "with the static overloaded 503 body + Retry-After: 1 — 2 admitted, 6 shed"),
+        concurrent("concurrency|lane-atcapacity|n4", F, "POST", "/v1/chat/completions", 4, body=lc1_body, fresh=True,
+                   mock_control={"*": "slow"},
+                   why="pool oracle-lc1's one member has models.<m>.max_concurrent: 1: 1 admitted, "
+                       "the other 3 hit AtCapacity and are skipped within the pick, falling through "
+                       "to the pool's default on_exhausted 503 (Retry-After: the 2s AT_CAPACITY floor "
+                       "— no breaker cooldown is involved here, so it never beats that floor)"),
+    ]
+
+
+def queue_cells() -> list[dict]:
+    """`on_exhausted: { queue: { max_ms } }` (pool oracle-q, one member, max_concurrent: 1): a
+    bounded wait for the permit to free rather than an immediate shed, and the bounded-wait-expires
+    arm when the member can never free it in time."""
+    F = "queue"
+    q_body = json.dumps({"model": "oracle-q", "messages": [{"role": "user", "content": "ping"}]},
+                         separators=(",", ":"), sort_keys=True)
+    return [
+        concurrent("queue|serve|n3", F, "POST", "/v1/chat/completions", 3, body=q_body, fresh=True,
+                   why="on_exhausted: queue{max_ms: 4000}: 1 admitted immediately, the other 2 queue "
+                       "on the freed permit and are served once the first request completes — all "
+                       "200; busbar_pool_queued is the park-depth gauge for this"),
+        concurrent("queue|timeout|n2", F, "POST", "/v1/chat/completions", 2, body=q_body, fresh=True,
+                   config_variant="queue-timeout", mock_control={"m-queue-lane": "slow"},
+                   why="queue.max_ms shrunk to 50ms against a `slow` member that never frees its "
+                       "permit in time: the bounded wait expires and the queued request falls "
+                       "through to the pool's on_exhausted 503 + Retry-After, same shape as an "
+                       "immediate shed"),
+    ]
+
+
+def cooldown_cells() -> list[dict]:
+    """Trip pool oracle-cd's one member (mock `down`, base_cooldown_secs 1, consecutive_n 1), settle
+    the mock, wait past the jittered cooldown, and send the same request again: served 200. Fully
+    self-contained (scripts/cooldown-trip.sh boots its own busbar on its own ports), because the
+    sleep-past-cooldown step needs precise timing no shared-boot bookkeeping here provides."""
+    return [{
+        "id": "cooldown|trip-then-serve", "plane": "core", "family": "cooldown", "driver": "script",
+        "script": {"name": "cooldown-trip.sh"}, "outcome": "ok",
+        "why": ("base_cooldown_secs 1: a tripped member is refused (503, nothing billed), then once "
+                "the jittered cooldown elapses the SAME request is served (200, billed) — the "
+                "breaker's own trip-then-recover cycle. Proven on the CUMULATIVE counters "
+                "busbar_breaker_trips_total / busbar_upstream_failures_total, which survive the "
+                "scrape-time busbar_lane_state gauge settling back to its starting value (0 -> 2 -> "
+                "0) by the time this cell's one before/after snapshot is taken, plus the "
+                "requests-vs-billable_requests split in the usage delta."),
+    }]
+
+
 def main() -> int:
     minv = json.loads(METHOD_INV.read_text())
     finv = json.loads(FIELD_INV.read_text())
     cells = sorted(llm_cells(finv) + protocol_cells(minv) + cli_cells() + migrate_cells()
                    + scrape_cells() + crosscut_cells() + admin_cells() + boot_cells() + failover_cells()
-                   + plugin_cells() + billing_cells() + hooks_cells(),
+                   + plugin_cells() + billing_cells() + hooks_cells()
+                   + concurrency_cells() + queue_cells() + cooldown_cells(),
                    key=lambda c: c["id"])
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "cell ids must be unique"

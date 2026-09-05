@@ -25,15 +25,31 @@ Outcome controls (the recorder sets them per cell):
                                     -> a fixed SSE / streamed sequence in that dialect
 
 Usage: mock-upstream.py <port> [marker]
+
+Egress capture (opt-in, for proving what busbar actually SENT upstream — not just what came back):
+  When the environment variable ORACLE_MOCK_CAPTURE_DIR is set, every handled request (whatever the
+  outcome — 200, a control-file failure, a 404 for an unrouted path, all of it) is written as its own
+  JSON file in that directory, named "<ns>-<pid>-<seq>.json" where <ns> is a nanosecond timestamp, so
+  that filenames sort in request order. Each file holds exactly:
+    {"path": <raw request path, unmodified>, "method": "POST",
+     "headers": {<lowercased header name>: <value>, ...}, "body": <utf-8 str, or "base64:..." if not>}
+  This lets a recorder that snapshots the directory's filename list immediately before issuing a
+  request, and again immediately after, take "the filenames present after that weren't present
+  before" (sorted, so ordering is preserved for cells that fire more than one egress request) as the
+  egress record(s) for that one cell — no other coordination needed. When the env var is unset
+  (the default), nothing is captured and this mock's behaviour is unchanged.
 """
+import itertools
 import json
 import os
 import sys
+import time
 from urllib.parse import unquote
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MARKER = "oracle-marker"
 IN_TOK, OUT_TOK = 11, 7
+_capture_seq = itertools.count()
 
 
 def j(obj) -> bytes:
@@ -138,7 +154,7 @@ class H(BaseHTTPRequestHandler):
     sys_version = ""
 
     def _send(self, status, body, ctype="application/json"):
-        if getattr(self.server, "cut", False) and status == 200:
+        if getattr(self, "cut", False) and status == 200:
             # `cut`: headers + the first frame (or half the body), then the socket dies — the
             # "upstream died mid-response" arm of the refund table (PB-27)
             first = body.split(b"\n\n", 1)[0] + b"\n\n" if b"\n\n" in body else body[: max(1, len(body) // 2)]
@@ -159,6 +175,29 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _capture_egress(self, method, path, raw_body):
+        # See the module docstring for the on-disk contract. Best-effort: a capture failure must
+        # never take down the mock or change the response busbar gets.
+        cap_dir = os.environ.get("ORACLE_MOCK_CAPTURE_DIR")
+        if not cap_dir:
+            return
+        try:
+            os.makedirs(cap_dir, exist_ok=True)
+            headers = {k.lower(): v for k, v in self.headers.items()}
+            try:
+                body = raw_body.decode("utf-8")
+            except UnicodeDecodeError:
+                import base64
+                body = "base64:" + base64.b64encode(raw_body).decode()
+            record = {"path": path, "method": method, "headers": headers, "body": body}
+            name = f"{time.time_ns()}-{os.getpid()}-{next(_capture_seq)}.json"
+            tmp_path = os.path.join(cap_dir, f".{name}.tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(record, f, separators=(",", ":"), sort_keys=True)
+            os.replace(tmp_path, os.path.join(cap_dir, name))  # atomic: no half-written file is ever "newest"
+        except OSError:
+            pass
+
     def do_GET(self):
         # Readiness only (fleet-fixtures wait_for_http probes with GET /). Every dialect is POST.
         if self.path.split("?", 1)[0] == "/":
@@ -168,6 +207,9 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(n) if n else b""
+        # Capture the egress request as busbar actually sent it, before any routing/outcome logic
+        # below can short-circuit — a 503/404/control-file response is still a request that was made.
+        self._capture_egress("POST", self.path, raw)
         try:
             req = json.loads(raw) if raw else {}
         except Exception:
@@ -217,7 +259,10 @@ class H(BaseHTTPRequestHandler):
         if ctl == "slow":
             import time
             time.sleep(float(os.environ.get("ORACLE_MOCK_SLOW_SECS", "8")))
-        self.server.cut = (ctl == "cut")  # type: ignore[attr-defined]
+        # Per-request, not server-global: each accepted connection gets its own handler instance,
+        # so storing this on `self` (not `self.server`) keeps concurrent requests from clobbering
+        # each other's cut/no-cut decision once the server is threaded.
+        self.cut = (ctl == "cut")
 
         want_stream = bool(req.get("stream"))
         if p == "/v1/messages":
@@ -250,10 +295,14 @@ def main():
     port = int(sys.argv[1])
     marker = sys.argv[2] if len(sys.argv) > 2 else MARKER
     control_file = sys.argv[3] if len(sys.argv) > 3 else ""
-    srv = HTTPServer(("127.0.0.1", port), H)
+    # Threaded so concurrency/queue/breaker cells can hit this mock with several requests in
+    # flight at once — a single-threaded HTTPServer would serialize them and make a "concurrent"
+    # cell impossible to record honestly. daemon_threads so a stray "slow" sleeper doesn't block
+    # process exit.
+    srv = ThreadingHTTPServer(("127.0.0.1", port), H)
+    srv.daemon_threads = True
     srv.marker = marker  # type: ignore[attr-defined]
     srv.control_file = control_file  # type: ignore[attr-defined]
-    srv.cut = False  # type: ignore[attr-defined]
     srv.serve_forever()
 
 

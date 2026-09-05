@@ -16,6 +16,9 @@ What is normalized (each rule is a named entry in `applied`):
   audit.hash          audit-chain hashes / seals (hex >= 32) -> "<HASH>"; sealed timestamps -> 0
   metrics.absolute    metrics are captured as DELTAS by the recorder; absolutes never enter a golden
   metrics.timing      duration _sum / quantile / histogram-bucket samples DROPPED (the _count stays)
+  metrics.cooldown    a cooldown/breaker metric sample KEEPS its key (presence/absence is the
+                      state-transition contract a cooldown-family cell proves) but its value — a
+                      jittered base_cooldown_secs — is normalized to "<JITTER>"
   hdr.retry-after     Retry-After value -> "<RETRY>" (presence is the contract; the value is clock/jitter)
   id.wire also maps v4 UUIDs -> "<UUID>"; header values get the same id rules as bodies
   key.id              the minted key id (differs per run) -> "<KEY>"  (recorder passes the real id)
@@ -39,6 +42,19 @@ What is normalized (each rule is a named entry in `applied`):
   body.keep-lines     a cell whose contract is the ABSENCE of something (`body_lines` on the cell)
                       keeps only the body lines matching that regex; an empty result is the
                       contract, and any surviving line is a diff
+  egress.cred         in effects.egress[].headers, the VALUE of an Authorization / x-api-key /
+                      x-goog-api-key header, or of any header whose value is an AWS SigV4
+                      "AWS4-HMAC-SHA256 Credential=..." string -> "<CRED>" (the credential differs
+                      per run/environment; whether it rode upstream at all, and everything else
+                      about the egress request, is deliberately left byte-exact so this cell can
+                      catch a dropped tool list, a mangled system prompt, an injected max_tokens, or
+                      a client header that leaked upstream when it should not have)
+  egress.body         effects.egress[].body is parsed as JSON and re-serialized canonically (same
+                      technique as a response body) so key order/whitespace cannot masquerade as a
+                      diff; a non-JSON body is left untouched. No id/timestamp scrubbing rule from
+                      the list above is applied to an egress body or to any non-credential egress
+                      header — that is the point: this is the one place in the normalizer that must
+                      stay maximally strict
 
 Usage: normalize.py <captured.json> [--key-id <id>] [--keep-body-lines <regex>] > normalized.json
 
@@ -107,7 +123,11 @@ def norm_scalar_str(s: str, applied: set) -> str:
     return s
 
 
-METRIC_TIMING = re.compile(r"(_seconds_sum(\{|$))|(_seconds\{[^}]*quantile=)|(_bucket\{)|(_seconds$)|(recovery_hint_ms)|(cooldown)")
+METRIC_TIMING = re.compile(r"(_seconds_sum(\{|$))|(_seconds\{[^}]*quantile=)|(_bucket\{)|(_seconds$)|(recovery_hint_ms)")
+# A cooldown/breaker-jitter sample is a real state signal (the metric line's PRESENCE is a contract —
+# it is how a cooldown-family cell proves the breaker actually tripped/settled) but its exact seconds
+# are base_cooldown_secs jittered +/-10%, so only the VALUE is normalized away, never the key.
+METRIC_COOLDOWN = re.compile(r"cooldown")
 # JSON keys whose VALUE is a per-request synthesized id with no recognisable prefix (gemini responseId).
 ID_KEYS = {"responseId", "request_id", "requestId"}
 
@@ -128,6 +148,16 @@ def norm_json(v, applied: set, key_id: str | None, parent_key: str = ""):
                 # a latency SUM / quantile sample is a measurement, never a contract, and a summary
                 # emits its quantiles only once its window has samples — DROP the key; the COUNT stays
                 applied.add("metrics.timing"); continue
+            if parent_key == "metrics" and METRIC_COOLDOWN.search(k):
+                # keep the key (a cooldown metric appearing/disappearing IS the state-transition
+                # contract for the cooldown family) but blank the jittered value
+                nk = k
+                if key_id and key_id in nk:
+                    applied.add("key.id"); nk = nk.replace(key_id, "<KEY>")
+                nk = norm_scalar_str(nk, applied)
+                applied.add("metrics.cooldown")
+                out[nk] = "<JITTER>" if isinstance(x, (int, float)) else norm_json(x, applied, key_id, k)
+                continue
             if parent_key == "metrics":
                 # metric LABELS carry the minted key id (bucket="vk_…") and other per-run ids
                 nk = k
@@ -146,6 +176,46 @@ def norm_json(v, applied: set, key_id: str | None, parent_key: str = ""):
             applied.add("key.id"); return "<KEY>"
         return norm_scalar_str(v, applied)
     return v
+
+
+CRED_HEADERS = {"authorization", "x-api-key", "x-goog-api-key"}
+SIGV4_RX = re.compile(r"^AWS4-HMAC-SHA256\b")
+
+
+def norm_egress_entry(entry, applied: set):
+    """One recorded upstream request ({path, method, headers, body}). Deliberately NOT run through
+    norm_json: only a credential value is scrubbed and only the body is re-serialized canonically —
+    everything else (path, method, every other header value) stays byte-exact, because this is the
+    seam that must catch a dropped/mangled egress request, not hide it."""
+    if not isinstance(entry, dict):
+        return entry
+    out = dict(entry)
+    headers = entry.get("headers")
+    if isinstance(headers, dict):
+        new_headers = {}
+        for k, v in headers.items():
+            lk = k.lower()
+            if lk in CRED_HEADERS or (isinstance(v, str) and SIGV4_RX.match(v)):
+                applied.add("egress.cred"); new_headers[lk] = "<CRED>"
+            else:
+                new_headers[lk] = v
+        out["headers"] = new_headers
+    body = entry.get("body")
+    if isinstance(body, str):
+        stripped = body.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                out["body"] = json.loads(stripped)
+                applied.add("egress.body")
+            except Exception:
+                pass
+    return out
+
+
+def norm_egress(egress, applied: set):
+    if not isinstance(egress, list):
+        return egress
+    return [norm_egress_entry(e, applied) for e in egress]
 
 
 def sort_runs(lines: list, rx, rule: str, applied: set) -> list:
@@ -224,11 +294,18 @@ def normalize(cap: dict, key_id: str | None, keep_lines: str | None = None) -> d
     headers = norm_headers(cap.get("headers", {}), applied)
     if body_rules and "content-length" in headers:
         applied.add("hdr.length"); headers["content-length"] = "<LEN>"
+    # `egress` is pulled out before the generic pass: norm_json's id/ts scrubbing rules must never
+    # touch it (see the egress.* rule docs above) — it gets only its own, much stricter, treatment.
+    effects_in = dict(cap.get("effects", {}))
+    egress_in = effects_in.pop("egress", None)
+    effects = norm_json(effects_in, applied, key_id)
+    if egress_in is not None:
+        effects["egress"] = norm_egress(egress_in, applied)
     out = {
         "status": cap.get("status"),
         "headers": headers,
         "body": body,
-        "effects": norm_json(cap.get("effects", {}), applied, key_id),
+        "effects": effects,
     }
     if isinstance(out["effects"].get("stderr"), str):
         out["effects"]["stderr"] = norm_text(out["effects"]["stderr"], applied)

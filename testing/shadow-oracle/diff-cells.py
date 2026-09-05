@@ -36,11 +36,11 @@ import sys
 from collections import Counter, defaultdict
 
 CLASS_ORDER = ["missing.golden", "missing.candidate", "status", "headers", "body", "effects.stderr",
-               "effects.usage", "effects.metrics", "effects.audit", "norm.rules"]
+               "effects.usage", "effects.metrics", "effects.audit", "norm.rules", "effects.egress", "effects.readback"]
 # Weight per class; a cell's weight is its family's max class weight over the classes it diverged in.
 # Money and refusal semantics dominate; cosmetics count but cannot outvote them.
 CLASS_WEIGHT = {"missing.golden": 10, "missing.candidate": 10, "status": 10, "effects.usage": 10,
-                "body": 3, "effects.stderr": 3, "effects.audit": 3, "headers": 1, "effects.metrics": 1, "norm.rules": 1}
+                "body": 3, "effects.stderr": 3, "effects.audit": 3, "headers": 1, "effects.metrics": 1, "norm.rules": 1, "effects.egress": 10, "effects.readback": 10}
 # Families where BODY bytes are the contract itself (admin responses, boot messages, CLI output).
 BODY_IS_CONTRACT = {"admin.ops", "boot.refusal", "boot.warning", "config.migrate", "cli", "ops.scrape"}
 
@@ -144,7 +144,7 @@ def compare(g: dict, c: dict) -> tuple[list, dict]:
     if bd is not None:
         classes.append("body"); detail["body"] = bd
     ge, ce = g.get("effects", {}), c.get("effects", {})
-    for k in ("usage", "metrics", "audit", "stderr"):
+    for k in ("usage", "metrics", "audit", "stderr", "egress", "readback"):
         if ge.get(k) != ce.get(k):
             classes.append(f"effects.{k}")
             if k == "stderr" and isinstance(ge.get(k), str) and isinstance(ce.get(k), str):
@@ -154,7 +154,8 @@ def compare(g: dict, c: dict) -> tuple[list, dict]:
     # ORDER canonicalizations fire only when the input happened to be unsorted; whether a map came
     # out sorted on one run is not a contract, so those rules never count as one-sided.
     ORDER_RULES = {"boot.pool-order", "boot.error-order", "boot.pair-order", "keys.order"}
-    ga, ca = [r for r in g.get("applied", []) if r not in ORDER_RULES], [r for r in c.get("applied", []) if r not in ORDER_RULES]
+    ga = [r for r in g.get("applied", []) + (g.get("effects") or {}).get("exec_rules", []) if r not in ORDER_RULES]
+    ca = [r for r in c.get("applied", []) + (c.get("effects") or {}).get("exec_rules", []) if r not in ORDER_RULES]
     if sorted(ga) != sorted(ca):
         classes.append("norm.rules")
         detail["norm.rules"] = {"only_golden": sorted(set(ga) - set(ca)), "only_candidate": sorted(set(ca) - set(ga))}
@@ -206,7 +207,35 @@ def main() -> int:
     ap.add_argument("--cells", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "cells.json"))
     ap.add_argument("--family", default="")
     ap.add_argument("--accepted", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "accepted-differences.json"))
+    ap.add_argument("--allow-harness-skew", action="store_true",
+                     help="proceed even if golden and candidate were produced by different (or unrecorded) "
+                          "testing/shadow-oracle revisions; without this the differ refuses to compare them")
     a = ap.parse_args()
+
+    def meta(p):
+        try:
+            return json.load(open(p, encoding="utf-8"))
+        except Exception:
+            return {}
+
+    gmeta = meta(os.path.join(a.golden, "meta.json"))
+    cmeta = meta(os.path.join(a.candidate, "meta.json"))
+    grev, crev = gmeta.get("harness_rev"), cmeta.get("harness_rev")
+    # A diff only means "this is busbar's behavior" if the same recorder, normalizer and cell set
+    # produced both sides. Either side missing its provenance is exactly as unproven as the two
+    # sides disagreeing — a golden with no harness_rev cannot be trusted to match anything.
+    if grev is None or crev is None or grev != crev:
+        if not a.allow_harness_skew:
+            if grev is None or crev is None:
+                why = f"golden harness_rev={grev!r} candidate harness_rev={crev!r} (one or both meta.json predate this field)"
+            else:
+                why = f"golden harness_rev={grev} candidate harness_rev={crev}"
+            sys.stderr.write(
+                "diff-cells: refusing to compare — golden and candidate were not proven to come from the "
+                f"same shadow-oracle harness revision ({why}). A diff between them may be explained by a "
+                "change to normalize.py/capture.py/cells.json/etc, not by busbar's behavior. Re-record both "
+                "with the current testing/shadow-oracle tree, or pass --allow-harness-skew to compare anyway.\n")
+            return 2
     accepted, transforms = [], []
     if os.path.exists(a.accepted):
         for e in json.load(open(a.accepted, encoding="utf-8")).get("accepted", []):
@@ -335,18 +364,12 @@ def main() -> int:
     for fam, s in sorted(fam_stats.items()):
         fam_table[fam] = {"owed": s["owed"], "diverging": s["diverging"], "accepted": s["accepted"], "owed_w": s["owed_w"], "div_w": s["div_w"],
                           "ratio": (s["div_w"] / s["owed_w"]) if s["owed_w"] else 0.0}
-    gv = (a.golden, os.path.join(a.golden, "meta.json"))
-    cv = (a.candidate, os.path.join(a.candidate, "meta.json"))
-
-    def meta(p):
-        try:
-            return json.load(open(p))
-        except Exception:
-            return {}
-
     report = {
-        "meta": {"golden": a.golden, "candidate": a.candidate, "golden_version": meta(gv[1]).get("version"),
-                 "candidate_version": meta(cv[1]).get("version"), "cells_json": a.cells, "family_filter": a.family},
+        "meta": {"golden": a.golden, "candidate": a.candidate, "golden_version": gmeta.get("version"),
+                 "candidate_version": cmeta.get("version"), "cells_json": a.cells, "family_filter": a.family,
+                 "golden_binary_sha256": gmeta.get("binary_sha256"), "candidate_binary_sha256": cmeta.get("binary_sha256"),
+                 "golden_harness_rev": grev, "candidate_harness_rev": crev,
+                 "harness_skew_allowed": bool(a.allow_harness_skew and (grev is None or crev is None or grev != crev))},
         "totals": {"cells_in_scope": len(cells), "owed": len(owed), "gaps": len(gaps),
                    "diverging": sum(1 for r in results if r["classes"] and "accepted" not in r),
                    "accepted": sum(1 for r in results if "accepted" in r), "W": W, "D": D,
@@ -369,7 +392,13 @@ def main() -> int:
 
     # report.md
     lines = [f"# Shadow-oracle replay: {report['meta'].get('golden_version')} (golden) vs {report['meta'].get('candidate_version')} (candidate)", "",
-             f"owed {len(owed)} · diverging {report['totals']['diverging']} · accepted {report['totals']['accepted']} · gaps {len(gaps)} · weighted D/W = {report['totals']['ratio']:.4f}", "",
+             f"golden binary sha256: `{report['meta'].get('golden_binary_sha256') or 'unknown'}` · "
+             f"candidate binary sha256: `{report['meta'].get('candidate_binary_sha256') or 'unknown'}`", "",
+             f"owed {len(owed)} · diverging {report['totals']['diverging']} · accepted {report['totals']['accepted']} · gaps {len(gaps)} · weighted D/W = {report['totals']['ratio']:.4f}", ""]
+    if report["meta"]["harness_skew_allowed"]:
+        lines += [f"**--allow-harness-skew was used**: golden harness_rev `{grev}`, candidate harness_rev `{crev}`. "
+                  "A divergence below may be explained by a harness change, not busbar's behavior.", ""]
+    lines += ["",
              "| family | owed | diverging | accepted | D/W |", "|---|---|---|---|---|"]
     for fam, s in fam_table.items():
         lines.append(f"| {fam} | {s['owed']} | {s['diverging']} | {s['accepted']} | {s['ratio']:.3f} |")

@@ -43,27 +43,30 @@
     }
   ],
   "counts": {
-    "total": 2203,
+    "total": 2213,
     "by_plane": {
       "a2a": 468,
-      "core": 696,
+      "core": 706,
       "llm": 127,
       "mcp": 912
     },
     "by_family": {
       "a2a": 468,
-      "admin.ops": 227,
+      "admin.ops": 231,
       "billing": 11,
       "boot.refusal": 205,
       "boot.warning": 31,
       "cli": 14,
+      "concurrency": 3,
       "config.migrate": 138,
+      "cooldown": 1,
       "hooks": 6,
       "http.crosscut": 20,
       "llm.wire": 127,
       "mcp": 912,
       "ops.scrape": 14,
       "plugins": 14,
+      "queue": 2,
       "route.failover": 16
     }
   },
@@ -5316,6 +5319,15 @@
             "listener": "admin",
             "body": "{\"module\":\"request-log-file\",\"settings\":{\"path\":\"{TMP}/oracle-request-log.jsonl\"}}"
           }
+        ],
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/export/oracle-log",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
         ]
       },
       "why": "204 no content; deletes the `oracle-log` instance created by PutExportName earlier in the epoch. Deleting a base-defined (config.yaml) instance such as `metrics"
@@ -5436,6 +5448,15 @@
             "listener": "admin",
             "body": "{\"config\":{\"limits\":[{\"budget\":5,\"per\":\"day\"}]},\"name\":\"oracle-added\"}"
           }
+        ],
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/groups/oracle-added",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
         ]
       },
       "why": "204 no content. A group with bound keys is 409 (Cond::BoundKeys); a group that is still a parent is 409 (Cond::StillParent); base-defined (`oracle`, `broke`) is"
@@ -5522,7 +5543,16 @@
         "headers": {},
         "body": null,
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/hooks/busbar-headroom",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "ok: null \u2014 no hook exists on the oracle config; needs plugin fixture. Unknown name 404; base-defined 409; stale If-Match 409. | oracle: variant=hooks (published",
       "config_variant": "hooks"
@@ -5643,6 +5673,15 @@
             "listener": "admin",
             "body": "{\"module\":\"admin-tokens\",\"token\":{\"env\":\"BUSBAR_ADMIN_TOKEN\"}}"
           }
+        ],
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/identity-providers/oracle-idp2",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
         ]
       },
       "why": "204; deletes `oracle-idp2` created earlier in the epoch. Deleting the base-defined `admin-tokens` (also the caller's own chain member) is 409 BaseDefined/StillR"
@@ -5727,7 +5766,16 @@
         "headers": {},
         "body": null,
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/keys/{KEY_NOSCOPE}",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "204; tombstones {KEY_NOSCOPE} (revoke-AND-forget). Run LAST among key ops. An over-long id is 400."
     },
@@ -5847,6 +5895,15 @@
             "listener": "admin",
             "body": "{\"limits\":{\"request_body_max_bytes\":33554432}}"
           }
+        ],
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/config/settings",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
         ]
       },
       "why": "200 OverlayResetView {changed,...}; section enum is groups|hooks|root|plugin_versions (spec + Cond::UnknownSection). The requested `limits` is NOT a 1.5.5 overl"
@@ -5895,7 +5952,16 @@
         "headers": {},
         "body": null,
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/plugins",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "ok: null \u2014 needs published plugin fixture. 204 on success; unknown file 404; invalid filename 400. No If-Match on this op. | oracle: variant=hooks (published he",
       "config_variant": "hooks"
@@ -7291,6 +7357,15 @@
             "listener": "admin",
             "body": "{\"module\":\"request-log-file\",\"settings\":{\"path\":\"{TMP}/oracle-request-log.jsonl\"}}"
           }
+        ],
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/export/oracle-log",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
         ]
       },
       "why": "200 NamedDefView; `settings` is REPLACED wholesale (never deep-merged) so `path` must be resent. Per-module settings are deny_unknown_fields (a typo inside is 4"
@@ -7437,6 +7512,15 @@
             "listener": "admin",
             "body": "{\"config\":{\"limits\":[{\"budget\":5,\"per\":\"day\"}]},\"name\":\"oracle-added\"}"
           }
+        ],
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/groups/oracle-added",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
         ]
       },
       "why": "200 GroupView; `limits` REPLACES the whole list. Body is deny_unknown_fields (additionalProperties:false) \u21d2 `bogus` 400. Patching a base-defined group is 409 (C"
@@ -7549,7 +7633,16 @@
         },
         "body": "{\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.6}}",
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/hooks/busbar-headroom",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "ok: null \u2014 needs plugin fixture. `settings` is REPLACED and pushed to the plugin commit-on-ack (Cond::SettingsPush on failure). Stale If-Match 409. | oracle: va",
       "config_variant": "hooks"
@@ -7696,6 +7789,15 @@
             "listener": "admin",
             "body": "{\"module\":\"admin-tokens\",\"token\":{\"env\":\"BUSBAR_ADMIN_TOKEN\"}}"
           }
+        ],
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/identity-providers/oracle-idp2",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
         ]
       },
       "why": "200 NamedDefView; `settings` replaced wholesale (opaque to busbar for admin-tokens). Stale If-Match 409."
@@ -7806,7 +7908,16 @@
         },
         "body": "{\"enabled\":true}",
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/keys/{KEY_OK}",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "200 KeyView; `enabled: true` is a no-op-equivalent on {KEY_OK}. `group` is three-state (absent/null/value); rebind to a missing group is 400 Cond::RebindTargetM"
     },
@@ -7952,7 +8063,16 @@
         },
         "body": "{\"config\":{\"admin_listen\":\"{ADMIN_LISTEN_ADDR}\",\"auth\":{\"admin_auth\":[\"admin-tokens\"],\"chain\":[\"keys\"],\"signing_key\":{\"file\":\"{WORK}/signing.key\"}},\"export\":{\"metrics\":{\"module\":\"prometheus\",\"settings\":{\"buffer_seconds\":60}}},\"groups\":{\"broke\":{\"limits\":[{\"per\":\"day\",\"requests\":1},{\"budget\":1,\"per\":\"day\"}]},\"oracle\":{\"limits\":[{\"budget\":1000000,\"per\":\"day\"}]}},\"identity-providers\":{\"admin-tokens\":{\"module\":\"admin-tokens\",\"token\":{\"env\":\"BUSBAR_ADMIN_TOKEN\"}}},\"limits\":{\"request_body_max_bytes\":33554432},\"listen\":\"{LISTEN_ADDR}\",\"models\":{\"m-anthropic\":{\"provider\":\"anthropic\"},\"m-bedrock\":{\"provider\":\"bedrock\"},\"m-cohere\":{\"provider\":\"cohere\"},\"m-gemini\":{\"provider\":\"gemini\"},\"m-openai-chat\":{\"provider\":\"openai-chat\"},\"m-openai-responses\":{\"provider\":\"openai-responses\"}},\"pools\":{\"oracle-unused\":{\"members\":[{\"model\":\"m-openai-chat\"}]}},\"providers\":{\"anthropic\":{\"api_key\":{\"env\":\"ORACLE_UPSTREAM_KEY\"}},\"bedrock\":{\"api_key\":{\"env\":\"ORACLE_UPSTREAM_KEY\"}},\"cohere\":{\"api_key\":{\"env\":\"ORACLE_UPSTREAM_KEY\"}},\"gemini\":{\"api_key\":{\"env\":\"ORACLE_UPSTREAM_KEY\"}},\"openai-chat\":{\"api_key\":{\"env\":\"ORACLE_UPSTREAM_KEY\"}},\"openai-responses\":{\"api_key\":{\"env\":\"ORACLE_UPSTREAM_KEY\"}}}},\"providers\":{\"anthropic\":{\"base_url\":\"{MOCK_URL}\",\"protocol\":\"anthropic\"},\"bedrock\":{\"base_url\":\"{MOCK_URL}\",\"protocol\":\"bedrock\"},\"cohere\":{\"base_url\":\"{MOCK_URL}\",\"protocol\":\"cohere\"},\"gemini\":{\"base_url\":\"{MOCK_URL}\",\"protocol\":\"gemini\"},\"openai-chat\":{\"base_url\":\"{MOCK_URL}\",\"protocol\":\"openai\"},\"openai-responses\":{\"base_url\":\"{MOCK_URL}\",\"protocol\":\"responses\"}}}",
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/config/settings",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "200 ConfigApplyView; body.config is the oracle's own config.yaml deploy block with limits.request_body_max_bytes pinned to the 32 MiB default (a no-op-equivalen"
     },
@@ -7986,7 +8106,16 @@
         "headers": {},
         "body": null,
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/config",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "200 ConfigReloadView; re-reads the on-disk config.yaml/providers.yaml and swaps. No body. Rate class Config."
     },
@@ -8111,6 +8240,15 @@
             "auth": "admin",
             "listener": "admin",
             "body": "{\"limits\":{\"request_body_max_bytes\":33554432}}"
+          }
+        ],
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/config/settings",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
           }
         ]
       },
@@ -8258,7 +8396,16 @@
         },
         "body": "{\"config\":{\"limits\":[{\"budget\":5,\"per\":\"day\"}]},\"name\":\"oracle-added\"}",
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/groups/{RESP:/name}",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "Creates the NEW group `oracle-added`. Inventory ADM-022: handler returns 200 GroupView although the spec also declares 201 \u2014 record whichever 1.5.5 emits. Re-cr"
     },
@@ -8299,6 +8446,46 @@
       "why": "expect [400]"
     },
     {
+      "id": "admin.ops|PostHooks|if-match-malformed",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/hooks",
+        "headers": {
+          "Content-Type": "application/json",
+          "If-Match": "garbage"
+        },
+        "body": "{\"config\":{\"kind\":\"tap\",\"module\":\"busbar-webrequest\"},\"name\":\"oracle-webreq\"}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "If-Match malformed: [400] (PB-100)",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "admin.ops|PostHooks|if-match-stale",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/hooks",
+        "headers": {
+          "Content-Type": "application/json",
+          "If-Match": "\"0\""
+        },
+        "body": "{\"config\":{\"kind\":\"tap\",\"module\":\"busbar-webrequest\"},\"name\":\"oracle-webreq\"}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "If-Match stale: [409] (PB-100)",
+      "config_variant": "hooks"
+    },
+    {
       "id": "admin.ops|PostHooks|ok",
       "plane": "core",
       "family": "admin.ops",
@@ -8307,13 +8494,24 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/admin/hooks",
-        "headers": {},
-        "body": null,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"config\":{\"kind\":\"tap\",\"module\":\"busbar-webrequest\"},\"name\":\"oracle-webreq\"}",
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/hooks/{RESP:/name}",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
-      "why": "needs fixture: ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (CFG-220); the compiled-in `weighted`/`first` words are",
-      "needs_fixture": true
+      "why": "Registers the NEW tap hook `oracle-webreq` backed by the published busbar-webrequest plugin (kind: hook in its manifest; declares no settings schema, so `open()",
+      "config_variant": "hooks"
     },
     {
       "id": "admin.ops|PostHooks|unauth",
@@ -8324,8 +8522,10 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/admin/hooks",
-        "headers": {},
-        "body": null,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"config\":{\"kind\":\"tap\",\"module\":\"busbar-webrequest\"},\"name\":\"oracle-webreq\"}",
         "auth": "none",
         "listener": "admin"
       },
@@ -8359,7 +8559,16 @@
         "headers": {},
         "body": null,
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/keys/{KEY_BROKE}",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "200 RevokeView; denylists {KEY_BROKE} durably but keeps the binding (GET still 200). Idempotent: revoking again is 200. Governance off \u21d2 409."
     },
@@ -8394,6 +8603,15 @@
         "body": null,
         "auth": "admin",
         "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/keys/{KEY_OK}",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ],
         "repeat": 2
       },
       "why": "same Idempotency-Key twice: the replay returns the first response (PB-21)"
@@ -8430,7 +8648,16 @@
         },
         "body": null,
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/keys/{KEY_OK}",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "200 RotatedKeyView (new secret shown once; old stops resolving \u2014 so {ORACLE_TOKEN_OK} is dead afterwards: run after every data-plane epoch). Idempotency keyed ("
     },
@@ -8486,6 +8713,15 @@
         "body": "{\"group\":\"oracle\",\"name\":\"oracle-minted\"}",
         "auth": "admin",
         "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/keys/{RESP:/id}",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ],
         "repeat": 2
       },
       "why": "same Idempotency-Key twice: the replay returns the first response (PB-21)"
@@ -8505,7 +8741,16 @@
         },
         "body": "{\"group\":\"oracle\",\"name\":\"oracle-minted\"}",
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/keys/{RESP:/id}",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "201 CreatedKeyView (secret shown once). Idempotency-Key keyed (actor, header), TTL 600 s: the replay returns the SAME 201 body verbatim with no marker header; a"
     },
@@ -8595,7 +8840,16 @@
         "headers": {},
         "body": null,
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/plugins",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "200 PluginReloadView (dlclose/dlopen cycle + swap). Oracle config has plugins disabled/no plugin dir: expect 200 with an empty reload or 400 \u2014 record whatever 1"
     },
@@ -8634,6 +8888,46 @@
       "why": "expect [400]"
     },
     {
+      "id": "admin.ops|PostPluginsRollback|if-match-malformed",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/plugins/rollback",
+        "headers": {
+          "Content-Type": "application/json",
+          "If-Match": "garbage"
+        },
+        "body": "{\"file\":\"busbar-headroom-2.0.7-{TRIPLE}.tar.gz\"}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "If-Match malformed: [400] (PB-100)",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "admin.ops|PostPluginsRollback|if-match-stale",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/plugins/rollback",
+        "headers": {
+          "Content-Type": "application/json",
+          "If-Match": "\"0\""
+        },
+        "body": "{\"file\":\"busbar-headroom-2.0.7-{TRIPLE}.tar.gz\"}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "If-Match stale: [409] (PB-100)",
+      "config_variant": "hooks"
+    },
+    {
       "id": "admin.ops|PostPluginsRollback|ok",
       "plane": "core",
       "family": "admin.ops",
@@ -8642,13 +8936,24 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/admin/plugins/rollback",
-        "headers": {},
-        "body": null,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"file\":\"busbar-headroom-2.0.7-{TRIPLE}.tar.gz\"}",
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/plugins",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
-      "why": "needs fixture: ok: null \u2014 needs published plugin fixture. `file` required \u21d2 bad_body 400. Unknown file is 404 (no path param, so not_found is null); not loadable 409; stale If",
-      "needs_fixture": true
+      "why": "Rolls the published busbar-headroom plugin back to the SAME version already active (the only artifact present in the plugins dir under the hooks variant) -- a n",
+      "config_variant": "hooks"
     },
     {
       "id": "admin.ops|PostPluginsRollback|unauth",
@@ -8659,8 +8964,10 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/admin/plugins/rollback",
-        "headers": {},
-        "body": null,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"file\":\"busbar-headroom-2.0.7-{TRIPLE}.tar.gz\"}",
         "auth": "none",
         "listener": "admin"
       },
@@ -8698,7 +9005,16 @@
         },
         "body": "{\"file\":\"busbar-webrequest-1.0.6-{TRIPLE}.tar.gz\",\"tarball_b64\":\"{TARBALL_B64:webrequest-hook}\"}",
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/plugins",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "ok: null \u2014 needs published plugin fixture. 201 PluginInstallView on success. `tarball_b64` required \u21d2 bad_body 400; bad filename 400 Cond::InvalidFilename; untr",
       "config_variant": "hooks"
@@ -8877,7 +9193,16 @@
         },
         "body": "{\"admin_auth\":[\"admin-tokens\"]}",
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/admin-auth",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "200 AdminAuthPutView; body is the oracle's existing chain so nothing changes. Traps: removing the caller's own provider is 400 Cond::LockoutSelf; an unknown mod"
     },
@@ -8969,7 +9294,16 @@
         },
         "body": "{\"limits\":{\"request_body_max_bytes\":33554432}}",
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/config/settings",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "200 ConfigSettingsView; durable by default (overlay `root`); a locked config refuses with 400. Every top-level key must be a known settings section (unknown \u21d2 4"
     },
@@ -9079,7 +9413,16 @@
         },
         "body": "{\"module\":\"request-log-file\",\"settings\":{\"path\":\"{TMP}/oracle-request-log.jsonl\"}}",
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/export/oracle-log",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "200 NamedDefView (upsert: PUT on an unknown name CREATES it, so there is no 404 on this op \u2014 the not_found probe is expected to return 200 and create `does-not-"
     },
@@ -9225,6 +9568,15 @@
             "listener": "admin",
             "body": "{\"config\":{\"limits\":[{\"budget\":5,\"per\":\"day\"}]},\"name\":\"oracle-added\"}"
           }
+        ],
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/groups/oracle-added",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
         ]
       },
       "why": "200 GroupView (replace). `config` is required \u21d2 bad_body 400. Unlike the named-map PUTs this is NOT an upsert: unknown name is 404. Base-defined 409. Stale If-M"
@@ -9337,7 +9689,16 @@
         },
         "body": "{\"config\":{\"kind\":\"gate\",\"module\":\"busbar-headroom\",\"on_error\":\"nothing\",\"prompt\":\"rw\",\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.5},\"timeout_ms\":60}}",
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/hooks/busbar-headroom",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (CFG-220); the compiled-in `weighted`/`first` words are",
       "config_variant": "hooks"
@@ -9448,7 +9809,16 @@
         },
         "body": "{\"module\":\"admin-tokens\",\"token\":{\"env\":\"BUSBAR_ADMIN_TOKEN\"}}",
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "post": [
+          {
+            "method": "GET",
+            "path": "/api/v1/admin/identity-providers/oracle-idp2",
+            "headers": {},
+            "auth": "admin",
+            "listener": "admin"
+          }
+        ]
       },
       "why": "200 NamedDefView; creates a second admin-tokens provider `oracle-idp2` (an unreferenced definition is legal). Upsert: an unknown name CREATES it, so the not_fou"
     },
@@ -12090,7 +12460,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b plugin validation failed:",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-136|boot",
@@ -12105,7 +12475,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b resolves to plugin",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-137a|boot",
@@ -12120,7 +12490,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b not an `auth` plugin",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-137b|boot",
@@ -12165,7 +12535,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b not a `hook` plugin",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-138b|boot",
@@ -12210,7 +12580,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b not an `auth` plugin. A provider's `module:` must be a built-in or a `kind: auth",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-139b|boot",
@@ -12272,7 +12642,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b only a `kind: secret` plugin can back a secret reference",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-151|validate",
@@ -12396,7 +12766,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b plugin load failed:",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-172|boot",
@@ -13932,6 +14302,73 @@
         "env": {}
       },
       "why": "unrecognized argument; exit 2"
+    },
+    {
+      "id": "concurrency|inbound-shed|n8",
+      "plane": "core",
+      "family": "concurrency",
+      "driver": "concurrent",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"m-openai-chat\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "concurrent": {
+        "n": 8
+      },
+      "why": "limits.max_inbound_concurrent: 2 sheds the excess immediately (never queued) with the static overloaded 503 body + Retry-After: 1 \u2014 2 admitted, 6 shed",
+      "fresh": true,
+      "config_variant": "inbound-concurrency-2",
+      "mock_control": {
+        "*": "slow"
+      }
+    },
+    {
+      "id": "concurrency|lane-atcapacity|n4",
+      "plane": "core",
+      "family": "concurrency",
+      "driver": "concurrent",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"oracle-lc1\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "concurrent": {
+        "n": 4
+      },
+      "why": "pool oracle-lc1's one member has models.<m>.max_concurrent: 1: 1 admitted, the other 3 hit AtCapacity and are skipped within the pick, falling through to the pool's default on_exhausted 503 (Retry-After: the 2s AT_CAPACITY floor \u2014 no breaker cooldown is involved here, so it never beats that floor)",
+      "fresh": true,
+      "mock_control": {
+        "*": "slow"
+      }
+    },
+    {
+      "id": "concurrency|ok|n8",
+      "plane": "core",
+      "family": "concurrency",
+      "driver": "concurrent",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"m-openai-chat\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "concurrent": {
+        "n": 8
+      },
+      "why": "8 parallel requests against an UNBOUNDED lane: all 200, usage = 8x \u2014 concurrency alone must never perturb billing",
+      "fresh": true
     },
     {
       "id": "config.migrate|v0.10.0|migrate",
@@ -16209,6 +16646,17 @@
         "env": {}
       },
       "why": "the migrated document under --validate"
+    },
+    {
+      "id": "cooldown|trip-then-serve",
+      "plane": "core",
+      "family": "cooldown",
+      "driver": "script",
+      "script": {
+        "name": "cooldown-trip.sh"
+      },
+      "outcome": "ok",
+      "why": "base_cooldown_secs 1: a tripped member is refused (503, nothing billed), then once the jittered cooldown elapses the SAME request is served (200, billed) \u2014 the breaker's own trip-then-recover cycle. Proven on the CUMULATIVE counters busbar_breaker_trips_total / busbar_upstream_failures_total, which survive the scrape-time busbar_lane_state gauge settling back to its starting value (0 -> 2 -> 0) by the time this cell's one before/after snapshot is taken, plus the requests-vs-billable_requests split in the usage delta."
     },
     {
       "id": "hooks|admin-list",
@@ -28661,6 +29109,50 @@
       "outcome": "ok",
       "why": "validate, boot, mint, spend, restart, read back (PB-11/37/93; persistence is the job)",
       "needs_fixture": true
+    },
+    {
+      "id": "queue|serve|n3",
+      "plane": "core",
+      "family": "queue",
+      "driver": "concurrent",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"oracle-q\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "concurrent": {
+        "n": 3
+      },
+      "why": "on_exhausted: queue{max_ms: 4000}: 1 admitted immediately, the other 2 queue on the freed permit and are served once the first request completes \u2014 all 200; busbar_pool_queued is the park-depth gauge for this",
+      "fresh": true
+    },
+    {
+      "id": "queue|timeout|n2",
+      "plane": "core",
+      "family": "queue",
+      "driver": "concurrent",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"oracle-q\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "concurrent": {
+        "n": 2
+      },
+      "why": "queue.max_ms shrunk to 50ms against a `slow` member that never frees its permit in time: the bounded wait expires and the queued request falls through to the pool's on_exhausted 503 + Retry-After, same shape as an immediate shed",
+      "fresh": true,
+      "config_variant": "queue-timeout",
+      "mock_control": {
+        "m-queue-lane": "slow"
+      }
     },
     {
       "id": "route.failover|fb|all-down",

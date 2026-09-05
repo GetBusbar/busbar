@@ -12,17 +12,27 @@
 #
 # Refuses (exit 3) on any digest mismatch and deletes the download. Also caches the release's
 # openapi JSON (used by enumerate-cells.py) beside the binary.
+#
+#   --check-golden <dir>   verify that <dir>/meta.json's `binary_sha256` (the exact binary record.sh
+#                           used to make that recording) matches the sha256 of the binary this script
+#                           has cached/pinned for that recording's version — i.e. the golden on disk
+#                           was really produced by the binary we still believe is "the golden binary",
+#                           not some other build that happens to share a version string. Exit 3 on
+#                           mismatch or a meta.json with no binary_sha256 (an unproven golden).
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
 # shellcheck source=../fleet-fixtures/lib.sh
 source "${repo}/testing/fleet-fixtures/lib.sh"
+# shellcheck source=harness-rev.sh
+source "${here}/harness-rev.sh"
 
-VERSION="1.5.5" CHECK=0 CACHE_ROOT="${BUSBAR_ORACLE_CACHE:-$HOME/.cache/busbar-oracle}"
+VERSION="1.5.5" CHECK=0 CACHE_ROOT="${BUSBAR_ORACLE_CACHE:-$HOME/.cache/busbar-oracle}" CHECK_GOLDEN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
     --check) CHECK=1; shift ;;
+    --check-golden) CHECK_GOLDEN="$2"; shift 2 ;;
     --cache-dir) CACHE_ROOT="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -31,11 +41,25 @@ DIGESTS="${here}/golden-digests.tsv"
 CACHE="${CACHE_ROOT}/${VERSION}"
 BIN="${CACHE}/busbar"
 
-sha256_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
-
 pinned() {  # pinned <asset> -> sha256 or empty
   awk -F'\t' -v v="$VERSION" -v a="$1" '$1==v && $2==a {print $3; exit}' "$DIGESTS"
 }
+
+if [ -n "$CHECK_GOLDEN" ]; then
+  meta_path="${CHECK_GOLDEN}/meta.json"
+  [ -s "$meta_path" ] || { echo "fetch-golden --check-golden: no meta.json at ${meta_path}" >&2; exit 3; }
+  want_bin_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binary_sha256") or "")' "$meta_path" 2>/dev/null)"
+  [ -n "$want_bin_sha" ] || { echo "fetch-golden --check-golden: ${meta_path} has no binary_sha256 (an unproven golden — re-record it)" >&2; exit 3; }
+  meta_ver="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version") or "")' "$meta_path" 2>/dev/null)"
+  [ -x "$BIN" ] || { echo "fetch-golden --check-golden: no cached binary at ${BIN} (version ${VERSION}; golden reports version ${meta_ver:-unknown}) — run fetch-golden.sh first" >&2; exit 3; }
+  have_bin_sha="$(binary_sha256 "$BIN")"
+  if [ "$have_bin_sha" != "$want_bin_sha" ]; then
+    echo "fetch-golden --check-golden: MISMATCH — ${meta_path} was recorded with binary_sha256 ${want_bin_sha} but the cached ${BIN} is ${have_bin_sha}" >&2
+    exit 3
+  fi
+  echo "ok  ${CHECK_GOLDEN}  binary_sha256 ${want_bin_sha:0:12} matches cached ${BIN}"
+  exit 0
+fi
 
 case "$(uname -sm)" in
   "Darwin arm64") TRIPLE=aarch64-apple-darwin; EXT=tar.gz ;;

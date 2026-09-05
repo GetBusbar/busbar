@@ -58,7 +58,10 @@ CONTROL="$WORK/mock.control"
 fail_setup() { record "setup" FAIL "$1" "${2:-}"; exit 1; }
 
 # ── mock upstream (all six dialects, byte-deterministic) ────────────────────────────────────────
-python3 "${here}/mock-upstream.py" "$MOCK_PORT" oracle-marker "$CONTROL" >"$WORK/mock.log" 2>&1 &
+mkdir -p "$WORK/egress"
+# the mock records every request it receives (path, method, headers, body) so the EGRESS side of a
+# cell is judged too, not only what came back
+ORACLE_MOCK_CAPTURE_DIR="$WORK/egress" python3 "${here}/mock-upstream.py" "$MOCK_PORT" oracle-marker "$CONTROL" >"$WORK/mock.log" 2>&1 &
 track_pid $!
 wait_for_http "http://127.0.0.1:${MOCK_PORT}/" 8 || fail_setup "mock upstream did not come up" "$(tail -c 300 "$WORK/mock.log")"
 
@@ -193,13 +196,25 @@ open(sys.argv[2],'w').write(s)
 PY
       envcmd+=(BUSBAR_CONFIG="$xwork/boot.yaml")
       "${envcmd[@]}" "$BIN" "${args[@]}" >"$raw/stdout" 2>"$raw/stderr" </dev/null &
-      local bpid=$! i=0 alive=1
+      local bpid=$! i=0 healthy=0
       while [ $i -lt 100 ]; do
-        if ! kill -0 "$bpid" 2>/dev/null; then alive=0; break; fi
-        if curl -fsS -m 1 -o /dev/null "http://127.0.0.1:48821/healthz" 2>/dev/null; then break; fi
+        if ! kill -0 "$bpid" 2>/dev/null; then break; fi
+        if curl -fsS -m 1 -o /dev/null "http://127.0.0.1:48821/healthz" 2>/dev/null; then healthy=1; break; fi
         sleep 0.1; i=$((i+1))
       done
-      if [ "$alive" -eq 1 ]; then kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null; rc=0; else wait "$bpid"; rc=$?; fi ;;
+      if [ "$healthy" -eq 1 ]; then
+        # a real warning-boot: /healthz answered on the data listener, so busbar came up degraded-but-
+        # serving. That IS the "alive" contract for this cell family — stop it and record a pass.
+        kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null; rc=0
+      elif kill -0 "$bpid" 2>/dev/null; then
+        # still running after the whole wait window, but /healthz never answered: this is a HANG, not
+        # a boot. Recording rc=0 here would let a stuck process pass as a warning-boot; use a distinct,
+        # unmistakable status (the `timeout`(1) convention) so it never looks like the 0 above.
+        kill -9 "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null; rc=124
+      else
+        # the process exited on its own (a refusal) — its own exit code is the cell's contract
+        wait "$bpid"; rc=$?
+      fi ;;
     *) record "$id" FAIL "unknown exec.mode $mode" ""; return ;;
   esac
   printf '%s\n' "$rc" >"$raw/status"
@@ -258,6 +273,96 @@ run_pre_request() {  # <request-json {method,path,headers,body,auth,listener}> �
   echo "pre $m $pth -> $(curl -sS -m 30 -o /dev/null -w '%{http_code}' -X "$m" "http://127.0.0.1:${port}${pth}" "${h[@]}" ${b:+--data-binary "$b"} 2>&1)"
 }
 
+run_readback() {  # <request-json {path,headers,auth,listener}> <write-response-body-file> <key-id>
+  # A mutating cell's `request.post`: a follow-up GET at the resource the write just touched, run
+  # AFTER the after-effects snapshot (so it never pollutes the write's own usage/metrics/audit delta)
+  # and normalized the same way any response is, so its bytes are as comparable as the write's own.
+  # `{RESP:/pointer}` in the path is filled in from the write's OWN captured response body (e.g. the
+  # id/name a POST just minted) — see fixtures/admin-readback.json for the kind vocabulary.
+  local rq="$1" respfile="$2" kid="$3" pth ptr val tok port rbody rstatus cap normd
+  pth="$(jq -r .path <<<"$rq")"
+  if [[ "$pth" == *'{RESP:'* ]]; then
+    ptr="${pth#*\{RESP:}"; ptr="${ptr%%\}*}"
+    val="$(jq -r --arg p "$ptr" 'try getpath($p | ltrimstr("/") | split("/")) catch empty' "$respfile" 2>/dev/null)"
+    pth="$(python3 -c 'import re,sys; print(re.sub(r"\{RESP:[^}]*\}", sys.argv[1], sys.argv[2]))' "$val" "$pth")"
+  fi
+  case "$(jq -r '.auth // "admin"' <<<"$rq")" in admin) tok="$ORACLE_ADMIN_TOKEN" ;; none) tok="" ;; *) tok="$ORACLE_TOKEN_OK" ;; esac
+  port="$LISTEN_PORT"; [ "$(jq -r '.listener // "admin"' <<<"$rq")" = admin ] && port="$ADMIN_PORT"
+  local -a h=()
+  while IFS= read -r kv; do h+=(-H "$kv"); done < <(jq -r '.headers // {} | to_entries[] | "\(.key): \(.value)"' <<<"$rq")
+  [ -z "$tok" ] || h+=(-H "Authorization: Bearer ${tok}")
+  rbody="$(mktemp "$raw/readback.XXXXXX")"
+  rstatus="$(curl -sS -m 10 -X GET "http://127.0.0.1:${port}${pth}" "${h[@]}" -o "$rbody" -w '%{http_code}' 2>/dev/null)"
+  [[ "$rstatus" =~ ^[0-9]+$ ]] || rstatus=0
+  cap="$(jq -n --argjson s "$rstatus" --rawfile b "$rbody" '{status: $s, headers: {}, body: $b, effects: {}}')"
+  normd="$(printf '%s' "$cap" | python3 "${here}/normalize.py" --key-id "$kid" 2>/dev/null)"
+  [ -n "$normd" ] || normd='{"status":0,"body":{"text":""}}'
+  rm -f "$rbody"
+  jq -c --arg p "$pth" '{path: $p, status: .status, body: .body}' <<<"$normd"
+}
+
+# ── concurrent cells: N parallel requests, one recorded outcome ──────────────────────────────────
+# {request: {method,path,headers,body,auth,listener}, concurrent: {n: <N>}, mock_control, fresh,
+#  config_variant}. Busbar's disposition of a burst is inherently a SET, not one transaction, so the
+# contract this driver records is the sorted multiset of the N statuses (capture-concurrent.py) plus
+# the same before/after usage-and-metrics deltas every other driver records — never a single status.
+# Needs mock-upstream.py to actually run the N requests concurrently (ThreadingHTTPServer); a
+# single-threaded upstream would serialize them and there would be nothing "concurrent" left to prove.
+record_concurrent_cell() {  # <id> <cell-json> <raw-dir> <safe>
+  local id="$1" cell="$2" raw="$3" safe="$4" cn method path listener body_spec token kid mc port statuses
+  cell="$(subst_placeholders "$cell")"
+  cn="$(jq -r '.concurrent.n // 2' <<<"$cell")"
+  method="$(jq -r '.request.method // "POST"' <<<"$cell")"; path="$(jq -r .request.path <<<"$cell")"
+  listener="$(jq -r '.request.listener // "data"' <<<"$cell")"
+  body_spec="$(jq -r '.request.body // empty' <<<"$cell")"
+  printf '%s' "${body_spec:-{\}}" >"$raw/request.body"
+  case "$(jq -r '.request.auth // "ok"' <<<"$cell")" in
+    broke) token="$ORACLE_TOKEN_BROKE"; kid="$ORACLE_KEY_BROKE" ;;
+    noscope) token="$ORACLE_TOKEN_NOSCOPE"; kid="$ORACLE_KEY_NOSCOPE" ;;
+    admin) token="$ORACLE_ADMIN_TOKEN"; kid="$ORACLE_KEY_OK" ;;
+    none) token=""; kid="$ORACLE_KEY_OK" ;;
+    *) token="$ORACLE_TOKEN_OK"; kid="$ORACLE_KEY_OK" ;;
+  esac
+  local hdr_args=(-H "Content-Type: application/json")
+  while IFS= read -r kv; do hdr_args+=(-H "$kv"); done < <(jq -r '.request.headers // {} | to_entries[] | "\(.key): \(.value)"' <<<"$cell")
+  [ -z "$token" ] || hdr_args+=(-H "Authorization: Bearer ${token}")
+  port="$LISTEN_PORT"; [ "$listener" = admin ] && port="$ADMIN_PORT"
+  mc="$(jq -c '.mock_control // empty' <<<"$cell")"
+  [ -z "$mc" ] || [ "$mc" = "{}" ] || printf '%s' "$mc" >"$CONTROL"
+  settle_then_snapshot "$raw/before" "$kid"
+  mkdir -p "$raw/par"
+  local pids=() i
+  for ((i = 1; i <= cn; i++)); do
+    ( curl -sS -m 30 -o "$raw/par/$i.body" -w '%{http_code}' -X "$method" "http://127.0.0.1:${port}${path}" \
+        "${hdr_args[@]}" --data-binary "@$raw/request.body" >"$raw/par/$i.status" 2>"$raw/par/$i.err" ) &
+    pids+=($!)
+  done
+  for p in "${pids[@]}"; do wait "$p" 2>/dev/null; done
+  settle_then_snapshot "$raw/after" "$kid"
+  rm -f "$CONTROL"
+  # each par/<i>.status file holds exactly the one %{http_code} curl wrote for that request; a
+  # missing/empty file (curl itself never got a status line) counts as 0, same convention capture.py
+  # uses for "no HTTP response" elsewhere in this recorder.
+  local codes=()
+  for ((i = 1; i <= cn; i++)); do
+    local c; c="$(cat "$raw/par/$i.status" 2>/dev/null)"
+    # curl's own "no HTTP response" placeholder is the 3-digit literal "000", which is a leading
+    # zero and therefore not a valid JSON number: force base-10 so it becomes the plain integer 0.
+    [[ "$c" =~ ^[0-9]+$ ]] && c=$((10#$c)) || c=0
+    codes+=("$c")
+  done
+  statuses="$(printf '%s\n' "${codes[@]}" | sort -n | paste -sd, - | sed 's/^/[/; s/$/]/')"
+  printf '%s\n' "$statuses" >"$raw/statuses.json"
+  if ! python3 "${here}/capture-concurrent.py" "$statuses" "$raw/before" "$raw/after" >"$raw/captured.json" 2>"$raw/capture.err"; then
+    record "$id" FAIL "capture-concurrent.py failed" "$(tail -c 300 "$raw/capture.err")"; return
+  fi
+  if ! python3 "${here}/normalize.py" "$raw/captured.json" --key-id "$kid" >"$OUT/cells/$safe.json" 2>"$raw/normalize.err"; then
+    record "$id" FAIL "normalize.py failed" "$(tail -c 300 "$raw/normalize.err")"; return
+  fi
+  record "$id" PASS "N=${cn}; statuses ${statuses}" ""
+  n=$((n + 1))
+}
+
 # ── the cells ───────────────────────────────────────────────────────────────────────────────────
 n=0
 while IFS= read -r cell; do
@@ -299,6 +404,9 @@ while IFS= read -r cell; do
   if [ "$FRESH_ALL" = 1 ] || [ "$(jq -r '.fresh // false' <<<"$cell")" = true ] || [ "$variant" != "$CUR_VARIANT" ]; then
     stop_busbar
     boot_busbar "$variant" || { record "$id" FAIL "fresh boot before cell failed (variant '${variant}')" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 300)"; continue; }
+  fi
+  if [ "$driver" = concurrent ]; then
+    record_concurrent_cell "$id" "$cell" "$raw" "$safe"; continue
   fi
   if [ "$driver" = http ]; then
     # An explicit request: {method, path, headers, body, auth: ok|broke|noscope|admin|none, listener,
@@ -378,31 +486,63 @@ PY
 
   [ "$outcome" != upstream_down ] || echo down >"$CONTROL"
   settle_then_snapshot "$raw/before" "$kid"
+  ls "$WORK/egress" 2>/dev/null | sort >"$raw/egress.before"
   status="$(curl -sS -m 20 -N -X POST "http://127.0.0.1:${LISTEN_PORT}${path}" "${hdr_args[@]}" \
     --data-binary @"$raw/request.body" -D "$raw/headers" -o "$raw/body" -w '%{http_code}' 2>"$raw/curl.err")"; curl_rc=$?
   case "$curl_rc:$status" in 0:*|18:[1-5]??|56:[1-5]??) printf '%s\n' "$curl_rc" >"$raw/curl.rc" ;; *) status="000" ;; esac
   fi
   settle_then_snapshot "$raw/after" "$kid"
   rm -f "$CONTROL"
+  ls "$WORK/egress" 2>/dev/null | sort >"$raw/egress.after"
+  egress_files=()
+  while IFS= read -r f; do [ -n "$f" ] && egress_files+=("$WORK/egress/$f"); done < <(comm -13 "$raw/egress.before" "$raw/egress.after")
   printf '%s\n' "$status" >"$raw/status"
   printf '%s\n' "$kid" >"$raw/key-id"
 
   if [ "$status" = "000" ]; then
     record "$id" FAIL "no HTTP response (curl)" "$(tr '\n' ' ' <"$raw/curl.err" | tail -c 300)"; continue
   fi
-  if ! python3 "${here}/capture.py" "$raw/headers" "$status" "$raw/body" "$raw/before" "$raw/after" >"$raw/captured.json" 2>"$raw/capture.err"; then
+  if ! python3 "${here}/capture.py" "$raw/headers" "$status" "$raw/body" "$raw/before" "$raw/after" "${egress_files[@]}" >"$raw/captured.json" 2>"$raw/capture.err"; then
     record "$id" FAIL "capture.py failed" "$(tail -c 300 "$raw/capture.err")"; continue
   fi
   if ! python3 "${here}/normalize.py" "$raw/captured.json" --key-id "$kid" ${keep_lines:+--keep-body-lines "$keep_lines"} >"$OUT/cells/$safe.json" 2>"$raw/normalize.err"; then
     record "$id" FAIL "normalize.py failed" "$(tail -c 300 "$raw/normalize.err")"; continue
+  fi
+  # a mutating admin cell's `request.post`: read back the resource the write touched (AFTER the
+  # after-snapshot, so it never shows up in the write's own usage/metrics/audit delta) and fold the
+  # normalized {path,status,body} triples into this cell's own effects, so a write that answered 200
+  # but touched nothing is a byte diff on THIS cell, not a silent pass.
+  if [ "$driver" = http ]; then
+    readback="[]"
+    while IFS= read -r rb; do
+      [ -n "$rb" ] || continue
+      item="$(run_readback "$rb" "$raw/body" "$kid")"
+      readback="$(jq -c --argjson it "$item" '. + [$it]' <<<"$readback")"
+    done < <(jq -c '.request.post[]? // empty' <<<"$cell")
+    if [ "$readback" != "[]" ]; then
+      jq --argjson rb "$readback" '.effects.readback = $rb' "$OUT/cells/$safe.json" >"$raw/with-readback.json" \
+        && mv "$raw/with-readback.json" "$OUT/cells/$safe.json"
+    fi
   fi
   usage_note="$(jq -c '.effects.usage' "$OUT/cells/$safe.json")"
   record "$id" PASS "HTTP ${status}; usage Δ ${usage_note}" ""
   n=$((n + 1))
 done < <(jq -c --arg p "$PLANE" '.cells[] | select($p == "all" or .plane == $p)' "${here}/cells.json")
 
+# Provenance: which harness revision (cells.json/normalize.py/etc — see harness-rev.sh) and which
+# exact binary file produced this recording, plus the host triple, so a later diff can tell "busbar
+# changed" apart from "the harness changed" (diff-cells.py refuses to compare two meta.json with
+# different/absent harness_rev unless told to). `at` is the time of THIS write, not of a cell added
+# to an old recording later.
+# shellcheck source=harness-rev.sh
+source "${here}/harness-rev.sh"
+BIN_SHA256="$(binary_sha256 "$BIN")"
+HARNESS_REV="$(harness_rev)"
+HOST_TRIPLE="$(host_triple)"
 jq -n --arg ver "$VER" --arg bin "$BIN" --argjson recorded "$n" \
-  '{binary: $bin, version: $ver, recorded: $recorded, at: (now | todate)}' >"$OUT/meta.json"
+  --arg binsha "$BIN_SHA256" --arg hrev "$HARNESS_REV" --arg host "$HOST_TRIPLE" \
+  '{binary: $bin, version: $ver, recorded: $recorded, binary_sha256: $binsha, harness_rev: $hrev,
+    host_triple: $host, at: (now | todate)}' >"$OUT/meta.json"
 cp "$WORK/busbar.log" "$OUT/busbar.log" 2>/dev/null || true
 cp "$WORK/mock.log" "$OUT/mock.log" 2>/dev/null || true
 

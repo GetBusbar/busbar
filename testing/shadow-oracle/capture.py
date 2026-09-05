@@ -3,14 +3,26 @@
 # Copyright (C) 2026 Busbar Inc and contributors
 """Assemble one captured oracle cell from curl output + before/after EFFECT snapshots.
 
-  capture.py <headers-file> <status> <body-file> <before-dir> <after-dir> > captured.json
+  capture.py <headers-file> <status> <body-file> <before-dir> <after-dir> [egress-file ...] > captured.json
 
 The response half is the bytes busbar returned. The effects half is what busbar DID — the closed loop
 ("meters were metered, audits audited") — expressed as DELTAS between two snapshots taken around the
 request, so absolute counters (which differ per run) never enter a golden:
   effects.usage    numeric fields of GET /api/v1/admin/keys/{id}/usage, after - before
   effects.metrics  prometheus samples (name + labels) whose value changed, after - before
-  effects.audit    count of admin-audit items added
+  effects.audit    the admin-audit items added, plus the count: each added item as
+                   {actor, action, resource, outcome, chain_ok} — chain_ok is computed here, against
+                   the RAW (pre-normalization) hashes, before normalize.py ever sees them: an item's
+                   chain_ok is true iff its prev_hash equals the preceding entry's hash (the previous
+                   added item, or — for the oldest added item — the newest pre-existing entry), and,
+                   for the very first entry the process ever wrote, iff prev_hash is empty (genesis)
+  effects.egress   the request(s) busbar itself sent upstream, in order: each trailing argv is the
+                   path to one JSON file written by mock-upstream.py's ORACLE_MOCK_CAPTURE_DIR
+                   ({"path", "method", "headers", "body"} — see that script's docstring for how the
+                   recorder finds these files for a given cell). A cell with none named just gets an
+                   empty list — that itself is a contract for cells that must never reach upstream
+                   (e.g. a refusal at Admit). A file that could not be read is recorded as
+                   {"unavailable": true}, same convention as the other snapshot-derived effects.
 A snapshot file that is missing or unparseable is recorded as {"unavailable": true} — visible in the
 golden, never silently zero (a binary that cannot expose its ledger must not look like one that
 metered nothing).
@@ -40,7 +52,12 @@ def num_delta(a, b):
         out = {}
         for k in sorted(set(a) | set(b)):
             d = num_delta(a.get(k), b.get(k))
-            if d not in (None, {}, [], 0):
+            # `d in (..., 0)` uses `==`, and in Python False == 0, so a bool False delta (a genuine
+            # true->false flip) would silently vanish here. Booleans are never "falsy zero": keep any
+            # non-None bool, and otherwise fall back to the original empty/zero check.
+            if isinstance(d, bool):
+                out[k] = d
+            elif d not in (None, {}, [], 0):
                 out[k] = d
         return out
     if isinstance(b, list):
@@ -92,8 +109,65 @@ def parse_headers(path: str) -> dict:
     return h
 
 
+def audit_items(x) -> list:
+    """The entry list out of a GET /api/v1/admin/audit snapshot, newest-first (matches the wire
+    shape: {"items": [...], "next_cursor": ...}). A bare list or a missing/empty snapshot degrades
+    to []."""
+    if isinstance(x, dict):
+        return x.get("items") or []
+    return x if isinstance(x, list) else []
+
+
+def audit_diff(before, after) -> dict:
+    """The audit items THIS request added, plus the count. `before`/`after` are the raw (unnormalized)
+    GET /api/v1/admin/audit snapshots — newest-first — taken around the request.
+
+    The chain check has to happen here, on the raw hashes, because normalize.py turns every
+    hash into "<HASH>" (they are per-run, content-derived, and not themselves the contract) — by the
+    time a normalizer could look, prev_hash == hash would trivially hold for ANY two items. So each
+    item's chain_ok is computed now and carried forward as a plain boolean; the raw hash/prev_hash
+    values themselves are never put in the output (only actor/action/resource/outcome/chain_ok are)."""
+    if after is None:
+        return {"unavailable": True}
+    items_before = audit_items(before)
+    items_after = audit_items(after)
+    added_n = len(items_after) - len(items_before)
+    # The first `added_n` entries of `after` are the ones this request appended (still newest-first).
+    added_desc = items_after[:added_n] if added_n > 0 else []
+    # Walk oldest-added -> newest-added so each item's predecessor is well-defined: the oldest added
+    # item's predecessor is the newest PRE-EXISTING entry (or, if there was no pre-existing entry at
+    # all, the chain genesis — whose prev_hash must be "").
+    prev_hash = items_before[0].get("hash", "") if items_before else ""
+    items_out = []
+    for it in reversed(added_desc):
+        items_out.append({
+            "actor": it.get("principal"),
+            "action": it.get("action"),
+            "resource": it.get("resource"),
+            "outcome": it.get("outcome"),
+            "chain_ok": it.get("prev_hash", "") == prev_hash,
+        })
+        prev_hash = it.get("hash", "")
+    return {"added": added_n, "items": items_out}
+
+
+def load_egress(paths: list) -> list:
+    """Read the egress record files the recorder found for this cell, in the order given (the order
+    the recorder discovered them, which — because mock-upstream.py names them so filenames sort in
+    request order — is also the order the requests actually happened in)."""
+    out = []
+    for p in paths:
+        try:
+            with open(p) as f:
+                out.append(json.load(f))
+        except (OSError, ValueError):
+            out.append({"unavailable": True})
+    return out
+
+
 def main() -> int:
     hdr_file, status, body_file, before, after = sys.argv[1:6]
+    egress = load_egress(sys.argv[6:])
     raw = open(body_file, "rb").read()
     try:
         body = raw.decode("utf-8")
@@ -108,19 +182,13 @@ def main() -> int:
             snap.pop("as_of", None)
     usage = num_delta(ub, ua) if ua is not None else {"unavailable": True}
     ab, aa = load_json(before, "audit.json"), load_json(after, "audit.json")
-
-    def count(x):
-        if isinstance(x, dict):
-            return len(x.get("items") or [])
-        return len(x) if isinstance(x, list) else 0
-
-    audit = {"added": count(aa) - count(ab)} if aa is not None else {"unavailable": True}
+    audit = audit_diff(ab, aa)
 
     cap = {
         "status": int(status) if status.isdigit() else 0,
         "headers": parse_headers(hdr_file),
         "body": body,
-        "effects": {"usage": usage, "metrics": metrics_delta(before, after), "audit": audit},
+        "effects": {"usage": usage, "metrics": metrics_delta(before, after), "audit": audit, "egress": egress},
     }
     print(json.dumps(cap, separators=(",", ":"), sort_keys=True))
     return 0
