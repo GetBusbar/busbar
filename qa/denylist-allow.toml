@@ -78,15 +78,15 @@ owner = "orchestrator, 2026-09-05"
 [[allow]]
 crate = "busbar-plane-mcp"
 dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
+via = "cpufeatures, getrandom"
+reason = "Two reviewed, non-I/O edges reach libc from this plane through its codec: (1) cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); (2) getrandom, reached through sonic_rs -> ahash's hasher seeding, uses libc only to issue the getentropy(2)/getrandom(2) syscall. Neither edge exposes a socket, file or process primitive. Re-review if any other path to libc appears."
 owner = "orchestrator, 2026-09-05"
 
 [[allow]]
 crate = "busbar-plane-voice"
 dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
+via = "cpufeatures, getrandom"
+reason = "Two reviewed, non-I/O edges reach libc from this plane through its codec: (1) cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); (2) getrandom, reached through sonic_rs -> ahash's hasher seeding, uses libc only to issue the getentropy(2)/getrandom(2) syscall. Neither edge exposes a socket, file or process primitive. Re-review if any other path to libc appears."
 owner = "orchestrator, 2026-09-05"
 
 [[allow]]
