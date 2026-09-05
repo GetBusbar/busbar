@@ -716,6 +716,11 @@ fn complete_message(
     let mut message = raw::parse_message(&buffered[..header_end]).ok_or(TransportError::Framing)?;
     let rest = &buffered[header_end..];
 
+    if raw::has_transfer_encoding(&message.headers) && !raw::is_chunked(&message.headers) {
+        // A declared coding this transport cannot frame. Falling through to `Content-Length` would
+        // be answering a question the sender did not ask.
+        return Err(TransportError::Framing);
+    }
     if raw::is_chunked(&message.headers) {
         let mut decoder = raw::ChunkedDecoder::default();
         decoder.feed(rest).map_err(|_| TransportError::Framing)?;
@@ -786,6 +791,12 @@ async fn read_ingress_message(
     let mut rest = buf[header_end..].to_vec();
     buf.clear();
     drop(buf);
+
+    if raw::has_transfer_encoding(&headers) && !raw::is_chunked(&headers) {
+        // A declared coding this transport cannot frame. Falling through to `Content-Length` would
+        // be answering a question the sender did not ask.
+        return Err(TransportError::Framing);
+    }
 
     let (bodies, trailers) = if raw::is_chunked(&headers) {
         let mut decoder = raw::ChunkedDecoder::default();

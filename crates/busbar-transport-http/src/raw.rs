@@ -122,15 +122,29 @@ pub fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str
 
 /// Whether a header block declares a chunked body.
 ///
-/// `Transfer-Encoding` may name a list; `chunked` is the last one when present, and it is the only
-/// coding this transport reads. A message that declares one it does not carry is a framing error
-/// rather than a body, which is why this is a question asked of the headers and not of the bytes.
+/// `Transfer-Encoding` may name a list, and this asks the POSITIONAL question the wire asks:
+/// `chunked` must be the FINAL coding. A sender applying any other coding must apply `chunked` last
+/// so the message stays framable, and a list where it is not last leaves the body length
+/// undeterminable — so `chunked, gzip` is not a chunked body, it is a message to refuse. `chunked`
+/// is also the only coding this transport reads, which is why this is a question asked of the
+/// headers and not of the bytes.
 #[must_use]
 pub fn is_chunked(headers: &[(String, String)]) -> bool {
     header(headers, "transfer-encoding").is_some_and(|v| {
         v.split(',')
-            .any(|c| c.trim().eq_ignore_ascii_case("chunked"))
+            .next_back()
+            .is_some_and(|c| c.trim().eq_ignore_ascii_case("chunked"))
     })
+}
+
+/// Whether a header block declares a transfer coding at all, chunked or otherwise.
+///
+/// The companion question to [`is_chunked`]: a message that names a coding this transport cannot
+/// frame is a framing error, and telling that apart from a message that names none is what lets a
+/// caller refuse the first without refusing the second.
+#[must_use]
+pub fn has_transfer_encoding(headers: &[(String, String)]) -> bool {
+    header(headers, "transfer-encoding").is_some()
 }
 
 /// The declared body length, where the message declares one.
@@ -351,6 +365,33 @@ mod tests {
         // The legal shape still parses, value whitespace and all.
         let ok = parse_message(b"GET / HTTP/1.1\r\nContent-Length:  5 \r\n\r\n").unwrap();
         assert_eq!(ok.headers[0].1, "5");
+    }
+
+    /// `chunked` is the LAST coding or the message is not chunked at all.
+    ///
+    /// A sender that applies any other coding must apply `chunked` as the final one, precisely so
+    /// the message stays framable; a `Transfer-Encoding` where it is not final leaves the body
+    /// length undeterminable, and a reader that took it for chunked anyway would be decoding a
+    /// framing the sender never wrote.
+    #[test]
+    fn chunked_counts_only_as_the_final_transfer_coding() {
+        assert!(is_chunked(&[(
+            "Transfer-Encoding".to_string(),
+            "gzip, chunked".to_string()
+        )]));
+        assert!(!is_chunked(&[(
+            "Transfer-Encoding".to_string(),
+            "chunked, gzip".to_string()
+        )]));
+        // And a coding list that names one at all is still a declared coding, chunked or not.
+        assert!(has_transfer_encoding(&[(
+            "Transfer-Encoding".to_string(),
+            "chunked, gzip".to_string()
+        )]));
+        assert!(!has_transfer_encoding(&[(
+            "Content-Length".to_string(),
+            "5".to_string()
+        )]));
     }
 
     #[test]
