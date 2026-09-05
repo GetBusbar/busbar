@@ -2342,6 +2342,50 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RequestIdSpanCaptu
     }
 }
 
+/// `tracing`'s per-callsite `Interest` cache (what [`tracing::callsite::rebuild_interest_cache`]
+/// recomputes) is PROCESS-GLOBAL, not per-thread: it decides, once, whether ANY dispatch anywhere
+/// might care about a callsite, and every thread's tracing macros trust that cached answer without
+/// re-querying their own current subscriber. `forward`'s span is created at `HOTPATH_LEVEL` (debug),
+/// which the ambient no-subscriber default this test binary never overrides is NOT interested in —
+/// so the FIRST time any test hits that callsite, interest gets cached `Never` and every later
+/// `Span::record` on it, on ANY thread, becomes a no-op ATOMIC CHECK, not a real call.
+///
+/// THIS TEST USED TO rebuild that GLOBAL cache TWICE per run: once (against its own thread-local
+/// capturing subscriber) to force interest to `Always` before firing, and once more (against the
+/// restored ambient default) to set it back to `Never` afterward, "for every other test that runs
+/// after". Under `cargo test --workspace`/`--test-threads>1` load that second rebuild is exactly as
+/// global as the first: it can land WHILE another worker thread is concurrently polling ITS OWN
+/// `forward`-instrumented request — on `current_thread`-flavored `#[tokio::test]` runtimes a task
+/// spawned by the app-under-test keeps running on the SAME OS thread as whatever this test set as
+/// thread-local default, but the CACHED INTEREST it depends on is shared with every other thread's
+/// runtime too. Racing the two rebuilds against concurrently-running tests intermittently flips
+/// interest back to `Never` mid-flight of this test's own `fire()`, and the `request_id` `record`
+/// call is silently skipped — the `.expect("the forward span recorded a request_id field")` below
+/// then panics on a value that was never written, not because anything downstream was wrong.
+///
+/// THE FIX: force interest to `Always` EXACTLY ONCE for the lifetime of this test binary
+/// ([`ensure_forward_span_interest_is_forced_on`], `std::sync::Once`-guarded) and NEVER rebuild the
+/// cache again. Once true, "is any dispatch interested" stays true forever, so there is nothing left
+/// to race: every thread's tracing macros keep querying their OWN current subscriber (thread-local
+/// via `set_default`, unchanged below) exactly as before, just without the global cache ever being
+/// toggled back off underneath a concurrently-running sibling. The one-time cost (this span is
+/// entered by every request for the rest of the process, on every thread) is a debug-level tracing
+/// allocation, not a correctness concern, and it is the same cost this test already paid for its
+/// own duration on every previous run.
+fn ensure_forward_span_interest_is_forced_on() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // A bare, layer-less `Registry` applies no level filter of its own, so installing it as the
+        // process GLOBAL default (not a thread-local override — this one MUST be visible to every
+        // thread, forever) is enough to make `register_callsite` answer "yes" for every span/event
+        // in the process, including `forward`'s debug-level one. It does nothing else: no output, no
+        // capture, so every OTHER test's tracing calls are unaffected beyond this one-time, one-way
+        // interest flip.
+        let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
+        tracing::callsite::rebuild_interest_cache();
+    });
+}
+
 /// The correlation id is a NATIVE `tracing` `u64` field (never `format!`'d into a string) on
 /// busbar's per-request `forward` span, matching the SAME id the response tap observed for the
 /// identical request — so a log line reading `request_id` off that span is the same join key a
@@ -2349,6 +2393,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RequestIdSpanCaptu
 #[tokio::test]
 async fn request_id_is_recorded_as_native_u64_tracing_field() {
     crate::testkit::install_test_seams();
+    ensure_forward_span_interest_is_forced_on();
     let lane = mock_lane("served").await;
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
@@ -2370,18 +2415,14 @@ async fn request_id_is_recorded_as_native_u64_tracing_field() {
     // `set_default` (not `with_default`): the code under test is `async` and this test's runtime is
     // single-threaded (`#[tokio::test]`'s default `current_thread` flavor), so the thread-local
     // default subscriber stays installed across every `.await` in between — matching the guard idiom
-    // `test_support::warn_capture`'s doc comment calls out for exactly this constraint.
+    // `test_support::warn_capture`'s doc comment calls out for exactly this constraint. Interest in
+    // the `forward` callsite is ALREADY forced on process-wide by
+    // `ensure_forward_span_interest_is_forced_on` above, so — unlike a prior version of this test —
+    // nothing here touches the global interest cache: only this thread's own current subscriber
+    // changes, which is what makes this safe under concurrently-running sibling tests.
     let _guard = tracing::subscriber::set_default(subscriber);
-    // `forward`'s span callsite may already have its `Interest` CACHED as "never" from an earlier
-    // call in this same test binary (any prior test that hit `forward` under the process-default
-    // no-op dispatcher) — `tracing-core` caches callsite interest globally and does not
-    // automatically recompute it just because a new default subscriber was installed. Force a
-    // recompute against the subscriber just installed so THIS span is actually visited/recorded.
-    tracing::callsite::rebuild_interest_cache();
     let resp = fire(app, 1).await;
     drop(_guard);
-    // Restore ambient interest for every other test that runs after this one in the same process.
-    tracing::callsite::rebuild_interest_cache();
     assert_eq!(resp.status().as_u16(), 200);
 
     let tracing_request_id = seen
