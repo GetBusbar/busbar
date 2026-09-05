@@ -523,6 +523,13 @@ fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
 #[test]
 fn a_reason_code_reads_the_same_in_the_journal_and_the_refusal() {
     assert_eq!(ReasonCode::OverBudget.to_string(), "over_budget");
+    // Two refusals the ladder answers at different rungs, with different statuses on the wire.
+    // They shared a reason with something else until they had their own, which made them
+    // indistinguishable to anything reading the record.
+    assert_eq!(ReasonCode::PoolNotPermitted.as_str(), "pool_not_permitted");
+    assert_eq!(ReasonCode::NoRate.as_str(), "no_rate");
+    assert_ne!(ReasonCode::PoolNotPermitted, ReasonCode::ScopeDenied);
+    assert_ne!(ReasonCode::NoRate, ReasonCode::Unpriced);
     assert_eq!(StepName::Encode.to_string(), "encode");
 
     // Two reasons that render the same word would make the journal ambiguous.

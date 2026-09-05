@@ -124,7 +124,9 @@ fn the_pool_allow_list_refuses_at_the_verify_step() {
         )
         .into_result(&seal)
         .expect_err("the key may not use this pool");
-    assert_eq!(refusal.reason(), ReasonCode::ScopeDenied);
+    // Its own reason, not a plain scope denial: the ladder answers this before it asks about
+    // pricing at all, and the two carry different statuses on the wire.
+    assert_eq!(refusal.reason(), ReasonCode::PoolNotPermitted);
     assert_eq!(refusal.step(), StepName::Verify);
     assert!(!refusal.under_hold(), "nothing is charged before the door");
 }
@@ -148,11 +150,11 @@ fn a_reachable_fallback_pool_refuses_the_same_way() {
         )
         .into_result(&seal)
         .expect_err("the fallback pool is not allowed");
-    assert_eq!(refusal.reason(), ReasonCode::ScopeDenied);
+    assert_eq!(refusal.reason(), ReasonCode::PoolNotPermitted);
 }
 
 #[test]
-fn an_unpriced_name_refuses_as_unpriced() {
+fn an_unpriced_name_refuses_for_having_no_rate() {
     let (seal, trust, token) = kernel();
     let candidates = vec![super::destination_tests::kinds::upstream()];
     let pools = Pools::with_card_missing(&["arbitrary"]);
@@ -166,5 +168,7 @@ fn an_unpriced_name_refuses_as_unpriced() {
         )
         .into_result(&seal)
         .expect_err("no configured rate");
-    assert_eq!(refusal.reason(), ReasonCode::Unpriced);
+    // Not `Unpriced`, which is a class the present card does not price: nothing is wrong with the
+    // caller's budget here, the name they supplied simply cannot be billed.
+    assert_eq!(refusal.reason(), ReasonCode::NoRate);
 }

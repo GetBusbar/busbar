@@ -31,6 +31,22 @@ pub enum RefusalKind {
     InvalidRequest,
 }
 
+impl RefusalKind {
+    /// The reason code this guard's refusal is recorded under.
+    ///
+    /// Both used to collapse onto reasons that meant something else — a pool the caller may not
+    /// reach onto a plain scope denial, an unpriced name onto a class the card does not price —
+    /// which made two refusals with different statuses indistinguishable to anything reading the
+    /// record.
+    #[must_use]
+    pub fn reason(self) -> busbar_caps::ReasonCode {
+        match self {
+            RefusalKind::Permission => busbar_caps::ReasonCode::PoolNotPermitted,
+            RefusalKind::InvalidRequest => busbar_caps::ReasonCode::NoRate,
+        }
+    }
+}
+
 /// The permission refusal, byte for byte.
 ///
 /// The body carries only vendor-plausible copy: it never names the key id, the pool, or any
