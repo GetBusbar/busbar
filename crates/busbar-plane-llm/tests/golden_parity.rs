@@ -11,10 +11,14 @@
 //!
 //! ## What is compared
 //!
-//! Every frozen request output is compared byte-for-byte, with no normalization at all. Every
-//! frozen answer output is compared with four members normalized, and the note above the answer
-//! tests says which four and why each one is unreachable from outside the codec crate — they are a
-//! recorded gap, not a tolerance band.
+//! Every frozen request output is compared byte-for-byte, with no normalization at all. So is every
+//! frozen answer output, with one exception the frozen file itself declares: the identity the
+//! client-facing writer MINTS. A minted token cannot be frozen, so the frozen file records a
+//! placeholder in its place, and the comparison reads that placeholder back after asserting the
+//! produced token has the dialect's native shape. The creation time, the elapsed figure and the
+//! tool-call identities used to be normalized here too; they are exact now, because the plane runs
+//! the same answer-normalization pass the reference forward path runs and is handed the two values
+//! it cannot observe — the creation time and the elapsed figure — as inputs.
 
 mod harness;
 
@@ -87,7 +91,7 @@ fn host_for(dialect: &str) -> &'static str {
 
 /// Where the codec crate keeps its frozen outputs.
 fn golden_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../busbar-llm/src/tests/proto/golden")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../busbar-llm-codec/src/tests/proto/golden")
 }
 
 /// One request, taken in through the plane's decode step and back out through its egress step.
@@ -325,65 +329,131 @@ fn every_frozen_request_translation_reproduces() {
 
 // ── the response direction ──────────────────────────────────────────────────────────────────────
 //
-// The answer direction reproduces the frozen outputs everywhere EXCEPT in four members, and all
-// four come from the same place: the normalization pass the reference path runs between reading an
-// answer and writing it is private to the codec crate, so this plane cannot run it.
+// The answer direction now reproduces the frozen outputs BYTE FOR BYTE, apart from the one member
+// the frozen output itself does not record: the identity the client-facing writer mints.
 //
-//   * the identity the client-facing writer stamps on the answer. The reference clears the
-//     upstream's own identity first, which makes the writer mint a fresh one in the client's native
-//     shape; without that clearing the upstream's identity passes through.
-//   * the creation time the reference supplies as an input. Absent, one writer reads the system
-//     clock for it — which also makes that writer's output nondeterministic, and that is a fact
-//     about the codec worth stating rather than working around.
-//   * the elapsed time stamped into the answer's metrics. The plane is handed no elapsed figure for
-//     the unit at the point it writes the answer, so it stamps none.
-//   * tool-call identities, which the reference rewrites so an identity minted by one vendor is
-//     recognisable when it comes back through another. The rewriter is private.
+// Three of the four members that used to be normalized here are exact:
 //
-// Every one of those is normalized below and everything else is compared byte-for-byte, so this
-// test is a real assertion about the translation and an exact record of what is not yet reachable.
+//   * the creation time. The plane runs the same answer-normalization pass the reference forward
+//     path runs, and hands it the creation time as an INPUT, from the context's clock. Nothing
+//     reads a system clock, so the answer is the same answer every time it is built.
+//   * the elapsed time stamped into the answer's metrics. It reaches the plane as a transport fact,
+//     because the thing that made the call is the thing that can measure it.
+//   * tool-call identities. The same pass rewrites them, so an identity minted by one vendor is
+//     recognisable when it comes back through another — and the rewrite is a pure function of the
+//     identity it rewrites, so it reproduces.
+//
+// The fourth is the answer's own identity. The reference clears the upstream's identity so the
+// client-facing writer mints one in the client's native shape, and a minted identity is not a
+// property of the translation: the FROZEN OUTPUT does not record one either — it stores a
+// placeholder in its place, minted and substituted by the codec crate's own golden harness. So the
+// comparison below substitutes the same placeholder into the produced answer, after asserting the
+// minted token has the dialect's native shape, and compares everything else exactly. That is not a
+// tolerance band; it is the frozen output being read as it was written.
 
-/// The member names whose values are normalized before comparison, and why each is on the list.
-const NORMALIZED_MEMBERS: &[&str] = &[
-    // The answer's own identity, in each client dialect's spelling.
-    "id",
-    "responseId",
-    // Tool-call identities, in each client dialect's spelling.
-    "call_id",
-    "toolUseId",
-    // The creation time and the elapsed time.
-    "created_at",
-    "created",
-    "latencyMs",
-];
+/// Assert the minted id at `obj[key]` has the shape `<prefix><base62>`, then substitute whatever the
+/// frozen output records in its place.
+///
+/// The frozen file does not record a minted token — it cannot; the token is minted per call. It
+/// records a placeholder, written there by the codec crate's own golden harness. So the honest
+/// comparison is: assert the produced token has the dialect's native shape, then read the frozen
+/// file's own placeholder into it, and compare every other byte exactly. Nothing else in the
+/// document is touched.
+fn placehold_id(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    frozen: Option<&serde_json::Map<String, serde_json::Value>>,
+    key: &str,
+    prefix: &str,
+) {
+    let Some(id) = obj
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+    else {
+        return;
+    };
+    assert!(
+        id.starts_with(prefix) && id.len() > prefix.len(),
+        "the minted id at `{key}` must start with `{prefix}`, got {id:?}"
+    );
+    let Some(placeholder) = frozen.and_then(|f| f.get(key)).cloned() else {
+        return;
+    };
+    obj.insert(key.to_string(), placeholder);
+}
 
-/// Replace every normalized member's value, at every depth, with a fixed token.
-fn normalize(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(obj) => {
-            for (key, v) in obj.iter_mut() {
-                if NORMALIZED_MEMBERS.contains(&key.as_str()) {
-                    *v = serde_json::Value::String("NORMALIZED".to_string());
-                } else {
-                    normalize(v);
+/// Substitute whichever id(s) the given client dialect's writer mints, taking each placeholder from
+/// the frozen answer at the same position. Bedrock mints none.
+fn placehold_minted_ids(
+    ingress: &str,
+    out: &mut serde_json::Value,
+    frozen: &serde_json::Value,
+) {
+    let frozen_obj = frozen.as_object();
+    let Some(obj) = out.as_object_mut() else {
+        return;
+    };
+    match ingress {
+        "anthropic" => placehold_id(obj, frozen_obj, "id", "msg_01"),
+        "openai" => placehold_id(obj, frozen_obj, "id", "chatcmpl-"),
+        // Cohere mints a bare RFC-4122 UUIDv4 rather than a `<prefix><base62>` token; the empty
+        // prefix makes the shape assertion a length check, which is all the id family shares.
+        "cohere" => placehold_id(obj, frozen_obj, "id", ""),
+        // Gemini mints a top-level `responseId` (an unprefixed base62 token) and nothing else.
+        "gemini" => placehold_id(obj, frozen_obj, "responseId", ""),
+        "responses" => {
+            placehold_id(obj, frozen_obj, "id", "resp_");
+            // Every `output[]` item carries a minted item-level id (`msg_`/`fc_`/`rs_`) the IR has
+            // no carrier for — distinct from a passed-through `call_id`, which is NOT touched.
+            let frozen_items = frozen_obj
+                .and_then(|f| f.get("output"))
+                .and_then(serde_json::Value::as_array);
+            if let Some(items) = obj
+                .get_mut("output")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for (i, item) in items.iter_mut().enumerate() {
+                    let frozen_item = frozen_items
+                        .and_then(|f| f.get(i))
+                        .and_then(serde_json::Value::as_object);
+                    let Some(item_obj) = item.as_object_mut() else {
+                        continue;
+                    };
+                    let Some(id) = item_obj
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                    else {
+                        continue;
+                    };
+                    let prefix = ["msg_", "fc_", "rs_"]
+                        .into_iter()
+                        .find(|p| id.starts_with(p))
+                        .unwrap_or_else(|| {
+                            panic!("a responses output item id has an unexpected prefix: {id:?}")
+                        });
+                    placehold_id(item_obj, frozen_item, "id", prefix);
                 }
             }
         }
-        serde_json::Value::Array(items) => {
-            for item in items {
-                normalize(item);
-            }
-        }
+        // bedrock mints no id in the JSON body — nothing to substitute.
         _ => {}
     }
 }
 
-/// One document, with the members above normalized.
-fn normalized(bytes: &[u8]) -> String {
-    let mut value: serde_json::Value =
-        sonic_rs::from_slice(bytes).expect("an answer is a document");
-    normalize(&mut value);
-    String::from_utf8(sonic_rs::to_vec(&value).expect("serializes")).expect("valid text")
+/// The two documents to compare: the frozen one, and the produced one with the minted identity
+/// replaced by the frozen file's own placeholder. Both go through the same serializer, so the
+/// comparison is over documents rather than over two spellings of one.
+fn comparable(ingress: &str, frozen_bytes: &[u8], produced: &[u8]) -> (String, String) {
+    let frozen: serde_json::Value =
+        sonic_rs::from_slice(frozen_bytes).expect("a frozen answer is a document");
+    let mut actual: serde_json::Value =
+        sonic_rs::from_slice(produced).expect("an answer is a document");
+    placehold_minted_ids(ingress, &mut actual, &frozen);
+    (
+        String::from_utf8(sonic_rs::to_vec(&frozen).expect("serializes")).expect("valid text"),
+        String::from_utf8(sonic_rs::to_vec(&actual).expect("serializes")).expect("valid text"),
+    )
 }
 
 /// One answer, taken in through the plane's response decoder and back out through its encoder.
@@ -392,7 +462,12 @@ fn translate_response(egress: &str, ingress: &str, body: &str) -> Vec<u8> {
     let plane = LlmPlane::new(UPSTREAMS);
     let arena = harness::LeakArena;
     let config = harness::EmptyConfig;
-    let transport = harness::HttpStack::new(harness::path_for(ingress), &[]);
+    // The elapsed figure the frozen output stamps, published the way a real transport publishes
+    // it: as a fact. The plane does not measure it and does not invent it.
+    let transport = harness::HttpStack::new(
+        harness::path_for(ingress),
+        &[(busbar_plane_llm::meta::TRANSPORT_FACT_ELAPSED_MS, "123")],
+    );
     let labels = Labels::new();
     let ctx = harness::ctx(&arena, &config, &transport, &labels);
     let dest = harness::destination(host_for(egress), lane_for(egress));
@@ -593,7 +668,7 @@ fn every_frozen_answer_translation_reproduces() {
             compared += 1;
             let actual = translate_response(egress, ingress, body);
             let (expected, actual) = against_golden(&name, &actual);
-            let (expected, actual) = (normalized(&expected), normalized(&actual));
+            let (expected, actual) = comparable(ingress, &expected, &actual);
             if expected != actual {
                 differing.push(format!("{name}\n  frozen: {expected}\n  plane:  {actual}"));
             }

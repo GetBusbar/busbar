@@ -51,3 +51,12 @@ serde_json = { workspace = true }
 # library would differ in escaping and in number formatting, and the difference would show up as a
 # changed request on the wire rather than as a failing test.
 sonic-rs = { workspace = true }
+
+[dev-dependencies]
+# THE CODECS' SELF-REGISTERING TEST SEAM. In a shipped build the composition root installs the
+# dialect declarations, and the answer-normalization pass reads the client dialect's native tool-id
+# prefix off that registry. This crate's test binary runs no composition root, so it turns on the
+# codec crate's own test seam, which registers the same six declarations once on first use. Test
+# targets only: the shipped dependency edge above is unchanged, and the plane's own code names
+# nothing from the seam.
+busbar-llm-codec = { path = "../busbar-llm-codec", features = ["test-support"] }

@@ -52,6 +52,16 @@ const KIND_API_ERROR: &str = "api_error";
 /// name a dialect, and the decode step says so rather than guessing.
 const FACT_PATH: &str = "path";
 
+/// How long the upstream took, in milliseconds, if the transport published the figure.
+///
+/// One dialect stamps this into the answer's metrics. The plane does not measure it and does not
+/// invent it: an unpublished or unparsable fact yields `None`, and the writer then stamps nothing.
+fn elapsed_ms(ctx: &Ctx<'_>) -> Option<u64> {
+    ctx.transport()
+        .fact(meta::TRANSPORT_FACT_ELAPSED_MS)
+        .and_then(|v| v.parse::<u64>().ok())
+}
+
 /// The default response ceiling used when a dialect requires one and the client sent none.
 ///
 /// The design fixes the fallback and the order it is reached in: the lane's own default, then the
@@ -545,14 +555,29 @@ impl Plane for LlmPlane {
             // Same dialect: the upstream's own bytes are already what the client reads.
             return put(ctx, bytes);
         }
-        let response = source_protocol
+        let mut response = source_protocol
             .reader()
             .read_response(&value)
             .map_err(|_| Encode::Unrepresentable)?;
+        // THE ANSWER-NORMALIZATION PASS. The reference forward path runs exactly this between
+        // reading an answer and writing it, and the four members this plane used to get wrong were
+        // all it: the upstream's own identity is cleared (so the client-facing writer mints one in
+        // the client's native shape rather than passing a foreign dialect's id through), the
+        // creation time is filled in, and the tool-call ids are rewritten so an identity minted by
+        // one vendor is recognisable when it comes back through another.
+        //
+        // The creation time is an INPUT, taken from the context's clock. That is the whole reason
+        // this call can live in a plane: the pass reads no clock of its own, so a plane running it
+        // stays pure over its inputs, and two calls with the same context produce the same answer.
+        busbar_llm_codec::chat_handle::chat_prepare_for_ingress(
+            &mut response,
+            ingress.name,
+            ctx.clock().unix_secs,
+        );
         let mut written = ingress_protocol.writer().write_response(&response);
         ingress_protocol
             .writer()
-            .inject_response_metrics(&mut written, None);
+            .inject_response_metrics(&mut written, elapsed_ms(ctx));
         put(ctx, &serialize(&written)?)
     }
 

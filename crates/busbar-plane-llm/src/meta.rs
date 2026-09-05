@@ -136,6 +136,16 @@ pub const FACT_SOURCE_DIALECT: &str = "source_dialect";
 /// event of a streamed one.
 pub const FACT_FRAME_KIND: &str = "frame_kind";
 
+/// The TRANSPORT fact key carrying how long the upstream took, in milliseconds.
+///
+/// One dialect stamps an elapsed figure into the answer's metrics, and the reference path has one
+/// to stamp because the thing that made the call measured it. A plane cannot measure it: it holds
+/// no connection and reads no clock but the one the context hands it, and a clock reading at encode
+/// time is not an elapsed time. So the figure arrives the way every other thing a plane cannot
+/// observe arrives — as a fact the transport published. With the fact absent the plane stamps
+/// nothing, which is what it did before this key existed.
+pub const TRANSPORT_FACT_ELAPSED_MS: &str = "elapsed_ms";
+
 /// The fact key under which the response side reports the reason the upstream stopped.
 pub const FACT_FINISH_REASON: &str = "finish_reason";
 
