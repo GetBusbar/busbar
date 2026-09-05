@@ -42,6 +42,18 @@ What is normalized (each rule is a named entry in `applied`):
   body.keep-lines     a cell whose contract is the ABSENCE of something (`body_lines` on the cell)
                       keeps only the body lines matching that regex; an empty result is the
                       contract, and any surviving line is a diff
+  keep.header         a cell's `keep.headers` names a header that would otherwise be stripped/blanked
+                      (Date, Retry-After, x-request-id, ...): its value is kept (still id-normalized)
+                      instead, because for THIS cell the header's presence/value IS the contract
+  keep.json_key       a cell's `keep.json_keys` names a dotted JSON path (list indices omitted, so
+                      "items.digest" matches every element of an `items` array) whose value is kept
+                      completely raw -- no id/ts/version scrubbing at or under that key -- because
+                      for THIS cell that literal value IS the contract
+  keep.text_regex     a cell's `keep.text_regex` names a line pattern in a /metrics exposition that
+                      would otherwise be dropped by metrics.shape (a quantile/duration sample): the
+                      line is kept with its trailing numeric sample value blanked to "<DUR>" (labels,
+                      e.g. quantile="0.5", stay byte-exact) because for THIS cell the label SET is the
+                      contract, not the timing value
   egress.cred         in effects.egress[].headers, the VALUE of an Authorization / x-api-key /
                       x-goog-api-key header, or of any header whose value is an AWS SigV4
                       "AWS4-HMAC-SHA256 Credential=..." string -> "<CRED>" (the credential differs
@@ -56,7 +68,10 @@ What is normalized (each rule is a named entry in `applied`):
                       header — that is the point: this is the one place in the normalizer that must
                       stay maximally strict
 
-Usage: normalize.py <captured.json> [--key-id <id>] [--keep-body-lines <regex>] > normalized.json
+Usage: normalize.py <captured.json> [--key-id <id>] [--keep-body-lines <regex>] [--keep <json>] > normalized.json
+  --keep '<json>': per-cell opt-in that OVERRIDES the default stripping named above for named parts
+    of THIS cell only: {"headers": ["retry-after", ...], "json_keys": ["info.version", ...],
+    "text_regex": "..."}. Absent (the default): behavior is unchanged from before this flag existed.
 
 Anything NOT listed is preserved byte-for-byte. Body JSON is re-serialized canonically (sorted keys,
 no whitespace) so that key order — which is NOT semantically meaningful and which serializers may
@@ -98,10 +113,15 @@ PAIR = re.compile(r"\((\d+) vs (\d+)")
 EXPO_TIMING = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*(_seconds_sum|_seconds|_bucket)(\{|\s)|quantile=")
 
 
-def norm_headers(h: dict, applied: set) -> dict:
+def norm_headers(h: dict, applied: set, keep_headers: set | None = None) -> dict:
+    keep_headers = keep_headers or set()
     out = {}
     for k, v in h.items():
         lk = k.lower()
+        if lk in keep_headers:
+            # this cell opted in: the value IS the contract -- keep it (still id-normalized, so a
+            # wire id inside it does not become a spurious per-run diff), never stripped/blanked.
+            applied.add("keep.header"); out[lk] = norm_scalar_str(v, applied); continue
         if lk in HDR_STRIP:
             applied.add("hdr.date"); continue
         if lk in HDR_TIMING:
@@ -132,10 +152,18 @@ METRIC_COOLDOWN = re.compile(r"cooldown")
 ID_KEYS = {"responseId", "request_id", "requestId"}
 
 
-def norm_json(v, applied: set, key_id: str | None, parent_key: str = ""):
+def norm_json(v, applied: set, key_id: str | None, parent_key: str = "", path: str = "", keep_json_keys: set | None = None):
+    keep_json_keys = keep_json_keys or set()
     if isinstance(v, dict):
         out = {}
         for k, x in v.items():
+            child_path = f"{path}.{k}" if path else k
+            if child_path in keep_json_keys:
+                # this cell opted in on this exact dotted path (list indices never appear in it, so
+                # "items.digest" reaches every element of an `items` array): keep the value RAW, with
+                # no further scrubbing at or under it -- for THIS cell that literal value IS the
+                # contract (e.g. openapi info.version, a plugin digest).
+                applied.add("keep.json_key"); out[k] = x; continue
             if k in TS_KEYS and isinstance(x, (int, float)):
                 applied.add("ts.unix"); out[k] = 0; continue
             if k in TIMING_KEYS and isinstance(x, (int, float)):
@@ -156,7 +184,7 @@ def norm_json(v, applied: set, key_id: str | None, parent_key: str = ""):
                     applied.add("key.id"); nk = nk.replace(key_id, "<KEY>")
                 nk = norm_scalar_str(nk, applied)
                 applied.add("metrics.cooldown")
-                out[nk] = "<JITTER>" if isinstance(x, (int, float)) else norm_json(x, applied, key_id, k)
+                out[nk] = "<JITTER>" if isinstance(x, (int, float)) else norm_json(x, applied, key_id, k, child_path, keep_json_keys)
                 continue
             if parent_key == "metrics":
                 # metric LABELS carry the minted key id (bucket="vk_…") and other per-run ids
@@ -164,13 +192,13 @@ def norm_json(v, applied: set, key_id: str | None, parent_key: str = ""):
                 if key_id and key_id in nk:
                     applied.add("key.id"); nk = nk.replace(key_id, "<KEY>")
                 nk = norm_scalar_str(nk, applied)
-                out[nk] = norm_json(x, applied, key_id, k); continue
+                out[nk] = norm_json(x, applied, key_id, k, child_path, keep_json_keys); continue
             if k in ID_KEYS and isinstance(x, str):
                 applied.add("id.wire"); out[k] = "<ID>"; continue
-            out[k] = norm_json(x, applied, key_id, k)
+            out[k] = norm_json(x, applied, key_id, k, child_path, keep_json_keys)
         return dict(sorted(out.items()))
     if isinstance(v, list):
-        return [norm_json(x, applied, key_id, parent_key) for x in v]
+        return [norm_json(x, applied, key_id, parent_key, path, keep_json_keys) for x in v]
     if isinstance(v, str):
         if key_id and v == key_id:
             applied.add("key.id"); return "<KEY>"
@@ -237,7 +265,7 @@ def sort_pool_lines(lines: list, applied: set) -> list:
     return sort_runs(sort_runs(lines, POOL_LINE, "boot.pool-order", applied), ERROR_BULLET, "boot.error-order", applied)
 
 
-def norm_text(text: str, applied: set) -> str:
+def norm_text(text: str, applied: set, keep_regex=None) -> str:
     if PAIR.search(text):
         def _sort_pair(m):
             a, b = sorted((int(m.group(1)), int(m.group(2))))
@@ -248,7 +276,20 @@ def norm_text(text: str, applied: set) -> str:
     lines = text.split("\n")
     if lines and lines[0].startswith(("# HELP ", "# TYPE ")):
         applied.add("metrics.shape")
-        keep = [ln for ln in lines if ln and not EXPO_TIMING.search(ln)]
+        keep = []
+        for ln in lines:
+            if not ln:
+                continue
+            if keep_regex and keep_regex.search(ln):
+                # this cell opted in on this line pattern (e.g. a quantile sample that metrics.timing
+                # would otherwise drop entirely): keep the line -- the label SET (quantile="0.5", ...)
+                # is the contract -- but blank the trailing numeric sample value, which is not.
+                head, sep, _val = ln.rpartition(" ")
+                keep.append(head + " <DUR>" if sep else ln)
+                applied.add("keep.text_regex")
+                continue
+            if not EXPO_TIMING.search(ln):
+                keep.append(ln)
         return "\n".join(sorted(keep))
     if len(lines) > 1 and lines[0].startswith("HTTP/"):
         # a raw response dump (HEAD cells): header lines get the header rules
@@ -256,14 +297,14 @@ def norm_text(text: str, applied: set) -> str:
     return "\n".join(sort_pool_lines(lines, applied))
 
 
-def norm_body(body: str, applied: set, key_id: str | None):
+def norm_body(body: str, applied: set, key_id: str | None, keep_json_keys: set | None = None, keep_regex=None):
     raw = body
     if body.startswith("base64:"):
         raw = base64.b64decode(body[7:]).decode("utf-8", "replace")
     stripped = raw.strip()
     if stripped.startswith("{") or stripped.startswith("["):
         try:
-            return {"json": norm_json(json.loads(stripped), applied, key_id)}
+            return {"json": norm_json(json.loads(stripped), applied, key_id, keep_json_keys=keep_json_keys)}
         except Exception:
             pass
     # SSE / text: normalize line-wise; for `data: {json}` lines canonicalize the JSON payload too.
@@ -271,18 +312,22 @@ def norm_body(body: str, applied: set, key_id: str | None):
     for ln in raw.split("\n"):
         if ln.startswith("data: ") and ln[6:].lstrip().startswith("{"):
             try:
-                j = norm_json(json.loads(ln[6:]), applied, key_id)
+                j = norm_json(json.loads(ln[6:]), applied, key_id, keep_json_keys=keep_json_keys)
                 lines.append("data: " + json.dumps(j, separators=(",", ":"), sort_keys=True)); continue
             except Exception:
                 pass
         lines.append(norm_scalar_str(ln, applied) if key_id is None else norm_scalar_str(ln.replace(key_id, "<KEY>"), applied))
-    return {"text": norm_text("\n".join(lines), applied)}
+    return {"text": norm_text("\n".join(lines), applied, keep_regex)}
 
 
-def normalize(cap: dict, key_id: str | None, keep_lines: str | None = None) -> dict:
+def normalize(cap: dict, key_id: str | None, keep_lines: str | None = None, keep: dict | None = None) -> dict:
+    keep = keep or {}
+    keep_headers = {h.lower() for h in keep.get("headers", [])}
+    keep_json_keys = set(keep.get("json_keys", []))
+    keep_regex = re.compile(keep["text_regex"]) if keep.get("text_regex") else None
     applied: set = set()
     body_rules: set = set()
-    body = norm_body(cap.get("body", ""), body_rules, key_id)
+    body = norm_body(cap.get("body", ""), body_rules, key_id, keep_json_keys, keep_regex)
     if keep_lines is not None:
         # The cell's contract is what is NOT there: keep only the matching lines (a JSON body is
         # rendered canonically first so the filter sees one line per top-level entry).
@@ -291,7 +336,7 @@ def normalize(cap: dict, key_id: str | None, keep_lines: str | None = None) -> d
         body = {"text": "\n".join(ln for ln in text.split("\n") if rx.search(ln))}
         body_rules.add("body.keep-lines")
     applied |= body_rules
-    headers = norm_headers(cap.get("headers", {}), applied)
+    headers = norm_headers(cap.get("headers", {}), applied, keep_headers)
     if body_rules and "content-length" in headers:
         applied.add("hdr.length"); headers["content-length"] = "<LEN>"
     # `egress` is pulled out before the generic pass: norm_json's id/ts scrubbing rules must never
@@ -317,12 +362,15 @@ def main() -> int:
     args = sys.argv[1:]
     key_id = None
     keep_lines = None
+    keep = None
     if "--key-id" in args:
         i = args.index("--key-id"); key_id = args[i + 1]; del args[i:i + 2]
     if "--keep-body-lines" in args:
         i = args.index("--keep-body-lines"); keep_lines = args[i + 1]; del args[i:i + 2]
+    if "--keep" in args:
+        i = args.index("--keep"); keep = json.loads(args[i + 1]); del args[i:i + 2]
     cap = json.load(open(args[0])) if args else json.load(sys.stdin)
-    print(json.dumps(normalize(cap, key_id, keep_lines), separators=(",", ":"), sort_keys=True))
+    print(json.dumps(normalize(cap, key_id, keep_lines, keep), separators=(",", ":"), sort_keys=True))
     return 0
 
 

@@ -43,16 +43,17 @@
     }
   ],
   "counts": {
-    "total": 2213,
+    "total": 2221,
     "by_plane": {
       "a2a": 468,
-      "core": 706,
+      "core": 714,
       "llm": 127,
       "mcp": 912
     },
     "by_family": {
       "a2a": 468,
       "admin.ops": 231,
+      "auth.lifecycle": 3,
       "billing": 11,
       "boot.refusal": 205,
       "boot.warning": 31,
@@ -60,6 +61,7 @@
       "concurrency": 3,
       "config.migrate": 138,
       "cooldown": 1,
+      "crosscut.traps": 5,
       "hooks": 6,
       "http.crosscut": 20,
       "llm.wire": 127,
@@ -6022,13 +6024,53 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/audit?limit=10",
+        "path": "/api/v1/admin/audit?limit=4",
         "headers": {},
         "body": null,
         "auth": "admin",
-        "listener": "admin"
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/api/v1/admin/keys",
+            "listener": "admin",
+            "auth": "admin",
+            "headers": {
+              "Content-Type": "application/json",
+              "Idempotency-Key": "oracle-idem-post-keys-1"
+            },
+            "body": "{\"group\":\"oracle\",\"name\":\"oracle-minted\"}"
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/admin/keys/{KEY_OK}/rotate",
+            "listener": "admin",
+            "auth": "admin",
+            "headers": {
+              "Idempotency-Key": "oracle-idem-audit-chain-rotate"
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/admin/keys/{KEY_BROKE}/revoke",
+            "listener": "admin",
+            "auth": "admin",
+            "headers": {}
+          },
+          {
+            "method": "PUT",
+            "path": "/api/v1/admin/config/settings",
+            "listener": "admin",
+            "auth": "admin",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"limits\":{\"request_body_max_bytes\":33554432}}"
+          }
+        ]
       },
-      "why": "200 AuditPageView {items,next_cursor}, newest first. A malformed cursor is 400 invalid_request (Cond::MalformedCursor). Body diff is expected to vary by seq/ts/"
+      "why": "mint, rotate {KEY_OK}, revoke {KEY_BROKE}, then a config/settings write, all on one fresh boot: the four newest audit entries pin the four action literals and the chain's own link integrity, not just the page's shape",
+      "fresh": true
     },
     {
       "id": "admin.ops|GetAudit|unauth",
@@ -9839,6 +9881,42 @@
         "listener": "admin"
       },
       "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "auth.lifecycle|key-expiry",
+      "plane": "core",
+      "family": "auth.lifecycle",
+      "driver": "script",
+      "script": {
+        "name": "key-expiry.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "minting a key with expires_at in the past (Unix epoch + 1): 1.5.5 never enforces a stored key-level expiry on the request path, only a signed token's own exp claim, so the admin API's own expires_at-must-be-future validation makes this expiry path unreachable through the admin API (400 at mint, spend never attempted) \u2014 recorded as the real outcome rather than assumed from the design doc"
+    },
+    {
+      "id": "auth.lifecycle|key-revoke",
+      "plane": "core",
+      "family": "auth.lifecycle",
+      "driver": "script",
+      "script": {
+        "name": "key-revoke.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "revoke actually stops the data plane, not just the admin response: mint, spend (200), revoke, spend again with the same token -> the ingress-native 401, and the usage delta shows the revoked spend billed nothing"
+    },
+    {
+      "id": "auth.lifecycle|key-rotate",
+      "plane": "core",
+      "family": "auth.lifecycle",
+      "driver": "script",
+      "script": {
+        "name": "key-rotate.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "rotate cuts the OLD token over immediately (no grace period) and the NEW token is live at once on the same node: mint, spend with the old token (200), rotate, spend with the old token again (401, no grace), spend with the new token (200); usage shows exactly the two served spends billed"
     },
     {
       "id": "billing|admin-usage|after-2",
@@ -16657,6 +16735,146 @@
       },
       "outcome": "ok",
       "why": "base_cooldown_secs 1: a tripped member is refused (503, nothing billed), then once the jittered cooldown elapses the SAME request is served (200, billed) \u2014 the breaker's own trip-then-recover cycle. Proven on the CUMULATIVE counters busbar_breaker_trips_total / busbar_upstream_failures_total, which survive the scrape-time busbar_lane_state gauge settling back to its starting value (0 -> 2 -> 0) by the time this cell's one before/after snapshot is taken, plus the requests-vs-billable_requests split in the usage delta."
+    },
+    {
+      "id": "crosscut.traps|exhausted-retry-after-floor",
+      "plane": "core",
+      "family": "crosscut.traps",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"oracle-fo\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "every member of pool oracle-fo is driven down (mock `down` verb, same technique as route.failover|fo|all-down): the on_exhausted 503's Retry-After is pinned instead of blanked to <RETRY>, so the report can show its actual value and a regression that floors it below 2 seconds (the breaker's own base_cooldown_secs is 15s, jittered) is a visible diff, not hidden inside the usual retry-after normalization (PB-4)",
+      "keep": {
+        "headers": [
+          "retry-after"
+        ]
+      },
+      "mock_control": {
+        "m-openai-chat": "down",
+        "m-anthropic": "down"
+      }
+    },
+    {
+      "id": "crosscut.traps|openapi-info-version",
+      "plane": "core",
+      "family": "crosscut.traps",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/openapi.json",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "the served OpenAPI document's own info.version literal (1.5.4 on 1.5.5, stale per the routes inventory) is pinned instead of being folded into <VERSION> by the generic ver.string rule, so a later binary that quietly bumps or fixes this frozen literal shows up as a diff either way",
+      "keep": {
+        "json_keys": [
+          "info.version"
+        ]
+      }
+    },
+    {
+      "id": "crosscut.traps|plugin-digests",
+      "plane": "core",
+      "family": "crosscut.traps",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/plugins?type=hooks",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "GET /api/v1/admin/plugins (hooks variant, the published headroom + webrequest plugins loaded): each item's digest is content-derived and pinned instead of being left to the generic scrubbing rules, so a later binary that reports a plugin's tarball as unchanged while its actual bytes moved is a diff",
+      "config_variant": "hooks",
+      "keep": {
+        "json_keys": [
+          "items.digest"
+        ]
+      }
+    },
+    {
+      "id": "crosscut.traps|request-duration-quantiles",
+      "plane": "core",
+      "family": "crosscut.traps",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/metrics",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"m-openai-chat\"}"
+          },
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"m-openai-chat\"}"
+          },
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"m-openai-chat\"}"
+          }
+        ]
+      },
+      "why": "three chat requests warm the summary, then /metrics is scraped: the QUANTILE LABEL SET busbar_request_duration_seconds publishes (which quantiles exist at all) is a contract even though each sampled duration is not -- keep those lines with the numeric value blanked to <DUR>, instead of the default metrics.timing rule dropping the whole sample",
+      "keep": {
+        "text_regex": "^busbar_request_duration_seconds\\{[^}]*quantile="
+      }
+    },
+    {
+      "id": "crosscut.traps|x-request-id-present",
+      "plane": "core",
+      "family": "crosscut.traps",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"m-openai-chat\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "the generated x-request-id is present on a DATA-plane response, not only on admin/error envelopes: keep the header (id-normalized) so a binary that stops setting it on the happy path is a diff, not a silent pass through the normal hdr.date strip",
+      "keep": {
+        "headers": [
+          "x-request-id"
+        ]
+      }
     },
     {
       "id": "hooks|admin-list",

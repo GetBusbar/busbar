@@ -374,6 +374,9 @@ while IFS= read -r cell; do
   driver="$(jq -r '.driver // "llm"' <<<"$cell")"
   # `body_lines`: the cell's contract is the ABSENCE of matching lines; the normalizer keeps only those
   keep_lines="$(jq -r '.body_lines // empty' <<<"$cell")"
+  # `keep`: the cell's contract is the PRESENCE of a specific header/JSON-key/metrics-line value that
+  # normalize.py would otherwise strip/blank by default — passed through verbatim as compact JSON.
+  keep_spec="$(jq -c '.keep // empty' <<<"$cell")"
   if [ "$(jq -r '.needs_fixture // false' <<<"$cell")" = true ]; then
     record "$id" SKIP "UNSUPPORTED: $(jq -r .why <<<"$cell" | cut -c1-140)" "named gap: the fixture this cell needs is not in the tree yet"; continue
   fi
@@ -505,7 +508,7 @@ PY
   if ! python3 "${here}/capture.py" "$raw/headers" "$status" "$raw/body" "$raw/before" "$raw/after" "${egress_files[@]}" >"$raw/captured.json" 2>"$raw/capture.err"; then
     record "$id" FAIL "capture.py failed" "$(tail -c 300 "$raw/capture.err")"; continue
   fi
-  if ! python3 "${here}/normalize.py" "$raw/captured.json" --key-id "$kid" ${keep_lines:+--keep-body-lines "$keep_lines"} >"$OUT/cells/$safe.json" 2>"$raw/normalize.err"; then
+  if ! python3 "${here}/normalize.py" "$raw/captured.json" --key-id "$kid" ${keep_lines:+--keep-body-lines "$keep_lines"} ${keep_spec:+--keep "$keep_spec"} >"$OUT/cells/$safe.json" 2>"$raw/normalize.err"; then
     record "$id" FAIL "normalize.py failed" "$(tail -c 300 "$raw/normalize.err")"; continue
   fi
   # a mutating admin cell's `request.post`: read back the resource the write touched (AFTER the

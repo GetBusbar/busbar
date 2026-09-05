@@ -323,7 +323,28 @@ def admin_cells() -> list[dict]:
             c = http(f"admin.ops|{opid}|ok", F, op["method"], _path_of(op, op["ok"]),
                      auth="admin", listener="admin", headers=op["ok"].get("headers") or {},
                      body=_req_of(op, op["ok"])["body"], why=why, **({"config_variant": variant} if variant else {}))
-            pre = pre_chain(opid)
+            if opid == "GetAudit":
+                # A deterministic 4-action chain on a FRESH boot, so the audit content comparison pins
+                # the four action literals AND the chain's link integrity (each entry's hash seals the
+                # one before it) -- not just the page shape a bare GetAudit would otherwise prove.
+                c["fresh"] = True
+                c["request"]["path"] = "/api/v1/admin/audit?limit=4"
+                c["request"]["pre"] = [
+                    {"method": "POST", "path": "/api/v1/admin/keys", "listener": "admin", "auth": "admin",
+                     "headers": {"Content-Type": "application/json", "Idempotency-Key": "oracle-idem-post-keys-1"},
+                     "body": json.dumps({"group": "oracle", "name": "oracle-minted"}, separators=(",", ":"), sort_keys=True)},
+                    {"method": "POST", "path": "/api/v1/admin/keys/{KEY_OK}/rotate", "listener": "admin", "auth": "admin",
+                     "headers": {"Idempotency-Key": "oracle-idem-audit-chain-rotate"}},
+                    {"method": "POST", "path": "/api/v1/admin/keys/{KEY_BROKE}/revoke", "listener": "admin", "auth": "admin",
+                     "headers": {}},
+                    {"method": "PUT", "path": "/api/v1/admin/config/settings", "listener": "admin", "auth": "admin",
+                     "headers": {"Content-Type": "application/json"},
+                     "body": json.dumps({"limits": {"request_body_max_bytes": 33554432}}, separators=(",", ":"), sort_keys=True)},
+                ]
+                c["why"] = ("mint, rotate {KEY_OK}, revoke {KEY_BROKE}, then a config/settings write, all "
+                            "on one fresh boot: the four newest audit entries pin the four action literals "
+                            "and the chain's own link integrity, not just the page's shape")
+            pre = pre_chain(opid) if opid != "GetAudit" else []
             if pre:
                 c["request"]["pre"] = pre
             if op.get("mutating"):
@@ -573,13 +594,100 @@ def cooldown_cells() -> list[dict]:
     }]
 
 
+def crosscut_traps_cells() -> list[dict]:
+    """`crosscut.traps`: five cells that each pin ONE value the normalizer would otherwise strip or
+    blank by default (`keep` on the cell — see normalize.py's `--keep`), because for these five the
+    value itself, not just its presence/shape, is the parity contract a byte-diff would otherwise
+    silently hide. Each is a real request against the same oracle config every other core cell uses."""
+    F = "crosscut.traps"
+    chat = lambda model: json.dumps({"model": model, "messages": [{"role": "user", "content": "ping"}]},
+                                     separators=(",", ":"), sort_keys=True)
+    cells = []
+    cells.append(http(
+        "crosscut.traps|x-request-id-present", F, "POST", "/v1/chat/completions", body=chat("m-openai-chat"),
+        keep={"headers": ["x-request-id"]},
+        why="the generated x-request-id is present on a DATA-plane response, not only on admin/error "
+            "envelopes: keep the header (id-normalized) so a binary that stops setting it on the happy "
+            "path is a diff, not a silent pass through the normal hdr.date strip"))
+    fo_body = chat("oracle-fo")
+    trap = http("crosscut.traps|exhausted-retry-after-floor", F, "POST", "/v1/chat/completions", body=fo_body,
+                 keep={"headers": ["retry-after"]},
+                 why="every member of pool oracle-fo is driven down (mock `down` verb, same technique as "
+                     "route.failover|fo|all-down): the on_exhausted 503's Retry-After is pinned instead of "
+                     "blanked to <RETRY>, so the report can show its actual value and a regression that "
+                     "floors it below 2 seconds (the breaker's own base_cooldown_secs is 15s, jittered) is "
+                     "a visible diff, not hidden inside the usual retry-after normalization (PB-4)")
+    trap["mock_control"] = {"m-openai-chat": "down", "m-anthropic": "down"}
+    cells.append(trap)
+    cells.append(http(
+        "crosscut.traps|openapi-info-version", F, "GET", "/api/v1/admin/openapi.json",
+        auth="admin", listener="admin", keep={"json_keys": ["info.version"]},
+        why="the served OpenAPI document's own info.version literal (1.5.4 on 1.5.5, stale per the "
+            "routes inventory) is pinned instead of being folded into <VERSION> by the generic "
+            "ver.string rule, so a later binary that quietly bumps or fixes this frozen literal shows "
+            "up as a diff either way"))
+    quantile_cell = http(
+        "crosscut.traps|request-duration-quantiles", F, "GET", "/metrics",
+        keep={"text_regex": r'^busbar_request_duration_seconds\{[^}]*quantile='},
+        why="three chat requests warm the summary, then /metrics is scraped: the QUANTILE LABEL SET "
+            "busbar_request_duration_seconds publishes (which quantiles exist at all) is a contract "
+            "even though each sampled duration is not -- keep those lines with the numeric value "
+            "blanked to <DUR>, instead of the default metrics.timing rule dropping the whole sample")
+    quantile_cell["request"]["pre"] = [
+        {"method": "POST", "path": "/v1/chat/completions", "listener": "data", "auth": "ok",
+         "headers": {"Content-Type": "application/json"}, "body": chat("m-openai-chat")}
+        for _ in range(3)
+    ]
+    cells.append(quantile_cell)
+    cells.append(http(
+        # NOTE: the sibling admin.ops|GetPlugins|ok cell uses `?type=hook` (a pre-existing typo in
+        # fixtures/admin-bodies.json, not owned here) and gets a 400 for it -- this trap uses the
+        # binary's actual accepted value (`hooks`) so it exercises a real 200 with real items.
+        "crosscut.traps|plugin-digests", F, "GET", "/api/v1/admin/plugins?type=hooks",
+        auth="admin", listener="admin", config_variant="hooks", keep={"json_keys": ["items.digest"]},
+        why="GET /api/v1/admin/plugins (hooks variant, the published headroom + webrequest plugins "
+            "loaded): each item's digest is content-derived and pinned instead of being left to the "
+            "generic scrubbing rules, so a later binary that reports a plugin's tarball as unchanged "
+            "while its actual bytes moved is a diff"))
+    return cells
+
+
+def auth_lifecycle_cells() -> list[dict]:
+    """`auth.lifecycle`: the three key-revoke/rotate/expiry scripts already committed under scripts/,
+    each a self-contained boot on its own ports (mirrors plugins.store-persist|<name>'s own-boot
+    script cell) proving the DATA-plane consequence of an admin lifecycle action, not just the shape
+    of the admin response that triggered it."""
+    F = "auth.lifecycle"
+    return [
+        {"id": "auth.lifecycle|key-revoke", "plane": "core", "family": F, "driver": "script",
+         "script": {"name": "key-revoke.sh"}, "outcome": "ok", "weight": 10,
+         "why": "revoke actually stops the data plane, not just the admin response: mint, spend (200), "
+                "revoke, spend again with the same token -> the ingress-native 401, and the usage delta "
+                "shows the revoked spend billed nothing"},
+        {"id": "auth.lifecycle|key-rotate", "plane": "core", "family": F, "driver": "script",
+         "script": {"name": "key-rotate.sh"}, "outcome": "ok", "weight": 10,
+         "why": "rotate cuts the OLD token over immediately (no grace period) and the NEW token is live "
+                "at once on the same node: mint, spend with the old token (200), rotate, spend with the "
+                "old token again (401, no grace), spend with the new token (200); usage shows exactly "
+                "the two served spends billed"},
+        {"id": "auth.lifecycle|key-expiry", "plane": "core", "family": F, "driver": "script",
+         "script": {"name": "key-expiry.sh"}, "outcome": "ok", "weight": 10,
+         "why": "minting a key with expires_at in the past (Unix epoch + 1): 1.5.5 never enforces a "
+                "stored key-level expiry on the request path, only a signed token's own exp claim, so "
+                "the admin API's own expires_at-must-be-future validation makes this expiry path "
+                "unreachable through the admin API (400 at mint, spend never attempted) — recorded as "
+                "the real outcome rather than assumed from the design doc"},
+    ]
+
+
 def main() -> int:
     minv = json.loads(METHOD_INV.read_text())
     finv = json.loads(FIELD_INV.read_text())
     cells = sorted(llm_cells(finv) + protocol_cells(minv) + cli_cells() + migrate_cells()
                    + scrape_cells() + crosscut_cells() + admin_cells() + boot_cells() + failover_cells()
                    + plugin_cells() + billing_cells() + hooks_cells()
-                   + concurrency_cells() + queue_cells() + cooldown_cells(),
+                   + concurrency_cells() + queue_cells() + cooldown_cells()
+                   + crosscut_traps_cells() + auth_lifecycle_cells(),
                    key=lambda c: c["id"])
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "cell ids must be unique"
