@@ -3,8 +3,12 @@
 //! Everything here is a constant, because everything here is read once at registration and sealed
 //! into policy. The meter-class list, in particular, is the exact list
 //! `docs/design/ARCHITECTURE.md`'s protocol-inventory table names for the `voice` row —
-//! `audio_tokens_in/out, text_tokens, cached_tokens, audio_seconds_in, tool_calls` — and no other
-//! class is declared, because the table names that list and no other.
+//! `audio_tokens_in/out, text_tokens_in/text_tokens_out, cached_tokens, audio_seconds_in,
+//! tool_calls` — and no other class is declared, because the table names that list and no other.
+//!
+//! In particular the table names `audio_seconds_in` and no outbound twin. Metering the downlink by
+//! duration would be a second reading of the same audio the `audio_tokens_out` class already prices,
+//! so the absent class is the table's decision and not an omission this module quietly fills in.
 
 use busbar_contract::ids::{
     AdminVerbId, ClassDirection, MeterClassDecl, MeterClassId, OpClassId, RecordSchemaId,
@@ -41,13 +45,14 @@ const CALLS_PER_UNIT: u32 = 1;
 
 /// The meter classes this plane declares.
 ///
-/// `text_tokens` is declared `ClassDirection::Input` rather than split into an in/out pair: the
-/// architecture table names one `text_tokens` class for this plane, unlike the LLM plane's four-way
-/// split, so there is no second class to hold the output half. This is a judgment call, made once
-/// here and stated so it can be revisited: it means a duplex turn's text emitted BY the model is
-/// metered under the same class its transcript input is, which is honest given the declared class
-/// list has no second text class to put it under, and wrong only if a future revision of the
-/// architecture table splits it — at which point this is the line to change.
+/// **Text is an in/out pair, and which half a duplex turn's emitted text lands in is a money
+/// question.** This module used to declare one `text_tokens` class in the input direction, which
+/// meant a turn's model-emitted text priced under the same class as the transcript that prompted it
+/// — at the input rate, on a rate card where the two rates differ. That is settled: the
+/// architecture's own inventory row for this plane names `text_tokens_in` and `text_tokens_out`
+/// separately, and model-emitted text prices under `text_tokens_out`, an OUTPUT class, never the
+/// input one. The class label is what selects the unit price, so a mislabelled direction is a
+/// mispriced turn rather than a cosmetic one.
 const METER_CLASSES: &[MeterClassDecl] = &[
     MeterClassDecl {
         key: MeterClassId::new("audio_tokens_in"),
@@ -62,9 +67,15 @@ const METER_CLASSES: &[MeterClassDecl] = &[
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("text_tokens"),
+        key: MeterClassId::new("text_tokens_in"),
         family: TOKEN_FAMILY,
         direction: ClassDirection::Input,
+        default_divisor: BYTES_PER_TOKEN,
+    },
+    MeterClassDecl {
+        key: MeterClassId::new("text_tokens_out"),
+        family: TOKEN_FAMILY,
+        direction: ClassDirection::Response,
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
@@ -87,13 +98,23 @@ const METER_CLASSES: &[MeterClassDecl] = &[
     },
 ];
 
+/// The name a session's opening unit is audited and priced under.
+///
+/// The audit record's shape is fixed for every plane and a plane contributes exactly two ids to it:
+/// an operation class and a finish class. So "a session opened" is not an event kind of its own — it
+/// is *this* operation class on the unit that opened it, which is why the name is declared here
+/// beside the other four rather than invented at the point a record is sealed.
+pub const OP_SESSION_OPEN: OpClassId = OpClassId::new("voice.session.open");
+
 /// The operation classes a unit of this plane can be.
 ///
-/// Four classes: a duplex turn (the unit shape for the two duplex dialects and for Twilio, which is
-/// ingress-only into one), the two one-shot operations, and a provider tool call — the last one is
-/// what a `Progress::OneShot` a provider pushes mid-session is priced as (see `crate::plane`'s
-/// `decode_response` for the mapping this plane makes from `IrDuplexTool::CallOpen` onto it).
+/// Five classes: the unit that opens a session, a duplex turn (the unit shape for the two duplex
+/// dialects and for telephony, which is ingress-only into one), the two one-shot operations, and a
+/// provider tool call — the last one is what a `Progress::OneShot` a provider pushes mid-session is
+/// priced as (see `crate::plane`'s `decode_response` for the mapping this plane makes from
+/// `IrDuplexTool::CallOpen` onto it).
 const OP_CLASSES: &[OpClassId] = &[
+    OP_SESSION_OPEN,
     OpClassId::new("duplex_turn"),
     OpClassId::new("transcribe"),
     OpClassId::new("tts"),
@@ -116,8 +137,11 @@ pub const FACT_TOOL_CALLS: &str = "tool_calls";
 pub const FACT_AUDIO_TOKENS_IN: &str = "audio_tokens_in";
 /// See [`FACT_AUDIO_TOKENS_IN`].
 pub const FACT_AUDIO_TOKENS_OUT: &str = "audio_tokens_out";
-/// See [`FACT_AUDIO_TOKENS_IN`].
-pub const FACT_TEXT_TOKENS: &str = "text_tokens";
+/// The fact key under which a response reports the text tokens the turn consumed.
+pub const FACT_TEXT_TOKENS_IN: &str = "text_tokens_in";
+/// The fact key under which a response reports the text tokens the model EMITTED. Separate from
+/// [`FACT_TEXT_TOKENS_IN`] because the two price under different classes at different rates.
+pub const FACT_TEXT_TOKENS_OUT: &str = "text_tokens_out";
 /// See [`FACT_AUDIO_TOKENS_IN`].
 pub const FACT_CACHED_TOKENS: &str = "cached_tokens";
 /// The fact key under which a response reports an upstream error's stable code.
@@ -153,7 +177,8 @@ const CONTENT_FACTS: &[&str] = &[
     FACT_TOOL_CALLS,
     FACT_AUDIO_TOKENS_IN,
     FACT_AUDIO_TOKENS_OUT,
-    FACT_TEXT_TOKENS,
+    FACT_TEXT_TOKENS_IN,
+    FACT_TEXT_TOKENS_OUT,
     FACT_CACHED_TOKENS,
 ];
 

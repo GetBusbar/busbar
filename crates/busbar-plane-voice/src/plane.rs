@@ -10,6 +10,14 @@
 //!
 //! # Assumptions and simplifications, stated once
 //!
+//! Three of the entries below are no longer this module's own reading. They were raised as findings,
+//! carried to the architecture's inventory row for this plane, and **ratified there** — so what
+//! follows restates a decision rather than declaring one, and a change to any of the three is a
+//! change to that row first and to this file second. They are: only the first decoded IR event per
+//! wire frame is acted on; uplink audio is assumed PCM16 for the `audio_seconds_in` estimate on the
+//! two WS dialects; and model-emitted text in a duplex turn prices under `text_tokens_out`, an
+//! output class, never the input one.
+//!
 //! - **HTTP/WS path arrives as a transport fact**, under the kernel's own reserved key
 //!   (`busbar_contract::transport::facts::PATH`), used to resolve which one-shot operation or which
 //!   duplex dialect a session's Unit 0 is. This used to be a guess, and both transports now declare
@@ -381,7 +389,8 @@ impl Plane for VoicePlane {
         let classes = [
             (meta::FACT_AUDIO_TOKENS_IN, "audio_tokens_in"),
             (meta::FACT_AUDIO_TOKENS_OUT, "audio_tokens_out"),
-            (meta::FACT_TEXT_TOKENS, "text_tokens"),
+            (meta::FACT_TEXT_TOKENS_IN, "text_tokens_in"),
+            (meta::FACT_TEXT_TOKENS_OUT, "text_tokens_out"),
             (meta::FACT_CACHED_TOKENS, "cached_tokens"),
         ];
         for (fact_key, class) in classes {
@@ -824,7 +833,7 @@ fn progress_from_server_event<'u>(
         IrServerEvent::Usage(usage) => {
             let counters = state.close_turn();
             let mut facts = Facts::new();
-            let ints: [(&str, i64); 6] = [
+            let ints: [(&str, i64); 7] = [
                 (
                     meta::FACT_AUDIO_TOKENS_IN,
                     i64::try_from(usage.audio_in).unwrap_or(i64::MAX),
@@ -833,9 +842,16 @@ fn progress_from_server_event<'u>(
                     meta::FACT_AUDIO_TOKENS_OUT,
                     i64::try_from(usage.audio_out).unwrap_or(i64::MAX),
                 ),
+                // The two halves travel separately. Summing them was what forced the whole figure
+                // through a single input-direction class; the upstream reports them apart and this
+                // plane keeps them apart, so the emitted half prices as output.
                 (
-                    meta::FACT_TEXT_TOKENS,
-                    i64::try_from(usage.text_in.saturating_add(usage.text_out)).unwrap_or(i64::MAX),
+                    meta::FACT_TEXT_TOKENS_IN,
+                    i64::try_from(usage.text_in).unwrap_or(i64::MAX),
+                ),
+                (
+                    meta::FACT_TEXT_TOKENS_OUT,
+                    i64::try_from(usage.text_out).unwrap_or(i64::MAX),
                 ),
                 (
                     meta::FACT_CACHED_TOKENS,

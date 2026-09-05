@@ -350,7 +350,8 @@ fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
     for expected in [
         "audio_tokens_in",
         "audio_tokens_out",
-        "text_tokens",
+        "text_tokens_in",
+        "text_tokens_out",
         "cached_tokens",
         "audio_seconds_in",
     ] {
@@ -359,6 +360,21 @@ fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
             "expected meter class {expected} in {classes:?}"
         );
     }
+
+    // The point of the split, asserted as a quantity and not just as a label: the fixture reports
+    // three text tokens consumed and four emitted, and the two land on different classes at their
+    // reported figures. Summed into one input-direction class -- which is what this plane used to do
+    // -- the emitted four would have priced at the input rate.
+    let quantity = |class: &str| {
+        locators
+            .lines
+            .as_slice()
+            .iter()
+            .find(|l| l.class.as_str() == class)
+            .and_then(|l| l.quantity)
+    };
+    assert_eq!(quantity("text_tokens_in"), Some(3));
+    assert_eq!(quantity("text_tokens_out"), Some(4));
 }
 
 #[test]
