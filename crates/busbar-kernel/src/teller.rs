@@ -29,17 +29,37 @@
 //! path, and the node's sweep. Whichever arrives second is told the unit is already settled, and
 //! does nothing. There is no third.
 //!
+//! ## The one await
+//!
+//! Route is the only step that touches the wire, so it is the only step that waits on anything: the
+//! other nine read what is already in hand and answer in place. The loop is therefore written once,
+//! as [`run_unit_async`], with exactly one await in it — the Route leg — and reached two ways.
+//!
+//! A caller whose Route answers in place calls [`run_unit`], which drives that same body with a leg
+//! that is ready on its first poll: one loop, one order of steps, no thread parked anywhere. A
+//! caller whose Route awaits an upstream calls [`run_unit_async`] on its own runtime and holds
+//! nothing while the upstream thinks — no blocking-pool thread, so the node's in-flight ceiling is
+//! the in-flight table's and not the size of a thread pool.
+//!
+//! Awaiting is also what makes a unit CANCELLABLE. A client that goes away drops the loop's future,
+//! and because the loop awaits in exactly one place it is dropped in exactly one place: inside
+//! Route, with the hold in the cell and the leases drawn. [`Abandoned`] stands there. It owns
+//! everything the terminal needs, so a dropped unit leaves through the SAME audit door, the same
+//! settle and the same exit a finished one leaves through — named for what happened, the client
+//! went away — and the cell is emptied and the leases released before the loop's frame is gone.
 //! ## No early exits
 //!
 //! Nothing in this file uses `?` and nothing returns early. Not style: a `?` in the middle of a
 //! loop that is holding a reservation is a path where the hold is dropped instead of settled, and
 //! "every unit posts exactly once" has to be readable in the shape of the code, not just true.
 
+use std::future::Future;
+
 use busbar_caps::{
-    AdminToken, Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Authenticated,
-    Canary, Decision, Decode, DurabilityLost, Encode, ExitToken, Hold, HoldCell, KernelSeal,
-    LedgerToken, Meter, MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags,
-    PrincipalId, QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName,
+    Abort, AdminToken, Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate,
+    Authenticated, Canary, Decision, Decode, DurabilityLost, Encode, ExitToken, Hold, HoldAccrual,
+    HoldCell, KernelSeal, LedgerToken, Meter, MeterClassId, Origin, OriginKind, Outcome, Posted,
+    PostingFlags, PrincipalId, QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName,
     TransportKeyToken, TrustToken, UnitEnd, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
     VerifiedDestination, Verify,
 };
@@ -480,6 +500,60 @@ pub trait Units {
     fn evidence(&self, ctx: &UnitCtx) -> Evidence;
 }
 
+/// The Route step, as the loop AWAITS it.
+///
+/// Route is the one step of the ten that dials, sends and relays, so it is the one step whose answer
+/// is not already in hand when the loop asks for it. Meter folds what Route observed and the exit
+/// settles what the meter counted; neither waits on anything, so neither is here and neither needs
+/// to be. This trait is that single seam, stated: one method, one future, one place the loop yields.
+///
+/// A plane whose Route answers in place does not implement this at all — [`run_unit`] supplies a leg
+/// that is ready on its first poll, over that plane's own [`Units::route`], and the loop body it
+/// drives is the same one. A plane whose Route awaits an upstream implements it and is reached
+/// through [`run_unit_async`], which parks no thread and drops the leg when the caller goes away.
+pub trait RouteAwait {
+    /// The leg, borrowed for the length of one unit's Route step.
+    ///
+    /// Deliberately an associated type rather than a boxed future: the synchronous entry point's leg
+    /// is a `Ready`, which is a value and not an allocation, so keeping the old callers costs them
+    /// nothing at all. A plane whose leg is an `async` block boxes its own.
+    type Leg<'a>: std::future::Future<Output = Decision<Route>>
+    where
+        Self: 'a;
+
+    /// Dial, send, relay — all under the hold, with the meter running, as a future the loop awaits
+    /// on the caller's own runtime.
+    fn route_leg<'a>(
+        &'a self,
+        token: &'a UnitToken<Route>,
+        ctx: &'a UnitCtx,
+        meter: &'a AccrualMeter,
+    ) -> Self::Leg<'a>;
+}
+
+/// A plane whose Route answers in place, as the one loop reaches it.
+///
+/// The loop has exactly one await, and this is what the synchronous entry point puts in it: a future
+/// that is ready the first time it is polled. It is what makes [`run_unit`] a DRIVER of the loop
+/// body rather than a second copy of it.
+struct Blocking<'u, U>(&'u U);
+
+impl<U: Units> RouteAwait for Blocking<'_, U> {
+    type Leg<'a>
+        = std::future::Ready<Decision<Route>>
+    where
+        Self: 'a;
+
+    fn route_leg<'a>(
+        &'a self,
+        token: &'a UnitToken<Route>,
+        ctx: &'a UnitCtx,
+        meter: &'a AccrualMeter,
+    ) -> Self::Leg<'a> {
+        std::future::ready(self.0.route(token, ctx, meter))
+    }
+}
+
 /// Everything one run of the loop borrows.
 #[derive(Debug)]
 pub struct Run<'r> {
@@ -518,12 +592,47 @@ pub enum Ended {
     AlreadySettled,
 }
 
-/// Run one unit through every step, and end it exactly once.
+/// Run one unit through every step, and end it exactly once — for a plane whose Route answers in
+/// place.
+///
+/// The same loop body as [`run_unit_async`], driven here rather than on a runtime: the leg it awaits
+/// is this plane's own [`Units::route`] wrapped in a `Ready`, so the one await answers on its first
+/// poll and the whole unit runs to its end on the calling thread, exactly as it always has. Nothing
+/// is spawned, nothing is allocated for the leg, and no caller that was synchronous yesterday has to
+/// change.
+pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_>) -> Ended {
+    let blocking = Blocking(units);
+    let mut loop_ = std::pin::pin!(run_unit_async(kernel, units, ctx, run, &blocking));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match loop_.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(ended) => ended,
+        // Unreachable, and provably so: the loop awaits in exactly one place, the leg it awaits
+        // there is the one `Blocking` hands it, and `Ready` answers on its first poll. `Blocking` is
+        // private to this file and is the only leg this entry point can be given, so there is no
+        // caller — inside the kernel or outside it — that can make this arm happen.
+        std::task::Poll::Pending => {
+            unreachable!("the synchronous loop's one await is a leg that is ready on its first poll")
+        }
+    }
+}
+
+/// Run one unit through every step, and end it exactly once — for a plane whose Route awaits.
 ///
 /// The order below is the whole point of this function, so it is written as one chain: each step
 /// hands the next what it produced, a refusal simply stops the chain, and there is no `?` and no
 /// early return anywhere in it.
-pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_>) -> Ended {
+///
+/// The unit runs on the CALLER'S runtime: nothing here is spawned, nothing is parked on a blocking
+/// worker, and the only thing this task occupies while the upstream thinks is its own in-flight
+/// slot. Drop the future and the unit is cancelled — see [`Abandoned`] for what the caller going
+/// away costs and what it does not.
+pub async fn run_unit_async<U: Units, R: RouteAwait>(
+    kernel: &Kernel,
+    units: &U,
+    ctx: &UnitCtx,
+    run: Run<'_>,
+    route: &R,
+) -> Ended {
     let seal = &kernel.seal;
     let opened = units
         .arrival(&UnitToken::<Arrival>::mint(seal), ctx)
@@ -596,102 +705,221 @@ pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_
                 .into_result(seal);
             exit(kernel, units, ctx, run, outcome, false)
         }
-        Ok(admission) => match admission {
-            // A child spending against its parent's admission. It still runs the rest of the loop;
-            // what it does not do is open a reservation of its own.
-            Admission::Accrual(accrual) => {
-                run.canary.accrual_taken();
-                let outcome = under_hold(kernel, units, ctx, &run);
-                let _sealed = units
-                    .audit(&UnitToken::<Audit>::mint(seal), ctx, &outcome)
-                    .into_result(seal);
-                let _bytes = units
-                    .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
-                    .into_result(seal);
-                // The child opened no reservation of its own, but the table minted it an arrival
-                // hold like every other unit, and that hold is in a cell the sweep also has a key
-                // to. Emptying the cell HERE is what makes the child's end final: leaving it full
-                // would leave the sweep free to settle a unit that already finished, and the
-                // parent's hold already carries this spend.
-                let taken = run.cell.take(&ExitToken::mint(seal));
-                run.leases.release_all(run.gauge);
-                match taken {
-                    None => Ended::AlreadySettled,
-                    Some(arrival) => {
-                        drop_arrival(arrival);
-                        // The child ends like every other unit: one posting, one sealed end. Its
-                        // posting reserved nothing, because the reservation behind it is the
-                        // parent's, which already carries this spend. A parent that exited while
-                        // the child ran hands the accrual back and it posts late instead — always
-                        // posted, flagged as late, against a synchronous draw.
-                        let ledger = LedgerToken::mint(seal);
-                        let parent = run.parent.unwrap_or(run.cell);
-                        let posted = match Posted::into_parent(accrual, parent, &ledger) {
-                            Ok(posted) => posted,
-                            Err(missed) => Posted::settle_late(missed, &ledger),
-                        };
-                        run.canary.settled();
-                        Ended::Settled {
-                            end: UnitEnd::seal(&ExitToken::mint(seal), outcome, Ok(posted)),
-                            // A child draws no request slot and posts no flat fee: the unit that
-                            // drew both is the parent it is spending against.
-                            requests: 0,
-                            fee: 0,
+        // The door answered, and its answer decides exactly two things: whether a hold goes into the
+        // cell, and what the end is settled against. Everything after it — the walk, the meter, the
+        // audit door, the bytes and the settle — is the same for all three shapes, so it is written
+        // once, below and in `terminal`, rather than three times.
+        Ok(admission) => {
+            let (settling, refused_cell) = match admission {
+                // A child spending against its parent's admission. It still runs the rest of the
+                // loop; what it does not do is open a reservation of its own.
+                Admission::Accrual(accrual) => {
+                    run.canary.accrual_taken();
+                    (Settling::Parent(accrual), None)
+                }
+                // A zero-priced unit: the heartbeat, the sweep, a handshake. It holds nothing, so
+                // there is nothing to swap into the cell, and the arrival hold is what the exit
+                // settles.
+                Admission::ZeroHold => (Settling::Exit(false), None),
+                // The ordinary case: the door's hold replaces the arrival hold in the cell, once.
+                Admission::Own(hold) => {
+                    match run.cell.admit(hold, &AdmitToken::<Admit>::mint(seal)) {
+                        Ok(arrival) => {
+                            run.canary.hold_opened();
+                            // The arrival hold has done its job; the admitted hold has taken its
+                            // place and is the one the exit settles.
+                            drop_arrival(arrival);
+                            (Settling::Exit(true), None)
+                        }
+                        Err(rejected) => {
+                            // The cell refused a second hold. The unit that lost the race ends here
+                            // and the hold it was carrying comes back rather than vanishing.
+                            drop_arrival(rejected.hold);
+                            (
+                                Settling::Exit(true),
+                                Some(Outcome::Failed(StepName::Admit, ReasonCode::InFlight)),
+                            )
                         }
                     }
                 }
+            };
+            match refused_cell {
+                // A unit that never reached the wire, so there is nothing to await and nothing a
+                // caller going away could interrupt. It still ends where every admitted unit ends.
+                Some(outcome) => terminal(kernel, units, ctx, run, outcome, settling),
+                None => {
+                    let meter = run.meter;
+                    // THE ONE AWAIT is inside this scope, and so is the only place a caller that
+                    // goes away can drop the loop. The guard owns the terminal for the length of it.
+                    let mut abandoned = Abandoned::arm(kernel, units, ctx, run, settling);
+                    let outcome = under_hold(kernel, units, route, ctx, meter).await;
+                    abandoned.reached(outcome)
+                }
             }
-            // A zero-priced unit: the heartbeat, the sweep, a handshake. It holds nothing, so there
-            // is nothing to swap into the cell, and the arrival hold is what the exit settles.
-            Admission::ZeroHold => {
-                let outcome = under_hold(kernel, units, ctx, &run);
-                let _sealed = units
-                    .audit(&UnitToken::<Audit>::mint(seal), ctx, &outcome)
-                    .into_result(seal);
-                let _bytes = units
-                    .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
-                    .into_result(seal);
-                exit(kernel, units, ctx, run, outcome, false)
+        }
+    }
+}
+
+/// What a unit's end is settled against, as the door decided it.
+///
+/// Not a second copy of `Admission`: what the loop needs after the door is only which of the two
+/// settles applies, and — for the one that opens a reservation of its own — whether the unit reached
+/// the door at all.
+enum Settling {
+    /// A child's spend, which goes into the parent's still-open hold rather than a hold of its own.
+    Parent(HoldAccrual),
+    /// A hold the [`exit`] path settles, and whether the unit reached the door.
+    Exit(bool),
+}
+
+/// THE UNIT THE CALLER WENT AWAY FROM.
+///
+/// The loop awaits in exactly one place, so a client that disconnects mid-request drops the loop's
+/// future in exactly one place too: inside Route, with the hold in the cell, the leases drawn and
+/// the in-flight slot held. This is what stands there.
+///
+/// It owns everything the terminal needs from the moment the door answered, so an abandoned unit
+/// leaves through the SAME audit door, the same settle and the same exit a finished unit leaves
+/// through — with the end named for what happened, the client went away. The upstream's own future
+/// is dropped by the same unwind, because it is what the loop was awaiting; the hold comes out of
+/// the cell and is forgotten rather than posted for delivery that did not happen, the leases go back
+/// to the gauge, and the slot the unit occupied is free before the loop's frame is gone.
+///
+/// [`reached`](Abandoned::reached) is how a unit that finished on its own takes its end back out. A
+/// guard whose terminal has been taken does nothing when it is dropped, which is the whole of the
+/// arming.
+struct Abandoned<'k, 'r, U: Units> {
+    kernel: &'k Kernel,
+    units: &'k U,
+    ctx: &'k UnitCtx,
+    /// The terminal, until somebody runs it. `None` once one of the two callers has.
+    ending: Option<(Run<'r>, Settling)>,
+}
+
+impl<'k, 'r, U: Units> Abandoned<'k, 'r, U> {
+    /// Take the terminal, for the length of the await.
+    fn arm(
+        kernel: &'k Kernel,
+        units: &'k U,
+        ctx: &'k UnitCtx,
+        run: Run<'r>,
+        settling: Settling,
+    ) -> Self {
+        Abandoned {
+            kernel,
+            units,
+            ctx,
+            ending: Some((run, settling)),
+        }
+    }
+
+    /// The unit reached its own end: take the terminal back out and run it there.
+    fn reached(&mut self, outcome: Outcome) -> Ended {
+        match self.ending.take() {
+            Some((run, settling)) => {
+                terminal(self.kernel, self.units, self.ctx, run, outcome, settling)
             }
-            // The ordinary case: the door's hold replaces the arrival hold in the cell, once.
-            Admission::Own(hold) => {
-                let swapped =
-                    run.cell
-                        .admit(hold, &AdmitToken::<Admit>::mint(seal))
-                        .map(|arrival| {
-                            run.canary.hold_opened();
-                            // The arrival hold has done its job; the admitted hold has taken its place
-                            // and is the one the exit settles.
-                            drop_arrival(arrival);
-                        });
-                let outcome = match swapped {
-                    Ok(()) => under_hold(kernel, units, ctx, &run),
-                    Err(rejected) => {
-                        // The cell refused a second hold. The unit that lost the race ends here and
-                        // the hold it was carrying comes back rather than vanishing.
-                        drop_arrival(rejected.hold);
-                        Outcome::Failed(StepName::Admit, ReasonCode::InFlight)
+            // Unreachable: this is called exactly once, on the one path out of the await, and the
+            // only other taker is the drop below — which cannot have run while this borrow exists.
+            // Answered rather than unwrapped, because an arm that cannot be taken still has to say
+            // something if it is.
+            None => Ended::AlreadySettled,
+        }
+    }
+}
+
+impl<U: Units> Drop for Abandoned<'_, '_, U> {
+    fn drop(&mut self) {
+        if let Some((run, settling)) = self.ending.take() {
+            // The end is discarded because there is nobody left to hand it to: the caller that
+            // would have read it is the one that went away. What matters is that it was REACHED —
+            // the audit door sealed it, the cell is empty and the leases are back.
+            let _ended = terminal(
+                self.kernel,
+                self.units,
+                self.ctx,
+                run,
+                Outcome::Aborted(Abort::Client),
+                settling,
+            );
+        }
+    }
+}
+
+/// THE ONE TERMINAL for a unit that passed the door: the audit that seals the end, the bytes that
+/// leave, and the settle.
+///
+/// Every admitted unit's end is here — completed, failed, or abandoned by the caller — and there is
+/// no second copy of it for the shapes the door answered with, because the shape decides only which
+/// of the two settles the last line runs.
+fn terminal<U: Units>(
+    kernel: &Kernel,
+    units: &U,
+    ctx: &UnitCtx,
+    run: Run<'_>,
+    outcome: Outcome,
+    settling: Settling,
+) -> Ended {
+    let seal = &kernel.seal;
+    let _sealed = units
+        .audit(&UnitToken::<Audit>::mint(seal), ctx, &outcome)
+        .into_result(seal);
+    let _bytes = units
+        .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
+        .into_result(seal);
+    match settling {
+        Settling::Exit(reached_admitted) => exit(kernel, units, ctx, run, outcome, reached_admitted),
+        Settling::Parent(accrual) => {
+            // The child opened no reservation of its own, but the table minted it an arrival hold
+            // like every other unit, and that hold is in a cell the sweep also has a key to.
+            // Emptying the cell HERE is what makes the child's end final: leaving it full would
+            // leave the sweep free to settle a unit that already finished, and the parent's hold
+            // already carries this spend.
+            let taken = run.cell.take(&ExitToken::mint(seal));
+            run.leases.release_all(run.gauge);
+            match taken {
+                None => Ended::AlreadySettled,
+                Some(arrival) => {
+                    drop_arrival(arrival);
+                    // The child ends like every other unit: one posting, one sealed end. Its
+                    // posting reserved nothing, because the reservation behind it is the parent's,
+                    // which already carries this spend. A parent that exited while the child ran
+                    // hands the accrual back and it posts late instead — always posted, flagged as
+                    // late, against a synchronous draw.
+                    let ledger = LedgerToken::mint(seal);
+                    let parent = run.parent.unwrap_or(run.cell);
+                    let posted = match Posted::into_parent(accrual, parent, &ledger) {
+                        Ok(posted) => posted,
+                        Err(missed) => Posted::settle_late(missed, &ledger),
+                    };
+                    run.canary.settled();
+                    Ended::Settled {
+                        end: UnitEnd::seal(&ExitToken::mint(seal), outcome, Ok(posted)),
+                        // A child draws no request slot and posts no flat fee: the unit that drew
+                        // both is the parent it is spending against.
+                        requests: 0,
+                        fee: 0,
                     }
-                };
-                let _sealed = units
-                    .audit(&UnitToken::<Audit>::mint(seal), ctx, &outcome)
-                    .into_result(seal);
-                let _bytes = units
-                    .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
-                    .into_result(seal);
-                exit(kernel, units, ctx, run, outcome, true)
+                }
             }
-        },
+        }
     }
 }
 
 /// Route and meter, both under the hold. Produces the provisional end the audit seals.
-fn under_hold<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: &Run<'_>) -> Outcome {
+///
+/// The Route leg is awaited here and nowhere else, which is what makes the drop that cancels a unit
+/// land in one known place with one known guard over it.
+async fn under_hold<U: Units, R: RouteAwait>(
+    kernel: &Kernel,
+    units: &U,
+    route: &R,
+    ctx: &UnitCtx,
+    meter: &AccrualMeter,
+) -> Outcome {
     let seal = &kernel.seal;
-    match units
-        .route(&UnitToken::<Route>::mint(seal), ctx, run.meter)
-        .into_result(seal)
-    {
+    let token = UnitToken::<Route>::mint(seal);
+    match route.route_leg(&token, ctx, meter).await.into_result(seal) {
         Err(refusal) => Outcome::Failed(refusal.step(), refusal.reason()),
         Ok(_) => {
             let provisional = Outcome::Completed;
