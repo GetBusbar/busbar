@@ -17,7 +17,15 @@
 #               self-test to obtain a green baseline before planting each violation)
 #
 # It never decides the verdict; testing/fleet-fixtures/verdict.sh does that from the ledger.
-# Pure stdlib, no cargo, no network.
+# Pure stdlib, no cargo, no network — with ONE narrow exception: rule_source_denylist() shells out
+# to `cargo xtask denylist --format=tsv` (docs/design/1.6.0-contract-gaps.md CG-59) when tree.root
+# is a real cargo workspace carrying an xtask/ member, folding its transitive `cargo metadata`
+# closure into the SAME source-denylist:<crate> row this file's own own-src text scan already
+# produces (xtask is the implementation behind that row's transitive half; this file stays the
+# implementation of its own-src half and of every other rule). Under --selftest's stripped tree
+# copy (no root Cargo.toml, no xtask/) that condition is never true, so the self-test's planted
+# violation is still caught by the own-src scan exactly as before — the cargo call is additive,
+# never load-bearing for the self-test.
 
 import argparse
 import fnmatch
@@ -25,6 +33,7 @@ import glob
 import json
 import os
 import re
+import subprocess
 import sys
 import tomllib
 
@@ -1042,10 +1051,45 @@ def rule_manifest_allowlist(tree, cfg):
 # ── 16. source-denylist ──────────────────────────────────────────────────────────────────────────
 
 
+def _xtask_denylist_hits(root):
+    """Per-crate transitive-closure hits from `cargo xtask denylist --format=tsv`
+    (docs/design/1.6.0-contract-gaps.md CG-59): `cargo metadata` over the whole normal-dependency
+    graph plus tokio-feature checks, which no pure-Python scan of `[dependencies]` keys can do (a
+    direct dependency list says nothing about what THAT crate pulls in). Returns {} when this tree
+    is not a real cargo workspace with an xtask/ member (in particular: always {} under
+    --selftest's stripped tree copy, which carries neither) so this stays additive, never
+    load-bearing for the self-test. A `cargo xtask denylist` that runs and fails for a REAL reason
+    (not "hits found" — that's a normal non-zero exit this function reads, not an error) still
+    degrades to {} with a note on stderr rather than crashing the whole gate: the own-src scan below
+    is unconditional and always runs regardless.
+    """
+    if not os.path.isfile(os.path.join(root, "Cargo.toml")):
+        return {}
+    if not os.path.isdir(os.path.join(root, "xtask")):
+        return {}
+    try:
+        proc = subprocess.run(
+            ["cargo", "xtask", "denylist", "--format=tsv"],
+            cwd=root, capture_output=True, text=True, timeout=300,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"source-denylist: `cargo xtask denylist` did not run ({e}); own-src scan only", file=sys.stderr)
+        return {}
+    hits = {}
+    for line in proc.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        crate, offender, via = parts
+        hits.setdefault(crate, []).append(f"`{offender}` via {via} (cargo xtask denylist)")
+    return hits
+
+
 def rule_source_denylist(tree, cfg):
     c = cfg["rules"]["source-denylist"]
     pat_rx = re.compile("|".join(re.escape(p) for p in c["patterns"]))
     allow = c.get("allowlist", {})
+    xtask_hits = _xtask_denylist_hits(tree.root)
     rows = []
     seen = []
     for kind in c["kinds"]:
@@ -1060,8 +1104,9 @@ def rule_source_denylist(tree, cfg):
                 m = pat_rx.search(l.code)
                 if m and m.group(0) not in allow.get(crate, []):
                     offenders.append(f"`{m.group(0)}` at {rel}:{l.no}")
+        offenders += xtask_hits.get(crate, [])
         current = len(offenders)
-        detail = (f"{crate} ({kind}): {current} denylisted path(s) in production code (ceiling 0): "
+        detail = (f"{crate} ({kind}): {current} denylisted path(s)/transitive dep(s) (ceiling 0): "
                   + ("; ".join(offenders[:5]) if offenders else "none"))
         rows.append(row(f"source-denylist:{crate}", current == 0,
                         f"{crate} performs no I/O of its own (pure kind)",

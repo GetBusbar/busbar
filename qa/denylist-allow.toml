@@ -1,0 +1,19 @@
+# qa/denylist-allow.toml — the one waiver seam for `cargo xtask denylist` (ARCHITECTURE.md section
+# 1.2's transitive source denylist over the pure plugin kinds: plane, hook, static/pure auth,
+# egress-auth-scheme).
+#
+# EMPTY AT HOUR 0, per section 1.2 ("allow-list empty at hour 0"). It stays empty until a specific,
+# reviewed exception is needed — never populated speculatively, never populated to make a red run
+# green without a decision behind it.
+#
+# Every future entry is a `[[allow]]` table naming the crate and either the banned dependency name
+# (`dep`) or the banned own-src path (`path`) it waives, with BOTH a `reason` and an `owner`. An
+# entry missing either field is a REFUSAL of the entire run (`xtask/src/denylist.rs::load_allowlist`
+# panics rather than silently accepting a half-filled waiver), so there is no way for an unreviewed
+# exception to read as reviewed.
+#
+# [[allow]]
+# crate = "busbar-plane-example"
+# dep = "some-banned-crate"
+# reason = "why this specific transitive edge is safe, reviewed"
+# owner = "the person who reviewed it"

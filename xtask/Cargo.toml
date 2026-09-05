@@ -1,0 +1,28 @@
+# xtask — the workspace's own build-time tooling, per the standard cargo-xtask pattern (a plain
+# workspace member invoked as `cargo xtask <verb>` via the `.cargo/config.toml` alias; no separate
+# build system, no shell script duplicating what Cargo already knows about the crate graph).
+#
+# WHY IT EXISTS. ARCHITECTURE.md section 1.2 specifies a transitive source denylist over the pure
+# plugin kinds (plane, hook, static auth, egress-auth-scheme): no banned crate anywhere in their
+# normal-dependency closure, no banned std/tokio path in their own src/. Section 8.3 lists
+# `cargo xtask gate` and section 9.1 makes `xtask` an M1 deliverable. Neither existed before this
+# crate (docs/design/1.6.0-contract-gaps.md CG-59) — `cargo metadata` is the only source of truth
+# for a TRANSITIVE dependency closure, and nothing short of a cargo subcommand can run it.
+[package]
+name = "xtask"
+version = "0.1.0"
+publish = false            # internal workspace tool; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "Workspace tooling: `cargo xtask denylist` proves the pure plugin kinds carry no banned transitive source (ARCHITECTURE.md section 1.2, CG-59)."
+license = "Apache-2.0"
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[dependencies]
+# The only external dependency: cargo metadata's own JSON, parsed as a generic Value. No
+# `cargo_metadata` crate — one more dependency for a tool whose entire point is auditing
+# dependencies is one worth not adding, and the format-version=1 shape this tool reads is small.
+serde_json = { workspace = true }
