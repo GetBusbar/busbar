@@ -211,8 +211,62 @@ fn plan_over(
     plan
 }
 
+/// WHAT THE WALK SAW, before a token seals it.
+///
+/// The same four things [`Routed`] carries, minus the one that cannot cross a thread: a
+/// `Decision<Route>` can only be built with the step's own token, and the token is minted for the
+/// length of the loop's call on the thread the loop runs on. The walk itself is asynchronous and the
+/// loop is not, so the two are on opposite sides of a channel — and a channel carries values, not
+/// borrows. So the walk answers with the REFUSAL or the PLAN and the sealing happens back where the
+/// token is, in [`route`], which is the only caller that has one.
+pub(crate) struct RouteParts {
+    /// The refusal this walk raised, or `None` where it proceeded. Exactly one of this and `plan`
+    /// is `Some`.
+    pub(crate) refusal: Option<Refusal>,
+    /// The plan the walk ran, where it ran one.
+    pub(crate) plan: Option<RoutePlan>,
+    /// The bytes the walk produced. Never posted here.
+    pub(crate) response: Response,
+    /// What the Meter step is bound to.
+    pub(crate) facts: MeterFacts,
+    /// The admission's meter half, handed back unspent where the walk never took it.
+    pub(crate) meter_sink: Option<UsageSink>,
+}
+
 /// The Route step.
+///
+/// The body is [`route_parts`]; this is the sealing, and it is the whole of the difference between
+/// them. Keeping the two apart is what lets a driver run the walk on the runtime and seal the answer
+/// on the thread the loop's token was minted on, without either half learning about the other's.
 pub(crate) async fn route(unit_token: &UnitToken<Route>, input: RouteInput<'_>) -> Routed {
+    seal(unit_token, route_parts(input).await)
+}
+
+/// Seal what the walk saw with the step's own token.
+pub(crate) fn seal(unit_token: &UnitToken<Route>, parts: RouteParts) -> Routed {
+    let RouteParts {
+        refusal,
+        plan,
+        response,
+        facts,
+        meter_sink,
+    } = parts;
+    let decision = match refusal {
+        Some(refusal) => Decision::refuse(unit_token, refusal),
+        // A walk that did not refuse ran a plan; the `unwrap_or_default` is the empty plan a
+        // refusing walk would have carried, and it is unreachable from the two constructions below.
+        None => Decision::proceed(unit_token, plan.unwrap_or_default()),
+    };
+    Routed {
+        decision,
+        response,
+        facts,
+        meter_sink,
+    }
+}
+
+/// The Route step's body: candidates, the pick, the walk, the completion tap.
+pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
     let RouteInput {
         host,
         rt,
@@ -239,7 +293,7 @@ pub(crate) async fn route(unit_token: &UnitToken<Route>, input: RouteInput<'_>) 
             KIND_NOT_FOUND,
             &busbar_substrate::ingress::not_found_message(destination, model_not_found_message),
         );
-        return Routed {
+        return RouteParts {
             facts: MeterFacts {
                 // No lane answered and none could: the name resolved to nothing.
                 lane: None,
@@ -252,7 +306,8 @@ pub(crate) async fn route(unit_token: &UnitToken<Route>, input: RouteInput<'_>) 
                 accrued: false,
             },
             meter_sink: usage_sink,
-            decision: Decision::refuse(unit_token, Refusal::new(ReasonCode::NoDestination)),
+            refusal: Some(Refusal::new(ReasonCode::NoDestination)),
+            plan: None,
             response,
         };
     };
@@ -385,7 +440,7 @@ pub(crate) async fn route(unit_token: &UnitToken<Route>, input: RouteInput<'_>) 
         .instrument(span)
         .await
     };
-    Routed {
+    RouteParts {
         facts: MeterFacts {
             // The serving lane and the usage the reader found are resolved INSIDE the walk, at the
             // tap that accrues them, and the walk hands back a response rather than a lane. For a
@@ -406,8 +461,9 @@ pub(crate) async fn route(unit_token: &UnitToken<Route>, input: RouteInput<'_>) 
         },
         // The walk took it.
         meter_sink: None,
-        // The plan the walk ran, sealed as the step's answer.
-        decision: Decision::proceed(unit_token, plan),
+        // The plan the walk ran, for the token to seal as the step's answer.
+        refusal: None,
+        plan: Some(plan),
         response: resp,
     }
 }

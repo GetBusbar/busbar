@@ -429,10 +429,26 @@ def admin_cells() -> list[dict]:
     return cells
 
 
+# A10b (2026-09-05): boot rows whose precondition a single-exec mutation cannot produce — each needs
+# a durable governance store already carrying state from a PRIOR boot (or a running process an admin
+# call reaches) that the mutation's ONE config/env/args edit has no way to leave behind. Mapped by
+# BOOT id to the script (in scripts/) that boots twice / reloads and captures the second outcome; see
+# each script's own header for the exact mechanism and, for BOOT-173, why it is deliberately absent.
+BOOT_SCRIPT_CELLS = {
+    "BOOT-172": ("durable-governance-precondition.sh", ["budget-hydration"]),
+    "BOOT-174": ("durable-governance-precondition.sh", ["dangling-group"]),
+    "BOOT-175": ("durable-governance-precondition.sh", ["governance-init"]),
+    "BOOT-W13": ("durable-governance-precondition.sh", ["inert-keys"]),
+    "BOOT-W24": ("plugins-fetch-reload-miss.sh", []),
+}
+
+
 def boot_cells() -> list[dict]:
     """One cell per inventoried boot refusal/warning: the mutated config under --validate (mode both/
     validate) or a real boot (mode boot). A mutation the fixture could not express (op: null) is still
-    a cell — the recorder records it as a named gap, never a pass."""
+    a cell — the recorder records it as a named gap, never a pass. A row in BOOT_SCRIPT_CELLS instead
+    gets a `driver: script` cell (see its comment) — the fixture exists, it just is not an
+    apply-mutation.py op."""
     if not BOOT_MUTATIONS.exists():
         return []
     fx = json.loads(BOOT_MUTATIONS.read_text())
@@ -441,9 +457,17 @@ def boot_cells() -> list[dict]:
         fam = m.get("family", "boot.refusal")
         mode = "boot" if m.get("mode") == "boot" else "validate"
         args = ["--validate"] if mode == "validate" else []
+        why = f"expect exit {m.get('expect', {}).get('exit')}; stderr ∋ {str(m.get('expect', {}).get('stderr_contains'))[:80]}"
+        script = BOOT_SCRIPT_CELLS.get(m["id"])
+        if script is not None:
+            sname, sargs = script
+            cells.append({"id": f"{fam}|{m['id']}|{mode}".replace("/", ""), "plane": "core",
+                          "family": fam, "driver": "script", "outcome": "ok",
+                          "script": {"name": sname, "args": sargs}, "why": why})
+            continue
         cells.append(exec_(f"{fam}|{m['id']}|{mode}", fam, args=args, mode=mode,
                            config=f"mutation:{m['id']}",
-                           why=f"expect exit {m.get('expect', {}).get('exit')}; stderr ∋ {str(m.get('expect', {}).get('stderr_contains'))[:80]}",
+                           why=why,
                            needs_fixture=(m.get("op") is None)))
     return cells
 

@@ -43,3 +43,7 @@ pub mod route;
 pub mod meter;
 /// Step 7 — the two terminal doors, and nothing else.
 pub mod audit;
+/// The carry between the steps, and the runtime seam the walk is run across. Not a step, and not a
+/// driver: the composition root drives, and this is what it drives the two engine-typed steps
+/// through.
+pub mod walk;

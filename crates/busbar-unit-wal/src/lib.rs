@@ -7,6 +7,15 @@
 //! exists to make those two waits mean something, and to make the failure of one of them impossible
 //! to ignore.
 //!
+//! ## The journal is the point of the crate
+//!
+//! [`journal`] is what a unit actually writes to. It is ONE chain, with one numbering and one head,
+//! and every unit's records go on it: the audit unit's sealed records, the ledger's postings and
+//! checkpoints, the migration's marker. Before it, each of those kept its own private notion of
+//! where its records lived and none could be verified against the others, because there was no order
+//! they all agreed on. The rules below are how that chain is made durable; they are not a second
+//! thing beside it.
+//!
 //! ## The four rules
 //!
 //! **Records are fixed-size frames.** Every frame is 512 bytes on the medium, header and payload
@@ -63,6 +72,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod backend;
+pub mod journal;
 pub mod record;
 pub mod recover;
 pub mod segment;
@@ -72,6 +82,11 @@ pub mod wal;
 pub use backend::{
     DirectoryFactory, FileSegment, MemoryFactory, MemorySegment, SegmentBackend, SegmentFactory,
     SharedBytes,
+};
+pub use journal::{
+    body_digest, decode_run, tail_of, verify as verify_journal, BodyWriter, Entry, Journal,
+    JournalAck, JournalBreak, JournalBreakKind, JournalRecord, Overflow, RecordClass,
+    JOURNAL_HEADER_BYTES, JOURNAL_MAGIC, JOURNAL_VERSION, MEMORY_BUFFER_RECORDS,
 };
 pub use record::{
     decode_frame, FrameError, FrameHeader, Record, FRAME_BYTES, FRAME_HEADER_BYTES, FRAME_MAGIC,

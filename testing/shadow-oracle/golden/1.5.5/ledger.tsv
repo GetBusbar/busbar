@@ -375,13 +375,7 @@ boot.refusal|BOOT-152|validate	PASS	exit 1;
 boot.refusal|BOOT-153|boot	PASS	exit 1; [2m2026-09-05T03:12:53.193132Z[0m [33m WARN[0m heterogen	
 boot.refusal|BOOT-160|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ references unknown provider	named gap: the fixture this cell needs is not in the tree yet
 boot.refusal|BOOT-161|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ references unknown model	named gap: the fixture this cell needs is not in the tree yet
-boot.refusal|BOOT-162|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ auth chain construction failed:	named gap: the fixture this cell needs is not in the tree yet
-boot.refusal|BOOT-170|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ settings:	named gap: the fixture this cell needs is not in the tree yet
 boot.refusal|BOOT-171|boot	PASS	exit 1; [2m2026-09-05T03:12:53.583052Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-172|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ governance boot: budget hydration failed (	named gap: the fixture this cell needs is not in the tree yet
-boot.refusal|BOOT-173|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ governance boot: could not read stored keys to validate budget_group references 	named gap: the fixture this cell needs is not in the tree yet
-boot.refusal|BOOT-174|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ which does not exist in the top-level groups block.	named gap: the fixture this cell needs is not in the tree yet
-boot.refusal|BOOT-175|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ governance init failed:	named gap: the fixture this cell needs is not in the tree yet
 boot.refusal|BOOT-180|boot	PASS	exit 0; [2m2026-09-05T03:12:54.066837Z[0m [33m WARN[0m heterogen	
 boot.refusal|BOOT-181|boot	PASS	exit 1; [2m2026-09-05T03:12:54.333783Z[0m [33m WARN[0m heterogen	
 boot.refusal|BOOT-182|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ server error on '	named gap: the fixture this cell needs is not in the tree yet
@@ -435,7 +429,6 @@ boot.warning|BOOT-W04|validate	PASS	exit 0; ok: config valid — 6 provider(s), 
 boot.warning|BOOT-W10|boot	PASS	exit 0; [2m2026-09-05T03:13:00.947492Z[0m [33m WARN[0m metadata 	
 boot.warning|BOOT-W11|boot	PASS	exit 0; [2m2026-09-05T03:13:01.218390Z[0m [33m WARN[0m heterogen	
 boot.warning|BOOT-W12|boot	PASS	exit 0; [2m2026-09-05T03:13:01.486251Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W13|boot	SKIP	UNSUPPORTED: expect exit 0; stderr ∋ does not name the `keys` verifier — those keys are INERT and NOT enforced	named gap: the fixture this cell needs is not in the tree yet
 boot.warning|BOOT-W14|boot	PASS	exit 0; [2m2026-09-05T03:13:01.793669Z[0m [33m WARN[0m heterogen	
 boot.warning|BOOT-W15|boot	PASS	exit 0; [2m2026-09-05T03:13:02.075764Z[0m [33m WARN[0m heterogen	
 boot.warning|BOOT-W16|boot	PASS	exit 0; [2m2026-09-05T03:13:02.366952Z[0m [33m WARN[0m heterogen	
@@ -443,9 +436,7 @@ boot.warning|BOOT-W17|boot	PASS	exit 0; [2m2026-09-05T03:13:02.655763Z[0m [33
 boot.warning|BOOT-W18|boot	PASS	exit 0; [2m2026-09-05T03:13:02.945061Z[0m [33m WARN[0m config is	
 boot.warning|BOOT-W19|boot	PASS	exit 0; [2m2026-09-05T03:13:03.253170Z[0m [33m WARN[0m config is	
 boot.warning|BOOT-W20|boot	PASS	exit 2; 	
-boot.warning|BOOT-W24|boot	SKIP	UNSUPPORTED: expect exit 0; stderr ∋ plugins.fetch: miss on reload; keeping current artifact	named gap: the fixture this cell needs is not in the tree yet
 boot.warning|BOOT-W25|boot	PASS	exit 0; [2m2026-09-05T03:13:04.040367Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W26|boot	SKIP	UNSUPPORTED: expect exit 0; stderr ∋ this pin REPLACES the binary-version floor, so the plugin is refused uncondition	named gap: the fixture this cell needs is not in the tree yet
 boot.warning|BOOT-W30|validate	PASS	exit 0; ok: config valid — 6 provider(s), 9 model(s), 7 pool(s)   	
 boot.warning|BOOT-W31|boot	PASS	exit 0; [2m2026-09-05T03:13:04.613459Z[0m [33m WARN[0m heterogen	
 boot.warning|BOOT-W32|boot	PASS	exit 0; [2m2026-09-05T03:13:04.948116Z[0m [33m WARN[0m heterogen	
@@ -2281,3 +2272,12 @@ boot.warning|BOOT-W23|boot	PASS	exit 0; [2m2026-09-05T20:00:51.441586Z[0m [33
 admin.ops|GetUsage|no-usage-after-mutation	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostConfigReload|rate-limit	PASS	HTTP 429; usage Δ {}	
 admin.ops|admin-token|wrong-destination	PASS	HTTP 401; usage Δ {}	
+boot.refusal|BOOT-162|boot	PASS	exit 1; [2m2026-09-05T20:47:25.016510Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-170|boot	PASS	exit 1; [2m2026-09-05T20:47:26.446381Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-172|boot	PASS	script durable-governance-precondition.sh: status 1	
+boot.refusal|BOOT-173|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ governance boot: could not read stored keys to validate budget_group references 	named gap: the fixture this cell needs is not in the tree yet
+boot.refusal|BOOT-174|boot	PASS	script durable-governance-precondition.sh: status 1	
+boot.refusal|BOOT-175|boot	PASS	script durable-governance-precondition.sh: status 1	
+boot.warning|BOOT-W13|boot	PASS	script durable-governance-precondition.sh: status 0	
+boot.warning|BOOT-W24|boot	PASS	script plugins-fetch-reload-miss.sh: status 200	
+boot.warning|BOOT-W26|boot	PASS	exit 0; [2m2026-09-05T20:47:36.559054Z[0m [33m WARN[0m heterogen	

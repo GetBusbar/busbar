@@ -4,6 +4,7 @@
 //! The batteries.
 
 mod fixtures;
+mod journal_chain;
 mod kill_at_every_offset;
 mod no_disk;
 mod poison;

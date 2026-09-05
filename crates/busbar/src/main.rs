@@ -631,8 +631,15 @@ fn register_protocols() {
         &'static str,
         busbar_substrate::ingress::arrival::BodyIngress,
     )> = Vec::new();
-    #[cfg(feature = "proto-llm")]
+    #[cfg(all(feature = "proto-llm", not(feature = "root-llm")))]
     body_ingress.extend_from_slice(busbar_llm::BODY_INGRESS);
+    // THE ROOT-DRIVEN LLM SURFACE (composition-root switch-over S2), default off. The table is the
+    // same six dialects under the same six names and the answers are the plane's own; what the swap
+    // changes is the PATH a request takes to reach one — through the kernel's loop, over the plane's
+    // nine step files, past the two audit doors and out through the one exit, instead of through the
+    // plane's own shell. Off, this line does not exist and the surface is the one it was.
+    #[cfg(all(feature = "proto-llm", feature = "root-llm"))]
+    body_ingress.extend_from_slice(root::units_llm::BODY_INGRESS);
     busbar_substrate::ingress::arrival::install_body_ingress(body_ingress);
 
     // THE RESOLVED-COMPLETION SYNTHESIZER — the LLM plane's single re-entry the MCP sampling path drives

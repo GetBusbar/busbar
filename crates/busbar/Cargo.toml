@@ -171,6 +171,10 @@ plane-voice = ["dep:busbar-voice", "busbar-voice?/runtime", "busbar-core/plane-v
 # the neutrality cells answering the same on both legs. It forwards to `plane-voice` because the
 # thing it mounts needs the plane's own crate edge to exist.
 root-voice = ["plane-voice"]
+# THE LLM PLANE THROUGH THE COMPOSITION ROOT, default OFF: the loop over the nine step files instead
+# of the shell over the engine. Same six dialects under the same six names. No config key, no
+# environment variable, no boot line; the oracle answers identically either way.
+root-llm = ["proto-llm", "busbar-llm/teller-waist"]
 # THE A2A PLANE ON THE KERNEL. Default OFF, and off is the point: the root is BUILT before any
 # plane is SWITCHED onto it, so this feature installs the composition and diverts no byte. With it
 # on, `main()` assembles the A2A plane's scope entries and its record-leg binding at boot and holds
@@ -201,6 +205,8 @@ loom-model = ["busbar-core/loom-model"]
 txn-fence-red = ["busbar-core/txn-fence-red"]
 
 [dev-dependencies]
+# The root's own llm tests install the plane's seams.
+busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through core's test_support, which core exposes to dependents only behind this feature.
 busbar-core = { path = "../busbar-core", features = ["test-support"] }
