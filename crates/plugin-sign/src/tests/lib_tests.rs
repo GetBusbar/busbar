@@ -674,12 +674,18 @@ fn malformed_floor_reason_says_the_floor_is_malformed() {
     assert!(note.contains("MAJOR.MINOR.PATCH"));
 }
 
-/// The embedded-release-key accessor parses a build-time hex key. In this test build the env is
-/// absent, so it returns None (a dev build has no first-party key).
+/// The embedded-release-key accessor mirrors the build-time env exactly: a build that carried
+/// BUSBAR_RELEASE_PUBKEY (CI, and every build in this tree through .cargo/config.toml) embeds a key
+/// that parses; a build without it embeds none. Neither state is assumed, so the test is honest in
+/// both.
 #[test]
-fn embedded_key_absent_in_dev_builds() {
-    // The build for tests does not set BUSBAR_RELEASE_PUBKEY.
-    assert!(embedded_release_pubkey().is_none());
+fn embedded_key_mirrors_the_build_env() {
+    match option_env!("BUSBAR_RELEASE_PUBKEY") {
+        Some(hex) if !hex.trim().is_empty() => {
+            assert!(embedded_release_pubkey().is_some(), "a build with the key set must embed it");
+        }
+        _ => assert!(embedded_release_pubkey().is_none(), "a keyless build must embed nothing"),
+    }
 }
 
 /// `store`/`secret` default to restart-required; `hook`/`auth` default to hot-appliable —
