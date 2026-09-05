@@ -34,12 +34,28 @@
 //!
 //! ## The order this file keeps that the loop does not state
 //!
-//! The live entry point answers a `(protocol, operation)` pair it holds no handler for BEFORE it
-//! reads the bytes, so a malformed body on an unsupported endpoint is answered with the endpoint's
-//! own refusal rather than with a parse error. The loop's order is arrival then decode, so the
-//! handler lookup is PERFORMED in the arrival arm and its refusal is RAISED in the decode arm, where
-//! it belongs. The bytes a client sees are the released ones; the step a record names is the step
-//! that refused.
+//! The live BODY-model entry point answers a `(protocol, operation)` pair it holds no handler for
+//! BEFORE it reads the bytes, so a malformed body on an unsupported endpoint is answered with the
+//! endpoint's own refusal rather than with a parse error. The loop's order is arrival then decode, so
+//! the handler lookup is PERFORMED in the arrival arm and its refusal is RAISED in the decode arm,
+//! where it belongs. The bytes a client sees are the released ones; the step a record names is the
+//! step that refused.
+//!
+//! The live PATH-model entry point interleaves the two the other way round — it parses and splices
+//! first and looks the handler up after — which is already the loop's own order, so that surface
+//! needs no compensation at all and takes none. The two orders are the plane's, written down beside
+//! the step files that hold them apart; this file only composes them the way each surface composes
+//! them live.
+//!
+//! ## The two surfaces whose model is in the URL
+//!
+//! Gemini and Bedrock name their model in the path rather than in the body. Reading it out is the
+//! DIALECT'S statement about its own URL space, so it happens where a dialect's statements happen —
+//! at the ingress, in the plane's own parse — exactly as the operation resolution does for a
+//! body-model arrival. What comes back is a VALUE, and this file drives it: the parse-and-splice the
+//! URL's facts imply is the arrival arm's body (`unit::arrival::arrival_path_model`), and the handler
+//! the pair resolves to is the decode arm's (`unit::decode::decode_path_model`, whose single-sentence
+//! 404 is the path surface's own and not the body surface's two).
 //!
 //! ## What the switch costs while the loop is synchronous, and why it is off by default
 //!
@@ -225,6 +241,54 @@ impl LlmNode {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// The URL's own facts, for the length of one unit
+// ---------------------------------------------------------------------------------------------
+
+/// WHAT THE URL SAID, held for exactly as long as the loop that reads it runs.
+///
+/// The loop's carry is typed for the surfaces whose model rides the body, and the two whose model
+/// rides the URL arrive with three facts more: the model, the stream intent and the framing that
+/// intent selects. They are pinned to the thread the loop runs on rather than threaded through the
+/// carry because the carry's shape is the plane's and this is the composition root's own compensation
+/// — a slot that is set immediately before [`LlmNode::answer`] on the blocking worker that runs it,
+/// read by the two arms that need it, and cleared when that worker's unit ends. One unit occupies one
+/// worker for its whole length, so the slot is never two units' at once.
+type PathFacts = busbar_llm::arrival::PathModelFacts;
+
+thread_local! {
+    static PATH_FACTS: std::cell::RefCell<Option<PathFacts>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// THE HOLD. The facts are the unit's for as long as this value lives, and nobody else's after.
+///
+/// A guard rather than a bare set-and-clear because the loop between the two can end at any step, and
+/// a slot left behind would be the NEXT unit on this worker reading the last one's URL.
+struct HeldPathFacts;
+
+impl Drop for HeldPathFacts {
+    fn drop(&mut self) {
+        PATH_FACTS.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+    }
+}
+
+/// Pin one unit's URL facts to this thread until the returned hold is dropped.
+fn hold_path_facts(facts: PathFacts) -> HeldPathFacts {
+    PATH_FACTS.with(|slot| {
+        *slot.borrow_mut() = Some(facts);
+    });
+    HeldPathFacts
+}
+
+/// Read this unit's URL facts, where it has any. `None` is a body-model unit, which is every other
+/// surface on this plane.
+fn with_path_facts<R>(read: impl FnOnce(&PathFacts) -> R) -> Option<R> {
+    PATH_FACTS.with(|slot| slot.borrow().as_ref().map(read))
+}
+
 /// What a node that cannot take the unit at all answers with, in the caller's own dialect.
 fn unavailable(proto: &str) -> Response {
     busbar_substrate::proxy::ingress_error(
@@ -323,6 +387,33 @@ impl Units for LlmUnit<'_> {
             peer_cert: None,
             transport_chain: TRANSPORT_CHAIN.to_vec(),
         };
+        // THE PATH SURFACES' STEP 0: the parse-and-splice the URL's facts imply. It runs FIRST and it
+        // runs alone — the live path-model entry point parses before it looks a handler up, so the
+        // handler cell below is not read on this surface at all and the decode arm performs its own
+        // lookup in its own spelling. The model, the stream intent and the framing come from the
+        // dialect's parse; the bytes that leave here are the ones the walk forwards.
+        if let Some(read) = with_path_facts(|facts| {
+            arrival::arrival_path_model(
+                self.walk.body(),
+                &facts.model,
+                facts.stream,
+                facts.gemini_json_array,
+                self.walk.proto(),
+            )
+        }) {
+            return match read {
+                Ok(arrived) => {
+                    let ct = arrival::content_type(self.walk.headers()).to_string();
+                    self.walk.keep_arrival(arrived.into_arrival(ct));
+                    Decision::proceed(token, record)
+                }
+                Err(refusal) => {
+                    self.walk
+                        .hold_bytes(audit::render_refusal(self.walk.proto(), &refusal.outcome()));
+                    Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
+                }
+            };
+        }
         // THE HANDLER CELL, read before the bytes. A pair this plane holds no handler for is
         // answered with the endpoint's own refusal on the live path, and it is answered before the
         // body is looked at — so a malformed body on an unsupported endpoint gets the 404 it has
@@ -360,6 +451,21 @@ impl Units for LlmUnit<'_> {
             .take()
         {
             return refuse(refusal);
+        }
+        // THE PATH SURFACES' STEP 1: the model is already known, so only the handler is left — and it
+        // is looked up in the path-model SPELLING, whose single sentence for both misses is the
+        // released 404 body on this surface and is not the body surface's two.
+        if let Some(read) = with_path_facts(|facts| {
+            decode::decode_path_model(self.walk.proto(), self.walk.operation(), &facts.model)
+                .map(|_| facts.model.clone())
+        }) {
+            return match read {
+                Ok(model) => {
+                    *self.model.lock().unwrap_or_else(|e| e.into_inner()) = model;
+                    Decision::proceed(token, self.op_class)
+                }
+                Err(refusal) => refuse(refusal),
+            };
         }
         // THE MODEL LADDER, walked once. The arrival's fields go straight into the step file: the
         // content type it read, the pristine bytes it retained, and the head projection it captured
@@ -699,6 +805,112 @@ body_arrivals! {
     (responses_body_arrival, busbar_llm::proto_codec::PROTO_RESPONSES),
     (cohere_body_arrival, busbar_llm::proto_codec::PROTO_COHERE),
 }
+
+/// One path-model arrival, driven through the loop.
+///
+/// The dialect's own URL parse answers first, because what a URL says is the dialect's statement and
+/// no composition root's. Three answers come back and each takes a different path: the URL named a
+/// model and a stream intent, so the unit is a path unit and the facts ride the hold below; or it
+/// named only the model and left the operation to the body, which is the body-model shape with a
+/// routing hint and takes the body arms unchanged; or it is not a request this dialect answers, and
+/// the dialect's own already-accounted bytes are returned untouched.
+async fn path_arrival(
+    proto: &'static str,
+    parsed: busbar_llm::arrival::PathArrivalFacts,
+    ctx: busbar_substrate::ingress::arrival::ArrivalCtx,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    use busbar_llm::arrival::PathArrivalFacts;
+    // The URL's facts, the operation they resolved to, and the routing hint a body-model shape
+    // carries. Exactly one of the first and the last is ever set.
+    let (facts, operation, model_hint) = match parsed {
+        PathArrivalFacts::Refused(resp) => return resp,
+        PathArrivalFacts::BodyModel {
+            operation,
+            model_hint,
+        } => (None, operation, Some(model_hint)),
+        PathArrivalFacts::PathModel(facts) => {
+            let operation = facts.operation;
+            (Some(facts), operation, None)
+        }
+    };
+    // The neutral arrival payload core boxed at the catch-all. A context carrying anything else is a
+    // wiring bug rather than a runtime input, and it is answered rather than unwrapped.
+    let Some(payload) = ctx.downcast_ref::<ArrivalPayload>() else {
+        return unavailable(proto);
+    };
+    let arrival = WalkArrival {
+        host: Arc::clone(&payload.host),
+        gov: busbar_api::PlaneRequestCtx {
+            key: payload.gov.key.clone(),
+        },
+        proto,
+        operation,
+        caller_token: payload.caller_token.clone(),
+        headers,
+        body,
+        lanes: NODE.lanes(),
+        runtime: tokio::runtime::Handle::current(),
+    };
+    // The same crossing the body arrivals make, with the URL's facts pinned to the worker for the
+    // length of the unit and released with it.
+    tokio::task::spawn_blocking(move || {
+        let _held = facts.map(hold_path_facts);
+        NODE.answer(arrival, model_hint)
+    })
+    .await
+    .unwrap_or_else(|_| unavailable(proto))
+}
+
+/// GEMINI'S PATH ARRIVAL, ON THE LOOP. The dialect's own tail decode and URL parse, then the loop.
+fn gemini_path_arrival(
+    a: ArrivalRequest,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
+    // Pinned before the parse, because a parse that rejects accounts its own rejection against them.
+    let started = Instant::now();
+    let charged_at = busbar_substrate::store::now();
+    let rest = busbar_llm::arrival::gemini_rest(&a.host, &a.path);
+    let parsed = busbar_llm::arrival::gemini_path_parse(
+        &a.host, &a.ctx, &rest, &a.uri, &a.body, started, charged_at,
+    );
+    Box::pin(path_arrival(
+        busbar_llm::proto_codec::PROTO_GEMINI,
+        parsed,
+        a.ctx,
+        a.headers,
+        a.body,
+    ))
+}
+
+/// BEDROCK'S PATH ARRIVAL, ON THE LOOP. Three shapes under one model path, and the native 404 for
+/// anything else — all four the dialect's own answer, and only the driving is this file's.
+fn bedrock_path_arrival(
+    a: ArrivalRequest,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
+    let started = Instant::now();
+    let charged_at = busbar_substrate::store::now();
+    let parsed = busbar_llm::arrival::bedrock_path_parse(
+        &a.host, &a.ctx, &a.path, &a.uri, &a.body, started, charged_at,
+    );
+    Box::pin(path_arrival(
+        busbar_llm::proto_codec::PROTO_BEDROCK,
+        parsed,
+        a.ctx,
+        a.headers,
+        a.body,
+    ))
+}
+
+/// THE PATH-MODEL ARRIVALS, ON THE LOOP — the switched-over twin of the plane's own `PATH_INGRESS`.
+///
+/// Same two dialects, same names, same table; what changes is the PATH a request takes to reach the
+/// answer. The composition root installs this one instead of the plane's when `root-llm` is on, and
+/// with it off this static does not exist and the surface is the one it was.
+pub static PATH_INGRESS: &[(&str, busbar_substrate::ingress::arrival::PathIngress)] = &[
+    (busbar_llm::proto_codec::PROTO_GEMINI, gemini_path_arrival),
+    (busbar_llm::proto_codec::PROTO_BEDROCK, bedrock_path_arrival),
+];
 
 /// THE BODY-MODEL ARRIVALS, ON THE LOOP — the switched-over twin of the plane's own `BODY_INGRESS`.
 ///
@@ -1339,6 +1551,239 @@ mod tests {
             assert!(REQUESTS.verify_principal_chain(&rig.key.id).is_ok());
             rig.server.shutdown().await;
         }
+    }
+
+    // ── THE TWO SURFACES WHOSE MODEL IS IN THE URL ─────────────────────────────────────────────
+
+    /// The two dialects that keep their model in the path.
+    const GEMINI: &str = busbar_llm::proto_codec::PROTO_GEMINI;
+    const BEDROCK: &str = busbar_llm::proto_codec::PROTO_BEDROCK;
+
+    /// The four ends a URL-model fixture reaches. Malformed and the pool ACL are the body surface's
+    /// fixtures and are exercised there; what these four pin is the surface that was OFF the loop —
+    /// a delivered answer, a streamed one, a name that resolves to nothing, and a spent budget.
+    const PATH_CASES: [Fixture; 4] = [
+        Fixture::BufferedOk,
+        Fixture::StreamedOk,
+        Fixture::UnknownModel,
+        Fixture::OverBudget,
+    ];
+
+    /// THE NATIVE REQUEST BODY each dialect's client sends. The model is NOT in it — that is the whole
+    /// point of the surface — so one body per dialect serves every fixture.
+    fn path_body(proto: &str) -> Bytes {
+        let v = if proto == GEMINI {
+            serde_json::json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]})
+        } else {
+            serde_json::json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}]})
+        };
+        Bytes::from(serde_json::to_vec(&v).expect("the fixture body serializes"))
+    }
+
+    /// WHAT THE URL SAYS, for the URL each fixture is sent to.
+    ///
+    /// Spelled here rather than parsed, because the parse is the DIALECT'S and is pinned beside it —
+    /// `busbar_llm`'s own tests drive the real `gemini_path_parse` / `bedrock_path_parse` over these
+    /// exact URLs and assert these exact facts. What this file is responsible for is what the loop
+    /// does with them.
+    fn path_facts(proto: &'static str, fixture: Fixture) -> PathFacts {
+        let model = fixture.model().to_string();
+        let stream = fixture.streamed();
+        PathFacts {
+            operation: busbar_api::operation::Operation::CHAT,
+            stream,
+            // `/v1beta/models/{model}:streamGenerateContent` with no `?alt=sse` is the JSON-array
+            // framing; bedrock has no such framing at all.
+            gemini_json_array: proto == GEMINI && stream,
+            // The gemini surface echoes its own versioned not-found copy; bedrock uses the neutral
+            // sentence. The api version is the one the fixture's `/v1beta/...` URL carries.
+            model_not_found_message: (proto == GEMINI).then(|| {
+                format!(
+                    "models/{model} is not found for API version v1beta, \
+                     or is not supported for the task you are trying to perform."
+                )
+            }),
+            model,
+        }
+    }
+
+    /// LEG 1 — the shipped path-model entry point, on its own deployment.
+    async fn leg_legacy_path(fixture: Fixture, proto: &'static str) -> Observed {
+        let rig = rig(fixture).await;
+        let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+            host: rig.host(),
+            gov: rig.gov(),
+            caller_token: None,
+        });
+        let facts = path_facts(proto, fixture);
+        let resp = busbar_llm::native_ingress::ingress_path_model(
+            &ctx,
+            json_headers(),
+            path_body(proto),
+            facts.model,
+            facts.operation,
+            facts.stream,
+            facts.gemini_json_array,
+            proto,
+            facts.model_not_found_message,
+        )
+        .await;
+        let observed = observe(&rig, resp).await;
+        rig.server.shutdown().await;
+        observed
+    }
+
+    /// LEG 2 — the same request through the kernel's loop, with the URL's facts held for the unit.
+    async fn leg_loop_path(fixture: Fixture, proto: &'static str) -> Observed {
+        let rig = rig(fixture).await;
+        let node = LlmNode::new();
+        let facts = path_facts(proto, fixture);
+        let arrival = WalkArrival {
+            host: rig.host(),
+            gov: rig.gov(),
+            proto,
+            operation: facts.operation,
+            caller_token: None,
+            headers: json_headers(),
+            body: path_body(proto),
+            lanes: node.lanes(),
+            runtime: tokio::runtime::Handle::current(),
+        };
+        let resp = tokio::task::spawn_blocking(move || {
+            let _held = hold_path_facts(facts);
+            node.answer(arrival, None)
+        })
+        .await
+        .expect("the loop's blocking worker joins");
+        let observed = observe(&rig, resp).await;
+        rig.server.shutdown().await;
+        observed
+    }
+
+    /// THE ONE FIELD THIS SWITCH CANNOT YET CARRY, named rather than skipped.
+    ///
+    /// A dialect that shapes its OWN model-not-found copy — gemini does, versioned with the api
+    /// version its URL carried — hands that copy to the forward, which uses it verbatim when the
+    /// destination resolves to no lane. On the loop the forward is reached through the plane's carry,
+    /// and the carry pins that copy to `None` for every unit: it is typed for the surfaces whose
+    /// model rides the body, and none of those has a copy of its own. So a gemini unit that names a
+    /// model this deployment has no lane for is answered with the NEUTRAL sentence where the shipped
+    /// entry point answers with gemini's own.
+    ///
+    /// It is one field of one fixture of one dialect and every other field of every other fixture is
+    /// byte-identical, which is why it is pinned here instead of hidden: the day the carry grows a
+    /// slot for a dialect's miss copy this row stops being a divergence and this test goes red,
+    /// which is the only way an exception ever gets deleted.
+    const CARRIED_BY_NOBODY: [(&str, Fixture, &str); 1] = [(GEMINI, Fixture::UnknownModel, "body")];
+
+    /// THE SWITCH, ON THE URL-MODEL SURFACES. Same request in, same bytes and same counters out —
+    /// through the shipped path-model entry point and through the kernel's loop over the step files.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_loop_matches_the_shipped_path_model_entry_point() {
+        let mut failures: Vec<String> = Vec::new();
+        let mut expected_seen: Vec<(&str, Fixture, &str)> = Vec::new();
+        for proto in [GEMINI, BEDROCK] {
+            for fixture in PATH_CASES {
+                let legacy = leg_legacy_path(fixture, proto).await;
+                let looped = leg_loop_path(fixture, proto).await;
+                for ((field, want), (_, got)) in legacy.0.iter().zip(looped.0.iter()) {
+                    if want == got {
+                        continue;
+                    }
+                    if CARRIED_BY_NOBODY.contains(&(proto, fixture, field)) {
+                        expected_seen.push((proto, fixture, field));
+                        continue;
+                    }
+                    failures.push(format!(
+                        "{proto}/{fixture:?}: field `{field}` diverges\n  shipped: {want}\n  loop:    {got}"
+                    ));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} divergence(s) across the two url-model dialects:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+        assert_eq!(
+            expected_seen,
+            CARRIED_BY_NOBODY.to_vec(),
+            "the named residual is no longer a divergence — delete the row it is named in"
+        );
+    }
+
+    /// The ENDS are what these fixtures claim they are. Without this the comparison above could be
+    /// green on eight identical 404s and prove nothing about the surface at all.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn every_url_model_fixture_reaches_the_end_it_names() {
+        let mut seen: Vec<(&str, Fixture, String)> = Vec::new();
+        for proto in [GEMINI, BEDROCK] {
+            for fixture in PATH_CASES {
+                let observed = leg_loop_path(fixture, proto).await;
+                let status = observed
+                    .0
+                    .iter()
+                    .find(|(k, _)| *k == "status")
+                    .map(|(_, v)| v.clone())
+                    .expect("every leg observes a status");
+                seen.push((proto, fixture, status));
+            }
+        }
+        let want: Vec<(&str, Fixture, String)> = [GEMINI, BEDROCK]
+            .into_iter()
+            .flat_map(|proto| {
+                [
+                    (proto, Fixture::BufferedOk, "200".to_string()),
+                    (proto, Fixture::StreamedOk, "200".to_string()),
+                    // Refused AFTER the door, so it is charged and audited as an admitted unit.
+                    (proto, Fixture::UnknownModel, "404".to_string()),
+                    // The door's own turn-away, in each dialect's own status vocabulary: gemini
+                    // answers a throttle as a throttle, bedrock's envelope carries it as a client
+                    // error. Both are the shipped entry point's answer, read off it rather than
+                    // assumed — the leg above proves the two legs agree.
+                    (
+                        proto,
+                        Fixture::OverBudget,
+                        if proto == BEDROCK { "400" } else { "429" }.to_string(),
+                    ),
+                ]
+            })
+            .collect();
+        assert_eq!(
+            seen, want,
+            "the url-model fixtures do not reach the ends they are named for"
+        );
+    }
+
+    /// THE PATH TABLE IS THE PLANE'S PATH TABLE. Same dialects, same names, same order — the
+    /// path-axis twin of the body-table comparison below, and for the same reason: a dialect missing
+    /// from the replacement resolves no arrival and the surface 404s, which is a deletion wearing a
+    /// routing bug's clothes.
+    #[test]
+    fn the_switched_path_table_names_every_dialect_the_plane_names() {
+        let shipped: Vec<&str> = busbar_llm::PATH_INGRESS.iter().map(|(n, _)| *n).collect();
+        let switched: Vec<&str> = PATH_INGRESS.iter().map(|(n, _)| *n).collect();
+        assert_eq!(switched, shipped);
+    }
+
+    /// THE HOLD IS ONE UNIT'S. A slot left behind is the next unit on this worker reading the last
+    /// one's URL, which is the one failure mode a thread-pinned carry has — so it is pinned.
+    #[test]
+    fn the_url_facts_are_released_with_the_unit() {
+        assert!(with_path_facts(|_| ()).is_none(), "the slot starts empty");
+        {
+            let _held = hold_path_facts(path_facts(GEMINI, Fixture::BufferedOk));
+            assert_eq!(
+                with_path_facts(|f| f.model.clone()).as_deref(),
+                Some(POOL),
+                "the hold is readable for the length of the unit"
+            );
+        }
+        assert!(
+            with_path_facts(|_| ()).is_none(),
+            "the hold outlived the unit that took it"
+        );
     }
 
     /// THE TABLE IS THE PLANE'S TABLE. Same dialects, same names, same order.

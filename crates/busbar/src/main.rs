@@ -614,7 +614,14 @@ fn register_protocols() {
     #[cfg(feature = "proto-llm")]
     {
         installed.extend_from_slice(busbar_llm::DECLS);
+        // THE ROOT-DRIVEN URL-MODEL SURFACE (composition-root switch-over S2), default off — the
+        // path-axis twin of the `BODY_INGRESS` swap below. The table is the same two dialects under
+        // the same two names and the answers are the plane's own; what the swap changes is the PATH a
+        // request takes to reach one. Off, this arm does not exist and the surface is the one it was.
+        #[cfg(not(feature = "root-llm"))]
         path_ingress.extend_from_slice(busbar_llm::PATH_INGRESS);
+        #[cfg(feature = "root-llm")]
+        path_ingress.extend_from_slice(root::units_llm::PATH_INGRESS);
     }
     #[cfg(feature = "plane-mcp")]
     installed.push(&busbar_mcp::PROTO_DECL);
