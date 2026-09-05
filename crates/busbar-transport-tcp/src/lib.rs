@@ -39,6 +39,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex as AsyncMutex;
+use tokio_util::compat::TokioAsyncReadCompatExt;
 
 /// How many bytes one read syscall may fill a frame with.
 ///
@@ -328,17 +329,25 @@ impl Transport for TcpTransport {
         })
     }
 
-    fn upgrade<'a>(
+    fn adopt<'a>(
         &'a self,
+        _from: &'a dyn Transport,
         conn: Conn,
-        _to: &'a str,
         _keys: &'a busbar_contract::TransportKeyHandle,
     ) -> Fut<'a, Conn> {
-        // `tcp` has no in-band upgrade of its own frame shape; an upper layer (`tls`) upgrades by
-        // calling `take_stream` on this transport directly rather than through the trait, because
-        // the resulting connection belongs to a different transport's registry.
+        // Nothing composes over `tcp` by being adopted onto it: `tcp` IS the bottom, so there is no
+        // lower layer whose stream it could take. It only ever hands one up, through `detach`.
         let _ = conn;
-        Box::pin(async move { Err(TransportError::Framing) })
+        Box::pin(async move { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract::RawStream> {
+        let (stream, peer) = self.take_stream(conn)?;
+        Some(busbar_contract::RawStream::new(
+            Self::KEY,
+            peer.to_string(),
+            Box::new(TokioAsyncReadCompatExt::compat(stream)),
+        ))
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {

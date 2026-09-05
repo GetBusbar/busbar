@@ -12,6 +12,7 @@ name = "busbar_transport_grpc"
 path = "src/lib.rs"
 
 [dependencies]
+tokio-util = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time"] }
 # `tonic` here is used ONLY for its codec/status/streaming machinery (`tonic::codec::Codec`,

@@ -54,6 +54,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex as AsyncMutex;
+use tokio_util::compat::TokioAsyncReadCompatExt;
 
 mod raw;
 
@@ -505,14 +506,37 @@ impl Transport for HttpTransport {
         })
     }
 
-    fn upgrade<'a>(
+    fn adopt<'a>(
         &'a self,
+        _from: &'a dyn Transport,
         conn: Conn,
-        _to: &'a str,
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
+        // `http` is adopted BY `ws`, never onto: it takes no lower layer's stream, it hands its own
+        // up. The transports it composes over give it a socket at `listen`/`dial`, not a handoff.
         let _ = conn;
-        Box::pin(async move { Err(TransportError::Framing) })
+        Box::pin(async move { Err(TransportError::HandoffMismatch) })
+    }
+
+    /// Give up the accepted socket under a connection, for the layer upgrading over it.
+    ///
+    /// This is the `http` → `ws` seam: the upgrade REQUEST has not been read here, because the
+    /// layer adopting the stream is the one that speaks the upgrade and answers it. An egress
+    /// connection has no socket to give — it dials through a pooled client, and a pooled connection
+    /// is not one caller's to take.
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract::RawStream> {
+        let inner = self.conns.lock().expect("poisoned").remove(&conn.id())?;
+        let peer = conn.peer();
+        let inner = Arc::try_unwrap(inner).ok()?;
+        let Inner::Ingress { read, write, .. } = inner else {
+            return None;
+        };
+        let stream = read.into_inner().reunite(write.into_inner()).ok()?;
+        Some(busbar_contract::RawStream::new(
+            Self::KEY,
+            peer,
+            Box::new(TokioAsyncReadCompatExt::compat(stream)),
+        ))
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {

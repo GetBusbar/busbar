@@ -122,9 +122,9 @@ impl WsTransport {
     /// Wrap an already-established, already-upgraded WS socket as a live connection. `Sock` is
     /// generic over the boxed duplex, so the battery drives this over an in-memory pair through
     /// the identical path a real TCP/TLS accept uses.
-    fn adopt(&self, sock: crate::conn::Sock, peer: &str) -> Conn {
+    fn hold(&self, sock: crate::conn::Sock, peer: &str, chain: Vec<&'static str>) -> Conn {
         let id = self.mint_id();
-        self.insert(id, ConnState::new(sock));
+        self.insert(id, ConnState::new(sock, chain));
         Conn::new(Arc::new(WsConnHandle {
             id,
             peer: peer.to_string(),
@@ -148,7 +148,7 @@ impl WsTransport {
                 .map_err(|_| TransportError::HandshakeFailed)?;
             sock
         };
-        Ok(self.adopt(sock, peer))
+        Ok(self.hold(sock, peer, vec!["tcp", "http", "ws"]))
     }
 }
 
@@ -210,10 +210,11 @@ impl Transport for WsTransport {
             alpn: None,
             sni: None,
             peer_cert: None,
-            // The real stack is `tcp` → `tls` → `http` → `ws`; this crate only ever sees the
-            // already-upgraded socket (see the module's own report on the lower-layer boundary),
-            // so it can honestly name only itself here.
-            transport_chain: vec!["ws"],
+            // The chain the layer below reported, plus this one. An adopted connection knows
+            // what it was handed; one this transport opened itself knows what it opened.
+            transport_chain: self
+                .state_of(conn.id())
+                .map_or_else(|| vec!["ws"], |s| s.chain.clone()),
         }
     }
 
@@ -255,7 +256,7 @@ impl Transport for WsTransport {
             let sock = tokio_tungstenite::accept_async(BoxedRw(Box::new(tcp)))
                 .await
                 .map_err(|_| TransportError::HandshakeFailed)?;
-            Ok(self.adopt(sock, &peer.to_string()))
+            Ok(self.hold(sock, &peer.to_string(), vec!["tcp", "http", "ws"]))
         })
     }
 
@@ -301,7 +302,7 @@ impl Transport for WsTransport {
                         .map_err(|_| TransportError::HandshakeFailed)?;
                 sock
             };
-            Ok(self.adopt(sock, &format!("{host_name}:{port}")))
+            Ok(self.hold(sock, &format!("{host_name}:{port}"), vec!["tcp", "http", "ws"]))
         })
     }
 
@@ -414,14 +415,32 @@ impl Transport for WsTransport {
         })
     }
 
-    fn upgrade<'a>(
+    /// The `http` → `ws` upgrade, from the side that owns what comes out.
+    ///
+    /// `http` gives up the accepted socket without having read the upgrade request, because the
+    /// layer that speaks the upgrade is the one that answers it: this transport runs the handshake
+    /// itself and the 101 goes back over the same stream. The composed chain travels with the
+    /// handoff, so the connection reports `tcp → http → ws` rather than naming only itself.
+    fn adopt<'a>(
         &'a self,
-        _conn: Conn,
-        _to: &'a str,
+        from: &'a dyn Transport,
+        conn: Conn,
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
-        // `UPGRADES_TO` is empty: nothing in this table upgrades FROM ws.
-        Box::pin(async move { Err(TransportError::Framing) })
+        Box::pin(async move {
+            if !<Self as TransportMeta>::COMPOSES_OVER.contains(&from.key()) {
+                return Err(TransportError::HandoffMismatch);
+            }
+            let mut chain = from.arrival(&conn).transport_chain;
+            let raw = from.detach(&conn).ok_or(TransportError::HandoffMismatch)?;
+            chain.push(<Self as TransportMeta>::KEY);
+            let peer = raw.peer().to_string();
+            let stream = tokio_util::compat::FuturesAsyncReadCompatExt::compat(raw.into_io());
+            let sock = tokio_tungstenite::accept_async(BoxedRw(Box::new(stream)))
+                .await
+                .map_err(|_| TransportError::HandshakeFailed)?;
+            Ok(self.hold(sock, &peer, chain))
+        })
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {

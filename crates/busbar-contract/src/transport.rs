@@ -113,13 +113,36 @@ pub trait Transport: Plugin + Send + Sync + 'static {
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, usize>;
 
-    /// Upgrade a connection in-band to another transport.
-    fn upgrade<'a>(
+    /// Adopt a connection a lower layer is handing up, becoming the new top of the stack.
+    ///
+    /// The upgrade belongs to the TARGET, not the source. The connection that comes out belongs to
+    /// this transport's registry, and only this transport can put it there — which is why the
+    /// source could never express the upgrade as a method of its own: it would have had to return a
+    /// handle it has no way to build. Here the target asks the source for its stream through
+    /// [`Transport::detach`], and what it gets back is a stream the source has already given up.
+    ///
+    /// A source this transport does not compose over is refused with
+    /// [`TransportError::HandoffMismatch`], and so is a stream that is not the shape this layer can
+    /// adopt: an upgrade neither leg declared is not one the session may continue on.
+    fn adopt<'a>(
         &'a self,
+        from: &'a dyn Transport,
         conn: Conn,
-        to: &'a str,
         keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn>;
+
+    /// Give up the byte stream under a connection, for the layer adopting it.
+    ///
+    /// Removes the connection from this transport's own registry, so it is never read from or
+    /// written to here again. `None` when the connection is unknown, when a reader still holds it
+    /// (an upgrade never races an in-flight read, by the at-most-one-upgrade-in-flight rule; a
+    /// caller that violates that ordering sees `None` rather than a torn stream), or when this
+    /// transport has no raw stream to give — the default, because most layers are the bottom one or
+    /// hand nothing up.
+    fn detach(&self, conn: &Conn) -> Option<crate::wire::RawStream> {
+        let _ = conn;
+        None
+    }
 
     /// Close a connection.
     fn close(&self, conn: Conn, reason: CloseReason);

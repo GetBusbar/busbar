@@ -199,10 +199,11 @@ async fn handshake_failure_maps_to_its_own_error() {
 }
 
 #[tokio::test]
-async fn composition_over_tcp_via_the_upgrade_seam() {
-    // The two-level composition cell: a `tcp`-owned connection is handed off, mid-life, and
-    // becomes a `tls`-framed one carrying the same bottom-layer credential (here: the same peer
-    // socket) — the STARTTLS shape.
+async fn an_in_band_upgrade_adopts_the_lower_layers_stream() {
+    // The in-band upgrade cell: a `tcp`-owned connection is handed off, mid-life, and becomes a
+    // `tls`-framed one carrying the same bottom-layer credential (here: the same peer socket) —
+    // the STARTTLS shape. The upgrade runs through the target's own `adopt`, so what comes out is
+    // a connection this transport's registry holds.
     let (server_cfg, client_cfg) = self_signed();
     let tls = TlsTransport::new();
     tls.register_server_config(0, server_cfg.clone());
@@ -240,7 +241,14 @@ async fn composition_over_tcp_via_the_upgrade_seam() {
     });
 
     let (tcp, tcp_conn) = accept_fut.await.unwrap().unwrap();
-    let upgraded = upgrade_from_tcp(&tls, &tcp, tcp_conn, &key0).await.unwrap();
+    let upgraded = tls.adopt(&tcp, tcp_conn.clone(), &key0).await.unwrap();
+    // The facts of the pre-upgrade layer do not survive it: `tcp` has given the stream up and no
+    // longer knows the connection, and the record the upgraded layer reports is its own, naming
+    // the composed stack rather than either half of it.
+    assert_eq!(tcp.arrival(&tcp_conn).port, 0, "the source kept nothing");
+    let record = tls.arrival(&upgraded);
+    assert_eq!(record.transport_chain, vec!["tcp", "tls"]);
+    assert_eq!(record.sni.as_deref(), Some("localhost"), "re-resolved at the new layer");
     // Keep the client's TLS stream alive across the write below: dropping it right after the
     // handshake closes the socket (FIN/RST) and races the server's write, which is exactly the
     // flake this ordering avoids.
@@ -256,6 +264,35 @@ async fn composition_over_tcp_via_the_upgrade_seam() {
         .await
         .unwrap();
     assert_eq!(&buf, payload);
+}
+
+/// A handoff from a layer `tls` does not compose over is refused before the stream is taken, and
+/// the source keeps it. The refusal names the mismatch rather than the framing, because nothing was
+/// ever wrong with the bytes.
+#[tokio::test]
+async fn a_handoff_from_an_undeclared_layer_is_a_mismatch() {
+    let (server_cfg, _client_cfg) = self_signed();
+    let tls = TlsTransport::new();
+    tls.register_server_config(0, server_cfg);
+    let other = TlsTransport::new();
+
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client.dial(&upstream_dest(&addr), &fixture_key(0)).await.unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    // `tls` composes over `tcp` and nothing else; a `tls` source names no declared handoff.
+    let err = tls
+        .adopt(&other, server_conn.clone(), &fixture_key(0))
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransportError::HandoffMismatch);
+    client.close(client_conn, CloseReason::Normal);
+    server.close(server_conn, CloseReason::Normal);
 }
 
 /// The destination names the certificate's own DNS name, and that is what the handshake offers —

@@ -250,13 +250,13 @@ impl Transport for GrpcTransport {
         })
     }
 
-    fn upgrade<'a>(
+    fn adopt<'a>(
         &'a self,
+        _from: &'a dyn Transport,
         _conn: Conn,
-        _to: &'a str,
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
-        Box::pin(async move { Err(TransportError::Framing) })
+        Box::pin(async move { Err(TransportError::HandoffMismatch) })
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {

@@ -12,7 +12,11 @@ name = "busbar_transport_ws"
 path = "src/lib.rs"
 
 [dependencies]
+tokio-util = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
+# The layer this one composes over: `ws` is an upgrade of an HTTP connection, and the upgrade is
+# expressed as this transport adopting the stream that one gives up.
+busbar-transport-http = { path = "../busbar-transport-http" }
 tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time"] }
 tokio-tungstenite = { workspace = true }
 tokio-rustls = { workspace = true }

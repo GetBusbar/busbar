@@ -139,6 +139,10 @@ reasons! {
     DestinationUnreachable => "destination_unreachable",
     /// Two evidence sources for the same unit disagree.
     MeterDisputed => "meter_disputed",
+    /// A layer offered a handoff the layer adopting it does not compose over, or handed up a stream
+    /// it cannot adopt. Its own reason rather than a framing failure: nothing was wrong with the
+    /// bytes, the two legs simply did not agree on what they were doing.
+    HandoffMismatch => "handoff_mismatch",
     /// A plane call panicked.
     PlanePanic => "plane_panic",
     /// The task running the unit disappeared without an end.

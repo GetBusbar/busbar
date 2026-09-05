@@ -883,6 +883,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "tokio",
+ "tokio-util",
  "tonic",
  "tower",
 ]
@@ -905,6 +906,7 @@ dependencies = [
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "webpki-roots",
 ]
 
@@ -934,6 +936,7 @@ dependencies = [
  "busbar-contract",
  "futures",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -949,6 +952,7 @@ dependencies = [
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
 ]
 
 [[package]]
@@ -956,12 +960,14 @@ name = "busbar-transport-ws"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-transport-http",
  "futures",
  "rustls",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
+ "tokio-util",
  "webpki-roots",
 ]
 
@@ -4386,6 +4392,7 @@ checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
  "pin-project-lite",
  "tokio",

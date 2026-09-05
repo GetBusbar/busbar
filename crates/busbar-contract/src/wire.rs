@@ -207,6 +207,13 @@ pub enum TransportError {
     Backpressure,
     /// The bytes violated the transport's own framing.
     Framing,
+    /// A handoff was offered by a layer this one does not compose over, or the stream it handed up
+    /// was not the shape this layer can adopt.
+    ///
+    /// Distinct from [`TransportError::Framing`]: nothing was wrong with the bytes. The two legs
+    /// simply did not agree on what they were doing, and a session that continued on that basis
+    /// would be one nobody declared.
+    HandoffMismatch,
 }
 
 impl fmt::Display for TransportError {
@@ -417,6 +424,66 @@ impl Conn {
 impl fmt::Debug for Conn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Conn").field("id", &self.0.id()).finish()
+    }
+}
+
+/// A duplex byte stream, as one transport layer hands it to the layer above.
+///
+/// Blanket-implemented, so any concrete socket a transport owns can be boxed as one. The traits are
+/// the ones the contract already depends on; nothing here names a runtime, because which runtime
+/// moves the bytes is the transport's business and not the seam's.
+pub trait RawIo: futures::io::AsyncRead + futures::io::AsyncWrite + Send + Unpin {}
+impl<T: futures::io::AsyncRead + futures::io::AsyncWrite + Send + Unpin> RawIo for T {}
+
+/// The byte stream under a connection, detached from the layer that owned it.
+///
+/// An in-band upgrade is not a source transport turning into a target transport: it is the source
+/// giving up its stream and the target taking it. That is why this exists as a value — the moment
+/// it is produced, the source has removed the connection from its own registry and will never read
+/// from or write to it again, and the target owns everything about what happens next.
+///
+/// `from` travels with the stream because a handoff is only admissible between the layers that
+/// declared it. A target handed a stream by a transport it does not compose over refuses, and the
+/// refusal is a mismatch rather than a framing error, because the bytes were never the problem.
+pub struct RawStream {
+    io: Box<dyn RawIo>,
+    from: &'static str,
+    peer: String,
+}
+
+impl RawStream {
+    /// Detach a stream from the layer that owned it, naming that layer.
+    #[must_use]
+    pub fn new(from: &'static str, peer: String, io: Box<dyn RawIo>) -> Self {
+        Self { io, from, peer }
+    }
+
+    /// Which transport handed this stream up.
+    #[must_use]
+    pub fn from(&self) -> &'static str {
+        self.from
+    }
+
+    /// The peer's source address, carried across the handoff so the adopting layer does not have to
+    /// ask the socket again.
+    #[must_use]
+    pub fn peer(&self) -> &str {
+        &self.peer
+    }
+
+    /// Take the stream itself. Consuming, because there is exactly one owner after a handoff.
+    #[must_use]
+    pub fn into_io(self) -> Box<dyn RawIo> {
+        self.io
+    }
+}
+
+impl fmt::Debug for RawStream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RawStream")
+            .field("from", &self.from)
+            .field("peer", &self.peer)
+            .finish_non_exhaustive()
     }
 }
 

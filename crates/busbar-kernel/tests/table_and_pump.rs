@@ -596,3 +596,27 @@ fn a_forged_datagram_is_discarded_and_the_session_stands() {
     assert!(!session.is_closed(), "the session is intact");
     assert_eq!(table.len(), 0, "and nothing entered the table to be posted");
 }
+
+/// A handoff neither leg declared closes the session it happened on, on either framing.
+///
+/// The variant was declared and nothing produced it, which made it a comment. An upgrade the
+/// adopting layer never declared leaves the session standing on a stack nobody wrote down, and no
+/// later frame makes that true again — so it is a hard close and not a refusal that renders.
+#[test]
+fn a_handoff_mismatch_closes_the_session_on_either_framing() {
+    use busbar_contract::Framing;
+    use busbar_kernel::inflight::{hard_closes, HardClose};
+
+    for framing in [Framing::Stream, Framing::Datagram] {
+        assert_eq!(
+            hard_closes(
+                OriginKind::Client,
+                StepName::Verify,
+                ReasonCode::HandoffMismatch,
+                framing
+            ),
+            Some(HardClose::HandoffMismatch),
+            "the stack the session stands on is not a per-frame question"
+        );
+    }
+}

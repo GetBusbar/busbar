@@ -47,6 +47,79 @@ async fn upgrade_then_round_trip_byte_exact() {
     assert_eq!(frame.meta.status, None, "no status leg after the upgrade");
 }
 
+/// The in-band `http` → `ws` upgrade, driven through the seam the design names: `http` accepts the
+/// connection, `ws` adopts the stream it gives up, and the handshake runs on the layer that speaks
+/// it. The facts of the pre-upgrade layer do not survive it — `http` no longer knows the connection
+/// — and the composed chain the adopted connection reports is the real one, not a name for itself.
+#[tokio::test]
+async fn an_in_band_upgrade_over_http_with_cleared_facts() {
+    use busbar_contract::TransportConfigView;
+
+    struct HttpCfg(String);
+    impl busbar_contract::ConfigView for HttpCfg {
+        fn get_str(&self, _k: &str) -> Option<&str> {
+            None
+        }
+        fn get_int(&self, _k: &str) -> Option<i64> {
+            None
+        }
+        fn get_bool(&self, _k: &str) -> Option<bool> {
+            None
+        }
+    }
+    impl TransportConfigView for HttpCfg {
+        fn bind(&self) -> Option<&str> {
+            Some(&self.0)
+        }
+    }
+
+    let http = Arc::new(busbar_transport_http::HttpTransport::new(
+        busbar_transport_http::ClientSettings::default(),
+    ));
+    let ws = Arc::new(WsTransport::new());
+    let keys = test_key_handle();
+    let listener = http
+        .listen(&HttpCfg("127.0.0.1:0".to_string()), &keys)
+        .await
+        .unwrap();
+    let addr = listener.local_addr();
+
+    let upgrade_task = {
+        let (http, ws, keys) = (http.clone(), ws.clone(), test_key_handle());
+        tokio::spawn(async move {
+            let http_conn = http.accept(&listener).await.unwrap();
+            let before = http.arrival(&http_conn).transport_chain;
+            let upgraded = ws.adopt(&*http, http_conn.clone(), &keys).await.unwrap();
+            (before, http.arrival(&http_conn), upgraded)
+        })
+    };
+
+    let client_t = WsTransport::new();
+    let url: &'static str = Box::leak(format!("ws://{addr}/duplex").into_boxed_str());
+    let client_conn = client_t.dial(&verified_upstream(url), &keys).await.unwrap();
+    let (before, after_source, upgraded) = upgrade_task.await.unwrap();
+
+    assert_eq!(before, vec!["tcp", "http"], "the layer below named itself");
+    assert_eq!(
+        ws.arrival(&upgraded).transport_chain,
+        vec!["tcp", "http", "ws"],
+        "the composed chain, not a name for itself"
+    );
+    assert_eq!(
+        after_source.port, 0,
+        "the source gave the stream up and knows nothing about it"
+    );
+
+    // And the adopted connection carries frames, which is what makes the upgrade real rather than
+    // a shape that only type-checks.
+    ws.write(&upgraded, StreamId(0), ArenaBytes::new(b"after the upgrade"))
+        .await
+        .unwrap();
+    let mut frames = client_t.frames(client_conn);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"after the upgrade");
+}
+
 #[tokio::test]
 async fn real_tcp_listen_accept_dial_round_trip() {
     // The genuine network path, not just the in-memory battery seam: `listen` binds, `accept`
@@ -155,13 +228,16 @@ async fn k_writers_serialise_without_interleaving() {
     assert_eq!(seen.len(), K);
 }
 
+/// A handoff from a layer `ws` does not compose over is refused before anything is read, and the
+/// source keeps its stream: an upgrade neither leg declared is not one the session may continue on.
 #[tokio::test]
-async fn upgrade_is_always_refused() {
+async fn a_handoff_from_an_undeclared_layer_is_a_mismatch() {
     let t = WsTransport::new();
     let (a, _b) = pair(&t, 4096).await;
     let keys = test_key_handle();
-    let err = t.upgrade(a, "twilio-media", &keys).await.unwrap_err();
-    assert_eq!(err, TransportError::Framing);
+    // `ws` does not compose over `ws`; offering it its own connection names no declared handoff.
+    let err = t.adopt(&t, a, &keys).await.unwrap_err();
+    assert_eq!(err, TransportError::HandoffMismatch);
 }
 
 #[tokio::test]

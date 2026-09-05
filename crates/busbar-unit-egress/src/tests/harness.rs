@@ -738,13 +738,13 @@ impl busbar_contract::Transport for TestTransport {
         })
     }
 
-    fn upgrade<'a>(
+    fn adopt<'a>(
         &'a self,
+        _from: &'a dyn busbar_contract::Transport,
         _conn: Conn,
-        _to: &'a str,
         _keys: &'a TransportKeyHandle,
     ) -> busbar_contract::Fut<'a, Conn> {
-        Box::pin(async { Err(TransportError::Refused) })
+        Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
     fn close(&self, _conn: Conn, _reason: busbar_contract::CloseReason) {

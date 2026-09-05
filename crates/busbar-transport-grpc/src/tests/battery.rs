@@ -250,7 +250,7 @@ async fn write_to_unseen_stream_on_an_accepted_connection_is_refused() {
 }
 
 #[tokio::test]
-async fn upgrade_is_always_refused() {
+async fn a_handoff_onto_grpc_is_a_mismatch() {
     let t = GrpcTransport::new();
     let cfg = crate::StaticConfig::bind_to("127.0.0.1:0");
     let keys = test_key_handle();
@@ -266,8 +266,8 @@ async fn upgrade_is_always_refused() {
     let dialer_t = GrpcTransport::new();
     let conn = dialer_t.dial(&dest, &keys).await.unwrap();
     let _ = tokio::time::timeout(Duration::from_millis(200), accept_task).await;
-    let err = dialer_t.upgrade(conn, "http", &keys).await.unwrap_err();
-    assert_eq!(err, TransportError::Framing);
+    let err = dialer_t.adopt(&dialer_t, conn, &keys).await.unwrap_err();
+    assert_eq!(err, TransportError::HandoffMismatch);
 }
 
 /// The method the destination names is the `:path` the call is actually opened against. Before the

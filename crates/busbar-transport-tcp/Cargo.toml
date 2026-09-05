@@ -12,6 +12,7 @@ license = "Apache-2.0"
 # `busbar-contract` plus the async runtime and stream plumbing it actually needs: no plane, no
 # kernel crate, no capability crate.
 [dependencies]
+tokio-util = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "io-util", "time"] }

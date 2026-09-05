@@ -786,6 +786,9 @@ pub fn hard_closes(
         (_, _, ReasonCode::PlanePanic) => Some(HardClose::PlanePanic),
         (_, _, ReasonCode::SessionUnbound) => Some(HardClose::SessionUnbound),
         (_, _, ReasonCode::Revoked) => Some(HardClose::Revoked),
+        // The handoff arm. An upgrade neither leg declared leaves a session standing on a stack
+        // nobody wrote down, and there is no later point at which that becomes true again.
+        (_, _, ReasonCode::HandoffMismatch) => Some(HardClose::HandoffMismatch),
         (_, StepName::Decode, ReasonCode::DecodeFailed) if framing == Framing::Stream => {
             Some(HardClose::DecodeFailedOnStream)
         }

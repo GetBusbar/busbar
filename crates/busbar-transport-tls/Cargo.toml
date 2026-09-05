@@ -12,6 +12,7 @@ license = "Apache-2.0"
 # base byte stream it composes over (and the in-band-upgrade seam, `take_stream`), and rustls for
 # the handshake itself — the same crypto backend the rest of the workspace pins (`ring`).
 [dependencies]
+tokio-util = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 busbar-transport-tcp = { path = "../busbar-transport-tcp" }
 futures = { workspace = true }

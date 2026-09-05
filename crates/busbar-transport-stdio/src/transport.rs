@@ -349,16 +349,15 @@ impl Transport for StdioTransport {
         })
     }
 
-    fn upgrade<'a>(
+    fn adopt<'a>(
         &'a self,
+        _from: &'a dyn Transport,
         _conn: Conn,
-        _to: &'a str,
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
-        // `UPGRADES_TO` is empty: stdio never upgrades in-band. Any call here is a caller bug, and
-        // the closed `TransportError` set has no dedicated "not applicable" code, so this reports
-        // the one that best matches "no such framing exists on this transport".
-        Box::pin(async move { Err(TransportError::Framing) })
+        // stdio composes over nothing, so there is no layer whose stream it could take: a handoff
+        // offered to it is one neither leg declared, which is what the mismatch says.
+        Box::pin(async move { Err(TransportError::HandoffMismatch) })
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {

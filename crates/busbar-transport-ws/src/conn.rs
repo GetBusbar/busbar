@@ -40,16 +40,21 @@ pub(crate) struct ConnState {
     pub(crate) reader: AsyncMutex<Option<SplitStream<Sock>>>,
     pub(crate) writer: AsyncMutex<SplitSink<Sock, Message>>,
     pub(crate) poisoned: AtomicBool,
+    /// The composed stack this connection stands on, bottom layer first, ending in `ws`. It is what
+    /// the layer below reported plus this one, carried across the handoff — a connection that named
+    /// only itself was one a location could not resolve against.
+    pub(crate) chain: Vec<&'static str>,
 }
 
 impl ConnState {
-    pub(crate) fn new(sock: Sock) -> std::sync::Arc<Self> {
+    pub(crate) fn new(sock: Sock, chain: Vec<&'static str>) -> std::sync::Arc<Self> {
         use futures::StreamExt;
         let (writer, reader) = sock.split();
         std::sync::Arc::new(Self {
             reader: AsyncMutex::new(Some(reader)),
             writer: AsyncMutex::new(writer),
             poisoned: AtomicBool::new(false),
+            chain,
         })
     }
 

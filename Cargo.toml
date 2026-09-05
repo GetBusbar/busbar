@@ -263,6 +263,11 @@ tikv-jemallocator = "0.6"
 # No feature floor: each consumer needs a different slice of the runtime and tokio's default set is
 # empty, so the whole feature choice belongs to the member.
 tokio = "1"
+# The bridge between the two duplex-stream vocabularies. `busbar-contract` names a detached byte
+# stream in the `futures` traits it already depends on, because the seam between two transport
+# layers must not name a runtime; every concrete socket in the tree is a tokio one. `compat` is what
+# carries a stream across that boundary and back, and it is the only feature any member wants.
+tokio-util = { version = "0.7", default-features = false, features = ["compat"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 # The neutral full-duplex WEBSOCKET transport (busbar-substrate `ingress`/`egress` duplex-ws): the
 # egress dialer runs the client WS handshake OVER a stream this crate has already TLS-wrapped to a

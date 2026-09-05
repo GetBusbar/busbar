@@ -186,13 +186,16 @@ async fn k_writers_serialise_without_interleaving() {
     assert_eq!(seen.len(), K, "every writer's line arrived exactly once, unmangled");
 }
 
+/// stdio composes over nothing, so a handoff offered to it is one neither leg declared. The refusal
+/// is a mismatch and not a framing error, because the bytes were never the problem.
 #[tokio::test]
-async fn upgrade_is_always_refused() {
+async fn a_handoff_onto_stdio_is_a_mismatch() {
     let t = StdioTransport::new();
     let (a, _b) = pair(&t, 4096);
     let keys = test_key_handle();
-    let err = t.upgrade(a, "tls", &keys).await.unwrap_err();
-    assert_eq!(err, TransportError::Framing);
+    let err = t.adopt(&t, a, &keys).await.unwrap_err();
+    assert_eq!(err, TransportError::HandoffMismatch);
+    assert!(<StdioTransport as busbar_contract::TransportMeta>::COMPOSES_OVER.is_empty());
 }
 
 #[tokio::test]

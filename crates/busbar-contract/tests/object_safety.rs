@@ -378,13 +378,13 @@ impl Transport for FixtureTransport {
         Box::pin(async move { Ok(n) })
     }
 
-    fn upgrade<'a>(
+    fn adopt<'a>(
         &'a self,
+        _from: &'a dyn Transport,
         _conn: Conn,
-        _to: &'a str,
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
-        Box::pin(async { Err(TransportError::Framing) })
+        Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
     fn close(&self, _conn: Conn, _reason: CloseReason) {}

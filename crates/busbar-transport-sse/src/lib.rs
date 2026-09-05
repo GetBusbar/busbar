@@ -201,13 +201,17 @@ impl Transport for SseTransport {
         self.http.write(conn, stream, bytes)
     }
 
-    fn upgrade<'a>(
+    fn adopt<'a>(
         &'a self,
+        from: &'a dyn Transport,
         conn: Conn,
-        to: &'a str,
         keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
-        self.http.upgrade(conn, to, keys)
+        self.http.adopt(from, conn, keys)
+    }
+
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract::RawStream> {
+        self.http.detach(conn)
     }
 
     fn close(&self, conn: Conn, reason: CloseReason) {

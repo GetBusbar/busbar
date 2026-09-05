@@ -16,10 +16,11 @@
 //!
 //! `listen`/`accept`/`dial` bind and connect their own TCP sockets directly (self-contained)
 //! rather than routing every byte through a `TcpTransport` instance, because a session transport
-//! owns its own accept loop. The one place this crate visibly composes over `busbar-transport-tcp`
-//! is the in-band upgrade path: [`upgrade_from_tcp`] takes a `Conn` a `TcpTransport` produced (via its
-//! `take_stream` seam) and turns it into a `tls`-framed one, for the STARTTLS-shaped case the
-//! design's transport table names.
+//! owns its own accept loop. The place this crate composes over `busbar-transport-tcp` is the
+//! in-band upgrade path, and it is a trait method rather than a free function: `tls` ADOPTS a
+//! connection `tcp` gives up, because the connection that comes out belongs to this transport's
+//! registry and only this transport can put it there. The composed chain travels with the handoff,
+//! so an adopted connection reports the stack it actually stands on rather than a guess.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -42,6 +43,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
+use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 /// Re-exported so a caller building [`rustls::ServerConfig`]/[`rustls::ClientConfig`] values to
 /// hand to [`TlsTransport::register_server_config`]/`register_client_config` names one crate for
@@ -51,13 +53,24 @@ pub use rustls;
 /// How many bytes one read syscall may fill a frame with.
 pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 
-type ServerStream = tokio_rustls::server::TlsStream<TcpStream>;
-type ClientStream = tokio_rustls::client::TlsStream<TcpStream>;
+/// Any duplex byte stream this transport can run a handshake over: the socket it opened itself, or
+/// the one a lower layer handed up. Boxing it is what lets one connection type cover both, so an
+/// adopted connection is not a second shape with a second set of methods.
+trait Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> Io for T {}
+
+type BoxedIo = Box<dyn Io>;
+type ServerStream = tokio_rustls::server::TlsStream<BoxedIo>;
+type ClientStream = tokio_rustls::client::TlsStream<BoxedIo>;
 
 struct Inner {
     sni: Option<String>,
     alpn: Option<String>,
     peer_cert: Option<CertFacts>,
+    /// The composed stack this connection actually stands on, bottom layer first. A connection this
+    /// transport opened itself stands on its own socket; an adopted one stands on whatever the
+    /// layer below it was already standing on, which is why this is carried rather than assumed.
+    chain: Vec<&'static str>,
     read: AsyncMutex<InnerRead>,
     write: AsyncMutex<InnerWrite>,
 }
@@ -145,7 +158,12 @@ impl TlsTransport {
         self.conns.lock().expect("poisoned").get(&id).cloned()
     }
 
-    fn insert_server(&self, stream: ServerStream, peer: SocketAddr) -> Conn {
+    fn insert_server(
+        &self,
+        stream: ServerStream,
+        peer: SocketAddr,
+        chain: Vec<&'static str>,
+    ) -> Conn {
         let (_, server_conn) = stream.get_ref();
         let alpn = server_conn
             .alpn_protocol()
@@ -164,6 +182,7 @@ impl TlsTransport {
             sni,
             alpn,
             peer_cert,
+            chain,
             read: AsyncMutex::new(InnerRead::Server(read)),
             write: AsyncMutex::new(InnerWrite::Server(write)),
         });
@@ -174,7 +193,12 @@ impl TlsTransport {
         }))
     }
 
-    fn insert_client(&self, stream: ClientStream, peer: SocketAddr) -> Conn {
+    fn insert_client(
+        &self,
+        stream: ClientStream,
+        peer: SocketAddr,
+        chain: Vec<&'static str>,
+    ) -> Conn {
         let (_, client_conn) = stream.get_ref();
         let alpn = client_conn
             .alpn_protocol()
@@ -185,6 +209,7 @@ impl TlsTransport {
             sni: None,
             alpn,
             peer_cert: None,
+            chain,
             read: AsyncMutex::new(InnerRead::Client(read)),
             write: AsyncMutex::new(InnerWrite::Client(write)),
         });
@@ -262,7 +287,9 @@ impl Transport for TlsTransport {
             alpn: inner.as_ref().and_then(|i| i.alpn.clone()),
             sni: inner.as_ref().and_then(|i| i.sni.clone()),
             peer_cert: inner.as_ref().and_then(|i| i.peer_cert.clone()),
-            transport_chain: vec!["tcp", "tls"],
+            transport_chain: inner
+                .as_ref()
+                .map_or_else(|| vec!["tcp", "tls"], |i| i.chain.clone()),
         }
     }
 
@@ -321,10 +348,10 @@ impl Transport for TlsTransport {
                 .ok_or(TransportError::KeyUnavailable)?;
             let acceptor = TlsAcceptor::from(cfg);
             let tls_stream = acceptor
-                .accept(stream)
+                .accept(Box::new(stream) as BoxedIo)
                 .await
                 .map_err(|_| TransportError::HandshakeFailed)?;
-            Ok(self.insert_server(tls_stream, peer))
+            Ok(self.insert_server(tls_stream, peer, vec!["tcp", "tls"]))
         })
     }
 
@@ -355,10 +382,10 @@ impl Transport for TlsTransport {
                 .map_err(|_| TransportError::AddressRefused)?
                 .to_owned();
             let tls_stream = connector
-                .connect(server_name, stream)
+                .connect(server_name, Box::new(stream) as BoxedIo)
                 .await
                 .map_err(|_| TransportError::HandshakeFailed)?;
-            Ok(self.insert_client(tls_stream, addr))
+            Ok(self.insert_client(tls_stream, addr, vec!["tcp", "tls"]))
         })
     }
 
@@ -424,18 +451,62 @@ impl Transport for TlsTransport {
         })
     }
 
-    fn upgrade<'a>(
+    /// The in-band upgrade, from this side: the STARTTLS-shaped handoff the transports table names.
+    ///
+    /// `tcp` gives up its stream and `tls` takes it, and the connection that comes out is one this
+    /// transport's own registry holds — which is precisely what the source could never have
+    /// returned. The facts of the new layer are derived from the completed handshake and nothing
+    /// is carried over from the layer below: after this returns, the source knows nothing about the
+    /// connection and this transport knows everything.
+    fn adopt<'a>(
         &'a self,
+        from: &'a dyn Transport,
         conn: Conn,
-        _to: &'a str,
-        _keys: &'a TransportKeyHandle,
+        keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
-        // `tls` upgrades to nothing (`UPGRADES_TO` is empty): the in-band STARTTLS case is served
-        // by `upgrade_from_tcp` below, which is not a trait method because it crosses transport
-        // crates in the other direction (it consumes a `tcp`-owned `Conn`, which this trait
-        // method's shape has no way to express — see this crate's delivery notes).
-        let _ = conn;
-        Box::pin(async move { Err(TransportError::Framing) })
+        Box::pin(async move {
+            if !Self::COMPOSES_OVER.contains(&from.key()) {
+                return Err(TransportError::HandoffMismatch);
+            }
+            let mut chain = from.arrival(&conn).transport_chain;
+            let raw = from.detach(&conn).ok_or(TransportError::HandoffMismatch)?;
+            chain.push(Self::KEY);
+            let peer: SocketAddr = raw
+                .peer()
+                .parse()
+                .map_err(|_| TransportError::HandoffMismatch)?;
+            let stream: BoxedIo = Box::new(FuturesAsyncReadCompatExt::compat(raw.into_io()));
+            let cfg = self
+                .server_configs
+                .lock()
+                .expect("poisoned")
+                .get(&keys.slot())
+                .cloned()
+                .ok_or(TransportError::KeyUnavailable)?;
+            let tls_stream = TlsAcceptor::from(cfg)
+                .accept(stream)
+                .await
+                .map_err(|_| TransportError::HandshakeFailed)?;
+            Ok(self.insert_server(tls_stream, peer, chain))
+        })
+    }
+
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract::RawStream> {
+        let inner = self.conns.lock().expect("poisoned").remove(&conn.id())?;
+        let peer = conn.peer();
+        let inner = Arc::try_unwrap(inner).ok()?;
+        let stream: BoxedIo = match (inner.read.into_inner(), inner.write.into_inner()) {
+            (InnerRead::Server(r), InnerWrite::Server(w)) => Box::new(r.unsplit(w)),
+            (InnerRead::Client(r), InnerWrite::Client(w)) => Box::new(r.unsplit(w)),
+            // The halves of one connection are always the same side; a mismatch would mean the
+            // registry had been torn, and there is no stream to hand up in that case.
+            _ => return None,
+        };
+        Some(busbar_contract::RawStream::new(
+            Self::KEY,
+            peer,
+            Box::new(TokioAsyncReadCompatExt::compat(stream)),
+        ))
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {
@@ -495,33 +566,6 @@ fn split_address(
         }
         None => Err(TransportError::AddressRefused),
     }
-}
-
-/// Turn a raw stream a lower transport handed off (a `tcp`-produced [`Conn`], detached via
-/// [`busbar_transport_tcp::TcpTransport::take_stream`]) into a `tls`-framed one — the in-band
-/// upgrade path (STARTTLS-shaped). Not a trait method: [`Transport::upgrade`]'s signature takes a
-/// same-transport `Conn` it can look up in its own registry, and a cross-crate handoff needs the
-/// caller to have already detached the raw stream, which only the source transport can do.
-pub async fn upgrade_from_tcp(
-    tls: &TlsTransport,
-    tcp: &busbar_transport_tcp::TcpTransport,
-    conn: Conn,
-    keys: &TransportKeyHandle,
-) -> Result<Conn, TransportError> {
-    let (stream, peer) = tcp.take_stream(&conn).ok_or(TransportError::Closed)?;
-    let cfg = tls
-        .server_configs
-        .lock()
-        .expect("poisoned")
-        .get(&keys.slot())
-        .cloned()
-        .ok_or(TransportError::KeyUnavailable)?;
-    let acceptor = TlsAcceptor::from(cfg);
-    let tls_stream = acceptor
-        .accept(stream)
-        .await
-        .map_err(|_| TransportError::HandshakeFailed)?;
-    Ok(tls.insert_server(tls_stream, peer))
 }
 
 #[cfg(test)]
