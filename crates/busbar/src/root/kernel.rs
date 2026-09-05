@@ -43,6 +43,8 @@
 //! reference plane last — and nothing calls into this type until the plane whose step it runs has
 //! been switched over.
 
+use std::sync::Mutex;
+
 use busbar_caps::{
     Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode, Hold,
     Meter, Outcome, PrincipalId, Refusal, Route, UnitToken, UsageToken, VerifiedDestination,
@@ -120,15 +122,21 @@ pub struct ProductionUnits {
     pub trust: Trust,
     /// The arrival door, bound to the admission unit and to nothing else.
     pub arrival_door: AdmissionDoor,
+    /// The journal, the ledger and the audit unit's two chains.
+    ///
+    /// Behind one lock because all four are append-only and a unit's settlement touches more than
+    /// one of them: the record is sealed, the ledger moves and the journal takes the batch, and a
+    /// reader that saw two of the three would be reading a half-settled unit.
+    pub durability: Mutex<crate::root::durability::Durability>,
 }
 
 impl ProductionUnits {
-    /// Assemble the units the loop reaches.
+    /// Assemble the units the loop reaches, over the durability stack the root already built.
     ///
-    /// Everything expensive — resolving the auth chain, hydrating the ledger cells — has happened
-    /// by the time this is called. This is the assembly, not the work.
+    /// Everything expensive — opening a journal, hydrating the ledger cells, resolving the auth
+    /// chain — has happened by the time this is called. This is the assembly, not the work.
     #[must_use]
-    pub fn new(auth_chain: AuthChain) -> Self {
+    pub fn new(auth_chain: AuthChain, durability: crate::root::durability::Durability) -> Self {
         ProductionUnits {
             door: Door::new(InMemoryCells::new()),
             breaker: BreakerUnit::new(),
@@ -136,6 +144,7 @@ impl ProductionUnits {
             auth: Auth::new(auth_chain),
             trust: Trust,
             arrival_door: AdmissionDoor,
+            durability: Mutex::new(durability),
         }
     }
 }

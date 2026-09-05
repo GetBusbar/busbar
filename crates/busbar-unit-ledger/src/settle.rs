@@ -68,6 +68,19 @@ impl Ledger {
         }
     }
 
+    /// Whether this ledger also writes onto the previous release's rows.
+    ///
+    /// Read-only, and here so the composition root can assert at boot that the dual write is on.
+    /// It is a release requirement rather than a deployment choice — the reconciliation identity
+    /// and rollback both depend on it — and the failure mode is silent: a ledger built with
+    /// [`Ledger::new`] where [`Ledger::dual_writing`] was meant keeps its own books correctly and
+    /// leaves the previous release unable to read anything this one wrote. Nothing observable goes
+    /// wrong until somebody tries to roll back.
+    #[must_use]
+    pub fn is_dual_writing(&self) -> bool {
+        self.legacy.is_some()
+    }
+
     /// The books.
     pub fn book(&self) -> &Book {
         &self.book
