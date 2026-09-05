@@ -22,14 +22,13 @@
 
 #![cfg(feature = "teller-waist")]
 
-/// Step 1 — who is calling: the read of the auth middleware's already-resolved outcome.
-
-/// Step 2 — where the unit may go: the three pre-admission guards, in their one order.
-
-/// Step 3 — whether the caller may do this at all: the migrated hook seats' veto.
-
-pub mod approve;
+/// Step 0 — what arrived: the body read and the path-carried model splice.
 pub mod arrival;
-pub mod authenticate;
+/// Step 1 — what it means: the model ladder and the handler lookup, in both live orders.
 pub mod decode;
+/// Step 1 — who is calling: the read of the auth middleware's already-resolved outcome.
+pub mod authenticate;
+/// Step 2 — where the unit may go: the three pre-admission guards, in their one order.
 pub mod verify;
+/// Step 3 — whether the caller may do this at all: the migrated hook seats' veto.
+pub mod approve;
