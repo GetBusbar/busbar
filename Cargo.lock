@@ -680,7 +680,7 @@ name = "busbar-plane-llm"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-llm",
+ "busbar-llm-codec",
  "serde_json",
  "sonic-rs",
 ]

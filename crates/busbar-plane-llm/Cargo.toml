@@ -39,8 +39,11 @@ path = "src/lib.rs"
 # THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
 busbar-contract = { path = "../busbar-contract" }
 # THE CODECS. Read-only from here: this crate calls the dialect readers, writers, translator and
-# error-envelope builders and edits none of them.
-busbar-llm = { path = "../busbar-llm" }
+# error-envelope builders and edits none of them. `busbar-llm-codec`, NOT `busbar-llm`: the codecs
+# used to share a crate with the money-path engine, which put `hyper`, `hyper-util` and a
+# socket-capable `tokio` in this plane's transitive closure — the thing a pure kind may not carry.
+# The engine stayed in `busbar-llm`; the codecs moved here, and this edge names only them.
+busbar-llm-codec = { path = "../busbar-llm-codec" }
 # The object notation the codecs speak. The adapter hands values across the seam and never invents
 # a second parser.
 serde_json = { workspace = true }

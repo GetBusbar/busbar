@@ -136,7 +136,7 @@ pub fn dialect(name: &str) -> Option<&'static Dialect> {
 /// this is the fact the request writer acts on, asked at its source.
 #[must_use]
 pub fn requires_max_response(name: &str) -> bool {
-    busbar_llm::DECLS
+    busbar_llm_codec::DECLS
         .iter()
         .find(|d| d.name == name)
         .is_some_and(|d| d.requires_max_tokens)

@@ -17,7 +17,7 @@ use busbar_contract::unit::{
 };
 use busbar_contract::wire::{Decode, Encode, EnvelopeField, Frame, FrameCursor, TransportEnvelope};
 
-use busbar_llm::ir::{IrResponse, IrStopReason, IrStreamEvent, StreamDecodeState};
+use busbar_llm_codec::ir::{IrResponse, IrStopReason, IrStreamEvent, StreamDecodeState};
 
 use crate::dialect::{self, Dialect};
 use crate::meta;
@@ -258,7 +258,7 @@ impl Plane for LlmPlane {
         // second opinion here would be a second dialect.
         let value = parse(bytes)?;
         let protocol =
-            busbar_llm::proto_codec::protocol_for(d.name).ok_or(Decode::UnsupportedOperation)?;
+            busbar_llm_codec::proto_codec::protocol_for(d.name).ok_or(Decode::UnsupportedOperation)?;
         let request = protocol
             .reader()
             .read_request(&value)
@@ -320,7 +320,7 @@ impl Plane for LlmPlane {
         let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
 
         let egress_protocol =
-            busbar_llm::proto_codec::protocol_for(egress.name).ok_or(Encode::Unrepresentable)?;
+            busbar_llm_codec::proto_codec::protocol_for(egress.name).ok_or(Encode::Unrepresentable)?;
         let bytes = u.body().body();
         let mut value: serde_json::Value =
             sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
@@ -344,7 +344,7 @@ impl Plane for LlmPlane {
                 bytes.to_vec()
             }
         } else {
-            let ingress_protocol = busbar_llm::proto_codec::protocol_for(ingress.name)
+            let ingress_protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
                 .ok_or(Encode::Unrepresentable)?;
             let mut request = ingress_protocol
                 .reader()
@@ -421,7 +421,7 @@ impl Plane for LlmPlane {
         };
         let upstream = upstream_for(self, dest).ok_or(Decode::UnsupportedOperation)?;
         let egress = dialect::dialect(upstream.dialect).ok_or(Decode::UnsupportedOperation)?;
-        let protocol = busbar_llm::proto_codec::protocol_for(egress.name)
+        let protocol = busbar_llm_codec::proto_codec::protocol_for(egress.name)
             .ok_or(Decode::UnsupportedOperation)?;
         let bytes = frame.bytes.as_slice();
         let body = ctx
@@ -506,9 +506,9 @@ impl Plane for LlmPlane {
             _ => ingress.name,
         };
         let source_protocol =
-            busbar_llm::proto_codec::protocol_for(source).ok_or(Encode::Unrepresentable)?;
+            busbar_llm_codec::proto_codec::protocol_for(source).ok_or(Encode::Unrepresentable)?;
         let ingress_protocol =
-            busbar_llm::proto_codec::protocol_for(ingress.name).ok_or(Encode::Unrepresentable)?;
+            busbar_llm_codec::proto_codec::protocol_for(ingress.name).ok_or(Encode::Unrepresentable)?;
         let bytes = r.ir.body();
 
         let is_event = matches!(
@@ -565,7 +565,7 @@ impl Plane for LlmPlane {
     ) -> Result<ArenaBytes<'u>, Encode> {
         let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
         let protocol =
-            busbar_llm::proto_codec::protocol_for(ingress.name).ok_or(Encode::Unrepresentable)?;
+            busbar_llm_codec::proto_codec::protocol_for(ingress.name).ok_or(Encode::Unrepresentable)?;
         let (status, kind) = refusal_shape(refusal.reason);
         let envelope = protocol
             .writer()
@@ -588,7 +588,7 @@ impl Plane for LlmPlane {
         };
         let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
         let protocol =
-            busbar_llm::proto_codec::protocol_for(ingress.name).ok_or(Encode::Unrepresentable)?;
+            busbar_llm_codec::proto_codec::protocol_for(ingress.name).ok_or(Encode::Unrepresentable)?;
         let envelope = protocol.writer().write_error(
             500,
             KIND_API_ERROR,
@@ -673,7 +673,7 @@ impl Plane for LlmPlane {
         }) else {
             return locators;
         };
-        let Some(protocol) = busbar_llm::proto_codec::protocol_for(source.name) else {
+        let Some(protocol) = busbar_llm_codec::proto_codec::protocol_for(source.name) else {
             return locators;
         };
         let Ok(value) = sonic_rs::from_slice::<serde_json::Value>(r.ir.body()) else {
@@ -765,7 +765,7 @@ impl Plane for LlmPlane {
             Some(FactValue::Str(name)) => name,
             _ => return ContentFacts { facts },
         };
-        let Some(protocol) = busbar_llm::proto_codec::protocol_for(source) else {
+        let Some(protocol) = busbar_llm_codec::proto_codec::protocol_for(source) else {
             return ContentFacts { facts };
         };
         let Ok(value) = sonic_rs::from_slice::<serde_json::Value>(r.ir.body()) else {
@@ -804,7 +804,7 @@ fn response_facts<'u>(ctx: &Ctx<'u>, response: &IrResponse, facts: &mut Facts<'u
     let tool_calls = response
         .content
         .iter()
-        .filter(|b| matches!(b, busbar_llm::ir::IrBlock::ToolUse { .. }))
+        .filter(|b| matches!(b, busbar_llm_codec::ir::IrBlock::ToolUse { .. }))
         .count();
     let _ = facts.set(
         meta::FACT_TOOL_CALLS,
