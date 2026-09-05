@@ -43,7 +43,8 @@ impl busbar_substrate_values::ir::facts::IrFacts for RerankReq {
 
     fn shape(&self) -> busbar_substrate_values::ir::facts::Shape {
         let items = busbar_substrate_values::ir::facts::IrFacts::content(self);
-        let (text_chars, system_chars) = busbar_substrate_values::ir::facts::Shape::counts_over(&items);
+        let (text_chars, system_chars) =
+            busbar_substrate_values::ir::facts::Shape::counts_over(&items);
         busbar_substrate_values::ir::facts::Shape {
             turn_count: 1,
             has_tools: false,

@@ -84,7 +84,8 @@ fn check_golden(name: &str, actual: &[u8]) {
 fn translate_request(ingress: &'static str, egress: &str, body: &str) -> Vec<u8> {
     let ingress_p = crate::proto_codec::protocol_for(ingress).expect("ingress protocol");
     let egress_p = crate::proto_codec::protocol_for(egress).expect("egress protocol");
-    let v: Value = busbar_substrate_values::json::parse(body.as_bytes()).expect("valid corpus JSON");
+    let v: Value =
+        busbar_substrate_values::json::parse(body.as_bytes()).expect("valid corpus JSON");
     let mut req = ingress_p.reader().read_request(&v).expect("reads");
     crate::chat_handle::chat_prepare_for_egress(
         &mut req,
@@ -215,7 +216,8 @@ fn normalize_ingress_ids(ingress: &str, out: &mut Value) {
 fn translate_response(egress: &str, ingress: &'static str, body: &str) -> Vec<u8> {
     let egress_p = crate::proto_codec::protocol_for(egress).expect("egress protocol");
     let ingress_p = crate::proto_codec::protocol_for(ingress).expect("ingress protocol");
-    let v: Value = busbar_substrate_values::json::parse(body.as_bytes()).expect("valid corpus JSON");
+    let v: Value =
+        busbar_substrate_values::json::parse(body.as_bytes()).expect("valid corpus JSON");
     let mut resp = egress_p.reader().read_response(&v).expect("reads");
     crate::chat_handle::chat_prepare_for_ingress(&mut resp, ingress, FIXED_NOW);
     let mut out = ingress_p.writer().write_response(&resp);

@@ -364,7 +364,8 @@ impl ProtocolWriter for CohereWriter {
                         // Emit a raw Value::String (unparseable/streaming-partial args) verbatim rather
                         // than JSON-encoding it a second time (double-encoding) — same as the OpenAI/
                         // Responses writers.
-                        let args_str = busbar_substrate_values::proto::tool_arguments_to_string(input);
+                        let args_str =
+                            busbar_substrate_values::proto::tool_arguments_to_string(input);
                         tool_calls_arr.push(serde_json::json!({ "id": id, "type": "function", "function": { "name": name, "arguments": args_str }}));
                     }
                 }

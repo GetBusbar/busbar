@@ -153,15 +153,18 @@ pub fn embeddings_read_request(
     proto: &str,
     body: &[u8],
     content_type: &str,
-) -> Result<crate::ir::embeddings::EmbeddingsReq, busbar_substrate_values::handlers::IngressReject> {
+) -> Result<crate::ir::embeddings::EmbeddingsReq, busbar_substrate_values::handlers::IngressReject>
+{
     match proto {
         "cohere" => super::cohere::handler::read_embeddings_request(body, content_type),
         "bedrock" => super::bedrock::handler::read_embeddings_request(body, content_type),
         "gemini" => super::gemini::handler::read_embeddings_request(body, content_type),
         "openai" => super::openai_chat::handler::read_embeddings_request(body, content_type),
-        other => Err(busbar_substrate_values::handlers::IngressReject::BadRequest(
-            format!("no embeddings reader for protocol `{other}`"),
-        )),
+        other => Err(
+            busbar_substrate_values::handlers::IngressReject::BadRequest(format!(
+                "no embeddings reader for protocol `{other}`"
+            )),
+        ),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -175,9 +178,9 @@ pub fn embeddings_read_response(
         "bedrock" => super::bedrock::handler::read_embeddings_response(wire),
         "gemini" => super::gemini::handler::read_embeddings_response(wire),
         "openai" => super::openai_chat::handler::read_embeddings_response(wire),
-        other => Err(busbar_substrate_values::handlers::CodecError::Malformed(format!(
-            "no embeddings response reader for protocol `{other}`"
-        ))),
+        other => Err(busbar_substrate_values::handlers::CodecError::Malformed(
+            format!("no embeddings response reader for protocol `{other}`"),
+        )),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -190,9 +193,11 @@ pub fn rerank_read_request(
     match proto {
         "cohere" => super::cohere::handler::read_rerank_request(body, content_type),
         "bedrock" => super::bedrock::handler::read_rerank_request(body, content_type),
-        other => Err(busbar_substrate_values::handlers::IngressReject::BadRequest(
-            format!("no rerank reader for protocol `{other}`"),
-        )),
+        other => Err(
+            busbar_substrate_values::handlers::IngressReject::BadRequest(format!(
+                "no rerank reader for protocol `{other}`"
+            )),
+        ),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -204,9 +209,9 @@ pub fn rerank_read_response(
     match proto {
         "cohere" => super::cohere::handler::read_rerank_response(wire),
         "bedrock" => super::bedrock::handler::read_rerank_response(wire),
-        other => Err(busbar_substrate_values::handlers::CodecError::Malformed(format!(
-            "no rerank response reader for protocol `{other}`"
-        ))),
+        other => Err(busbar_substrate_values::handlers::CodecError::Malformed(
+            format!("no rerank response reader for protocol `{other}`"),
+        )),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -220,9 +225,11 @@ pub fn image_read_request(
         "bedrock" => super::bedrock::handler::read_image_request(body, content_type),
         "gemini" => super::gemini::handler::read_image_request(body, content_type),
         "openai" => super::openai_chat::handler::read_image_request(body, content_type),
-        other => Err(busbar_substrate_values::handlers::IngressReject::BadRequest(
-            format!("no image reader for protocol `{other}`"),
-        )),
+        other => Err(
+            busbar_substrate_values::handlers::IngressReject::BadRequest(format!(
+                "no image reader for protocol `{other}`"
+            )),
+        ),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -235,9 +242,9 @@ pub fn image_read_response(
         "bedrock" => super::bedrock::handler::read_image_response(wire),
         "gemini" => super::gemini::handler::read_image_response(wire),
         "openai" => super::openai_chat::handler::read_image_response(wire),
-        other => Err(busbar_substrate_values::handlers::CodecError::Malformed(format!(
-            "no image response reader for protocol `{other}`"
-        ))),
+        other => Err(busbar_substrate_values::handlers::CodecError::Malformed(
+            format!("no image response reader for protocol `{other}`"),
+        )),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -250,9 +257,11 @@ pub fn transcription_read_request(
     match proto {
         "gemini" => super::gemini::handler::read_transcription_request(body, content_type),
         "openai" => super::openai_chat::handler::read_transcription_request(body, content_type),
-        other => Err(busbar_substrate_values::handlers::IngressReject::BadRequest(
-            format!("no transcription reader for protocol `{other}`"),
-        )),
+        other => Err(
+            busbar_substrate_values::handlers::IngressReject::BadRequest(format!(
+                "no transcription reader for protocol `{other}`"
+            )),
+        ),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -264,9 +273,9 @@ pub fn transcription_read_response(
     match proto {
         "gemini" => super::gemini::handler::read_transcription_response(wire),
         "openai" => super::openai_chat::handler::read_transcription_response(wire),
-        other => Err(busbar_substrate_values::handlers::CodecError::Malformed(format!(
-            "no transcription response reader for protocol `{other}`"
-        ))),
+        other => Err(busbar_substrate_values::handlers::CodecError::Malformed(
+            format!("no transcription response reader for protocol `{other}`"),
+        )),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -279,9 +288,11 @@ pub fn speech_read_request(
     match proto {
         "gemini" => super::gemini::handler::read_speech_request(body, content_type),
         "openai" => super::openai_chat::handler::read_speech_request(body, content_type),
-        other => Err(busbar_substrate_values::handlers::IngressReject::BadRequest(
-            format!("no speech reader for protocol `{other}`"),
-        )),
+        other => Err(
+            busbar_substrate_values::handlers::IngressReject::BadRequest(format!(
+                "no speech reader for protocol `{other}`"
+            )),
+        ),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -293,9 +304,9 @@ pub fn speech_read_response(
     match proto {
         "gemini" => super::gemini::handler::read_speech_response(wire),
         "openai" => super::openai_chat::handler::read_speech_response(wire),
-        other => Err(busbar_substrate_values::handlers::CodecError::Malformed(format!(
-            "no speech response reader for protocol `{other}`"
-        ))),
+        other => Err(busbar_substrate_values::handlers::CodecError::Malformed(
+            format!("no speech response reader for protocol `{other}`"),
+        )),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -304,12 +315,15 @@ pub fn moderation_read_request(
     proto: &str,
     body: &[u8],
     content_type: &str,
-) -> Result<crate::ir::moderation::ModerationReq, busbar_substrate_values::handlers::IngressReject> {
+) -> Result<crate::ir::moderation::ModerationReq, busbar_substrate_values::handlers::IngressReject>
+{
     match proto {
         "openai" => super::openai_chat::handler::read_moderation_request(body, content_type),
-        other => Err(busbar_substrate_values::handlers::IngressReject::BadRequest(
-            format!("no moderation reader for protocol `{other}`"),
-        )),
+        other => Err(
+            busbar_substrate_values::handlers::IngressReject::BadRequest(format!(
+                "no moderation reader for protocol `{other}`"
+            )),
+        ),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -320,8 +334,8 @@ pub fn moderation_read_response(
 ) -> Result<crate::ir::moderation::ModerationResp, busbar_substrate_values::handlers::CodecError> {
     match proto {
         "openai" => super::openai_chat::handler::read_moderation_response(wire),
-        other => Err(busbar_substrate_values::handlers::CodecError::Malformed(format!(
-            "no moderation response reader for protocol `{other}`"
-        ))),
+        other => Err(busbar_substrate_values::handlers::CodecError::Malformed(
+            format!("no moderation response reader for protocol `{other}`"),
+        )),
     }
 }

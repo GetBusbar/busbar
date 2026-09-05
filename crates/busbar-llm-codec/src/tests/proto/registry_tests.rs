@@ -10,7 +10,9 @@
 //! [`a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else`] is the same claim, one axis over.
 
 use busbar_api::operation::Operation;
-use busbar_substrate_values::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_substrate_values::handlers::{
+    CodecError, IngressReject, OperationHandler, RequestHandler,
+};
 use busbar_substrate_values::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
 use busbar_substrate_values::proto::{IngressAuth, ProtocolDecl, Registry};
 use busbar_substrate_values::wire::{EgressCtx, WireBody};
@@ -585,8 +587,10 @@ fn a_later_registration_of_a_declared_name_is_skipped_keeping_the_first() {
     static INSTALLED_COPY: ProtocolDecl = named_decl("anthro-like");
     static BUILTIN_COPY: ProtocolDecl = named_decl("anthro-like");
     static OTHER: ProtocolDecl = named_decl("other");
-    let merged =
-        busbar_substrate_values::proto::merged_boot_decls(&[&INSTALLED_COPY], &[&BUILTIN_COPY, &OTHER]);
+    let merged = busbar_substrate_values::proto::merged_boot_decls(
+        &[&INSTALLED_COPY],
+        &[&BUILTIN_COPY, &OTHER],
+    );
     assert_eq!(merged.len(), 2, "one entry per name");
     assert!(
         std::ptr::eq(merged[0], &INSTALLED_COPY),

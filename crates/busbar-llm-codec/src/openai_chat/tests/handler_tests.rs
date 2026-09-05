@@ -70,11 +70,13 @@ fn transcription_usage_tokens_round_trips() {
     // A cross-protocol transcript whose usage arrived as tokens (e.g. Gemini) → OpenAI token shape.
     let ir = crate::ir::audio::TranscriptionResp {
         text: "hi".into(),
-        usage: Some(Billing::Tokens(busbar_substrate_values::billing::TokenUsage {
-            input: 11,
-            output: 3,
-            ..Default::default()
-        })),
+        usage: Some(Billing::Tokens(
+            busbar_substrate_values::billing::TokenUsage {
+                input: 11,
+                output: 3,
+                ..Default::default()
+            },
+        )),
         ..Default::default()
     };
     let back: Value = serde_json::from_slice(
@@ -146,7 +148,9 @@ fn egress_multipart_sanitizes_mime_from_any_ingress() {
     let ir = crate::ir::audio::TranscriptionReq {
         model: "whisper-1".into(),
         audio: Some(busbar_substrate_values::media::MediaBlob {
-            payload: busbar_substrate_values::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
+            payload: busbar_substrate_values::media::MediaPayload::Bytes(
+                bytes::Bytes::from_static(b"x"),
+            ),
             mime_type: "audio/mp3\r\nX-Injected: evil".into(),
             pcm: None,
         }),
@@ -546,7 +550,9 @@ fn image_response_without_usage_bills_per_image() {
     });
     let resp = super::read_image_response(&serde_json::to_vec(&wire).unwrap()).unwrap();
     match resp.billing() {
-        Some(busbar_substrate_values::billing::Billing::Images { count, .. }) => assert_eq!(count, 2),
+        Some(busbar_substrate_values::billing::Billing::Images { count, .. }) => {
+            assert_eq!(count, 2)
+        }
         other => panic!("per-image response must bill Images, got {other:?}"),
     }
 }
@@ -655,7 +661,9 @@ fn transcription_temperature_round_trips_openai_multipart() {
         model: "whisper-1".into(),
         temperature: Some(0.5),
         audio: Some(busbar_substrate_values::media::MediaBlob {
-            payload: busbar_substrate_values::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
+            payload: busbar_substrate_values::media::MediaPayload::Bytes(
+                bytes::Bytes::from_static(b"x"),
+            ),
             mime_type: "audio/mpeg".into(),
             pcm: None,
         }),

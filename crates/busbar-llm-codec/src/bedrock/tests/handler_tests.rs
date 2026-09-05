@@ -60,7 +60,9 @@ fn image_response_bills_per_image() {
     let wire = br#"{"images":["AAAA","BBBB","CCCC"]}"#;
     let resp = super::read_image_response(wire).unwrap();
     match resp.billing() {
-        Some(busbar_substrate_values::billing::Billing::Images { count, .. }) => assert_eq!(count, 3),
+        Some(busbar_substrate_values::billing::Billing::Images { count, .. }) => {
+            assert_eq!(count, 3)
+        }
         other => panic!("Titan per-image response must bill Images, got {other:?}"),
     }
 }

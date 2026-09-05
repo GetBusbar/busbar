@@ -145,10 +145,7 @@ impl RawUpstreamError {
 /// integer form silently discards the provider's stated cooldown floor on every date-form response,
 /// leaving the breaker to guess.
 pub fn parse_retry_after(headers: &http::HeaderMap) -> Option<u64> {
-    let s = headers
-        .get(http::header::RETRY_AFTER)?
-        .to_str()
-        .ok()?;
+    let s = headers.get(http::header::RETRY_AFTER)?.to_str().ok()?;
     let s = s.trim();
     if let Ok(n) = s.parse::<u64>() {
         return Some(n);

@@ -341,7 +341,9 @@ fn image_response_without_usage_bills_per_image() {
     .unwrap();
     let resp = super::read_image_response(&wire).unwrap();
     match resp.billing() {
-        Some(busbar_substrate_values::billing::Billing::Images { count, .. }) => assert_eq!(count, 2),
+        Some(busbar_substrate_values::billing::Billing::Images { count, .. }) => {
+            assert_eq!(count, 2)
+        }
         other => panic!("per-image Imagen response must bill Images, got {other:?}"),
     }
 }
@@ -590,7 +592,9 @@ fn gemini_transcription_forwards_caller_prompt_and_temperature() {
         prompt: Some("Spell Busbar correctly.".into()),
         temperature: Some(0.5),
         audio: Some(busbar_substrate_values::media::MediaBlob {
-            payload: busbar_substrate_values::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
+            payload: busbar_substrate_values::media::MediaPayload::Bytes(
+                bytes::Bytes::from_static(b"x"),
+            ),
             mime_type: "audio/mpeg".into(),
             pcm: None,
         }),

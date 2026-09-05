@@ -145,10 +145,7 @@ pub fn bearer_error_code(error_type: &str) -> serde_json::Value {
 /// OpenAI error envelope, so the mapping — context-length-exceeded (fail over without penalty) first,
 /// then 429→RateLimit, 401/403→Auth, 5xx→ServerError, other 4xx→ClientError — is single-sourced here.
 #[cfg(any(test, feature = "test-support"))]
-pub fn openai_classify(
-    status: http::StatusCode,
-    body: &[u8],
-) -> crate::breaker::CanonicalSignal {
+pub fn openai_classify(status: http::StatusCode, body: &[u8]) -> crate::breaker::CanonicalSignal {
     use crate::breaker::StatusClass;
     use http::StatusCode;
     // context-length-exceeded — the lane is healthy; this must fail over (to a larger-context
@@ -257,15 +254,9 @@ pub const BASE62_REJECT_THRESHOLD: u8 = 248;
 /// misconfigured lane) and OMIT the header entirely (empty Vec) rather than emitting a syntactically
 /// empty `Authorization: ` header (a fingerprinting tell). The key is NEVER logged (it is the secret);
 /// only the protocol name and the fact that the bytes are malformed.
-pub fn bearer_auth_headers(
-    proto: &str,
-    key: &str,
-) -> Vec<(http::HeaderName, http::HeaderValue)> {
+pub fn bearer_auth_headers(proto: &str, key: &str) -> Vec<(http::HeaderName, http::HeaderValue)> {
     match http::HeaderValue::from_str(&format!("Bearer {key}")) {
-        Ok(value) => vec![(
-            http::HeaderName::from_static(HDR_AUTHORIZATION),
-            value,
-        )],
+        Ok(value) => vec![(http::HeaderName::from_static(HDR_AUTHORIZATION), value)],
         Err(_) => {
             crate::diag_debug!(
                 crate::diagnostics::PROTO_AUTH_INVALID_HEADER_BYTES,
@@ -1595,9 +1586,7 @@ pub fn lane_protocol_name(name: &str) -> Option<&'static str> {
 
 /// Collect `(HeaderName, HeaderValue)` pairs into an axum `HeaderMap`. A dependency-free neutral
 /// helper (no protocol vocabulary), used by the dialect crates on the egress-header path.
-pub fn convert_headers(
-    headers: Vec<(http::HeaderName, http::HeaderValue)>,
-) -> http::HeaderMap {
+pub fn convert_headers(headers: Vec<(http::HeaderName, http::HeaderValue)>) -> http::HeaderMap {
     let mut map = http::HeaderMap::new();
     for (name, value) in headers {
         map.insert(name, value);
