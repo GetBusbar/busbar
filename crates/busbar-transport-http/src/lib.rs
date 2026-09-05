@@ -792,8 +792,9 @@ async fn read_ingress_message(
     };
     let mut buf = leftover.lock().await;
     let mut r = read.lock().await;
+    let mut scan = HeaderScan::default();
     let header_end = loop {
-        if let Some(pos) = find_header_end(&buf) {
+        if let Some(pos) = scan.find(&buf) {
             break pos;
         }
         if buf.len() >= READ_CHUNK_BYTES {
@@ -929,8 +930,53 @@ fn body_frame(bytes: Vec<u8>) -> (StreamId, Frame) {
     )
 }
 
+/// Bytes this crate's header scan has looked at, for the cell that pins its complexity class.
+#[cfg(test)]
+static SCANNED_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The offset just past the blank line that ends a header block, searching from `start`.
+///
+/// The search JUMPS between line feeds rather than stepping a four-byte window over every position;
+/// the terminator's last byte is one, so no candidate is skipped. `start` may sit anywhere in the
+/// buffer: the match looks BACKWARD from the line feed it found, so a caller resuming a scan never
+/// has to have kept the three bytes before it in view.
+fn find_header_end_from(buf: &[u8], start: usize) -> Option<usize> {
+    let mut i = start.min(buf.len());
+    #[cfg(test)]
+    SCANNED_BYTES.fetch_add(buf.len() - i, std::sync::atomic::Ordering::Relaxed);
+    while let Some(rel) = memchr::memchr(b'\n', &buf[i..]) {
+        let at = i + rel;
+        if at >= 3 && &buf[at - 3..=at] == b"\r\n\r\n" {
+            return Some(at + 1);
+        }
+        i = at + 1;
+    }
+    None
+}
+
 fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
+    find_header_end_from(buf, 0)
+}
+
+/// What the header scan remembers between reads: how much of the buffer has already been proven
+/// not to hold the terminator.
+///
+/// Without this the reader rescans the whole growing buffer on every read, which for a header
+/// dribbled a byte at a time is quadratic in the header size. The cursor is rewound by three
+/// bytes, because that is the most of a four-byte terminator a previous read can have left behind.
+#[derive(Default)]
+struct HeaderScan {
+    proven: usize,
+}
+
+impl HeaderScan {
+    fn find(&mut self, buf: &[u8]) -> Option<usize> {
+        let found = find_header_end_from(buf, self.proven);
+        if found.is_none() {
+            self.proven = buf.len().saturating_sub(3);
+        }
+        found
+    }
 }
 
 #[cfg(test)]

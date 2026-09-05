@@ -742,6 +742,48 @@ async fn every_transport_error_is_mapped_on_dial() {
     assert_eq!(err, TransportError::Refused);
 }
 
+/// The header-end scan costs a pass over the header, not a pass per read.
+///
+/// The reader takes as many reads as the network chooses, and a header dribbled a byte at a time
+/// is the shape that separates a linear scan from a quadratic one: rescanning the whole buffer on
+/// every read means the prefix already proven terminator-free is proven again, once per byte. The
+/// budget bounds the damage at 64 KiB but does not change its class, and a bounded quadratic is
+/// still CPU an attacker gets to spend for free.
+///
+/// This drives the SAME [`HeaderScan`] the ingress reader runs on, so what it counts is production
+/// work rather than a model of it.
+#[test]
+fn the_header_scan_costs_one_pass_over_the_header_not_one_per_read() {
+    let mut header = b"POST / HTTP/1.1\r\nX-Filler: ".to_vec();
+    header.extend_from_slice(&[b'a'; 8192]);
+    header.extend_from_slice(b"\r\n\r\n");
+
+    let mut buf = Vec::with_capacity(header.len());
+    let mut scan = HeaderScan::default();
+    SCANNED_BYTES.store(0, std::sync::atomic::Ordering::Relaxed);
+    let mut found = None;
+    for byte in &header {
+        buf.push(*byte);
+        if let Some(pos) = scan.find(&buf) {
+            found = Some(pos);
+            break;
+        }
+    }
+    assert_eq!(
+        found,
+        Some(header.len()),
+        "the boundary is still found at exactly the same offset"
+    );
+
+    let scanned = SCANNED_BYTES.load(std::sync::atomic::Ordering::Relaxed);
+    let n = header.len();
+    assert!(
+        scanned < 4 * n,
+        "a {n}-byte header dribbled a byte at a time cost {scanned} bytes of scanning; \
+         a cursor makes that O(n), restarting at zero makes it O(n^2)"
+    );
+}
+
 #[test]
 fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
     fn honest(frame: &Frame) -> bool {
