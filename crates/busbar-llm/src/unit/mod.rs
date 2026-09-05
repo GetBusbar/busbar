@@ -32,3 +32,7 @@ pub mod authenticate;
 pub mod verify;
 /// Step 3 — whether the caller may do this at all: the migrated hook seats' veto.
 pub mod approve;
+/// Step 5 — the one attempt: candidates, the pick, the walk, the completion tap.
+pub mod route;
+/// Step 7 — the two terminal doors, and nothing else.
+pub mod audit;
