@@ -6252,10 +6252,15 @@ fn complete_converse_body_splices_metrics_and_preserves_every_other_byte() {
         text.starts_with("{ \"stopReason\" : \"end_turn\",\n  \"usage\""),
         "the upstream bytes ahead of the splice must be untouched: {text}"
     );
-    assert!(text.ends_with("}\n"), "trailing bytes must survive: {text:?}");
+    assert!(
+        text.ends_with("}\n"),
+        "trailing bytes must survive: {text:?}"
+    );
     let reparsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(
-        reparsed.pointer("/metrics/latencyMs").and_then(|v| v.as_u64()),
+        reparsed
+            .pointer("/metrics/latencyMs")
+            .and_then(|v| v.as_u64()),
         Some(57)
     );
     assert_eq!(reparsed["stopReason"], "end_turn");
@@ -6279,7 +6284,9 @@ fn complete_converse_body_replaces_a_malformed_metrics_instead_of_duplicating_th
     let out = complete_converse_body(body, &parsed, Some(9)).expect("replaced");
     let reparsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(
-        reparsed.pointer("/metrics/latencyMs").and_then(|v| v.as_u64()),
+        reparsed
+            .pointer("/metrics/latencyMs")
+            .and_then(|v| v.as_u64()),
         Some(9)
     );
     assert_eq!(
@@ -6314,10 +6321,15 @@ fn same_proto_translator_completes_a_converse_body_and_reports_its_usage() {
     let out = t.finish();
     let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
     assert!(
-        v.pointer("/metrics/latencyMs").and_then(|m| m.as_u64()).is_some(),
+        v.pointer("/metrics/latencyMs")
+            .and_then(|m| m.as_u64())
+            .is_some(),
         "the completed body must carry metrics.latencyMs: {v}"
     );
-    assert_eq!(v["output"]["message"]["content"][0]["text"], "oracle-marker");
+    assert_eq!(
+        v["output"]["message"]["content"][0]["text"],
+        "oracle-marker"
+    );
     let usage = t.usage().expect("billing usage from the Converse reader");
     assert_eq!((usage.input, usage.output), (11, 7));
     assert!(!t.aborted());
@@ -6340,7 +6352,11 @@ fn same_proto_translator_leaves_a_non_converse_body_alone_but_still_bills_it() {
     let body = br#"{"embedding":[0.1,0.2],"inputTextTokenCount":6}"#;
     let mut t = same_proto_translator(1 << 20);
     assert!(t.feed(body).is_empty());
-    assert_eq!(t.finish(), body.to_vec(), "an embeddings body relays verbatim");
+    assert_eq!(
+        t.finish(),
+        body.to_vec(),
+        "an embeddings body relays verbatim"
+    );
     let usage = t.usage().expect("the embeddings tap still bills");
     assert_eq!(usage.input, 6);
     // Non-JSON: verbatim, and nothing to bill.
@@ -6363,7 +6379,9 @@ fn same_proto_translator_relays_past_the_cap_and_recovers_usage_from_the_tail() 
     assert!(t.feed(c).is_empty());
     assert!(t.feed(d).is_empty());
     assert!(t.finish().is_empty(), "nothing is held back once relaying");
-    let usage = t.usage().expect("usage recovered from the trailing usage object");
+    let usage = t
+        .usage()
+        .expect("usage recovered from the trailing usage object");
     assert_eq!((usage.input, usage.output), (11, 7));
 }
 
@@ -6374,7 +6392,9 @@ fn same_proto_translator_over_cap_without_a_usage_object_bills_a_floor_not_zero(
     let out = t.feed(&[b'x'; 100]);
     assert_eq!(out.len(), 100);
     assert!(t.finish().is_empty());
-    let usage = t.usage().expect("an over-cap body is never metered at zero");
+    let usage = t
+        .usage()
+        .expect("an over-cap body is never metered at zero");
     assert!(usage.output >= 1);
 }
 
@@ -6392,7 +6412,8 @@ fn stream_translator_factory_installs_the_converse_body_translator_for_bedrock_o
 fn streaming_metadata_metrics_is_always_present_and_never_overwrites_upstream() {
     let framing = BedrockStreamFraming::default();
     // Timing unavailable: still emitted (required member), as 0.
-    let mut data = serde_json::json!({"usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}});
+    let mut data =
+        serde_json::json!({"usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}});
     framing.inject_streaming_metrics(ET_METADATA, &mut data, None);
     assert_eq!(
         data.pointer("/metrics/latencyMs").and_then(|v| v.as_u64()),
@@ -6400,11 +6421,7 @@ fn streaming_metadata_metrics_is_always_present_and_never_overwrites_upstream() 
     );
     // Upstream-supplied: kept.
     let mut data = serde_json::json!({"usage": {}, "metrics": {"latencyMs": 31}});
-    framing.inject_streaming_metrics(
-        ET_METADATA,
-        &mut data,
-        Some(std::time::Instant::now()),
-    );
+    framing.inject_streaming_metrics(ET_METADATA, &mut data, Some(std::time::Instant::now()));
     assert_eq!(
         data.pointer("/metrics/latencyMs").and_then(|v| v.as_u64()),
         Some(31)
@@ -6446,6 +6463,9 @@ fn buffered_to_eventstream_metadata_carries_metrics_even_without_timing() {
         .find(|(et, _)| et == ET_METADATA)
         .expect("a metadata frame");
     let v: serde_json::Value = serde_json::from_slice(payload).unwrap();
-    assert_eq!(v.pointer("/metrics/latencyMs").and_then(|m| m.as_u64()), Some(0));
+    assert_eq!(
+        v.pointer("/metrics/latencyMs").and_then(|m| m.as_u64()),
+        Some(0)
+    );
     assert_eq!(v["usage"]["totalTokens"], 7);
 }

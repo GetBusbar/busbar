@@ -1375,9 +1375,8 @@ impl ProtocolWriter for ResponsesWriter {
                     }
                     let annotations =
                         super::super::openai_annotations::url_annotations(text, 0, citations);
-                    let logprobs = write_responses_part_logprobs(
-                        pending_logprobs.take().unwrap_or(&[]),
-                    );
+                    let logprobs =
+                        write_responses_part_logprobs(pending_logprobs.take().unwrap_or(&[]));
                     // Match the native message-item shape the STREAMING `output_item.done` emits: an
                     // item-level `id` (`msg_…`), a `status`, and `annotations: []` on the `output_text`
                     // content part. Omitting them is a proxy tell — a typed SDK reading `item.id` /

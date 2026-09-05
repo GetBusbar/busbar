@@ -139,6 +139,9 @@ busbar-core = { path = "../busbar-core", features = ["test-support"] }
 # deleted `#[path]` witness used to net in. A dev-dep back-edge (busbar-mcp normal-depends on
 # busbar-core; this dev-dep the other way is not a build cycle). Not linked into any shipped target.
 busbar-mcp = { path = "../busbar-mcp" }
+# The in-memory `Store` the governed engine tests seed a registry with, named at its own crate so
+# a test reaches governance through the neutral engine test kit rather than through core.
+busbar-store-memory = { path = "../store-memory" }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
 # The relocated money-path tests (src/engine/{tests,engine_tests}) drive the engine through

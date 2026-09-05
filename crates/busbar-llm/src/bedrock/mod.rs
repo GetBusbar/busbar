@@ -1703,11 +1703,11 @@ pub(crate) fn complete_converse_body(
     if body[close] != b'}' {
         return None;
     }
-    let prev = body[..close].iter().rposition(|b| !b.is_ascii_whitespace())?;
+    let prev = body[..close]
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())?;
     let separator = if body[prev] == b'{' { "" } else { "," };
-    let member = format!(
-        "{separator}\"{FIELD_METRICS}\":{{\"{FIELD_LATENCY_MS}\":{latency_ms}}}"
-    );
+    let member = format!("{separator}\"{FIELD_METRICS}\":{{\"{FIELD_LATENCY_MS}\":{latency_ms}}}");
     let mut out = Vec::with_capacity(body.len() + member.len());
     out.extend_from_slice(&body[..close]);
     out.extend_from_slice(member.as_bytes());

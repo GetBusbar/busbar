@@ -731,7 +731,9 @@ fn bedrock_carry_response_metrics_latency_ms() {
     let mut value2 = serde_json::json!({"output": {}});
     writer.inject_response_metrics(&mut value2, None);
     assert_eq!(
-        value2.pointer("/metrics/latencyMs").and_then(|v| v.as_u64()),
+        value2
+            .pointer("/metrics/latencyMs")
+            .and_then(|v| v.as_u64()),
         Some(0),
         "metrics.latencyMs must still be present when timing is unavailable; got {value2}"
     );
@@ -739,7 +741,9 @@ fn bedrock_carry_response_metrics_latency_ms() {
     let mut value3 = serde_json::json!({"output": {}, "metrics": {"latencyMs": 42}});
     writer.inject_response_metrics(&mut value3, Some(137));
     assert_eq!(
-        value3.pointer("/metrics/latencyMs").and_then(|v| v.as_u64()),
+        value3
+            .pointer("/metrics/latencyMs")
+            .and_then(|v| v.as_u64()),
         Some(42),
         "an upstream metrics.latencyMs must survive injection untouched; got {value3}"
     );
