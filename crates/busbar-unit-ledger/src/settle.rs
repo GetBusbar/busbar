@@ -201,11 +201,10 @@ impl Ledger {
     /// beside it, so the value is counted once. When the recompute agrees, the caller moves it back
     /// with a negative amount.
     ///
-    /// contract: the architecture names "Σ unreconciled" as one of the sealed figures and as a term
-    /// of the identity, but does not say whether an unreconciled amount is also counted as settled.
-    /// Treating it as a MOVE keeps the identity closed with no special case; treating it as a
-    /// parallel tally would need the identity to subtract it somewhere. The integrator should
-    /// confirm which reading the reporting surfaces expect.
+    /// Decided rule (ARCHITECTURE.md §4.2): "an unreconciled amount is a MOVE out of settled, never
+    /// a parallel tally" — booking it is `unreconciled += A; settled -= A` on the same figure, so
+    /// the identity closes with no special case and nothing is reported as settled that the store
+    /// has not confirmed.
     pub fn record_unreconciled(&mut self, key: &TotalsKey, window: WindowStart, amount: i128) {
         let figures = self.book.entry(key.clone(), window);
         figures.unreconciled += amount;
