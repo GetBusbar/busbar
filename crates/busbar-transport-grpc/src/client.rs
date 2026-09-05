@@ -11,7 +11,6 @@ use std::task::{Context, Poll};
 
 use futures::Stream;
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use http::uri::PathAndQuery;
 
@@ -42,14 +41,16 @@ impl tower::Service<http::Request<tonic::body::Body>> for Dialer {
     }
 }
 
-/// Connect to `host:port` over raw TCP and complete the HTTP/2 client preface. NOT resolve-then-
-/// pin — see this crate's own report: the SSRF guard belongs in front of this transport, in a
-/// crate this one may not yet depend on.
-pub(crate) async fn dial_h2(host: &str, port: u16) -> Result<(Dialer, http::Uri), TransportError> {
-    let tcp = TcpStream::connect((host, port))
-        .await
-        .map_err(|_| TransportError::Refused)?;
-    let io = TokioIo::new(tcp);
+/// Complete the HTTP/2 client preface over a stream the layer below has already established.
+///
+/// No name is resolved here and no socket is opened: the connection arrives as a stream the lower
+/// transport gave up, which is what lets the resolve-then-pin network guard sit in front of the
+/// dial, once for the whole stack, instead of inside every carrier.
+pub(crate) async fn handshake_h2(
+    stream: crate::conn::LowerIo,
+    authority: &str,
+) -> Result<(Dialer, http::Uri), TransportError> {
+    let io = TokioIo::new(stream);
     let (send_request, connection) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
         .handshake::<_, tonic::body::Body>(io)
         .await
@@ -59,7 +60,7 @@ pub(crate) async fn dial_h2(host: &str, port: u16) -> Result<(Dialer, http::Uri)
     });
     let origin = http::Uri::builder()
         .scheme("http")
-        .authority(format!("{host}:{port}"))
+        .authority(authority.to_string())
         .path_and_query("/")
         .build()
         .map_err(|_| TransportError::AddressRefused)?;

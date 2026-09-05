@@ -282,6 +282,33 @@ impl VerifiedDestination {
         self.transport
     }
 
+    /// The same sealed destination, re-addressed for the layer underneath this one.
+    ///
+    /// A composed transport does not open its own socket: it dials through the layer below it, and
+    /// that layer reads a socket address where this one reads a URL or a method. Re-addressing is
+    /// not re-sealing — every judgement the trust unit made travels unchanged, and only the
+    /// spelling of where the bytes go changes to what the lower layer can parse. There is no way to
+    /// reach this without already holding a sealed destination, so walking down a stack can never
+    /// widen where a unit may go.
+    ///
+    /// `None` for a destination that is not an upstream: nothing else has a layer beneath it.
+    #[must_use]
+    pub fn beneath(&self, transport: &'static str, address: UpstreamAddress) -> Option<Self> {
+        let DestinationFacts::Upstream { lane, .. } = self.facts else {
+            return None;
+        };
+        Some(Self {
+            facts: DestinationFacts::Upstream {
+                transport,
+                address,
+                lane,
+            },
+            lane: self.lane,
+            transport,
+            budget_remaining: self.budget_remaining,
+        })
+    }
+
     /// The destination's remaining lifetime request budget, where it declares one.
     ///
     /// The transport section exposes this to hooks under its own fact key so pick order can take

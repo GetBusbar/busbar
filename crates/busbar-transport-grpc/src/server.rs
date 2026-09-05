@@ -24,7 +24,6 @@ use std::task::{Context, Poll};
 use futures::Stream;
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tonic::{Request, Response, Status};
 
@@ -37,10 +36,10 @@ use crate::conn::ConnState;
 /// The fixed path every RPC this crate serves or dials answers to. See the module header.
 pub(crate) const RPC_PATH: &str = "/busbar.raw/Frames";
 
-/// Serve one accepted TCP connection as an HTTP/2 gRPC connection until it closes.
-pub(crate) fn serve_connection(tcp: TcpStream, state: Arc<ConnState>) {
+/// Serve one stream the layer below handed up as an HTTP/2 gRPC connection until it closes.
+pub(crate) fn serve_connection(stream: crate::conn::LowerIo, state: Arc<ConnState>) {
     tokio::spawn(async move {
-        let io = TokioIo::new(tcp);
+        let io = TokioIo::new(stream);
         let svc = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
             let state = state.clone();
             async move { Ok::<_, std::convert::Infallible>(handle_one_rpc(state, req).await) }

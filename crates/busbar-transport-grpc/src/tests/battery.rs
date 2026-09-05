@@ -14,6 +14,39 @@ use busbar_contract::{ArenaBytes, StreamId, Transport};
 
 use crate::GrpcTransport;
 
+/// A `grpc` transport standing on `http`, which is what carries an inbound connection.
+fn server_transport() -> GrpcTransport {
+    GrpcTransport::over(std::sync::Arc::new(
+        busbar_transport_http::HttpTransport::new(busbar_transport_http::ClientSettings::default()),
+    ))
+}
+
+/// A `grpc` transport standing on `tcp`, which is what carries a dialled one.
+fn client_transport() -> GrpcTransport {
+    GrpcTransport::over(std::sync::Arc::new(
+        busbar_transport_tcp::TcpTransport::new(),
+    ))
+}
+
+/// A bind address, for the layer below.
+struct BindTo(String);
+impl busbar_contract::ConfigView for BindTo {
+    fn get_str(&self, _k: &str) -> Option<&str> {
+        None
+    }
+    fn get_int(&self, _k: &str) -> Option<i64> {
+        None
+    }
+    fn get_bool(&self, _k: &str) -> Option<bool> {
+        None
+    }
+}
+impl busbar_contract::TransportConfigView for BindTo {
+    fn bind(&self) -> Option<&str> {
+        Some(&self.0)
+    }
+}
+
 fn test_key_handle() -> busbar_contract::TransportKeyHandle {
     struct Seal;
     impl busbar_contract::KernelSeal for Seal {
@@ -45,9 +78,9 @@ fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination
 
 #[tokio::test]
 async fn unary_shaped_round_trip() {
-    let server_t = std::sync::Arc::new(GrpcTransport::new());
-    let client_t = GrpcTransport::new();
-    let cfg = crate::StaticConfig::bind_to("127.0.0.1:0");
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
     let keys = test_key_handle();
     let listener = server_t.listen(&cfg, &keys).await.unwrap();
     let addr = listener.local_addr();
@@ -87,9 +120,9 @@ async fn unary_shaped_round_trip() {
 
 #[tokio::test]
 async fn terminal_status_is_read_from_the_grpc_status_trailer() {
-    let server_t = std::sync::Arc::new(GrpcTransport::new());
-    let client_t = GrpcTransport::new();
-    let cfg = crate::StaticConfig::bind_to("127.0.0.1:0");
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
     let keys = test_key_handle();
     let listener = server_t.listen(&cfg, &keys).await.unwrap();
     let addr = listener.local_addr();
@@ -126,9 +159,9 @@ async fn terminal_status_is_read_from_the_grpc_status_trailer() {
 
 #[tokio::test]
 async fn multiplexed_streams_without_cross_talk() {
-    let server_t = std::sync::Arc::new(GrpcTransport::new());
-    let client_t = GrpcTransport::new();
-    let cfg = crate::StaticConfig::bind_to("127.0.0.1:0");
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
     let keys = test_key_handle();
     let listener = server_t.listen(&cfg, &keys).await.unwrap();
     let addr = listener.local_addr();
@@ -168,9 +201,9 @@ async fn multiplexed_streams_without_cross_talk() {
 
 #[tokio::test]
 async fn k_writers_on_one_call_do_not_corrupt_messages() {
-    let server_t = std::sync::Arc::new(GrpcTransport::new());
-    let client_t = std::sync::Arc::new(GrpcTransport::new());
-    let cfg = crate::StaticConfig::bind_to("127.0.0.1:0");
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = std::sync::Arc::new(client_transport());
+    let cfg = BindTo("127.0.0.1:0".to_string());
     let keys = test_key_handle();
     let listener = server_t.listen(&cfg, &keys).await.unwrap();
     let addr = listener.local_addr();
@@ -222,9 +255,9 @@ async fn k_writers_on_one_call_do_not_corrupt_messages() {
 
 #[tokio::test]
 async fn write_to_unseen_stream_on_an_accepted_connection_is_refused() {
-    let server_t = std::sync::Arc::new(GrpcTransport::new());
-    let client_t = GrpcTransport::new();
-    let cfg = crate::StaticConfig::bind_to("127.0.0.1:0");
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
     let keys = test_key_handle();
     let listener = server_t.listen(&cfg, &keys).await.unwrap();
     let addr = listener.local_addr();
@@ -251,22 +284,24 @@ async fn write_to_unseen_stream_on_an_accepted_connection_is_refused() {
 
 #[tokio::test]
 async fn a_handoff_onto_grpc_is_a_mismatch() {
-    let t = GrpcTransport::new();
-    let cfg = crate::StaticConfig::bind_to("127.0.0.1:0");
+    // Nothing is adopted ONTO `grpc`: it takes a stream from the layer under it at `accept` and
+    // `dial`, and there is no third way in. A handoff offered here is one neither leg declared.
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
     let keys = test_key_handle();
-    let listener = t.listen(&cfg, &keys).await.unwrap();
+    let listener = server_t
+        .listen(&BindTo("127.0.0.1:0".to_string()), &keys)
+        .await
+        .unwrap();
     let addr = listener.local_addr();
-    let host: &'static str = Box::leak(addr.into_boxed_str());
-    let dest = verified_upstream(host);
     let accept_task = {
-        let t = std::sync::Arc::new(t);
-        let t2 = t.clone();
-        tokio::spawn(async move { t2.accept(&listener).await })
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
     };
-    let dialer_t = GrpcTransport::new();
-    let conn = dialer_t.dial(&dest, &keys).await.unwrap();
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let conn = client_t.dial(&verified_upstream(host), &keys).await.unwrap();
     let _ = tokio::time::timeout(Duration::from_millis(200), accept_task).await;
-    let err = dialer_t.adopt(&dialer_t, conn, &keys).await.unwrap_err();
+    let err = client_t.adopt(&client_t, conn, &keys).await.unwrap_err();
     assert_eq!(err, TransportError::HandoffMismatch);
 }
 
@@ -275,9 +310,9 @@ async fn a_handoff_onto_grpc_is_a_mismatch() {
 /// fixed path and two plane operations could not reach two upstream methods.
 #[tokio::test]
 async fn the_destinations_method_is_the_path_the_call_opens_against() {
-    let server_t = std::sync::Arc::new(GrpcTransport::new());
-    let client_t = GrpcTransport::new();
-    let cfg = crate::StaticConfig::bind_to("127.0.0.1:0");
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
     let keys = test_key_handle();
     let listener = server_t.listen(&cfg, &keys).await.unwrap();
     let addr = listener.local_addr();
@@ -332,6 +367,35 @@ async fn the_destinations_method_is_the_path_the_call_opens_against() {
         .unwrap()
         .clone();
     assert_eq!(served, vec!["/vendor.Inference/Chat".to_string()]);
+
+    // And the chain both ends report is the stack they actually stand on.
+    assert_eq!(
+        server_t.arrival(&server_conn).transport_chain,
+        vec!["tcp", "http", "grpc"]
+    );
+    assert_eq!(
+        client_t.arrival(&client_conn).transport_chain,
+        vec!["tcp", "grpc"]
+    );
+}
+
+/// With no layer under it this transport has no socket to reach for.
+#[tokio::test]
+async fn a_transport_with_no_lower_layer_cannot_listen_or_dial() {
+    let t = GrpcTransport::new();
+    let keys = test_key_handle();
+    assert_eq!(
+        t.listen(&BindTo("127.0.0.1:0".to_string()), &keys)
+            .await
+            .unwrap_err(),
+        TransportError::HandoffMismatch
+    );
+    assert_eq!(
+        t.dial(&verified_upstream("127.0.0.1:1"), &keys)
+            .await
+            .unwrap_err(),
+        TransportError::HandoffMismatch
+    );
 }
 
 #[allow(clippy::assertions_on_constants)]
@@ -346,7 +410,10 @@ async fn transport_meta_matches_the_architecture_row() {
         <GrpcTransport as TransportMeta>::UNIT0_TRIGGER,
         Some(Unit0Trigger::FirstMessage)
     );
-    assert_eq!(<GrpcTransport as TransportMeta>::COMPOSES_OVER, &["http"]);
+    assert_eq!(
+        <GrpcTransport as TransportMeta>::COMPOSES_OVER,
+        &["http", "tcp"]
+    );
     assert!(<GrpcTransport as TransportMeta>::UPGRADES_TO.is_empty());
     assert_eq!(
         <GrpcTransport as TransportMeta>::STATUS_CLASS,

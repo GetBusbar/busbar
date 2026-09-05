@@ -876,6 +876,8 @@ name = "busbar-transport-grpc"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-transport-http",
+ "busbar-transport-tcp",
  "bytes",
  "futures",
  "http",
@@ -961,6 +963,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-transport-http",
+ "busbar-transport-tcp",
  "futures",
  "rustls",
  "rustls-pki-types",

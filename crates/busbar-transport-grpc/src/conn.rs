@@ -8,9 +8,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as SyncMutex};
 
-use busbar_contract::unit::ConfigView;
 use busbar_contract::wire::{ConnHandle, Frame, TransportError};
-use busbar_contract::{StreamId, TransportConfigView};
+use busbar_contract::StreamId;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
 /// The opaque handle the kernel is given. Carries identity only — see `busbar-transport-stdio`'s
@@ -28,6 +27,15 @@ impl ConnHandle for GrpcConnHandle {
         self.peer.clone()
     }
 }
+
+/// Any duplex byte stream the layer below can hand up. Boxed rather than concrete because which
+/// carrier is under this one — a plain socket, a TLS one, an in-memory pair — is that layer's
+/// business and never this one's.
+pub(crate) trait Lower: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> Lower for T {}
+
+/// The boxed form, as it crosses the handoff.
+pub(crate) type LowerIo = Box<dyn Lower>;
 
 /// One inbound item: a stream-tagged frame, or a transport failure on that stream.
 pub(crate) type InboundItem = Result<(StreamId, Frame), TransportError>;
@@ -56,11 +64,16 @@ pub(crate) struct ConnState {
     /// assumed, because "the method a destination named is the method dialled" is otherwise a
     /// claim nothing checks.
     pub(crate) served_paths: SyncMutex<Vec<String>>,
+    /// The composed stack this connection stands on, bottom layer first, ending in `grpc`. It is
+    /// the layer below's chain plus this one, carried across the handoff — a connection that named
+    /// only itself was one a location could not resolve against.
+    pub(crate) chain: Vec<&'static str>,
 }
 
 impl ConnState {
     pub(crate) fn new(
         dialer: Option<(Arc<crate::client::Dialer>, http::Uri, &'static str)>,
+        chain: Vec<&'static str>,
     ) -> Arc<Self> {
         let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
         Arc::new(Self {
@@ -70,40 +83,8 @@ impl ConnState {
             dialer,
             next_local_stream: std::sync::atomic::AtomicU64::new(1),
             served_paths: SyncMutex::new(Vec::new()),
+            chain,
         })
     }
 }
 
-/// A trivial config view: `bind` is the only field this transport reads.
-#[derive(Debug, Clone)]
-pub struct StaticConfig {
-    bind: Option<String>,
-}
-
-impl StaticConfig {
-    /// A config naming one bind address.
-    #[must_use]
-    pub fn bind_to(addr: impl Into<String>) -> Self {
-        Self {
-            bind: Some(addr.into()),
-        }
-    }
-}
-
-impl ConfigView for StaticConfig {
-    fn get_str(&self, _key: &str) -> Option<&str> {
-        None
-    }
-    fn get_int(&self, _key: &str) -> Option<i64> {
-        None
-    }
-    fn get_bool(&self, _key: &str) -> Option<bool> {
-        None
-    }
-}
-
-impl TransportConfigView for StaticConfig {
-    fn bind(&self) -> Option<&str> {
-        self.bind.as_deref()
-    }
-}

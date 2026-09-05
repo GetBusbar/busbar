@@ -8,13 +8,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as SyncMutex};
 
 use futures::{Stream, StreamExt};
-use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::unit::Refusal;
 use busbar_contract::wire::{
-    ArrivalRecord, CloseReason, Conn, Direction, Frame, FrameMeta, Listener, ListenerHandle,
-    TransportError, Unit0Trigger,
+    ArrivalRecord, CloseReason, Conn, Direction, Frame, FrameMeta, Listener, TransportError,
+    Unit0Trigger,
 };
 use busbar_contract::{
     grammar::SelectorForm, AbiVersion, ArenaBytes, Fut, Kind, Plugin, SlabBytes, StreamId,
@@ -22,8 +21,7 @@ use busbar_contract::{
 };
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::conn::{ConnState, WsConnHandle};
-use crate::rw::BoxedRw;
+use crate::conn::{ConnState, LowerIo, Sock, WsConnHandle};
 
 type FrameStream = std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
 
@@ -62,32 +60,20 @@ fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), TransportError
     Ok((secure, host, port, path.to_string()))
 }
 
-fn tls_config() -> Arc<rustls::ClientConfig> {
-    static CFG: std::sync::OnceLock<Arc<rustls::ClientConfig>> = std::sync::OnceLock::new();
-    CFG.get_or_init(|| {
-        let roots = rustls::RootCertStore {
-            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-        };
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let cfg = rustls::ClientConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()
-            .expect("ring provider supports the default TLS protocol versions")
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-        Arc::new(cfg)
-    })
-    .clone()
-}
-
 /// The WebSocket transport. In-tree, inside the trusted computing base — see the architecture
 /// doc's transport and transports-table sections.
+///
+/// It opens no socket of its own. Every byte reaches it through the layer it composes over: the
+/// lower transport binds, accepts and dials, and this one takes the stream that layer gives up and
+/// runs the WebSocket handshake on it. That is what makes the composed chain real rather than
+/// declared, and it is what puts the network guard, the transport-key unit and the frame-honesty
+/// tests in ONE place for the whole stack instead of one place per transport.
 pub struct WsTransport {
     next_id: AtomicU64,
     conns: SyncMutex<HashMap<u64, Arc<ConnState>>>,
-    /// Keyed by the listener's rendered `local_addr()` — see the module's own report note: a real
-    /// [`busbar_contract::wire::Listener`] carries no id of its own, only an address string, so
-    /// this is the best key available on the opaque handle without widening the contract.
-    listeners: SyncMutex<HashMap<String, Arc<TokioTcpListener>>>,
+    /// The layer this one composes over. `None` for an instance used only through
+    /// [`WsTransport::adopt`] or the in-memory handshake seam, which are handed a stream directly.
+    lower: Option<Arc<dyn Transport>>,
 }
 
 impl Default for WsTransport {
@@ -97,14 +83,36 @@ impl Default for WsTransport {
 }
 
 impl WsTransport {
-    /// A fresh transport instance with no live connections.
+    /// A transport with no layer under it: it can adopt a stream a caller hands it, and nothing
+    /// else. `listen`, `accept` and `dial` all need a lower layer, because this one owns no socket.
     #[must_use]
     pub fn new() -> Self {
         Self {
             next_id: AtomicU64::new(1),
             conns: SyncMutex::new(HashMap::new()),
-            listeners: SyncMutex::new(HashMap::new()),
+            lower: None,
         }
+    }
+
+    /// A transport composed over `lower` — the layer that binds, accepts and dials on its behalf.
+    ///
+    /// The design's own stack is `tcp → tls → http → ws`: `http` is what an inbound upgrade arrives
+    /// on, and `tcp`/`tls` are what an outbound one is dialled through. Which of them a given
+    /// instance stands on is the composition root's declaration, and the boot check is what holds
+    /// that declaration to the transports actually registered.
+    #[must_use]
+    pub fn over(lower: Arc<dyn Transport>) -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            conns: SyncMutex::new(HashMap::new()),
+            lower: Some(lower),
+        }
+    }
+
+    fn lower(&self) -> Result<&Arc<dyn Transport>, TransportError> {
+        // A ws transport with nothing under it has no socket to reach for, and inventing one is the
+        // exact thing this composition exists to stop.
+        self.lower.as_ref().ok_or(TransportError::HandoffMismatch)
     }
 
     fn mint_id(&self) -> u64 {
@@ -131,24 +139,44 @@ impl WsTransport {
         }))
     }
 
-    /// TEST-ONLY (also usable by an embedder that already owns a socket pair): perform a WS
-    /// handshake in the given role over an arbitrary duplex stream and adopt the result.
-    pub async fn handshake_over<S>(&self, stream: S, is_server: bool, peer: &str) -> Result<Conn, TransportError>
+    /// Run the WebSocket handshake, in the given role, over a stream some layer already
+    /// established, and hold what comes out.
+    ///
+    /// This is the whole of what this transport does with a socket: it never opens one. An embedder
+    /// that already owns a duplex pair drives the identical path a composed accept or dial does.
+    pub async fn handshake_over<S>(
+        &self,
+        stream: S,
+        is_server: bool,
+        peer: &str,
+    ) -> Result<Conn, TransportError>
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
     {
-        let boxed = BoxedRw(Box::new(stream));
-        let sock = if is_server {
-            tokio_tungstenite::accept_async(boxed)
+        self.handshake(Box::new(stream), is_server, "ws://localhost/", peer, vec!["ws"])
+            .await
+    }
+
+    /// The one place a WebSocket connection is made, whichever direction it came from.
+    async fn handshake(
+        &self,
+        stream: Box<dyn LowerIo>,
+        is_server: bool,
+        url: &str,
+        peer: &str,
+        chain: Vec<&'static str>,
+    ) -> Result<Conn, TransportError> {
+        let sock: Sock = if is_server {
+            tokio_tungstenite::accept_async(stream)
                 .await
                 .map_err(|_| TransportError::HandshakeFailed)?
         } else {
-            let (sock, _resp) = tokio_tungstenite::client_async("ws://localhost/", boxed)
+            let (sock, _resp) = tokio_tungstenite::client_async(url, stream)
                 .await
                 .map_err(|_| TransportError::HandshakeFailed)?;
             sock
         };
-        Ok(self.hold(sock, peer, vec!["tcp", "http", "ws"]))
+        Ok(self.hold(sock, peer, chain))
     }
 }
 
@@ -187,7 +215,10 @@ impl TransportMeta for WsTransport {
         SelectorForm::Port,
     ];
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = &[];
-    const COMPOSES_OVER: &'static [&'static str] = &["http"];
+    // The layers this one is actually built over, and the Cargo edges say the same: an inbound
+    // upgrade arrives on `http`, an outbound one is dialled through `tcp`. `tls` sits under those
+    // two rather than under this one, which is why it is not named here.
+    const COMPOSES_OVER: &'static [&'static str] = &["http", "tcp"];
     const HANDOFF: Option<busbar_contract::wire::Handoff> = None;
     const FRAMING: busbar_contract::Framing = busbar_contract::Framing::Stream;
     const SESSION: bool = true;
@@ -218,52 +249,30 @@ impl Transport for WsTransport {
         }
     }
 
+    /// The listener is the layer below's. This transport binds nothing.
     fn listen<'a>(
         &'a self,
         cfg: &'a dyn TransportConfigView,
-        _keys: &'a TransportKeyHandle,
+        keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Listener> {
-        Box::pin(async move {
-            let addr = cfg.bind().ok_or(TransportError::AddressRefused)?;
-            let listener = TokioTcpListener::bind(addr)
-                .await
-                .map_err(|_| TransportError::AddressRefused)?;
-            let local = listener
-                .local_addr()
-                .map_err(|_| TransportError::AddressRefused)?
-                .to_string();
-            self.listeners
-                .lock()
-                .unwrap()
-                .insert(local.clone(), Arc::new(listener));
-            Ok(Listener::new(Arc::new(WsListenerHandle { addr: local })))
-        })
+        Box::pin(async move { self.lower()?.listen(cfg, keys).await })
     }
 
+    /// Take the next connection off the layer below, then upgrade it — which is
+    /// `Unit0Trigger::Upgrade`: the session opens at the handshake, and the handshake runs on the
+    /// stream that layer gives up.
     fn accept<'a>(&'a self, l: &'a Listener) -> Fut<'a, Conn> {
         Box::pin(async move {
-            let listener = self
-                .listeners
-                .lock()
-                .unwrap()
-                .get(&l.local_addr())
-                .cloned()
-                .ok_or(TransportError::Closed)?;
-            let (tcp, peer) = listener.accept().await.map_err(|_| TransportError::Closed)?;
-            // THE UPGRADE ITSELF — `Unit0Trigger::Upgrade`. `accept_async` parses the HTTP upgrade
-            // request and answers the 101 over the raw stream; no separate `http` transport is
-            // consulted (see the lower-layer boundary note in the module header).
-            let sock = tokio_tungstenite::accept_async(BoxedRw(Box::new(tcp)))
-                .await
-                .map_err(|_| TransportError::HandshakeFailed)?;
-            Ok(self.hold(sock, &peer.to_string(), vec!["tcp", "http", "ws"]))
+            let lower = self.lower()?;
+            let conn = lower.accept(l).await?;
+            self.adopt(lower.as_ref(), conn, &NO_KEYS).await
         })
     }
 
     fn dial<'a>(
         &'a self,
         dest: &'a VerifiedDestination,
-        _keys: &'a TransportKeyHandle,
+        keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
             let DestinationFacts::Upstream { address, .. } = dest.facts() else {
@@ -273,36 +282,38 @@ impl Transport for WsTransport {
                 .authority()
                 .ok_or(TransportError::AddressRefused)?;
             let (secure, host_name, port, path) = split_ws_url(url)?;
-            // NOT resolve-then-pin: see the module header. A real deployment dials through the
-            // tcp/tls transport crates once they exist; this crate resolves the name directly,
-            // which is the placeholder this report flags rather than silently narrows.
-            let tcp = TcpStream::connect((host_name.as_str(), port))
-                .await
-                .map_err(|_| TransportError::Refused)?;
+            let authority: &'static str = Box::leak(format!("{host_name}:{port}").into_boxed_str());
+
+            // The socket is the layer below's, dialled against the address this destination already
+            // carries — no name is resolved here, which is what puts the network guard in front of
+            // the dial instead of inside it. Re-addressing narrows the sealed destination to what
+            // that layer reads; it does not re-seal it, and it cannot widen where the unit may go.
+            let lower = self.lower()?;
+            let beneath = dest
+                .beneath(
+                    lower.key(),
+                    busbar_contract::UpstreamAddress::Socket {
+                        authority,
+                        sni: address.sni().or(if secure {
+                            Some(Box::leak(host_name.clone().into_boxed_str()) as &'static str)
+                        } else {
+                            None
+                        }),
+                    },
+                )
+                .ok_or(TransportError::AddressRefused)?;
+            let conn = lower.dial(&beneath, keys).await?;
+            let mut chain = lower.arrival(&conn).transport_chain;
+            let raw = lower.detach(&conn).ok_or(TransportError::HandoffMismatch)?;
+            chain.push(<Self as TransportMeta>::KEY);
+
             let request_url = format!(
                 "{}://{host_name}:{port}{path}",
                 if secure { "wss" } else { "ws" }
             );
-            let sock = if secure {
-                let server_name = rustls::pki_types::ServerName::try_from(host_name.clone())
-                    .map_err(|_| TransportError::HandshakeFailed)?;
-                let tls = tokio_rustls::TlsConnector::from(tls_config())
-                    .connect(server_name, tcp)
-                    .await
-                    .map_err(|_| TransportError::HandshakeFailed)?;
-                let (sock, _resp) =
-                    tokio_tungstenite::client_async(&request_url, BoxedRw(Box::new(tls)))
-                        .await
-                        .map_err(|_| TransportError::HandshakeFailed)?;
-                sock
-            } else {
-                let (sock, _resp) =
-                    tokio_tungstenite::client_async(&request_url, BoxedRw(Box::new(tcp)))
-                        .await
-                        .map_err(|_| TransportError::HandshakeFailed)?;
-                sock
-            };
-            Ok(self.hold(sock, &format!("{host_name}:{port}"), vec!["tcp", "http", "ws"]))
+            let stream = tokio_util::compat::FuturesAsyncReadCompatExt::compat(raw.into_io());
+            self.handshake(Box::new(stream), false, &request_url, authority, chain)
+                .await
         })
     }
 
@@ -436,10 +447,7 @@ impl Transport for WsTransport {
             chain.push(<Self as TransportMeta>::KEY);
             let peer = raw.peer().to_string();
             let stream = tokio_util::compat::FuturesAsyncReadCompatExt::compat(raw.into_io());
-            let sock = tokio_tungstenite::accept_async(BoxedRw(Box::new(stream)))
-                .await
-                .map_err(|_| TransportError::HandshakeFailed)?;
-            Ok(self.hold(sock, &peer, chain))
+            self.handshake(Box::new(stream), true, "", &peer, chain).await
         })
     }
 
@@ -490,12 +498,17 @@ impl Drop for PoisonGuard<'_> {
     }
 }
 
-struct WsListenerHandle {
-    addr: String,
-}
-
-impl ListenerHandle for WsListenerHandle {
-    fn local_addr(&self) -> String {
-        self.addr.clone()
+/// The keys an accept-side upgrade is adopted under.
+///
+/// The WebSocket handshake needs no key material of its own: whatever secured the bytes was
+/// resolved by the layer underneath, at its own `listen`, through the transport-key unit. A handle
+/// naming no slot is the honest way to say that rather than passing one this layer never reads.
+static NO_KEYS: std::sync::LazyLock<TransportKeyHandle> = std::sync::LazyLock::new(|| {
+    struct NoKeySeal;
+    impl busbar_contract::KernelSeal for NoKeySeal {
+        fn seal_origin(&self) -> &'static str {
+            "busbar-transport-ws: an upgrade reads no key of its own"
+        }
     }
-}
+    TransportKeyHandle::issue(&NoKeySeal, 0, "none")
+});

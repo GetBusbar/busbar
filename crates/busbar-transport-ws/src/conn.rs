@@ -15,8 +15,6 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
-use crate::rw::BoxedRw;
-
 /// The opaque handle the kernel is given. Carries identity only.
 pub(crate) struct WsConnHandle {
     pub(crate) id: u64,
@@ -32,7 +30,13 @@ impl ConnHandle for WsConnHandle {
     }
 }
 
-pub(crate) type Sock = WebSocketStream<BoxedRw>;
+/// The framed WebSocket socket, over whatever duplex the layer below handed up. The stream is
+/// boxed rather than concrete because which carrier is under it — a plain socket, a TLS one, an
+/// in-memory pair — is the lower layer'''s business and never this one'''s.
+pub(crate) trait LowerIo: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> LowerIo for T {}
+
+pub(crate) type Sock = WebSocketStream<Box<dyn LowerIo>>;
 
 /// One connection's real state: the split socket halves behind the single write lock every
 /// outbound frame passes through, plus the poison fence for a write that never completed cleanly.

@@ -8,13 +8,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as SyncMutex};
 
 use futures::Stream;
-use tokio::net::TcpListener as TokioTcpListener;
 
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::unit::Refusal;
 use busbar_contract::wire::{
-    ArrivalRecord, CloseReason, Conn, Frame, Listener, ListenerHandle, TransportError,
-    Unit0Trigger,
+    ArrivalRecord, CloseReason, Conn, Frame, Listener, TransportError, Unit0Trigger,
 };
 use busbar_contract::{
     grammar::SelectorForm, AbiVersion, ArenaBytes, Fut, Kind, Plugin, StreamId, Transport,
@@ -28,10 +26,16 @@ type FrameStream = std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame),
 
 /// The gRPC transport: unary and multiplexed streams over HTTP/2, byte-blind. In-tree, inside the
 /// trusted computing base — see the architecture doc's transport and transports-table sections.
+///
+/// It opens no socket of its own. The layer it composes over binds, accepts and dials, and this one
+/// drives HTTP/2 over the stream that layer gives up — so the composed chain is real rather than
+/// declared, and the network guard sits in front of the dial for the whole stack at once.
 pub struct GrpcTransport {
     next_id: AtomicU64,
     conns: SyncMutex<HashMap<u64, Arc<ConnState>>>,
-    listeners: SyncMutex<HashMap<String, Arc<TokioTcpListener>>>,
+    /// The layer this one composes over. `None` for an instance that will only ever be handed a
+    /// stream directly, which is all a transport owning no socket can otherwise do.
+    lower: Option<Arc<dyn Transport>>,
 }
 
 impl Default for GrpcTransport {
@@ -41,14 +45,41 @@ impl Default for GrpcTransport {
 }
 
 impl GrpcTransport {
-    /// A fresh transport instance with no live connections.
+    /// A transport with no layer under it. `listen`, `accept` and `dial` all need one.
     #[must_use]
     pub fn new() -> Self {
         Self {
             next_id: AtomicU64::new(1),
             conns: SyncMutex::new(HashMap::new()),
-            listeners: SyncMutex::new(HashMap::new()),
+            lower: None,
         }
+    }
+
+    /// A transport composed over `lower` — the layer that binds, accepts and dials for it.
+    #[must_use]
+    pub fn over(lower: Arc<dyn Transport>) -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            conns: SyncMutex::new(HashMap::new()),
+            lower: Some(lower),
+        }
+    }
+
+    fn lower(&self) -> Result<&Arc<dyn Transport>, TransportError> {
+        self.lower.as_ref().ok_or(TransportError::HandoffMismatch)
+    }
+
+    /// Take the stream out of a connection the layer below owns, with the chain it stood on.
+    fn take(
+        &self,
+        lower: &Arc<dyn Transport>,
+        conn: &Conn,
+    ) -> Result<(crate::conn::LowerIo, Vec<&'static str>), TransportError> {
+        let mut chain = lower.arrival(conn).transport_chain;
+        let raw = lower.detach(conn).ok_or(TransportError::HandoffMismatch)?;
+        chain.push(<Self as TransportMeta>::KEY);
+        let stream = tokio_util::compat::FuturesAsyncReadCompatExt::compat(raw.into_io());
+        Ok((Box::new(stream), chain))
     }
 
     fn mint_id(&self) -> u64 {
@@ -74,9 +105,9 @@ impl Plugin for GrpcTransport {
 
 impl TransportMeta for GrpcTransport {
     const KEY: &'static str = "grpc";
-    // See `busbar-transport-ws`'s identical note: grpc is the top transport of its stack (over
-    // `http`) and therefore the one that would own claim selection over the request that opens
-    // each call, including its `:path`.
+    // See `busbar-transport-ws`'s identical note: grpc is the top transport of its stack and
+    // therefore the one that owns claim selection over the request that opens each call, including
+    // its `:path`.
     const SELECTOR_FORMS: &'static [SelectorForm] = &[
         SelectorForm::ExactPath,
         SelectorForm::PrefixOneLevel,
@@ -89,7 +120,9 @@ impl TransportMeta for GrpcTransport {
         SelectorForm::Port,
     ];
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = &[];
-    const COMPOSES_OVER: &'static [&'static str] = &["http"];
+    // The layers this one is actually built over, and the Cargo edges say the same: `http`
+    // carries an inbound connection, `tcp` carries a dialled one.
+    const COMPOSES_OVER: &'static [&'static str] = &["http", "tcp"];
     const HANDOFF: Option<busbar_contract::wire::Handoff> = None;
     const FRAMING: busbar_contract::Framing = busbar_contract::Framing::Stream;
     const SESSION: bool = true;
@@ -113,59 +146,41 @@ impl Transport for GrpcTransport {
             alpn: None,
             sni: None,
             peer_cert: None,
-            // See the crate's own report: the real stack is `tcp`/`tls`/`http`/`grpc`, and this
-            // crate only ever sees the already-established HTTP/2 connection it built itself.
-            transport_chain: vec!["grpc"],
+            // The chain the layer below reported, plus this one.
+            transport_chain: self
+                .state_of(conn.id())
+                .map_or_else(|| vec!["grpc"], |s| s.chain.clone()),
         }
     }
 
+    /// The listener is the layer below's. This transport binds nothing.
     fn listen<'a>(
         &'a self,
         cfg: &'a dyn TransportConfigView,
-        _keys: &'a TransportKeyHandle,
+        keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Listener> {
-        Box::pin(async move {
-            let addr = cfg.bind().ok_or(TransportError::AddressRefused)?;
-            let listener = TokioTcpListener::bind(addr)
-                .await
-                .map_err(|_| TransportError::AddressRefused)?;
-            let local = listener
-                .local_addr()
-                .map_err(|_| TransportError::AddressRefused)?
-                .to_string();
-            self.listeners
-                .lock()
-                .unwrap()
-                .insert(local.clone(), Arc::new(listener));
-            Ok(Listener::new(Arc::new(GrpcListenerHandle { addr: local })))
-        })
+        Box::pin(async move { self.lower()?.listen(cfg, keys).await })
     }
 
+    /// Take the next connection off the layer below and serve HTTP/2 over the stream it gives up.
     fn accept<'a>(&'a self, l: &'a Listener) -> Fut<'a, Conn> {
         Box::pin(async move {
-            let listener = self
-                .listeners
-                .lock()
-                .unwrap()
-                .get(&l.local_addr())
-                .cloned()
-                .ok_or(TransportError::Closed)?;
-            let (tcp, peer) = listener.accept().await.map_err(|_| TransportError::Closed)?;
+            let lower = self.lower()?;
+            let conn = lower.accept(l).await?;
+            let peer = conn.peer();
+            let (stream, chain) = self.take(lower, &conn)?;
             let id = self.mint_id();
-            let state = ConnState::new(None);
+            let state = ConnState::new(None, chain);
             self.conns.lock().unwrap().insert(id, state.clone());
-            crate::server::serve_connection(tcp, state);
-            Ok(Conn::new(Arc::new(GrpcConnHandle {
-                id,
-                peer: peer.to_string(),
-            })))
+            crate::server::serve_connection(stream, state);
+            Ok(Conn::new(Arc::new(GrpcConnHandle { id, peer })))
         })
     }
 
     fn dial<'a>(
         &'a self,
         dest: &'a VerifiedDestination,
-        _keys: &'a TransportKeyHandle,
+        keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
             let DestinationFacts::Upstream { address, .. } = dest.facts() else {
@@ -178,13 +193,24 @@ impl Transport for GrpcTransport {
             // dialled against. A destination that names none falls back to this crate's own frame
             // method, which is the only path a byte-blind transport can serve on its own.
             let method = address.method().unwrap_or(crate::server::RPC_PATH);
-            let (host_name, port) = authority
-                .rsplit_once(':')
-                .and_then(|(h, p)| p.parse::<u16>().ok().map(|p| (h.to_string(), p)))
+            // The socket is the layer below's, dialled against the address this destination
+            // already carries. Re-addressing narrows the sealed destination to what that layer
+            // reads; it does not re-seal it, and it cannot widen where the unit may go.
+            let lower = self.lower()?;
+            let beneath = dest
+                .beneath(
+                    lower.key(),
+                    busbar_contract::UpstreamAddress::Socket {
+                        authority,
+                        sni: address.sni(),
+                    },
+                )
                 .ok_or(TransportError::AddressRefused)?;
-            let (dialer, origin) = client::dial_h2(&host_name, port).await?;
+            let conn = lower.dial(&beneath, keys).await?;
+            let (stream, chain) = self.take(lower, &conn)?;
+            let (dialer, origin) = client::handshake_h2(stream, authority).await?;
             let id = self.mint_id();
-            let state = ConnState::new(Some((Arc::new(dialer), origin, method)));
+            let state = ConnState::new(Some((Arc::new(dialer), origin, method)), chain);
             self.conns.lock().unwrap().insert(id, state);
             Ok(Conn::new(Arc::new(GrpcConnHandle {
                 id,
@@ -301,12 +327,4 @@ impl Transport for GrpcTransport {
     }
 }
 
-struct GrpcListenerHandle {
-    addr: String,
-}
 
-impl ListenerHandle for GrpcListenerHandle {
-    fn local_addr(&self) -> String {
-        self.addr.clone()
-    }
-}

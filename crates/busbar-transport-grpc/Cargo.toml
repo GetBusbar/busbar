@@ -14,7 +14,11 @@ path = "src/lib.rs"
 [dependencies]
 tokio-util = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
-tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time"] }
+# The layers this one composes over: `grpc` drives HTTP/2 over a stream one of them gives up, and
+# opens no socket of its own.
+busbar-transport-http = { path = "../busbar-transport-http" }
+busbar-transport-tcp = { path = "../busbar-transport-tcp" }
+tokio = { workspace = true, features = ["rt", "macros", "io-util", "sync", "time"] }
 # `tonic` here is used ONLY for its codec/status/streaming machinery (`tonic::codec::Codec`,
 # `tonic::Status`, `tonic::server::Grpc`, `tonic::client::Grpc`) — the gRPC WIRE FRAMING (the
 # 5-byte length-prefix per message, the `grpc-status` trailer) with a byte-blind custom `Codec`

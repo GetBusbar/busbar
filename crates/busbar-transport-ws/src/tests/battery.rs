@@ -53,26 +53,6 @@ async fn upgrade_then_round_trip_byte_exact() {
 /// — and the composed chain the adopted connection reports is the real one, not a name for itself.
 #[tokio::test]
 async fn an_in_band_upgrade_over_http_with_cleared_facts() {
-    use busbar_contract::TransportConfigView;
-
-    struct HttpCfg(String);
-    impl busbar_contract::ConfigView for HttpCfg {
-        fn get_str(&self, _k: &str) -> Option<&str> {
-            None
-        }
-        fn get_int(&self, _k: &str) -> Option<i64> {
-            None
-        }
-        fn get_bool(&self, _k: &str) -> Option<bool> {
-            None
-        }
-    }
-    impl TransportConfigView for HttpCfg {
-        fn bind(&self) -> Option<&str> {
-            Some(&self.0)
-        }
-    }
-
     let http = Arc::new(busbar_transport_http::HttpTransport::new(
         busbar_transport_http::ClientSettings::default(),
     ));
@@ -94,7 +74,7 @@ async fn an_in_band_upgrade_over_http_with_cleared_facts() {
         })
     };
 
-    let client_t = WsTransport::new();
+    let client_t = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
     let url: &'static str = Box::leak(format!("ws://{addr}/duplex").into_boxed_str());
     let client_conn = client_t.dial(&verified_upstream(url), &keys).await.unwrap();
     let (before, after_source, upgraded) = upgrade_task.await.unwrap();
@@ -120,16 +100,21 @@ async fn an_in_band_upgrade_over_http_with_cleared_facts() {
     assert_eq!(frame.bytes.as_slice(), b"after the upgrade");
 }
 
+/// The genuine network path, over the layers this transport composes over rather than over sockets
+/// of its own: the `http` layer binds and accepts, the `tcp` layer dials, and this one does the one
+/// thing it owns — the WebSocket handshake — on the streams they give up.
 #[tokio::test]
-async fn real_tcp_listen_accept_dial_round_trip() {
-    // The genuine network path, not just the in-memory battery seam: `listen` binds, `accept`
-    // performs the real upgrade over a real socket, and `dial` connects and performs the client
-    // handshake against it.
-    let server_t = Arc::new(WsTransport::new());
-    let client_t = WsTransport::new();
-    let cfg = crate::StaticConfig::bind_to("127.0.0.1:0");
+async fn a_composed_round_trip_over_the_layers_below() {
+    let http = Arc::new(busbar_transport_http::HttpTransport::new(
+        busbar_transport_http::ClientSettings::default(),
+    ));
+    let server_t = Arc::new(WsTransport::over(http));
+    let client_t = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
     let keys = test_key_handle();
-    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let listener = server_t
+        .listen(&HttpCfg("127.0.0.1:0".to_string()), &keys)
+        .await
+        .unwrap();
     let addr = listener.local_addr();
 
     let accept_task = {
@@ -142,13 +127,62 @@ async fn real_tcp_listen_accept_dial_round_trip() {
     let client_conn = client_t.dial(&dest, &keys).await.unwrap();
     let server_conn = accept_task.await.unwrap().unwrap();
 
+    // Both ends report the stack they actually stand on, not a name for themselves.
+    assert_eq!(
+        server_t.arrival(&server_conn).transport_chain,
+        vec!["tcp", "http", "ws"]
+    );
+    assert_eq!(
+        client_t.arrival(&client_conn).transport_chain,
+        vec!["tcp", "ws"]
+    );
+
     client_t
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"hello over real tcp"))
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"hello over the layers below"))
         .await
         .unwrap();
     let mut frames = server_t.frames(server_conn);
     let (_s, frame) = frames.next().await.unwrap().unwrap();
-    assert_eq!(frame.bytes.as_slice(), b"hello over real tcp");
+    assert_eq!(frame.bytes.as_slice(), b"hello over the layers below");
+}
+
+/// With no layer under it this transport has no socket to reach for, and inventing one is exactly
+/// what the composition exists to stop.
+#[tokio::test]
+async fn a_transport_with_no_lower_layer_cannot_listen_or_dial() {
+    let t = WsTransport::new();
+    let keys = test_key_handle();
+    assert_eq!(
+        t.listen(&HttpCfg("127.0.0.1:0".to_string()), &keys)
+            .await
+            .unwrap_err(),
+        TransportError::HandoffMismatch
+    );
+    assert_eq!(
+        t.dial(&verified_upstream("ws://127.0.0.1:1/"), &keys)
+            .await
+            .unwrap_err(),
+        TransportError::HandoffMismatch
+    );
+}
+
+/// A bind address, for the layer below.
+struct HttpCfg(String);
+impl busbar_contract::ConfigView for HttpCfg {
+    fn get_str(&self, _k: &str) -> Option<&str> {
+        None
+    }
+    fn get_int(&self, _k: &str) -> Option<i64> {
+        None
+    }
+    fn get_bool(&self, _k: &str) -> Option<bool> {
+        None
+    }
+}
+impl busbar_contract::TransportConfigView for HttpCfg {
+    fn bind(&self) -> Option<&str> {
+        Some(&self.0)
+    }
 }
 
 #[tokio::test]
@@ -269,7 +303,11 @@ async fn transport_meta_matches_the_architecture_row() {
         <WsTransport as TransportMeta>::UNIT0_TRIGGER,
         Some(Unit0Trigger::Upgrade)
     );
-    assert_eq!(<WsTransport as TransportMeta>::COMPOSES_OVER, &["http"]);
+    // The layers this one is actually built over, which the Cargo edges must agree with.
+    assert_eq!(
+        <WsTransport as TransportMeta>::COMPOSES_OVER,
+        &["http", "tcp"]
+    );
     assert!(<WsTransport as TransportMeta>::UPGRADES_TO.is_empty());
     assert_eq!(<WsTransport as TransportMeta>::STATUS_CLASS, None);
 }
