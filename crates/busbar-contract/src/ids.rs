@@ -51,6 +51,15 @@ declare_id!(
     "a plane admin verb"
 );
 declare_id!(
+    /// One claim a plane declares, named so policy can be written against it.
+    ///
+    /// The scope step's lookup key is the pair `(claim, operation class)`, so the claim needs a
+    /// name of its own: without one a plane's operations can be declared but never scoped, because
+    /// there is no way to say which of its claims a policy entry is about.
+    ClaimKey,
+    "a declared claim"
+);
+declare_id!(
     /// One class of metered quantity.
     ///
     /// A meter class is the unit of both pricing and capping: the cap-dimension shape below is

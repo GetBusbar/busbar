@@ -17,9 +17,9 @@
 //!   ported byte-for-byte from 1.5.5's admin API.
 //! - [`Grants`] — the set a principal actually holds, once every role binding it matches has been
 //!   unioned together and any ceiling has been applied.
-//! - [`required_scope`] — the admin-API scope matrix: derived from HTTP method and path alone
+//! - [`admin_required_scope`] — the admin-API scope matrix: derived from HTTP method and path alone
 //!   (never the request body, so a crafted request cannot escalate), matching 1.5.5's
-//!   `required_scope(method, path)` operation-for-operation.
+//!   `admin_required_scope(method, path)` operation-for-operation.
 //! - [`ADMIN_SCOPE_TABLE`] — the 66 operations that matrix was mechanically extracted from at the
 //!   1.5.5 tag (`v1.5.5`, `crates/busbar/src/admin/v1/json/openapi.json`), kept here as DATA so the
 //!   rule above can be proven against every one of them instead of a hand-picked sample.
@@ -37,11 +37,19 @@
 //! depends on. What is here is the part that is pure data plus a pure function: the admin-API scope
 //! table (a concrete, already-migrated instance of "required scope from (claim, op_class)") and the
 //! two-rung authorization chain every caller of that lookup is checked against. `// contract:` marks
-//! every place a richer `(claim, op_class)` lookup or a hook-veto seat would plug in once the
-//! contract crate carries those types.
+//! - [`PolicyView`] and [`required_scope`] — the `(claim, op_class)` lookup a 1.6.0-native plane's
+//!   `Policy` entries are read through. The contract crate now carries a claim's name, so the pair
+//!   the design makes the lookup key can finally be spelled; without the claim half, a native plane
+//!   had no way to be scoped at all.
+//!
+//! The hook-veto seat is still absent: it reaches into the hook seat machinery, which this crate
+//! does not depend on. A veto composes with the check here the way the design says — this runs
+//! first, and a veto after it wins regardless of what it returned.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
+
+use busbar_contract::{ClaimKey, OpClassId};
 
 /// The built-in authorization scopes — a strict two-rung chain: `ReadOnly` at the bottom, `Full` at
 /// the top. Authorization is checked on the PRINCIPAL per endpoint and is NEVER derived from the
@@ -198,7 +206,7 @@ const READ_ONLY_POST_PATHS: &[&str] = &["/config/validate", "/plugins/inspect"];
 /// Ported verbatim from 1.5.5's `busbar_core::admin::v1::contract::required_scope` (behaviourally
 /// identical; the only change is that `method` is a plain string here instead of `axum::http::Method`,
 /// so this crate carries no HTTP-framework dependency at all).
-pub fn required_scope(method: &str, path: &str) -> Scope {
+pub fn admin_required_scope(method: &str, path: &str) -> Scope {
     if method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD") {
         return Scope::ReadOnly;
     }
@@ -224,7 +232,7 @@ pub struct AdminOperation {
 /// derived mechanically from 1.5.5's `openapi.json` at the `v1.5.5` tag
 /// (`crates/busbar/src/admin/v1/json/openapi.json`'s `x-busbar-required-scope` annotations) —
 /// pinned by git object hash. `POST /config/validate` and `POST /plugins/inspect` are read-only.
-/// This is the "1.5.5 scope table as data" [`required_scope`] is proven against, row for row, in
+/// This is the "1.5.5 scope table as data" [`admin_required_scope`] is proven against, row for row, in
 /// the table test.
 ///
 /// `// contract:` the richer `(claim, op_class) -> Scope` lookup a 1.6.0-native plane's `Policy`
@@ -273,16 +281,16 @@ pub static ADMIN_SCOPE_TABLE: &[AdminOperation] = &[
     op("GET", "/api/v1/admin/models", Scope::ReadOnly),
     op("GET", "/api/v1/admin/openapi.json", Scope::ReadOnly),
     op("GET", "/api/v1/admin/plugins", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/plugins/{file}/schema", Scope::ReadOnly),
+    op(
+        "GET",
+        "/api/v1/admin/plugins/{file}/schema",
+        Scope::ReadOnly,
+    ),
     op("GET", "/api/v1/admin/pools", Scope::ReadOnly),
     op("GET", "/api/v1/admin/pools/{name}", Scope::ReadOnly),
     op("GET", "/api/v1/admin/providers", Scope::ReadOnly),
     op("GET", "/api/v1/admin/usage", Scope::ReadOnly),
-    op(
-        "PATCH",
-        "/api/v1/admin/export/{name}/settings",
-        Scope::Full,
-    ),
+    op("PATCH", "/api/v1/admin/export/{name}/settings", Scope::Full),
     op("PATCH", "/api/v1/admin/groups/{name}", Scope::Full),
     op("PATCH", "/api/v1/admin/hooks/{name}/settings", Scope::Full),
     op(
@@ -312,7 +320,11 @@ pub static ADMIN_SCOPE_TABLE: &[AdminOperation] = &[
     op("PUT", "/api/v1/admin/export/{name}", Scope::Full),
     op("PUT", "/api/v1/admin/groups/{name}", Scope::Full),
     op("PUT", "/api/v1/admin/hooks/{name}", Scope::Full),
-    op("PUT", "/api/v1/admin/identity-providers/{name}", Scope::Full),
+    op(
+        "PUT",
+        "/api/v1/admin/identity-providers/{name}",
+        Scope::Full,
+    ),
 ];
 
 /// `const fn` builder for [`ADMIN_SCOPE_TABLE`] rows, so the table above is data, not a macro.
@@ -332,6 +344,30 @@ pub enum Refused {
         /// The scope that would have sufficed.
         needed: Scope,
     },
+}
+
+/// Where the required scope for a claim's operation class is read from.
+///
+/// A trait rather than a table, because the entries live in the sealed `Policy` the composition
+/// root holds and this crate owns no policy store. The admin matrix above is one already-closed
+/// instance of the same lookup, written out as data because it is byte-pinned parity surface.
+pub trait PolicyView {
+    /// The scope this claim's operation class requires, where the policy says anything about it.
+    fn required_scope(&self, claim: ClaimKey, op: OpClassId) -> Option<Scope>;
+}
+
+/// The APPROVE step's lookup: the scope a claim's operation class requires.
+///
+/// A kernel-granted operation needs no policy entry at all and answers before the policy is asked —
+/// that is what lets a transport hand shake before it has authenticated anyone, and what keeps the
+/// data listener's operational routes answering when nothing else can.
+///
+/// Everything else is a policy question, and a pair the policy says nothing about has NO required
+/// scope. That is a refusal rather than a pass: an operation nobody wrote a policy entry for has
+/// not been authorized, and a plane that could be scoped by silence could be scoped by omission.
+#[must_use]
+pub fn required_scope(claim: ClaimKey, op: OpClassId, policy: &dyn PolicyView) -> Option<Scope> {
+    policy.required_scope(claim, op)
 }
 
 /// The APPROVE step: does `held` satisfy `needed`? Kernel-granted operations

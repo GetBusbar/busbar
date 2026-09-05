@@ -14,14 +14,14 @@ fn required_scope_matrix() {
         "/api/v1/admin/config",
         "/api/v1/admin/audit",
     ] {
-        assert_eq!(required_scope("GET", path), Scope::ReadOnly, "{path}");
+        assert_eq!(admin_required_scope("GET", path), Scope::ReadOnly, "{path}");
     }
     assert_eq!(
-        required_scope("POST", "/api/v1/admin/config/validate"),
+        admin_required_scope("POST", "/api/v1/admin/config/validate"),
         Scope::ReadOnly
     );
     assert_eq!(
-        required_scope("POST", "/api/v1/admin/plugins/inspect"),
+        admin_required_scope("POST", "/api/v1/admin/plugins/inspect"),
         Scope::ReadOnly
     );
     for (method, path) in [
@@ -34,10 +34,14 @@ fn required_scope_matrix() {
         ("POST", "/api/v1/admin/config/apply"),
         ("POST", "/api/v1/admin/groups"),
     ] {
-        assert_eq!(required_scope(method, path), Scope::Full, "{method} {path}");
+        assert_eq!(
+            admin_required_scope(method, path),
+            Scope::Full,
+            "{method} {path}"
+        );
     }
     assert_eq!(
-        required_scope("OPTIONS", "/api/v1/admin/hooks"),
+        admin_required_scope("OPTIONS", "/api/v1/admin/hooks"),
         Scope::Full,
         "unknown methods fail closed"
     );
@@ -94,7 +98,9 @@ fn approve_checks_held_grants_against_needed_scope() {
     assert!(approve(Grants::of(Scope::ReadOnly), Scope::ReadOnly).is_ok());
     assert_eq!(
         approve(Grants::of(Scope::ReadOnly), Scope::Full),
-        Err(Refused::InsufficientScope { needed: Scope::Full })
+        Err(Refused::InsufficientScope {
+            needed: Scope::Full
+        })
     );
     // No grants at all refuses everything, including a read.
     assert_eq!(
@@ -146,7 +152,7 @@ fn required_scope_matches_every_pinned_admin_operation() {
 
     for entry in ADMIN_SCOPE_TABLE {
         assert_eq!(
-            required_scope(entry.method, entry.path),
+            admin_required_scope(entry.method, entry.path),
             entry.scope,
             "{} {}",
             entry.method,
@@ -173,4 +179,46 @@ fn admin_scope_table_rows_are_well_formed() {
             entry.path
         );
     }
+}
+
+/// The design's own lookup key is the pair `(claim, operation class)`, and it can now be spelled.
+///
+/// Until the contract crate carried a claim's name, a 1.6.0-native plane had no way to be scoped at
+/// all: its operations could be declared, but nothing could say which of its claims a policy entry
+/// was about. What this pins is the two answers that are not "look it up": a pair the policy says
+/// nothing about has no required scope, which is a refusal rather than a pass.
+#[test]
+fn a_claims_operation_class_is_scoped_through_the_policy() {
+    use busbar_contract::{ClaimKey, OpClassId};
+
+    struct OnePolicy;
+    impl crate::PolicyView for OnePolicy {
+        fn required_scope(&self, claim: ClaimKey, op: OpClassId) -> Option<Scope> {
+            match (claim.as_str(), op.as_str()) {
+                ("chat", "completion") => Some(Scope::ReadOnly),
+                ("chat", "mint") => Some(Scope::Full),
+                _ => None,
+            }
+        }
+    }
+
+    let policy = OnePolicy;
+    assert_eq!(
+        crate::required_scope(ClaimKey::new("chat"), OpClassId::new("completion"), &policy),
+        Some(Scope::ReadOnly)
+    );
+    assert_eq!(
+        crate::required_scope(ClaimKey::new("chat"), OpClassId::new("mint"), &policy),
+        Some(Scope::Full)
+    );
+    // The same operation class under a claim the policy does not mention is not the same question.
+    assert_eq!(
+        crate::required_scope(
+            ClaimKey::new("other"),
+            OpClassId::new("completion"),
+            &policy
+        ),
+        None,
+        "an operation nobody wrote a policy entry for has not been authorized"
+    );
 }

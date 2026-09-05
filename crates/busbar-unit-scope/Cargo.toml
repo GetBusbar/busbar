@@ -26,4 +26,5 @@ name = "busbar_unit_scope"
 path = "src/lib.rs"
 
 [dependencies]
+busbar-contract = { path = "../busbar-contract" }
 busbar-caps = { path = "../busbar-caps" }

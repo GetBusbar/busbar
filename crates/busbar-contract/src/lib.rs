@@ -36,9 +36,10 @@ pub use grammar::{
     SelectorFamily, SelectorForm, SignedOver,
 };
 pub use ids::{
-    AdminVerbId, BucketChain, BucketRef, BucketScope, CapDimension, ClassDirection, ClassEstimate,
-    CorrelationRef, Estimate, LaneId, MeterClassDecl, MeterClassId, OpClassId, PrincipalId,
-    RecordSchemaId, SchemeAlt, SchemeKey, SessionId, StreamId, TransportId, UnitKey, UpstreamIdx,
+    AdminVerbId, BucketChain, BucketRef, BucketScope, CapDimension, ClaimKey, ClassDirection,
+    ClassEstimate, CorrelationRef, Estimate, LaneId, MeterClassDecl, MeterClassId, OpClassId,
+    PrincipalId, RecordSchemaId, SchemeAlt, SchemeKey, SessionId, StreamId, TransportId, UnitKey,
+    UpstreamIdx,
 };
 pub use kinds::{
     Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
