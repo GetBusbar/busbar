@@ -73,6 +73,46 @@ fn mcp_call_record_round_trips_through_the_actual_journal_reader() {
     );
 }
 
+/// A CORRUPT LENGTH PREFIX MUST FAIL CLOSED, WHICH IS WHAT THE FUNCTION'S DOC PROMISES.
+///
+/// `parse_call_suffix` reads a 64-bit length off the wire and adds it to the cursor. An oversized
+/// prefix — `u64::MAX`, or merely a length longer than the body that follows — must come back as a
+/// `StoreError`, not as a panic and not as a wrapped sum that passes the bound test and then slices
+/// backwards. The well-formed round-trip above never exercises the arm, so this is the case that
+/// makes "fails closed on a truncated/oversized field rather than reading past the buffer" a claim
+/// the suite defends.
+#[test]
+fn an_oversized_or_truncated_length_prefix_fails_closed() {
+    fn journal_body(content: Vec<u8>) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "seq": 1u64,
+            "prev_hash": "",
+            "hash": "h",
+            "content": content,
+        }))
+        .unwrap()
+    }
+    // The first field's length prefix claims the whole address space. The sum `off + len` is what
+    // overflows.
+    let mut absurd = u64::MAX.to_be_bytes().to_vec();
+    absurd.extend_from_slice(b"12345678");
+    let err = McpCallRecord::from_journal_body("key-1", &journal_body(absurd))
+        .expect_err("a u64::MAX length prefix must be refused, never added to the cursor");
+    assert_eq!(err.0, "truncated call suffix field");
+
+    // The ordinary corruption: a prefix a few bytes longer than the body actually carries.
+    let mut short = 32u64.to_be_bytes().to_vec();
+    short.extend_from_slice(b"only-eight");
+    let err = McpCallRecord::from_journal_body("key-1", &journal_body(short))
+        .expect_err("a field longer than the remaining body must be refused");
+    assert_eq!(err.0, "truncated call suffix field");
+
+    // And a body that ends mid-prefix, the other truncation arm.
+    let err = McpCallRecord::from_journal_body("key-1", &journal_body(vec![0, 0, 0]))
+        .expect_err("a body too short to hold a length prefix must be refused");
+    assert_eq!(err.0, "truncated call suffix length prefix");
+}
+
 #[test]
 fn mcp_demotion_row_round_trips_through_the_plane_record_envelope() {
     let row = McpDemotionRow {
