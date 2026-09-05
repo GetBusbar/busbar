@@ -44,7 +44,6 @@ test-support = ["busbar-substrate/test-support", "busbar-llm-codec/test-support"
 # beside the live `native_ingress` path rather than in place of it. Both paths always compile and are
 # always unit-tested — the flag only ever chooses which fn-pointer tables a composition root installs,
 # never a config key, an env var or a boot line.
-teller-waist = []
 # Passthrough to `busbar-timing`'s debug-only per-method micro-timing (DEFAULT OFF), mirroring
 # `busbar-core`'s `timing` feature: the relocated engine's `#[cfg(feature = "timing")]` profiling
 # guards (in `engine/pipeline.rs`) resolve against this, so the flag exists in lock-step with the

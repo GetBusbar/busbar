@@ -352,7 +352,7 @@ mod plane_decl_identity_tests;
 /// THE TELLER STEPS, one module per step of the loop. Declared unconditionally; the module root
 /// carries the `teller-waist` `cfg`, so with the feature off this line names an empty module and the
 /// default build is unchanged.
-pub mod unit;
+
 
 // THE CODEC AND IR SUITES MOVED WITH THE CODECS. The detection fold, the error-frame writers, the
 // tool-id decode, the leaf-op write dispatch, the translate-parity/streaming/round-trip goldens and
