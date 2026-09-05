@@ -62,12 +62,12 @@
 
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
 use serde_json::Value;
 
 use busbar_substrate::proxy::KIND_INVALID_REQUEST;
 
 use crate::engine::LazyBody;
+use crate::unit::audit::RefusalOutcome;
 
 /// THE CLOSED SET OF REASONS STEP 0 MAY REFUSE FOR.
 ///
@@ -125,15 +125,18 @@ impl ArrivalRefusal {
         }
     }
 
-    /// Render the refusal in the caller's own dialect.
+    /// NAME the refusal as an outcome value — the whole of what this step answers with.
     ///
-    /// The same shaper the live arms call, given the same three values, so the bytes are the same
-    /// bytes. What the live arms do additionally — hand the rendered response to `finish_rejected`
-    /// so it is counted and logged under the unresolved pool label — is the AUDIT step's business
-    /// and belongs in `unit/audit.rs`, not here: a step that rendered and posted would be a step
-    /// with two jobs and a second terminal door.
-    pub fn render(self, proto: &str) -> Response {
-        busbar_substrate::proxy::ingress_error(proto, self.status(), self.kind(), self.message())
+    /// It is deliberately not bytes. The three values below are the live arm's own three, and they
+    /// are handed to the audit step, which owns the one shaper that turns them into a dialect's
+    /// envelope and the one door that posts the result. A step that rendered here would be a step
+    /// with two jobs and a second way out of the plane; the construction gate reads this file's
+    /// signatures for exactly that.
+    ///
+    /// None of the three carries a header of its own: an arrival refusal is a plain 400 in whatever
+    /// envelope the caller's dialect wears.
+    pub fn outcome(self) -> RefusalOutcome {
+        RefusalOutcome::new(self.status(), self.kind(), self.message())
     }
 }
 
@@ -286,6 +289,8 @@ pub fn arrival_path_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unit::audit::render_refusal;
+    use axum::response::Response;
     use http_body_util::BodyExt;
 
     /// The recorded request fixtures, read from where they are recorded rather than copied here. A
@@ -563,7 +568,7 @@ mod tests {
                 "We could not parse the JSON body of your request.",
             );
             assert_eq!(
-                seen(refusal.render(proto)).await,
+                seen(render_refusal(proto, &refusal.outcome())).await,
                 seen(live).await,
                 "{proto}: the step's parse refusal is not the live path's"
             );
@@ -592,7 +597,7 @@ mod tests {
                     "Request body must be a JSON object.",
                 );
                 assert_eq!(
-                    seen(refusal.render(proto)).await,
+                    seen(render_refusal(proto, &refusal.outcome())).await,
                     seen(live).await,
                     "{proto}: the step's non-object refusal is not the live path's"
                 );
@@ -614,10 +619,71 @@ mod tests {
                 "The request body could not be processed.",
             );
             assert_eq!(
-                seen(ArrivalRefusal::Reserialize.render(proto)).await,
+                seen(render_refusal(
+                    proto,
+                    &ArrivalRefusal::Reserialize.outcome()
+                ))
+                .await,
                 seen(live).await,
                 "{proto}: the step's reserialize refusal is not the live path's"
             );
+        }
+    }
+
+    /// IDENTITY, THE WHOLE SET, THROUGH THE TERMINAL. Every refusal this step can produce, in every
+    /// registered dialect, rendered the way the loop will actually render it — the named outcome
+    /// handed to the audit step — is byte-for-byte the response the legacy arm built directly.
+    ///
+    /// The three tests above each pin ONE refusal; this one pins that the set has no member that
+    /// escaped them, and pins the path rather than the values: if a refusal ever grew a header of its
+    /// own, or the terminal ever shaped an envelope of its own, the two sides would part here.
+    #[tokio::test]
+    async fn every_arrival_refusal_renders_through_audit_to_the_legacy_bytes() {
+        registered();
+        // The refusal, and the (status, kind, message) triple the legacy arm passed to the shaper —
+        // spelled out at the call rather than read back off the refusal, so a change to either side
+        // is a red test rather than a tautology.
+        let cases = [
+            (
+                ArrivalRefusal::BodyParse,
+                StatusCode::BAD_REQUEST,
+                KIND_INVALID_REQUEST,
+                "We could not parse the JSON body of your request.",
+            ),
+            (
+                ArrivalRefusal::NotAnObject,
+                StatusCode::BAD_REQUEST,
+                KIND_INVALID_REQUEST,
+                "Request body must be a JSON object.",
+            ),
+            (
+                ArrivalRefusal::Reserialize,
+                StatusCode::BAD_REQUEST,
+                KIND_INVALID_REQUEST,
+                "The request body could not be processed.",
+            ),
+        ];
+        assert_eq!(cases.len(), 3, "the closed set grew without a case here");
+        // Every registered dialect, and one that is not registered at all: a plane with no dialect
+        // linked still has to answer, and the neutral envelope is as much the legacy path's as the
+        // dialect-shaped ones are.
+        let mut protos: Vec<&str> = busbar_substrate::proto::known_protocols().to_vec();
+        protos.push("no-such-protocol");
+        for proto in protos {
+            for (refusal, status, kind, message) in cases {
+                let legacy = busbar_substrate::proxy::ingress_error(proto, status, kind, message);
+                assert_eq!(
+                    seen(render_refusal(proto, &refusal.outcome())).await,
+                    seen(legacy).await,
+                    "{proto}: {refusal:?} rendered through the terminal is not the legacy bytes"
+                );
+                // And the value itself carries no header of its own, which is why the two sides can
+                // be equal at all.
+                assert!(
+                    refusal.outcome().headers().is_empty(),
+                    "{refusal:?} grew a header with nothing pinning it"
+                );
+            }
         }
     }
 
@@ -644,8 +710,11 @@ mod tests {
     /// honest neutral envelope, not a panic and not an empty body.
     #[tokio::test]
     async fn a_refusal_renders_even_with_no_dialect_registered() {
-        let (status, _headers, body) =
-            seen(ArrivalRefusal::BodyParse.render("no-such-protocol")).await;
+        let (status, _headers, body) = seen(render_refusal(
+            "no-such-protocol",
+            &ArrivalRefusal::BodyParse.outcome(),
+        ))
+        .await;
         assert_eq!(status, 400);
         assert!(
             !body.is_empty(),

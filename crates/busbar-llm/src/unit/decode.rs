@@ -54,12 +54,12 @@
 
 use axum::body::Bytes;
 use axum::http::StatusCode;
-use axum::response::Response;
 use busbar_api::operation::Operation;
 use busbar_substrate::handlers::OperationHandler;
 use busbar_substrate::proxy::{KIND_INVALID_REQUEST, KIND_NOT_FOUND};
 
 use crate::engine::LazyBody;
+use crate::unit::audit::RefusalOutcome;
 
 /// THE CLOSED SET OF REASONS STEP 1 MAY REFUSE FOR.
 ///
@@ -108,11 +108,13 @@ impl DecodeRefusal {
         }
     }
 
-    /// Render the refusal in the caller's own dialect, through the shaper the live arms call.
+    /// NAME the refusal as an outcome value. Shaping it into a dialect's envelope, and counting and
+    /// logging it, are both the audit step's job and neither is this one's — which is why what
+    /// leaves this file is three values rather than a response.
     ///
-    /// Counting and logging the refusal is the audit step's job, not this one's.
-    pub fn render(self, proto: &str) -> Response {
-        busbar_substrate::proxy::ingress_error(proto, self.status(), self.kind(), self.message())
+    /// Neither 404 nor the missing-model 400 carries a header of its own.
+    pub fn outcome(self) -> RefusalOutcome {
+        RefusalOutcome::new(self.status(), self.kind(), self.message())
     }
 }
 
@@ -242,7 +244,9 @@ pub fn decode_path_model<'a>(
 mod tests {
     use super::*;
     use crate::unit::arrival::{arrival_body, ArrivalRefusal};
+    use crate::unit::audit::render_refusal;
     use axum::http::{HeaderMap, HeaderValue};
+    use axum::response::Response;
     use http_body_util::BodyExt;
 
     /// The recorded request fixtures, read from where they are recorded.
@@ -558,19 +562,35 @@ mod tests {
                 "This endpoint does not support that operation.",
             );
             assert_eq!(
-                seen(DecodeRefusal::UnknownProtocol.render(proto)).await,
+                seen(render_refusal(
+                    proto,
+                    &DecodeRefusal::UnknownProtocol.outcome()
+                ))
+                .await,
                 seen(protocol_miss).await,
                 "{proto}: the step's protocol miss is not the live path's"
             );
             assert_eq!(
-                seen(DecodeRefusal::UnsupportedOperation.render(proto)).await,
+                seen(render_refusal(
+                    proto,
+                    &DecodeRefusal::UnsupportedOperation.outcome()
+                ))
+                .await,
                 seen(endpoint_miss).await,
                 "{proto}: the step's endpoint miss is not the live path's"
             );
             // And they are not the same bytes as each other.
             assert_ne!(
-                seen(DecodeRefusal::UnknownProtocol.render(proto)).await,
-                seen(DecodeRefusal::UnsupportedOperation.render(proto)).await,
+                seen(render_refusal(
+                    proto,
+                    &DecodeRefusal::UnknownProtocol.outcome()
+                ))
+                .await,
+                seen(render_refusal(
+                    proto,
+                    &DecodeRefusal::UnsupportedOperation.outcome()
+                ))
+                .await,
                 "{proto}: the two 404s collapsed into one"
             );
         }
@@ -589,7 +609,11 @@ mod tests {
                 "Missing required parameter: 'model'.",
             );
             assert_eq!(
-                seen(DecodeRefusal::MissingModel.render(proto)).await,
+                seen(render_refusal(
+                    proto,
+                    &DecodeRefusal::MissingModel.outcome()
+                ))
+                .await,
                 seen(live).await,
                 "{proto}: the step's missing-model refusal is not the live path's"
             );
@@ -651,6 +675,57 @@ mod tests {
     }
 
     // ── THE SET IS CLOSED ──────────────────────────────────────────────────────────────────────
+
+    /// IDENTITY, THE WHOLE SET, THROUGH THE TERMINAL. Every refusal this step can produce, in every
+    /// registered dialect and in none, rendered the way the loop will render it — the named outcome
+    /// handed to the audit step — is byte-for-byte what the legacy arm built directly.
+    ///
+    /// The per-refusal tests above pin one refusal each; this pins that the set has no member they
+    /// missed, and pins the PATH: the step names an outcome, the terminal turns it into bytes, and
+    /// the bytes are the released ones.
+    #[tokio::test]
+    async fn every_decode_refusal_renders_through_audit_to_the_legacy_bytes() {
+        registered();
+        // The triple each legacy arm passed to the shaper, spelled at the call rather than read back
+        // off the refusal, so a change to either side is red rather than invisible.
+        let cases = [
+            (
+                DecodeRefusal::UnknownProtocol,
+                StatusCode::NOT_FOUND,
+                KIND_NOT_FOUND,
+                "This protocol does not support that operation.",
+            ),
+            (
+                DecodeRefusal::UnsupportedOperation,
+                StatusCode::NOT_FOUND,
+                KIND_NOT_FOUND,
+                "This endpoint does not support that operation.",
+            ),
+            (
+                DecodeRefusal::MissingModel,
+                StatusCode::BAD_REQUEST,
+                KIND_INVALID_REQUEST,
+                "Missing required parameter: 'model'.",
+            ),
+        ];
+        assert_eq!(cases.len(), 3, "the closed set grew without a case here");
+        let mut protos: Vec<&str> = busbar_substrate::proto::known_protocols().to_vec();
+        protos.push("no-such-protocol");
+        for proto in protos {
+            for (refusal, status, kind, message) in cases {
+                let legacy = busbar_substrate::proxy::ingress_error(proto, status, kind, message);
+                assert_eq!(
+                    seen(render_refusal(proto, &refusal.outcome())).await,
+                    seen(legacy).await,
+                    "{proto}: {refusal:?} rendered through the terminal is not the legacy bytes"
+                );
+                assert!(
+                    refusal.outcome().headers().is_empty(),
+                    "{refusal:?} grew a header with nothing pinning it"
+                );
+            }
+        }
+    }
 
     /// Three reasons, three sentences, two statuses. A fourth reason added without a sentence of its
     /// own would collide here.

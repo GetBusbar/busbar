@@ -33,20 +33,120 @@
 //! counted against the plane. That is not tidiness: a second call site is a second way for a unit to
 //! be posted, and "posted exactly once" is a property of the call graph, not of the intent of
 //! whoever wrote the second site.
+//!
+//! ## Why the RENDERING lives here too
+//!
+//! A refusal taken at any earlier step is not bytes yet: it is a named outcome — a status, a
+//! dialect-neutral code word, the sentence the client reads, and whatever headers the refusal itself
+//! carries. [`RefusalOutcome`] is that value, and [`render_refusal`] is the one function in this
+//! directory that turns one into a response. An earlier step that could build a response could hand
+//! it straight back to the loop and skip the terminal, which is the same hole the two doors close
+//! from the other side: the gate forbids a `Response` return anywhere under the step directory but
+//! this file, so "every outcome is rendered at the terminal" is a property the compiler and the gate
+//! hold jointly rather than a convention.
 
 // BUILT DARK, as the Route step beside it is: the doors below have no production caller until the
 // unit's own shell is assembled, and the identity harness at the bottom is what drives them until
 // then. The allow is scoped to this file so it retires with the step it covers.
 #![allow(dead_code)]
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
 
 use busbar_substrate::plane_host::EngineHost;
 
 use crate::engine::POOL_LABEL_UNRESOLVED;
+
+/// A REFUSAL AS A VALUE — what an earlier step answers with instead of bytes.
+///
+/// The three parts are the three a client can observe of a turn-away, and they are deliberately
+/// dialect-NEUTRAL: the `status` it wears, the `kind` code word (one of the substrate's shared
+/// tokens, not a dialect's spelling of it) and the `message` sentence. Which envelope those are
+/// poured into — which member names, which nesting, which synthesized header — is the caller's
+/// dialect's business and is decided at the terminal, from the protocol name, by
+/// [`render_refusal`]. A step that chose the envelope would be a step that had to know the dialects,
+/// and "delete a dialect and the plane is free of it" would stop being true of the step files.
+///
+/// `headers` is for the refusals that carry one of their OWN — a `Retry-After` on a rate-limit
+/// turn-away is the live example. They are stamped onto the rendered response after the envelope, so
+/// a refusal that carries none is byte-for-byte what the bare shaper produces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusalOutcome {
+    status: StatusCode,
+    kind: &'static str,
+    message: Cow<'static, str>,
+    headers: Vec<(HeaderName, HeaderValue)>,
+}
+
+impl RefusalOutcome {
+    /// Name a refusal: the status, the code word, the sentence. No headers of its own.
+    pub fn new(
+        status: StatusCode,
+        kind: &'static str,
+        message: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        Self {
+            status,
+            kind,
+            message: message.into(),
+            headers: Vec::new(),
+        }
+    }
+
+    /// Add a header this refusal carries in its own right.
+    #[must_use]
+    pub fn with_header(mut self, name: HeaderName, value: HeaderValue) -> Self {
+        self.headers.push((name, value));
+        self
+    }
+
+    /// The status this refusal wears on the wire.
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    /// The dialect-neutral code word this refusal wears on the wire.
+    pub fn kind(&self) -> &'static str {
+        self.kind
+    }
+
+    /// The sentence the client reads.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// The headers the refusal carries in its own right, in the order they were named.
+    pub fn headers(&self) -> &[(HeaderName, HeaderValue)] {
+        &self.headers
+    }
+}
+
+/// THE ONE PLACE A NAMED REFUSAL BECOMES BYTES.
+///
+/// The shaper is the same `ingress_error` the live arms call, given the same three values, so the
+/// bytes are the live path's bytes rather than an equivalent set of them. The refusal's own headers
+/// are stamped afterwards, which is the order the live arms stamp them in: the envelope first, the
+/// refusal's additions over it.
+///
+/// This does NOT post the unit. Rendering and sealing are two jobs and they are two functions: a
+/// refusal is rendered here and then handed to [`audit_refused`], which is what makes the record and
+/// the response come from one place without making them one call.
+pub(crate) fn render_refusal(proto: &str, refusal: &RefusalOutcome) -> Response {
+    let mut resp = busbar_substrate::proxy::ingress_error(
+        proto,
+        refusal.status(),
+        refusal.kind(),
+        refusal.message(),
+    );
+    for (name, value) in refusal.headers() {
+        resp.headers_mut().insert(name.clone(), value.clone());
+    }
+    resp
+}
 
 /// Seal the end of a unit that PASSED the door.
 ///
