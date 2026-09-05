@@ -1710,7 +1710,7 @@
         },
         "upstream_credentials": {
           "optional": true,
-          "type": "crate::auth::UpstreamCreds"
+          "type": "busbar_api::UpstreamCreds"
         },
         "weights": {
           "optional": true,

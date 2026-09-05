@@ -109,13 +109,20 @@ A2A = plane_dir("a2a")
 
 SOURCES = [
     f"{CORE}/config",
-    # `PolicyOnError` / `ProviderAuth` — the on_error/on_empty terminal and the per-provider
-    # auth-style selector — are LLM-runtime config VALUE enums that moved DOWN to
-    # `busbar-substrate` in 1.6.0's ABI-purity pass (`config/mod.rs` now re-exports each at its
-    # historical path). Track them at their new home so their `snake_case` / `#[serde(rename)]`
-    # variant grammar stays fingerprinted rather than degrading to nothing the moment it left the
-    # core config module — exactly as `UpstreamCreds`/`SecretRef` are tracked at theirs.
-    "crates/busbar-substrate/src/config.rs",
+    # `PolicyOnError` / `ProviderAuth` (the on_error/on_empty terminal and the per-provider
+    # auth-style selector) and, as of the 1.6.0 config-seam migration (Phase 1.2), the bulk of the
+    # config GRAMMAR's PURE SHAPES — `providers:`/`models:`, `pools:`, `hooks:`, `limits:`/
+    # `health:`/`routing:`, `auth:`/`identity-providers:`, `groups:`, and the remaining small
+    # top-level sections (`tls:`, `security:`, `store:`, `secrets:`, `advanced:`, `config:`,
+    # `rate_card:`, the `export:` definition entry) — moved DOWN to `busbar-substrate` (plain serde
+    # structs/enums with pure accessors; the loaders/validators/`App`-touching resolvers that
+    # consume them stayed in `busbar-core`, which re-exports every moved item at its historical
+    # `config::` path). Tracked as a DIRECTORY, like `{CORE}/config` above, so a future file split
+    # under it is automatically covered rather than needing a SOURCES edit. Track them at their new
+    # home so their `snake_case` / `#[serde(rename)]` / `deny_unknown_fields` grammar stays
+    # fingerprinted rather than degrading to an opaque string the moment it left the core config
+    # module — exactly as `UpstreamCreds`/`SecretRef` are tracked at theirs.
+    "crates/busbar-substrate/src/config",
     "crates/secret-ref/src/lib.rs",
     # `UpstreamCreds` — the `upstream_credentials:` key's value grammar — moved to `busbar-api` (the
     # neutral contracts crate the plane crates name) in 1.6.0's plane extraction, exactly as

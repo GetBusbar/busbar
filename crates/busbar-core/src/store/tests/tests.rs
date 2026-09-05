@@ -1399,7 +1399,7 @@ fn test_config_breaker_conversion() {
             consecutive_n: 4,
         }),
     };
-    let rcfg = ccfg.to_runtime();
+    let rcfg = crate::store::breaker_cfg_to_runtime(&ccfg);
     assert_eq!(rcfg.base_cooldown_secs, 7);
     assert_eq!(rcfg.max_cooldown_secs, 99);
     assert!(rcfg.honor_retry_after, "always honored (no config knob)");
@@ -1413,7 +1413,7 @@ fn test_config_breaker_conversion() {
         max_cooldown_secs: 120,
         trip: None,
     };
-    let rbare = bare.to_runtime();
+    let rbare = crate::store::breaker_cfg_to_runtime(&bare);
     assert!(matches!(rbare.trip.mode, TripMode::ErrorRate));
     assert_eq!(rbare.trip.min_requests, 5);
 }
