@@ -107,12 +107,15 @@ run_selftest() {
   local scratch="$ROOT/target/construction/selftest"
   local pristine="$scratch/pristine" tree="$scratch/tree"
   rm -rf "$scratch"; mkdir -p "$pristine" "$tree"
-  # The scratch copy carries everything the gate reads: every crate's src, the scripts, the ceilings
-  # and the ledger machinery. No target/, so the copy is small and never recurses into itself.
-  local src_dirs
+  # The scratch copy carries everything the gate reads: every crate's src, every crate's Cargo.toml
+  # (manifest-allowlist reads `[dependencies]` straight from disk, not from the Tree scan), the
+  # scripts, the ceilings and the ledger machinery. No target/, so the copy is small and never
+  # recurses into itself.
+  local src_dirs manifests
   src_dirs="$(cd "$ROOT" && ls -d crates/*/src)"
+  manifests="$(cd "$ROOT" && ls crates/*/Cargo.toml)"
   # shellcheck disable=SC2086
-  (cd "$ROOT" && tar -cf - $src_dirs scripts qa testing/fleet-fixtures) | tar -C "$pristine" -xf -
+  (cd "$ROOT" && tar -cf - $src_dirs $manifests scripts qa testing/fleet-fixtures) | tar -C "$pristine" -xf -
   (cd "$pristine" && tar -cf - .) | tar -C "$tree" -xf -
   local gate="$tree/scripts/construction-gate.sh" fail=0
 
@@ -150,7 +153,11 @@ run_selftest() {
   for rule in one-attempt-seam request-path-fn-size ports-only:busbar-voice ports-only-tests:busbar-voice \
               no-uninstalled-seam neutral-no-dialect single-terminal \
               token-sealed teller-step-order one-teller-loop one-teller-loop:run_gauntlet \
-              no-response-escapes-audit terminal-doors-in-audit-step one-pick-site; do
+              no-response-escapes-audit terminal-doors-in-audit-step one-pick-site \
+              loc-ceilings:kernel:arena manifest-allowlist:hook-test-plugin \
+              source-denylist:busbar-plane-llm lean-core no-default-bodies sealed-unit-traits \
+              hold-discipline:no-early-exit forbid-unsafe:busbar-plane-llm \
+              token-sealed:kernel-seal token-sealed:admit-token-mint; do
     python3 "$HELPERS/plant.py" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
     # exit 3 = the rule's subject is absent from this tree (nothing to plant): noted, not failed
     [ "$rc" -ne 3 ] || { note "SKIP $rule: nothing to plant (subject absent from this tree)"; continue; }

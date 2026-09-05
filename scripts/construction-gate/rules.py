@@ -637,9 +637,28 @@ def rule_token_sealed(tree, cfg):
               f"(ceiling {c['max_sites']}): " + ("; ".join(offenders) if offenders else "none"))
     if not any(rel.startswith(root) for rel in tree.files):
         detail = VACUOUS + f"{c['allowed_root']} does not exist yet; nothing to seal"
-    return [row("token-sealed", current <= c["max_sites"],
+    rows = [row("token-sealed", current <= c["max_sites"],
                 "the Teller's tokens are minted only inside the Teller",
                 detail, current, c["max_sites"], c["why"], offenders)]
+
+    kroot = c["kernel_root"].rstrip("/") + os.sep
+    for sub_id, pat_key, ceil_key, subject in (
+        ("token-sealed:kernel-seal", "kernel_seal_pattern", "max_kernel_seal_sites",
+         "`KernelSeal::acquire_for_kernel(`"),
+        ("token-sealed:admit-token-mint", "admit_token_mint_pattern", "max_admit_token_mint_sites",
+         "`AdmitToken::mint(`"),
+    ):
+        # production_only (tree.grep's default) already excludes test files and #[cfg(test)]
+        # modules, so a unit crate's own test module calling KernelSeal::acquire_for_kernel never
+        # counts here -- only a call from PRODUCTION source outside busbar-kernel/src does.
+        sites = [f"{rel}:{l.no}" for rel, l in tree.grep(c[pat_key]) if not rel.startswith(kroot)]
+        ceiling = c[ceil_key]
+        detail = (f"{len(sites)} production call site(s) of {subject} outside {c['kernel_root']} "
+                  f"(ceiling {ceiling}): " + ("; ".join(sites) if sites else "none"))
+        rows.append(row(sub_id, len(sites) <= ceiling,
+                        f"{subject} is spelled only inside {c['kernel_root']}",
+                        detail, len(sites), ceiling, c["why"], sites))
+    return rows
 
 
 def _expanded_calls(tree, rel, entry, steps, depth=4):
@@ -798,6 +817,61 @@ def rule_terminal_doors_in_audit_step(tree, cfg):
                 detail, current, c["max_extra_sites"], c["why"], offenders)]
 
 
+# ── Shared plugin-kind helpers (loc-ceilings, manifest-allowlist, source-denylist, forbid-unsafe) ───
+
+
+def _dirs_for_globs(root, patterns):
+    """Existing crate directories matching a list of globs, sorted, de-duplicated. A glob matching
+    nothing is silently empty (the kind has no crate yet), never an error."""
+    out = []
+    for pat in patterns:
+        for d in sorted(glob.glob(os.path.join(root, pat))):
+            if os.path.isdir(d) and d not in out:
+                out.append(d)
+    return out
+
+
+def _kind_crate_dirs(root, cfg, kind):
+    pats = cfg["gate"]["plugin_kinds"].get(kind, [])
+    return _dirs_for_globs(root, pats)
+
+
+def _crate_name(d):
+    return os.path.basename(d.rstrip("/"))
+
+
+def _crate_files(tree, crate):
+    pre = os.path.join("crates", crate) + os.sep
+    return [rel for rel in tree.files if rel.startswith(pre)]
+
+
+def _read_cargo_deps(cargo_toml_path):
+    """A deliberately small parser: the exact-name dependency keys under `[dependencies]` only
+    (never `[dev-dependencies]` or a target-cfg table). Handles both `name = { ... }` and
+    `[dependencies.name]` forms. Returns [] when the file is missing."""
+    deps = []
+    try:
+        with open(cargo_toml_path, encoding="utf-8") as fh:
+            raw = fh.read().split("\n")
+    except OSError:
+        return deps
+    section = None
+    for line in raw:
+        s = line.strip()
+        if s.startswith("["):
+            if s.startswith("[dependencies.") and s.endswith("]"):
+                section = "dependencies"
+                deps.append(s[len("[dependencies."):-1].strip())
+                continue
+            section = s.strip("[]")
+            continue
+        if section == "dependencies" and s and not s.startswith("#"):
+            m = re.match(r"^([A-Za-z0-9_-]+)\s*=", s)
+            if m:
+                deps.append(m.group(1))
+    return deps
+
+
 def rule_one_pick_site(tree, cfg):
     c = cfg["rules"]["one-pick-site"]
     sites = [f"{rel}:{l.no}" for rel, l in _call_sites(tree, c["verb"])]
@@ -807,6 +881,469 @@ def rule_one_pick_site(tree, cfg):
     return [row("one-pick-site", current <= c["max_sites"],
                 "the lane pick is called from at most the loop and the fallback re-entry",
                 detail, current, c["max_sites"], c["why"], sites)]
+
+
+# ── 14. loc-ceilings ─────────────────────────────────────────────────────────────────────────────
+
+
+def rule_loc_ceilings(tree, cfg):
+    c = cfg["rules"]["loc-ceilings"]
+    rows = []
+
+    def loc(rel):
+        # SURFACE lines only, per the owner's counting decision: non-blank, non-comment lines
+        # under src/, excluding #[cfg(test)] module bodies and src/tests/** (both already folded
+        # into `intest` by the Tree scan). Proof tables, fixtures and data tables that live in
+        # test-classified paths are proofs, not surface, and do not spend the ceiling.
+        return sum(1 for l in tree.files[rel] if not l.intest and l.code.strip())
+
+    def crate_total(crate):
+        return sum(loc(rel) for rel in _crate_files(tree, crate))
+
+    unit_dirs = _dirs_for_globs(tree.root, [os.path.join("crates", c["unit_crate_glob"])])
+    unit_crates = [_crate_name(d) for d in unit_dirs]
+
+    kernel_files_all = _crate_files(tree, c["kernel_crate"])
+    teller_files = [rel for rel in kernel_files_all if os.path.basename(rel) in c["teller_files"]]
+    local_kernel_fns = {f.name for rel in kernel_files_all for f in tree.fns.get(rel, [])}
+    call_rx = re.compile(r"(?<![A-Za-z0-9_.:])([a-z_][A-Za-z0-9_]*)\s*\(")
+    called_names = set()
+    for rel in teller_files:
+        for l in tree.files[rel]:
+            if l.intest:
+                continue
+            for m in call_rx.finditer(l.code):
+                nm = m.group(1)
+                if nm not in local_kernel_fns and len(nm) >= 4:
+                    called_names.add(nm)
+    extra_files, extra_hits = set(), set()
+    for cr in unit_crates:
+        for rel in _crate_files(tree, cr):
+            for f in tree.fns.get(rel, []):
+                if not f.intest and f.name in called_names:
+                    extra_files.add(rel)
+                    extra_hits.add(f.name)
+    extra_loc = sum(loc(rel) for rel in extra_files)
+    kernel_own = crate_total(c["kernel_crate"])
+    kernel_total = kernel_own + extra_loc
+    rows.append(row(
+        "loc-ceilings:kernel", kernel_total <= c["kernel_ceiling"],
+        "busbar-kernel (own files + call-graph-reachable busbar-unit-* files) stays within its LOC ceiling",
+        f"{kernel_own} own + {extra_loc} reachable-by-name in {len(extra_files)} busbar-unit-* file(s) "
+        f"= {kernel_total} (ceiling {c['kernel_ceiling']}); reachability is a NAME-MATCH approximation "
+        "(see rule why), never a true call graph",
+        kernel_total, c["kernel_ceiling"], c["why"],
+        [f"{rel} ({loc(rel)} lines) shares a name with a call from {c['teller_files']}: "
+         f"{', '.join(sorted(n for n in extra_hits if n in {ff.name for ff in tree.fns.get(rel, [])}))}"
+         for rel in sorted(extra_files)][:10]))
+
+    for key, spec in c["kernel_files"].items():
+        matched = [rel for rel in kernel_files_all if os.path.basename(rel) in spec["patterns"]]
+        cur = sum(loc(rel) for rel in matched)
+        note = "" if matched else " -- no matching file under busbar-kernel/src yet (vacuous 0)"
+        rows.append(row(
+            f"loc-ceilings:kernel:{key}", cur <= spec["ceiling"],
+            f"busbar-kernel's {spec['label']} stays within its LOC ceiling",
+            f"{spec['label']} ({', '.join(spec['patterns'])}): {cur} line(s) (ceiling {spec['ceiling']})"
+            + note,
+            cur, spec["ceiling"], c["why"], matched))
+
+    caps_contract = crate_total(c["caps_crate"]) + crate_total(c["contract_crate"])
+    rows.append(row(
+        "loc-ceilings:caps-contract", caps_contract <= c["caps_contract_ceiling"],
+        f"{c['caps_crate']} + {c['contract_crate']} together stay within their LOC ceiling",
+        f"{c['caps_crate']} {crate_total(c['caps_crate'])} + {c['contract_crate']} "
+        f"{crate_total(c['contract_crate'])} = {caps_contract} (ceiling {c['caps_contract_ceiling']})",
+        caps_contract, c["caps_contract_ceiling"], c["why"], []))
+
+    per_unit = sorted(((crate_total(cr), cr) for cr in unit_crates), reverse=True)
+    unit_total = sum(n for n, _ in per_unit)
+    rows.append(row(
+        "loc-ceilings:unit-total", unit_total <= c["unit_total_ceiling"],
+        "all busbar-unit-* crates together stay within their LOC ceiling",
+        f"{len(unit_crates)} busbar-unit-* crate(s), {unit_total} line(s) total "
+        f"(ceiling {c['unit_total_ceiling']})",
+        unit_total, c["unit_total_ceiling"], c["why"],
+        [f"{cr}: {n}" for n, cr in per_unit[:8]]))
+
+    verbs_total = crate_total(c["verbs_crate"]) if c["verbs_crate"] in unit_crates else 0
+    note = "" if c["verbs_crate"] in unit_crates else f" -- {c['verbs_crate']} does not exist yet (vacuous 0)"
+    rows.append(row(
+        f"loc-ceilings:unit-verbs", verbs_total <= c["verbs_ceiling"],
+        f"{c['verbs_crate']} stays within its LOC ceiling",
+        f"{c['verbs_crate']}: {verbs_total} line(s) (ceiling {c['verbs_ceiling']}){note}",
+        verbs_total, c["verbs_ceiling"], c["why"], []))
+
+    union_total = kernel_total + caps_contract + unit_total
+    rows.append(row(
+        "loc-ceilings:union", union_total <= c["union_ceiling"],
+        "the kernel + caps/contract + unit-* union stays within its LOC ceiling",
+        f"kernel {kernel_total} + caps/contract {caps_contract} + unit-* {unit_total} = {union_total} "
+        f"(ceiling {c['union_ceiling']}); a call-graph-reachable unit file counts once here AND once in "
+        "its own crate's unit-total, so this sum over-counts rather than hides an overage",
+        union_total, c["union_ceiling"], c["why"], []))
+    return rows
+
+
+# ── 15. manifest-allowlist ───────────────────────────────────────────────────────────────────────
+
+
+def rule_manifest_allowlist(tree, cfg):
+    c = cfg["rules"]["manifest-allowlist"]
+    kinds = ["plane", "store", "pure_auth", "hook", "export", "secret", "egress_auth"]
+    unit_dirs = _dirs_for_globs(tree.root, [os.path.join("crates", cfg["rules"]["loc-ceilings"]["unit_crate_glob"])]) \
+        if "loc-ceilings" in cfg["rules"] else []
+    unit_names = {_crate_name(d) for d in unit_dirs}
+    plane_names = set(cfg["gate"]["plane_crates"]) | {_crate_name(d) for d in _kind_crate_dirs(tree.root, cfg, "plane")}
+    transport_names = {_crate_name(d) for d in _kind_crate_dirs(tree.root, cfg, "transport")}
+    global_ok = set(c["reviewed_allowlist"]) | {"busbar-contract"}
+    extra = c.get("reviewed_extra", {})
+    known_red = c.get("known_red_deps", {})
+
+    rows = []
+    seen_dirs = []
+    for kind in kinds:
+        seen_dirs += [(kind, d) for d in _kind_crate_dirs(tree.root, cfg, kind)]
+    for kind, d in seen_dirs:
+        crate = _crate_name(d)
+        deps = _read_cargo_deps(os.path.join(d, "Cargo.toml"))
+        ok = global_ok | set(extra.get(crate, []))
+        tracked = set(known_red.get(crate, []))
+        red, tracked_red, unreviewed = [], [], []
+        for dep in deps:
+            is_red = (dep == "busbar-kernel" or dep == "busbar-caps" or dep in unit_names
+                      or (dep in plane_names and dep != crate) or dep in transport_names)
+            if is_red and dep in tracked:
+                tracked_red.append(dep)
+            elif is_red:
+                red.append(dep)
+            elif dep not in ok:
+                unreviewed.append(dep)
+        current = len(red) + len(unreviewed)
+        parts = []
+        if red:
+            parts.append("RED (kernel/caps/unit/plane/transport): " + ", ".join(red))
+        if unreviewed:
+            parts.append("not on the reviewed list: " + ", ".join(unreviewed))
+        if tracked_red:
+            parts.append("tracked migration debt (qa/construction.toml known_red_deps): " + ", ".join(tracked_red))
+        detail = f"{crate} ({kind}): " + ("; ".join(parts) if parts else "every dependency is busbar-contract or reviewed")
+        rows.append(row(f"manifest-allowlist:{crate}", current == 0,
+                        f"{crate} depends only on busbar-contract plus reviewed crates",
+                        detail, current, 0, c["why"], red + unreviewed))
+    if not rows:
+        rows.append(row("manifest-allowlist", True,
+                        "depends only on busbar-contract plus reviewed crates",
+                        "vacuous: no plugin-kind crate exists yet under gate.plugin_kinds",
+                        0, 0, c["why"], []))
+    return rows
+
+
+# ── 16. source-denylist ──────────────────────────────────────────────────────────────────────────
+
+
+def rule_source_denylist(tree, cfg):
+    c = cfg["rules"]["source-denylist"]
+    pat_rx = re.compile("|".join(re.escape(p) for p in c["patterns"]))
+    allow = c.get("allowlist", {})
+    rows = []
+    seen = []
+    for kind in c["kinds"]:
+        seen += [(kind, d) for d in _kind_crate_dirs(tree.root, cfg, kind)]
+    for kind, d in seen:
+        crate = _crate_name(d)
+        offenders = []
+        for rel in _crate_files(tree, crate):
+            for l in tree.files[rel]:
+                if l.intest:
+                    continue
+                m = pat_rx.search(l.code)
+                if m and m.group(0) not in allow.get(crate, []):
+                    offenders.append(f"`{m.group(0)}` at {rel}:{l.no}")
+        current = len(offenders)
+        detail = (f"{crate} ({kind}): {current} denylisted path(s) in production code (ceiling 0): "
+                  + ("; ".join(offenders[:5]) if offenders else "none"))
+        rows.append(row(f"source-denylist:{crate}", current == 0,
+                        f"{crate} performs no I/O of its own (pure kind)",
+                        detail, current, 0, c["why"], offenders))
+    if not rows:
+        rows.append(row("source-denylist", True, "pure kinds perform no I/O of their own",
+                        "vacuous: no plane/hook/pure-auth/egress-auth crate exists yet",
+                        0, 0, c["why"], []))
+    return rows
+
+
+# ── 17. lean-core ────────────────────────────────────────────────────────────────────────────────
+
+
+def rule_lean_core(tree, cfg):
+    c = cfg["rules"]["lean-core"]
+    word_rx = re.compile(r"(?i)\b(" + "|".join(re.escape(w) for w in c["words"]) + r")\b")
+    crates = list(c["crates_kernel"])
+    crates += [_crate_name(d) for d in _dirs_for_globs(tree.root, [os.path.join("crates", c["crate_glob"])])]
+    offenders = []
+    for crate in crates:
+        for rel in _crate_files(tree, crate):
+            for l in tree.files[rel]:
+                if l.intest:
+                    continue
+                for m in _STR_RE.finditer(l.code):
+                    content = m.group(0)[1:-1]
+                    if word_rx.search(content):
+                        offenders.append(f'"{content}" at {rel}:{l.no}')
+    current = len(offenders)
+    detail = (f"{current} string literal(s) in {crates} naming a dialect or the section 1.3 pinned "
+              f"word list (ceiling {c['max_hits']}): " + ("; ".join(offenders[:8]) if offenders else "none"))
+    return [row("lean-core", current <= c["max_hits"],
+                "the kernel and unit crates name no dialect and no open-vocabulary word",
+                detail, current, c["max_hits"], c["why"], offenders)]
+
+
+# ── 18. no-default-bodies ───────────────────────────────────────────────────────────────────────
+
+
+def _trait_span(tree, rel, name):
+    """(start_line, end_line) of `pub trait <name>` in `rel`, by brace matching on the blanked
+    text, or None if the file or trait is absent."""
+    if rel not in tree.files:
+        return None
+    text = "\n".join(l.blank for l in tree.files[rel])
+    m = re.search(r"trait\s+" + re.escape(name) + r"(?![A-Za-z0-9_])[^{]*\{", text)
+    if not m:
+        return None
+    starts, off = [], 0
+    for l in tree.files[rel]:
+        starts.append(off)
+        off += len(l.blank) + 1
+
+    def line_of(pos):
+        lo, hi = 0, len(starts) - 1
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            lo, hi = (mid, hi) if starts[mid] <= pos else (lo, mid - 1)
+        return lo + 1
+
+    depth, i, n = 0, m.end() - 1, len(text)
+    end = -1
+    while i < n:
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+        i += 1
+    if end < 0:
+        return None
+    return (line_of(m.start()), line_of(end))
+
+
+def rule_no_default_bodies(tree, cfg):
+    c = cfg["rules"]["no-default-bodies"]
+    files = {c["file"], c["plane_file"], c["transport_file"]}
+    offenders, missing = [], []
+    for name in c["traits"]:
+        span = None
+        home = None
+        for rel in files:
+            span = _trait_span(tree, rel, name)
+            if span:
+                home = rel
+                break
+        if not span:
+            missing.append(name)
+            continue
+        start, end = span
+        for f in tree.fns.get(home, []):
+            if start <= f.start <= end and not f.intest:
+                offenders.append(f"{name}::{f.name} has a default body at {home}:{f.start}")
+    current = len(offenders)
+    detail = (f"{current} defaulted kind-trait method(s) (ceiling {c['max_defaulted']}): "
+              + ("; ".join(offenders) if offenders else "none")
+              + (f"; trait(s) not found yet: {missing}" if missing else ""))
+    return [row("no-default-bodies", current <= c["max_defaulted"],
+                "every kind-trait method is bodiless; implementing the trait is the only way to answer it",
+                detail, current, c["max_defaulted"], c["why"], offenders)]
+
+
+# ── 19. sealed-unit-traits ───────────────────────────────────────────────────────────────────────
+
+
+def rule_sealed_unit_traits(tree, cfg):
+    c = cfg["rules"]["sealed-unit-traits"]
+    seal_rx = re.compile(r"trait\s+[A-Za-z_][A-Za-z0-9_]*\s*:([^{]*)\{")
+    offenders, checked = [], []
+    for _key, spec in c["traits"].items():
+        rel = spec["file"]
+        if rel not in tree.files:
+            continue
+        text = "\n".join(l.blank for l in tree.files[rel])
+        m = re.search(r"trait\s+" + re.escape(spec["trait"]) + r"(?![A-Za-z0-9_])[^{]*\{", text)
+        if not m:
+            continue
+        checked.append(spec["trait"])
+        header = text[m.start():m.end()]
+        sealed = bool(re.search(r"[Ss]eal", header))
+        if not sealed:
+            offenders.append(f"{spec['crate']}::{spec['trait']} has no private-supertrait seal ({rel})")
+    current = len(offenders)
+    if not checked:
+        detail = "vacuous: none of the configured unit traits exist in this tree yet"
+    else:
+        detail = (f"{len(offenders)} of {len(checked)} configured unit trait(s) unsealed "
+                  f"(ceiling {c['max_unsealed']}): " + ("; ".join(offenders) if offenders else "none"))
+    return [row("sealed-unit-traits", current <= c["max_unsealed"],
+                "a unit's kernel-facing trait is sealed on a private supertrait",
+                detail, current, c["max_unsealed"], c["why"], offenders)]
+
+
+# ── 20. hold-discipline ──────────────────────────────────────────────────────────────────────────
+
+
+def _hold_scope_crates(tree, cfg, c):
+    crates = list(c["scope_crates_kernel"])
+    crates += [_crate_name(d) for d in _dirs_for_globs(tree.root, [os.path.join("crates", c["scope_crate_glob"])])]
+    return crates
+
+
+def rule_hold_discipline(tree, cfg):
+    c = cfg["rules"]["hold-discipline"]
+    crates = _hold_scope_crates(tree, cfg, c)
+    files = [rel for cr in crates for rel in _crate_files(tree, cr)]
+    take_rx = re.compile(c["take_pattern"])
+    settle_rx = re.compile(c["settle_pattern"])
+    rows = []
+
+    # (a) no `?` / early `return` between a take and its settle, in the same function.
+    early_exit = []
+    for rel in files:
+        for f in tree.fns.get(rel, []):
+            if f.intest:
+                continue
+            body = tree.files[rel][f.start - 1:f.end]
+            take_i = next((i for i, l in enumerate(body) if take_rx.search(l.code)), None)
+            settle_i = next((i for i, l in enumerate(body) if settle_rx.search(l.code)), None)
+            if take_i is None or settle_i is None or settle_i <= take_i:
+                continue
+            # take_i itself is included: a `?`/`return` spelled on the take line (e.g.
+            # `cell.take(...)?;`) is exactly as much an early exit as one on a later line.
+            for l in body[take_i:settle_i]:
+                if "?" in l.blank or re.search(r"\breturn\b", l.code):
+                    early_exit.append(f"{f.name} at {rel}:{l.no}")
+    rows.append(row("hold-discipline:no-early-exit", len(early_exit) <= c["max_early_exit"],
+                    "no `?` or early return between a Hold take and its settle",
+                    (f"{len(early_exit)} finding(s) (ceiling {c['max_early_exit']}): "
+                     + ("; ".join(early_exit) if early_exit else "none"))
+                    if any(take_rx.search(l.code) for rel in files for l in tree.files[rel])
+                    else VACUOUS + "no take/settle pair found in scope",
+                    len(early_exit), c["max_early_exit"], c["why"], early_exit))
+
+    # (b) no Hold captured in a catch_unwind closure (approximated as: the enclosing function of a
+    # catch_unwind( call also mentions the word Hold — an over-approximation, stated honestly).
+    hold_rx = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(c["hold_word"]) + r"(?![A-Za-z0-9_])")
+    catch_sites = list(tree.grep(c["catch_unwind_pattern"]))
+    captured = []
+    for rel, l in catch_sites:
+        f = tree.enclosing_fn(rel, l.no)
+        if f is None:
+            continue
+        body = " ".join(x.code for x in tree.files[rel][f.start - 1:f.end])
+        if hold_rx.search(body):
+            captured.append(f"{f.name} at {rel}:{l.no}")
+    rows.append(row("hold-discipline:no-catch-unwind-capture", len(captured) <= c["max_catch_unwind_capture"],
+                    "no `Hold` is captured in a `catch_unwind` closure",
+                    (f"{len(captured)} finding(s) (ceiling {c['max_catch_unwind_capture']}): "
+                     + ("; ".join(captured) if captured else "none"))
+                    if catch_sites else VACUOUS + "no catch_unwind site found in scope",
+                    len(captured), c["max_catch_unwind_capture"], c["why"], captured))
+
+    # (c) no JoinHandle::abort.
+    aborts = [f"{rel}:{l.no}" for rel, l in tree.grep(c["abort_pattern"], files=files)]
+    rows.append(row("hold-discipline:no-join-abort", len(aborts) <= c["max_join_abort"],
+                    "no `JoinHandle::abort` in scope",
+                    (f"{len(aborts)} finding(s) (ceiling {c['max_join_abort']}): "
+                     + ("; ".join(aborts) if aborts else "none")),
+                    len(aborts), c["max_join_abort"], c["why"], aborts))
+
+    # (d) no mem::forget / drop(...) of a value whose name says Hold.
+    forgets = [f"{rel}:{l.no}" for rel, l in tree.grep(c["forget_or_drop_pattern"], files=files)]
+    rows.append(row("hold-discipline:no-forget-or-drop", len(forgets) <= c["max_forget_or_drop"],
+                    "no `mem::forget`/`drop(...)` of a value named like a Hold",
+                    (f"{len(forgets)} finding(s) (ceiling {c['max_forget_or_drop']}): "
+                     + ("; ".join(forgets) if forgets else "none")),
+                    len(forgets), c["max_forget_or_drop"], c["why"], forgets))
+
+    # (e) cancellation-token check before every `.await` in the route step -- reported only where an
+    # async route step (an await inside a function named in route_step_functions) exists at all.
+    cancel_rx = re.compile(c["cancel_check_pattern"])
+    uncancellable = []
+    any_route_await = False
+    for rel in files:
+        for f in tree.fns.get(rel, []):
+            if f.intest or f.name not in c["route_step_functions"]:
+                continue
+            body = tree.files[rel][f.start - 1:f.end]
+            seen_check = False
+            for l in body:
+                if cancel_rx.search(l.code):
+                    seen_check = True
+                if ".await" in l.code:
+                    any_route_await = True
+                    if not seen_check:
+                        uncancellable.append(f"{f.name} at {rel}:{l.no}")
+    if any_route_await:
+        detail = (f"{len(uncancellable)} `.await` in a route step with no prior cancellation check "
+                  f"(ceiling {c['max_uncancellable_await']}): "
+                  + ("; ".join(uncancellable) if uncancellable else "none"))
+    else:
+        detail = VACUOUS + "no `.await` found inside a route-step function in scope"
+    rows.append(row("hold-discipline:cancellation-before-await",
+                    len(uncancellable) <= c["max_uncancellable_await"],
+                    "a cancellation-token check precedes every `.await` in the route step",
+                    detail, len(uncancellable), c["max_uncancellable_await"], c["why"], uncancellable))
+    return rows
+
+
+# ── 21. forbid-unsafe ────────────────────────────────────────────────────────────────────────────
+
+
+_UNSAFE_ATTR_RX = {
+    "forbid": re.compile(r"forbid\s*\(\s*unsafe_code\s*\)"),
+    "deny": re.compile(r"(forbid|deny)\s*\(\s*unsafe_code\s*\)"),
+}
+
+
+def rule_forbid_unsafe(tree, cfg):
+    c = cfg["rules"]["forbid-unsafe"]
+    rows = []
+
+    def check(kinds, level, rid_prefix, label, known_missing):
+        rx = _UNSAFE_ATTR_RX[level]
+        seen = []
+        for kind in kinds:
+            seen += _kind_crate_dirs(tree.root, cfg, kind)
+        out = []
+        for d in seen:
+            crate = _crate_name(d)
+            has_it = any(rx.search(l.code) for rel in _crate_files(tree, crate) for l in tree.files[rel])
+            current = 0 if has_it else 1
+            ceiling = 1 if crate in known_missing else 0
+            debt_note = " (tracked debt, ratcheted in qa/construction.toml)" if crate in known_missing else ""
+            out.append(row(f"{rid_prefix}:{crate}", current <= ceiling,
+                          f"{crate} carries `#![{level}(unsafe_code)]`",
+                          f"{crate}: {'present' if has_it else 'MISSING'} `{label}`" + (debt_note if not has_it else ""),
+                          current, ceiling, c["why"], [] if has_it else [f"{crate}: missing {label}"]))
+        if not out:
+            out = [row(rid_prefix, True, f"{label} present", "vacuous: no crate of this kind exists yet",
+                       0, 0, c["why"], [])]
+        return out
+
+    rows += check(c["forbid_kinds"], "forbid", "forbid-unsafe",
+                  "#![forbid(unsafe_code)]", set(c.get("known_missing_forbid", [])))
+    rows += check(c["deny_kinds"], "deny", "forbid-unsafe-deny",
+                  "#![deny(unsafe_code)] (or stronger)", set(c.get("known_missing_deny", [])))
+    return rows
 
 
 def evaluate(tree, cfg, hits_path):
@@ -824,6 +1361,14 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_no_response_escapes_audit(tree, cfg)
     rows += rule_terminal_doors_in_audit_step(tree, cfg)
     rows += rule_one_pick_site(tree, cfg)
+    rows += rule_loc_ceilings(tree, cfg)
+    rows += rule_manifest_allowlist(tree, cfg)
+    rows += rule_source_denylist(tree, cfg)
+    rows += rule_lean_core(tree, cfg)
+    rows += rule_no_default_bodies(tree, cfg)
+    rows += rule_sealed_unit_traits(tree, cfg)
+    rows += rule_hold_discipline(tree, cfg)
+    rows += rule_forbid_unsafe(tree, cfg)
     return rows
 
 
@@ -908,12 +1453,35 @@ def calibrate(rows, cfg, path):
     rules["single-terminal"]["max_extra_sites"] = by_id["single-terminal"]["current"]
     rules["duplicate-dispatch"]["max_duplicated_lines"] = by_id["duplicate-dispatch"]["current"]
     rules["token-sealed"]["max_sites"] = by_id["token-sealed"]["current"]
+    rules["token-sealed"]["max_kernel_seal_sites"] = by_id["token-sealed:kernel-seal"]["current"]
+    rules["token-sealed"]["max_admit_token_mint_sites"] = by_id["token-sealed:admit-token-mint"]["current"]
     rules["teller-step-order"]["max_findings"] = by_id["teller-step-order"]["current"]
     rules["one-teller-loop"]["max_callers_per_plane_crate"] = by_id["one-teller-loop"]["current"]
     rules["one-teller-loop"]["max_legacy_sites"] = by_id["one-teller-loop:run_gauntlet"]["current"]
     rules["no-response-escapes-audit"]["max_escapes"] = by_id["no-response-escapes-audit"]["current"]
     rules["terminal-doors-in-audit-step"]["max_extra_sites"] = by_id["terminal-doors-in-audit-step"]["current"]
     rules["one-pick-site"]["max_sites"] = by_id["one-pick-site"]["current"]
+    # The aggregate rows (kernel/caps-contract/unit-total/union) are sums of the same lines the
+    # per-file rows already ratchet exactly, so calibrating them with zero slack too would make a
+    # single planted line fail every aggregate that sums over it, not just the one row the
+    # self-test names. A fixed slack margin here keeps each aggregate a real (if looser) ceiling
+    # while leaving the per-file ratchets, below, exact -- so a planted regression is caught at the
+    # file granularity self-test proves, not smeared across every row that sums over that file.
+    agg_slack = 1000
+    rules["loc-ceilings"]["kernel_ceiling"] = by_id["loc-ceilings:kernel"]["current"] + agg_slack
+    rules["loc-ceilings"]["caps_contract_ceiling"] = by_id["loc-ceilings:caps-contract"]["current"] + agg_slack
+    rules["loc-ceilings"]["unit_total_ceiling"] = by_id["loc-ceilings:unit-total"]["current"] + agg_slack
+    rules["loc-ceilings"]["verbs_ceiling"] = by_id["loc-ceilings:unit-verbs"]["current"] + agg_slack
+    rules["loc-ceilings"]["union_ceiling"] = by_id["loc-ceilings:union"]["current"] + agg_slack
+    for key in rules["loc-ceilings"]["kernel_files"]:
+        rules["loc-ceilings"]["kernel_files"][key]["ceiling"] = by_id[f"loc-ceilings:kernel:{key}"]["current"]
+    rules["sealed-unit-traits"]["max_unsealed"] = by_id["sealed-unit-traits"]["current"]
+    for rid in ("forbid-unsafe", "forbid-unsafe-deny"):
+        missing_field = "known_missing_forbid" if rid == "forbid-unsafe" else "known_missing_deny"
+        rules["forbid-unsafe"][missing_field] = sorted(
+            r["id"].split(":", 1)[1] for r in rows
+            if r["id"].startswith(rid + ":") and r["current"] > 0
+        )
     out = ["# calibrated copy of qa/construction.toml: every ceiling equals the measured value", ""]
     _emit_table("", cfg, out)
     with open(path, "w", encoding="utf-8") as fh:
