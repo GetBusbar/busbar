@@ -1355,9 +1355,7 @@ mod tests {
             &usage(4_200),
             &LedgerToken::mint(&seal),
         );
-        let b = through_posting
-            .settle_posted(&at, posted)
-            .expect("settles");
+        let b = through_posting.settle_posted(&at, posted).expect("settles");
 
         assert_eq!(a.posting, b.posting);
         assert_eq!(

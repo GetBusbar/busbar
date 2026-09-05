@@ -114,7 +114,7 @@ use busbar_contract::ClaimKey;
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_plane_voice::claims::Dialect;
 use busbar_plane_voice::{meta, Upstream, VoicePlane};
-use busbar_unit_admission::{Door, Estimate, InMemoryCells, Pricer};
+use busbar_unit_admission::{Admission as _, Door, Estimate, InMemoryCells, Pricer};
 use busbar_unit_auth::{Auth, AuthRequest};
 use busbar_unit_scope::{Scope, TRANSPORT_HANDSHAKE};
 use busbar_unit_trust::net::GuardPolicy;
@@ -613,6 +613,21 @@ impl TurnUsage {
     }
 }
 
+/// The coarse opening magnitude of one turn, in tokens of the dearest class it may charge under.
+///
+/// Deliberately generous, and the asymmetry is the reason: an under-sized reservation has to be
+/// topped up mid-turn out of the principal's slice, and a slice that has run dry turns the rest of
+/// the turn into an overdraft the deployment carries. An over-sized one costs nothing at all — the
+/// residual is released at settlement, in the same act that posts the figure. So this is sized to be
+/// wrong in the cheap direction.
+const TURN_OPENING_TOKENS: u64 = 4_096;
+
+/// How many turns of that magnitude the session's own opening reservation covers.
+///
+/// A live session cannot be metered after the fact, so unit zero reserves for the conversation and
+/// each turn settles against it. This is what "the metering lease is the hold" is sized by.
+const SESSION_OPENING_TURNS: u64 = 8;
+
 /// One voice unit, as the loop reaches it.
 ///
 /// Constructed per unit, cheap, and holding only what this unit is about: the node's half is
@@ -747,10 +762,48 @@ impl<'n> VoiceUnit<'n> {
         if self.shape.is_handshake() {
             return Estimate::zero();
         }
+        // The highest price any class this turn may charge under carries the whole estimate. Pricing
+        // the opening magnitude at the cheapest class and then charging at the dearest is how a
+        // reservation is under-sized on every single turn; taking the maximum costs nothing but
+        // headroom the settlement gives straight back.
+        let rate = self
+            .node
+            .pricer
+            .rate_for(self.dialect.name())
+            .unwrap_or_default();
+        let dearest = rate
+            .input
+            .max(rate.output)
+            .max(rate.cache_read)
+            .max(rate.cache_write);
         Estimate {
-            per_class: Vec::new(),
+            per_class: vec![busbar_unit_admission::ClassEstimate {
+                class: "audio_tokens_out".to_string(),
+                quantity: TURN_OPENING_TOKENS,
+                max_unit_price_nanos: dearest,
+            }],
+            // A turn is a frame of a conversation the session already paid to open, not a request of
+            // its own, so it carries no flat fee. Unit zero drew the slot.
             fee_nanos: 0,
         }
+    }
+
+    /// The session's coarse opening reservation, in nano-units: what unit zero takes the lease for
+    /// and every later frame is allowed against.
+    fn session_opening_nanos(&self) -> u64 {
+        let rate = self
+            .node
+            .pricer
+            .rate_for(self.dialect.name())
+            .unwrap_or_default();
+        let dearest = rate
+            .input
+            .max(rate.output)
+            .max(rate.cache_read)
+            .max(rate.cache_write);
+        TURN_OPENING_TOKENS
+            .saturating_mul(SESSION_OPENING_TURNS)
+            .saturating_mul(dearest)
     }
 }
 
@@ -873,7 +926,12 @@ impl Units for VoiceUnit<'_> {
             // The session's opening reservation is taken here, once, and it is the reservation every
             // later frame of the session is allowed against. A lease that cannot be opened is an
             // exhaustion answer at the door rather than a session that opens and then cannot pay.
-            if let Err(reason) = self.node.io.lease.reserve(self.session, 0) {
+            if let Err(reason) = self
+                .node
+                .io
+                .lease
+                .reserve(self.session, self.session_opening_nanos())
+            {
                 // A detached I/O half is not an over-budget principal, and the two must not be
                 // reported as the same thing. The reservation failing for want of a lease is the
                 // node's own unavailability.
@@ -882,23 +940,22 @@ impl Units for VoiceUnit<'_> {
             return Decision::proceed(token, Admission::ZeroHold);
         }
 
+        // The door opens the hold, not this arm. That is the ordering the whole accounting rests on:
+        // a reservation exists because a decision said yes, and it is sized by the estimate that
+        // decision was handed. Opening one here — beside the door rather than out of it — would be a
+        // reservation with no admission behind it, and a unit whose hold and whose answer could
+        // disagree about whether it was let in.
         let estimate = self.estimate();
+        let chain = busbar_unit_admission::BucketChain::unchecked(Vec::new(), Vec::new());
         let door = self.node.door.lock().unwrap_or_else(|e| e.into_inner());
         // The pinned arrival epoch, never a fresh clock read: the door's own contract.
-        let _unit = busbar_unit_admission::AdmissionUnit::new(
+        let mut unit = busbar_unit_admission::AdmissionUnit::new(
             &door,
             &self.node.pricer,
             self.dialect.name(),
             self.epoch,
         );
-        Decision::proceed(
-            token,
-            Admission::Own(busbar_caps::Hold::open(
-                admit,
-                principal.clone(),
-                estimate.hold_nanos(busbar_unit_admission::STANDARD_TIER_BP),
-            )),
-        )
+        unit.admit(&estimate, principal, &chain, admit, token)
     }
 
     fn route(
@@ -1019,6 +1076,68 @@ impl Units for VoiceUnit<'_> {
 }
 
 impl VoiceUnit<'_> {
+    /// The balance one unit of this plane settles into: the caller's own attribution bucket, in
+    /// nano-units, across every pool.
+    ///
+    /// The plane names the balance because the plane is what knows which pot its traffic belongs
+    /// in; the ledger keeps it. An uncapped attribution bucket is still a balance, which is the
+    /// point — a deployment that configured no group still has one figure per principal.
+    #[must_use]
+    pub fn balance(principal: &PrincipalId) -> busbar_unit_ledger::totals::TotalsKey {
+        busbar_unit_ledger::totals::TotalsKey::new(
+            busbar_unit_ledger::totals::BucketId::new(principal.as_str()),
+            busbar_unit_ledger::totals::CapDimension::NanoUnits,
+            busbar_unit_ledger::totals::BucketScope::All,
+        )
+    }
+
+    /// **The exit arm.** Move the books for what this unit posted, and put the posting on the
+    /// journal.
+    ///
+    /// The loop's exit path takes the hold out of its cell, applies what the unit spent and settles
+    /// it — that is where the hold stops existing. What comes back is the POSTING, and until it
+    /// reaches here it has moved no balance and left no record. So this is the far end of the hold's
+    /// life: opened at the door, accrued while the unit ran, and closed here, with the residual
+    /// released and any overdraft carried out as a record of its own.
+    ///
+    /// The window is the unit's pinned arrival epoch's day, never a fresh clock read, so a session
+    /// that straddles a boundary posts in the window it was admitted in.
+    ///
+    /// # Errors
+    ///
+    /// The journal could not make the record durable. The books have already moved: value was
+    /// delivered, and a settlement is not rolled back because a write failed.
+    pub fn settle(
+        &self,
+        principal: &PrincipalId,
+        posted: busbar_caps::Posted,
+        token: &busbar_caps::DurabilityToken,
+    ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
+        let key = Self::balance(principal);
+        let at = crate::root::durability::Settling {
+            key: &key,
+            window: busbar_unit_admission::budget_window(
+                busbar_unit_admission::window::WINDOW_DAY,
+                self.epoch,
+            ),
+            durability: token,
+            // The loop has no exit step of its own; the figure this posting is OF is the metering
+            // step's, and that is the step a durability loss here is attributed to.
+            step: busbar_caps::StepName::Meter,
+            stamp: crate::root::durability::PostingStamp {
+                rate_card_version: 0,
+                wall: self.epoch,
+                mono: self.node.tick(),
+            },
+        };
+        let mut durability = self
+            .node
+            .durability
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        durability.settle_posted(&at, posted)
+    }
+
     /// Seal one record onto the record chain.
     ///
     /// The chain is the audit unit's and nothing else can put a record on it: a plane can say what it
@@ -1539,5 +1658,249 @@ mod tests {
     #[test]
     fn the_handshake_scope_is_the_kernel_granted_one() {
         assert_eq!(handshake_scope(), "transport:handshake");
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The hold's five acts, on this plane
+    // -----------------------------------------------------------------------------------------
+
+    /// A node whose card prices the dialect, so a turn's estimate is a figure rather than a zero.
+    fn priced_node(io: VoiceIo) -> VoiceNode {
+        let mut node = node(io);
+        let mut rates = std::collections::BTreeMap::new();
+        rates.insert(
+            Dialect::OpenaiRealtime.name().to_string(),
+            busbar_unit_admission::RateNanos::from_micros_per_token(2.0, 5.0, 0.0, 0.0),
+        );
+        node.pricer = Pricer::with_card(0, rates);
+        node
+    }
+
+    /// A handshake reserves nothing of its own, and takes the SESSION's opening reservation on the
+    /// lease. The two are different things and the distinction is the whole design: no money moves
+    /// in unit zero, but the conversation it opens is allowed against a figure taken here, because a
+    /// live session cannot be metered after the fact.
+    #[test]
+    fn unit_zero_reserves_nothing_itself_and_takes_the_sessions_opening_reservation() {
+        /// A lease that records what it was reserved for.
+        struct Recording(std::sync::Mutex<Vec<u64>>);
+        impl SessionLease for Recording {
+            fn reserve(&self, _session: u64, nanos: u64) -> Result<(), ReasonCode> {
+                self.0.lock().expect("lock").push(nanos);
+                Ok(())
+            }
+            fn settle(&self, _session: u64, _nanos: u64) -> bool {
+                true
+            }
+            fn close(&self, _session: u64) {}
+        }
+        let seen = std::sync::Arc::new(Recording(std::sync::Mutex::new(Vec::new())));
+        struct Shared(std::sync::Arc<Recording>);
+        impl SessionLease for Shared {
+            fn reserve(&self, session: u64, nanos: u64) -> Result<(), ReasonCode> {
+                self.0.reserve(session, nanos)
+            }
+            fn settle(&self, session: u64, nanos: u64) -> bool {
+                self.0.settle(session, nanos)
+            }
+            fn close(&self, session: u64) {
+                self.0.close(session);
+            }
+        }
+        let node = priced_node(VoiceIo {
+            dial: Box::new(OpenDial),
+            lease: Box::new(Shared(std::sync::Arc::clone(&seen))),
+            ..VoiceIo::default()
+        });
+        let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
+        assert_eq!(
+            unit.estimate(),
+            Estimate::zero(),
+            "no money moves in unit 0"
+        );
+        let opening = unit.session_opening_nanos();
+        assert!(opening > 0, "a priced dialect names a session budget");
+
+        let _ = run(&Kernel::new(), &unit);
+        assert_eq!(
+            *seen.0.lock().expect("lock"),
+            vec![opening],
+            "the lease was taken for the session's opening reservation, once"
+        );
+    }
+
+    /// A turn's reservation is the coarse opening magnitude at the dearest price the dialect's
+    /// classes charge, and the door is what opens it. Over-sized on purpose: the residual comes
+    /// straight back at settlement.
+    #[test]
+    fn a_turn_opens_a_reservation_the_door_sized_off_the_estimate() {
+        let node = priced_node(serviceable());
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        // 5 micro-units per output token is 5_000 nano-units, and it is the dearest of the four.
+        let estimate = unit.estimate();
+        assert_eq!(estimate.per_class.len(), 1);
+        assert_eq!(estimate.per_class[0].max_unit_price_nanos, 5_000);
+        assert_eq!(
+            estimate.hold_nanos(busbar_unit_admission::STANDARD_TIER_BP),
+            TURN_OPENING_TOKENS * 5_000
+        );
+
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let admit = busbar_caps::AdmitToken::<Admit>::mint(&seal);
+        let token: UnitToken<Admit> = UnitToken::mint(&seal);
+        let admission = unit
+            .admit(
+                &token,
+                &admit,
+                &ctx(1),
+                &PrincipalId::new("acct:voice"),
+                &[],
+            )
+            .into_result(&seal)
+            .expect("the empty chain admits");
+        match admission {
+            busbar_caps::Admission::Own(hold) => {
+                assert_eq!(hold.reserved(), TURN_OPENING_TOKENS * 5_000);
+                assert_eq!(hold.accrued(), 0, "a reservation is not a spend");
+                let _ = busbar_caps::Posted::settle(
+                    hold,
+                    &busbar_caps::Usage::report(&busbar_caps::UsageToken::mint(&seal), Vec::new())
+                        .expect("empty"),
+                    &busbar_caps::LedgerToken::mint(&seal),
+                );
+            }
+            other => panic!("a priced turn opens a hold of its own, got {other:?}"),
+        }
+    }
+
+    /// **The lifecycle, end to end.** The door opens the reservation, the meter accrues against it,
+    /// the exit path settles it, and the posting moves this plane's balance and lands on the
+    /// journal. Before the exit arm was bound, the last two of those four happened nowhere.
+    #[test]
+    fn a_turn_opens_accrues_settles_and_lands_on_the_journal() {
+        let node = priced_node(serviceable());
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
+            audio_tokens_out: 120,
+            audio_ms_in: 900,
+            ..TurnUsage::default()
+        });
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let kernel = Kernel::new();
+        let Ended::Settled { end, .. } = run(&kernel, &unit) else {
+            panic!("the exit path settles it");
+        };
+        let posted = end.into_posted().expect("the usage report fits the record");
+        assert_eq!(
+            posted.reserved(),
+            TURN_OPENING_TOKENS * 5_000,
+            "what the door reserved"
+        );
+        // What the settlement table posts is what the destination REPORTED, not what the kernel's
+        // meter counted; the accrual is the floor beside it, and the hold carries both.
+        assert_eq!(posted.settled(), 120, "what the upstream reported");
+        assert_eq!(posted.overdraft(), 0, "well inside the reservation");
+        assert_eq!(
+            posted.released(),
+            TURN_OPENING_TOKENS * 5_000 - 120,
+            "and the residual the settlement hands back"
+        );
+
+        let who = PrincipalId::new("acct:voice");
+        let settled = unit
+            .settle(&who, posted, &busbar_caps::DurabilityToken::mint(&seal))
+            .expect("the memory-buffered journal takes it");
+        assert_eq!(
+            settled.settlement.released,
+            i128::from(TURN_OPENING_TOKENS * 5_000 - 120)
+        );
+        assert!(settled.overdraft.is_none());
+
+        let durability = node.durability.lock().expect("lock");
+        let key = VoiceUnit::balance(&who);
+        let window = busbar_unit_admission::budget_window(
+            busbar_unit_admission::window::WINDOW_DAY,
+            1_700_000_000,
+        );
+        assert_eq!(durability.ledger.book().get(&key, window).settled, 120);
+        let replayed = durability
+            .journal
+            .replay()
+            .expect("reads back")
+            .expect("verifies");
+        assert_eq!(
+            replayed.len(),
+            1,
+            "one posting, one record — and no overdraft record beside it"
+        );
+    }
+
+    /// The other end of the same lifecycle: a turn that ran far past what the door sized for it.
+    /// It is not refused, it is not trimmed, and what nothing backed becomes a record of its own.
+    #[test]
+    fn a_turn_that_outruns_its_reservation_posts_in_full_and_carries_the_rest() {
+        let node = priced_node(serviceable());
+        let who = PrincipalId::new("acct:voice");
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+
+        // The hold the door would have opened, and a spend far past it with an empty slice behind.
+        let reserved = TURN_OPENING_TOKENS * 5_000;
+        let mut hold = busbar_caps::Hold::open(
+            &busbar_caps::AdmitToken::<Admit>::mint(&seal),
+            who.clone(),
+            reserved,
+        );
+        let spend = hold.spend(reserved + 7_000, 0);
+        assert_eq!(
+            spend.accrued,
+            reserved + 7_000,
+            "the spend is never trimmed"
+        );
+        assert_eq!(spend.overdraft, 7_000);
+
+        let usage = busbar_caps::Usage::report(
+            &busbar_caps::UsageToken::mint(&seal),
+            vec![UsageLine {
+                class: MeterClassId::new("audio_tokens_out"),
+                quantity: reserved + 7_000,
+                source: QuantitySource::Count,
+                estimated: false,
+            }],
+        )
+        .expect("one line");
+        let posted =
+            busbar_caps::Posted::settle(hold, &usage, &busbar_caps::LedgerToken::mint(&seal));
+        assert!(posted
+            .flags()
+            .contains(busbar_caps::PostingFlags::OVERDRAFT));
+
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let settled = unit
+            .settle(&who, posted, &busbar_caps::DurabilityToken::mint(&seal))
+            .expect("the journal takes both records");
+        let note = settled
+            .settlement
+            .overdraft
+            .as_ref()
+            .expect("the ledger noted the carry");
+        assert_eq!(note.principal, "acct:voice");
+        assert_eq!(note.amount, 7_000);
+
+        let durability = node.durability.lock().expect("lock");
+        let window = busbar_unit_admission::budget_window(
+            busbar_unit_admission::window::WINDOW_DAY,
+            1_700_000_000,
+        );
+        let figures = durability
+            .ledger
+            .book()
+            .get(&VoiceUnit::balance(&who), window);
+        assert_eq!(figures.settled, i128::from(reserved + 7_000));
+        assert_eq!(figures.overdraft_carried_out, 7_000);
+        let replayed = durability
+            .journal
+            .replay()
+            .expect("reads back")
+            .expect("verifies");
+        assert_eq!(replayed.len(), 2, "the posting, then the carry");
     }
 }

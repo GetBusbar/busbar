@@ -458,6 +458,14 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub door: &'r Door<S>,
     /// What the door prices a unit against.
     pub pricer: &'r Pricer,
+    /// What the deployment's card charges for a byte of the priced document, in nano-units.
+    ///
+    /// The highest such price over the destinations this unit may reach, read out of the card once
+    /// by the root rather than looked up per unit — the maximum for the reason the estimate's own
+    /// documentation gives, and read here rather than in the admission step so the door never
+    /// reaches a rate table. Zero on a deployment whose card prices this plane's byte class at
+    /// nothing, which is a reservation carrying the flat fee alone and not a missing one.
+    pub bytes_nanos: u64,
     /// The plane's durable records.
     pub records: &'r RecordLegs,
     /// What the usage unit folds against.
@@ -638,7 +646,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             per_class: vec![busbar_unit_admission::ClassEstimate {
                 class: CLASS_BYTES.as_str().to_string(),
                 quantity: self.draft.request_bytes,
-                max_unit_price_nanos: 0,
+                max_unit_price_nanos: self.bindings.bytes_nanos,
             }],
             fee_nanos: if self.draft.has_upstream() {
                 u64::try_from(self.bindings.pricer.price_per_request_cents().max(0))
