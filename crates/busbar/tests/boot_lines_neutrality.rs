@@ -17,7 +17,8 @@
 #![cfg(unix)]
 #![cfg(feature = "proto-llm")]
 
-use std::io::Read;
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -220,9 +221,25 @@ fn boot_lines_match_1_5_5_shape() {
         read_to_string(&log_path)
     );
 
-    // Give the per-worker data runtimes a beat to all finish standing up before SIGTERM, so a flaky
-    // slow worker cannot make this boot-line pin depend on scheduling luck.
-    std::thread::sleep(Duration::from_millis(200));
+    // Wait for BOTH listeners to actually answer `/healthz` before SIGTERM, rather than sleeping a
+    // fixed duration. Under `cargo test --workspace` load (many crates' test binaries competing for
+    // CPU) a fixed sleep is not long enough for a slow-scheduled worker thread to finish standing up
+    // its listener and log its own "busbar listening" line before the signal lands, so the captured
+    // log is missing a line the un-loaded run always has — a false failure, not a real drift. Polling
+    // the actual readiness signal (a live TCP accept + HTTP response on each port) is load-robust
+    // without weakening what gets compared: the ordered-set assertion below is unchanged.
+    let data_ready = wait_for(Duration::from_secs(30), || healthz_ok(data_port));
+    assert!(
+        data_ready,
+        "data listener on 127.0.0.1:{data_port} never answered /healthz within 30s; log:\n{}",
+        read_to_string(&log_path)
+    );
+    let admin_ready = wait_for(Duration::from_secs(30), || healthz_ok(admin_port));
+    assert!(
+        admin_ready,
+        "admin listener on 127.0.0.1:{admin_port} never answered /healthz within 30s; log:\n{}",
+        read_to_string(&log_path)
+    );
 
     let pid = child.id().to_string();
     let killed = Command::new("kill")
@@ -233,13 +250,18 @@ fn boot_lines_match_1_5_5_shape() {
         .success();
     assert!(killed, "kill -TERM {pid} failed");
 
-    let exited = wait_for(Duration::from_secs(15), || {
+    // Capture UNTIL THE PROCESS EXITS, not for a fixed window: the log is only read below, after this
+    // returns, so a slow-draining process under load still has every line it will ever write present
+    // by the time the comparison runs. The budget itself is generous (not zero-cost, but this test
+    // only runs once) precisely so CPU contention from concurrently running crates cannot turn a slow
+    // but correct drain into a false failure.
+    let exited = wait_for(Duration::from_secs(60), || {
         child.try_wait().expect("try_wait").is_some()
     });
     if !exited {
         let _ = child.kill();
         panic!(
-            "busbar did not drain within 15s of SIGTERM; log:\n{}",
+            "busbar did not drain within 60s of SIGTERM; log:\n{}",
             read_to_string(&log_path)
         );
     }
@@ -314,6 +336,33 @@ fn sort_consecutive_runs(lines: &mut Vec<String>, pred: impl Fn(&str) -> bool) {
         out.append(&mut run);
     }
     *lines = out;
+}
+
+/// A single best-effort `GET /healthz` against `127.0.0.1:port`, over a raw blocking TCP socket
+/// rather than an async client, so this plain `#[test]` does not need a tokio runtime just to probe
+/// readiness. `/healthz` is unauthenticated and side-effect-free (see `endpoints::healthz`'s own
+/// doc), so this cannot perturb the boot-line sequence under test. Any I/O failure (connection
+/// refused because the listener has not bound yet, a reset mid-handshake, ...) is reported as "not
+/// ready" rather than propagated, since "not yet listening" is the expected steady state until boot
+/// completes.
+fn healthz_ok(port: u16) -> bool {
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+        return false;
+    };
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
+    if stream
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut buf = Vec::new();
+    if stream.read_to_end(&mut buf).is_err() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&buf);
+    text.starts_with("HTTP/1.1 200") || text.starts_with("HTTP/1.0 200")
 }
 
 fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
