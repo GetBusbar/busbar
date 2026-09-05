@@ -9,9 +9,9 @@ and carries the check that would prove it -- that list is the owner's post-check
 ## Summary
 
 - bindings: **103**  (PB-0 master rule + 102 table rows)
-- mapped: **102**
-- unmapped: **1**
-- checks by kind: gate 9, lint 5, oracle-cell 44, oracle-family 5, test 439
+- mapped: **103**
+- unmapped: **0**
+- checks by kind: gate 9, lint 5, oracle-cell 45, oracle-family 5, test 441
 
 ## Bindings
 
@@ -24,7 +24,7 @@ and carries the check that would prove it -- that list is the owner's post-check
 | PB-4 | `on_exhausted` terminals | mapped | oracle-cell: `crosscut.traps\|exhausted-retry-after-floor`<br>oracle-cell: `route.failover\|fo\|all-down`<br>oracle-cell: `route.failover\|lb\|member-down`<br>test: `at_capacity_default_no_on_exhausted_sheds_503`<br>test: `retry_after_reflects_cooldown_when_a_member_is_tripped`<br>test: `retry_after_has_saturation_floor_when_purely_at_capacity`<br>test: `retry_after_empty_candidate_set_uses_floor_not_one`<br>test: `least_bad_still_serves_the_only_member_after_it_was_tried`<br>test: `a_fallback_pool_applies_its_own_exclusions`<br>test: `at_capacity_fallback_chain_spills_through_to_third_pool`<br>test: `at_capacity_self_referential_fallback_stays_503`<br>test: `queue_skips_wait_and_rejects_when_no_candidate_at_capacity`<br>test: `queue_won_permit_but_breaker_now_open_never_dispatches`<br>test: `queue_two_waiters_one_freed_permit_wakes_exactly_one`<br>test: `test_scrape_gauges_pool_queued_reads_live_depth`<br>gate: `scripts/release-check.sh` |
 | PB-5 | pick order | mapped | oracle-cell: `route.failover\|fo\|all-up`<br>test: `sticky_affinity_never_selects_zero_weight_drained_member`<br>test: `sticky_fall_through_records_reason`<br>test: `test_sticky_yields_when_tripped`<br>test: `order_last_in_chain_wins`<br>test: `stale_order_filtered_against_post_restrict_set`<br>test: `last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate`<br>test: `ordered_walk_falls_through_to_swrr_when_no_preferred_ready`<br>test: `ordered_walk_empty_order_is_swrr` |
 | PB-6 | hook seats for migrated hooks | mapped | test: `global_gate_reject_short_circuits_the_request`<br>test: `global_request_stage_tap_fires_on_a_real_dispatched_request`<br>test: `migrated_request_hook_seats_after_admit_before_candidate` |
-| PB-7 | inbound shed | unmapped | _none_ |
+| PB-7 | inbound shed | mapped | test: `inbound_cap_sheds_the_excess_and_serves_the_admitted`<br>test: `a_saturated_gate_sheds_instead_of_parking_the_caller`<br>oracle-cell: `concurrency\|inbound-shed\|n8` |
 | PB-8 | request bounds for `http`/`sse` units | mapped | oracle-cell: `route.failover\|fo\|primary-down`<br>test: `test_saturated_lane_respects_deadline_no_infinite_spin`<br>test: `test_context_length_failover_no_penalty`<br>test: `test_prefers_larger_context_max`<br>test: `a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it`<br>test: `test_member_override_wins_over_model_default`<br>test: `test_attempt_cap_budget_floor`<br>test: `route_deadline_503_carries_detail_request_timeout`<br>test: `pick_among_none_lands_on_on_exhausted_with_overloaded_and_retry_after` |
 | PB-9 | revocation / rotation | mapped | test: `rotate_invalidates_the_outstanding_signed_token`<br>test: `local_revoke_rejects_the_very_next_auth_attempt`<br>test: `peer_revoke_written_to_the_store_is_honoured_within_the_window` |
 | PB-10 | upstream disposition and status mapping | mapped | test: `test_disposition_hard_down_billing_code`<br>test: `test_disposition_transient_rate_limit_code`<br>test: `test_disposition_transient_server_error`<br>test: `test_disposition_hard_down_auth`<br>test: `test_disposition_code_drives_classification`<br>test: `test_disposition_client_fault_no_known_code`<br>test: `test_classify_context_length_both_protocols`<br>test: `test_extract_error_bad_api_key_classifies_as_auth_harddown` |
@@ -125,7 +125,7 @@ and carries the check that would prove it -- that list is the owner's post-check
 
 A green test that asserts the opposite of a binding is not a proof. These need an owner decision.
 
-- **PB-7** (inbound shed): CONTRADICTED by a green test: crates/busbar-core/src/tests/tests.rs test_inbound_over_capacity_queues_fifo_and_serves_when_freed asserts an over-cap arrival queues FIFO and is served 200, not the 503 + Retry-After: 1 the binding requires. Owner decision needed: binding or code.
+- **PB-7** (inbound shed): Resolved 2026-09-05: the shed was restored (a5e337b2); proven by crates/busbar/tests/inbound_concurrency_shed.rs, the admission layer test and the concurrency\|inbound-shed\|n8 cell.
 - **PB-8** (request bounds for `http`/`sse` units): The mapped tests cover the deadline, context_max exclusion and attempt caps; route_deadline_tests.rs pins DETAIL_REQUEST_TIMEOUT on the pre-attempt check and the pick_among None path landing on on_exhausted (503 overloaded + Retry-After); max_unit_duration does not exist yet.
 - **PB-11** (plugin trust and ABI windows): CONTRADICTED in part by green tests: crates/plugin-loader/src/tests/registry_tests.rs store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4 and supported_abi_store_floor_admits_v2 pin a store window of v2..=v4, where the binding requires v2..=v2 and refuses ABI 3/4. The plugins.load cells prove the trust/skip half only.
 - **PB-13** (`data_dir`): data_dir, DataDirNotWritable, KeysetMissing and wal_capacity do not exist in crates/ yet; the tripwire is armed anyway: no_data_dir_neutrality.rs boots a 1.5.5-shaped config and asserts no ledger/journal/hold/WAL series and no keyset/data-dir boot line, and the ops.scrape no-ledger-series cell records the same absence against 1.5.5.
@@ -142,7 +142,6 @@ A green test that asserts the opposite of a binding is not a proof. These need a
 
 Each line is the check that would move the binding to `mapped`.
 
-- **PB-7** (inbound shed): axum test: with max_inbound_concurrent=1 every listed data route sheds 503 with Retry-After: 1 while the admin listener answers; plus an http.crosscut cell
 
 ## Running the checks (a slower tier)
 
