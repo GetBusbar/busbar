@@ -1,3 +1,4 @@
+admin.ops|admin-token|wrong-destination
 admin.ops|DeleteExportName|if-match-malformed
 admin.ops|DeleteExportName|if-match-stale
 admin.ops|DeleteExportName|not-found
@@ -106,6 +107,7 @@ admin.ops|GetPoolsName|ok
 admin.ops|GetPoolsName|unauth
 admin.ops|GetProviders|ok
 admin.ops|GetProviders|unauth
+admin.ops|GetUsage|no-usage-after-mutation
 admin.ops|GetUsage|ok
 admin.ops|GetUsage|unauth
 admin.ops|PatchExportNameSettings|bad-body
@@ -147,6 +149,7 @@ admin.ops|PostConfigApply|if-match-stale
 admin.ops|PostConfigApply|ok
 admin.ops|PostConfigApply|unauth
 admin.ops|PostConfigReload|ok
+admin.ops|PostConfigReload|rate-limit
 admin.ops|PostConfigReload|unauth
 admin.ops|PostConfigRollback|bad-body
 admin.ops|PostConfigRollback|if-match-malformed

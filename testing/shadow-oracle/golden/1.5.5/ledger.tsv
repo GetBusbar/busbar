@@ -2278,3 +2278,6 @@ boot.refusal|BOOT-139b|boot	PASS	exit 1; [2m2026-09-05T20:00:49.891644Z[0m [3
 boot.warning|BOOT-W21|boot	PASS	exit 0; [2m2026-09-05T20:00:50.379295Z[0m [33m WARN[0m heterogen	
 boot.warning|BOOT-W22|boot	PASS	exit 0; [2m2026-09-05T20:00:50.906398Z[0m [33m WARN[0m heterogen	
 boot.warning|BOOT-W23|boot	PASS	exit 0; [2m2026-09-05T20:00:51.441586Z[0m [33m WARN[0m heterogen	
+admin.ops|GetUsage|no-usage-after-mutation	PASS	HTTP 200; usage Δ {}	
+admin.ops|PostConfigReload|rate-limit	PASS	HTTP 429; usage Δ {}	
+admin.ops|admin-token|wrong-destination	PASS	HTTP 401; usage Δ {}	

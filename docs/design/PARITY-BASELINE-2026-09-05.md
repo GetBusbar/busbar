@@ -2,7 +2,7 @@
 
 Golden: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam-work/target/oracle/recordings/golden` · Candidate: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam-work/target/oracle/recordings/candidate` · cells: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam-work/testing/shadow-oracle/cells.json`
 
-**Owed 879 · diverging 0 · golden gaps 1404 · weighted D/W = 0.0000**
+**Owed 882 · diverging 0 · golden gaps 1401 · weighted D/W = 0.0000**
 
 ## Decision
 
@@ -12,7 +12,7 @@ Golden: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam
 
 | family | owed | diverging | D/W |
 |---|---|---|---|
-| admin.ops | 231 | 0 | 0.000 |
+| admin.ops | 234 | 0 | 0.000 |
 | auth.lifecycle | 3 | 0 | 0.000 |
 | billing | 11 | 0 | 0.000 |
 | boot.refusal | 190 | 0 | 0.000 |
@@ -87,4 +87,3 @@ Golden: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam
 
 - 1380 × SKIP: named gap on the golden, never owed
 - 21 × SKIP: named gap: the fixture this cell needs is not in the tree yet
-- 3 × MISSING: no golden ledger row
