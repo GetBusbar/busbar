@@ -22,10 +22,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// A fresh, isolated fixture directory (pid + nanos, like the sibling harnesses).
+/// A fresh, isolated fixture directory (pid + nanos, like the sibling harnesses). Deliberately does
+/// NOT spell "data-dir"/"data_dir" (or any other `LEDGER_BOOT_WORDS` entry): the boot log prints this
+/// path (e.g. the overlay file location), and a fixture name containing the tripwire vocabulary would
+/// make the test flag its own path as a leak.
 fn fixture_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
-        "busbar-no-data-dir-{}-{}",
+        "busbar-neutrality-fixture-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -91,7 +94,9 @@ models:
     .unwrap();
 }
 
-const ADMIN_TOKEN: &str = "no-data-dir-neutrality-admin";
+// Deliberately does not spell "data-dir"/"data_dir": see `fixture_dir`'s comment on why the tripwire
+// vocabulary must not appear anywhere this fixture's own material could echo into the boot log.
+const ADMIN_TOKEN: &str = "neutrality-fixture-admin";
 
 /// The series prefixes a local ledger would introduce; none may appear on a 1.5.5 config.
 const LEDGER_SERIES: &[&str] = &[
@@ -149,6 +154,12 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
         "busbar did not reach 'listening' within 30s; log:\n{}",
         read_to_string(&log_path)
     );
+    // The boot log line lands the instant ANY of the per-core SO_REUSEPORT workers starts listening,
+    // not when every worker (and its metrics registry) is warm: the kernel can hand an early
+    // connection to a worker that answers 200 with a genuinely empty body before its exposition is
+    // wired up. `/healthz` bypassing auth only proves ONE of the N workers is up, not all of them
+    // (a later request can still land on a cold one), so the real gate is the scrape itself: retry it
+    // until it comes back non-empty before trusting its content one way or the other.
 
     // Mint one virtual key through the admin API, exactly as an operator would.
     let (_, minted) = http_request(
@@ -174,17 +185,23 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
         Some(r#"{"model":"test-model","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}"#),
         Some(&token),
     );
-    // The scrape (key-authenticated on the data listener in 1.5.5).
-    let (status, body) = http_request(
-        &format!("127.0.0.1:{data_port}"),
-        "GET",
-        "/metrics",
-        None,
-        Some(&token),
-    );
-    assert_eq!(
-        status, 200,
-        "GET /metrics must answer 200 on a 1.5.5-shaped config; got:\n{body}"
+    // The scrape (key-authenticated on the data listener in 1.5.5). Retry past the cold-worker
+    // window described above: keep scraping until a non-empty body proves the worker that answered
+    // is actually warm, rather than trusting the first (possibly cold) 200.
+    let data_addr = format!("127.0.0.1:{data_port}");
+    let mut status = 0u16;
+    let mut body = String::new();
+    let ready = wait_for(Duration::from_secs(10), || {
+        let (s, b) = http_request(&data_addr, "GET", "/metrics", None, Some(&token));
+        status = s;
+        let non_empty = !b.is_empty();
+        body = b;
+        s == 200 && non_empty
+    });
+    assert!(
+        ready,
+        "GET /metrics never answered 200 with a non-empty body within 10s (last status {status}); \
+         chat answered {chat:?}; mint answered {minted}; last exposition:\n{body}"
     );
     let body = body.as_str();
     assert!(
@@ -272,7 +289,7 @@ fn http_request(
         }
         let resp = req.send().await.expect("request");
         let status = resp.status().as_u16();
-        (status, resp.text().await.expect("DEBUG read body"))
+        (status, resp.text().await.unwrap_or_default())
     })
 }
 
