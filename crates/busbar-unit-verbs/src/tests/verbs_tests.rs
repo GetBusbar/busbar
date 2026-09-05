@@ -552,6 +552,203 @@ fn a_new_verb_admitted_by_posture_reaches_governance() {
     assert_eq!(out, b"ok");
 }
 
+/// A governance whose mint parks inside the call, so a second caller can be observed arriving while
+/// the first one's idempotency reservation is genuinely live.
+///
+/// The in-flight refusal is a fact about two callers overlapping, and there is no other way to hold
+/// a reservation open: a single-threaded test only ever sees the reservation already committed or
+/// already cleared.
+struct GatedGovernance {
+    inner: FakeGovernance,
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+    /// How many mints actually reached governance, so a refused retry can be shown to have minted
+    /// nothing.
+    mints: std::sync::Arc<AtomicU64>,
+    /// Only the FIRST caller parks. A second one that got this far was not refused, and it must say
+    /// so with an assertion rather than by deadlocking the test.
+    gate_spent: std::sync::atomic::AtomicBool,
+}
+
+impl GatedGovernance {
+    fn park(&self) {
+        if self
+            .gate_spent
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let _ = self.entered.send(());
+        let _ = self.release.lock().unwrap().recv();
+    }
+}
+
+impl Governance for GatedGovernance {
+    fn group_exists(&self, name: &str) -> bool {
+        self.inner.group_exists(name)
+    }
+    fn actual_parent(&self, name: &str) -> Option<String> {
+        self.inner.actual_parent(name)
+    }
+    fn provision_group(
+        &self,
+        admin: &AdminToken,
+        group: &str,
+        parent: &str,
+    ) -> Result<(), GovernanceError> {
+        self.inner.provision_group(admin, group, parent)
+    }
+    fn mint_key(
+        &self,
+        admin: &AdminToken,
+        group: Option<&str>,
+    ) -> Result<MintedKey, GovernanceError> {
+        self.park();
+        self.mints.fetch_add(1, Ordering::SeqCst);
+        self.inner.mint_key(admin, group)
+    }
+    fn rotate_key(&self, admin: &AdminToken, id: &str) -> Result<RotateOutcome, GovernanceError> {
+        self.park();
+        self.inner.rotate_key(admin, id)
+    }
+    fn execute_legacy(
+        &self,
+        verb: KernelVerb,
+        admin: &AdminToken,
+        request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError> {
+        self.inner.execute_legacy(verb, admin, request)
+    }
+    fn execute_new_verb(
+        &self,
+        verb: KernelVerb,
+        admin: &AdminToken,
+        request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError> {
+        self.inner.execute_new_verb(verb, admin, request)
+    }
+}
+
+/// A retry that arrives while the first call is still running is REFUSED, not served.
+///
+/// The alternative is minting a second admin key for one request — a credential the client never
+/// asked for and will never see. Asserted at the API level, through `Verbs`, because that is where
+/// the refusal is client-visible: a regression that collapsed `Probe::InFlight` into `Probe::NoKey`
+/// passes every test that only drives the bare cache.
+#[test]
+fn a_create_that_arrives_while_the_first_is_in_flight_is_refused_not_minted() {
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let mints = std::sync::Arc::new(AtomicU64::new(0));
+    let verbs = make_verbs(GatedGovernance {
+        inner: FakeGovernance::new(),
+        entered: entered_tx,
+        release: Mutex::new(release_rx),
+        mints: mints.clone(),
+        gate_spent: std::sync::atomic::AtomicBool::new(false),
+    });
+
+    // Everything the run learns is collected first and asserted after the parked thread has been
+    // let go: an assertion that fired inside the scope would strand the first call and hang.
+    let (retry, first) = std::thread::scope(|scope| {
+        let held = scope.spawn(|| {
+            let admin = admin();
+            verbs.create_key(
+                &admin,
+                "alice",
+                VerbScope::Full,
+                1_000,
+                UnitKey::new(1),
+                Some("dedupe-me"),
+                None,
+                None,
+            )
+        });
+
+        // The first call is now inside governance with its reservation live.
+        entered_rx.recv().expect("the first call reached the mint");
+        let admin = admin();
+        let retry = verbs.create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            1_001,
+            UnitKey::new(1),
+            Some("dedupe-me"),
+            None,
+            None,
+        );
+
+        release_tx.send(()).expect("let the first call finish");
+        (retry, held.join().expect("the first call did not panic"))
+    });
+
+    let err = retry.err().expect("a retry inside the first call's window is refused");
+    assert_eq!(err.step, crate::refusal::RefusalStep::Admit);
+    assert_eq!(
+        err.reason,
+        crate::refusal::ReasonCode::IdempotencyInFlight,
+        "the client-visible reason for an overlapping retry"
+    );
+
+    let first = first.expect("the first call succeeds once it is let go");
+    assert!(first.minted_outcome().is_some(), "exactly one key was minted");
+    assert_eq!(
+        mints.load(Ordering::SeqCst),
+        1,
+        "the refused retry must not have reached governance at all"
+    );
+}
+
+/// A rotate retry that overlaps its first call is refused the same way, on the rotate-scoped key.
+#[test]
+fn a_rotate_that_arrives_while_the_first_is_in_flight_is_refused() {
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let verbs = make_verbs(GatedGovernance {
+        inner: FakeGovernance::new().with_key("k1", false),
+        entered: entered_tx,
+        release: Mutex::new(release_rx),
+        mints: std::sync::Arc::new(AtomicU64::new(0)),
+        gate_spent: std::sync::atomic::AtomicBool::new(false),
+    });
+
+    let (retry, first) = std::thread::scope(|scope| {
+        let held = scope.spawn(|| {
+            let admin = admin();
+            verbs.rotate_key(
+                &admin,
+                "alice",
+                VerbScope::Full,
+                1_000,
+                UnitKey::new(1),
+                Some("dedupe-me"),
+                "k1",
+            )
+        });
+
+        entered_rx.recv().expect("the first call reached the rotate");
+        let admin = admin();
+        let retry = verbs.rotate_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            1_001,
+            UnitKey::new(1),
+            Some("dedupe-me"),
+            "k1",
+        );
+
+        release_tx.send(()).expect("let the first call finish");
+        (retry, held.join().expect("the first call did not panic"))
+    });
+
+    let err = retry.err().expect("a retry inside the first call's window is refused");
+    assert_eq!(err.step, crate::refusal::RefusalStep::Admit);
+    assert_eq!(err.reason, crate::refusal::ReasonCode::IdempotencyInFlight);
+    first.expect("the rotate succeeds once it is let go");
+}
+
 #[test]
 fn rate_limit_is_enforced_across_execute_calls() {
     let verbs = make_verbs(FakeGovernance::new());
