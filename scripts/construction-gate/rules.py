@@ -418,8 +418,16 @@ def rule_no_uninstalled_seam(tree, cfg):
     # A seam DEFINED in the substrate's own test kit is a fixture's install hook, not a production
     # promise: it is never counted (a test-kit path fragment names it).
     exempt = c.get("exempt_seam_path_fragments", [])
+    # `seam_root` is one root or a LIST of them. The substrate is two crates now (the value families
+    # split out of the crate that carries the egress engine) and `install_protocols` /
+    # `install_stream_translator_factory` / `install_diagnostics` went with the values — a
+    # single-string root would stop seeing the very seams the fault this rule exists for lived in.
+    roots = c["seam_root"]
+    if isinstance(roots, str):
+        roots = [roots]
+    roots = [r.rstrip("/") + os.sep for r in roots]
     for rel, fns in tree.fns.items():
-        if not rel.startswith(c["seam_root"].rstrip("/") + os.sep):
+        if not any(rel.startswith(r) for r in roots):
             continue
         if any(frag in rel for frag in exempt):
             continue

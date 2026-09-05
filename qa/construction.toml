@@ -105,7 +105,11 @@ why = """An installable seam (a substrate `install_*` / `set_*_factory` that fil
 static) is a promise that boot fills it. A seam only the test kit installs is a seam production \
 never fills — the stream-translator factory fault that made real streams pass through \
 untranslated while every test was green."""
-seam_root = "crates/busbar-substrate/src"
+# BOTH HALVES of the substrate. The value families split into `busbar-substrate-values` so a plane's
+# closure resolves no hyper/reqwest/tokio edge, and `install_protocols`,
+# `install_stream_translator_factory` and `install_diagnostics` all went with them — the second root
+# is what keeps this rule reading the seams the fault it exists for actually lived in.
+seam_root = ["crates/busbar-substrate/src", "crates/busbar-substrate-values/src"]
 seam_name_pattern = '^(install_[a-z0-9_]+|set_[a-z0-9_]+_factory)$'
 # A file whose path contains one of these is NOT production and cannot count as an installer.
 non_production_path_fragments = ["testkit", "test_support", "plugin-testkit", "fixtures.rs"]

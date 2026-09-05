@@ -52,7 +52,7 @@ note() { printf '  %s\n' "$*"; }
 hdr()  { printf '\n== %s ==\n' "$*"; }
 
 # ── THE NEUTRAL SURFACE (the ABI side; the only place these nouns are a leak) ─────────────────────
-NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/api/src crates/busbar-plugin/src"
+NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/busbar-substrate-values/src crates/api/src crates/busbar-plugin/src"
 
 # The metering/pricing context that promotes a bare `provider`/`model` from homonym to leak.
 CTX_RE='price|pricing|cost|billing|rate_card|meter|metering|budget|spend|charge|invoice|quota'
