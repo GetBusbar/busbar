@@ -156,6 +156,53 @@ async fn ingress_reads_a_head_and_body_frame_from_a_real_client() {
     assert_eq!(body.bytes.as_slice(), b"abcd");
 }
 
+/// A declared-length body that stops short at EOF is a framing error, not a short request.
+///
+/// The chunked branch already answers this way — a peer that stops before the terminal chunk gets
+/// `Framing`, because guessing where the body ended is the one thing a transport must not do. The
+/// declared-length branch is the same question and must give the same answer: a `Content-Length`
+/// that the bytes do not honour is a message that never arrived, not a smaller one that did.
+#[tokio::test]
+async fn a_declared_length_body_cut_short_at_eof_is_a_framing_error() {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+
+    let writer = tokio::spawn(async move {
+        let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        let mut wire = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 1000\r\n\r\n".to_vec();
+        wire.extend_from_slice(&vec![b'a'; 200]);
+        tokio::io::AsyncWriteExt::write_all(&mut client, &wire)
+            .await
+            .unwrap();
+        tokio::io::AsyncWriteExt::shutdown(&mut client)
+            .await
+            .unwrap();
+        // Hold the read half so the connection is half-closed, not reset.
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+
+    let conn = accept_fut.await.unwrap();
+    let mut frames = transport.frames(conn);
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the reader answers rather than hanging")
+        .expect("the stream yields the framing error, not end-of-stream");
+    assert_eq!(
+        first.unwrap_err(),
+        TransportError::Framing,
+        "a body 800 bytes short of its declared length is not a complete request"
+    );
+    writer.abort();
+}
+
 /// A chunked body of at least a mebibyte, written in chunks that straddle the read budget, arrives
 /// byte-exact — and the trailers that follow it arrive as their own frame rather than as body.
 ///

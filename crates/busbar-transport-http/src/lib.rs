@@ -777,7 +777,10 @@ async fn read_ingress_message(
                 .await
                 .map_err(|e| HttpTransport::map_io_err(&e))?;
             if n == 0 {
-                break;
+                // The peer stopped before the length it declared: the same answer the chunked
+                // branch gives a peer that stops before the terminal chunk. A body short of its
+                // declared length is a message that never arrived, not a smaller one that did.
+                return Err(TransportError::Framing);
             }
             rest.extend_from_slice(&chunk[..n]);
         }
