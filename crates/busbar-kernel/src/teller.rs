@@ -36,11 +36,12 @@
 //! "every unit posts exactly once" has to be readable in the shape of the code, not just true.
 
 use busbar_caps::{
-    Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Authenticated, Canary,
-    Decision, Decode, DurabilityLost, Encode, ExitToken, Hold, HoldCell, KernelSeal, LedgerToken,
-    Meter, MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags, PrincipalId,
-    QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName, TransportKeyToken, TrustToken,
-    UnitEnd, UnitKey, UnitToken, Usage, UsageLine, UsageToken, VerifiedDestination, Verify,
+    AdminToken, Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Authenticated,
+    Canary, Decision, Decode, DurabilityLost, Encode, ExitToken, Hold, HoldCell, KernelSeal,
+    LedgerToken, Meter, MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags,
+    PrincipalId, QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName,
+    TransportKeyToken, TrustToken, UnitEnd, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
+    VerifiedDestination, Verify,
 };
 
 use crate::registry::Generation;
@@ -102,6 +103,20 @@ impl Kernel {
     /// mint sees this one too.
     pub fn transport_key_token(&self) -> TransportKeyToken {
         TransportKeyToken::mint(&self.seal)
+    }
+
+    /// The verbs unit's token, as the composition root lends it.
+    ///
+    /// The second token minted outside the loop, and for the same reason as the first: a kernel
+    /// verb is a Route DESTINATION rather than a step of its own, so there is no step whose token
+    /// could stand in, and without this the verbs unit's `execute` has a parameter no caller in the
+    /// tree can supply. That was true of `provision_server` until `transport_key_token` existed and
+    /// it is true of `execute` until this does.
+    ///
+    /// Kept beside the other two and named the same way, so the source scan that accounts for every
+    /// mint sees this one too.
+    pub fn admin_token(&self) -> AdminToken {
+        AdminToken::mint(&self.seal)
     }
 
     /// The seal itself, for the other two places in the kernel that mint tokens: the recovery

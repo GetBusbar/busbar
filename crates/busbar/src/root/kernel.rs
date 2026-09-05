@@ -35,15 +35,21 @@
 //! egress-auth unit is called from inside Route by the egress unit; and the breaker unit is
 //! consulted at Verify and recorded at Route without ever being a step of its own.
 //!
-//! ## Why every method is unimplemented here
+//! ## One plane at a time
 //!
-//! This file is the skeleton: the shape is what has to be right first, because it is what every
-//! later step binds against, and a shape that compiles against the real trait is a claim that can
-//! be checked. The bodies arrive one plane at a time — admin, then the other three, then the
-//! reference plane last — and nothing calls into this type until the plane whose step it runs has
-//! been switched over.
+//! The bodies arrive one plane at a time — admin first, then the other three, then the reference
+//! plane last — and the first of them has landed. Every method therefore begins with the same
+//! question: is this unit one the admin bindings opened? If it is, the step runs against the units
+//! that plane composes over. If it is not, the step REFUSES, naming the step it refused at.
+//!
+//! The refusal is deliberate and is not a placeholder. A unit that reached this type on a plane
+//! this root does not yet drive was routed to the wrong loop, and there are only two honest answers
+//! to that: end it saying so, or panic. Serving it half-composed — arriving it, admitting it, and
+//! then finding at Route that nothing knows what it is — would charge a request slot for a unit that
+//! could never have been answered. A refusal at the first step costs nothing and says exactly what
+//! happened, which is what makes the coexistence window safe to be in.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use busbar_caps::{
     Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode, Hold,
@@ -137,6 +143,22 @@ pub struct ProductionUnits {
     pub meter_policy: crate::root::policy::MeterPolicyHandle,
     /// What the scope unit reads at Approve. Silence is a refusal.
     pub scope_policy: crate::root::policy::ScopePolicy,
+    /// The admin plane's bindings: the seam an operation's body is reached through, and the table
+    /// of admin units the loop is currently walking.
+    ///
+    /// One plane's bindings rather than five, because one plane has been switched. The other four
+    /// arrive as their own fields as their own steps land, and until then their step methods say so
+    /// rather than answering for a plane that is still served elsewhere.
+    pub admin: crate::root::units_admin::AdminBinding,
+    /// The store, behind the published ABI. The verbs unit's disaster-recovery subset and its
+    /// sealed idempotency cache both reach it, and both reach the same one.
+    pub store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
+    /// The credential the kernel lends the verbs unit for the length of an execution.
+    ///
+    /// Minted once, at boot, from the node's one authority — the second token in the tree minted
+    /// outside the loop, for the same reason as the first: a kernel verb is a Route destination
+    /// rather than a step, so no step's token stands in for it.
+    pub admin_token: busbar_caps::AdminToken,
 }
 
 impl ProductionUnits {
@@ -146,13 +168,22 @@ impl ProductionUnits {
     /// chain, reading the rate cards — has happened by the time this is called. This is the
     /// assembly, not the work. Every argument is a value configuration decided, which is the shape
     /// that makes it impossible to construct these units and forget one.
+    // The argument list IS the point, and shortening it would cost the property the doc comment
+    // above claims. Every parameter is one decision configuration made; bundling them into a struct
+    // would give that struct a `Default`, and a `Default` is exactly how a deployment ends up with a
+    // metering policy it never read its rate cards for. A long list that cannot be built wrong beats
+    // a short one that can.
+    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
+        kernel: &busbar_kernel::teller::Kernel,
         auth_chain: AuthChain,
         durability: crate::root::durability::Durability,
         breaker_policy: crate::root::adapters::BreakerPolicy,
         meter_policy: crate::root::policy::MeterPolicyHandle,
         scope_policy: crate::root::policy::ScopePolicy,
+        admin: crate::root::units_admin::AdminBinding,
+        store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
     ) -> Self {
         ProductionUnits {
             door: Door::new(InMemoryCells::new()),
@@ -164,106 +195,214 @@ impl ProductionUnits {
             durability: Mutex::new(durability),
             meter_policy,
             scope_policy,
+            admin,
+            store,
+            // Minted once, at boot, from the node's one authority. The verbs unit is lent it for the
+            // length of an execution and holds nothing after; there is no second way to obtain one.
+            admin_token: kernel.admin_token(),
         }
+    }
+
+    /// The scope an admin credential carries.
+    ///
+    /// A deployment that mounts the administrative listener behind its own credential grants the
+    /// full tier: 1.5.5's admin token is not scoped below it, and narrowing it here would refuse
+    /// operations the previous release admitted. The scope unit's matrix is still what decides what
+    /// that grant reaches — the grant is the ceiling, the matrix is the door.
+    fn admin_grant(&self) -> busbar_unit_verbs::VerbScope {
+        busbar_unit_verbs::VerbScope::Full
+    }
+}
+
+/// Every step below asks the same question first: which plane is this unit's? One plane has been
+/// switched onto this loop, so the answer is either the admin plane or a plane whose own steps have
+/// not landed yet. The unswitched answer is a refusal naming the step, never a panic and never a
+/// silent pass: a unit that reached here on a plane this root does not yet drive was routed wrongly,
+/// and the honest answer is to say so and end it rather than to serve it half-composed.
+impl ProductionUnits {
+    /// Whether this unit is one the admin bindings are walking.
+    ///
+    /// Membership of the table, not a guess from the context: the surface that opened the unit is
+    /// what put it there, so a unit that is in the table is one this root composed and a unit that
+    /// is not is one it did not.
+    fn is_admin(&self, ctx: &UnitCtx) -> bool {
+        self.admin.units.holds(ctx.key)
     }
 }
 
 impl Units for ProductionUnits {
-    fn arrival(&self, _token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
-        todo!("the kernel's arrival gate: size, rate, source, cursor and spill budgets from config")
+    fn arrival(&self, token: &UnitToken<Arrival>, ctx: &UnitCtx) -> Decision<Arrival> {
+        if self.is_admin(ctx) {
+            return crate::root::units_admin::arrival(&self.admin, token, ctx);
+        }
+        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
     }
 
-    fn decode(&self, _token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
-        todo!("the claimed plane's decode_ingress")
+    fn decode(&self, token: &UnitToken<Decode>, ctx: &UnitCtx) -> Decision<Decode> {
+        if self.is_admin(ctx) {
+            return crate::root::units_admin::decode(&self.admin, token, ctx);
+        }
+        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::DecodeFailed))
     }
 
     fn authenticate(
         &self,
-        _token: &UnitToken<Authenticate>,
-        _ctx: &UnitCtx,
+        token: &UnitToken<Authenticate>,
+        ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
-        todo!("the auth unit's resolve, over the cache, the key verifier and the revocation view")
+        if self.is_admin(ctx) {
+            return crate::root::units_admin::authenticate(&self.auth, &self.admin, token, ctx);
+        }
+        Decision::refuse(
+            token,
+            Refusal::new(busbar_caps::ReasonCode::Unauthenticated),
+        )
     }
 
     fn verify(
         &self,
-        _token: &UnitToken<Verify>,
+        token: &UnitToken<Verify>,
         _trust: &busbar_caps::TrustToken,
-        _ctx: &UnitCtx,
-        _principal: &PrincipalId,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
     ) -> Decision<Verify> {
-        todo!("the trust unit's verify, reading the breaker unit through the lane view")
+        if self.is_admin(ctx) {
+            return crate::root::units_admin::verify(&self.admin, token, ctx, principal);
+        }
+        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
     }
 
     fn approve(
         &self,
-        _token: &UnitToken<Approve>,
-        _ctx: &UnitCtx,
-        _principal: &PrincipalId,
-        _destinations: &[VerifiedDestination],
+        token: &UnitToken<Approve>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
-        todo!("the scope unit's required_scope, then the hook seats the root composes around it")
+        if self.is_admin(ctx) {
+            return crate::root::units_admin::approve(
+                &self.admin,
+                self.admin_grant(),
+                token,
+                ctx,
+                principal,
+                destinations,
+            );
+        }
+        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::ScopeDenied))
     }
 
     fn admit(
         &self,
-        _token: &UnitToken<Admit>,
-        _admit: &AdmitToken<Admit>,
-        _ctx: &UnitCtx,
-        _principal: &PrincipalId,
-        _destinations: &[VerifiedDestination],
+        token: &UnitToken<Admit>,
+        admit: &AdmitToken<Admit>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
     ) -> Decision<Admit> {
-        todo!("the admission unit, bound to the pinned arrival epoch and priced by the cost unit")
+        if self.is_admin(ctx) {
+            return crate::root::units_admin::admit(
+                &self.admin,
+                token,
+                admit,
+                ctx,
+                principal,
+                destinations,
+            );
+        }
+        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
     }
 
     fn route(
         &self,
-        _token: &UnitToken<Route>,
-        _ctx: &UnitCtx,
-        _meter: &AccrualMeter,
+        token: &UnitToken<Route>,
+        ctx: &UnitCtx,
+        meter: &AccrualMeter,
     ) -> Decision<Route> {
-        todo!("the egress unit's walk, over the twenty-two borrowed views of a route request")
+        if self.is_admin(ctx) {
+            return crate::root::units_admin::route(
+                &self.admin,
+                Arc::clone(&self.store),
+                &self.admin_token,
+                token,
+                ctx,
+                meter,
+            );
+        }
+        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
     }
 
     fn meter(
         &self,
-        _token: &UnitToken<Meter>,
-        _usage: &UsageToken,
-        _ctx: &UnitCtx,
-        _provisional: &Outcome,
+        token: &UnitToken<Meter>,
+        usage: &UsageToken,
+        ctx: &UnitCtx,
+        provisional: &Outcome,
     ) -> Decision<Meter> {
-        todo!("the usage unit's meter, against the policy built from the configured rate cards")
+        if self.is_admin(ctx) {
+            return crate::root::units_admin::meter(token, usage, ctx, provisional);
+        }
+        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::Unpriced))
     }
 
-    fn audit(
-        &self,
-        _token: &UnitToken<Audit>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
-    ) -> Decision<Audit> {
-        todo!("the audit unit's record stream, then the ledger settle on the exit path")
+    fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+        if self.is_admin(ctx) {
+            let durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
+            return crate::root::units_admin::audit(
+                &self.admin,
+                &durability.legacy,
+                token,
+                ctx,
+                outcome,
+            );
+        }
+        Decision::proceed(token, crate::root::units_admin::unresolved_facts(outcome))
     }
 
     fn audit_refused(
         &self,
-        _token: &UnitToken<Audit>,
-        _ctx: &UnitCtx,
-        _refusal: &Refusal,
+        token: &UnitToken<Audit>,
+        ctx: &UnitCtx,
+        refusal: &Refusal,
     ) -> Decision<Audit> {
-        todo!("the second audit door: a unit that never passed Admit, and was charged nothing")
+        if self.is_admin(ctx) {
+            let durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
+            return crate::root::units_admin::audit_refused(
+                &self.admin,
+                &durability.legacy,
+                token,
+                ctx,
+                refusal,
+            );
+        }
+        Decision::proceed(
+            token,
+            crate::root::units_admin::unresolved_facts(&Outcome::Refused(
+                refusal.step(),
+                refusal.reason(),
+            )),
+        )
     }
 
     fn encode(
         &self,
-        _token: &UnitToken<Encode>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
+        token: &UnitToken<Encode>,
+        ctx: &UnitCtx,
+        outcome: &Outcome,
     ) -> Decision<Encode> {
-        todo!("the claimed plane's encode_response, encode_refusal or encode_end")
+        if self.is_admin(ctx) {
+            return crate::root::units_admin::encode(&self.admin, token, ctx, outcome);
+        }
+        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::DecodeFailed))
     }
 
-    fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
-        todo!("what the usage and cost units reported, read once by the settlement table")
+    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
+        if self.is_admin(ctx) {
+            return crate::root::units_admin::evidence(ctx);
+        }
+        // Nothing located, nothing accrued, no upstream candidate: a unit this root did not compose
+        // reached no destination, and the settlement table's answer for that is zero on every row.
+        Evidence::default()
     }
 }
 
@@ -306,13 +445,23 @@ mod tests {
         )
         .expect("a memory-buffered journal cannot fail to open");
 
+        let kernel = new_kernel();
         let units = ProductionUnits::new(
+            &kernel,
             AuthChain::new(Vec::new(), false),
             durability,
             crate::root::adapters::BreakerPolicy::new(),
             crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
             crate::root::policy::ScopePolicy::new(),
+            crate::root::units_admin::AdminBinding::new(std::sync::Arc::new(
+                crate::root::units_admin::RefusingDispatch,
+            )),
+            std::sync::Arc::new(crate::root::units_admin::RefusingStore),
         );
+
+        // Nothing is in flight before anything arrives, which is the machine-checkable half of
+        // "an entry that outlived its unit would be a leak per request".
+        assert!(units.admin.units.is_empty());
 
         // The journal opened nothing, the ledger is dual-writing, and the scope policy permits
         // nothing until it is told to. All three are the safe end of a choice that had an unsafe
