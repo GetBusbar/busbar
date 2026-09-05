@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::{
@@ -84,6 +84,10 @@ struct Inner {
     chain: Vec<&'static str>,
     read: AsyncMutex<InnerRead>,
     write: AsyncMutex<InnerWrite>,
+    /// Set once the kernel has finalised this connection. A frame stream captured its own clone of
+    /// this state before the close, so the registry removal alone would not reach it; this is the
+    /// flag that stream checks so it ends at the next poll and the TLS stream actually drops.
+    closed: AtomicBool,
 }
 
 enum InnerRead {
@@ -207,6 +211,7 @@ impl TlsTransport {
             chain,
             read: AsyncMutex::new(InnerRead::Server(read)),
             write: AsyncMutex::new(InnerWrite::Server(write)),
+            closed: AtomicBool::new(false),
         });
         self.conns.lock().expect("poisoned").insert(id, inner);
         Conn::new(Arc::new(TlsConnHandle {
@@ -244,6 +249,7 @@ impl TlsTransport {
             chain,
             read: AsyncMutex::new(InnerRead::Client(read)),
             write: AsyncMutex::new(InnerWrite::Client(write)),
+            closed: AtomicBool::new(false),
         });
         self.conns.lock().expect("poisoned").insert(id, inner);
         Conn::new(Arc::new(TlsConnHandle {
@@ -443,6 +449,9 @@ impl Transport for TlsTransport {
         let inner = self.inner(conn.id());
         Box::pin(futures::stream::unfold(inner, move |inner| async move {
             let inner = inner?;
+            if inner.closed.load(Ordering::Acquire) {
+                return None;
+            }
             let mut buf = vec![0_u8; READ_CHUNK_BYTES];
             let mut guard = inner.read.lock().await;
             let result = match &mut *guard {
@@ -582,7 +591,13 @@ impl Transport for TlsTransport {
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {
-        self.conns.lock().expect("poisoned").remove(&conn.id());
+        // A frame stream holds its own clone of the state, so removing the registry entry is not
+        // enough to drop the TLS stream: the flag is what ends that stream at its next poll, after
+        // which the last clone goes and the socket really does close.
+        let inner = self.conns.lock().expect("poisoned").remove(&conn.id());
+        if let Some(inner) = inner {
+            inner.closed.store(true, Ordering::Release);
+        }
     }
 
     fn unit0_refusal<'a>(

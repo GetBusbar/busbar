@@ -186,6 +186,41 @@ async fn cancel_mid_frame_leaves_the_connection_usable() {
 }
 
 #[tokio::test]
+async fn close_ends_a_live_frame_stream() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key())
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let mut frames = server.frames(server_conn.clone());
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .await
+        .unwrap();
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"first");
+
+    // The kernel finalises the connection. A stream still pumping it must end, and the socket
+    // must drop: bytes the peer writes afterwards are never yielded.
+    server.close(server_conn, CloseReason::Normal);
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after close"))
+        .await
+        .unwrap();
+    assert!(
+        frames.next().await.is_none(),
+        "a closed connection's frame stream must end, not keep yielding inbound frames"
+    );
+}
+
+#[tokio::test]
 async fn every_transport_error_is_mapped() {
     // Refused: nothing listens on this port.
     let client = TcpTransport::new();
