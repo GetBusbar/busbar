@@ -28,7 +28,7 @@ use crate::ir::tool::{CallRef, IrDuplexTool};
 use crate::ir::usage::IrDuplexUsage;
 use bytes::Bytes;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// The dialect wire `type` tokens — named once here so the reader's dispatch and the writer's framing
 /// never drift. These are the plane's OWN vocabulary (it owns 100% of its protocol nouns, `plane4-duplex-session.md` §7.2).
@@ -73,12 +73,26 @@ pub struct WireEvent(pub bytes::Bytes);
 /// `CallRef ↔ call_id` correlation table (`plane4-duplex-session.md` §2.2), the negotiated output format, and the barge-in
 /// playback-position bookkeeping (`plane4-duplex-session.md` §2.3 — the plane tracks bytes played because the upstream emits
 /// audio faster than realtime).
+/// THE CEILING ON THE `call_id → CallRef` TABLE, stated here rather than left implicit.
+///
+/// The table is a correlation convenience — open, args, close and result for ONE call meeting under
+/// one handle — not a ledger, and nothing removes from it within a session (a `conversation.item.delete`
+/// deletes an ITEM, which is not the call). A client that mints distinct `call_id`s therefore grows
+/// it for as long as the call lasts. 1024 is far past any real turn's concurrent tool calls, so the
+/// eviction below is unreachable in ordinary use; past it the OLDEST entry goes and a re-sighting of
+/// an evicted id correlates as a NEW call, which is the honest answer once the older correlation is
+/// no longer held.
+pub const MAX_TRACKED_CALL_IDS: usize = 1024;
+
 #[derive(Debug)]
 pub struct DecodeState {
     up_seq: u64,
     down_seq: u64,
     next_call_ref: u64,
     call_ids: HashMap<String, CallRef>,
+    /// Insertion order of `call_ids`, oldest first — what makes "evict the oldest" answerable
+    /// without asking the map, which has no order.
+    call_id_order: VecDeque<String>,
     /// Downlink audio bytes played out for the CURRENT item — reset on flush / new item.
     played_bytes: u64,
     /// Negotiated OUTPUT format the truncate math measures against.
@@ -92,6 +106,7 @@ impl Default for DecodeState {
             down_seq: 0,
             next_call_ref: 0,
             call_ids: HashMap::new(),
+            call_id_order: VecDeque::new(),
             played_bytes: 0,
             output_fmt: AudioFormat::Pcm16,
         }
@@ -115,7 +130,8 @@ impl DecodeState {
 
     /// The [`CallRef`] for a wire `call_id`, minting a fresh monotonic handle the first time the id is
     /// seen and returning the SAME handle on every later sighting (open → args → close → result all
-    /// correlate to one ref).
+    /// correlate to one ref). Bounded by [`MAX_TRACKED_CALL_IDS`]: past the ceiling the oldest id is
+    /// evicted, so a session cannot be made to grow this table without limit by minting call ids.
     pub fn ref_for_call_id(&mut self, call_id: &str) -> CallRef {
         if let Some(r) = self.call_ids.get(call_id) {
             return *r;
@@ -123,6 +139,12 @@ impl DecodeState {
         let r = CallRef(self.next_call_ref);
         self.next_call_ref += 1;
         self.call_ids.insert(call_id.to_string(), r);
+        self.call_id_order.push_back(call_id.to_string());
+        while self.call_id_order.len() > MAX_TRACKED_CALL_IDS {
+            if let Some(oldest) = self.call_id_order.pop_front() {
+                self.call_ids.remove(&oldest);
+            }
+        }
         r
     }
 
@@ -180,8 +202,15 @@ fn u64_at(v: &Value, key: &str) -> u64 {
 }
 
 /// base64-decode a wire audio string to opaque media bytes (the identity IR is the decoded bytes).
-fn decode_audio(b64: &str) -> Bytes {
-    busbar_substrate_values::media::base64_decode(b64).unwrap_or_default()
+///
+/// `None` on a payload that is not base64, and every read path must DROP that frame rather than
+/// substitute an empty one. The callee returns `Option` deliberately — it refuses even a lone
+/// trailing sextet "rather than silently drop it, honoring the fail-loud contract" — and an empty
+/// frame relayed and metered in place of a refusal is indistinguishable from a caller who said
+/// nothing, which is the one confusion a voice plane cannot afford. The Twilio grammar in this same
+/// crate already answers this way (`BadPayload`, never an empty payload).
+fn decode_audio(b64: &str) -> Option<Bytes> {
+    busbar_substrate_values::media::base64_decode(b64)
 }
 
 /// base64-encode opaque media bytes back to a wire audio string.
@@ -239,7 +268,9 @@ impl DuplexReader for OpenAiRealtimeCodec {
                 })]
             }
             wire::INPUT_AUDIO_APPEND => {
-                let media = decode_audio(str_at(&v, "audio"));
+                let Some(media) = decode_audio(str_at(&v, "audio")) else {
+                    return Vec::new();
+                };
                 vec![IrClientEvent::AudioFrame(IrAudioFrame {
                     dir: UpDown::Up,
                     seq: st.next_up_seq(),
@@ -270,7 +301,10 @@ impl DuplexReader for OpenAiRealtimeCodec {
             wire::ITEM_TRUNCATE => {
                 vec![IrClientEvent::Control(IrDuplexControl::ItemTruncate {
                     item_ref: str_at(&v, "item_id").to_string(),
-                    content_index: u64_at(&v, "content_index") as u32,
+                    // A wire value that does not fit takes the field's documented default (`0`),
+                    // the same answer an ABSENT `content_index` gets. Narrowing with `as` would
+                    // instead hand back a different, perfectly valid index into different content.
+                    content_index: u32::try_from(u64_at(&v, "content_index")).unwrap_or(0),
                     audio_played_ms: u64_at(&v, "audio_end_ms"),
                 })]
             }
@@ -318,7 +352,9 @@ impl DuplexReader for OpenAiRealtimeCodec {
                 item_id: str_at(&v, "item_id").to_string(),
             }],
             wire::OUTPUT_AUDIO_DELTA | wire::OUTPUT_AUDIO_DELTA_LEGACY => {
-                let media = decode_audio(str_at(&v, "delta"));
+                let Some(media) = decode_audio(str_at(&v, "delta")) else {
+                    return Vec::new();
+                };
                 st.record_played(media.len() as u64);
                 vec![IrServerEvent::AudioFrame(IrAudioFrame {
                     dir: UpDown::Down,
@@ -558,9 +594,16 @@ impl DuplexWriter for OpenAiRealtimeCodec {
 }
 
 /// Re-frame the extracted token classes back onto a `usage` object (the inverse of [`extract_usage`]).
+///
+/// The sums SATURATE, matching `IrDuplexUsage::to_billing_usage`'s stated discipline ("a runaway
+/// turn pins the count, never wraps small"): these counts came off an upstream `usage` object, and
+/// a wrapped total is a small, believable number that is false.
 fn usage_to_wire(u: &IrDuplexUsage) -> Value {
     json!({
-        "total_tokens": u.audio_in + u.audio_out + u.text_in + u.text_out,
+        "total_tokens": u.audio_in
+            .saturating_add(u.audio_out)
+            .saturating_add(u.text_in)
+            .saturating_add(u.text_out),
         "input_token_details": {
             "audio_tokens": u.audio_in,
             "text_tokens": u.text_in,

@@ -127,14 +127,19 @@ fn vad_from_realtime_input_config(ric: &Value) -> Option<IrVad> {
     }
     Some(IrVad::ServerVad {
         threshold: 0.5,
+        // A timing that does not fit in the shared IR's `u32` takes the SAME documented default an
+        // absent field takes. Narrowing with `as` would turn a nonsense value into "no padding at
+        // all" / "no silence window at all" — working settings nobody configured.
         prefix_padding_ms: aad
             .get("prefixPaddingMs")
             .and_then(Value::as_u64)
-            .unwrap_or(300) as u32,
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(300),
         silence_duration_ms: aad
             .get("silenceDurationMs")
             .and_then(Value::as_u64)
-            .unwrap_or(200) as u32,
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(200),
         create_response: true,
         interrupt_response: true,
     })
@@ -293,11 +298,16 @@ fn usage_from_metadata(u: &Value) -> IrDuplexUsage {
 
 /// Re-frame the extracted token classes back onto a Gemini `usageMetadata` object (inverse of
 /// [`usage_from_metadata`]).
+/// The sums SATURATE for the same reason the OpenAI re-frame's do: these counts came off an
+/// upstream `usageMetadata` object, and a wrapped total is a small number that is false.
 fn usage_to_metadata(u: &IrDuplexUsage) -> Value {
     json!({
-        "promptTokenCount": u.audio_in + u.text_in,
-        "responseTokenCount": u.audio_out + u.text_out,
-        "totalTokenCount": u.audio_in + u.text_in + u.audio_out + u.text_out,
+        "promptTokenCount": u.audio_in.saturating_add(u.text_in),
+        "responseTokenCount": u.audio_out.saturating_add(u.text_out),
+        "totalTokenCount": u.audio_in
+            .saturating_add(u.text_in)
+            .saturating_add(u.audio_out)
+            .saturating_add(u.text_out),
         "cachedContentTokenCount": u.cached,
         "promptTokensDetails": [
             { "modality": "AUDIO", "tokenCount": u.audio_in },
@@ -347,7 +357,9 @@ impl DuplexReader for GeminiLiveCodec {
                 if audio_format_from_mime(str_at(blob, "mimeType")).is_none() {
                     return; // non-audio realtime input has no shared frame (drop).
                 }
-                let media = decode_audio(str_at(blob, "data"));
+                let Some(media) = decode_audio(str_at(blob, "data")) else {
+                    return; // a payload that is not base64 is not silence — emit no frame.
+                };
                 out.push(IrClientEvent::AudioFrame(IrAudioFrame {
                     dir: UpDown::Up,
                     seq: st.next_up_seq(),
@@ -423,7 +435,9 @@ impl DuplexReader for GeminiLiveCodec {
                         if audio_format_from_mime(mime).is_none() {
                             continue;
                         }
-                        let media = decode_audio(str_at(inline, "data"));
+                        let Some(media) = decode_audio(str_at(inline, "data")) else {
+                            continue; // a payload that is not base64 is not silence — emit no frame.
+                        };
                         st.record_played(media.len() as u64);
                         out.push(IrServerEvent::AudioFrame(IrAudioFrame {
                             dir: UpDown::Down,

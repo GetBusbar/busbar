@@ -297,6 +297,143 @@ fn item_truncate_roundtrips_end_ms() {
     );
 }
 
+/// A CONTENT INDEX THAT DOES NOT FIT MUST NOT BECOME A DIFFERENT, VALID INDEX.
+///
+/// `content_index` arrives from a CLIENT, which is untrusted input. Narrowing the wire `u64` with
+/// `as u32` turns `4294967296` into `0` — a silently different, perfectly plausible index into a
+/// different piece of content. Out of range means the field was not usable, and the honest answer
+/// is the field's own documented default (`0`), reached deliberately rather than by wrap-around.
+#[test]
+fn an_out_of_range_content_index_falls_back_to_the_documented_default() {
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    for (wire_value, expect) in [(4_294_967_296u64, 0u32), (u64::MAX, 0), (7, 7)] {
+        let ir = codec.read_up(
+            wire(
+                &json!({
+                    "type": "conversation.item.truncate",
+                    "item_id": "item_42",
+                    "content_index": wire_value,
+                    "audio_end_ms": 500
+                })
+                .to_string(),
+            ),
+            &mut st,
+        );
+        let IrClientEvent::Control(IrDuplexControl::ItemTruncate { content_index, .. }) = &ir[0]
+        else {
+            panic!("expected ItemTruncate");
+        };
+        assert_eq!(
+            *content_index, expect,
+            "content_index {wire_value} must not be truncated into a different valid index"
+        );
+    }
+}
+
+/// TOKEN SUMS SATURATE, THEY DO NOT WRAP.
+///
+/// The four counts come from an upstream `usage` object — untrusted bytes. The crate already states
+/// this discipline in `IrDuplexUsage::to_billing_usage` ("a runaway turn pins the count, never
+/// wraps small"); the client-facing re-frame must not answer differently, because a wrapped total
+/// is a small, believable number that is simply false.
+#[test]
+fn usage_totals_saturate_rather_than_wrap() {
+    let u = IrDuplexUsage {
+        audio_in: u64::MAX,
+        audio_out: 1,
+        text_in: 1,
+        text_out: 1,
+        cached: 0,
+    };
+    let wire = usage_to_wire(&u);
+    assert_eq!(
+        wire["total_tokens"].as_u64(),
+        Some(u64::MAX),
+        "a total that cannot be represented pins at the ceiling; it never wraps to a small number"
+    );
+}
+
+/// AUDIO THAT DOES NOT DECODE IS NOT SILENCE.
+///
+/// `base64_decode` returns `Option` deliberately — the substrate's own comment calls it the
+/// fail-loud contract. Turning a `None` into an empty frame relays and meters a zero-length audio
+/// frame that is indistinguishable from a caller saying nothing, which is the one thing a voice
+/// plane must not confuse. No frame is the honest answer, exactly as the Twilio arm in this crate
+/// already gives (`BadPayload` rather than an empty payload).
+#[test]
+fn an_undecodable_audio_payload_emits_no_frame() {
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    let up = codec.read_up(
+        wire(&json!({ "type": "input_audio_buffer.append", "audio": "!!!!" }).to_string()),
+        &mut st,
+    );
+    assert!(
+        up.is_empty(),
+        "an uplink audio payload that is not base64 must yield no IR frame, got {up:?}"
+    );
+    let down = codec.read_down(
+        wire(&json!({ "type": "response.output_audio.delta", "delta": "!!!!" }).to_string()),
+        &mut st,
+    );
+    assert!(
+        down.is_empty(),
+        "a downlink audio delta that is not base64 must yield no IR frame, got {down:?}"
+    );
+    assert_eq!(
+        st.played_ms(),
+        0,
+        "a payload that never decoded must not advance the barge-in playback clock"
+    );
+    // Well-formed audio still flows, in both directions.
+    assert_eq!(
+        codec
+            .read_up(
+                wire(
+                    &json!({ "type": "input_audio_buffer.append", "audio": b64(&[1, 2, 3, 4]) })
+                        .to_string()
+                ),
+                &mut st,
+            )
+            .len(),
+        1
+    );
+}
+
+/// THE CALL-ID CORRELATION TABLE HAS A CEILING.
+///
+/// Nothing removes from it within a session — not even `conversation.item.delete` — so a client
+/// that mints distinct `call_id`s grows it for as long as the call lasts. The table is a
+/// correlation convenience, not a ledger: past the documented ceiling the OLDEST entry goes, and a
+/// re-sighting of an evicted id correlates as a new call rather than keeping the map growing.
+#[test]
+fn the_call_id_table_is_capped_and_evicts_the_oldest() {
+    let mut st = DecodeState::default();
+    let first = st.ref_for_call_id("call-0");
+    for i in 1..=MAX_TRACKED_CALL_IDS {
+        st.ref_for_call_id(&format!("call-{i}"));
+    }
+    assert_eq!(
+        st.call_ids.len(),
+        MAX_TRACKED_CALL_IDS,
+        "the table stays at its ceiling however many distinct call ids arrive"
+    );
+    assert!(
+        !st.call_ids.contains_key("call-0"),
+        "the OLDEST id is the one evicted"
+    );
+    assert_ne!(
+        st.ref_for_call_id("call-0"),
+        first,
+        "an evicted id correlates as a new call rather than resurrecting its old handle"
+    );
+    // The most recent ids are still correlated, which is the whole point of keeping the table.
+    let newest = format!("call-{MAX_TRACKED_CALL_IDS}");
+    let handle = st.ref_for_call_id(&newest);
+    assert_eq!(st.ref_for_call_id(&newest), handle);
+}
+
 // ── tools: correlation across the call loop ──────────────────────────────────────────────────────
 
 #[test]
