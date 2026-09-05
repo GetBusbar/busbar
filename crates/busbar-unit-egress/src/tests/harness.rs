@@ -754,6 +754,7 @@ impl busbar_contract::Transport for TestTransport {
     fn unit0_refusal<'a>(
         &'a self,
         _conn: Conn,
+        _stream: Option<busbar_contract::StreamId>,
         _refusal: &'a Refusal,
         _bytes: ArenaBytes<'a>,
     ) -> busbar_contract::Fut<'a, ()> {

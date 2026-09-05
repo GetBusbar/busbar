@@ -151,9 +151,15 @@ pub trait Transport: Plugin + Send + Sync + 'static {
     ///
     /// This is the pre-decode path: no plane is known yet, so the kernel renders the refusal
     /// through the transport's own generic envelope rather than through a dialect.
+    ///
+    /// `stream` names how much of the connection the refusal is about. On a transport whose first
+    /// unit opens per stream, a refusal is one stream's — the other streams on that connection
+    /// belong to other units, which have done nothing wrong and must go on to complete. `None` is
+    /// the whole connection, which is the only honest reading on a transport that carries one.
     fn unit0_refusal<'a>(
         &'a self,
         conn: Conn,
+        stream: Option<StreamId>,
         refusal: &'a Refusal,
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()>;

@@ -576,6 +576,8 @@ impl Transport for HttpTransport {
     fn unit0_refusal<'a>(
         &'a self,
         conn: Conn,
+        // One request per connection here, so a refusal is always the whole of it.
+        _stream: Option<StreamId>,
         _refusal: &'a Refusal,
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()> {

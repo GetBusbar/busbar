@@ -285,7 +285,7 @@ async fn unit0_refusal_writes_then_closes() {
         stream: None,
         correlates: None,
     };
-    t.unit0_refusal(a, &refusal, ArenaBytes::new(b"refused")).await.unwrap();
+    t.unit0_refusal(a, None, &refusal, ArenaBytes::new(b"refused")).await.unwrap();
     let mut frames = t.frames(b);
     let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), b"refused");

@@ -392,6 +392,7 @@ impl Transport for FixtureTransport {
     fn unit0_refusal<'a>(
         &'a self,
         _conn: Conn,
+        _stream: Option<StreamId>,
         _refusal: &'a Refusal,
         _bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()> {

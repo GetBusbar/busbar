@@ -359,6 +359,8 @@ impl Transport for TcpTransport {
     fn unit0_refusal<'a>(
         &'a self,
         conn: Conn,
+        // `tcp` carries one stream, so there is nothing narrower than the connection to refuse on.
+        _stream: Option<StreamId>,
         _refusal: &'a Refusal,
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()> {

@@ -221,10 +221,11 @@ impl Transport for SseTransport {
     fn unit0_refusal<'a>(
         &'a self,
         conn: Conn,
+        stream: Option<StreamId>,
         refusal: &'a Refusal,
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()> {
-        self.http.unit0_refusal(conn, refusal, bytes)
+        self.http.unit0_refusal(conn, stream, refusal, bytes)
     }
 }
 

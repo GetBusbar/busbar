@@ -374,6 +374,8 @@ impl Transport for StdioTransport {
     fn unit0_refusal<'a>(
         &'a self,
         conn: Conn,
+        // stdio is one channel; the connection is the whole of what can be refused.
+        _stream: Option<StreamId>,
         _refusal: &'a Refusal,
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()> {

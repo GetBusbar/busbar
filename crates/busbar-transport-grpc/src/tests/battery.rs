@@ -282,6 +282,110 @@ async fn write_to_unseen_stream_on_an_accepted_connection_is_refused() {
     assert_eq!(err, TransportError::Framing);
 }
 
+/// Refusing request *n* leaves *n±1* completing on the same connection.
+///
+/// `Unit0Trigger::FirstMessage` opens a session per stream here, so a refusal is one stream's. When
+/// the refusal took a whole `Conn` and no stream, the only safe reading was to broadcast onto every
+/// open call and close the connection — which refused two units for one unit's fault, on a
+/// connection a deployment expected to keep carrying the others.
+#[tokio::test]
+async fn refusing_one_call_leaves_its_neighbours_completing() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = std::sync::Arc::new(client_transport());
+    let keys = test_key_handle();
+    let listener = server_t
+        .listen(&BindTo("127.0.0.1:0".to_string()), &keys)
+        .await
+        .unwrap();
+    let addr = listener.local_addr();
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let client_conn = client_t
+        .dial(&verified_upstream(host), &keys)
+        .await
+        .unwrap();
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+
+    // Three calls on one connection: the middle one is the one that gets refused.
+    for (id, body) in [(1_u64, &b"one"[..]), (2, b"two"), (3, b"three")] {
+        client_t
+            .write(&client_conn, StreamId(id), ArenaBytes::new(body))
+            .await
+            .unwrap();
+    }
+
+    let server_conn = accept_task.await.unwrap().unwrap();
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let mut server_streams = std::collections::BTreeMap::new();
+    for _ in 0..3 {
+        let (stream, frame) = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        server_streams.insert(
+            String::from_utf8(frame.bytes.as_slice().to_vec()).unwrap(),
+            stream,
+        );
+    }
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::InFlightCap,
+        retry_after_secs: None,
+        // The refusal names the call it is about, which is the whole of what changed here.
+        stream: Some(server_streams["two"]),
+        correlates: None,
+    };
+
+    // Refuse the middle call by name, then answer its two neighbours normally.
+    server_t
+        .unit0_refusal(
+            server_conn.clone(),
+            Some(server_streams["two"]),
+            &refusal,
+            ArenaBytes::new(b"refused"),
+        )
+        .await
+        .unwrap();
+    for name in ["one", "three"] {
+        server_t
+            .write(
+                &server_conn,
+                server_streams[name],
+                ArenaBytes::new(name.as_bytes()),
+            )
+            .await
+            .expect("a neighbour's call is still open");
+    }
+
+    // Every one of the three still gets its own answer, and the refused one gets the refusal.
+    let mut client_frames = client_t.frames(client_conn);
+    let mut answered = std::collections::BTreeMap::new();
+    while answered.len() < 3 {
+        let (stream, frame) = tokio::time::timeout(Duration::from_secs(5), client_frames.next())
+            .await
+            .expect("the connection is still carrying the other calls")
+            .unwrap()
+            .unwrap();
+        if !frame.bytes.as_slice().is_empty() {
+            answered.insert(
+                stream,
+                String::from_utf8(frame.bytes.as_slice().to_vec()).unwrap(),
+            );
+        }
+    }
+    let mut bodies: Vec<_> = answered.values().cloned().collect();
+    bodies.sort();
+    assert_eq!(
+        bodies,
+        vec!["one".to_string(), "refused".to_string(), "three".to_string()],
+        "the refused call got the refusal and its neighbours completed"
+    );
+}
+
 #[tokio::test]
 async fn a_handoff_onto_grpc_is_a_mismatch() {
     // Nothing is adopted ONTO `grpc`: it takes a stream from the layer under it at `accept` and

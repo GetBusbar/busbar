@@ -464,6 +464,8 @@ impl Transport for WsTransport {
     fn unit0_refusal<'a>(
         &'a self,
         conn: Conn,
+        // A WebSocket connection carries one message stream; refusing it refuses all of it.
+        _stream: Option<StreamId>,
         _refusal: &'a Refusal,
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()> {

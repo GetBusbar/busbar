@@ -300,28 +300,45 @@ impl Transport for GrpcTransport {
         }
     }
 
+    /// Refuse one call, or the whole connection where the caller names no call.
+    ///
+    /// `Unit0Trigger::FirstMessage` opens a session PER STREAM here, on a connection that may be
+    /// carrying several at once. A refusal of request *n* is therefore about request *n*: its
+    /// outbound stream is written and ended, and *n±1* go on to complete on the same connection,
+    /// untouched. Only a refusal that names no stream is about the connection, and that one closes
+    /// it — which is what a transport with a single stream would have meant all along.
     fn unit0_refusal<'a>(
         &'a self,
         conn: Conn,
+        stream: Option<StreamId>,
         _refusal: &'a Refusal,
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()> {
         Box::pin(async move {
-            // AMBIGUITY (see the crate's own report): `unit0_refusal` takes a whole `Conn`, but on
-            // this transport `Unit0Trigger::FirstMessage` opens a session PER STREAM on a
-            // connection that may carry several. The contract gives no stream to target, so this
-            // best-effort broadcasts the refusal onto every stream currently open on the
-            // connection, then closes the whole connection — safe (nothing is left half-served)
-            // but almost certainly wider than a real deployment wants.
             let id = conn.id();
-            if let Some(state) = self.state_of(id) {
-                let payload = bytes.as_slice().to_vec();
-                let senders: Vec<_> = state.outbound.lock().unwrap().values().cloned().collect();
-                for tx in senders {
-                    let _ = tx.send(payload.clone());
+            let Some(state) = self.state_of(id) else {
+                return Ok(());
+            };
+            let payload = bytes.as_slice().to_vec();
+            match stream {
+                Some(stream) => {
+                    // Remove the sender as well as writing to it: dropping it is what ends this
+                    // call's response stream (and so emits its `grpc-status` trailer), which is the
+                    // difference between refusing one call and leaving it half-served.
+                    let tx = state.outbound.lock().unwrap().remove(&stream.0);
+                    if let Some(tx) = tx {
+                        let _ = tx.send(payload);
+                    }
+                }
+                None => {
+                    let senders: Vec<_> =
+                        state.outbound.lock().unwrap().values().cloned().collect();
+                    for tx in senders {
+                        let _ = tx.send(payload.clone());
+                    }
+                    self.close(conn, CloseReason::Normal);
                 }
             }
-            self.close(conn, CloseReason::Normal);
             Ok(())
         })
     }

@@ -530,6 +530,8 @@ impl Transport for TlsTransport {
     fn unit0_refusal<'a>(
         &'a self,
         conn: Conn,
+        // `tls` inherits `tcp`'s single stream; the connection is the whole of what can be refused.
+        _stream: Option<StreamId>,
         _refusal: &'a Refusal,
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()> {

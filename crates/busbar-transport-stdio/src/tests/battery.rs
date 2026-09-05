@@ -209,7 +209,7 @@ async fn unit0_refusal_writes_then_closes() {
         stream: None,
         correlates: None,
     };
-    t.unit0_refusal(a, &refusal, ArenaBytes::new(b"refused"))
+    t.unit0_refusal(a, None, &refusal, ArenaBytes::new(b"refused"))
         .await
         .unwrap();
     let mut frames = t.frames(b);
