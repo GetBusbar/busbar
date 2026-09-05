@@ -202,6 +202,66 @@ fn claims_on_different_transports_never_collide() {
     assert!(!a.overlaps(&b));
 }
 
+/// One table writes both the ladder and the claim list, so the two cannot disagree.
+///
+/// A claim carries exactly one selector, which is right, and a plane whose protocol detection is a
+/// fourteen-rung ladder therefore has two dozen claims. Transcribing them twice by hand -- once as
+/// rungs and once as the narrower declaration -- is where a rung gets added to one list and
+/// forgotten in the other. Here the two are the same table read twice by the compiler.
+#[test]
+fn one_ladder_table_writes_both_lists() {
+    #[derive(Debug)]
+    struct Rung {
+        rung: u16,
+        dialect: &'static str,
+        claim: busbar_contract::grammar::Claim,
+    }
+
+    const fn build(selector: Selector) -> busbar_contract::grammar::Claim {
+        busbar_contract::grammar::Claim {
+            transport: "http",
+            selector,
+            scheme: Some("inbound"),
+            scheme_alternatives: &["bearer"],
+            idempotency: None,
+        }
+    }
+
+    busbar_contract::claims_from_ladder! {
+        /// The ladder, tightest first.
+        FIXTURE_LADDER,
+        /// The same list, one field narrower.
+        FIXTURE_CLAIMS,
+        Rung,
+        build,
+        // Rung 1: the tightest evidence there is.
+        1 => "alpha", Selector::HeaderPrefix("authorization", "AWS4-HMAC-SHA256"),
+        // Rung 2: a vendor header.
+        2 => "beta", Selector::HeaderPresent("x-beta-version"),
+        2 => "beta", Selector::HeaderPresent("x-beta-key"),
+        // Rung 3: the loosest.
+        3 => "alpha", Selector::PathSuffix("/v1/chat"),
+    }
+
+    assert_eq!(FIXTURE_LADDER.len(), 4);
+    assert_eq!(FIXTURE_CLAIMS.len(), FIXTURE_LADDER.len());
+    for (claim, entry) in FIXTURE_CLAIMS.iter().zip(FIXTURE_LADDER) {
+        assert_eq!(*claim, entry.claim, "the two lists drifted");
+    }
+
+    // Order is the table's order, and the rung numbers ascend.
+    let rungs: Vec<u16> = FIXTURE_LADDER.iter().map(|r| r.rung).collect();
+    assert_eq!(rungs, vec![1, 2, 2, 3]);
+    assert_eq!(FIXTURE_LADDER[0].dialect, "alpha");
+    assert_eq!(FIXTURE_LADDER[1].dialect, "beta");
+
+    // The builder is the caller's, so scheme and alternatives are declared once, not per row.
+    for claim in FIXTURE_CLAIMS {
+        assert_eq!(claim.scheme, Some("inbound"));
+        assert_eq!(claim.scheme_alternatives, &["bearer"]);
+    }
+}
+
 /// A claim says "no credential" by declaring no scheme, and that keeps the narrowing check honest.
 ///
 /// The authenticate step may only narrow within a claim's declared alternatives. If the absence of

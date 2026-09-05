@@ -311,6 +311,37 @@ pub struct Claim {
     pub idempotency: Option<Idempotency>,
 }
 
+/// Declare an ordered detection ladder and the claim list that goes with it, from one table.
+///
+/// A claim carries exactly one selector, and that rule is right: a boot that has to decide whether
+/// two claims could match the same bytes cannot do it through an unexplained disjunction. But a
+/// plane whose protocol detection is a fourteen-rung ladder then has two dozen claims, and a
+/// constant cannot loop over a constant, so both the ladder and the narrower `CLAIMS` list get
+/// transcribed by hand — twice, by index, with the rung number in a comment. That is a legibility
+/// cost rather than a correctness one, and this is the fix for it.
+///
+/// The row type is the caller's own, and it must have the three fields the invocation fills:
+/// `rung`, `dialect` and `claim`. The builder is the caller's own `const fn` from a selector to a
+/// claim, so the scheme, alternatives and idempotency stay where the plane declares them once.
+/// Ordinary comments between rows survive, because a macro invocation is still source.
+#[macro_export]
+macro_rules! claims_from_ladder {
+    (
+        $(#[$ladder_doc:meta])* $ladder:ident,
+        $(#[$claims_doc:meta])* $claims:ident,
+        $row:ident, $build:ident,
+        $($rung:literal => $dialect:literal, $selector:expr),+ $(,)?
+    ) => {
+        $(#[$ladder_doc])*
+        pub const $ladder: &[$row] = &[
+            $($row { rung: $rung, dialect: $dialect, claim: $build($selector) },)+
+        ];
+
+        $(#[$claims_doc])*
+        pub const $claims: &[$crate::grammar::Claim] = &[$($build($selector),)+];
+    };
+}
+
 impl Claim {
     /// Whether two claims could ever match the same arriving bytes.
     ///

@@ -87,184 +87,76 @@ const V1BETA_MODELS: &[PathSeg] = &[
     PathSeg::Tail,
 ];
 
-/// The ladder, in rung order, tightest first.
-///
-/// Every rung of the codec crate's detection predicates appears here exactly once, and the rungs
-/// appear in ascending order. The ladder test asserts both.
-pub const LADDER: &[LadderClaim] = &[
+busbar_contract::claims_from_ladder! {
+    /// The ladder, in rung order, tightest first.
+    ///
+    /// Every rung of the codec crate's detection predicates appears here exactly once, and the
+    /// rungs appear in ascending order. The ladder test asserts both.
+    LADDER,
+    /// The claims, in ladder order, as the declaration constant wants them.
+    ///
+    /// The same list one field narrower. It used to be twenty-five lines transcribed by index
+    /// beside the ladder itself, because a constant cannot loop over a constant; the macro writes
+    /// both from the one table below, so a rung added in one and forgotten in the other is not a
+    /// shape this file can take.
+    CLAIMS,
+    LadderClaim,
+    claim,
+
     // Rung 1: a request signature in the authorization header is the tightest evidence there is —
     // no other dialect's clients ever send one.
-    LadderClaim {
-        rung: 1,
-        dialect: "bedrock",
-        claim: claim(Selector::HeaderPrefix("authorization", "AWS4-HMAC-SHA256")),
-    },
-    // Rung 2: two vendor-specific version headers, either of which names the dialect on its own.
-    LadderClaim {
-        rung: 2,
-        dialect: "anthropic",
-        claim: claim(Selector::HeaderPresent("anthropic-version")),
-    },
-    LadderClaim {
-        rung: 2,
-        dialect: "anthropic",
-        claim: claim(Selector::HeaderPresent("anthropic-beta")),
-    },
-    // Rung 3: a vendor-specific key header.
-    LadderClaim {
-        rung: 3,
-        dialect: "gemini",
-        claim: claim(Selector::HeaderPresent("x-goog-api-key")),
-    },
-    // Rung 4: a key header two vendors could in principle send, which is why it sits below rung 2.
-    LadderClaim {
-        rung: 4,
-        dialect: "anthropic",
-        claim: claim(Selector::HeaderPresent("x-api-key")),
-    },
-    // Rung 5: the action suffixes of one vendor's model-scoped surface.
-    LadderClaim {
-        rung: 5,
-        dialect: "gemini",
-        claim: claim(Selector::PathContains(":generateContent")),
-    },
-    LadderClaim {
-        rung: 5,
-        dialect: "gemini",
-        claim: claim(Selector::PathContains(":streamGenerateContent")),
-    },
-    LadderClaim {
-        rung: 5,
-        dialect: "gemini",
-        claim: claim(Selector::PathContains(":embedContent")),
-    },
-    LadderClaim {
-        rung: 5,
-        dialect: "gemini",
-        claim: claim(Selector::PathContains(":batchEmbedContents")),
-    },
-    LadderClaim {
-        rung: 5,
-        dialect: "gemini",
-        claim: claim(Selector::PathContains(":predict")),
-    },
-    // Rung 6: the same vendor's model-scoped surface without an action suffix, on either version.
-    LadderClaim {
-        rung: 6,
-        dialect: "gemini",
-        claim: claim(Selector::PathPattern(V1_MODELS)),
-    },
-    LadderClaim {
-        rung: 6,
-        dialect: "gemini",
-        claim: claim(Selector::PathPattern(V1BETA_MODELS)),
-    },
-    // Rung 7: the widely-copied chat surface.
-    LadderClaim {
-        rung: 7,
-        dialect: "openai",
-        claim: claim(Selector::PathSuffix("/v1/chat/completions")),
-    },
-    // Rung 8: another vendor's chat surface, on either of its two versions.
-    LadderClaim {
-        rung: 8,
-        dialect: "cohere",
-        claim: claim(Selector::PathSuffix("/v2/chat")),
-    },
-    LadderClaim {
-        rung: 8,
-        dialect: "cohere",
-        claim: claim(Selector::PathSuffix("/v1/chat")),
-    },
-    // Rung 9: that vendor's two non-chat surfaces.
-    LadderClaim {
-        rung: 9,
-        dialect: "cohere",
-        claim: claim(Selector::PathSuffix("/v2/embed")),
-    },
-    LadderClaim {
-        rung: 9,
-        dialect: "cohere",
-        claim: claim(Selector::PathSuffix("/v2/rerank")),
-    },
-    // Rung 10: one vendor's second, newer request surface.
-    LadderClaim {
-        rung: 10,
-        dialect: "responses",
-        claim: claim(Selector::PathSuffix("/v1/responses")),
-    },
-    // Rung 11: a path that names a dialect only because nothing tighter claimed it.
-    LadderClaim {
-        rung: 11,
-        dialect: "anthropic",
-        claim: claim(Selector::PathContains("/v1/messages")),
-    },
-    // Rung 12: one vendor's turn-shaped surface.
-    LadderClaim {
-        rung: 12,
-        dialect: "bedrock",
-        claim: claim(Selector::PathContains("/converse")),
-    },
-    // Rung 13: the same vendor's model-scoped invoke path.
-    LadderClaim {
-        rung: 13,
-        dialect: "bedrock",
-        claim: claim(Selector::PathPattern(MODEL_INVOKE)),
-    },
-    // Rung 14: the loosest rung — the non-chat surfaces of the widely-copied dialect.
-    LadderClaim {
-        rung: 14,
-        dialect: "openai",
-        claim: claim(Selector::PathSuffix("/v1/embeddings")),
-    },
-    LadderClaim {
-        rung: 14,
-        dialect: "openai",
-        claim: claim(Selector::PathSuffix("/v1/moderations")),
-    },
-    LadderClaim {
-        rung: 14,
-        dialect: "openai",
-        claim: claim(Selector::PathContains("/v1/images/")),
-    },
-    LadderClaim {
-        rung: 14,
-        dialect: "openai",
-        claim: claim(Selector::PathContains("/v1/audio/")),
-    },
-];
+    1 => "bedrock", Selector::HeaderPrefix("authorization", "AWS4-HMAC-SHA256"),
 
-/// The claims, in ladder order, as the declaration constant wants them.
-///
-/// This is the same list one field narrower. It is written out rather than derived because a
-/// declaration is an associated constant, and a constant cannot run a loop over another constant.
-pub const CLAIMS: &[Claim] = &[
-    LADDER[0].claim,
-    LADDER[1].claim,
-    LADDER[2].claim,
-    LADDER[3].claim,
-    LADDER[4].claim,
-    LADDER[5].claim,
-    LADDER[6].claim,
-    LADDER[7].claim,
-    LADDER[8].claim,
-    LADDER[9].claim,
-    LADDER[10].claim,
-    LADDER[11].claim,
-    LADDER[12].claim,
-    LADDER[13].claim,
-    LADDER[14].claim,
-    LADDER[15].claim,
-    LADDER[16].claim,
-    LADDER[17].claim,
-    LADDER[18].claim,
-    LADDER[19].claim,
-    LADDER[20].claim,
-    LADDER[21].claim,
-    LADDER[22].claim,
-    LADDER[23].claim,
-    LADDER[24].claim,
-];
+    // Rung 2: two vendor-specific version headers, either of which names the dialect on its own.
+    2 => "anthropic", Selector::HeaderPresent("anthropic-version"),
+    2 => "anthropic", Selector::HeaderPresent("anthropic-beta"),
+
+    // Rung 3: a vendor-specific key header.
+    3 => "gemini", Selector::HeaderPresent("x-goog-api-key"),
+
+    // Rung 4: a key header two vendors could in principle send, which is why it sits below rung 2.
+    4 => "anthropic", Selector::HeaderPresent("x-api-key"),
+
+    // Rung 5: the action suffixes of one vendor's model-scoped surface.
+    5 => "gemini", Selector::PathContains(":generateContent"),
+    5 => "gemini", Selector::PathContains(":streamGenerateContent"),
+    5 => "gemini", Selector::PathContains(":embedContent"),
+    5 => "gemini", Selector::PathContains(":batchEmbedContents"),
+    5 => "gemini", Selector::PathContains(":predict"),
+
+    // Rung 6: the same vendor's model-scoped surface without an action suffix, on either version.
+    6 => "gemini", Selector::PathPattern(V1_MODELS),
+    6 => "gemini", Selector::PathPattern(V1BETA_MODELS),
+
+    // Rung 7: the widely-copied chat surface.
+    7 => "openai", Selector::PathSuffix("/v1/chat/completions"),
+
+    // Rung 8: another vendor's chat surface, on either of its two versions.
+    8 => "cohere", Selector::PathSuffix("/v2/chat"),
+    8 => "cohere", Selector::PathSuffix("/v1/chat"),
+
+    // Rung 9: that vendor's two non-chat surfaces.
+    9 => "cohere", Selector::PathSuffix("/v2/embed"),
+    9 => "cohere", Selector::PathSuffix("/v2/rerank"),
+
+    // Rung 10: one vendor's second, newer request surface.
+    10 => "responses", Selector::PathSuffix("/v1/responses"),
+
+    // Rung 11: a path that names a dialect only because nothing tighter claimed it.
+    11 => "anthropic", Selector::PathContains("/v1/messages"),
+
+    // Rung 12: one vendor's turn-shaped surface.
+    12 => "bedrock", Selector::PathContains("/converse"),
+
+    // Rung 13: the same vendor's model-scoped invoke path.
+    13 => "bedrock", Selector::PathPattern(MODEL_INVOKE),
+
+    // Rung 14: the loosest rung — the non-chat surfaces of the widely-copied dialect.
+    14 => "openai", Selector::PathSuffix("/v1/embeddings"),
+    14 => "openai", Selector::PathSuffix("/v1/moderations"),
+    14 => "openai", Selector::PathContains("/v1/images/"),
+    14 => "openai", Selector::PathContains("/v1/audio/"),
+}
 
 /// Which dialect a request's path and headers name, by walking the ladder in order.
 ///
