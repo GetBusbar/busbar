@@ -10,7 +10,6 @@
 //! the reason string, because those are how a well-meaning default becomes an outage.
 
 use super::*;
-use busbar_substrate::trust::{Approval, Sighting, TrustState};
 
 fn thresholds() -> Thresholds {
     Thresholds {
@@ -211,50 +210,7 @@ fn the_reported_numbers_belong_to_the_signal_that_tripped() {
     assert!(!trip.reason().contains("error_rate"));
 }
 
-/// THE LOAD-BEARING INTEGRATION. A trip SUSPENDS, and suspension outranks everything: the pin is
-/// still locked, the digests still match, the agent is still exactly what the operator approved, and
-/// it serves nothing. This is the whole point of `Suspended` being a first-class state rather than a
-/// field beside the trust state, and it is what replaces the deleted reward loop.
-#[test]
-fn a_trip_suspends_an_otherwise_perfectly_healthy_registration() {
-    use crate::a2a::pin::{approve_registration, CardPin};
-    use busbar_substrate::trust::Observation;
-    use std::collections::BTreeMap;
-
-    let pin = CardPin::JwsIssuerKey {
-        issuer_key: "OPERATOR-KEY".to_string(),
-        card_fingerprint: "sha256/FP".to_string(),
-    };
-    let sighting = Sighting::Seen(Observation {
-        pin: Some(pin),
-        capabilities: BTreeMap::from([("plan".to_string(), "sha256/PLAN".to_string())]),
-    });
-    let mut approval = Approval::registered();
-    approve_registration(&mut approval, &sighting, None).expect("approve");
-    assert_eq!(approval.state(&sighting), TrustState::Approved);
-    assert!(approval.serves("plan", "sha256/PLAN"));
-
-    let mut w = window(200);
-    w.terminal_failures = 180;
-    let trip = evaluate(&w, &thresholds()).expect("trips");
-    approval.suspend(&trip.reason());
-
-    assert_eq!(
-        approval.state(&sighting),
-        TrustState::Suspended,
-        "a tripped agent leaves service, it does not sort last"
-    );
-    assert!(
-        !approval.serves("plan", "sha256/PLAN"),
-        "dispatch must refuse a suspended agent even though nothing about its card changed"
-    );
-    let visible = approval.suspension().expect("an operator-visible reason");
-    assert!(visible.contains("terminal_failure_rate"));
-    assert!(visible.contains("0.900"));
-
-    // Resuming returns it to what its approval and sighting actually say. Lifting a suspension is
-    // not a re-approval, and here there is nothing else wrong, so it serves again.
-    approval.resume();
-    assert_eq!(approval.state(&sighting), TrustState::Approved);
-    assert!(approval.serves("plan", "sha256/PLAN"));
-}
+// THE LOAD-BEARING INTEGRATION of a trip with `Approval::suspend` and the identity pin lives in
+// `busbar-a2a`'s `pin_tests.rs`, not here: this crate carries the anomaly grammar alone and has no
+// dependency on `busbar_substrate::trust` or the A2A pin, both of which belong to the plane half.
+// See `a_trip_suspends_an_otherwise_perfectly_healthy_registration` there.

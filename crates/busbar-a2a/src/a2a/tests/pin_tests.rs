@@ -255,3 +255,63 @@ fn a_signed_pin_cannot_be_produced_from_a_card_that_did_not_verify() {
         Err(jws::JwsError::MalformedIssuerKey)
     );
 }
+
+/// THE LOAD-BEARING INTEGRATION. A trip SUSPENDS, and suspension outranks everything: the pin is
+/// still locked, the digests still match, the agent is still exactly what the operator approved, and
+/// it serves nothing. This is the whole point of `Suspended` being a first-class state rather than a
+/// field beside the trust state, and it is what replaces the deleted reward loop.
+///
+/// This test moved here from the codec crate's anomaly suite: it exercises the pin (this plane's
+/// artifact) and `busbar_substrate::trust` together, both of which are the I/O half's business, not
+/// the wire vocabulary's.
+#[test]
+fn a_trip_suspends_an_otherwise_perfectly_healthy_registration() {
+    use crate::a2a::anomaly::{evaluate, AnomalySignal, Thresholds, Window};
+
+    let pin = CardPin::JwsIssuerKey {
+        issuer_key: "OPERATOR-KEY".to_string(),
+        card_fingerprint: "sha256/FP".to_string(),
+    };
+    let sighting = seen(pin);
+    let mut approval = Approval::registered();
+    approve_registration(&mut approval, &sighting, None).expect("approve");
+    assert_eq!(approval.state(&sighting), TrustState::Approved);
+    assert!(approval.serves("plan", "sha256/PLAN"));
+
+    let thresholds = Thresholds {
+        min_observations: 20,
+        error_rate: Some(0.5),
+        terminal_failure_rate: Some(0.5),
+        latency_p95_ms: Some(10_000),
+        egress_budget_ratio: Some(3.0),
+    };
+    let w = Window {
+        observations: 200,
+        terminal_failures: 180,
+        first_observation_ms: 1_000,
+        last_observation_ms: 61_000,
+        ..Window::default()
+    };
+    let trip = evaluate(&w, &thresholds).expect("trips");
+    assert_eq!(trip.signal, AnomalySignal::TerminalFailureRate);
+    approval.suspend(&trip.reason());
+
+    assert_eq!(
+        approval.state(&sighting),
+        TrustState::Suspended,
+        "a tripped agent leaves service, it does not sort last"
+    );
+    assert!(
+        !approval.serves("plan", "sha256/PLAN"),
+        "dispatch must refuse a suspended agent even though nothing about its card changed"
+    );
+    let visible = approval.suspension().expect("an operator-visible reason");
+    assert!(visible.contains("terminal_failure_rate"));
+    assert!(visible.contains("0.900"));
+
+    // Resuming returns it to what its approval and sighting actually say. Lifting a suspension is
+    // not a re-approval, and here there is nothing else wrong, so it serves again.
+    approval.resume();
+    assert_eq!(approval.state(&sighting), TrustState::Approved);
+    assert!(approval.serves("plan", "sha256/PLAN"));
+}
