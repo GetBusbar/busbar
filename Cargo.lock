@@ -607,6 +607,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-api",
  "busbar-core",
+ "busbar-mcp",
  "busbar-substrate",
  "busbar-timing",
  "bytes",

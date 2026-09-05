@@ -355,36 +355,7 @@ pub static BODY_INGRESS: &[(&str, busbar_substrate::ingress::arrival::BodyIngres
 #[path = "tests/plane_decl_identity_tests.rs"]
 mod plane_decl_identity_tests;
 
-/// THE DETECTION TESTS, relocated here from `busbar-core` because they name dialects: they exercise
-/// the generic detection fold through THIS plugin's registered `claims` / `residual_claims`
-/// predicates, proving the ladder→predicate move is byte-identical.
-#[cfg(test)]
-#[path = "tests/detect_tests.rs"]
-mod detect_tests;
-
-#[cfg(test)]
-#[path = "tests/write_error_frame_tests.rs"]
-mod write_error_frame_tests;
-
-#[cfg(test)]
-#[path = "tests/decode_native_tool_id_tests.rs"]
-mod decode_native_tool_id_tests;
-
-#[cfg(test)]
-#[path = "tests/leaf_write_dispatch_tests.rs"]
-mod leaf_write_dispatch_tests;
-
-/// THE CODEC/IR TEST SUITES relocated from `busbar-core`'s `proto/tests/*`: the detection,
-/// translate-parity, streaming, round-trip and IR goldens that name the
-/// dialects and the concrete wire codecs, now living beside the types they exercise. See the module
-/// header for the `super::*` prelude reconstruction.
-#[cfg(test)]
-#[path = "tests/proto/mod.rs"]
-mod relocated_proto_tests;
-
-/// The bedrock buffered-response → native ConverseStream eventstream synthesis suite, RELOCATED from
-/// `busbar-core`'s `proxy/tests/`: it drives
-/// `bedrock::bedrock_response_to_eventstream`, a witnessed codec fn, so it lives beside that codec.
-#[cfg(test)]
-#[path = "tests/bedrock_eventstream_tests.rs"]
-mod bedrock_eventstream_tests;
+// THE CODEC AND IR SUITES MOVED WITH THE CODECS. The detection fold, the error-frame writers, the
+// tool-id decode, the leaf-op write dispatch, the translate-parity/streaming/round-trip goldens and
+// the bedrock eventstream synthesis all name the dialects, so they are declared by
+// `busbar-llm-codec` now and run in its test binary. What is left here is what names the ENGINE.

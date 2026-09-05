@@ -75,3 +75,7 @@ busbar-substrate = { path = "../busbar-substrate", features = ["test-support"] }
 busbar-core = { path = "../busbar-core", features = ["test-support"] }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
+# ONE relocated registry test asserts the registry's handling of a codec-LESS registered protocol
+# using the real MCP declaration (`busbar_mcp::PROTO_DECL`). A dev-dep back-edge; not linked into any
+# shipped target.
+busbar-mcp = { path = "../busbar-mcp" }
