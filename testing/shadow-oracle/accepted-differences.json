@@ -196,6 +196,39 @@
         "headers"
       ],
       "rationale": "The Converse output shape requires metrics; 1.5.5's same-dialect passthrough dropped it. 1.6.0 always carries it (latencyMs is timing and normalized)."
+    },
+    {
+      "id": "S-4 anthropic required members",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
+      "cells": "^llm\\|anthropic\\|(bedrock|cohere|gemini|openai|responses)\\|request\\|ok(_stream)?$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Anthropic's published Message / stream-event schemas mark stop_details, container, citations, the cache and service_tier usage members, output_tokens_details and server_tool_use required; 1.5.5 omitted them. 1.6.0 emits the spec's null/zero defaults or the carried value."
+    },
+    {
+      "id": "S-5 openai chat required members",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
+      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|responses)\\|request\\|ok$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "choices[].logprobs and message.refusal are required by the published chat schema; null when the backend carried none."
+    },
+    {
+      "id": "S-6 responses required members",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
+      "cells": "^llm\\|responses\\|(anthropic|bedrock|cohere|gemini|openai)\\|request\\|ok$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "The Response object's required members (created_at, error, incomplete_details, instructions, tools, tool_choice, parallel_tool_calls, metadata, temperature, top_p, part logprobs, usage details) are emitted with spec defaults or carried values."
     }
   ]
 }
