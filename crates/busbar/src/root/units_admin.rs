@@ -1374,6 +1374,11 @@ pub fn mount(
     build_units: impl FnOnce(Arc<dyn AdminDispatch>) -> crate::root::kernel::ProductionUnits,
 ) -> axum::Router {
     let runtime = tokio::runtime::Handle::current();
+    // THIS COMPOSITION HAS AN EXIT PATH, so the one operation whose effect outlives its own
+    // response — the restart — hands that effect to it instead of starting it mid-flight. Declared
+    // here because this is where the loop is put in front of the surface: the operation's own
+    // surface is unchanged and does not know which composition it is answering under.
+    busbar_core::admin::restart::drain_released_at_exit();
     let dispatch: Arc<dyn AdminDispatch> = Arc::new(RouterDispatch::new(inner.clone(), &runtime));
     let node = Arc::new(AdminNode::new(kernel, build_units(dispatch)));
 
@@ -1435,14 +1440,25 @@ pub fn mount(
                 for (name, value) in &answer.headers {
                     response = response.header(name.as_str(), value.as_str());
                 }
-                response
+                let response = response
                     .body(axum::body::Body::from(answer.body))
                     .unwrap_or_else(|_| {
                         axum::http::Response::builder()
                             .status(500)
                             .body(axum::body::Body::empty())
                             .expect("an empty 500 always builds")
-                    })
+                    });
+
+                // THE END OF THE EXIT PATH: whatever this unit asked to outlive its response is
+                // released HERE, with the response built and handed back and nothing left that can
+                // change a byte of it. For the one operation that asks — the restart — that is the
+                // graceful drain, which the surface used to begin from inside its own handler. It
+                // still begins at the same point relative to the answer; what moved is the steps
+                // that now sit between the handler and this line, and they no longer sit between
+                // the drain and the write. Every other unit releases nothing, which costs one
+                // atomic read.
+                busbar_core::admin::restart::release_asked_drain();
+                response
             }
         },
     ))
