@@ -449,3 +449,20 @@ async fn close_gives_up_on_a_peer_that_never_reads() {
         "the detached close task must give up within its budget and drop the socket"
     );
 }
+
+/// A redial against the same upstream must not allocate a second `'static` address. `dial` needs
+/// both halves for the lifetime of the process, so the allocation is deliberate; what would not be
+/// deliberate is one per dial, which a redial loop against a flapping upstream turns into unbounded
+/// growth. Identical strings must come back as the identical allocation.
+#[test]
+fn a_redial_reuses_the_interned_address_rather_than_leaking_a_new_one() {
+    let first = crate::transport::intern("example.invalid:8443");
+    let again = crate::transport::intern("example.invalid:8443");
+    assert!(
+        std::ptr::eq(first, again),
+        "a repeat dial must reuse the address the first one interned, not leak a second"
+    );
+    let other = crate::transport::intern("elsewhere.invalid:8443");
+    assert!(!std::ptr::eq(first, other));
+    assert_eq!(other, "elsewhere.invalid:8443");
+}

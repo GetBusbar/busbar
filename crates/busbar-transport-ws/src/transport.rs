@@ -36,6 +36,26 @@ use crate::conn::{ConnState, LowerIo, Sock, WsConnHandle};
 /// dropped the only handle that could cancel it.
 pub(crate) const CLOSE_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// The `'static` view of a dial address, allocated at most once per distinct string.
+///
+/// The sealed destination's address shape is already `'static`, but a `ws://` dial target is a URL:
+/// the `host:port` this transport hands the layer below, and the certificate name it offers, are
+/// derived from it and may name a port the URL never spelled, so neither is a slice of anything
+/// that already lives forever. Allocating one per dial would grow the process without bound against
+/// a flapping upstream; interning makes it leak-once, the same posture the boot-time lane names
+/// take, so a redial reuses what the first dial allocated.
+pub(crate) fn intern(s: &str) -> &'static str {
+    static INTERNED: std::sync::LazyLock<SyncMutex<std::collections::HashSet<&'static str>>> =
+        std::sync::LazyLock::new(|| SyncMutex::new(std::collections::HashSet::new()));
+    let mut table = INTERNED.lock().expect("ws address intern table poisoned");
+    if let Some(already) = table.get(s) {
+        return already;
+    }
+    let once: &'static str = Box::leak(s.to_string().into_boxed_str());
+    table.insert(once);
+    once
+}
+
 type FrameStream =
     std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
 
@@ -303,7 +323,7 @@ impl Transport for WsTransport {
             };
             let url = address.authority().ok_or(TransportError::AddressRefused)?;
             let (secure, host_name, port, path) = split_ws_url(url)?;
-            let authority: &'static str = Box::leak(format!("{host_name}:{port}").into_boxed_str());
+            let authority: &'static str = intern(&format!("{host_name}:{port}"));
 
             // The socket is the layer below's, dialled against the address this destination already
             // carries — no name is resolved here, which is what puts the network guard in front of
@@ -316,7 +336,7 @@ impl Transport for WsTransport {
                     busbar_contract_transport::dest::UpstreamAddress::Socket {
                         authority,
                         sni: address.sni().or(if secure {
-                            Some(Box::leak(host_name.clone().into_boxed_str()) as &'static str)
+                            Some(intern(&host_name))
                         } else {
                             None
                         }),
