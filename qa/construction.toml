@@ -453,6 +453,41 @@ max_forget_or_drop = 0
 max_uncancellable_await = 0
 
 # ── 21. forbid-unsafe (ARCHITECTURE.md section 1.2) ─────────────────────────────────────────────────────────
+[rules.kernel-seal-impls]
+why = """`busbar_contract::plugin::KernelSeal` is what every kernel-built view the contract declares \
+takes to be constructed: a verified destination, the unit a plane reads, a one-shot secret, a \
+transport key handle. It has to be a public trait, because busbar-caps implements it on every token \
+and sits ABOVE the contract, and Rust cannot say "implementable by exactly one other crate". So the \
+type system does not close it and this scan does: outside busbar-caps, an in-tree crate that \
+implements this trait can mint its own kernel evidence, and it does not need a token, a kernel or a \
+review to do it. Scanned INCLUDING test code on purpose -- every site this rule found on the day it \
+was written was in a test module, so a production-only reading of it would be vacuous by \
+construction and would prove nothing. This is the in-tree half only: an out-of-tree plugin can still \
+implement the trait, and per the trust policy a loaded plugin is trusted code, so that is not a line \
+this rule pretends to draw."""
+pattern = 'impl(<[^>]*>)?\s+(busbar_contract::)?(plugin::)?KernelSeal\s+for'
+allowed_root = "crates/busbar-caps/src"
+max_sites = 0
+# Ratchet, NOT a review: each file below forges a seal today with a private type, and each is owned
+# by a change that is not this one. A new site anywhere else is held to the rule immediately.
+# busbar-plane-admin and busbar-plane-voice are the awkward two: a PLANE crate may not name
+# busbar-caps at all (section 1.2, and manifest-allowlist makes it an automatic RED), so their test
+# seals cannot move onto a token until the contract offers a seal a plane is allowed to name. That is
+# debt this rule now PINS rather than debt it hides.
+known_sites = [
+  "crates/busbar-plane-admin/src/tests.rs",
+  "crates/busbar-plane-voice/src/tests/harness.rs",
+  "crates/busbar-transport-grpc/src/tests/battery.rs",
+  "crates/busbar-transport-http/src/tests.rs",
+  "crates/busbar-transport-stdio/src/tests/battery.rs",
+  "crates/busbar-transport-tcp/src/tests.rs",
+  "crates/busbar-transport-tls/src/tests.rs",
+  "crates/busbar-transport-ws/src/tests/battery.rs",
+  "crates/busbar-transport-ws/src/transport.rs",
+  "crates/busbar-unit-egress/src/tests/harness.rs",
+]
+
+# ── 22. forbid-unsafe ────────────────────────────────────────────────────────────────────────────
 [rules.forbid-unsafe]
 why = """Plane, hook, pure-auth, egress-auth and secret crates carry `#![forbid(unsafe_code)]` — a \
 lint level nothing inside the crate can locally override, matching that these kinds are structurally \

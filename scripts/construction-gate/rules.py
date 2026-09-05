@@ -1368,6 +1368,34 @@ _UNSAFE_ATTR_RX = {
 }
 
 
+def rule_kernel_seal_impls(tree, cfg):
+    """The contract's sealing trait is implemented only inside busbar-caps.
+
+    Scans test code as well as production: every forging impl in the tree lives in a test module,
+    so the default production-only reading would be vacuous. `known_sites` is a ratchet of files
+    that carry one today and are somebody else's to move; a site anywhere else fails immediately.
+    """
+    c = cfg["rules"]["kernel-seal-impls"]
+    root = c["allowed_root"].rstrip("/") + os.sep
+    known = set(c.get("known_sites", []))
+    offenders, tracked = [], []
+    for rel, l in tree.grep(c["pattern"], production_only=False):
+        if rel.startswith(root):
+            continue
+        (tracked if rel in known else offenders).append(f"{rel}:{l.no}")
+    current = len(offenders)
+    parts = []
+    if offenders:
+        parts.append("forging the contract's seal: " + "; ".join(offenders))
+    if tracked:
+        parts.append("tracked debt (qa/construction.toml known_sites): " + "; ".join(tracked))
+    detail = (f"{current} impl(s) of the contract's KernelSeal outside {c['allowed_root']} "
+              f"(ceiling {c['max_sites']}): " + ("; ".join(parts) if parts else "none"))
+    return [row("kernel-seal-impls", current <= c["max_sites"],
+                "the contract's sealing trait is implemented only inside busbar-caps",
+                detail, current, c["max_sites"], c["why"], offenders)]
+
+
 def rule_forbid_unsafe(tree, cfg):
     c = cfg["rules"]["forbid-unsafe"]
     rows = []
@@ -1464,6 +1492,7 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_no_default_bodies(tree, cfg)
     rows += rule_sealed_unit_traits(tree, cfg)
     rows += rule_hold_discipline(tree, cfg)
+    rows += rule_kernel_seal_impls(tree, cfg)
     rows += rule_forbid_unsafe(tree, cfg)
     rows += rule_secret_carrier_debug(tree, cfg)
     return rows

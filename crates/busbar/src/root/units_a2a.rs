@@ -1613,12 +1613,10 @@ mod tests {
     /// doors and the verdicts must match.
     #[test]
     fn the_root_guard_and_the_trust_units_own_door_agree() {
-        struct Seal;
-        impl busbar_contract::plugin::KernelSeal for Seal {
-            fn seal_origin(&self) -> &'static str {
-                "busbar a2a guard equivalence test"
-            }
-        }
+        // The token the loop lends the trust unit, which is what seals a destination in a running
+        // deployment. A private type carrying an impl of the contract's sealing trait would forge
+        // the same value while reading as if that were the ordinary way to obtain one.
+        let trust = busbar_caps::TrustToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel());
         let resolver = FixedResolver(vec!["93.184.216.34".parse().expect("an address")]);
         for authority in [
             "https://agent.example/",
@@ -1630,7 +1628,7 @@ mod tests {
             "https://169.254.169.254/latest/meta-data",
         ] {
             let facts = upstream(authority);
-            let sealed = busbar_contract::VerifiedDestination::seal(&Seal, facts, "http", None);
+            let sealed = busbar_contract::VerifiedDestination::seal(&trust, facts, "http", None);
             let through_the_root = guard_destination(
                 &facts,
                 &resolver,

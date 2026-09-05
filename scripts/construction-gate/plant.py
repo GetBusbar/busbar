@@ -45,6 +45,7 @@ TOUCHED = [
     "crates/busbar-contract/src/kinds.rs",
     "crates/busbar-unit-breaker/src/lib.rs",
     "crates/busbar-unit-admission/src/cells.rs",
+    "crates/busbar-unit-breaker/src/port.rs",
 ]
 
 
@@ -210,6 +211,24 @@ def plant(rule, pristine, scratch, cfg, baseline):
         src = (src[:needle_at]
                + needle + " if run.meter.total() == u64::MAX { return Ended::AlreadySettled; }"
                + src[needle_at + len(needle):])
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(src)
+    elif rule == "kernel-seal-impls":
+        # Forge a kernel seal from a crate that is not busbar-caps, on a file the ratchet does not
+        # already name. A unit crate is the sharpest place for it: nothing about implementing the
+        # trait requires a token, a kernel, or anyone's review.
+        rel = "crates/busbar-unit-breaker/src/port.rs"
+        path = os.path.join(scratch, rel)
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        src += (
+            "\n\nstruct PlantedSeal;\n"
+            "impl busbar_contract::plugin::KernelSeal for PlantedSeal {\n"
+            "    fn seal_origin(&self) -> &'static str {\n"
+            '        "planted"\n'
+            "    }\n"
+            "}\n"
+        )
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(src)
     elif rule == "forbid-unsafe:busbar-plane-llm":
