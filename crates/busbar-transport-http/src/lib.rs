@@ -792,10 +792,19 @@ async fn read_ingress_message(
     buf.clear();
     drop(buf);
 
-    if raw::has_transfer_encoding(&headers) && !raw::is_chunked(&headers) {
-        // A declared coding this transport cannot frame. Falling through to `Content-Length` would
-        // be answering a question the sender did not ask.
-        return Err(TransportError::Framing);
+    if raw::has_transfer_encoding(&headers) {
+        if !raw::is_chunked(&headers) {
+            // A declared coding this transport cannot frame. Falling through to `Content-Length`
+            // would be answering a question the sender did not ask.
+            return Err(TransportError::Framing);
+        }
+        if raw::content_length(&headers).is_some() {
+            // Two headers describing two framings of the same bytes. The coding wins the reading,
+            // but this reader hands the VERBATIM header prefix up as the HEAD frame, so forwarding
+            // it would hand the next reader a length the bytes do not have — the smuggling shape
+            // itself. Refused rather than forwarded.
+            return Err(TransportError::Framing);
+        }
     }
 
     let (bodies, trailers) = if raw::is_chunked(&headers) {

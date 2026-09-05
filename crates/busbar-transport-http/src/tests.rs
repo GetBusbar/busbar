@@ -364,6 +364,53 @@ async fn a_transfer_encoding_that_is_not_chunked_last_is_refused() {
     writer.abort();
 }
 
+/// A message carrying BOTH a `Transfer-Encoding` and a `Content-Length` is refused on ingress.
+///
+/// The two headers describe two different framings of the same bytes, which is the classic
+/// request-smuggling shape: whoever forwards it hands the next hop a length the bytes do not have.
+/// An intermediary that chooses to forward must strip the `Content-Length` first; this one chooses
+/// the other arm and refuses, because the HEAD frame it would otherwise hand up is the verbatim
+/// header prefix and any reader re-parsing it would see the length that was never true.
+///
+/// The egress direction already gets this right by stripping both headers when it rebuilds the
+/// request, and the round-trip cell above pins that. The two directions now agree.
+#[tokio::test]
+async fn a_message_with_both_a_transfer_encoding_and_a_content_length_is_refused() {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let writer = tokio::spawn(async move {
+        let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(
+            &mut client,
+            b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 6\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+
+    let conn = accept_fut.await.unwrap();
+    let mut frames = transport.frames(conn);
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the reader answers rather than hanging")
+        .expect("the stream yields the framing error");
+    assert_eq!(
+        first.unwrap_err(),
+        TransportError::Framing,
+        "two disagreeing framings of one body is a message to refuse, not one to forward"
+    );
+    writer.abort();
+}
+
 /// A chunked body of at least a mebibyte, written in chunks that straddle the read budget, arrives
 /// byte-exact — and the trailers that follow it arrive as their own frame rather than as body.
 ///
