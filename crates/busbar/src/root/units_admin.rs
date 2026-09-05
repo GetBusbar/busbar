@@ -405,7 +405,7 @@ impl LedgerView for NodeLedger {
                 WIDTH_THE_NODE_KEEPS,
                 WIDTH_THE_NODE_KEEPS,
             );
-            let entry = rows.entry(row).or_insert_with(LedgerRow::default);
+            let entry: &mut LedgerRow = rows.entry(row).or_default();
             // The books hold a signed figure because an adjustment can move one down; the identity's
             // side of it is unsigned. A negative settled total is not a row that was posted, so it is
             // the branch above rather than a saturating cast that would report it as zero.
