@@ -680,6 +680,73 @@ def auth_lifecycle_cells() -> list[dict]:
     ]
 
 
+def neutrality_cells() -> list[dict]:
+    """`neutrality`: the oracle's own baseline config is already 1.5.5-shaped (no mcp:/agents:/
+    streams: section — see oracle-config.sh), so these cells pin the operator-visible surfaces that
+    must stay IDENTICAL when a binary with every plane compiled in boots it: the boot banner, the
+    /metrics series set, every deny_unknown_fields section's own accepted-key list, the route set,
+    and an idle boot's in-flight accounting. A later binary that starts a plane, mounts a route, or
+    emits a series just because it CAN, without the operator asking for it, is a diff here."""
+    F = "neutrality"
+    cells = []
+    # (a) the boot banner: RUST_LOG=info pinned explicitly (not the recorder's default `warn`) so the
+    # golden and candidate are compared at the same verbosity regardless of any default-filter drift;
+    # `body_lines` keeps only lines the tracing formatter tagged INFO/WARN/ERROR, in emission order —
+    # a line that only shows at DEBUG (Bootstrap/Migration/Policy/keyset) must stay invisible here.
+    cells.append(exec_(
+        "neutrality|boot-lines", F, args=[], mode="boot", config="baseline", env={"RUST_LOG": "info"},
+        body_lines=r"\b(INFO|WARN|ERROR)\b",
+        why="the exact ordered set of boot log lines at INFO and above on a pure 1.5.5-shaped config "
+            "(no mcp/agents/streams section) — every 1.6.0-additive plane stays silent and out of order"))
+    # (b) /metrics: the published series NAMES + TYPES (the `# HELP` / `# TYPE` preamble lines,
+    # sample values already dropped by metrics.shape) plus an explicit absence check for any plane
+    # series, so a plane compiled in but never configured cannot register even an empty series.
+    cells.append(http(
+        "neutrality|metrics-series", F, "GET", "/metrics", body_lines=r"^# (HELP|TYPE) ",
+        why="the /metrics series NAME + TYPE set on a pure 1.5.5-shaped config: no busbar_plane_* or "
+            "ledger series may appear just because the binary can compile them in"))
+    cells.append(http(
+        "neutrality|metrics-no-plane-series", F, "GET", "/metrics",
+        body_lines=r"^busbar_(plane|ledger|journal|hold|wal)_",
+        why="an ABSENCE contract like ops.scrape's own ledger check, extended to the plane-prefixed "
+            "series: the golden is an empty body, and any surviving line on a later binary is a diff"))
+    # (c) unknown-key `expected one of` lists: the top-level struct plus every NAMED-MAP section that
+    # actually appears in a 1.5.5-shaped config, fed one bogus sibling key each — added to
+    # fixtures/boot-mutations.json under family "neutrality" (ids NEUT-U-*) so boot_cells() below
+    # already turns each into its own `neutrality|NEUT-U-<section>|validate` cell; nothing to add here.
+    # (d) the route set on a plane-neutral config: the operational routes plus a 404 on a path shaped
+    # like an unconfigured plane's own mount — proves the route table gained nothing it was not asked
+    # for, not merely that the configured routes still answer.
+    cells.append(http("neutrality|routes|stats", F, "GET", "/stats",
+                       why="the pool/lane topology route answers on a plane-neutral config exactly as the "
+                           "operational-routes rule in ARCHITECTURE.md describes"))
+    cells.append(http("neutrality|routes|healthz", F, "GET", "/healthz", auth="none",
+                       why="unconditional bypass, unaffected by which planes are compiled in"))
+    cells.append(http("neutrality|routes|v1-models", F, "GET", "/v1/models",
+                       why="the openai-envelope model listing on a plane-neutral config"))
+    cells.append(http("neutrality|routes|admin-openapi-paths", F, "GET", "/api/v1/admin/openapi.json",
+                       auth="admin", listener="admin", keep={"json_keys": ["paths"]},
+                       why="the served path list: absent mcp:/agents:/streams: sections, the document "
+                           "must list only the 1.5.5 admin surface — the `paths` object is kept raw "
+                           "(no version/id scrubbing under it) so an added path is a visible diff"))
+    cells.append(http("neutrality|routes|mcp-shaped-404", F, "GET", "/mcp",
+                       why="no mcp: block is configured: the MCP plane's own mount path falls through "
+                           "to the ordinary path-inferred 404 like any other unmatched path"))
+    cells.append(http("neutrality|routes|a2a-shaped-404", F, "GET", "/.well-known/agent-card.json",
+                       why="no agents: block is configured: the A2A well-known agent-card path is unmounted"))
+    cells.append(http("neutrality|routes|voice-shaped-404", F, "GET", "/v1/realtime",
+                       why="no streams: block is configured: the voice plane's realtime-shaped path is unmounted"))
+    # (e) /stats in-flight accounting at rest: an explicit FRESH boot (never sharing state with an
+    # earlier cell) so every lane's inflight/free_slots fields are pinned at their idle value — the
+    # absence of any reserved headroom a session-transport plane would otherwise draw against.
+    stats_idle = http("neutrality|stats-idle-zero", F, "GET", "/stats",
+                       why="on an idle fresh boot every lane's in-flight fields read their zero/unbounded "
+                           "rest state: no session-transport plane is claimed, so nothing is pre-reserved")
+    stats_idle["fresh"] = True
+    cells.append(stats_idle)
+    return cells
+
+
 def main() -> int:
     minv = json.loads(METHOD_INV.read_text())
     finv = json.loads(FIELD_INV.read_text())
@@ -687,7 +754,7 @@ def main() -> int:
                    + scrape_cells() + crosscut_cells() + admin_cells() + boot_cells() + failover_cells()
                    + plugin_cells() + billing_cells() + hooks_cells()
                    + concurrency_cells() + queue_cells() + cooldown_cells()
-                   + crosscut_traps_cells() + auth_lifecycle_cells(),
+                   + crosscut_traps_cells() + auth_lifecycle_cells() + neutrality_cells(),
                    key=lambda c: c["id"])
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "cell ids must be unique"
