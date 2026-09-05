@@ -2347,4 +2347,658 @@ mod tests {
         assert_eq!(refused.status, 403);
         assert_eq!(refused, refused_answer());
     }
+
+    // ── the five ledger views ───────────────────────────────────────────────────────────────────
+
+    /// The day the fixture's postings fall in.
+    const A_DAY: u64 = 1_767_225_600;
+
+    /// A ledger with something in it.
+    ///
+    /// Deliberately not balanced: one row reconciles and one does not, so a test that asserted the
+    /// residual is zero would be asserting something about a table of zeros rather than about the
+    /// identity. The unbalanced row is short by a known amount, which is the figure the
+    /// reconciliation view has to report.
+    struct SeededLedger;
+
+    impl SeededLedger {
+        /// The row whose two sides disagree, and by how much in micro-units.
+        const SHORT_ROW: (&'static str, &'static str, &'static str) = ("key-1", "lane-b", "prov-y");
+        const SHORT_BY_MICROS: i64 = 250;
+    }
+
+    impl LedgerView for SeededLedger {
+        fn ledger_rows(&self) -> crate::root::ledger_identity::LedgerSnapshot {
+            use crate::root::ledger_identity::{LedgerRow, RowKey};
+            [
+                (
+                    RowKey::new("key-1", A_DAY, "lane-a", "prov-x"),
+                    LedgerRow {
+                        priced_nanos: 7_000_000,
+                        fee_count: 2,
+                    },
+                ),
+                (
+                    RowKey::new(
+                        SeededLedger::SHORT_ROW.0,
+                        A_DAY,
+                        SeededLedger::SHORT_ROW.1,
+                        SeededLedger::SHORT_ROW.2,
+                    ),
+                    LedgerRow {
+                        priced_nanos: 1_000_000,
+                        fee_count: 1,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect()
+        }
+
+        fn legacy_rows(&self) -> crate::root::ledger_identity::LegacySnapshot {
+            use crate::root::ledger_identity::{LegacyRow, RowKey};
+            [
+                (
+                    RowKey::new("key-1", A_DAY, "lane-a", "prov-x"),
+                    LegacyRow {
+                        spend_micros: 7_000,
+                        billable_requests: 2,
+                    },
+                ),
+                (
+                    RowKey::new(
+                        SeededLedger::SHORT_ROW.0,
+                        A_DAY,
+                        SeededLedger::SHORT_ROW.1,
+                        SeededLedger::SHORT_ROW.2,
+                    ),
+                    LegacyRow {
+                        // The ledger accounted for 1_000 micro-units against 1_250 drawn, so the
+                        // books are short by 250 on this row and by nothing on the other.
+                        spend_micros: 1_000 + SeededLedger::SHORT_BY_MICROS,
+                        billable_requests: 1,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect()
+        }
+
+        fn checkpoints(&self) -> Vec<busbar_unit_ledger::checkpoint::Checkpoint> {
+            use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
+
+            let mut totals = std::collections::BTreeMap::new();
+            totals.insert(
+                (
+                    TotalsKey::new(
+                        BucketId::new("key-1"),
+                        CapDimension::NanoUnits,
+                        BucketScope::All,
+                    ),
+                    A_DAY,
+                ),
+                busbar_unit_ledger::totals::Totals {
+                    settled: 8_000,
+                    drawn: 8_250,
+                    ..busbar_unit_ledger::totals::Totals::zero()
+                },
+            );
+            vec![busbar_unit_ledger::checkpoint::Checkpoint::seal(
+                4,
+                1,
+                1_700_000_000,
+                Vec::new(),
+                totals,
+                0,
+                0,
+                None,
+            )
+            .expect("an unsigned seal cannot fail")]
+        }
+
+        fn migration_marker(&self) -> Option<busbar_unit_ledger::migration::MigrationMarker> {
+            Some(busbar_unit_ledger::migration::MigrationMarker {
+                checkpoint_seq: 0,
+                node: 1,
+                sealed_at: 1_699_999_000,
+                body_hash: [7u8; 32],
+                balances: 3,
+                cells_read: 11,
+                rate_card_version: 5,
+            })
+        }
+    }
+
+    /// The five paths, in the order the closed table declares them.
+    const LEDGER_PATHS: &[&str] = &[
+        "/api/v1/admin/ledger/totals",
+        "/api/v1/admin/ledger/checkpoints",
+        "/api/v1/admin/ledger/reconciliation",
+        "/api/v1/admin/ledger/migration",
+        "/api/v1/admin/ledger/openapi.json",
+    ];
+
+    fn a_ledger_request(path: &str) -> AdminRequest {
+        AdminRequest {
+            method: "GET".to_string(),
+            path: path.to_string(),
+            credential: Some("admin-token".to_string()),
+            headers: vec![("accept".to_string(), "application/json".to_string())],
+            body: Vec::new(),
+            at: 1_700_000_000,
+        }
+    }
+
+    /// Walk one request through the whole loop against a node whose ledger holds the fixture.
+    #[cfg(feature = "root-admin")]
+    fn answer_over_seeded_ledger(request: AdminRequest) -> AdminAnswer {
+        let mut units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+        units.admin = AdminBinding::new(Arc::new(AnsweringDispatch))
+            .with_ledger_view(Arc::new(SeededLedger));
+        AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
+    }
+
+    /// Every view answers, through the whole loop, with a JSON document of its own.
+    ///
+    /// "Of its own" is half the assertion. The dispatch this node is built over answers every verb
+    /// with the same recognisable body, so a view that had fallen through to it — which is exactly
+    /// what would happen if the executing unit stopped recognising a ledger verb — would still come
+    /// back 200 and still be JSON. Requiring five distinct bodies, none of them the dispatch's, is
+    /// what makes the green mean the ledger was read rather than the router.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn every_ledger_view_answers_from_the_ledger_and_not_from_the_dispatch() {
+        let mut bodies = Vec::new();
+        for path in LEDGER_PATHS {
+            let answer = answer_over_seeded_ledger(a_ledger_request(path));
+            assert_eq!(answer.status, 200, "{path} did not answer");
+            assert_eq!(
+                answer.headers,
+                vec![("content-type".to_string(), "application/json".to_string())],
+                "{path} carried a header the view does not set"
+            );
+            let parsed: serde_json::Value =
+                serde_json::from_slice(&answer.body).unwrap_or_else(|e| panic!("{path}: {e}"));
+            assert!(parsed.is_object(), "{path} did not answer a JSON object");
+            assert_ne!(
+                answer.body, br#"{"entries":[]}"#,
+                "{path} fell through to the dispatch"
+            );
+            bodies.push(answer.body);
+        }
+        let mut distinct = bodies.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            LEDGER_PATHS.len(),
+            "two views answered the same bytes"
+        );
+    }
+
+    /// The figures each view serves are the figures the ledger holds, field by field.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn each_view_serves_the_figures_the_ledger_holds() {
+        let body = |path: &str| -> serde_json::Value {
+            serde_json::from_slice(&answer_over_seeded_ledger(a_ledger_request(path)).body)
+                .expect("valid JSON")
+        };
+
+        let totals = body("/api/v1/admin/ledger/totals");
+        let rows = totals["rows"].as_array().expect("rows");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["bucket"], "key-1");
+        assert_eq!(rows[0]["day"], A_DAY);
+        assert_eq!(rows[0]["lane"], "lane-a");
+        assert_eq!(rows[0]["provider"], "prov-x");
+        // Money is text and a count is a number — the rule the served document states.
+        assert_eq!(rows[0]["priced_nanos"], "7000000");
+        assert_eq!(rows[0]["priced_micros"], "7000");
+        assert_eq!(rows[0]["fee_count"], 2);
+
+        let checkpoints = body("/api/v1/admin/ledger/checkpoints");
+        let sealed = checkpoints["checkpoints"].as_array().expect("checkpoints");
+        assert_eq!(sealed.len(), 1);
+        assert_eq!(sealed[0]["checkpoint_seq"], 4);
+        assert_eq!(sealed[0]["node"], 1);
+        assert_eq!(sealed[0]["body_hash_verifies"], true);
+        assert_eq!(
+            sealed[0]["signed"], false,
+            "an unsigned seal reports as unsigned"
+        );
+        let cells = sealed[0]["totals"].as_array().expect("totals");
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0]["bucket"], "key-1");
+        assert_eq!(cells[0]["settled"], "8000");
+        assert_eq!(cells[0]["drawn"], "8250");
+        assert_eq!(
+            sealed[0]["body_hash"]
+                .as_str()
+                .expect("a hash is text")
+                .len(),
+            64,
+            "a digest is served as 64 hex characters"
+        );
+
+        let migration = body("/api/v1/admin/ledger/migration");
+        assert_eq!(migration["migrated"], true);
+        assert_eq!(migration["marker"]["checkpoint_seq"], 0);
+        assert_eq!(migration["marker"]["balances"], 3);
+        assert_eq!(migration["marker"]["cells_read"], 11);
+        assert_eq!(migration["marker"]["rate_card_version"], 5);
+        assert_eq!(
+            migration["marker"]["body_hash"], "0707070707070707070707070707070707070707070707070707070707070707"
+        );
+
+        let document = body("/api/v1/admin/ledger/openapi.json");
+        assert_eq!(document["info"]["version"], "1.6.0");
+    }
+
+    /// A node with no ledger behind it says so, rather than reporting a balance it never read.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn an_unopened_ledger_answers_empty_rather_than_absent() {
+        let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+        let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+        let body = |path: &str| -> serde_json::Value {
+            let answer = node.answer(a_ledger_request(path));
+            assert_eq!(answer.status, 200, "{path}");
+            serde_json::from_slice(&answer.body).expect("valid JSON")
+        };
+        assert_eq!(body("/api/v1/admin/ledger/totals")["rows"], serde_json::json!([]));
+        assert_eq!(
+            body("/api/v1/admin/ledger/checkpoints")["checkpoints"],
+            serde_json::json!([])
+        );
+        assert_eq!(body("/api/v1/admin/ledger/migration")["migrated"], false);
+        assert_eq!(
+            body("/api/v1/admin/ledger/migration")["marker"],
+            serde_json::Value::Null
+        );
+        // The identity over two empty snapshots holds, and it is honest here only because the
+        // totals view beside it reports the empty set it held over.
+        assert_eq!(body("/api/v1/admin/ledger/reconciliation")["holds"], true);
+    }
+
+    /// THE ONE THAT MATTERS: the residual an operator reads is the residual the identity computes.
+    ///
+    /// Not "a residual of the same magnitude" — the same function's answer. The endpoint calls
+    /// `ledger_identity::reconcile`, so a second derivation cannot creep into the rendering and make
+    /// the surface capable of disagreeing with the check that gates the release. This test computes
+    /// the identity itself, from the same two snapshots, and requires the served figures to be it.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn the_reconciliation_served_is_the_identitys_own_answer() {
+        let view = SeededLedger;
+        let expected =
+            crate::root::ledger_identity::reconcile(&view.ledger_rows(), &view.legacy_rows());
+        assert_eq!(
+            expected.len(),
+            1,
+            "the fixture must have exactly one row out, or the comparison is vacuous"
+        );
+
+        let served: serde_json::Value = serde_json::from_slice(
+            &answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/reconciliation")).body,
+        )
+        .expect("valid JSON");
+
+        assert_eq!(served["holds"], false);
+        let rows = served["discrepancies"].as_array().expect("discrepancies");
+        assert_eq!(rows.len(), expected.len());
+        for (row, d) in rows.iter().zip(expected.iter()) {
+            assert_eq!(row["bucket"], d.row.bucket);
+            assert_eq!(row["day"], d.row.day);
+            assert_eq!(row["lane"], d.row.lane);
+            assert_eq!(row["provider"], d.row.provider);
+            assert_eq!(row["residual"]["accounted"], d.spend.accounted.to_string());
+            assert_eq!(row["residual"]["drawn"], d.spend.drawn.to_string());
+            assert_eq!(row["residual"]["amount"], d.spend.amount().to_string());
+            assert_eq!(row["ledger_fee_count"], d.ledger_fee_count);
+            assert_eq!(row["legacy_billable_requests"], d.legacy_billable_requests);
+        }
+
+        // And the number is the one the fixture was built to be out by, so a rendering that served
+        // the right field of the wrong row would still fail.
+        assert_eq!(
+            rows[0]["residual"]["amount"],
+            (-i128::from(SeededLedger::SHORT_BY_MICROS)).to_string()
+        );
+        assert_eq!(rows[0]["lane"], SeededLedger::SHORT_ROW.1);
+    }
+
+    /// A caller the node will not authenticate gets from a ledger view exactly what it gets from
+    /// the legacy read that touches the same money — byte for byte, including the status.
+    ///
+    /// Stated as an equality against `GET /usage` rather than against a literal, because the claim
+    /// the design makes about these verbs is not "they answer 403"; it is that their auth posture is
+    /// the SAME one. A literal would still pass on the day the shared posture changed and the views
+    /// were left behind.
+    ///
+    /// The refused case is a credential the node's directory has revoked. That is what an
+    /// unauthenticated caller IS on this composition: the admin-only node's chain is open, so a
+    /// request carrying no credential at all is admitted — for the views exactly as for `/usage`,
+    /// which the second half asserts. Choosing the reachable refusal over the unreachable one is
+    /// what keeps this test about the posture the two share rather than about a 401 this node never
+    /// produces.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_read_does() {
+        let under = |path: &str, credential: Option<&str>, revoked: bool| -> AdminAnswer {
+            let mut request = a_ledger_request(path);
+            request.credential = credential.map(ToString::to_string);
+            let units =
+                crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
+                    .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                        Denylist(revoked),
+                    )));
+            AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
+        };
+
+        let refused = under("/api/v1/admin/usage", Some("admin-token"), true);
+        assert_ne!(
+            refused.status, 200,
+            "the control must actually be a refusal, or this test compares two successes"
+        );
+        for path in LEDGER_PATHS {
+            assert_eq!(
+                under(path, Some("admin-token"), true),
+                refused,
+                "{path} does not refuse a revoked credential the way /usage does"
+            );
+        }
+
+        // And the other half: where `/usage` admits a caller carrying no credential, so does every
+        // view. The bodies differ — they are different operations — but the admission does not.
+        let admitted = under("/api/v1/admin/usage", None, false);
+        assert_eq!(admitted.status, 200, "the open chain admits the control");
+        for path in LEDGER_PATHS {
+            assert_eq!(
+                under(path, None, false).status,
+                admitted.status,
+                "{path} does not admit a credential-less caller the way /usage does"
+            );
+        }
+    }
+
+    /// The scope gate is live on this path, and the views sit on the rung the legacy read sits on.
+    ///
+    /// Two halves, and both are needed. A credential granted `read-only` reaches every view — which
+    /// is the whole point of putting them on that rung — and the SAME credential is refused a
+    /// mutation on the same surface, which is what proves the gate is a gate rather than an absence.
+    /// Without the second half, a step that had stopped checking scope altogether would pass the
+    /// first.
+    #[test]
+    fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
+        let binding = AdminBinding::new(Arc::new(RefusingDispatch));
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+
+        let decide = |path: &str, method: &str, granted: VerbScope| -> bool {
+            let key = UnitKey::new(1);
+            let mut request = a_ledger_request(path);
+            request.method = method.to_string();
+            binding.units.open(key, request);
+            let ctx = UnitCtx {
+                key,
+                origin: busbar_caps::OriginKind::Client,
+                session: None,
+                generation: busbar_kernel::registry::Generation::FIRST,
+                admin_listener: true,
+                kernel_verb_only: true,
+            };
+            let token: UnitToken<Approve> = UnitToken::mint(&seal);
+            let decision = approve(
+                &binding,
+                granted,
+                &token,
+                &ctx,
+                &PrincipalId::new("admin"),
+                &[],
+            );
+            binding.units.close(key);
+            decision.into_result(&seal).is_ok()
+        };
+
+        for path in LEDGER_PATHS {
+            assert!(
+                decide(path, "GET", VerbScope::ReadOnly),
+                "{path} refused a read-only credential"
+            );
+            assert!(
+                decide(path, "GET", VerbScope::Full),
+                "{path} refused a full credential"
+            );
+        }
+        assert!(
+            !decide("/api/v1/admin/config/settings", "PUT", VerbScope::ReadOnly),
+            "the scope gate is not checking anything: a read-only credential reached a mutation"
+        );
+    }
+
+    /// Both of the unit's own answers about a ledger verb put it on the read side, and the plane's
+    /// row agrees. Three tables, one split — and the rate class is the one that bites: a view whose
+    /// class fell through to `Crud` would spend a mutation slot every time somebody looked at a
+    /// balance, and would eventually refuse an operator's config change because of it.
+    #[test]
+    fn a_ledger_view_is_read_only_in_every_table_that_has_an_opinion() {
+        for path in LEDGER_PATHS {
+            let row = busbar_plane_admin::verbs::resolve("GET", path)
+                .unwrap_or_else(|| panic!("{path} is not in the plane's table"));
+            assert!(row.read_only, "{path} is not read-only in the plane's table");
+            assert_eq!(row.op_class(), busbar_contract::ids::OpClassId::new("admin_read"));
+
+            let verb = kernel_verb(&row).unwrap_or_else(|| panic!("{path} names no kernel verb"));
+            assert!(LEDGER_VERBS.contains(&verb), "{path} is not a ledger verb");
+            assert_eq!(
+                busbar_unit_verbs::required_scope(verb),
+                busbar_unit_verbs::required_scope(KernelVerb::GetUsage),
+                "{path} does not require what the legacy /usage read requires"
+            );
+            assert_eq!(
+                mutation_class(verb),
+                MutationClass::Forbidden,
+                "{path} would spend a mutation slot per read"
+            );
+            assert_eq!(
+                busbar_unit_scope::admin_required_scope("GET", path),
+                Scope::ReadOnly
+            );
+        }
+    }
+
+    /// A ledger verb never reaches the dispatch, and never reaches the posture check either.
+    ///
+    /// The governance seam is the boundary the two facts meet at, so it is where they are asserted:
+    /// a recording seam that would notice a legacy or new-verb call, and a `PostureCtx` that refuses
+    /// every mutation. A view answering under that posture is a view no ceremony gates.
+    #[test]
+    fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingDispatch(Arc<AtomicUsize>);
+        impl AdminDispatch for CountingDispatch {
+            fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                refused_answer()
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let admin = crate::root::kernel::new_kernel().admin_token();
+
+        for verb in LEDGER_VERBS {
+            let verbs = busbar_unit_verbs::Verbs::new(
+                CoreGovernance::new(
+                    Arc::new(CountingDispatch(Arc::clone(&calls))),
+                    Arc::new(SeededLedger),
+                    *verb,
+                    a_ledger_request("/api/v1/admin/ledger/totals"),
+                ),
+                RefusingStore,
+                ArrivalNonce(1),
+                PackedReplay,
+                CONFIG_CLASS_RULES,
+            );
+            let packed = verbs
+                .execute(
+                    *verb,
+                    &admin,
+                    "admin",
+                    VerbScope::ReadOnly,
+                    1_700_000_000,
+                    // The posture a fleet is in before its operator ceremony has run, under which
+                    // every one of the 17 money-governance verbs is refused. A view answers anyway,
+                    // because there is nothing for an operator to have approved about a read.
+                    Some(busbar_unit_verbs::PostureCtx {
+                        operator: busbar_unit_verbs::OperatorState::Unset,
+                        dual_control: busbar_unit_verbs::DualControl::Required,
+                    }),
+                    busbar_unit_verbs::ApprovalState::NotYetApproved,
+                    b"",
+                )
+                .unwrap_or_else(|r| panic!("{verb:?} was refused: {r:?}"));
+            let answer = AdminAnswer::unpack(&packed).expect("the view packs an answer");
+            assert_eq!(answer.status, 200);
+        }
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            0,
+            "a ledger view reached the dispatch, which has no handler for it"
+        );
+
+        // The control: a money-governance verb under the same posture IS refused, so the green above
+        // is the views being exempt rather than the posture check being unbound.
+        let verbs = busbar_unit_verbs::Verbs::new(
+            CoreGovernance::new(
+                Arc::new(CountingDispatch(Arc::clone(&calls))),
+                Arc::new(SeededLedger),
+                KernelVerb::Adjust,
+                a_ledger_request("/api/v1/admin/adjust"),
+            ),
+            RefusingStore,
+            ArrivalNonce(1),
+            PackedReplay,
+            CONFIG_CLASS_RULES,
+        );
+        assert!(verbs
+            .execute(
+                KernelVerb::Adjust,
+                &admin,
+                "admin",
+                VerbScope::Full,
+                1_700_000_000,
+                Some(busbar_unit_verbs::PostureCtx {
+                    operator: busbar_unit_verbs::OperatorState::Unset,
+                    dual_control: busbar_unit_verbs::DualControl::Required,
+                }),
+                busbar_unit_verbs::ApprovalState::NotYetApproved,
+                b"",
+            )
+            .is_err());
+    }
+
+    /// The additive document describes exactly the operations the closed table declares, and not one
+    /// path the pinned 1.5.5 document already has.
+    ///
+    /// That second clause is the additivity claim itself. "Additive" is not a promise that the new
+    /// document is small; it is the statement that nothing in it collides with a path a 1.5.5 client
+    /// already knows, so the two documents can be read side by side without either contradicting the
+    /// other.
+    #[test]
+    fn the_additive_document_describes_the_ledger_views_and_nothing_the_pinned_one_has() {
+        let additive: serde_json::Value =
+            serde_json::from_str(LEDGER_OPENAPI_ADDITIVE).expect("the additive document is JSON");
+        let paths = additive["paths"].as_object().expect("it declares paths");
+
+        let mut declared: Vec<&str> = paths.keys().map(String::as_str).collect();
+        declared.sort_unstable();
+        let mut expected: Vec<&str> = LEDGER_PATHS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            declared, expected,
+            "the document and the closed table declare different operations"
+        );
+
+        for (path, item) in paths {
+            let op = &item["get"];
+            assert!(
+                op.is_object(),
+                "{path} is described under a method the table does not declare"
+            );
+            assert_eq!(
+                op["x-busbar-required-scope"], "read-only",
+                "{path} is documented at a scope it is not served at"
+            );
+            let operation_id = op["operationId"].as_str().expect("an operationId");
+            let verb = busbar_plane_admin::verbs::resolve("GET", path)
+                .expect("the table declares it")
+                .verb;
+            assert_eq!(
+                snake_of(operation_id),
+                verb,
+                "{path}: the document's operationId is not the table's verb"
+            );
+        }
+
+        let pinned: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testing/shadow-oracle/fixtures/openapi-1.5.5.json"
+        )))
+        .expect("the pinned fixture is JSON");
+        let pinned_paths = pinned["paths"].as_object().expect("it declares paths");
+        for path in paths.keys() {
+            assert!(
+                !pinned_paths.contains_key(path),
+                "{path} collides with a path the pinned 1.5.5 document already declares"
+            );
+        }
+        // And from the other side: the served 1.5.5 document has no ledger path at all, which is
+        // what PB-75 means by leaving its bytes alone.
+        assert!(
+            !pinned_paths
+                .keys()
+                .any(|p| p.starts_with("/api/v1/admin/ledger/")),
+            "the pinned document has grown a ledger path"
+        );
+    }
+
+    /// `GetLedgerTotals` -> `get_ledger_totals`, so the test above can compute the expected verb
+    /// name rather than hand-transcribing a second copy of the five-row mapping.
+    fn snake_of(operation_id: &str) -> String {
+        let mut out = String::new();
+        for (i, c) in operation_id.chars().enumerate() {
+            if c.is_uppercase() {
+                if i != 0 {
+                    out.push('_');
+                }
+                out.extend(c.to_lowercase());
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// A string a deployment configured is escaped on the way out, so a name holding a quote cannot
+    /// end the document early and hand a reader a different one from the one this rendered.
+    #[test]
+    fn a_configured_name_cannot_break_out_of_the_document() {
+        use crate::root::ledger_identity::{LedgerRow, LedgerSnapshot, RowKey};
+
+        let hostile = "a\"b\\c\nd\te\u{1}";
+        let mut rows = LedgerSnapshot::new();
+        rows.insert(
+            RowKey::new(hostile, A_DAY, hostile, hostile),
+            LedgerRow {
+                priced_nanos: 1,
+                fee_count: 0,
+            },
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&render_totals(&rows)).expect("a hostile name still renders JSON");
+        assert_eq!(parsed["rows"][0]["bucket"], hostile);
+        assert_eq!(parsed["rows"][0]["lane"], hostile);
+        assert_eq!(parsed["rows"][0]["provider"], hostile);
+    }
 }
