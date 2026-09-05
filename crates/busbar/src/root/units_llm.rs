@@ -252,54 +252,6 @@ impl LlmNode {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The URL's own facts, for the length of one unit
-// ---------------------------------------------------------------------------------------------
-
-/// WHAT THE URL SAID, held for exactly as long as the loop that reads it runs.
-///
-/// The loop's carry is typed for the surfaces whose model rides the body, and the two whose model
-/// rides the URL arrive with three facts more: the model, the stream intent and the framing that
-/// intent selects. They are pinned to the thread the loop runs on rather than threaded through the
-/// carry because the carry's shape is the plane's and this is the composition root's own compensation
-/// — a slot that is set immediately before [`LlmNode::answer`] on the blocking worker that runs it,
-/// read by the two arms that need it, and cleared when that worker's unit ends. One unit occupies one
-/// worker for its whole length, so the slot is never two units' at once.
-type PathFacts = busbar_llm::arrival::PathModelFacts;
-
-thread_local! {
-    static PATH_FACTS: std::cell::RefCell<Option<PathFacts>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// THE HOLD. The facts are the unit's for as long as this value lives, and nobody else's after.
-///
-/// A guard rather than a bare set-and-clear because the loop between the two can end at any step, and
-/// a slot left behind would be the NEXT unit on this worker reading the last one's URL.
-struct HeldPathFacts;
-
-impl Drop for HeldPathFacts {
-    fn drop(&mut self) {
-        PATH_FACTS.with(|slot| {
-            *slot.borrow_mut() = None;
-        });
-    }
-}
-
-/// Pin one unit's URL facts to this thread until the returned hold is dropped.
-fn hold_path_facts(facts: PathFacts) -> HeldPathFacts {
-    PATH_FACTS.with(|slot| {
-        *slot.borrow_mut() = Some(facts);
-    });
-    HeldPathFacts
-}
-
-/// Read this unit's URL facts, where it has any. `None` is a body-model unit, which is every other
-/// surface on this plane.
-fn with_path_facts<R>(read: impl FnOnce(&PathFacts) -> R) -> Option<R> {
-    PATH_FACTS.with(|slot| slot.borrow().as_ref().map(read))
-}
-
 /// THE IN-FLIGHT SLOT, for the length of one unit.
 ///
 /// The table is what bounds how many units this node has in flight, so the slot has to come back on
@@ -420,7 +372,7 @@ impl Units for LlmUnit<'_> {
         // handler cell below is not read on this surface at all and the decode arm performs its own
         // lookup in its own spelling. The model, the stream intent and the framing come from the
         // dialect's parse; the bytes that leave here are the ones the walk forwards.
-        if let Some(read) = with_path_facts(|facts| {
+        if let Some(read) = self.walk.with_path(|facts| {
             arrival::arrival_path_model(
                 self.walk.body(),
                 &facts.model,
@@ -483,7 +435,7 @@ impl Units for LlmUnit<'_> {
         // THE PATH SURFACES' STEP 1: the model is already known, so only the handler is left — and it
         // is looked up in the path-model SPELLING, whose single sentence for both misses is the
         // released 404 body on this surface and is not the body surface's two.
-        if let Some(read) = with_path_facts(|facts| {
+        if let Some(read) = self.walk.with_path(|facts| {
             decode::decode_path_model(self.walk.proto(), self.walk.operation(), &facts.model)
                 .map(|_| facts.model.clone())
         }) {
@@ -883,6 +835,9 @@ async fn body_arrival(proto: &'static str, a: ArrivalRequest) -> Response {
         headers,
         body,
         lanes: NODE.lanes(),
+        // A body-model arrival: the model rides the body, so there is no URL fact to carry and the
+        // dialect's miss copy, where it has one, is not this surface's.
+        path: None,
     };
     // THE LOOP AWAITS, so it is awaited: right here, on the task and the runtime this request
     // already arrived on. Nothing is spawned, so nothing outlives the client — a connection that
@@ -959,16 +914,14 @@ async fn path_arrival(
         headers,
         body,
         lanes: NODE.lanes(),
-        runtime: tokio::runtime::Handle::current(),
+        // THE URL'S FACTS, handed to the unit's own carry rather than pinned to a thread. They are
+        // read by three steps — the parse-and-splice at step 0, the handler lookup at step 1 and the
+        // dialect's miss copy at step 5 — and the third of those is on the far side of the loop's one
+        // await, which is exactly where a thread-pinned fact stops being this unit's.
+        path: facts,
     };
-    // The same crossing the body arrivals make, with the URL's facts pinned to the worker for the
-    // length of the unit and released with it.
-    tokio::task::spawn_blocking(move || {
-        let _held = facts.map(hold_path_facts);
-        NODE.answer(arrival, model_hint)
-    })
-    .await
-    .unwrap_or_else(|_| unavailable(proto))
+    // The same drive the body arrivals make: awaited here, on the task the request arrived on.
+    NODE.answer(arrival, model_hint).await
 }
 
 /// GEMINI'S PATH ARRIVAL, ON THE LOOP. The dialect's own tail decode and URL parse, then the loop.
@@ -1477,6 +1430,7 @@ mod tests {
             headers: json_headers(),
             body: fixture.body(),
             lanes: node.lanes(),
+            path: None,
         };
         node.answer(arrival, None).await
     }
@@ -1566,6 +1520,7 @@ mod tests {
             headers: json_headers(),
             body: fixture.body(),
             lanes: node.lanes(),
+            path: None,
         };
         let key = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
         let principal = authenticate::principal_id(&arrival.gov);
@@ -1817,6 +1772,9 @@ mod tests {
         Bytes::from(serde_json::to_vec(&v).expect("the fixture body serializes"))
     }
 
+    /// The URL's facts, as the carry names them.
+    type PathFacts = busbar_llm::arrival::PathModelFacts;
+
     /// WHAT THE URL SAYS, for the URL each fixture is sent to.
     ///
     /// Spelled here rather than parsed, because the parse is the DIALECT'S and is pinned beside it —
@@ -1870,7 +1828,7 @@ mod tests {
         observed
     }
 
-    /// LEG 2 — the same request through the kernel's loop, with the URL's facts held for the unit.
+    /// LEG 2 — the same request through the kernel's loop, with the URL's facts in the unit's carry.
     async fn leg_loop_path(fixture: Fixture, proto: &'static str) -> Observed {
         let rig = rig(fixture).await;
         let node = LlmNode::new();
@@ -1884,56 +1842,29 @@ mod tests {
             headers: json_headers(),
             body: path_body(proto),
             lanes: node.lanes(),
-            runtime: tokio::runtime::Handle::current(),
+            path: Some(facts),
         };
-        let resp = tokio::task::spawn_blocking(move || {
-            let _held = hold_path_facts(facts);
-            node.answer(arrival, None)
-        })
-        .await
-        .expect("the loop's blocking worker joins");
+        let resp = node.answer(arrival, None).await;
         let observed = observe(&rig, resp).await;
         rig.server.shutdown().await;
         observed
     }
-
-    /// THE ONE FIELD THIS SWITCH CANNOT YET CARRY, named rather than skipped.
-    ///
-    /// A dialect that shapes its OWN model-not-found copy — gemini does, versioned with the api
-    /// version its URL carried — hands that copy to the forward, which uses it verbatim when the
-    /// destination resolves to no lane. On the loop the forward is reached through the plane's carry,
-    /// and the carry pins that copy to `None` for every unit: it is typed for the surfaces whose
-    /// model rides the body, and none of those has a copy of its own. So a gemini unit that names a
-    /// model this deployment has no lane for is answered with the NEUTRAL sentence where the shipped
-    /// entry point answers with gemini's own.
-    ///
-    /// It is one field of one fixture of one dialect and every other field of every other fixture is
-    /// byte-identical, which is why it is pinned here instead of hidden: the day the carry grows a
-    /// slot for a dialect's miss copy this row stops being a divergence and this test goes red,
-    /// which is the only way an exception ever gets deleted.
-    const CARRIED_BY_NOBODY: [(&str, Fixture, &str); 1] = [(GEMINI, Fixture::UnknownModel, "body")];
 
     /// THE SWITCH, ON THE URL-MODEL SURFACES. Same request in, same bytes and same counters out —
     /// through the shipped path-model entry point and through the kernel's loop over the step files.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn the_loop_matches_the_shipped_path_model_entry_point() {
         let mut failures: Vec<String> = Vec::new();
-        let mut expected_seen: Vec<(&str, Fixture, &str)> = Vec::new();
         for proto in [GEMINI, BEDROCK] {
             for fixture in PATH_CASES {
                 let legacy = leg_legacy_path(fixture, proto).await;
                 let looped = leg_loop_path(fixture, proto).await;
                 for ((field, want), (_, got)) in legacy.0.iter().zip(looped.0.iter()) {
-                    if want == got {
-                        continue;
+                    if want != got {
+                        failures.push(format!(
+                            "{proto}/{fixture:?}: field `{field}` diverges\n  shipped: {want}\n  loop:    {got}"
+                        ));
                     }
-                    if CARRIED_BY_NOBODY.contains(&(proto, fixture, field)) {
-                        expected_seen.push((proto, fixture, field));
-                        continue;
-                    }
-                    failures.push(format!(
-                        "{proto}/{fixture:?}: field `{field}` diverges\n  shipped: {want}\n  loop:    {got}"
-                    ));
                 }
             }
         }
@@ -1942,11 +1873,6 @@ mod tests {
             "{} divergence(s) across the two url-model dialects:\n{}",
             failures.len(),
             failures.join("\n")
-        );
-        assert_eq!(
-            expected_seen,
-            CARRIED_BY_NOBODY.to_vec(),
-            "the named residual is no longer a divergence — delete the row it is named in"
         );
     }
 
@@ -2004,23 +1930,47 @@ mod tests {
         assert_eq!(switched, shipped);
     }
 
-    /// THE HOLD IS ONE UNIT'S. A slot left behind is the next unit on this worker reading the last
-    /// one's URL, which is the one failure mode a thread-pinned carry has — so it is pinned.
-    #[test]
-    fn the_url_facts_are_released_with_the_unit() {
-        assert!(with_path_facts(|_| ()).is_none(), "the slot starts empty");
-        {
-            let _held = hold_path_facts(path_facts(GEMINI, Fixture::BufferedOk));
-            assert_eq!(
-                with_path_facts(|f| f.model.clone()).as_deref(),
-                Some(POOL),
-                "the hold is readable for the length of the unit"
-            );
-        }
-        assert!(
-            with_path_facts(|_| ()).is_none(),
-            "the hold outlived the unit that took it"
+    /// THE URL'S FACTS ARE ONE UNIT'S, and they are the unit's for the whole of it.
+    ///
+    /// They used to be pinned to the thread the loop ran on, which was sound only while the loop
+    /// occupied one blocking worker end to end. It does not any more: a unit yields at its Route step
+    /// and may be resumed on another thread, and the step that reads the dialect's miss copy is on
+    /// the far side of that yield. So they ride the carry, and this says what the carry answers on
+    /// each of the two shapes — the fact a body-model unit has none is half the seam.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_url_facts_ride_the_unit_and_not_the_thread() {
+        let rig = rig(Fixture::BufferedOk).await;
+        let node = LlmNode::new();
+        let facts = path_facts(GEMINI, Fixture::BufferedOk);
+        let base = |path| WalkArrival {
+            host: rig.host(),
+            gov: rig.gov(),
+            proto: GEMINI,
+            operation: busbar_api::operation::Operation::CHAT,
+            caller_token: None,
+            headers: json_headers(),
+            body: path_body(GEMINI),
+            lanes: node.lanes(),
+            path,
+        };
+        let carried = Walk::open(base(Some(facts)));
+        assert_eq!(
+            carried.with_path(|f| f.model.clone()).as_deref(),
+            Some(POOL),
+            "a path-model unit reads what its own URL said"
         );
+        assert!(
+            carried
+                .with_path(|f| f.model_not_found_message.clone())
+                .flatten()
+                .is_some(),
+            "and the dialect's own miss copy is one of the facts it carries"
+        );
+        assert!(
+            Walk::open(base(None)).with_path(|_| ()).is_none(),
+            "a body-model unit carries no URL fact at all"
+        );
+        rig.server.shutdown().await;
     }
 
     /// THE TABLE IS THE PLANE'S TABLE. Same dialects, same names, same order.

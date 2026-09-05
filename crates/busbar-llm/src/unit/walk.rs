@@ -62,6 +62,16 @@ pub struct WalkArrival {
     /// configured lane's name is a runtime `String` and a `LaneId` is a borrowed static one; this is
     /// the bridge, and it is the root's because leaking is the root's decision to make.
     pub lanes: Arc<Mutex<Registration>>,
+    /// WHAT THE URL SAID, on the two surfaces whose model rides the path rather than the body.
+    ///
+    /// `None` is a body-model unit, which is every other surface on this plane. Where it is `Some`,
+    /// the dialect's own parse has already read the model, the stream intent, the framing that intent
+    /// selects and the dialect's own model-miss copy — and all four are facts about the request that
+    /// steps 0, 1 and 5 read. They ride HERE, in the unit's own carry, because a unit is a future
+    /// that yields at its Route step and may be resumed on another thread: anything pinned to the
+    /// thread the unit started on is a fact the rest of the unit cannot safely read, and a fact the
+    /// NEXT unit on that thread might.
+    pub path: Option<crate::arrival::PathModelFacts>,
 }
 
 /// What the walk has established so far.
@@ -107,6 +117,7 @@ pub struct Walk {
     headers: HeaderMap,
     body: Bytes,
     lanes: Arc<Mutex<Registration>>,
+    path: Option<crate::arrival::PathModelFacts>,
     carry: Mutex<Carry>,
 }
 
@@ -137,6 +148,7 @@ impl Walk {
             headers,
             body,
             lanes,
+            path,
         } = arrival;
         let rt = crate::engine::native_runtime_arc(host.as_ref());
         Walk {
@@ -149,8 +161,23 @@ impl Walk {
             headers,
             body,
             lanes,
+            path,
             carry: Mutex::new(Carry::default()),
         }
+    }
+
+    /// WHAT THE URL SAID, for the steps that read it.
+    ///
+    /// `None` on every body-model surface, which is what makes this the one question a step asks to
+    /// find out which of the two shapes it is running under. The facts are read rather than taken:
+    /// step 0 wants the model and the framing, step 1 wants the model again, and step 5 wants the
+    /// dialect's miss copy, so no one of them may consume them.
+    #[must_use]
+    pub fn with_path<R>(
+        &self,
+        read: impl FnOnce(&crate::arrival::PathModelFacts) -> R,
+    ) -> Option<R> {
+        self.path.as_ref().map(read)
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -413,9 +440,14 @@ impl Walk {
             caller_token: self.caller_token.as_deref(),
             resolved_gov_key: self.gov.key.as_ref(),
             usage_sink: sink,
-            // The body-model arrivals carry no dialect-shaped miss copy; the two that do keep their
-            // own entry point.
-            model_not_found_message: None,
+            // THE DIALECT'S OWN MISS COPY, where the URL's parse produced one. A body-model arrival
+            // has none and gets the neutral sentence; a path-model arrival on a dialect that words
+            // its own is answered in that dialect's words, which is what the shipped entry point
+            // does and what the loop would otherwise have quietly stopped doing.
+            model_not_found_message: self
+                .path
+                .as_ref()
+                .and_then(|path| path.model_not_found_message.as_deref()),
             lanes: &self.lanes,
         })
         .await;
