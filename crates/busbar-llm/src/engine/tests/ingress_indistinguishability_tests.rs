@@ -3947,8 +3947,11 @@ async fn test_cancel_drop_mid_stream_refunds_budget() {
 /// cross_protocol_emits_one_element_array` above proves the TRUE&&TRUE case (gemini ingress,
 /// stream shim present); this proves the far more common divergent case an `||` mutant would
 /// wrongly array-wrap: a NON-gemini streaming ingress (`gemini_json_array` is always false here —
-/// `uses_array_stream_shim()` is gemini-only) whose upstream answers buffered (non-SSE), which
-/// must fall through to the plain single-object response every non-Gemini client expects.
+/// `uses_array_stream_shim()` is gemini-only) whose upstream answers buffered (non-SSE). Every
+/// `stream: true` request now gets its dialect's SSE stream regardless of what the upstream did
+/// (the buffered body is synthesized into the ingress's native stream shape), so the assertion
+/// here is "SSE chunks, not a JSON array" rather than "a plain JSON object" — the mutant this test
+/// guards against would still wrongly wrap the (now-per-chunk) OpenAI objects in an array.
 #[tokio::test]
 async fn test_non_gemini_stream_buffered_cross_protocol_stays_a_plain_object_not_an_array() {
     crate::testkit::install_test_seams();
@@ -4006,22 +4009,47 @@ async fn test_non_gemini_stream_buffered_cross_protocol_stays_a_plain_object_not
     )
     .await;
     assert_eq!(resp.status().as_u16(), 200);
-    assert_eq!(
-        resp.headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok()),
-        Some("application/json"),
-        "buffered cross-protocol non-stream fallback is application/json"
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        ct.starts_with("text/event-stream"),
+        "a stream: true request now gets its dialect's SSE stream even over a buffered upstream \
+         2xx, got content-type {ct:?}"
     );
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let parsed: Value = serde_json::from_slice(&bytes).expect("body must be JSON");
+    let text = String::from_utf8(bytes.to_vec()).expect("SSE is UTF-8");
     assert!(
-        parsed.is_object(),
-        "an `||` mutant would wrongly array-wrap this non-gemini buffered response: {parsed}"
+        !text.trim_start().starts_with('['),
+        "an `||` mutant would wrongly array-wrap this non-gemini buffered response: {text}"
     );
+    // Every `data:` line is its own native OpenAI chat-completion-chunk object (never array-wrapped),
+    // and at least one chunk carries the completion text under `choices`.
+    let mut saw_choices = false;
+    for line in text.lines() {
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data == "[DONE]" {
+            continue;
+        }
+        let parsed: Value = serde_json::from_str(data)
+            .unwrap_or_else(|e| panic!("chunk data is JSON ({e}): {data}"));
+        assert!(
+            parsed.is_object(),
+            "an `||` mutant would wrongly array-wrap this non-gemini buffered response: {parsed}"
+        );
+        if parsed.get("choices").is_some() {
+            saw_choices = true;
+        }
+    }
     assert!(
-        parsed.get("choices").is_some(),
-        "must be a native OpenAI chat-completion object: {parsed}"
+        saw_choices,
+        "must carry a native OpenAI chat-completion-chunk object: {text}"
     );
     server.shutdown().await;
 }

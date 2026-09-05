@@ -405,6 +405,23 @@ pub trait ProtocolWriter: Send + Sync {
     /// `Some` AND `value` is a JSON object (same double-`Some` guard the original inline branches use).
     fn inject_response_metrics(&self, _value: &mut serde_json::Value, _elapsed_ms: Option<u64>) {}
 
+    /// A byte-in/byte-out translator for a SAME-protocol NON-stream (buffered JSON) 2xx body, or
+    /// `None` to relay the upstream bytes verbatim (the default, and what every dialect did before).
+    ///
+    /// The same-protocol non-stream path never reaches `write_response`/`inject_response_metrics`:
+    /// the body streams straight through. A dialect whose response shape has a REQUIRED member the
+    /// proxy must supply itself can hand back a translator here that buffers the body and completes
+    /// it at end-of-stream. `BedrockWriter` overrides: a Converse response always carries
+    /// `metrics.latencyMs`, so its translator passes an upstream `metrics` through untouched and
+    /// otherwise adds busbar's own measured latency. The translator also owns the billing usage for
+    /// that body (`StreamTranslator::usage`), since the forward path reads usage from the translator
+    /// whenever one is installed.
+    fn same_protocol_buffered_response_translator(
+        &self,
+    ) -> Option<Box<dyn busbar_substrate::proto::StreamTranslator>> {
+        None
+    }
+
     /// The request-id RESPONSE HEADER (name + value) to ATTACH to a 2xx/relay response on THIS
     /// protocol's INGRESS path, or `None` when no header is attached. This is the SUCCESS-path analog
     /// of `attach_error_response_headers`, dispatched through the writer vtable so the agnostic forward

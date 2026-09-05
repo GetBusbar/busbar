@@ -243,6 +243,17 @@
         "headers"
       ],
       "rationale": "openapi.json adds the mcp/a2a endpoints; every 1.5.5 path and schema is unchanged (a dedicated cell pins info.version)."
+    },
+    {
+      "id": "S-7 responses-door streams stream",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
+      "cells": "^llm\\|responses\\|responses\\|request\\|ok_stream$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "A stream: true request on the Responses door is served as text/event-stream with the ResponseStreamEvent sequence; 1.5.5 answered the same-dialect case with a buffered JSON body. Metered identically (250 cents / 18 tokens)."
     }
   ]
 }
