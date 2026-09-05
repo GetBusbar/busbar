@@ -24,7 +24,7 @@
 
 use busbar_caps::{
     Canary, Hold, LedgerToken, MeterClassId, Outcome, Posted, PrincipalId, ReasonCode,
-    RecoveryToken, StepName, UnitKey, Usage, UsageLine, UsageToken,
+    QuantitySource, RecoveryToken, StepName, UnitKey, Usage, UsageLine, UsageToken,
 };
 
 use crate::slice::Epoch;
@@ -81,6 +81,11 @@ pub fn settle(kernel: &Kernel, record: &HoldRecord, canary: &Canary) -> Posted {
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
             quantity: amount,
+            // The sweep never saw a destination report anything: this figure is the accrual the
+            // journal recorded, which is the kernel's own count, and the whole report is an
+            // estimate for the same reason.
+            source: QuantitySource::Count,
+            estimated: true,
         }],
     )
     .expect("one usage line is always within the record's bound");

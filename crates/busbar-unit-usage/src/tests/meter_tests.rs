@@ -36,7 +36,7 @@ fn a_located_report_settles_at_what_the_destination_said() {
     let m = fold(
         vec![
             located(INPUT, 11, Direction::Input),
-            located(OUTPUT, 7, Direction::Output),
+            located(OUTPUT, 7, Direction::Response),
         ],
         counts(vec![]),
         &MeterPolicy::default(),
@@ -228,23 +228,23 @@ fn a_byte_derived_line_is_an_estimate_and_a_frame_derived_one_is_not() {
 #[test]
 fn the_source_conversions_floor_multiply_and_refuse_to_divide_by_nothing() {
     assert_eq!(
-        QuantitySource::KernelBytes { divisor: 4 }.quantity_from_raw(7),
+        crate::source::quantity_from_raw(&QuantitySource::KernelBytes { divisor: 4 }, 7),
         1
     );
     assert_eq!(
-        QuantitySource::KernelBytes { divisor: 0 }.quantity_from_raw(7),
+        crate::source::quantity_from_raw(&QuantitySource::KernelBytes { divisor: 0 }, 7),
         0
     );
     assert_eq!(
-        QuantitySource::KernelFrames { factor: 2 }.quantity_from_raw(3),
+        crate::source::quantity_from_raw(&QuantitySource::KernelFrames { factor: 2 }, 3),
         6
     );
     assert_eq!(
-        QuantitySource::KernelFrames { factor: u64::MAX }.quantity_from_raw(u64::MAX),
+        crate::source::quantity_from_raw(&QuantitySource::KernelFrames { factor: u64::MAX }, u64::MAX),
         u64::MAX,
         "the frame factor saturates rather than wrapping"
     );
-    assert_eq!(QuantitySource::Count.quantity_from_raw(9), 9);
+    assert_eq!(crate::source::quantity_from_raw(&QuantitySource::Count, 9), 9);
 }
 
 /// Which sources the kernel derived itself, and which came from somebody else. The split is what
@@ -263,7 +263,7 @@ fn the_closed_sources_split_into_kernel_derived_and_reported() {
     }
     let reported = [
         QuantitySource::Locator {
-            direction: Direction::Output,
+            direction: Direction::Response,
             ptr: LocatorPtr::new("/usage/output_tokens"),
         },
         QuantitySource::TransportUnits,

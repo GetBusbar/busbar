@@ -194,6 +194,8 @@ pub fn meter(
         lines.push(UsageLine {
             class: MeterClassId::new(class),
             quantity: charge,
+            source: QuantitySource::Count,
+            estimated: false,
         });
     }
 

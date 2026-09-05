@@ -45,9 +45,12 @@ fn inputs(unit: u64) -> AuditInputs {
         },
         amount: Amount {
             lines: vec![UsageLine {
-                class: "tokens_out".into(),
+                class: busbar_caps::MeterClassId::new("tokens_out"),
                 quantity: 120,
-                source: QuantitySource::Locator,
+                source: QuantitySource::Locator {
+                    direction: busbar_contract::ClassDirection::Response,
+                    ptr: busbar_caps::LocatorPtr::new("/usage/output_tokens"),
+                },
                 estimated: false,
             }],
             pre_tier: 600,
@@ -130,7 +133,7 @@ fn editing_any_recorded_fact_is_caught() {
         ("the fee count", |r| r.amount.fee_count += 1),
         ("a quantity", |r| r.amount.lines[0].quantity += 1),
         ("a quantity's source", |r| {
-            r.amount.lines[0].source = QuantitySource::KernelBytes
+            r.amount.lines[0].source = QuantitySource::KernelBytes { divisor: 4 }
         }),
         ("the estimated mark", |r| r.amount.lines[0].estimated = true),
         ("the currency", |r| r.amount.currency = "EUR".into()),

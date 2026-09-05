@@ -49,7 +49,7 @@ pub use settlement::{
     fee_count, requests_settled, settle, Evidence, FeeInputs, Finish, SettleFlag, Settlement,
     StatusClass, UnitEndKind,
 };
-pub use source::{Direction, LocatorPtr, QuantitySource};
+pub use source::{quantity_from_raw, Direction, LocatorPtr, QuantitySource};
 
 /// Basis points in a whole: the scale every ratio in this crate is expressed on, so no comparison
 /// needs a decimal.

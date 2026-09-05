@@ -161,6 +161,8 @@ pub fn usage(token: &UsageToken, quantity: u64) -> Usage {
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
             quantity,
+            source: busbar_caps::QuantitySource::Count,
+            estimated: false,
         }],
     )
     .expect("one line is within the bound")

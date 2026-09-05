@@ -23,6 +23,7 @@
 
 use busbar_caps::{
     Abort, Canary, ExitToken, HoldCell, LedgerToken, MeterClassId, Outcome, Posted, PostingFlags,
+    QuantitySource,
     ReasonCode, StepName, UnitEnd, Usage, UsageLine, UsageToken,
 };
 
@@ -286,6 +287,8 @@ pub fn sweep_settle(
                     let lines = vec![UsageLine {
                         class: MeterClassId::new("nano_units"),
                         quantity: amount,
+                        source: QuantitySource::Count,
+                        estimated: flags.contains(PostingFlags::ESTIMATED),
                     }];
                     let token = UsageToken::mint(kernel.seal());
                     // Estimated or reported is the settlement table's answer, not the sweep's: a

@@ -3,7 +3,7 @@
 
 //! The identity, under random postings and under a hand-corrupted amount.
 
-use busbar_caps::Usage;
+use busbar_caps::{QuantitySource, Usage};
 
 use crate::identity::{closed_window_is_settled, residual};
 use crate::settle::Ledger;
@@ -255,6 +255,8 @@ fn an_estimated_usage_report_still_settles_and_still_balances() {
         vec![busbar_caps::UsageLine {
             class: busbar_caps::MeterClassId::new("bytes"),
             quantity: 250,
+            source: QuantitySource::Count,
+            estimated: false,
         }],
     )
     .unwrap();

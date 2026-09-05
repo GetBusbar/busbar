@@ -42,6 +42,8 @@ pub fn usage(class: &'static str, quantity: u64) -> Usage {
         vec![UsageLine {
             class: MeterClassId::new(class),
             quantity,
+            source: busbar_caps::QuantitySource::Count,
+            estimated: false,
         }],
     )
     .unwrap()

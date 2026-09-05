@@ -51,6 +51,8 @@ fn usage_of(k: &Kernel, quantity: u64) -> Usage {
         vec![UsageLine {
             class: MeterClassId::new("tokens"),
             quantity,
+            source: QuantitySource::Count,
+            estimated: false,
         }],
     )
     .expect("one line is within the bound")
@@ -311,6 +313,8 @@ fn an_estimated_usage_report_flags_the_posting() {
         vec![UsageLine {
             class: MeterClassId::new("tokens"),
             quantity: 100,
+            source: QuantitySource::Count,
+            estimated: false,
         }],
     )
     .expect("within the bound");
@@ -330,6 +334,8 @@ fn a_usage_report_is_bounded_by_the_record_size() {
         .map(|_| UsageLine {
             class: MeterClassId::new("class"),
             quantity: 1,
+            source: QuantitySource::Count,
+            estimated: false,
         })
         .collect();
     assert_eq!(

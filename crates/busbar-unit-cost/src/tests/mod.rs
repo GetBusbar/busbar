@@ -8,7 +8,7 @@
 //! older release's derivation at a pinned card against the sum of the stored nano-units.
 
 use busbar_caps::step::MeterClassId;
-use busbar_caps::{KernelSeal, Usage, UsageLine, UsageToken};
+use busbar_caps::{KernelSeal, QuantitySource, Usage, UsageLine, UsageToken};
 
 use crate::{LaneClass, RateCard, RateCardVersion};
 
@@ -37,6 +37,8 @@ pub(crate) fn usage(lines: &[(&'static str, u64)]) -> Usage {
         .map(|(class, quantity)| UsageLine {
             class: MeterClassId::new(class),
             quantity: *quantity,
+            source: QuantitySource::Count,
+            estimated: false,
         })
         .collect();
     Usage::report(&token, lines).expect("a test report stays within the line bound")
@@ -51,6 +53,8 @@ pub(crate) fn estimated_usage(lines: &[(&'static str, u64)]) -> Usage {
         .map(|(class, quantity)| UsageLine {
             class: MeterClassId::new(class),
             quantity: *quantity,
+            source: QuantitySource::Count,
+            estimated: false,
         })
         .collect();
     Usage::estimate(&token, lines).expect("a test report stays within the line bound")
@@ -63,6 +67,8 @@ pub(crate) fn lines(entries: &[(&'static str, u64)]) -> Vec<UsageLine> {
         .map(|(class, quantity)| UsageLine {
             class: MeterClassId::new(class),
             quantity: *quantity,
+            source: QuantitySource::Count,
+            estimated: false,
         })
         .collect()
 }

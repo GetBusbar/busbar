@@ -112,32 +112,13 @@ pub struct OutcomeFacts {
 /// One quantity, with where the number came from.
 ///
 /// The source travels with the quantity because a figure the destination confirmed and a figure the
-/// node estimated are not the same evidence, and a billing dispute turns on exactly that difference.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UsageLine {
-    /// Which declared meter class.
-    pub class: String,
-    /// How much.
-    pub quantity: u64,
-    /// Where the number came from.
-    pub source: QuantitySource,
-    /// Whether it is the node's floor rather than a reported figure.
-    pub estimated: bool,
-}
-
-/// Where a quantity came from. A closed set, because an open one would let a plane invent a
-/// provenance nobody can evaluate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuantitySource {
-    /// Read out of the payload at a declared location.
-    Locator,
-    /// Derived from the bytes the node counted.
-    KernelBytes,
-    /// Derived from the frames the node counted.
-    KernelFrames,
-    /// Reported by a transport that decodes its own payload.
-    TransportUnits,
-}
+/// node estimated are not the same evidence, and a billing dispute turns on exactly that
+/// difference. Both the line and its provenance are the capability crate's own: this record is the
+/// sealed copy of what the usage unit folded, and a record that spelled the provenance differently
+/// from the fold that produced it could not be checked against it. The audit crate carried a
+/// four-arm reading of the design's seven-arm set; those four are the first four of the seven,
+/// unchanged in meaning.
+pub use busbar_caps::{QuantitySource, UsageLine};
 
 /// WHAT IT COST.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -338,7 +319,7 @@ impl AuditChain {
         d.num(u64::from(record.outcome.stale_policy));
         d.num(record.amount.lines.len() as u64);
         for line in &record.amount.lines {
-            d.text(&line.class);
+            d.text(line.class.as_str());
             d.num(line.quantity);
             d.text(&format!("{:?}", line.source));
             d.num(u64::from(line.estimated));

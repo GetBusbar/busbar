@@ -38,7 +38,8 @@
 use busbar_caps::{
     Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Canary, Decision, Decode,
     DurabilityLost, Encode, ExitToken, Hold, HoldCell, KernelSeal, LedgerToken, Meter,
-    MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags, PrincipalId, ReasonCode,
+    MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags, PrincipalId, QuantitySource,
+    ReasonCode,
     Refusal, Route, SessionId, StepName, UnitEnd, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
     VerifiedDestination, Verify,
 };
@@ -708,6 +709,10 @@ pub fn exit<U: Units>(
             let lines = vec![UsageLine {
                 class,
                 quantity: amount,
+                // The exit path settles what the accrual meter counted while the unit ran, which
+                // is the kernel's own figure, not one a destination reported.
+                source: QuantitySource::Count,
+                estimated: flags.contains(PostingFlags::ESTIMATED),
             }];
             let usage_token = UsageToken::mint(seal);
             let usage = if flags.contains(PostingFlags::ESTIMATED) {

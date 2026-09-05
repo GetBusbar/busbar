@@ -90,6 +90,8 @@ pub(crate) fn plain(lines: &[(&'static str, u64)]) -> Vec<UsageLine> {
         .map(|(class, quantity)| UsageLine {
             class: MeterClassId::new(class),
             quantity: *quantity,
+            source: QuantitySource::Count,
+            estimated: false,
         })
         .collect()
 }
