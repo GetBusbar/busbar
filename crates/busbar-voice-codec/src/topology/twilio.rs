@@ -23,6 +23,13 @@
 
 use serde::Serialize;
 
+// The crate's ONE base64 implementation. This module used to carry its own copy, justified as
+// keeping the envelope free of a new dependency — a justification the crate split retired:
+// `busbar-substrate-values` is already an unconditional dependency and `ir/codec` already decodes
+// audio through it. Two implementations of one wire primitive in one crate is a drift hazard with
+// nothing bought for it, and this is the primitive that turns bytes on a phone call into audio.
+use busbar_substrate_values::media::{base64_decode, base64_encode};
+
 /// Twilio's negotiated µ-law encoding string on the `start` event's media format.
 pub const TWILIO_MULAW_ENCODING: &str = "audio/x-mulaw";
 /// The only sample rate the 8 kHz passthrough carrier accepts.
@@ -204,7 +211,9 @@ impl TwilioEnvelope {
                     .and_then(|m| m.get("payload"))
                     .and_then(serde_json::Value::as_str)
                     .ok_or(TwilioError::Malformed)?;
-                let payload = base64_decode(payload_b64).ok_or(TwilioError::BadPayload)?;
+                let payload = base64_decode(payload_b64)
+                    .ok_or(TwilioError::BadPayload)?
+                    .to_vec();
                 Ok(TwilioEvent::Media {
                     stream_sid,
                     payload,
@@ -375,68 +384,6 @@ fn xml_escape(s: &str) -> String {
         }
     }
     out
-}
-
-// ── Standard base64 (RFC 4648) — self-contained so the envelope pulls no new dependency. ─────────────
-
-const B64_ENCODE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn base64_encode(data: &[u8]) -> String {
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = u32::from(chunk[0]);
-        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
-        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(B64_ENCODE[((n >> 18) & 63) as usize] as char);
-        out.push(B64_ENCODE[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            B64_ENCODE[((n >> 6) & 63) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            B64_ENCODE[(n & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
-fn base64_sextet(c: u8) -> Option<u32> {
-    match c {
-        b'A'..=b'Z' => Some(u32::from(c - b'A')),
-        b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
-        b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
-}
-
-fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    let sextets: Vec<u8> = s
-        .bytes()
-        .filter(|&b| b != b'=' && !b.is_ascii_whitespace())
-        .collect();
-    let mut out = Vec::with_capacity(sextets.len() / 4 * 3);
-    for chunk in sextets.chunks(4) {
-        if chunk.len() < 2 {
-            return None;
-        }
-        let mut n = 0u32;
-        for &c in chunk {
-            n = (n << 6) | base64_sextet(c)?;
-        }
-        let missing = 4 - chunk.len();
-        n <<= 6 * missing as u32;
-        let be = n.to_be_bytes();
-        for byte in be.iter().take(1 + (chunk.len() - 1)).skip(1) {
-            out.push(*byte);
-        }
-    }
-    Some(out)
 }
 
 #[cfg(test)]
