@@ -386,3 +386,53 @@ async fn an_undelivered_unit0_refusal_is_an_error() {
     assert_eq!(err, TransportError::Reset);
     assert_eq!(w.written.as_slice(), b"refused");
 }
+
+/// The read buffer is per-connection and reused across polls, so the byte-exactness cell has a new
+/// way to fail: a short frame following a long one must not carry the tail of its predecessor, and
+/// the buffer a connection reads through must be the same allocation each time rather than a fresh
+/// `READ_CHUNK_BYTES` one per read syscall.
+#[tokio::test]
+async fn one_read_buffer_per_connection_reused_without_leaking_bytes_between_frames() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key())
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let mut frames = server.frames(server_conn.clone());
+    let long = vec![b'L'; 4096];
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(&long))
+        .await
+        .unwrap();
+    let mut got = Vec::new();
+    while got.len() < long.len() {
+        let (_s, frame) = frames.next().await.unwrap().unwrap();
+        got.extend_from_slice(frame.bytes.as_slice());
+    }
+    assert_eq!(got, long);
+    let first_buffer = server.scratch_addr(server_conn.id()).await.unwrap();
+
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"short"))
+        .await
+        .unwrap();
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(
+        frame.bytes.as_slice(),
+        b"short",
+        "no residue from the longer frame before it"
+    );
+    assert_eq!(frame.meta.bytes, 5, "honest frame meta on a reused buffer");
+    assert_eq!(
+        server.scratch_addr(server_conn.id()).await.unwrap(),
+        first_buffer,
+        "one buffer per connection, not one per read"
+    );
+}

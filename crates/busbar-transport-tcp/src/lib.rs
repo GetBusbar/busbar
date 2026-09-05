@@ -59,10 +59,22 @@ pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 
 /// One connection's live state. Never reachable from the opaque [`Conn`] handle directly; only
 /// through this transport's own registry, keyed by [`ConnHandle::id`].
+/// A connection's read half and the buffer every read on it fills.
+///
+/// The buffer is allocated once, when the connection is registered, and reused for the life of the
+/// connection: a fresh `READ_CHUNK_BYTES` `Vec` per read syscall is an allocation and a zero-fill
+/// on the frame path, for every read, for the life of every streaming connection. Keeping it behind
+/// the same lock as the read half is what makes the reuse sound — a connection is read by one pump
+/// at a time, so there is never a second reader to see a half-filled buffer.
+struct ReadSide {
+    half: OwnedReadHalf,
+    scratch: Vec<u8>,
+}
+
 struct Inner {
     peer: SocketAddr,
     local_port: u16,
-    read: AsyncMutex<OwnedReadHalf>,
+    read: AsyncMutex<ReadSide>,
     write: AsyncMutex<OwnedWriteHalf>,
     /// Set once the kernel has finalised this connection. A frame stream captured its own clone of
     /// this state before the close, so the registry removal alone would not reach it; this is the
@@ -136,7 +148,10 @@ impl TcpTransport {
         let inner = Arc::new(Inner {
             peer,
             local_port,
-            read: AsyncMutex::new(read),
+            read: AsyncMutex::new(ReadSide {
+                half: read,
+                scratch: vec![0_u8; READ_CHUNK_BYTES],
+            }),
             write: AsyncMutex::new(write),
             closed: AtomicBool::new(false),
         });
@@ -174,10 +189,19 @@ impl TcpTransport {
             .expect("conn registry poisoned")
             .remove(&conn.id())?;
         let inner = Arc::try_unwrap(inner).ok()?;
-        let read = inner.read.into_inner();
+        let read = inner.read.into_inner().half;
         let write = inner.write.into_inner();
         let stream = read.reunite(write).ok()?;
         Some((stream, inner.peer))
+    }
+
+    /// The address of the buffer a connection reads through, for the test that pins one buffer per
+    /// connection rather than one per read.
+    #[cfg(test)]
+    pub(crate) async fn scratch_addr(&self, id: u64) -> Option<usize> {
+        let inner = self.inner(id)?;
+        let guard = inner.read.lock().await;
+        Some(guard.scratch.as_ptr() as usize)
     }
 
     fn map_connect_err(e: &io::Error) -> TransportError {
@@ -314,14 +338,15 @@ impl Transport for TcpTransport {
             if inner.closed.load(Ordering::Acquire) {
                 return None;
             }
-            let mut buf = vec![0_u8; READ_CHUNK_BYTES];
             let mut guard = inner.read.lock().await;
-            match guard.read(&mut buf).await {
+            let side = &mut *guard;
+            match side.half.read(&mut side.scratch).await {
                 Ok(0) => None,
                 Ok(n) => {
+                    // Copied out to exactly this frame's length; the scratch keeps whatever the
+                    // read left in it, which nothing else ever looks at.
+                    let bytes: Arc<[u8]> = Arc::from(&side.scratch[..n]);
                     drop(guard);
-                    buf.truncate(n);
-                    let bytes: Arc<[u8]> = buf.into();
                     let frame = Frame {
                         direction: Direction::Inbound,
                         stream: StreamId(0),

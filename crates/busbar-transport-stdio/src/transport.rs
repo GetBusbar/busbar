@@ -345,8 +345,12 @@ impl Transport for StdioTransport {
                                 slot.partial.clear();
                                 continue; // a blank line carries no frame
                             }
-                            let bytes = SlabBytes::new(Arc::<[u8]>::from(slot.partial.clone()));
-                            slot.partial.clear();
+                            // Taken, not cloned: the line is finished with, so copying it into a
+                            // second buffer only to drop the first is one allocation and one copy
+                            // per frame that nothing needs.
+                            let bytes = SlabBytes::new(Arc::<[u8]>::from(std::mem::take(
+                                &mut slot.partial,
+                            )));
                             let meta = FrameMeta {
                                 bytes: bytes.len() as u64,
                                 transport_units: None,

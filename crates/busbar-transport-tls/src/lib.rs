@@ -82,7 +82,7 @@ struct Inner {
     /// transport opened itself stands on its own socket; an adopted one stands on whatever the
     /// layer below it was already standing on, which is why this is carried rather than assumed.
     chain: Vec<&'static str>,
-    read: AsyncMutex<InnerRead>,
+    read: AsyncMutex<ReadSide>,
     write: AsyncMutex<InnerWrite>,
     /// Set once the kernel has finalised this connection. A frame stream captured its own clone of
     /// this state before the close, so the registry removal alone would not reach it; this is the
@@ -93,6 +93,18 @@ struct Inner {
 enum InnerRead {
     Server(ReadHalf<ServerStream>),
     Client(ReadHalf<ClientStream>),
+}
+
+/// A connection's read half and the buffer every read on it fills.
+///
+/// The buffer is allocated once, when the connection is registered, and reused for the life of the
+/// connection: a fresh `READ_CHUNK_BYTES` `Vec` per read is an allocation and a zero-fill on the
+/// frame path, for every read, for the life of every streaming connection. Keeping it behind the
+/// same lock as the read half is what makes the reuse sound — a connection is read by one pump at
+/// a time, so there is never a second reader to see a half-filled buffer.
+struct ReadSide {
+    half: InnerRead,
+    scratch: Vec<u8>,
 }
 
 enum InnerWrite {
@@ -211,7 +223,10 @@ impl TlsTransport {
             alpn,
             peer_cert,
             chain,
-            read: AsyncMutex::new(InnerRead::Server(read)),
+            read: AsyncMutex::new(ReadSide {
+                half: InnerRead::Server(read),
+                scratch: vec![0_u8; READ_CHUNK_BYTES],
+            }),
             write: AsyncMutex::new(InnerWrite::Server(write)),
             closed: AtomicBool::new(false),
         });
@@ -251,7 +266,10 @@ impl TlsTransport {
             alpn,
             peer_cert,
             chain,
-            read: AsyncMutex::new(InnerRead::Client(read)),
+            read: AsyncMutex::new(ReadSide {
+                half: InnerRead::Client(read),
+                scratch: vec![0_u8; READ_CHUNK_BYTES],
+            }),
             write: AsyncMutex::new(InnerWrite::Client(write)),
             closed: AtomicBool::new(false),
         });
@@ -260,6 +278,15 @@ impl TlsTransport {
             id,
             peer: peer.to_string(),
         }))
+    }
+
+    /// The address of the buffer a connection reads through, for the test that pins one buffer per
+    /// connection rather than one per read.
+    #[cfg(test)]
+    pub(crate) async fn scratch_addr(&self, id: u64) -> Option<usize> {
+        let inner = self.inner(id)?;
+        let guard = inner.read.lock().await;
+        Some(guard.scratch.as_ptr() as usize)
     }
 
     fn map_io_err(e: &io::Error) -> TransportError {
@@ -461,18 +488,19 @@ impl Transport for TlsTransport {
             if inner.closed.load(Ordering::Acquire) {
                 return None;
             }
-            let mut buf = vec![0_u8; READ_CHUNK_BYTES];
             let mut guard = inner.read.lock().await;
-            let result = match &mut *guard {
-                InnerRead::Server(r) => r.read(&mut buf).await,
-                InnerRead::Client(r) => r.read(&mut buf).await,
+            let side = &mut *guard;
+            let result = match &mut side.half {
+                InnerRead::Server(r) => r.read(&mut side.scratch).await,
+                InnerRead::Client(r) => r.read(&mut side.scratch).await,
             };
             match result {
                 Ok(0) => None,
                 Ok(n) => {
+                    // Copied out to exactly this frame's length; the scratch keeps whatever the
+                    // read left in it, which nothing else ever looks at.
+                    let bytes: Arc<[u8]> = Arc::from(&side.scratch[..n]);
                     drop(guard);
-                    buf.truncate(n);
-                    let bytes: Arc<[u8]> = buf.into();
                     let frame = Frame {
                         direction: Direction::Inbound,
                         stream: StreamId(0),
@@ -578,7 +606,7 @@ impl Transport for TlsTransport {
         let inner = self.conns.lock().expect("poisoned").remove(&conn.id())?;
         let peer = conn.peer();
         let inner = Arc::try_unwrap(inner).ok()?;
-        let stream: BoxedIo = match (inner.read.into_inner(), inner.write.into_inner()) {
+        let stream: BoxedIo = match (inner.read.into_inner().half, inner.write.into_inner()) {
             (InnerRead::Server(r), InnerWrite::Server(w)) => Box::new(r.unsplit(w)),
             (InnerRead::Client(r), InnerWrite::Client(w)) => Box::new(r.unsplit(w)),
             // The halves of one connection are always the same side; a mismatch would mean the
