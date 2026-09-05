@@ -5,7 +5,7 @@
 
 use super::{entry, Canned, DefaultCacheability, OneKey};
 use crate::cache::CredentialCache;
-use crate::chain::{AuthChain, ChainVerdict};
+use crate::chain::{AuthChain, ChainVerdict, ResolvedKey};
 use crate::module::AuthOutcome;
 use crate::principal::Principal;
 
@@ -234,6 +234,99 @@ fn test_validate_token_is_admit_or_deny() {
         false,
     );
     assert!(!closed.validate_token(Some("cred")));
+}
+
+/// PB-92's order (`ARCHITECTURE.md`, `VirtualKey.expires_at`): signature → `exp` → denylist →
+/// `by_id` generation, each step short-circuiting the ones after it. This crate does not own the
+/// governance implementation of [`crate::chain::KeyVerifier`] — that lives on the composition root's
+/// side — so this is a fake that RECORDS the order it was asked to perform each check in, pinning
+/// the contract [`crate::chain::KeyVerifier::verify_token`]'s doc now states, over the same shape a
+/// real implementation has: four sequential, short-circuiting steps.
+struct OrderRecordingVerifier {
+    log: std::sync::Mutex<Vec<&'static str>>,
+    fail_at: Option<&'static str>,
+}
+
+impl OrderRecordingVerifier {
+    fn new(fail_at: Option<&'static str>) -> Self {
+        OrderRecordingVerifier {
+            log: std::sync::Mutex::new(Vec::new()),
+            fail_at,
+        }
+    }
+
+    fn record_and_check(&self, step: &'static str) -> bool {
+        self.log.lock().unwrap().push(step);
+        self.fail_at != Some(step)
+    }
+
+    fn recorded(&self) -> Vec<&'static str> {
+        self.log.lock().unwrap().clone()
+    }
+}
+
+impl crate::chain::KeyVerifier for OrderRecordingVerifier {
+    fn verify_token(
+        &self,
+        _token: &str,
+        _now: u64,
+        _expected_aud: Option<&str>,
+    ) -> Option<ResolvedKey> {
+        if !self.record_and_check("signature") {
+            return None;
+        }
+        if !self.record_and_check("exp") {
+            return None;
+        }
+        if !self.record_and_check("denylist") {
+            return None;
+        }
+        if !self.record_and_check("by_id") {
+            return None;
+        }
+        Some(ResolvedKey {
+            id: "vk_order".to_string(),
+            name: "order-pin".to_string(),
+        })
+    }
+}
+
+#[test]
+fn keys_arm_verify_token_order_matches_pb_92_on_full_success() {
+    let verifier = OrderRecordingVerifier::new(None);
+    let c = chain(Vec::new(), true);
+    assert!(matches!(
+        c.run_chain_cached(Some("tok"), None, Some(&verifier), 1000, None),
+        ChainVerdict::Identified { .. }
+    ));
+    assert_eq!(
+        verifier.recorded(),
+        vec!["signature", "exp", "denylist", "by_id"],
+        "PB-92: signature, then exp, then denylist, then by_id generation"
+    );
+}
+
+#[test]
+fn keys_arm_verify_token_short_circuits_at_the_failing_step() {
+    for (fail_at, expected_log) in [
+        ("signature", vec!["signature"]),
+        ("exp", vec!["signature", "exp"]),
+        ("denylist", vec!["signature", "exp", "denylist"]),
+        ("by_id", vec!["signature", "exp", "denylist", "by_id"]),
+    ] {
+        let verifier = OrderRecordingVerifier::new(Some(fail_at));
+        let c = chain(Vec::new(), true);
+        assert_eq!(
+            c.run_chain_cached(Some("tok"), None, Some(&verifier), 1000, None),
+            ChainVerdict::Denied,
+            "a failure at {fail_at} denies"
+        );
+        assert_eq!(
+            verifier.recorded(),
+            expected_log,
+            "a failure at {fail_at} must not reach a later step"
+        );
+    }
 }
 
 #[test]

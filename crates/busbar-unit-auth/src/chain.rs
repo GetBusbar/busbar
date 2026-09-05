@@ -53,6 +53,13 @@ pub struct ResolvedKey {
 /// ingress, where it rejects a token whose audience is absent or different. Threading it through
 /// the verifier rather than a caller is what stops a route added to that plane later from forgetting
 /// the check.
+///
+/// PB-92's ORDER, which an implementation must follow: **signature → `exp` → denylist → `by_id`
+/// generation**. Each step short-circuits the ones after it — an unsigned or expired token is never
+/// looked up against the denylist, and a revoked subject is never resolved to its binding — so a
+/// caller can rely on the FIRST reason a token failed being the one PB-92 names, not a later one that
+/// happened to also be true. `expires_at` itself stays unenforced here (PB-92): only the token's own
+/// `exp` claim gates step two.
 pub trait KeyVerifier: Send + Sync {
     /// Verify a signed key. `None` for unknown, expired, rotated, revoked or disabled.
     fn verify_token(
