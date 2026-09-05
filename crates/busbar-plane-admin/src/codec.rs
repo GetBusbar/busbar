@@ -272,6 +272,7 @@ impl Plane for AdminPlane {
     fn plane_facts<'u>(
         &self,
         _verb: AdminVerbId,
+        _subject: Option<&'u str>,
         _ctx: &Ctx<'u>,
     ) -> Result<PlaneFacts<'u>, Decode> {
         // This plane declares no introspection verbs of its own (`meta::ADMIN_VERBS` is empty; see

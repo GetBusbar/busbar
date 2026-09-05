@@ -47,20 +47,22 @@ pub const CLASS_BYTES: MeterClassId = MeterClassId::new("bytes");
 /// The read-only verb that lists the agents this node fronts.
 pub const VERB_AGENTS: AdminVerbId = AdminVerbId::new("agents");
 
+/// The read-only verb that answers for the ONE agent the subject names.
+pub const VERB_AGENT: AdminVerbId = AdminVerbId::new("agent");
+
 /// The verbs this plane answers.
 ///
-/// ONE verb, and the reason there is only one is worth recording. The codec answers two read-only
-/// projections: one that lists every agent, and one that answers for an agent NAMED IN THE REQUEST.
-/// The contract's introspection verb takes no argument — a verb identifier and a context, and
-/// nothing to say WHICH agent — so the per-name projection cannot be expressed here at all. It is
-/// declared nowhere rather than declared and answered wrongly. That is a finding about the
-/// contract's introspection shape, and it is written down in the crate's notes.
+/// Two, and which two is the point. The codec answers a projection over every agent and a projection
+/// over the ONE agent a request names; the introspection verb now carries a subject, so both are
+/// expressible and both are declared. The per-name one used to be declared nowhere, because a verb
+/// identifier and a context said WHICH plane but never WHICH agent, and a key per agent is not
+/// available to a plane whose verb key set is closed at registration.
 ///
 /// The codec's two OTHER admin operations — the one that re-contacts an agent and re-pins it, and
 /// the one that records an operator's approval — CHANGE something, so they are not verbs of this
 /// plane either: a mutating plane admin operation is the kernel's own record-write verb, reached
 /// with the plane's record schemas, and the plane contributes the shape rather than the action.
-const ADMIN_VERBS: &[AdminVerbId] = &[VERB_AGENTS];
+const ADMIN_VERBS: &[AdminVerbId] = &[VERB_AGENTS, VERB_AGENT];
 
 /// The schema of this plane's own configuration block.
 ///

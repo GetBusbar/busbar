@@ -273,6 +273,7 @@ impl Plane for FixturePlane {
     fn plane_facts<'u>(
         &self,
         _verb: AdminVerbId,
+        _subject: Option<&'u str>,
         _ctx: &Ctx<'u>,
     ) -> Result<PlaneFacts<'u>, Decode> {
         Ok(PlaneFacts::default())

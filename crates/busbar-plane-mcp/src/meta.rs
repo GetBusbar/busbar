@@ -57,21 +57,23 @@ pub const CLASS_BYTES: MeterClassId = MeterClassId::new("bytes");
 /// The read-only verb that lists the registered servers.
 pub const VERB_TOOLS: AdminVerbId = AdminVerbId::new("tools");
 
+/// The read-only verb that answers for the ONE registration the subject names.
+pub const VERB_SERVER: AdminVerbId = AdminVerbId::new("server");
+
 /// The verbs this plane answers.
 ///
-/// ONE verb, and the reason there is only one is worth recording. The codec answers three read-only
-/// projections: one that lists every registration, and two that answer for a registration NAMED IN
-/// THE REQUEST — what has changed about it, and whether it is healthy. The contract's introspection
-/// verb takes no argument — a verb identifier and a context, and nothing to say WHICH registration —
-/// so the two per-name projections cannot be expressed here at all. They are declared nowhere rather
-/// than declared and answered wrongly. That is a finding about the contract's introspection shape,
-/// and it is written down in the crate's notes.
+/// Two, and which two is the point. The codec answers a projection over every registration and a
+/// projection over the ONE registration a request names; the introspection verb now carries a
+/// subject, so both are expressible and both are declared. The per-name one used to be declared
+/// nowhere, because a verb identifier and a context said WHICH plane but never WHICH server, and a
+/// key per registration is not available to a plane whose verb key set is closed at registration.
 ///
-/// The codec's fourth admin operation re-contacts a server and re-pins it, which CHANGES something,
-/// so it is not a verb of this plane either: a mutating plane admin operation is the kernel's own
-/// record-write verb, reached with the plane's record schemas, and the plane contributes the shape
-/// rather than the action.
-const ADMIN_VERBS: &[AdminVerbId] = &[VERB_TOOLS];
+/// What is still NOT a verb of this plane is anything that changes something: the codec's operation
+/// that re-contacts a server and re-pins it is the kernel's own record-write verb, reached with this
+/// plane's record schemas, and the plane contributes the shape rather than the action. Liveness is
+/// not here either, for a different reason — a plane holds a registration table and no runtime
+/// state, so a health answer would be a guess wearing a fact's clothes.
+const ADMIN_VERBS: &[AdminVerbId] = &[VERB_TOOLS, VERB_SERVER];
 
 /// The schema of this plane's own configuration block.
 ///

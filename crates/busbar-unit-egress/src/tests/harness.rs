@@ -989,6 +989,7 @@ impl busbar_contract::Plane for TestPlane {
     fn plane_facts<'u>(
         &self,
         _verb: busbar_contract::AdminVerbId,
+        _subject: Option<&'u str>,
         _ctx: &Ctx<'u>,
     ) -> Result<PlaneFacts<'u>, Decode> {
         Ok(PlaneFacts::default())

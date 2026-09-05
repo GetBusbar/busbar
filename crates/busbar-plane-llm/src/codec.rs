@@ -796,7 +796,12 @@ impl Plane for LlmPlane {
         }
     }
 
-    fn plane_facts<'u>(&self, verb: AdminVerbId, ctx: &Ctx<'u>) -> Result<PlaneFacts<'u>, Decode> {
+    fn plane_facts<'u>(
+        &self,
+        verb: AdminVerbId,
+        _subject: Option<&'u str>,
+        ctx: &Ctx<'u>,
+    ) -> Result<PlaneFacts<'u>, Decode> {
         let mut facts = Facts::new();
         if verb == meta::VERB_DIALECTS {
             for d in dialect::DIALECTS {

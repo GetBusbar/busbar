@@ -64,6 +64,18 @@ const CONTENT_TYPE_JSON: &[u8] = b"application/json";
 /// The envelope member naming which revision the hop is made under.
 const FIELD_PROTOCOL_VERSION: &str = "mcp-protocol-version";
 
+/// The fact key the per-name projection reports the registration's own name under.
+const SUBJECT_FACT_NAME: &str = "name";
+
+/// The fact key the per-name projection reports the priced lane under.
+const SUBJECT_FACT_LANE: &str = "lane";
+
+/// The fact key the per-name projection reports the dialling transport under.
+const SUBJECT_FACT_TRANSPORT: &str = "transport";
+
+/// The fact key the per-name projection reports a locally launched registration under.
+const SUBJECT_FACT_LOCAL: &str = "local";
+
 /// The kind of resource a registered server is, in this plane's own vocabulary.
 const RESOURCE_KIND_SERVER: &str = "mcp_server";
 
@@ -773,19 +785,45 @@ impl Plane for McpPlane {
         }
     }
 
-    fn plane_facts<'u>(&self, verb: AdminVerbId, ctx: &Ctx<'u>) -> Result<PlaneFacts<'u>, Decode> {
-        if verb != crate::meta::VERB_TOOLS {
-            return Err(Decode::UnsupportedOperation);
-        }
-        let mut facts = Facts::new();
-        let _ = facts.set("count", FactValue::Int(self.servers().len() as i64));
-        for server in self.servers() {
-            // The server's name is the key and the lane it is priced on is the value. Nothing here
-            // is a credential, a price or an address: an operator reading this learns which servers
-            // are registered and on which lane, which is what an introspection verb is for.
-            let _ = facts.set(server.id, FactValue::Str(server.lane.as_str()));
-        }
+    fn plane_facts<'u>(
+        &self,
+        verb: AdminVerbId,
+        subject: Option<&'u str>,
+        ctx: &Ctx<'u>,
+    ) -> Result<PlaneFacts<'u>, Decode> {
         let _ = ctx;
+        let mut facts = Facts::new();
+        match verb {
+            v if v == crate::meta::VERB_TOOLS => {
+                let _ = facts.set("count", FactValue::Int(self.servers().len() as i64));
+                for server in self.servers() {
+                    // The server's name is the key and the lane it is priced on is the value.
+                    // Nothing here is a credential, a price or an address: an operator reading this
+                    // learns which servers are registered and on which lane, which is what an
+                    // introspection verb is for.
+                    let _ = facts.set(server.id, FactValue::Str(server.lane.as_str()));
+                }
+            }
+            v if v == crate::meta::VERB_SERVER => {
+                // The projection over ONE registration. A subject that names no registration is an
+                // unsupported operation rather than an empty answer: "there is no such server" and
+                // "that server has nothing to report" are different facts.
+                let name = subject.ok_or(Decode::UnsupportedOperation)?;
+                let server = self
+                    .servers()
+                    .iter()
+                    .find(|s| s.id == name)
+                    .ok_or(Decode::UnsupportedOperation)?;
+                let _ = facts.set(SUBJECT_FACT_NAME, FactValue::Str(server.id));
+                let _ = facts.set(SUBJECT_FACT_LANE, FactValue::Str(server.lane.as_str()));
+                let _ = facts.set(SUBJECT_FACT_TRANSPORT, FactValue::Str(server.transport));
+                // Whether this node launches the server itself, which is the one structural thing
+                // about a registration an operator cannot read off the name. The host itself stays
+                // out: an address is not introspection, it is configuration.
+                let _ = facts.set(SUBJECT_FACT_LOCAL, FactValue::Bool(server.host.is_empty()));
+            }
+            _ => return Err(Decode::UnsupportedOperation),
+        }
         Ok(PlaneFacts { facts })
     }
 

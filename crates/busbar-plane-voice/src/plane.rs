@@ -423,7 +423,12 @@ impl Plane for VoicePlane {
         }
     }
 
-    fn plane_facts<'u>(&self, verb: AdminVerbId, ctx: &Ctx<'u>) -> Result<PlaneFacts<'u>, Decode> {
+    fn plane_facts<'u>(
+        &self,
+        verb: AdminVerbId,
+        _subject: Option<&'u str>,
+        ctx: &Ctx<'u>,
+    ) -> Result<PlaneFacts<'u>, Decode> {
         if verb != meta::VERB_DIALECTS {
             return Err(Decode::UnsupportedOperation);
         }

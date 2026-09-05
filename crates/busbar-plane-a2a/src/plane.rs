@@ -46,6 +46,15 @@ pub struct Codec {
     pub events_read: u32,
 }
 
+/// The fact key the per-name projection reports the agent's own name under.
+const SUBJECT_FACT_NAME: &str = "name";
+
+/// The fact key the per-name projection reports the priced lane under.
+const SUBJECT_FACT_LANE: &str = "lane";
+
+/// The fact key the per-name projection reports the dialling transport under.
+const SUBJECT_FACT_TRANSPORT: &str = "transport";
+
 /// The credential scheme the outbound hop is decorated under.
 ///
 /// The plane NAMES the scheme and never holds what is behind it. Which secret the scheme resolves,
@@ -609,19 +618,41 @@ impl Plane for A2aPlane {
         }
     }
 
-    fn plane_facts<'u>(&self, verb: AdminVerbId, ctx: &Ctx<'u>) -> Result<PlaneFacts<'u>, Decode> {
-        if verb != crate::meta::VERB_AGENTS {
-            return Err(Decode::UnsupportedOperation);
-        }
-        let mut facts = Facts::new();
-        let _ = facts.set("count", FactValue::Int(self.agents().len() as i64));
-        for agent in self.agents() {
-            // The agent's name is the key and the lane it is priced on is the value. Nothing here
-            // is a credential, a price or an address: an operator reading this learns which agents
-            // are configured and on which lane, which is what an introspection verb is for.
-            let _ = facts.set(agent.id, FactValue::Str(agent.lane.as_str()));
-        }
+    fn plane_facts<'u>(
+        &self,
+        verb: AdminVerbId,
+        subject: Option<&'u str>,
+        ctx: &Ctx<'u>,
+    ) -> Result<PlaneFacts<'u>, Decode> {
         let _ = ctx;
+        let mut facts = Facts::new();
+        match verb {
+            v if v == crate::meta::VERB_AGENTS => {
+                let _ = facts.set("count", FactValue::Int(self.agents().len() as i64));
+                for agent in self.agents() {
+                    // The agent's name is the key and the lane it is priced on is the value.
+                    // Nothing here is a credential, a price or an address: an operator reading this
+                    // learns which agents are configured and on which lane, which is what an
+                    // introspection verb is for.
+                    let _ = facts.set(agent.id, FactValue::Str(agent.lane.as_str()));
+                }
+            }
+            v if v == crate::meta::VERB_AGENT => {
+                // The projection over ONE agent. A subject that names no agent is an unsupported
+                // operation rather than an empty answer: "there is no such agent" and "that agent
+                // has nothing to report" are different facts.
+                let name = subject.ok_or(Decode::UnsupportedOperation)?;
+                let agent = self
+                    .agents()
+                    .iter()
+                    .find(|a| a.id == name)
+                    .ok_or(Decode::UnsupportedOperation)?;
+                let _ = facts.set(SUBJECT_FACT_NAME, FactValue::Str(agent.id));
+                let _ = facts.set(SUBJECT_FACT_LANE, FactValue::Str(agent.lane.as_str()));
+                let _ = facts.set(SUBJECT_FACT_TRANSPORT, FactValue::Str(agent.transport));
+            }
+            _ => return Err(Decode::UnsupportedOperation),
+        }
         Ok(PlaneFacts { facts })
     }
 

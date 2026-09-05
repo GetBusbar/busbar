@@ -280,9 +280,17 @@ pub trait Plane: Plugin + Send + Sync + 'static {
 
     /// Answer one of this plane's declared read-only introspection verbs. Errors when the verb
     /// is not one this plane declares.
+    ///
+    /// The subject is the one bounded argument a projection may take: which registration, which
+    /// agent, which server. A verb that projects over everything is asked with no subject; a verb
+    /// that projects over one named thing is asked with its name. Without it a plane that answers
+    /// per-name projections has no way to declare them — a key per registration is not open to it,
+    /// because the verb key set is closed at registration — so it declares only the list verb and
+    /// leaves the rest unanswerable.
     fn plane_facts<'u>(
         &self,
         verb: AdminVerbId,
+        subject: Option<&'u str>,
         ctx: &Ctx<'u>,
     ) -> Result<crate::kinds::PlaneFacts<'u>, Decode>;
 

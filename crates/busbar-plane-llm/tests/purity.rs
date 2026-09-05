@@ -223,7 +223,7 @@ fn run_once() -> Pass {
         audit: format!("{:?}", plane.audit(&unit, &UnitEnd::Completed, &ctx)),
         plane_facts: pairs(
             &plane
-                .plane_facts(AdminVerbId::new("dialects"), &ctx)
+                .plane_facts(AdminVerbId::new("dialects"), None, &ctx)
                 .expect("the dialects verb is declared")
                 .facts,
         ),
@@ -249,7 +249,7 @@ fn an_undeclared_verb_is_refused() {
     let labels = Labels::new();
     let ctx = harness::ctx(&arena, &config, &transport, &labels);
     assert!(plane
-        .plane_facts(AdminVerbId::new("not-a-verb"), &ctx)
+        .plane_facts(AdminVerbId::new("not-a-verb"), None, &ctx)
         .is_err());
 }
 
