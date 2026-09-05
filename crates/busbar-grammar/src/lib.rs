@@ -15,6 +15,13 @@
 //! into the policy journal and read back, which is what makes a resolved pointer a value the kernel
 //! can compare rather than a number someone remembers.
 //!
+//! It locates values; it does not validate them. Structure is read strictly — brackets have to
+//! match, punctuation has to be where punctuation goes — but number and string grammar is not
+//! checked against the RFC, so `01.2.3e` and a raw control byte inside a string are located rather
+//! than refused. Nothing downstream needs a well-formedness verdict from here: the body busbar
+//! forwards is parsed by the provider, whose strictness is the one that counts. Reading a resolved
+//! span as "this document is valid JSON" is reading something the scanner never said.
+//!
 //! The scanner is the hot one. It never builds a tree, never unescapes into a buffer it owns, and
 //! never looks at a byte twice. Skipping a value it does not care about is a byte loop; matching a
 //! key decodes escapes on both sides a character at a time through the stack. Its budget is under a
@@ -81,7 +88,11 @@ pub enum Resolved {
     NeedMore,
     /// The document is well-formed as far as it was read, and the pointer is not in it.
     Missing,
-    /// The bytes are not JSON.
+    /// The bytes cannot be read as JSON structure.
+    ///
+    /// A structural reading, not a verdict on the document: the scanner found a byte where no value,
+    /// key, separator or matching bracket could go. A [`Resolved::Found`] is the converse — where
+    /// the value is — and never a claim that what is in the span is well-formed.
     Malformed,
 }
 
