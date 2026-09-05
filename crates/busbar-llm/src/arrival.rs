@@ -433,9 +433,9 @@ pub fn bedrock_path_parse(
         };
     }
     if path.ends_with("/converse-stream") {
-        return match request_handler(PROTO_BEDROCK)
-            .and_then(|rh| rh.resolve_operation(&format!("/model/{model_id}/converse-stream"), body))
-        {
+        return match request_handler(PROTO_BEDROCK).and_then(|rh| {
+            rh.resolve_operation(&format!("/model/{model_id}/converse-stream"), body)
+        }) {
             Some(op) => converse(op, true),
             None => unsupported(),
         };

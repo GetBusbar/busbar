@@ -77,7 +77,13 @@ impl ArrivalHost for ParseHost {
         resp
     }
 
-    fn ingress_error(&self, proto: &str, status: StatusCode, kind: &str, message: &str) -> Response {
+    fn ingress_error(
+        &self,
+        proto: &str,
+        status: StatusCode,
+        kind: &str,
+        message: &str,
+    ) -> Response {
         busbar_substrate::proxy::ingress_error(proto, status, kind, message)
     }
 
@@ -351,7 +357,8 @@ fn the_url_facts_drive_the_two_steps_to_the_live_paths_answer() {
             .expect("the live lookup resolves this pair");
         assert!(
             std::ptr::eq(
-                live_handler as *const dyn busbar_substrate::handlers::OperationHandler as *const u8,
+                live_handler as *const dyn busbar_substrate::handlers::OperationHandler
+                    as *const u8,
                 step1.op_handler as *const dyn busbar_substrate::handlers::OperationHandler
                     as *const u8
             ),
