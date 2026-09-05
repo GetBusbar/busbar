@@ -391,3 +391,27 @@ fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination
         None,
     )
 }
+
+/// `split_ws_url` on the bracketed-IPv6 shapes. A literal address with an explicit port is the one
+/// case the bracket rule exists to serve, and it must come back as the address without its brackets
+/// and the port the URL spelled — not as an authority that gets a default port stapled onto it.
+#[test]
+fn a_bracketed_ipv6_authority_parses_with_and_without_a_port() {
+    assert_eq!(
+        crate::transport::split_ws_url("wss://[::1]:8080/p").unwrap(),
+        (true, "::1".to_string(), 8080, "/p".to_string())
+    );
+    assert_eq!(
+        crate::transport::split_ws_url("ws://[::1]/p").unwrap(),
+        (false, "::1".to_string(), 80, "/p".to_string())
+    );
+    // The shapes the existing rule already got right stay right.
+    assert_eq!(
+        crate::transport::split_ws_url("ws://host:9000/p").unwrap(),
+        (false, "host".to_string(), 9000, "/p".to_string())
+    );
+    assert_eq!(
+        crate::transport::split_ws_url("wss://host/p").unwrap(),
+        (true, "host".to_string(), 443, "/p".to_string())
+    );
+}

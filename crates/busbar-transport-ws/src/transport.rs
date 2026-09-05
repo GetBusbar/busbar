@@ -35,7 +35,7 @@ type FrameStream =
 
 /// One `ws://`/`wss://` URL, hand-parsed into `(secure, host, port, path)`. Deliberately strict
 /// rather than permissive: this is an operator/runtime target, not free text.
-fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), TransportError> {
+pub(crate) fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), TransportError> {
     let (secure, rest) = if let Some(r) = url.strip_prefix("wss://") {
         (true, r)
     } else if let Some(r) = url.strip_prefix("ws://") {
@@ -51,7 +51,11 @@ fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), TransportError
         return Err(TransportError::AddressRefused);
     }
     let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) if !h.ends_with(']') && !p.contains(']') => {
+        // The last colon separates a port only when nothing after it is inside the brackets: that
+        // one condition tells `[::1]:8080` (a port) from `[::1]` (an address whose own colons the
+        // brackets are there to hide). A rule that also demanded the host not end in `]` rejected
+        // exactly the bracketed-with-a-port case the brackets exist for.
+        Some((h, p)) if !p.contains(']') => {
             let port: u16 = p.parse().map_err(|_| TransportError::AddressRefused)?;
             (h.to_string(), port)
         }
