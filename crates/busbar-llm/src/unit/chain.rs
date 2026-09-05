@@ -1034,7 +1034,6 @@ async fn the_verify_step_reads_a_live_deployment_through_a_pool_view() {
 /// which is the difference between an answer and a fixture-shaped guess.
 #[tokio::test]
 async fn the_plane_reads_whether_a_rate_card_is_present() {
-    use busbar_substrate::plane_host::BudgetHost as _;
     use verify::PoolView as _;
 
     let rig = rig(Fixture::BufferedOk).await;
