@@ -565,3 +565,91 @@ fn the_doors_answer_is_one_of_three_shapes() {
         Admission::ZeroHold
     ));
 }
+
+/// The child's own posting, and what happens when its parent got away first.
+///
+/// The design bounds late-accrual exposure by the parent-exit conversion being a MECHANISM: at the
+/// parent's exit every outstanding accrual becomes a child-owned hold, drawn synchronously. Without
+/// the two constructors below the bound was an assertion, because nothing in the tree could perform
+/// the conversion or write the child's posting.
+#[test]
+fn a_child_posts_inside_its_parent_while_the_parent_is_open() {
+    let k = Kernel::new();
+    let admit = k.admit_token();
+    let parent = HoldCell::new(Hold::open(&admit, who("acct-1"), 0));
+    let arrival = parent
+        .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
+        .expect("the parent passes the door");
+    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+
+    let accrual = parent
+        .accrue_child(&who("acct-1"), 250, &admit)
+        .expect("an open parent takes the child's spend");
+
+    let posted =
+        Posted::into_parent(accrual, &parent, &k.ledger_token()).expect("the parent is still open");
+    assert_eq!(posted.settled(), 250);
+    assert_eq!(
+        posted.reserved(),
+        0,
+        "the reservation behind a child is its parent's"
+    );
+    assert_eq!(posted.overdraft(), 0);
+    assert!(
+        posted.flags().is_clean(),
+        "nothing about a child that met its parent is late"
+    );
+}
+
+#[test]
+fn a_child_whose_parent_exited_gets_its_accrual_back_and_posts_late() {
+    let k = Kernel::new();
+    let admit = k.admit_token();
+    let parent = HoldCell::new(Hold::open(&admit, who("acct-1"), 0));
+    let arrival = parent
+        .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
+        .expect("the parent passes the door");
+    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let accrual = parent
+        .accrue_child(&who("acct-1"), 250, &admit)
+        .expect("an open parent takes the child's spend");
+
+    // The parent exits while the child is still running.
+    let taken = parent.take(&k.exit_token()).expect("the parent's own exit");
+    let _ = Posted::settle(taken, &usage_of(&k, 0), &k.ledger_token());
+
+    let handed_back = Posted::into_parent(accrual, &parent, &k.ledger_token())
+        .expect_err("a parent that has gone cannot carry it");
+    assert_eq!(handed_back.amount(), 250);
+
+    let late = Posted::settle_late(handed_back, &k.ledger_token());
+    assert!(late.flags().contains(PostingFlags::LATE_ACCRUAL));
+    assert_eq!(late.settled(), 250);
+}
+
+#[test]
+fn an_outstanding_accrual_becomes_a_hold_of_its_own_at_the_parents_exit() {
+    let k = Kernel::new();
+    let admit = k.admit_token();
+    let parent = HoldCell::new(Hold::open(&admit, who("acct-1"), 0));
+    let arrival = parent
+        .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
+        .expect("the parent passes the door");
+    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let accrual = parent
+        .accrue_child(&who("acct-1"), 250, &admit)
+        .expect("an open parent takes the child's spend");
+
+    // Sized at the child's maximum provider push, drawn synchronously: whatever the child goes on
+    // to spend, there is a reservation behind it, which is what makes the exposure a bound.
+    let converted = accrual.convert_at_parent_exit(1_000, &admit);
+    assert_eq!(converted.reserved(), 1_000);
+    assert_eq!(converted.principal(), &who("acct-1"));
+    let posted = Posted::settle(converted, &usage_of(&k, 250), &k.ledger_token());
+    assert_eq!(posted.settled(), 250);
+    assert!(
+        !posted.flags().contains(PostingFlags::LATE_ACCRUAL),
+        "a converted accrual is not a late one: it has its own reservation"
+    );
+    assert_eq!(posted.overdraft(), 0);
+}

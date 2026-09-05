@@ -240,11 +240,17 @@ fn the_source_conversions_floor_multiply_and_refuse_to_divide_by_nothing() {
         6
     );
     assert_eq!(
-        crate::source::quantity_from_raw(&QuantitySource::KernelFrames { factor: u64::MAX }, u64::MAX),
+        crate::source::quantity_from_raw(
+            &QuantitySource::KernelFrames { factor: u64::MAX },
+            u64::MAX
+        ),
         u64::MAX,
         "the frame factor saturates rather than wrapping"
     );
-    assert_eq!(crate::source::quantity_from_raw(&QuantitySource::Count, 9), 9);
+    assert_eq!(
+        crate::source::quantity_from_raw(&QuantitySource::Count, 9),
+        9
+    );
 }
 
 /// Which sources the kernel derived itself, and which came from somebody else. The split is what

@@ -36,6 +36,7 @@ fn run(units: &TestUnits, kernel: &Kernel, cell: &busbar_caps::HoldCell, canary:
         &ctx(1),
         Run {
             cell,
+            parent: None,
             leases: &mut leases,
             gauge: &gauge,
             canary,
@@ -195,6 +196,7 @@ fn every_unit_end_leaves_through_the_one_exit() {
             &ctx(2),
             Run {
                 cell: &cell,
+                parent: None,
                 leases: &mut leases,
                 gauge: &gauge,
                 canary: &canary,
@@ -228,6 +230,7 @@ fn a_unit_is_settled_exactly_once() {
         &ctx(1),
         Run {
             cell: &cell,
+            parent: None,
             leases: &mut leases,
             gauge: &gauge,
             canary: &canary,
@@ -275,13 +278,46 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
         ..TestUnits::default()
     };
     let child_cell = cell(&kernel);
-    let ended = run(&child, &kernel, &child_cell, &canary);
+    let gauge = ConcurrencyGauge::new();
+    let mut leases = LeaseSet::new();
+    let meter = AccrualMeter::new();
+    let ended = run_unit(
+        &kernel,
+        &child,
+        &ctx(1),
+        Run {
+            cell: &child_cell,
+            parent: Some(&parent),
+            leases: &mut leases,
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+    );
+    // The child ends like every other unit: one sealed end carrying one posting. It reserved
+    // nothing, because the reservation behind it is the parent's, and its posting is clean —
+    // nothing about it is late, because the parent was still open when it ended.
     match ended {
-        Ended::AccruedIntoParent { amount, outcome } => {
-            assert_eq!(amount, 250);
-            assert_eq!(outcome, Outcome::Completed);
+        Ended::Settled { end, requests, fee } => {
+            assert_eq!(end.outcome(), Outcome::Completed);
+            let posted = end.posted().expect("the child posts like any other unit");
+            assert_eq!(posted.settled(), 250);
+            assert_eq!(
+                posted.reserved(),
+                0,
+                "the reservation behind it is the parent's"
+            );
+            assert_eq!(posted.overdraft(), 0);
+            assert!(!posted
+                .flags()
+                .contains(busbar_caps::PostingFlags::LATE_ACCRUAL));
+            assert_eq!(
+                (requests, fee),
+                (0, 0),
+                "a child draws no slot and posts no fee; the parent drew both"
+            );
         }
-        other => panic!("expected an accrual into the parent, got {other:?}"),
+        other => panic!("expected a settled child, got {other:?}"),
     }
     assert_eq!(parent.accruals(), 1);
     let counts = canary.counts();
@@ -375,6 +411,7 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
             &ctx(3),
             Run {
                 cell: &cell,
+                parent: None,
                 leases: &mut leases,
                 gauge: &gauge,
                 canary: &canary,

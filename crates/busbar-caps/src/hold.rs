@@ -450,6 +450,18 @@ impl HoldCell {
     }
 }
 
+impl HoldAccrual {
+    /// Convert an outstanding accrual into a child-owned hold, at the parent's exit.
+    ///
+    /// This is what makes the late-accrual exposure a mechanism rather than an assertion. When a
+    /// parent exits with a child still running, the child's accrual becomes a hold of its own,
+    /// sized at the child's maximum provider push and drawn synchronously — so the child cannot
+    /// afterwards post late with no reservation behind it, whatever it goes on to spend.
+    pub fn convert_at_parent_exit<S: Step>(self, sized: u64, token: &AdmitToken<S>) -> Hold {
+        Hold::open(token, self.principal, sized)
+    }
+}
+
 /// The flags a posting can carry. A posting is never just an amount: it says how much the amount is
 /// believed, and every flag here puts the posting on a report someone reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -523,6 +535,33 @@ impl Posted {
             overdraft: hold.overdraft(),
             flags,
         }
+    }
+
+    /// Post a child's spend that landed inside its parent's admission.
+    ///
+    /// The parent's hold already carries the amount — the accrual added it at the door — so what
+    /// this writes is the child's OWN posting: it reserved nothing, it settled what it spent, and
+    /// it has no overdraft, because the reservation behind it is the parent's. That is what lets a
+    /// child end like every other unit, with one posting and one sealed end, instead of ending in
+    /// a shape the record has no room for.
+    ///
+    /// A parent that exited between the door and here hands the accrual back, and the caller posts
+    /// it late against a synchronous draw.
+    pub fn into_parent(
+        accrual: HoldAccrual,
+        parent: &HoldCell,
+        _token: &LedgerToken,
+    ) -> Result<Self, HoldAccrual> {
+        if parent.state() != HoldCellState::Admitted {
+            return Err(accrual);
+        }
+        Ok(Posted {
+            principal: accrual.principal,
+            reserved: 0,
+            settled: accrual.amount,
+            overdraft: 0,
+            flags: PostingFlags::NONE,
+        })
     }
 
     /// Post a child's spend that missed its parent — always posted, backed by a synchronous slice

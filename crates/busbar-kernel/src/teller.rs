@@ -426,6 +426,12 @@ pub trait Units {
 pub struct Run<'r> {
     /// The unit's hold cell, in the in-flight table.
     pub cell: &'r HoldCell,
+    /// The parent unit's cell, where this unit is a child spending against a parent's admission.
+    ///
+    /// The child never sees the parent's HOLD — that is the whole point of the accrual — but it
+    /// does need the cell, to ask at its own exit whether the parent is still open. A parent that
+    /// has exited is what turns the child's posting into a late one.
+    pub parent: Option<&'r HoldCell>,
     /// The concurrency leases the unit took at the door.
     pub leases: &'r mut LeaseSet,
     /// The node's gauge, which the leases go back to.
@@ -447,19 +453,6 @@ pub enum Ended {
         requests: u32,
         /// Whether the flat per-request fee posted.
         fee: u32,
-    },
-    /// The unit spent against its parent's hold instead of opening one, so there is no posting of
-    /// its own: the parent's posting includes it.
-    ///
-    // contract: the capability crate has no constructor for "a posting that landed inside a
-    // parent's". When it gains one, this variant carries it and the child seals a `UnitEnd` like
-    // any other unit. Until then the child's spend is counted on the canary here and folded into
-    // the parent's hold by the cell.
-    AccruedIntoParent {
-        /// How much went into the parent.
-        amount: u64,
-        /// How the child ended.
-        outcome: Outcome,
     },
     /// Somebody else — the node's sweep — took the hold first and has already settled it. Doing
     /// anything here would be the second settlement of one unit.
@@ -555,17 +548,31 @@ pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_
                 // hold like every other unit, and that hold is in a cell the sweep also has a key
                 // to. Emptying the cell HERE is what makes the child's end final: leaving it full
                 // would leave the sweep free to settle a unit that already finished, and the
-                // parent's posting already contains this spend.
+                // parent's hold already carries this spend.
                 let taken = run.cell.take(&ExitToken::mint(seal));
                 run.leases.release_all(run.gauge);
                 match taken {
                     None => Ended::AlreadySettled,
                     Some(arrival) => {
                         drop_arrival(arrival);
+                        // The child ends like every other unit: one posting, one sealed end. Its
+                        // posting reserved nothing, because the reservation behind it is the
+                        // parent's, which already carries this spend. A parent that exited while
+                        // the child ran hands the accrual back and it posts late instead — always
+                        // posted, flagged as late, against a synchronous draw.
+                        let ledger = LedgerToken::mint(seal);
+                        let parent = run.parent.unwrap_or(run.cell);
+                        let posted = match Posted::into_parent(accrual, parent, &ledger) {
+                            Ok(posted) => posted,
+                            Err(missed) => Posted::settle_late(missed, &ledger),
+                        };
                         run.canary.settled();
-                        Ended::AccruedIntoParent {
-                            amount: accrual.amount(),
-                            outcome,
+                        Ended::Settled {
+                            end: UnitEnd::seal(&ExitToken::mint(seal), outcome, Ok(posted)),
+                            // A child draws no request slot and posts no flat fee: the unit that
+                            // drew both is the parent it is spending against.
+                            requests: 0,
+                            fee: 0,
                         }
                     }
                 }
