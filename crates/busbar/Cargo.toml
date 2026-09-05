@@ -194,12 +194,6 @@ root-mcp = []
 # `tower` is the feature's own edge: wrapping a mounted router means calling it as the service it
 # already is, which is the one thing that guarantees the inner surface answers exactly as it did.
 root-admin = ["dep:tower"]
-
-# THE LLM PLANE, SWITCHED OVER. Default-OFF. With it on, every body-model LLM request is served by
-# the kernel's loop over the plane's nine step files instead of by the plane's own shell; the step
-# bodies themselves come from `busbar-llm/teller-waist`, which is the one feature that puts them in
-# the build at all. Off, neither this module nor those files exist and the surface is the one it was.
-root-llm = ["proto-llm", "busbar-llm/teller-waist"]
 auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]
 openapi-schema = ["busbar-core/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
@@ -210,10 +204,6 @@ txn-fence-red = ["busbar-core/txn-fence-red"]
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through core's test_support, which core exposes to dependents only behind this feature.
 busbar-core = { path = "../busbar-core", features = ["test-support"] }
-# `root/units_llm.rs` drives the switched-over plane against the shipped one on the same fixture, so
-# the bin's own tests need the plane's composition-root-shaped install seams (its protocol decls, its
-# plane decl, its arrival tables, its stream-translator factory) present in the test binary.
-busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # The integration suite under tests/ (black-box: boots the binary / reads generated inventories).
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }
