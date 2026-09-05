@@ -143,7 +143,6 @@ pub struct Metered {
 
 impl Metered {
     /// The step's answer on its own, which is what the loop takes.
-    #[must_use]
     pub fn into_decision(self) -> Decision<Meter> {
         self.decision
     }
@@ -154,13 +153,8 @@ impl Metered {
 /// The kernel's row also takes the hold implicitly, through the cell; here it is passed and
 /// returned explicitly, because a plane holds no cell and the point is that the hold leaves this
 /// step exactly as it arrived plus its accrual.
-pub type MeterStep = for<'a> fn(
-    &UnitToken<Meter>,
-    &UsageToken,
-    &MeterCtx<'a>,
-    Option<Hold>,
-    &Outcome,
-) -> Metered;
+pub type MeterStep =
+    for<'a> fn(&UnitToken<Meter>, &UsageToken, &MeterCtx<'a>, Option<Hold>, &Outcome) -> Metered;
 
 /// The four reserved meter classes, in the canonical order the pricer prices them.
 ///
@@ -559,7 +553,10 @@ mod tests {
         assert_eq!(usage.total(), INPUT + OUTPUT);
         assert_eq!(usage.lines().len(), 2, "two tiers reported, two lines");
         assert!(!usage.is_estimated(), "the destination reported this");
-        assert_eq!(metered.fee_count, 1, "a delivered 2xx from an upstream posts the flat fee");
+        assert_eq!(
+            metered.fee_count, 1,
+            "a delivered 2xx from an upstream posts the flat fee"
+        );
         assert!(!metered.refund, "a 2xx refunds nothing");
         server2.shutdown().await;
     }
@@ -580,7 +577,14 @@ mod tests {
         let (_seal, unit_token, usage_token) = tokens();
         for (status, charged, upstream_leg, fee, refund, why) in [
             (200u16, true, true, 1u32, false, "delivered and charged"),
-            (502, true, true, 0, true, "a failed transfer refunds the fee base"),
+            (
+                502,
+                true,
+                true,
+                0,
+                true,
+                "a failed transfer refunds the fee base",
+            ),
             (
                 502,
                 false,
@@ -649,9 +653,15 @@ mod tests {
             &usage_token,
             &ctx,
             None,
-            &Outcome::Failed(StepName::Route, busbar_caps::ReasonCode::DestinationUnreachable),
+            &Outcome::Failed(
+                StepName::Route,
+                busbar_caps::ReasonCode::DestinationUnreachable,
+            ),
         );
-        assert_eq!(metered.fee_count, 1, "the 2xx that went out is not reversed");
+        assert_eq!(
+            metered.fee_count, 1,
+            "the 2xx that went out is not reversed"
+        );
         assert!(!metered.refund, "the client saw a success");
         assert!(metered.row.is_none(), "nothing was accrued");
         let usage = metered.decision.into_result(&seal).expect("still a report");
