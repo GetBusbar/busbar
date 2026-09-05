@@ -623,3 +623,241 @@ fn streamed_redacted_reasoning_preserves_bytes_on_anthropic_egress() {
         .expect("the redacted block must close");
     assert_eq!(stop_evt, "content_block_stop");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Spec-required response members — every member Anthropic's published Messages OpenAPI document
+// marks REQUIRED is present on the wire, in the spec's nullable/default shape when busbar has no
+// value and unchanged when the source reported one.
+// ---------------------------------------------------------------------------------------------
+
+/// Buffered `Message`: `stop_details`, `container` (null), `content[].citations` (null on a text
+/// block with none), `content[].caller` on tool_use, and the full `usage` object with every
+/// required member (`cache_creation` zero tiers, zero cache counters, `inference_geo` null,
+/// `output_tokens_details` null, `server_tool_use` null, `service_tier: "standard"`).
+#[test]
+fn anthropic_response_carries_every_spec_required_member_with_default_shapes() {
+    let resp = crate::ir::IrResponse {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![
+            crate::ir::IrBlock::Text {
+                text: "hi".into(),
+                cache_control: None,
+                citations: vec![],
+            },
+            crate::ir::IrBlock::ToolUse {
+                id: "toolu_1".into(),
+                name: "f".into(),
+                input: serde_json::json!({}),
+                cache_control: None,
+                thought_signature: None,
+            },
+            crate::ir::IrBlock::Thinking {
+                text: "t".into(),
+                signature: None,
+                redacted: false,
+                cache_control: None,
+            },
+        ],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
+            input_tokens: 3,
+            output_tokens: 4,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
+        },
+        model: Some("m".into()),
+        id: Some("msg_1".into()),
+        logprobs: Vec::new(),
+        created: None,
+        system_fingerprint: None,
+        stop_sequence: None,
+    };
+    let out = AnthropicWriter.write_response(&resp);
+    assert_eq!(out["stop_details"], serde_json::Value::Null);
+    assert_eq!(out["container"], serde_json::Value::Null);
+    assert_eq!(out["content"][0]["citations"], serde_json::Value::Null);
+    assert_eq!(
+        out["content"][1]["caller"],
+        serde_json::json!({"type": "direct"})
+    );
+    assert_eq!(out["content"][2]["signature"], "");
+    assert_eq!(
+        out["usage"],
+        serde_json::json!({
+            "input_tokens": 3,
+            "output_tokens": 4,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0},
+            "inference_geo": null,
+            "output_tokens_details": null,
+            "server_tool_use": null,
+            "service_tier": "standard"
+        })
+    );
+}
+
+/// The same members, where the source DID report values, pass through unchanged: reported tiers,
+/// counters, `service_tier`, `server_tool_use` (with the spec-required `web_fetch_requests`
+/// sibling) and `output_tokens_details.thinking_tokens`; a citation-bearing text block keeps its
+/// citations rather than being nulled.
+#[test]
+fn anthropic_response_spec_required_members_pass_reported_values_through() {
+    let body = serde_json::json!({
+        "id": "msg_1", "type": "message", "role": "assistant", "model": "m",
+        "content": [{"type": "text", "text": "x", "citations": [
+            {"type": "char_location", "cited_text": "x", "document_index": 0,
+             "document_title": "d", "start_char_index": 0, "end_char_index": 1}
+        ]}],
+        "stop_reason": "end_turn", "stop_sequence": null,
+        "usage": {
+            "input_tokens": 10, "output_tokens": 5,
+            "cache_creation_input_tokens": 7, "cache_read_input_tokens": 3,
+            "cache_creation": {"ephemeral_5m_input_tokens": 4, "ephemeral_1h_input_tokens": 3},
+            "server_tool_use": {"web_search_requests": 2},
+            "service_tier": "priority",
+            "output_tokens_details": {"thinking_tokens": 2}
+        }
+    });
+    let ir = AnthropicReader.read_response(&body).expect("reads");
+    assert_eq!(ir.usage.detail.reasoning_tokens, Some(2));
+    let out = AnthropicWriter.write_response(&ir);
+    assert_eq!(
+        out["content"][0]["citations"],
+        body["content"][0]["citations"]
+    );
+    assert_eq!(out["usage"]["cache_creation_input_tokens"], 7);
+    assert_eq!(out["usage"]["cache_read_input_tokens"], 3);
+    assert_eq!(
+        out["usage"]["cache_creation"],
+        body["usage"]["cache_creation"]
+    );
+    assert_eq!(out["usage"]["service_tier"], "priority");
+    assert_eq!(
+        out["usage"]["server_tool_use"],
+        serde_json::json!({"web_search_requests": 2, "web_fetch_requests": 0})
+    );
+    assert_eq!(
+        out["usage"]["output_tokens_details"],
+        serde_json::json!({"thinking_tokens": 2})
+    );
+}
+
+/// A cache write whose tier split is unknown (a foreign backend that reports only the total) must
+/// not be given an invented split that does not sum to the total: `cache_creation` is the spec's
+/// nullable form in that one case.
+#[test]
+fn anthropic_response_cache_creation_is_null_when_total_known_but_tiers_are_not() {
+    let resp = crate::ir::IrResponse {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: Some(9),
+            cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
+        },
+        model: None,
+        id: None,
+        logprobs: Vec::new(),
+        created: None,
+        system_fingerprint: None,
+        stop_sequence: None,
+    };
+    let out = AnthropicWriter.write_response(&resp);
+    assert_eq!(out["usage"]["cache_creation_input_tokens"], 9);
+    assert_eq!(out["usage"]["cache_creation"], serde_json::Value::Null);
+}
+
+/// Streaming: `message_start.message` is the same full `Message` shape (`stop_details`,
+/// `container`, full `usage`); `content_block_start` seeds carry `citations: null` (text) and
+/// `caller` (tool_use); `message_delta.delta` carries `container`/`stop_details` and its `usage`
+/// every `MessageDeltaUsage` member.
+#[test]
+fn anthropic_stream_events_carry_every_spec_required_member() {
+    use crate::ir::{IrBlockMeta, IrStreamEvent};
+    let w = AnthropicWriter;
+    let (_, start) = w
+        .write_response_event(&IrStreamEvent::MessageStart {
+            role: crate::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        })
+        .expect("message_start");
+    let m = &start["message"];
+    assert_eq!(m["stop_details"], serde_json::Value::Null);
+    assert_eq!(m["container"], serde_json::Value::Null);
+    assert_eq!(m["stop_sequence"], serde_json::Value::Null);
+    for k in [
+        "cache_creation",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "inference_geo",
+        "input_tokens",
+        "output_tokens",
+        "output_tokens_details",
+        "server_tool_use",
+        "service_tier",
+    ] {
+        assert!(
+            m["usage"].get(k).is_some(),
+            "message_start usage.{k} present"
+        );
+    }
+
+    let (_, text_start) = w
+        .write_response_event(&IrStreamEvent::BlockStart {
+            index: 0,
+            block: IrBlockMeta::Text,
+        })
+        .expect("text start");
+    assert_eq!(
+        text_start["content_block"]["citations"],
+        serde_json::Value::Null
+    );
+    let (_, tool_start) = w
+        .write_response_event(&IrStreamEvent::BlockStart {
+            index: 1,
+            block: IrBlockMeta::ToolUse {
+                id: "toolu_1".into(),
+                name: "f".into(),
+            },
+        })
+        .expect("tool start");
+    assert_eq!(
+        tool_start["content_block"]["caller"],
+        serde_json::json!({"type": "direct"})
+    );
+
+    let (_, delta) = w
+        .write_response_event(&IrStreamEvent::MessageDelta {
+            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_sequence: None,
+            usage: crate::ir::IrUsage {
+                input_tokens: 1,
+                output_tokens: 2,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail::default(),
+            },
+        })
+        .expect("message_delta");
+    assert_eq!(delta["delta"]["container"], serde_json::Value::Null);
+    assert_eq!(delta["delta"]["stop_details"], serde_json::Value::Null);
+    assert_eq!(
+        delta["usage"],
+        serde_json::json!({
+            "input_tokens": 1,
+            "output_tokens": 2,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens_details": null,
+            "server_tool_use": null
+        })
+    );
+}

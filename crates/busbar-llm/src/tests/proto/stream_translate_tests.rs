@@ -731,13 +731,18 @@ fn a2_roundtrip_usage_fidelity_no_cache_emits_no_cache_object() {
             json!({"input_tokens": 12, "output_tokens": 4}),
         );
         let ir = p.reader().read_response(&native).unwrap();
+        assert_eq!(ir.usage.cache_read_input_tokens, None);
         let out = p.writer().write_response(&ir);
         assert_eq!(out["usage"]["input_tokens"], json!(12));
-        assert!(
-            out["usage"].get("cache_read_input_tokens").is_none(),
-            "no spurious cache field: {out}"
+        // Anthropic's published `Usage` schema REQUIRES both cache counters, and a real uncached
+        // response reports them as 0 (never omits them) — so "no spurious cache" here means the
+        // counters are exactly 0, not that the keys are absent.
+        assert_eq!(
+            out["usage"]["cache_read_input_tokens"],
+            json!(0),
+            "required cache counter present as 0 when no cache: {out}"
         );
-        assert!(out["usage"].get("cache_creation_input_tokens").is_none());
+        assert_eq!(out["usage"]["cache_creation_input_tokens"], json!(0));
     }
     // Bedrock
     {
@@ -3171,8 +3176,10 @@ fn test_translate_openai_include_usage_to_anthropic_ingress_no_post_stop_message
     // The deferred terminal `message_delta` must carry the MERGED usage from the trailing include_usage
     // chunk (prompt 7 / completion 11), NOT the pre-merge zeros — an ordering-only check would pass a
     // regression that flushed the fold with zero usage, silently zeroing token accounting.
+    // (The `message_delta.usage` object also carries the other members the published
+    // `MessageDeltaUsage` schema requires, so match the two counters rather than the whole object.)
     assert!(
-        wire.contains("\"usage\":{\"input_tokens\":7,\"output_tokens\":11}"),
+        wire.contains("\"input_tokens\":7,\"output_tokens\":11"),
         "the folded terminal message_delta must carry the merged usage (7 in / 11 out); wire:\n{wire}"
     );
 
@@ -4100,6 +4107,10 @@ fn test_same_protocol_roundtrip_idempotence() {
     // `id` is seeded because a native Anthropic Message always carries one and the writer
     // (correctly) synthesizes an `id` when absent — so idempotence is only meaningful with a
     // real id present (an id-less fixture is not a shape a native client ever sends).
+    // The usage block carries every member the published `Usage` schema requires, with the
+    // values a real uncached Anthropic response reports (zero counters, the zero tier object,
+    // `service_tier: "standard"`): the writer always emits those members, so a fixture that left
+    // them out (or carried `null` counters) would read back as their reported-zero form.
     let original_data = serde_json::json!({
         "id": "msg_01TestRoundtripIdempotence",
         "type": "message",
@@ -4112,8 +4123,10 @@ fn test_same_protocol_roundtrip_idempotence() {
         "usage": {
             "input_tokens": 10,
             "output_tokens": 20,
-            "cache_creation_input_tokens": null,
-            "cache_read_input_tokens": null
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0},
+            "service_tier": "standard"
         }
     });
 

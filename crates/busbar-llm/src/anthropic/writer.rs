@@ -469,39 +469,19 @@ impl ProtocolWriter for AnthropicWriter {
                 msg_obj.insert("content".to_string(), serde_json::Value::Array(Vec::new()));
                 msg_obj.insert("stop_reason".to_string(), serde_json::Value::Null);
                 msg_obj.insert("stop_sequence".to_string(), serde_json::Value::Null);
-                // `usage` is a REQUIRED field of `message_start.message`: a native Anthropic stream
-                // always carries `usage:{"input_tokens":N,"output_tokens":0}` at stream open, and the
-                // official TypeScript SDK types `message.usage` as `Usage` (not `Usage | undefined`) —
-                // a client that reads `event.message.usage.input_tokens` on the first event throws if
-                // it is absent. On the cross-protocol path (e.g. OpenAI→Anthropic) the first chunk
-                // carries no usage, so `usage` is `None`; emit a zero-valued skeleton in that case
-                // (which also matches native behavior: output_tokens is 0 at stream open) rather than
-                // omitting the key.
-                let mut usage_map = serde_json::Map::new();
-                let (input_tokens, output_tokens) = usage
-                    .as_ref()
-                    .map(|u| (u.input_tokens, u.output_tokens))
-                    .unwrap_or((0, 0));
-                usage_map.insert("input_tokens".to_string(), serde_json::json!(input_tokens));
-                usage_map.insert(
-                    "output_tokens".to_string(),
-                    serde_json::json!(output_tokens),
-                );
-                if let Some(usage_val) = usage {
-                    if let Some(ccit) = usage_val.cache_creation_input_tokens {
-                        usage_map.insert(
-                            "cache_creation_input_tokens".to_string(),
-                            serde_json::json!(ccit),
-                        );
-                    }
-                    if let Some(crit) = usage_val.cache_read_input_tokens {
-                        usage_map.insert(
-                            "cache_read_input_tokens".to_string(),
-                            serde_json::json!(crit),
-                        );
-                    }
-                }
-                msg_obj.insert("usage".to_string(), serde_json::Value::Object(usage_map));
+                // The published `Message` schema also requires `stop_details` (structured detail
+                // about why output stopped) and `container` (the code-execution container); both
+                // are nullable and are `null` at stream open, as a real stream carries them.
+                msg_obj.insert("stop_details".to_string(), serde_json::Value::Null);
+                msg_obj.insert("container".to_string(), serde_json::Value::Null);
+                // `usage` is a REQUIRED field of `message_start.message`, typed as the same full
+                // `Usage` schema the buffered response carries: a client that reads
+                // `event.message.usage.input_tokens` on the first event throws if it is absent. On
+                // the cross-protocol path (e.g. OpenAI→Anthropic) the first chunk carries no usage,
+                // so `usage` is `None`; `write_usage_object` emits the zero-valued skeleton in that
+                // case (which also matches native behavior: output_tokens is 0 at stream open) and
+                // fills every spec-required member either way.
+                msg_obj.insert("usage".to_string(), write_usage_object(usage.as_ref()));
                 let mut data_obj = serde_json::Map::new();
                 // Native Anthropic SSE data bodies carry a top-level `type` matching the SSE `event:`
                 // header (e.g. `{"type":"message_start",...}`). The SDK streaming decoder accepts the
@@ -522,9 +502,12 @@ impl ProtocolWriter for AnthropicWriter {
                     // ships `thinking:""` + `signature:""`. Omitting the seed leaves the SDK's
                     // accumulator field `undefined`, so the first `..._delta` concatenates onto
                     // `undefined` (`"undefined" + chunk` / a `KeyError`) and streaming accumulation
-                    // breaks on the client. Emit the seeds to match native.
+                    // breaks on the client. Emit the seeds to match native. The published response
+                    // block schemas also require `citations` on a text block (null: no citation has
+                    // arrived yet — they stream as `citations_delta` events) and `caller` on a
+                    // tool_use block (`{"type":"direct"}`, the spec's default).
                     IrBlockMeta::Text => {
-                        serde_json::json!({ "type": "text", "text": "" })
+                        serde_json::json!({ "type": "text", "text": "", "citations": null })
                     }
                     IrBlockMeta::Thinking => {
                         serde_json::json!({ "type": "thinking", "thinking": "", "signature": "" })
@@ -538,7 +521,13 @@ impl ProtocolWriter for AnthropicWriter {
                     // wire is content_block_start{redacted_thinking,data}+content_block_stop = native.
                     IrBlockMeta::RedactedThinking => return None,
                     IrBlockMeta::ToolUse { id, name } => {
-                        serde_json::json!({ "type": STOP_TOOL_USE, "id": id, "name": name, "input": {} })
+                        serde_json::json!({
+                            "type": STOP_TOOL_USE,
+                            "id": id,
+                            "name": name,
+                            "input": {},
+                            "caller": { "type": "direct" },
+                        })
                     }
                     IrBlockMeta::Image => {
                         serde_json::json!({ "type": "image" })
@@ -691,36 +680,19 @@ impl ProtocolWriter for AnthropicWriter {
                         .map(serde_json::Value::from)
                         .unwrap_or(serde_json::Value::Null),
                 );
-                let mut usage_map = serde_json::Map::new();
-                usage_map.insert(
-                    "input_tokens".to_string(),
-                    serde_json::json!(usage.input_tokens),
-                );
-                usage_map.insert(
-                    "output_tokens".to_string(),
-                    serde_json::json!(usage.output_tokens),
-                );
-                if let Some(ccit) = usage.cache_creation_input_tokens {
-                    usage_map.insert(
-                        "cache_creation_input_tokens".to_string(),
-                        serde_json::json!(ccit),
-                    );
-                }
-                if let Some(crit) = usage.cache_read_input_tokens {
-                    usage_map.insert(
-                        "cache_read_input_tokens".to_string(),
-                        serde_json::json!(crit),
-                    );
-                }
-                // The 5m/1h tier split rides the streamed `message_delta.usage` on native Anthropic
-                // exactly as it rides the buffered `usage`. Emitting it only on the buffered path
-                // made the SAME request reconcile per-tier at `stream: false` and collapse to one
-                // cache-write number at `stream: true`.
-                write_cache_creation_tiers(&mut usage_map, &usage.detail);
+                // The published `MessageDelta` schema also requires `stop_details` and `container`,
+                // both nullable; busbar carries neither, so they are `null` (the shape a real
+                // `message_delta` has whenever no refusal detail / code-execution container applies).
+                delta_obj.insert("stop_details".to_string(), serde_json::Value::Null);
+                delta_obj.insert("container".to_string(), serde_json::Value::Null);
+                // `usage`: every `MessageDeltaUsage` member the spec requires, plus the 5m/1h tier
+                // split when the source reported it — it rides the streamed `message_delta.usage`
+                // on native Anthropic exactly as it rides the buffered `usage`, so the SAME request
+                // reconciles per tier at `stream: true` as it does at `stream: false`.
                 let mut data_obj = serde_json::Map::new();
                 data_obj.insert("type".to_string(), serde_json::json!(EVT_MESSAGE_DELTA));
                 data_obj.insert("delta".to_string(), serde_json::Value::Object(delta_obj));
-                data_obj.insert("usage".to_string(), serde_json::Value::Object(usage_map));
+                data_obj.insert("usage".to_string(), write_message_delta_usage(usage));
                 Some((
                     EVT_MESSAGE_DELTA.to_string(),
                     serde_json::Value::Object(data_obj),
@@ -816,21 +788,24 @@ impl ProtocolWriter for AnthropicWriter {
         let model = resp.model.as_deref().unwrap_or("");
         obj.insert("model".to_string(), serde_json::json!(model));
 
-        // content blocks
-        let content_array: Vec<serde_json::Value> = resp.content.iter().map(write_block).collect();
+        // content blocks, in their RESPONSE shape (the response block schemas require members a
+        // request block does not carry — see `write_response_block`).
+        let content_array: Vec<serde_json::Value> =
+            resp.content.iter().map(write_response_block).collect();
         obj.insert(
             "content".to_string(),
             serde_json::Value::Array(content_array),
         );
 
-        // stop_reason (omit if None — a native body omits it until the turn ends, and omitting
-        // keeps same-protocol round-trips lossless)
-        if let Some(ref reason) = resp.stop_reason {
-            obj.insert(
-                "stop_reason".to_string(),
-                serde_json::json!(write_anthropic_stop_reason(*reason)),
-            );
-        }
+        // stop_reason: a required member of the published `Message` schema (nullable). Emit the
+        // mapped reason, or an explicit `null` when the source carried none, so the key is always
+        // present; `read_response` maps a `null` back to `None`, keeping round-trips lossless.
+        obj.insert(
+            "stop_reason".to_string(),
+            resp.stop_reason
+                .map(|reason| serde_json::json!(write_anthropic_stop_reason(reason)))
+                .unwrap_or(serde_json::Value::Null),
+        );
 
         // stop_sequence: a native non-streaming Anthropic `Message` ALWAYS carries this key — the
         // matched stop string when a stop sequence fired, JSON `null` otherwise (the SDK types
@@ -850,31 +825,15 @@ impl ProtocolWriter for AnthropicWriter {
             }
         }
 
-        // usage
-        let mut usage_map = serde_json::Map::new();
-        usage_map.insert(
-            "input_tokens".to_string(),
-            serde_json::json!(resp.usage.input_tokens),
-        );
-        usage_map.insert(
-            "output_tokens".to_string(),
-            serde_json::json!(resp.usage.output_tokens),
-        );
-        if let Some(ccit) = resp.usage.cache_creation_input_tokens {
-            usage_map.insert(
-                "cache_creation_input_tokens".to_string(),
-                serde_json::json!(ccit),
-            );
-        }
-        if let Some(crit) = resp.usage.cache_read_input_tokens {
-            usage_map.insert(
-                "cache_read_input_tokens".to_string(),
-                serde_json::json!(crit),
-            );
-        }
-        // The differently-priced 5m/1h cache-creation tiers, in Anthropic's native nested spelling.
-        write_cache_creation_tiers(&mut usage_map, &resp.usage.detail);
-        obj.insert("usage".to_string(), serde_json::Value::Object(usage_map));
+        // stop_details / container: required, nullable members of the published `Message` schema.
+        // busbar carries neither (no refusal detail, no code-execution container), so both are
+        // `null` — the value a real response carries whenever they do not apply.
+        obj.insert("stop_details".to_string(), serde_json::Value::Null);
+        obj.insert("container".to_string(), serde_json::Value::Null);
+
+        // usage: every member the published `Usage` schema requires, with the source's values
+        // where it reported them and the spec's zero/null/default shape otherwise.
+        obj.insert("usage".to_string(), write_usage_object(Some(&resp.usage)));
 
         serde_json::Value::Object(obj)
     }

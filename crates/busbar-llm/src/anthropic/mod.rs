@@ -593,55 +593,186 @@ fn read_cache_tier_detail(usage_val: Option<&serde_json::Value>) -> crate::ir::I
             .and_then(|u| u.get("service_tier"))
             .and_then(|v| v.as_str())
             .map(String::from),
+        // `usage.output_tokens_details.thinking_tokens` — the reasoning slice of `output_tokens`.
+        // The IR already has a neutral slot for it (OpenAI `reasoning_tokens`, Gemini
+        // `thoughtsTokenCount`), so read it into that slot rather than dropping it.
+        reasoning_tokens: usage_val
+            .and_then(|u| u.get("output_tokens_details"))
+            .and_then(|d| d.get("thinking_tokens"))
+            .and_then(|v| v.as_u64()),
         ..Default::default()
     }
 }
 
-/// Write the 5m/1h cache-creation tier split into a wire `usage` map, in Anthropic's native nested
-/// `cache_creation: {ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}` spelling.
+/// The `cache_creation` tier object for a wire `usage`, in Anthropic's native nested
+/// `{ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}` spelling. The published `Usage` schema
+/// requires the member and requires both counters inside it, so:
 ///
-/// Emitted only when a tier was actually reported, so a response that never had the split does not
-/// acquire an invented one. Shared by the buffered `write_response` and the streaming
-/// `message_delta` arm — the inverse of [`read_cache_tier_detail`], and for the same reason: the
-/// tiers are priced differently, and a stream that loses them yields a bill that reconciles in
-/// aggregate and cannot be reconciled per line.
-fn write_cache_creation_tiers(
-    usage_map: &mut serde_json::Map<String, serde_json::Value>,
-    detail: &crate::ir::IrUsageDetail,
-) {
-    let mut tiers = serde_json::Map::new();
-    if let Some(t5) = detail.cache_creation_5m_input_tokens {
-        tiers.insert(
-            "ephemeral_5m_input_tokens".to_string(),
-            serde_json::json!(t5),
-        );
+/// * a reported tier is emitted as-is, with the unreported sibling as `0` (the tiers are slices of
+///   `cache_creation_input_tokens`, so a missing one really is zero);
+/// * no tier reported and no cache write at all (`cache_creation_input_tokens` absent or 0) — the
+///   all-zero object a real uncached Anthropic response carries;
+/// * no tier reported but a non-zero cache write (a foreign backend that only knows the total,
+///   e.g. Bedrock `cacheWriteInputTokens`) — `null`, the schema's nullable form, rather than an
+///   invented split that would not sum to the total.
+fn write_cache_creation_object(usage: &crate::ir::IrUsage) -> serde_json::Value {
+    let d = &usage.detail;
+    let any_tier =
+        d.cache_creation_5m_input_tokens.is_some() || d.cache_creation_1h_input_tokens.is_some();
+    if !any_tier && usage.cache_creation_input_tokens.unwrap_or(0) > 0 {
+        return serde_json::Value::Null;
     }
-    if let Some(t1h) = detail.cache_creation_1h_input_tokens {
-        tiers.insert(
-            "ephemeral_1h_input_tokens".to_string(),
-            serde_json::json!(t1h),
-        );
+    serde_json::json!({
+        "ephemeral_5m_input_tokens": d.cache_creation_5m_input_tokens.unwrap_or(0),
+        "ephemeral_1h_input_tokens": d.cache_creation_1h_input_tokens.unwrap_or(0),
+    })
+}
+
+/// `usage.output_tokens_details` — `{thinking_tokens: N}` when the reasoning slice is known,
+/// else the schema's `null`. Required by both `Usage` and `MessageDeltaUsage`.
+fn write_output_tokens_details(usage: &crate::ir::IrUsage) -> serde_json::Value {
+    match usage.detail.reasoning_tokens {
+        Some(t) => serde_json::json!({ "thinking_tokens": t }),
+        None => serde_json::Value::Null,
     }
-    if !tiers.is_empty() {
+}
+
+/// `usage.server_tool_use` — Anthropic's `{web_search_requests, web_fetch_requests}` object when a
+/// server-tool count is known, else the schema's `null` (what a real response carries when no
+/// server tool ran). Required by both `Usage` and `MessageDeltaUsage`. The IR carries only the
+/// web-search count; the schema requires both counters, so `web_fetch_requests` is `0` here.
+fn write_server_tool_use(usage: &crate::ir::IrUsage) -> serde_json::Value {
+    match usage.detail.web_search_requests {
+        Some(n) => serde_json::json!({ "web_search_requests": n, "web_fetch_requests": 0 }),
+        None => serde_json::Value::Null,
+    }
+}
+
+/// Build the full wire `usage` object of a `Message` (the buffered response and the
+/// `message_start.message` skeleton, which the published spec types as the same `Usage` schema).
+///
+/// Every member the spec marks REQUIRED is always present, in the spec's own nullable/default shape
+/// when busbar has no value: the two cache counters as `0` (a real uncached Anthropic response
+/// reports zeros, never omits them), `cache_creation` as the zero tier object, `service_tier` as
+/// `"standard"` (the tier a request lands on unless it asked for another), and `inference_geo`,
+/// `output_tokens_details`, `server_tool_use` as `null`. A value the source reported is emitted
+/// unchanged. `None` (a cross-protocol stream whose first frame carried no usage) yields the
+/// zero-valued skeleton.
+fn write_usage_object(usage: Option<&crate::ir::IrUsage>) -> serde_json::Value {
+    let zero = crate::ir::IrUsage {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail::default(),
+    };
+    let usage = usage.unwrap_or(&zero);
+    let mut usage_map = serde_json::Map::new();
+    usage_map.insert(
+        "input_tokens".to_string(),
+        serde_json::json!(usage.input_tokens),
+    );
+    usage_map.insert(
+        "output_tokens".to_string(),
+        serde_json::json!(usage.output_tokens),
+    );
+    usage_map.insert(
+        "cache_creation_input_tokens".to_string(),
+        serde_json::json!(usage.cache_creation_input_tokens.unwrap_or(0)),
+    );
+    usage_map.insert(
+        "cache_read_input_tokens".to_string(),
+        serde_json::json!(usage.cache_read_input_tokens.unwrap_or(0)),
+    );
+    usage_map.insert(
+        "cache_creation".to_string(),
+        write_cache_creation_object(usage),
+    );
+    usage_map.insert("inference_geo".to_string(), serde_json::Value::Null);
+    usage_map.insert(
+        "output_tokens_details".to_string(),
+        write_output_tokens_details(usage),
+    );
+    usage_map.insert("server_tool_use".to_string(), write_server_tool_use(usage));
+    usage_map.insert(
+        "service_tier".to_string(),
+        serde_json::json!(usage.detail.service_tier.as_deref().unwrap_or("standard")),
+    );
+    serde_json::Value::Object(usage_map)
+}
+
+/// Build the wire `usage` object of a `message_delta` event (`MessageDeltaUsage`). The spec
+/// requires `input_tokens`, `output_tokens`, both cache counters, `output_tokens_details` and
+/// `server_tool_use`; they are always present, zero/null when busbar has no value. The 5m/1h tier
+/// split and `service_tier` are not members of that schema, so they are still emitted only when the
+/// source reported them — the same request must reconcile per tier at `stream: true` exactly as it
+/// does at `stream: false`, and a stream must not lose an attribution the buffered path reports.
+fn write_message_delta_usage(usage: &crate::ir::IrUsage) -> serde_json::Value {
+    let mut usage_map = serde_json::Map::new();
+    usage_map.insert(
+        "input_tokens".to_string(),
+        serde_json::json!(usage.input_tokens),
+    );
+    usage_map.insert(
+        "output_tokens".to_string(),
+        serde_json::json!(usage.output_tokens),
+    );
+    usage_map.insert(
+        "cache_creation_input_tokens".to_string(),
+        serde_json::json!(usage.cache_creation_input_tokens.unwrap_or(0)),
+    );
+    usage_map.insert(
+        "cache_read_input_tokens".to_string(),
+        serde_json::json!(usage.cache_read_input_tokens.unwrap_or(0)),
+    );
+    usage_map.insert(
+        "output_tokens_details".to_string(),
+        write_output_tokens_details(usage),
+    );
+    usage_map.insert("server_tool_use".to_string(), write_server_tool_use(usage));
+    let d = &usage.detail;
+    if d.cache_creation_5m_input_tokens.is_some() || d.cache_creation_1h_input_tokens.is_some() {
         usage_map.insert(
             "cache_creation".to_string(),
-            serde_json::Value::Object(tiers),
+            write_cache_creation_object(usage),
         );
     }
-    // The two Anthropic-specific usage-attribution fields, re-emitted only when the source reported
-    // them (a response that never had them does not acquire an invented one). `server_tool_use` is
-    // Anthropic's nested `{web_search_requests: N}` object; `service_tier` a sibling string. Shared by
-    // the buffered `write_response` and streaming `message_delta` so a stream does not lose an
-    // attribution the buffered path reports.
-    if let Some(wsr) = detail.web_search_requests {
-        usage_map.insert(
-            "server_tool_use".to_string(),
-            serde_json::json!({ "web_search_requests": wsr }),
-        );
-    }
-    if let Some(tier) = &detail.service_tier {
+    if let Some(tier) = &d.service_tier {
         usage_map.insert("service_tier".to_string(), serde_json::json!(tier));
     }
+    serde_json::Value::Object(usage_map)
+}
+
+/// Write one RESPONSE content block: [`write_block`] plus the members the published response block
+/// schemas require that a request block does not carry. `write_block` is shared with the request
+/// writer, and a request block must not grow response-only keys, so the response-only members are
+/// added here:
+///
+/// * `text` — `citations`, `null` when the block carries none (the spec's nullable default);
+/// * `tool_use` — `caller`, `{"type":"direct"}` (the spec's default; the IR carries no caller);
+/// * `thinking` — `signature`, `""` when the source carried none (the spec types it as a plain
+///   string, matching the `""` seed the `content_block_start` writer already emits).
+///
+/// A value the source reported is left untouched.
+fn write_response_block(block: &crate::ir::IrBlock) -> serde_json::Value {
+    let mut val = write_block(block);
+    if let Some(obj) = val.as_object_mut() {
+        match obj.get("type").and_then(|t| t.as_str()) {
+            Some("text") => {
+                obj.entry("citations").or_insert(serde_json::Value::Null);
+            }
+            Some(STOP_TOOL_USE) => {
+                obj.entry("caller")
+                    .or_insert_with(|| serde_json::json!({ "type": "direct" }));
+            }
+            Some("thinking") => {
+                obj.entry("signature")
+                    .or_insert_with(|| serde_json::json!(""));
+            }
+            _ => {}
+        }
+    }
+    val
 }
 
 // Helper functions for IR mapping (used by read_request/write_request)

@@ -212,9 +212,17 @@ fn roundtrip_anthropic_response() {
             }
         }),
         &[
-            // `server_tool_use` (hosted web-search request counts) has no IR carrier: it counts
-            // REQUESTS, not tokens, so no token field can hold it and the totals stay correct
-            // without it. Deliberate; listed so its absence is a reviewed fact.
+            // The published `Message` / `Usage` schemas REQUIRE these members; the writer fills
+            // them with the spec's nullable/default shape when the source body omitted them
+            // (`null`, or `service_tier: "standard"`), so a body that left them out gains them on
+            // the way back. Additive and spec-driven; listed so each is a reviewed fact.
+            "ADDED container",
+            "ADDED content[0].citations",
+            "ADDED stop_details",
+            "ADDED usage.inference_geo",
+            "ADDED usage.output_tokens_details",
+            "ADDED usage.server_tool_use",
+            "ADDED usage.service_tier",
         ],
     );
 }
