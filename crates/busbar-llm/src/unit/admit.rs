@@ -117,7 +117,6 @@ pub struct Admitted {
 
 impl Admitted {
     /// The step's answer on its own, which is what the loop takes.
-    #[must_use]
     pub fn into_decision(self) -> Decision<Admit> {
         self.decision
     }
@@ -167,13 +166,8 @@ pub fn admit(
             // A budget downgrade re-pooled the admission: the accrual scope is the pool the charge
             // landed on, not the one the caller asked for, so the sink is built against it.
             let pool = downgraded.as_deref().unwrap_or(ctx.destination);
-            let sink = crate::native_ingress::usage_sink(
-                ctx.host,
-                ctx.gov,
-                pool,
-                ctx.charged_at,
-                admit,
-            );
+            let sink =
+                crate::native_ingress::usage_sink(ctx.host, ctx.gov, pool, ctx.charged_at, admit);
             Admitted {
                 // The hold is opened at zero: it is accounting, and sizing it is the ledger
                 // phase's. See this module's header for why a small hold cannot refuse anyone.
@@ -448,7 +442,11 @@ mod tests {
             &LedgerToken::mint(&seal),
         );
         assert_eq!(posted.principal().as_str(), key.id.as_str());
-        assert_eq!(posted.settled(), 0, "nothing was routed, so nothing settled");
+        assert_eq!(
+            posted.settled(),
+            0,
+            "nothing was routed, so nothing settled"
+        );
     }
 
     /// THE REFUSED IDENTITY. An over-budget key is turned away with a 429 that charges NOTHING —
@@ -580,4 +578,3 @@ mod tests {
         let _: AdmitStep = admit;
     }
 }
-
