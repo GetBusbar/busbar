@@ -1,0 +1,24 @@
+[package]
+name = "busbar-contract"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The plugin-visible contract: the traits, closed grammars and bounded types every busbar plugin is written against, and nothing else."
+license = "Apache-2.0"
+
+# DEPENDENCY POLICY (the core-to-plugin section of the design). This crate is the ONLY thing a
+# plugin manifest may name from busbar, so it must stand alone: it names no kernel crate, no
+# capability crate, no unit crate, no plane and no transport. Standard library, serde, and reviewed
+# third-party crates only.
+#
+# `serde` is here because the closed grammars below (claims, selectors, locations) are sealed into
+# the policy journal and read back out of config; a grammar that cannot round-trip through the
+# journal cannot be sealed, and sealing is what makes a claim decidable at boot.
+#
+# `futures` is here for exactly one item: the `Stream` trait in the transport frame pump. The
+# standard library has no stable stream trait, and inventing a private one would mean every in-tree
+# transport re-implements the adapter the ecosystem already has.
+[dependencies]
+serde = { workspace = true }
+futures = { workspace = true }
