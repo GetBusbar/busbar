@@ -626,6 +626,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "busbar-api",
+ "busbar-caps",
  "busbar-core",
  "busbar-llm-codec",
  "busbar-mcp",

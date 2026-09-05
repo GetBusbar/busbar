@@ -65,6 +65,19 @@ openapi-schema = ["busbar-substrate/openapi-schema", "busbar-llm-codec/openapi-s
 # (a `webhooks:` config section + a dispatch slot on the fallback plane) is the reported deferred
 # remainder — see `openai_responses/webhook.rs`.
 webhook-receiver = ["dep:busbar-plugin"]
+# THE TELLER WAIST — the `src/unit/` step files, ONE FILE PER TELLER STEP, written dark. DEFAULT OFF,
+# and off is byte-identical to not having them: `src/unit/mod.rs` carries the inner
+# `#![cfg(feature = "teller-waist")]`, so with the flag down the whole directory compiles to nothing
+# and the dependency below is not linked at all. The legacy `native_ingress` path is untouched either
+# way; the two coexist until the composition root flips the matrix leg.
+#
+# It carries `busbar-caps` — the capability vocabulary the loop's step seam is written in
+# (`UnitToken<S>`, `Decision<S>`, `Refusal`, `ReasonCode`, the step markers, and the facts each step
+# hands the next). `busbar-caps` + `busbar-contract` is the PLUGIN-VISIBLE pair, so naming it is the
+# plane ABI rather than a reach into the kernel. `busbar-kernel` is deliberately NOT named here: the
+# type that implements the loop's step seam lives in the composition root, and these files are the
+# per-step bodies it delegates to.
+teller-waist = ["dep:busbar-caps"]
 
 [dependencies]
 # NO `busbar-core` HERE, ON PURPOSE. A plane is a plugin on the plane ABI: the ONLY surface between
@@ -127,6 +140,9 @@ base64 = { workspace = true }
 # The route-mount enums (`RouteMethod`/`RouteAuth`) for the OFF-by-default live webhook HTTP route.
 # Optional so the default dependency graph is unchanged; enabled only by `webhook-receiver`.
 busbar-plugin = { path = "../busbar-plugin", optional = true }
+# The capability vocabulary the `teller-waist` step files are typed in (see the feature above).
+# Optional so the default dependency graph — and therefore the default build — is unchanged.
+busbar-caps = { path = "../busbar-caps", optional = true }
 
 [dev-dependencies]
 # THE NEUTRAL TEST KIT (`busbar_substrate::testkit`: the built-app seam the money-path tests forward
