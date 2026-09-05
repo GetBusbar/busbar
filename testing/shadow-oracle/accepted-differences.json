@@ -215,7 +215,7 @@
       "id": "S-5 openai chat required members",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
-      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|responses)\\|request\\|ok$",
+      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|responses)\\|request\\|ok$|^route\\.failover\\|(fo\\|primary-(429|5xx|down)|fo\\|second-request-after-trip|lb\\|up)$",
       "classes": [
         "body",
         "headers"
