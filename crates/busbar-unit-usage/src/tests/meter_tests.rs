@@ -7,7 +7,7 @@
 use super::*;
 use crate::{
     meter, Direction, DisputeReason, KernelCounts, LegDeclaration, MeterPolicy, QuantitySource,
-    UsageMeter, DEFAULT_LOCATOR_FLOOR_RATIO, DEFAULT_VARIANCE_TOLERANCE_BP,
+    DEFAULT_LOCATOR_FLOOR_RATIO, DEFAULT_VARIANCE_TOLERANCE_BP,
 };
 use std::collections::BTreeMap;
 
@@ -283,11 +283,28 @@ fn the_closed_sources_split_into_kernel_derived_and_reported() {
 }
 
 /// The short form on the report type folds with the default tolerances and no lane evidence — the
-/// same answer as the long form, so the convenience cannot drift from the rule.
+/// The fold takes its policy and its legs, and there is no second way in.
+///
+/// There used to be a shorter form that took neither: it priced at default tolerances with no lane
+/// alias map and discarded the disputes, which is not what the metering step does. Its absence is
+/// the point of this cell — the policy and the legs are arguments the caller has to supply, so a
+/// fold cannot happen without somebody deciding what it is folding against.
 #[test]
-fn the_short_form_folds_the_same_way_as_the_long_one() {
+fn the_fold_takes_its_policy_and_its_legs() {
     let values = vec![located(INPUT, 11, Direction::Input)];
-    let short = Usage::meter(&retained(values.clone()), &counts(vec![]), &token())
-        .expect("within the line bound");
-    assert_eq!(pairs(short.lines()), vec![(INPUT, 11)]);
+    let folded = meter(
+        &retained(values),
+        &counts(vec![]),
+        &MeterPolicy::default(),
+        &LegDeclaration::default(),
+        &token(),
+    )
+    .expect("within the line bound");
+    assert_eq!(pairs(folded.usage.lines()), vec![(INPUT, 11)]);
+    // A located figure with no kernel companion to check it against is exactly the case the
+    // short form used to swallow: it produced the dispute and then discarded it.
+    assert!(
+        folded.disputed(),
+        "the disputes come back with the report rather than being dropped"
+    );
 }

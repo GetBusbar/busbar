@@ -63,37 +63,14 @@ impl Metered {
     }
 }
 
-/// Building the report the ledger settles against, from the evidence a unit left behind.
+/// The fold, with everything it decided. The one shape of the metering step.
 ///
-/// This sits on the report type as a trait rather than as an inherent method because the report
-/// itself belongs to the capability crate, which depends on nothing. The call reads the same way.
-pub trait UsageMeter: Sized {
-    /// Fold the retained locator values against the kernel's own counts into one report.
-    fn meter(
-        retained: &RetainedLocatorValues,
-        kernel: &KernelCounts,
-        token: &UsageToken,
-    ) -> Result<Self, UsageError>;
-}
-
-impl UsageMeter for Usage {
-    fn meter(
-        retained: &RetainedLocatorValues,
-        kernel: &KernelCounts,
-        token: &UsageToken,
-    ) -> Result<Usage, UsageError> {
-        meter(
-            retained,
-            kernel,
-            &MeterPolicy::default(),
-            &LegDeclaration::default(),
-            token,
-        )
-        .map(|m| m.usage)
-    }
-}
-
-/// The fold, with everything it decided.
+/// The policy and the leg declaration are on the signature because the fold cannot be done without
+/// them: the tolerances and the lane alias map are what the variance rule compares against, and the
+/// three-way lane cross-check is what the legs carry. There was a shorter form that took neither
+/// and priced at defaults, discarding the disputes it produced; a fold that silently prices at
+/// default tolerances with no alias map is not the fold, so it is gone rather than kept as a
+/// convenience that could drift from the rule.
 ///
 /// Line by line: a located figure is the charge, always, with the kernel floor as a tripwire either
 /// side of it. Any other reported figure is compared against its kernel companion, and beyond the

@@ -486,8 +486,11 @@ Unit traits (sealed; shapes): `Auth::resolve(..) → Decision<Authenticate>` (ma
 `Trust::verify(.., &BreakerView, &TrustToken) → Decision<Verify>` · `Scope::approve(..)` ·
 `Admission::admit(&Estimate, &Principal, &BucketChain, &AdmitToken<Admit>) → Decision<Admit>` yielding
 `Hold` (all-or-nothing across the chain) or `HoldAccrual` · `Egress::route(&RoutePlan, &Pool,
-&UnitToken<Route>)` · `Breaker::observe/state` · `Usage::meter(&RetainedLocatorValues, &KernelCounts,
-&UsageToken) → Usage` · `Ledger::settle(Hold, Usage, &LedgerToken) → Posted` · `Audit::seal(..)` ·
+&UnitToken<Route>)` · `Breaker::observe/state` · `meter(&RetainedLocatorValues, &KernelCounts,
+&MeterPolicy, &LegDeclaration, &UsageToken) → Result<Metered, UsageError>` — a free function, not a
+trait: the report belongs to the capability crate, and the two policy arguments are what the
+variance rule and the three-way lane cross-check compare against, so a fold without them is not the
+fold; `Metered` carries the usage AND the disputes · `Ledger::settle(Hold, Usage, &LedgerToken) → Posted` · `Audit::seal(..)` ·
 `Verbs::execute(KernelVerb, &AdminToken)` · `Recovery::materialize(&HoldRecord, &RecoveryToken) → Hold`.
 
 ### 3.2 Plane
