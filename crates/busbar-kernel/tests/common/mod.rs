@@ -113,6 +113,60 @@ impl TestUnits {
     }
 }
 
+/// THE UPSTREAM THAT IS STILL THINKING.
+///
+/// A Route leg that never answers, so the loop is left waiting at its one await — exactly where a
+/// client that hangs up mid-request drops it. Nothing else about the plane changes: every other step
+/// is [`TestUnits`]', so what the cells around this fixture measure is the await and only the await.
+pub struct NeverRoutes<'u> {
+    /// The plane the other nine steps come from, so the call order still reads as one unit.
+    pub units: &'u TestUnits,
+    /// Set when the leg's own future is dropped — the proof that cancellation reached the upstream
+    /// rather than stopping at the loop.
+    pub dropped: &'u AtomicBool,
+}
+
+/// The leg itself. It answers `Pending` for ever, and says so when it is dropped.
+pub struct Never<'u> {
+    dropped: &'u AtomicBool,
+}
+
+impl std::future::Future for Never<'_> {
+    type Output = Decision<Route>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Pending
+    }
+}
+
+impl Drop for Never<'_> {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::Release);
+    }
+}
+
+impl busbar_kernel::teller::RouteAwait for NeverRoutes<'_> {
+    type Leg<'a>
+        = Never<'a>
+    where
+        Self: 'a;
+
+    fn route_leg<'a>(
+        &'a self,
+        _token: &'a UnitToken<Route>,
+        _ctx: &'a UnitCtx,
+        _meter: &'a AccrualMeter,
+    ) -> Never<'a> {
+        self.units.note(StepName::Route);
+        Never {
+            dropped: self.dropped,
+        }
+    }
+}
+
 /// A principal every test shares.
 /// The arrival record the battery's kernel-owned arrival step hands forward.
 pub fn arrival_record() -> busbar_caps::ArrivalRecord {

@@ -47,6 +47,7 @@
 //! everything the terminal needs, so a dropped unit leaves through the SAME audit door, the same
 //! settle and the same exit a finished one leaves through — named for what happened, the client
 //! went away — and the cell is emptied and the leases released before the loop's frame is gone.
+//!
 //! ## No early exits
 //!
 //! Nothing in this file uses `?` and nothing returns early. Not style: a `?` in the middle of a
@@ -611,7 +612,9 @@ pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_
         // private to this file and is the only leg this entry point can be given, so there is no
         // caller — inside the kernel or outside it — that can make this arm happen.
         std::task::Poll::Pending => {
-            unreachable!("the synchronous loop's one await is a leg that is ready on its first poll")
+            unreachable!(
+                "the synchronous loop's one await is a leg that is ready on its first poll"
+            )
         }
     }
 }
@@ -868,7 +871,9 @@ fn terminal<U: Units>(
         .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
         .into_result(seal);
     match settling {
-        Settling::Exit(reached_admitted) => exit(kernel, units, ctx, run, outcome, reached_admitted),
+        Settling::Exit(reached_admitted) => {
+            exit(kernel, units, ctx, run, outcome, reached_admitted)
+        }
         Settling::Parent(accrual) => {
             // The child opened no reservation of its own, but the table minted it an arrival hold
             // like every other unit, and that hold is in a cell the sweep also has a key to.
