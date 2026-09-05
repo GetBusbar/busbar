@@ -48,52 +48,109 @@ fn refuse(dialect: &str, reason: RefusalReason) -> Vec<u8> {
         .to_vec()
 }
 
-/// Replace the freshly minted identifier one dialect stamps on every error envelope.
+/// Drop the minted identifier from an envelope, so two envelopes can be compared on everything else.
 ///
-/// One of the six mints a random identifier inside its error envelope, so two refusals built from
-/// the same inputs differ in that one member. That is a property of the codec, not of this plane,
-/// and it is pinned by its own test below; here it is normalized so the rest of the envelope can be
-/// compared byte-for-byte.
-fn normalize_minted_id(bytes: &[u8]) -> Vec<u8> {
+/// Used ONLY where the two sides mint from different inputs: the codec's own writer draws its
+/// identifier, and the plane builds one from entropy it was handed. Both are the same document
+/// otherwise, and the identifier itself is pinned by its own shape and determinism tests above — so
+/// removing it here compares what this test is actually about, which is that the plane picked the
+/// status and the kind and the codec wrote every other byte.
+fn without_minted_id(bytes: &[u8]) -> String {
     let Ok(mut value) = sonic_rs::from_slice::<serde_json::Value>(bytes) else {
-        return bytes.to_vec();
+        return String::from_utf8_lossy(bytes).into_owned();
     };
     if let Some(obj) = value.as_object_mut() {
-        if obj.contains_key("request_id") {
-            obj.insert(
-                "request_id".to_string(),
-                serde_json::Value::String("req_NORMALIZED".to_string()),
-            );
-        }
+        obj.remove("request_id");
     }
-    sonic_rs::to_vec(&value).unwrap_or_else(|_| bytes.to_vec())
+    sonic_rs::to_string(&value).unwrap_or_else(|_| String::from_utf8_lossy(bytes).into_owned())
 }
 
-/// A refusal built twice from the same inputs is the same refusal, except for a minted identifier.
+/// A refusal built twice from the same inputs is the same refusal. Every byte of it.
 ///
-/// The plane is required to be pure over its inputs, and it is: it reads no clock and no random
-/// source. One of the dialects' error writers does, and this test says which and how, so the
-/// divergence is a recorded fact rather than a flaky assertion somewhere else.
+/// The plane is required to be pure over its inputs, and this is the test that says so without a
+/// carve-out. It used to have one: one of the six dialects mints an identifier inside its error
+/// envelope, and the envelope came back different on the second call, so the test recorded WHICH
+/// dialect did it rather than asserting the plane was deterministic. The minted identifier now takes
+/// its entropy as an input — the plane hands the codec bytes from the context, the codec builds the
+/// identifier from them and mints nothing of its own — so the carve-out is gone and the assertion is
+/// the whole document.
+///
+/// The identifier is still there, still the native shape, still the native width. What changed is
+/// that its bytes are a function of what the kernel handed this call.
 #[test]
-fn a_refusal_is_the_same_twice_apart_from_a_minted_identifier() {
-    let mut mints = Vec::new();
+fn a_refusal_is_the_same_twice() {
     for dialect in DIALECTS {
         let first = refuse(dialect, RefusalReason::CredentialRejected);
         let second = refuse(dialect, RefusalReason::CredentialRejected);
-        if first != second {
-            mints.push(*dialect);
-        }
         assert_eq!(
-            normalize_minted_id(&first),
-            normalize_minted_id(&second),
-            "the {dialect} refusal differs between two identical calls by more than a minted \
-             identifier"
+            String::from_utf8_lossy(&first),
+            String::from_utf8_lossy(&second),
+            "the {dialect} refusal differs between two identical calls, so the plane is not a \
+             function of its inputs"
         );
     }
-    assert_eq!(
-        mints,
-        vec!["anthropic"],
-        "the set of dialects whose error envelope carries a freshly minted identifier changed"
+}
+
+/// The one minted identifier still wears its dialect's native shape.
+///
+/// Determinism would be cheap if the identifier were a constant, and a constant would be a tell: a
+/// client that saw the same `request_id` on two refusals would know it was not talking to the
+/// upstream. So this pins the shape — the native prefix, the native version marker, the native
+/// width, the native alphabet — alongside the determinism above.
+#[test]
+fn the_minted_identifier_keeps_its_native_shape() {
+    let envelope = refuse("anthropic", RefusalReason::CredentialRejected);
+    let value: serde_json::Value =
+        sonic_rs::from_slice(&envelope).expect("a refusal is a document");
+    let id = value
+        .get("request_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("the anthropic error envelope carries a request_id");
+    assert!(
+        id.starts_with("req_01") && id.len() == 30,
+        "the minted request id must keep the native `req_01` + 24-character shape, got {id:?}"
+    );
+    assert!(
+        id.as_bytes()[6..].iter().all(u8::is_ascii_alphanumeric),
+        "the minted request id's token must be base62, got {id:?}"
+    );
+}
+
+/// No dialect's refusal envelope is a fixed document.
+///
+/// The counterpart of the determinism test: the same inputs give the same bytes, and DIFFERENT
+/// inputs give different bytes for the dialect that mints. A codec that ignored the entropy it was
+/// handed would pass the determinism test and fail this one.
+#[test]
+fn the_minted_identifier_follows_the_entropy_it_is_handed() {
+    let at = |unix_secs: u64| -> Vec<u8> {
+        let plane = LlmPlane::EMPTY;
+        let arena = harness::LeakArena;
+        let config = harness::EmptyConfig;
+        let transport = harness::HttpStack::new(harness::path_for("anthropic"), &[]);
+        let labels = Labels::new();
+        let ctx = harness::ctx_at(&arena, &config, &transport, &labels, unix_secs);
+        plane
+            .encode_refusal(
+                &Refusal {
+                    step: Step::Admit,
+                    reason: RefusalReason::CredentialRejected,
+                    retry_after_secs: None,
+                    stream: None,
+                    correlates: None,
+                },
+                None,
+                None,
+                &ctx,
+            )
+            .expect("anthropic can express a refusal")
+            .as_slice()
+            .to_vec()
+    };
+    assert_ne!(
+        String::from_utf8_lossy(&at(1_752_000_000)),
+        String::from_utf8_lossy(&at(1_752_000_001)),
+        "the minted identifier ignored the entropy it was handed, so it is a constant"
     );
 }
 
@@ -139,8 +196,8 @@ fn every_refusal_is_the_dialects_own_envelope() {
             ))
             .expect("the envelope serializes");
             assert_eq!(
-                normalize_minted_id(&refuse(dialect, *reason)),
-                normalize_minted_id(&expected),
+                without_minted_id(&refuse(dialect, *reason)),
+                without_minted_id(&expected),
                 "the {dialect} refusal for {reason:?} is not the dialect's own envelope"
             );
         }

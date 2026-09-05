@@ -114,9 +114,24 @@ pub fn ctx<'u>(
     transport: &'u HttpStack,
     labels: &'u Labels<'u>,
 ) -> Ctx<'u> {
+    ctx_at(arena, config, transport, labels, 1_752_000_000)
+}
+
+/// The same context, with the clock reading chosen by the caller.
+///
+/// A test that asks whether an answer follows the values it was handed needs two readings to hand
+/// over; every other test wants the one fixed reading, which is what `ctx` supplies.
+#[must_use]
+pub fn ctx_at<'u>(
+    arena: &'u LeakArena,
+    config: &'u EmptyConfig,
+    transport: &'u HttpStack,
+    labels: &'u Labels<'u>,
+    unix_secs: u64,
+) -> Ctx<'u> {
     Ctx::new(
         Clock {
-            unix_secs: 1_752_000_000,
+            unix_secs,
             monotonic_nanos: 0,
         },
         config,

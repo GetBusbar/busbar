@@ -62,6 +62,21 @@ fn elapsed_ms(ctx: &Ctx<'_>) -> Option<u64> {
         .and_then(|v| v.parse::<u64>().ok())
 }
 
+/// The bytes the codec builds a minted envelope identifier from.
+///
+/// A plane holds no random source, so the entropy for the one identifier a refusal envelope carries
+/// comes from the kernel through the context. The context's per-call value today is its clock
+/// reading — both halves of it, the wall reading and the monotonic one — and that is what is handed
+/// over here. When the context grows a value source of its own, this is the one place that changes:
+/// nothing else in the plane names entropy.
+fn minted_id_entropy(ctx: &Ctx<'_>) -> [u8; 24] {
+    let clock = ctx.clock();
+    let mut bytes = [0u8; 24];
+    bytes[..8].copy_from_slice(&clock.unix_secs.to_be_bytes());
+    bytes[8..].copy_from_slice(&clock.monotonic_nanos.to_be_bytes());
+    bytes
+}
+
 /// The default response ceiling used when a dialect requires one and the client sent none.
 ///
 /// The design fixes the fallback and the order it is reached in: the lane's own default, then the
@@ -589,12 +604,20 @@ impl Plane for LlmPlane {
         ctx: &Ctx<'u>,
     ) -> Result<ArenaBytes<'u>, Encode> {
         let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
-        let protocol =
-            busbar_llm_codec::proto_codec::protocol_for(ingress.name).ok_or(Encode::Unrepresentable)?;
         let (status, kind) = refusal_shape(refusal.reason);
-        let envelope = protocol
-            .writer()
-            .write_error(status, kind, refusal_message(refusal.reason));
+        // One dialect puts a minted identifier at the top of its error envelope, because a native
+        // envelope carries one. A plane reads no random source, so the entropy for it is an input:
+        // the codec builds the identifier from bytes handed to it, which keeps the envelope's native
+        // shape while leaving this method a pure function of what it was given. Two refusals built
+        // from the same context are therefore the same bytes.
+        let envelope = busbar_llm_codec::write_error_envelope(
+            ingress.name,
+            status,
+            kind,
+            refusal_message(refusal.reason),
+            &minted_id_entropy(ctx),
+        )
+        .ok_or(Encode::Unrepresentable)?;
         put(ctx, &serialize(&envelope)?)
     }
 

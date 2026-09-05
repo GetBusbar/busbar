@@ -381,6 +381,53 @@ fn synth_request_id() -> String {
     synth_id_with_prefix("req_")
 }
 
+/// The same `req_01<24 base62>` id, built from entropy the CALLER supplies.
+///
+/// The shape and the width are the native ones — this is the same id, in the same alphabet, at the
+/// same length; only the source of the bytes moves. That matters because the envelope is the one
+/// place a refusal carries a minted value, and a plane may read no random source: it is handed one.
+/// The same bytes always produce the same id, so a caller that supplies a fixed input gets a fixed
+/// envelope, and a caller that supplies real entropy gets an envelope indistinguishable from the
+/// native form.
+///
+/// `entropy` is consumed with the SAME rejection sampling the drawn form uses (bytes at or above the
+/// largest multiple of 62 are discarded, so the character distribution stays uniform), and it is
+/// cycled if it is shorter than the draw needs — so a caller can pass as little as one byte and
+/// still get a well-formed id, at the entropy it actually supplied.
+#[must_use]
+pub fn request_id_from_entropy(entropy: &[u8]) -> String {
+    const BASE62_REJECT_FLOOR: u8 = busbar_substrate::proto::BASE62_REJECT_THRESHOLD;
+    let alphabet = ANTHROPIC_NATIVE_ALPHABET;
+    let mut token = [b'0'; SYNTH_ID_TOKEN_LEN];
+    if !entropy.is_empty() {
+        let mut filled = 0usize;
+        // Bounded by construction: every pass over `entropy` either fills at least one character or
+        // the input has no in-range byte at all, and the second case is caught by the round counter.
+        let mut rounds = 0usize;
+        while filled < SYNTH_ID_TOKEN_LEN && rounds < SYNTH_ID_TOKEN_LEN + 1 {
+            let mut progressed = false;
+            for &byte in entropy {
+                if byte >= BASE62_REJECT_FLOOR {
+                    continue; // biased residue — discard, exactly as the drawn form does
+                }
+                token[filled] = alphabet[(byte % 62) as usize];
+                filled += 1;
+                progressed = true;
+                if filled == SYNTH_ID_TOKEN_LEN {
+                    break;
+                }
+            }
+            if !progressed {
+                break; // every supplied byte was out of range; the '0' fill stands
+            }
+            rounds += 1;
+        }
+    }
+    // `token` is ASCII base62 by construction, hence always valid UTF-8.
+    let token = std::str::from_utf8(&token).unwrap_or("000000000000000000000000");
+    format!("req_01{token}")
+}
+
 /// Shared id construction for both `msg_` and `req_`. The suffix is the native `01` version marker
 /// followed by a fixed-width 24-char mixed-case base62 token drawn ENTIRELY from the OS CSPRNG
 /// (mirroring the sibling `synth_anthropic_request_id` and `openai_chat::synth_completion_id`). The
@@ -1899,13 +1946,26 @@ impl AnthropicWriter {
     /// exception, but its absence is a distinguishability tell. Shared by every `write_error` exit
     /// so the status-driven and kind-driven paths emit byte-identical envelopes.
     fn error_envelope(error_type: &str, message: &str) -> serde_json::Value {
+        Self::error_envelope_with_request_id(error_type, message, &synth_request_id())
+    }
+
+    /// The same envelope, with the top-level `request_id` supplied rather than minted.
+    ///
+    /// This is the form a caller that may not read a random source uses: it builds the id from
+    /// entropy it was handed (see [`request_id_from_entropy`]) and passes it in. Both forms produce
+    /// the identical document — the only difference is where the id's bytes came from.
+    pub fn error_envelope_with_request_id(
+        error_type: &str,
+        message: &str,
+        request_id: &str,
+    ) -> serde_json::Value {
         serde_json::json!({
             "type": "error",
             "error": {
                 "type": error_type,
                 "message": message,
             },
-            "request_id": synth_request_id(),
+            "request_id": request_id,
         })
     }
 }

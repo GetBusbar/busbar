@@ -92,6 +92,43 @@ pub mod proto_stream;
 /// suites that pin them are codec suites.
 pub mod wire_shim;
 
+/// A dialect's own error envelope, with the entropy for any minted identifier supplied.
+///
+/// One of the six dialects — anthropic — puts a freshly minted `request_id` at the top of its error
+/// envelope, because a native envelope carries one and an envelope without one is a tell. That is
+/// the only minted value on a refusal, and a caller that may not read a random source cannot use
+/// the writer's own form. So this takes the entropy as an argument: the caller hands the bytes, the
+/// id is built from them, and the same bytes produce the same envelope. The other five dialects
+/// mint nothing here and ignore the argument entirely.
+///
+/// Returns `None` for a protocol name the registry does not know.
+#[must_use]
+pub fn write_error_envelope(
+    ingress_protocol: &str,
+    status: u16,
+    kind: &str,
+    message: &str,
+    entropy: &[u8],
+) -> Option<serde_json::Value> {
+    let protocol = proto_codec::protocol_for(ingress_protocol)?;
+    let mut envelope = protocol.writer().write_error(status, kind, message);
+    // The writer built the whole document, including a drawn id. Replace ONLY that member, and only
+    // where the writer put one, with the id the caller's entropy produces — so the envelope this
+    // returns is the writer's envelope in every other byte.
+    if let Some(obj) = envelope.as_object_mut() {
+        if obj.contains_key(ANTHROPIC_REQUEST_ID_MEMBER) {
+            obj.insert(
+                ANTHROPIC_REQUEST_ID_MEMBER.to_string(),
+                serde_json::Value::String(anthropic::request_id_from_entropy(entropy)),
+            );
+        }
+    }
+    Some(envelope)
+}
+
+/// The member the anthropic error envelope carries its minted identifier under.
+const ANTHROPIC_REQUEST_ID_MEMBER: &str = "request_id";
+
 /// PUBLISH THIS PLUGIN'S DIALECT DECLARATIONS into the SHARED substrate test registry, ONCE — the
 /// lazy, self-installing counterpart of the composition root's `install_protocols`, for the test
 /// surface where no `main` runs a composition root.
