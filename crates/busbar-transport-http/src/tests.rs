@@ -411,6 +411,53 @@ async fn a_message_with_both_a_transfer_encoding_and_a_content_length_is_refused
     writer.abort();
 }
 
+/// A `write` dropped mid-exchange ends the connection observably instead of hanging `frames`.
+///
+/// The battery's cancel-mid-frame cell, on the egress side. The exchange runs inside `write`, and a
+/// caller is free to drop that future — a timeout, a select, a cancelled task. When it does, the
+/// response sender is still sitting in the connection's slot, so nothing ever closes the channel
+/// and `frames` waits on a receive that can never complete. A half-sent exchange is not resumable
+/// and this does not pretend otherwise; what it guarantees is that the stream ENDS.
+#[tokio::test]
+async fn a_cancelled_egress_write_ends_the_frame_stream_rather_than_hanging_it() {
+    // An upstream that accepts the connection and then never answers.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((sock, _)) = listener.accept().await {
+            held.push(sock);
+        }
+    });
+
+    let transport = HttpTransport::new(ClientSettings::default());
+    let uri: &'static str = Box::leak(format!("http://{addr}/").into_boxed_str());
+    let conn = transport
+        .dial(&upstream_dest(uri), &fixture_key())
+        .await
+        .unwrap();
+
+    // A complete message, so the exchange starts — and then the write future is dropped in it.
+    let write_fut = transport.write(
+        &conn,
+        StreamId(0),
+        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+    );
+    let cancelled = tokio::time::timeout(std::time::Duration::from_millis(50), write_fut).await;
+    assert!(
+        cancelled.is_err(),
+        "the write really was dropped mid-flight"
+    );
+
+    let mut frames = transport.frames(conn);
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next()).await;
+    assert!(
+        matches!(ended, Ok(None) | Ok(Some(Err(_)))),
+        "a cancelled exchange ends the stream; it must not leave frames() waiting forever"
+    );
+    server.abort();
+}
+
 /// A chunked body of at least a mebibyte, written in chunks that straddle the read budget, arrives
 /// byte-exact — and the trailers that follow it arrive as their own frame rather than as body.
 ///

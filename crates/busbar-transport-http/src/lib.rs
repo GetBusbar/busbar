@@ -507,6 +507,11 @@ impl Transport for HttpTransport {
                     };
                     buffered.clear();
                     drop(buffered);
+                    // From here to the send, every await is a point the caller can drop us at.
+                    let mut guard = ExchangeGuard {
+                        resp_tx,
+                        armed: true,
+                    };
 
                     let mut builder = http::Request::builder()
                         .method(raw.start.method_or("GET"))
@@ -552,6 +557,9 @@ impl Transport for HttpTransport {
                         .map_err(|_| TransportError::Reset)?
                         .to_bytes();
 
+                    // The exchange is done and the frames are in hand: this take is the one the
+                    // guard exists to stand in for, so disarm it first.
+                    guard.armed = false;
                     let tx = resp_tx.lock().expect("poisoned").take();
                     if let Some(tx) = tx {
                         let head_frame = Frame {
@@ -697,6 +705,27 @@ impl Transport for HttpTransport {
             self.conns.lock().expect("poisoned").remove(&conn.id());
             Ok(())
         })
+    }
+}
+
+/// Holds the exchange's end-of-stream promise for as long as the exchange is in flight.
+///
+/// The response sender lives in the connection until the exchange finishes and hands it the
+/// frames. If the `write` future is DROPPED in between — a timeout, a `select`, a cancelled task —
+/// nothing else ever takes that sender, so the channel stays open and `frames` waits on a receive
+/// that can never complete: an unrecoverable hang rather than a degradation. This guard takes the
+/// sender on an undisarmed drop, which closes the channel and ends the stream. A half-sent exchange
+/// is not resumable and this does not pretend otherwise; the connection just ends observably.
+struct ExchangeGuard<'a> {
+    resp_tx: &'a Mutex<Option<RespSender>>,
+    armed: bool,
+}
+
+impl Drop for ExchangeGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.resp_tx.lock().expect("poisoned").take();
+        }
     }
 }
 
