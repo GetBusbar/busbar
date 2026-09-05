@@ -428,20 +428,7 @@ fn an_unknown_notification_is_simply_not_one_of_these() {
     assert_eq!(McpNotification::read("notifications/nope", None), None);
 }
 
-/// THE WIRE NAMES ARE THE SDK's. This is the assertion that would catch a literal being typed here a
-/// second time and drifting from the specification the crate implements.
-#[test]
-fn every_wire_name_this_cell_serves_is_the_one_the_sdk_declares() {
-    use rmcp::model::ConstString;
-    assert_eq!(METHOD_TOOLS_CALL, rmcp::model::CallToolRequestMethod::VALUE);
-    assert_eq!(METHOD_RESOURCES_SUBSCRIBE, "resources/subscribe");
-    assert_eq!(METHOD_RESOURCES_UNSUBSCRIBE, "resources/unsubscribe");
-    assert_eq!(
-        METHOD_NOTIFY_TOOLS_LIST_CHANGED,
-        "notifications/tools/list_changed"
-    );
-    assert_eq!(
-        METHOD_NOTIFY_RESOURCES_UPDATED,
-        "notifications/resources/updated"
-    );
-}
+// THE SDK-IDENTITY PIN MOVED TO `busbar-mcp` — the crate that still names `rmcp` (the SDK
+// hard-depends on `tokio`, which may not enter a pure kind's closure, so this crate spells the five
+// method names as literals). It is `src/tests/sdk_vocabulary_tests.rs` there, under the same test
+// name, and it now pins all five against the SDK rather than one — see that file.

@@ -44,10 +44,16 @@ path = "src/lib.rs"
 # values lived beside it. Nothing here may take a `busbar-substrate` edge back.
 busbar-substrate-values = { path = "../busbar-substrate-values", default-features = false }
 busbar-api = { path = "../api" }
-# The specification authors' own crate, pinned narrow (see busbar-core/Cargo.toml's rationale): the
-# codec takes the protocol VOCABULARY — MCP method names and parameter shapes — from it and nothing
-# else, so a name the SDK retires stops compiling here instead of being served.
-rmcp = { workspace = true }
+# NO `rmcp` HERE, AND THAT IS THE ONE THING THIS SPLIT COST. The codec used to read its five method
+# names off the SDK's const-string types and its parameter objects off the SDK's structs, so a name
+# the specification authors retired stopped COMPILING. `rmcp` hard-depends on `tokio` (sync, macros,
+# rt, time) — and a pure kind's closure is scanned with ONE whole-workspace feature resolve, which
+# unifies that tokio with the socket-capable one the rest of the workspace enables, so the SDK edge
+# put `tokio (net/fs/process)` in `busbar-plane-mcp`'s closure and no feature setting could take it
+# out. The names and the two `{"uri": …}` parameter shapes are declared here instead, and the SDK
+# still holds the pin one crate over: `busbar-mcp` keeps the `rmcp` edge and asserts all five names
+# and both parameter shapes against it (`src/tests/sdk_vocabulary_tests.rs`). A retired name is now
+# a red test rather than a build failure — the same fact, discovered one step later.
 # HTTP VOCABULARY ONLY — `StatusCode`, for the declaration's quota/auth-failure status fields. This
 # is the crate axum re-exports as `axum::http`; naming it directly is what lets this crate drop axum
 # (and with it hyper, tower and a socket-capable tokio) out of the plane's closure.

@@ -39,6 +39,13 @@ pub use busbar_mcp_codec::{codec, outputschema, record, sanitize};
 pub mod diagnostics;
 pub mod mcp;
 
+/// THE SDK-IDENTITY PIN FOR THE CODEC'S WIRE VOCABULARY. It lives here, not in the codec crate,
+/// because `rmcp` hard-depends on `tokio` and the codec crate is in a PURE plane kind's transitive
+/// closure — see the module header.
+#[cfg(test)]
+#[path = "tests/sdk_vocabulary_tests.rs"]
+mod sdk_vocabulary_tests;
+
 /// THE MCP PLANE'S OWN DURABLE RECORD TYPES — relocated here from `busbar-api` (1.7.0 plane
 /// extraction), then out again with the codec, re-exported at the crate root so
 /// `busbar_mcp::McpCallRecord` / `busbar_mcp::McpDemotionRow` resolve. The neutral crates name

@@ -51,13 +51,28 @@ pub mod handler;
 mod invoke;
 mod subscribe;
 
-use rmcp::model::{
-    CallToolRequestMethod, ConstString, ResourceUpdatedNotificationMethod,
-    ResourceUpdatedNotificationParam, SubscribeRequestMethod, ToolListChangedNotificationMethod,
-    UnsubscribeRequestMethod,
-};
-
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
+
+/// THE RESOURCE-UPDATED NOTIFICATION'S PARAMETER OBJECT — `{"uri": "<resource>"}`.
+///
+/// The SDK's `ResourceUpdatedNotificationParam` stayed behind with `rmcp` for the reason
+/// [`subscribe`]'s parameter type states: `rmcp` hard-depends on `tokio`, and a plane's ENTIRE
+/// transitive closure is scanned with one whole-workspace feature resolve, so naming the SDK here
+/// would put a socket-capable runtime back in `busbar-plane-mcp`'s closure. The wire is unchanged —
+/// serde ignores the `_meta` this codec never read, and the SDK's constructor left `_meta: None`
+/// where it is skipped on serialize, so both directions emit and accept the same bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ResourceUpdatedParam {
+    /// The URI of the resource that was updated.
+    uri: String,
+}
+
+impl ResourceUpdatedParam {
+    fn new(uri: impl Into<String>) -> Self {
+        Self { uri: uri.into() }
+    }
+}
 
 /// The single mount path. MCP names the operation in the BODY (`method`), not the path — the
 /// opposite of OpenAI, and the reason [`handler::McpRequestHandler::resolve_operation`] reads the
@@ -77,21 +92,19 @@ pub(crate) const PATH_MCP: &str = "/mcp";
 /// suite of `busbar-plane-mcp`, which may not name the server half, reads it here.
 pub const PROTOCOL_VERSION: &str = "2026-07-28";
 
-/// The JSON-RPC method names this dialect serves, each read off `rmcp`'s own const-string type
-/// rather than spelled again here. `ConstString::VALUE` is a `const`, so these are compile-time
-/// literals with no runtime cost — and a name the SDK retires stops compiling instead of being
-/// served.
-pub(crate) const METHOD_TOOLS_CALL: &str = CallToolRequestMethod::VALUE;
-pub(crate) const METHOD_RESOURCES_SUBSCRIBE: &str = SubscribeRequestMethod::VALUE;
-pub(crate) const METHOD_RESOURCES_UNSUBSCRIBE: &str = UnsubscribeRequestMethod::VALUE;
-/// `allow(dead_code)` under `not(test)` for the DUAL-COMPILED shape only: in this crate's own
-/// build these are `pub` and reachable, but core's `test-support` build compiles them into a
-/// private module where the notification half has no caller until the server-to-client channel
-/// is mounted. Same attribute the pre-extraction file carried, for the same reason.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const METHOD_NOTIFY_TOOLS_LIST_CHANGED: &str = ToolListChangedNotificationMethod::VALUE;
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const METHOD_NOTIFY_RESOURCES_UPDATED: &str = ResourceUpdatedNotificationMethod::VALUE;
+/// The JSON-RPC method names this dialect serves.
+///
+/// These used to be read off `rmcp`'s own const-string types, so a name the SDK retired stopped
+/// compiling here. `rmcp` hard-depends on `tokio` and could not cross into a pure kind's closure,
+/// so THE SDK IS STILL THE ACCEPTANCE TEST — it just holds the pin one crate over. `busbar-mcp`,
+/// which keeps the `rmcp` edge, asserts every one of these five against the SDK's const string in
+/// its own test binary, so a retired name is a red test rather than a served one. `pub` rather than
+/// `pub(crate)` because that assertion is now a cross-crate read.
+pub const METHOD_TOOLS_CALL: &str = "tools/call";
+pub const METHOD_RESOURCES_SUBSCRIBE: &str = "resources/subscribe";
+pub const METHOD_RESOURCES_UNSUBSCRIBE: &str = "resources/unsubscribe";
+pub const METHOD_NOTIFY_TOOLS_LIST_CHANGED: &str = "notifications/tools/list_changed";
+pub const METHOD_NOTIFY_RESOURCES_UPDATED: &str = "notifications/resources/updated";
 
 /// MCP'S DECLARATION — and the asymmetry in it is the point. MCP declares a HANDLER and NO CODEC:
 /// its IR is its own, there is no cross-dialect translation into or out of it, and it point-reads no
@@ -227,7 +240,7 @@ impl McpNotification {
                 // The SDK's parameter type is the acceptance test here too: a notification that
                 // names no resource says a resource changed without saying which, and acting on it
                 // would mean guessing.
-                let p: ResourceUpdatedNotificationParam =
+                let p: ResourceUpdatedParam =
                     serde_json::from_value(params?.clone()).ok()?;
                 (!p.uri.is_empty()).then_some(McpNotification::ResourceUpdated { uri: p.uri })
             }
@@ -246,7 +259,7 @@ impl McpNotification {
             // `params` is emitted only where the message has any, so the notification that carries
             // none stays byte-identical to what the specification describes.
             envelope["params"] =
-                serde_json::to_value(ResourceUpdatedNotificationParam::new(uri.clone()))
+                serde_json::to_value(ResourceUpdatedParam::new(uri.clone()))
                     .unwrap_or_else(|_| serde_json::json!({ "uri": uri }));
         }
         Bytes::from(serde_json::to_vec(&envelope).unwrap_or_default())

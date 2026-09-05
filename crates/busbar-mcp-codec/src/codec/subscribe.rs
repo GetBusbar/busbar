@@ -9,7 +9,38 @@
 #[cfg(any(test, feature = "test-support"))]
 use bytes::Bytes;
 
-use rmcp::model::{SubscribeRequestParams, UnsubscribeRequestParams};
+use serde::{Deserialize, Serialize};
+
+/// THE SUBSCRIPTION PARAMETER OBJECT — `{"uri": "<target>"}`, the one member both
+/// `resources/subscribe` and `resources/unsubscribe` carry.
+///
+/// This used to be the SDK's own `SubscribeRequestParams` / `UnsubscribeRequestParams`. Those types
+/// stayed behind with `rmcp` when the codec crossed into a pure kind's closure: `rmcp` hard-depends
+/// on `tokio`, and a plane is scanned over its ENTIRE transitive closure with one whole-workspace
+/// feature resolve, so naming the SDK here would have put a socket-capable runtime back in
+/// `busbar-plane-mcp`'s closure.
+///
+/// THE WIRE IS UNCHANGED, and the two ways it could have changed are both closed. On the READ side
+/// serde ignores members it was not told about, which is what the SDK type did with everything but
+/// `uri` (it captured `_meta`, and this codec never read it). On the WRITE side the SDK's
+/// constructor set `_meta: None` and that field is `skip_serializing_if = "Option::is_none"`, so
+/// its output was `{"uri": …}` and so is this. The SDK is still the acceptance test: `busbar-mcp`,
+/// which keeps the `rmcp` edge, pins this shape and every method name against the SDK's own types
+/// in its own test binary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SubscriptionParams {
+    /// The URI of the resource being subscribed to or unsubscribed from.
+    uri: String,
+}
+
+impl SubscriptionParams {
+    /// Only the WRITE side constructs one, and the write side is the `test-support`-gated
+    /// round-trip helper below — so in a shipped build this has no caller, exactly as before.
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+    fn new(uri: impl Into<String>) -> Self {
+        Self { uri: uri.into() }
+    }
+}
 
 use busbar_substrate_values::handlers::{CodecError, IngressReject, OperationHandler};
 use busbar_substrate_values::ir::handle::IrHandle;
@@ -90,16 +121,16 @@ pub(crate) fn read_subscribe_request(body: &[u8]) -> Result<SubscribeReq, Ingres
     let params = v.get("params").cloned().ok_or_else(|| {
         IngressReject::BadRequest("a subscription request carries a `params` member".to_string())
     })?;
-    // The SDK's parameter type IS the acceptance test — see the note on this struct. A body it
+    // The parameter type IS the acceptance test — see the note on [`SubscriptionParams`]. A body it
     // refuses is a body the protocol refuses, and the error it gives is the reason why.
     let (intent, target) = match method {
         METHOD_RESOURCES_SUBSCRIBE => {
-            let p: SubscribeRequestParams = serde_json::from_value(params)
+            let p: SubscriptionParams = serde_json::from_value(params)
                 .map_err(|e| IngressReject::BadRequest(e.to_string()))?;
             (SubscribeIntent::Register, p.uri)
         }
         METHOD_RESOURCES_UNSUBSCRIBE => {
-            let p: UnsubscribeRequestParams = serde_json::from_value(params)
+            let p: SubscriptionParams = serde_json::from_value(params)
                 .map_err(|e| IngressReject::BadRequest(e.to_string()))?;
             (SubscribeIntent::Deregister, p.uri)
         }
@@ -148,17 +179,12 @@ pub(crate) fn read_subscribe_response(wire: &[u8]) -> Result<SubscribeResp, Code
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
 pub(crate) fn subscribe_write_request(r: &SubscribeReq) -> Bytes {
-    // Built through the SDK's own constructor, so the member names and the `_meta` handling are
-    // the SDK's rather than a second spelling of them here.
-    let params = match r.intent {
-        SubscribeIntent::Register => {
-            serde_json::to_value(SubscribeRequestParams::new(r.target.clone()))
-        }
-        SubscribeIntent::Deregister => {
-            serde_json::to_value(UnsubscribeRequestParams::new(r.target.clone()))
-        }
-    }
-    .unwrap_or_else(|_| serde_json::json!({ "uri": r.target }));
+    // ONE parameter object for both intents, because the specification gives both verbs the same
+    // one; the intent is carried by the METHOD NAME, on the next line. The `_meta` member the SDK
+    // type carried was never written (its constructor left it `None`, and `None` is skipped), so
+    // this emits the same bytes.
+    let params = serde_json::to_value(SubscriptionParams::new(r.target.clone()))
+        .unwrap_or_else(|_| serde_json::json!({ "uri": r.target }));
     // The `id` is the ENGINE's, not the caller's, for the reason the invocation codec states:
     // correlation is decided on the way out and read back by `ingress::jsonrpc::read_response`.
     Bytes::from(

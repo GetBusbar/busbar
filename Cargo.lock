@@ -726,7 +726,6 @@ dependencies = [
  "busbar-substrate-values",
  "bytes",
  "http",
- "rmcp",
  "serde",
  "serde_json",
 ]
