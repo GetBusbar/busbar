@@ -541,3 +541,66 @@ async fn transport_meta_matches_the_architecture_row() {
         Some(StatusAt::Terminal)
     );
 }
+
+/// Two concurrent `write()`s naming the same unseen `StreamId` are one call, not two.
+///
+/// The "K writers" cell makes concurrent writers on one connection an expected shape. A
+/// check-then-open sequence lets both writers miss the map, both open an HTTP/2 call, and the
+/// later registration overwrite — and so drop — the earlier sender, ending that call's outbound
+/// stream with the first write's bytes accepted but never delivered.
+#[tokio::test]
+async fn two_writes_racing_on_one_fresh_stream_open_a_single_call() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = std::sync::Arc::new(client_transport());
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = std::sync::Arc::new(client_t.dial(&dest, &keys).await.unwrap());
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    let one = {
+        let (t, c) = (client_t.clone(), client_conn.clone());
+        tokio::spawn(async move { t.write(&c, StreamId(7), ArenaBytes::new(b"one")).await })
+    };
+    let two = {
+        let (t, c) = (client_t.clone(), client_conn.clone());
+        tokio::spawn(async move { t.write(&c, StreamId(7), ArenaBytes::new(b"two")).await })
+    };
+    one.await.unwrap().unwrap();
+    two.await.unwrap().unwrap();
+
+    // Both payloads reach the server, and they reach it on ONE call.
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    for _ in 0..2 {
+        let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+            .await
+            .expect("both writes were accepted, so both messages must arrive")
+            .unwrap()
+            .unwrap();
+        seen.push(frame.bytes.as_slice().to_vec());
+    }
+    seen.sort();
+    assert_eq!(seen, vec![b"one".to_vec(), b"two".to_vec()]);
+
+    let paths = server_t
+        .state_of(server_conn.id())
+        .unwrap()
+        .served_paths
+        .lock()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        paths.len(),
+        1,
+        "one fresh StreamId is one gRPC call, however many writers raced for it: {paths:?}"
+    );
+}

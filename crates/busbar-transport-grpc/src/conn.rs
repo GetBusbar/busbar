@@ -6,6 +6,8 @@
 //! call is one [`busbar_contract::StreamId`], keyed in `outbound` below.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex as SyncMutex};
 
 use busbar_contract::wire::Frame;
@@ -42,6 +44,27 @@ pub(crate) type LowerIo = Box<dyn Lower>;
 /// One inbound item: a stream-tagged frame, or a transport failure on that stream.
 pub(crate) type InboundItem = Result<(StreamId, Frame), TransportError>;
 
+/// One open gRPC call's outbound half: the channel `write()` feeds and the RPC task drains.
+pub(crate) type OutboundTx = mpsc::UnboundedSender<Vec<u8>>;
+
+/// Opening a call is asynchronous, so what the map holds is the OPENING, not the opened channel.
+///
+/// Two `write()`s naming the same unseen stream must be one call: the first inserts this future
+/// under the lock before it awaits anything, so the second finds it and awaits the same open rather
+/// than starting a second one whose registration would overwrite — and drop — the first's sender.
+pub(crate) type OpenCall = futures::future::Shared<
+    Pin<Box<dyn Future<Output = Result<OutboundTx, TransportError>> + Send>>,
+>;
+
+/// An already-open call, in the shape the map holds. The server side registers these: an accepted
+/// RPC's channel exists before anything can look it up.
+pub(crate) fn opened(tx: OutboundTx) -> OpenCall {
+    use futures::FutureExt;
+    (Box::pin(std::future::ready(Ok(tx)))
+        as Pin<Box<dyn Future<Output = Result<OutboundTx, TransportError>> + Send>>)
+        .shared()
+}
+
 /// One connection's real state.
 pub(crate) struct ConnState {
     /// Every stream's inbound frames land on this ONE channel, tagged with their `StreamId` — the
@@ -51,7 +74,7 @@ pub(crate) struct ConnState {
     /// One outbound channel per open stream (gRPC call). `write()` looks a stream up here; the
     /// task driving that RPC (accepted inbound, or opened by a dial-side `write` to a fresh
     /// `StreamId`) owns the receiving half and forwards each message onto the wire.
-    pub(crate) outbound: SyncMutex<HashMap<u64, mpsc::UnboundedSender<Vec<u8>>>>,
+    pub(crate) outbound: SyncMutex<HashMap<u64, OpenCall>>,
     /// The dial-side connection this Conn rides on, plus the origin URI (scheme + authority) every
     /// call it opens needs, so `write()` can lazily open a new RPC for a `StreamId` it has not
     /// seen before. `None` for an accepted (server-side) connection, whose streams are opened by

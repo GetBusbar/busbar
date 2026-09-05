@@ -69,7 +69,11 @@ async fn handle_one_rpc(
     let local = state.next_local_stream.fetch_add(1, Ordering::Relaxed);
     let stream_id = StreamId(local);
     let (out_tx, out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    state.outbound.lock().unwrap().insert(local, out_tx);
+    state
+        .outbound
+        .lock()
+        .unwrap()
+        .insert(local, crate::conn::opened(out_tx));
 
     let mut grpc = tonic::server::Grpc::new(RawCodec);
     let handler = RpcHandler {
