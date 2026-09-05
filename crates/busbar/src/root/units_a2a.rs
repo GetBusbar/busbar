@@ -69,9 +69,9 @@
 use std::sync::{Arc, Mutex};
 
 use busbar_caps::{
-    Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Decision,
-    Decode, Encode, Meter, Outcome, PrincipalId, ReasonCode, Refusal, Route, RoutePlan, ScopeFacts,
-    TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
+    Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate,
+    Decision, Decode, Encode, Meter, Outcome, PrincipalId, ReasonCode, Refusal,
+    Route, RoutePlan, ScopeFacts, TrustToken, UnitToken, UsageToken, Verify, VerifiedDestination,
 };
 use busbar_contract::dest::{DestinationFacts, Leg};
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
@@ -252,10 +252,7 @@ impl RecordLegs {
                     None => busbar_api::PlaneSelector::All,
                 };
                 Ok(LegResult {
-                    bodies: self
-                        .store
-                        .list_plane_records(kind, &selector)
-                        .map_err(fail)?,
+                    bodies: self.store.list_plane_records(kind, &selector).map_err(fail)?,
                     ..LegResult::default()
                 })
             }
@@ -308,12 +305,7 @@ impl RecordLegs {
     /// The first leg that refuses stops the run and is returned; the legs before it have already
     /// happened, which is why a plan's record legs are ordered so that a failure leaves the durable
     /// state readable rather than half-written.
-    pub fn run_plan(
-        &self,
-        legs: &[Leg],
-        key: &LegKey<'_>,
-        body: &[u8],
-    ) -> Result<Vec<LegResult>, LegError> {
+    pub fn run_plan(&self, legs: &[Leg], key: &LegKey<'_>, body: &[u8]) -> Result<Vec<LegResult>, LegError> {
         let mut results = Vec::new();
         for leg in legs {
             if let DestinationFacts::PlaneRecord { schema, op } = leg.destination {
@@ -414,9 +406,11 @@ pub fn declared_scope(op: OpClassId) -> Scope {
 /// unreachable for a reason nobody can find in a configuration file.
 #[must_use]
 pub fn scope_policy(base: crate::root::policy::ScopePolicy) -> crate::root::policy::ScopePolicy {
-    ops::OP_CLASSES.iter().fold(base, |policy, op| {
-        policy.declaring(CLAIM_A2A, *op, declared_scope(*op))
-    })
+    ops::OP_CLASSES
+        .iter()
+        .fold(base, |policy, op| {
+            policy.declaring(CLAIM_A2A, *op, declared_scope(*op))
+        })
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -809,11 +803,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         }
     }
 
-    fn authenticate(
-        &self,
-        token: &UnitToken<Authenticate>,
-        _ctx: &UnitCtx,
-    ) -> Decision<Authenticate> {
+    fn authenticate(&self, token: &UnitToken<Authenticate>, _ctx: &UnitCtx) -> Decision<Authenticate> {
         // The three open surfaces of this protocol declare no scheme, so there is nothing to narrow
         // within and nothing to present: the chain answers for the anonymous principal or it
         // denies, and either answer is the chain's. Everything else presents a bearer credential
@@ -891,8 +881,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // Silence is a refusal. A pair the deployment's policy says nothing about has not been
         // authorized, and there is deliberately no arm here that reads an absent entry as a
         // permissive one.
-        let Some(needed) =
-            busbar_unit_scope::required_scope(CLAIM_A2A, op, self.bindings.scope_policy)
+        let Some(needed) = busbar_unit_scope::required_scope(CLAIM_A2A, op, self.bindings.scope_policy)
         else {
             return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
         };
@@ -932,12 +921,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         unit.admit(&self.estimate(), principal, &chain, admit, token)
     }
 
-    fn route(
-        &self,
-        token: &UnitToken<Route>,
-        _ctx: &UnitCtx,
-        meter: &AccrualMeter,
-    ) -> Decision<Route> {
+    fn route(&self, token: &UnitToken<Route>, _ctx: &UnitCtx, meter: &AccrualMeter) -> Decision<Route> {
         // The record legs, in the plan's order, before anything is dialled. They are what says
         // whether this caller may see the task at all and what the agent's own name for it is, and
         // the hop that follows carries that name.
@@ -946,10 +930,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             parent: None,
             seq: 0,
             ts: self.bindings.now,
-            terminal: matches!(
-                self.draft.finish,
-                FinishClass::Complete | FinishClass::Error
-            ),
+            terminal: matches!(self.draft.finish, FinishClass::Complete | FinishClass::Error),
         };
         match self.bindings.records.run_plan(&self.draft.legs, &key, &[]) {
             Err(LegError::UndeclaredOp { .. }) => {
@@ -1049,12 +1030,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         }
     }
 
-    fn audit(
-        &self,
-        token: &UnitToken<Audit>,
-        _ctx: &UnitCtx,
-        outcome: &Outcome,
-    ) -> Decision<Audit> {
+    fn audit(&self, token: &UnitToken<Audit>, _ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
         let inputs = self.audit_inputs(*outcome, None);
         let record = {
             let mut durability = self.bindings.durability.lock().expect("durability lock");
@@ -1096,12 +1072,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         )
     }
 
-    fn encode(
-        &self,
-        token: &UnitToken<Encode>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
-    ) -> Decision<Encode> {
+    fn encode(&self, token: &UnitToken<Encode>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Encode> {
         // The plane's encoders take the unit's arena, and this signature carries neither an arena
         // nor the plane's draft, so the bytes are written where the borrow lives and this step
         // reports what left. That is a statement about the seam, not a shortcut: a root that
@@ -1196,9 +1167,9 @@ pub fn guard_destination(
         }
         Err(_) => {
             let (host, port) = split_authority(authority).ok_or_else(|| {
-                busbar_unit_trust::NetworkRefusal::Guard(busbar_unit_trust::AddressRefusal::NoHost(
-                    authority.to_string(),
-                ))
+                busbar_unit_trust::NetworkRefusal::Guard(
+                    busbar_unit_trust::AddressRefusal::NoHost(authority.to_string()),
+                )
             })?;
             (true, host, port)
         }
@@ -1352,10 +1323,7 @@ mod tests {
         // Four schemas, and every one of them was reached under its own name.
         let seen = store.kinds();
         for schema in records::RECORD_SCHEMAS {
-            assert!(
-                seen.contains(&schema.as_str().to_string()),
-                "{schema} unreached"
-            );
+            assert!(seen.contains(&schema.as_str().to_string()), "{schema} unreached");
         }
     }
 
@@ -1656,6 +1624,7 @@ mod tests {
         }
     }
 
+
     /// One record leg of a plan.
     fn leg_record(schema: RecordSchemaId, op: &'static str) -> Leg {
         Leg {
@@ -1708,10 +1677,7 @@ mod tests {
             fn put_key(&self, _key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
                 Ok(())
             }
-            fn get_key(
-                &self,
-                _id: &str,
-            ) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+            fn get_key(&self, _id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
                 Ok(None)
             }
             fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
@@ -1735,10 +1701,7 @@ mod tests {
             ) -> busbar_api::StoreResult<()> {
                 Ok(())
             }
-            fn add_metering(
-                &self,
-                _delta: &busbar_api::MeteringDelta,
-            ) -> busbar_api::StoreResult<()> {
+            fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
                 Ok(())
             }
             fn list_metering(
@@ -1779,10 +1742,7 @@ mod tests {
     impl busbar_api::Store for RecordingStore {
         no_governance_rows!();
 
-        fn upsert_plane_record(
-            &self,
-            record: &busbar_api::PlaneRecord,
-        ) -> busbar_api::StoreResult<()> {
+        fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
             self.note("put", &record.kind);
             Ok(())
         }
@@ -1796,10 +1756,7 @@ mod tests {
             Ok(None)
         }
 
-        fn append_plane_record(
-            &self,
-            record: &busbar_api::PlaneRecord,
-        ) -> busbar_api::StoreResult<()> {
+        fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
             self.note("append", &record.kind);
             Ok(())
         }
@@ -1840,9 +1797,7 @@ mod tests {
             &self,
             _record: &busbar_api::PlaneRecord,
         ) -> busbar_api::StoreResult<()> {
-            Err(busbar_api::StoreError(
-                "the store is unavailable".to_string(),
-            ))
+            Err(busbar_api::StoreError("the store is unavailable".to_string()))
         }
     }
 }

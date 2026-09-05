@@ -239,7 +239,9 @@ impl DialRefusal {
             // a target the guard would open, which is exactly the no-destination answer -- and not a
             // scope denial, because the principal's scope was never the question.
             DialRefusal::GuardRefused => ReasonCode::NoDestination,
-            DialRefusal::Unreachable | DialRefusal::Detached => ReasonCode::DestinationUnreachable,
+            DialRefusal::Unreachable | DialRefusal::Detached => {
+                ReasonCode::DestinationUnreachable
+            }
         }
     }
 }
@@ -556,11 +558,7 @@ impl TurnUsage {
     /// a line that is absent settle the same, but only one of them claims the upstream said so.
     fn lines(&self) -> Vec<UsageLine> {
         let reported: [(&str, u64, QuantitySource); 5] = [
-            (
-                "audio_tokens_in",
-                self.audio_tokens_in,
-                QuantitySource::Count,
-            ),
+            ("audio_tokens_in", self.audio_tokens_in, QuantitySource::Count),
             (
                 "audio_tokens_out",
                 self.audio_tokens_out,
@@ -1072,11 +1070,7 @@ impl Units for VoiceUnit<'_> {
     fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
         Evidence {
             // What the upstream reported, where it reported anything.
-            located: self
-                .usage
-                .audio_tokens_out
-                .checked_add(0)
-                .filter(|n| *n > 0),
+            located: self.usage.audio_tokens_out.checked_add(0).filter(|n| *n > 0),
             // What the kernel counted while the unit ran. The floor is evidence, never a charge.
             accrued_floor: self.accrued.load(Ordering::Acquire),
             locator_required: false,
@@ -1183,7 +1177,9 @@ impl VoiceUnit<'_> {
             subject: busbar_unit_audit::record::Subject::Arrival,
             what: busbar_unit_audit::record::What {
                 unit_key: ctx.key,
-                op_class: busbar_unit_audit::record::OpClassId::new(self.shape.op_class().as_str()),
+                op_class: busbar_unit_audit::record::OpClassId::new(
+                    self.shape.op_class().as_str(),
+                ),
                 destination: None,
                 parent: None,
                 pre_hook_head: None,
@@ -1588,8 +1584,7 @@ mod tests {
             realtime.target().map(|t| t.url),
             Some("wss://api.openai.com".to_string())
         );
-        let live =
-            VoiceUnit::new(&node, UnitShape::SessionOpen, 8, 0).on_dialect(Dialect::GeminiLive);
+        let live = VoiceUnit::new(&node, UnitShape::SessionOpen, 8, 0).on_dialect(Dialect::GeminiLive);
         assert_eq!(
             live.target().map(|t| t.url),
             Some("wss://generativelanguage.googleapis.com".to_string())
