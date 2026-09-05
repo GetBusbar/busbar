@@ -17,14 +17,36 @@
 #[derive(Default)]
 pub struct SseReader {
     buf: Vec<u8>,
+    /// How far into `buf` a terminator scan has already looked and found nothing. A stream that
+    /// trickles one event across many chunks would otherwise re-walk the WHOLE accumulated buffer on
+    /// every chunk — quadratic in the event's size, on a relay thread fed by an untrusted upstream
+    /// whose only bound is the megabyte-scale body cap. Reset to zero whenever a framed event is
+    /// drained, because the bytes that follow it have never been scanned in their new positions.
+    scanned: usize,
 }
+
+/// The longest terminator (`\r\n\r\n`) is four bytes, so a scan that resumes THREE bytes behind the
+/// previous end still sees any terminator that straddles the boundary between two chunks.
+const TERMINATOR_REWIND: usize = 3;
 
 impl SseReader {
     /// Feed a chunk and take every COMPLETE event it finished.
     pub fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
         self.buf.extend_from_slice(chunk);
         let mut out = Vec::new();
-        while let Some((pos, len)) = frame_end(&self.buf) {
+        loop {
+            // Resume where the last scan stopped (minus the rewind), and rebase the hit onto the
+            // whole buffer so the drain arithmetic and the emitted frame are byte-identical to a
+            // scan from zero. Nothing before `from` can hold the earliest terminator: that region
+            // was already searched and every terminator it could still complete extends into the
+            // rewind window.
+            let from = self.scanned.saturating_sub(TERMINATOR_REWIND);
+            let Some((pos, len)) = frame_end(&self.buf[from..]).map(|(pos, len)| (from + pos, len))
+            else {
+                self.scanned = self.buf.len();
+                break;
+            };
+            self.scanned = 0;
             let frame = self.buf.drain(..pos + len).collect::<Vec<u8>>();
             match String::from_utf8(frame) {
                 Ok(s) => out.push(s),
@@ -49,7 +71,23 @@ impl SseReader {
     }
 }
 
+// Test-only tally of the bytes every terminator scan has walked, so a test can assert the reader's
+// scanning work is linear in the bytes fed rather than in bytes × chunks. Thread-local, so parallel
+// tests do not contaminate each other's count.
+#[cfg(test)]
+thread_local! {
+    static SCANNED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Zero the scan tally and return what it held (test-only).
+#[cfg(test)]
+fn take_scanned_bytes() -> usize {
+    SCANNED_BYTES.with(|c| c.replace(0))
+}
+
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    #[cfg(test)]
+    SCANNED_BYTES.with(|c| c.set(c.get() + haystack.len()));
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 

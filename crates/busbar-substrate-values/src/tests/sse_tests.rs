@@ -40,3 +40,62 @@ fn test_non_utf8_frame_drop_carries_diag_code() {
         cap.messages()
     );
 }
+
+/// An event trickled across many chunks must cost work proportional to its BYTES, not to bytes ×
+/// chunks. Upstream responses are untrusted, and the relay bounds only `pending()` against the
+/// operator's body cap — a cap that is megabyte-scale — so a backend that dribbles a near-cap
+/// unterminated event in TCP-sized pieces would otherwise burn a quadratic number of byte
+/// comparisons on the relay thread before the ceiling stopped it.
+///
+/// The bound is generous (16 bytes of scan per byte fed) because the point is the SHAPE: a
+/// full-buffer rescan per chunk walks ~3·N²/2 bytes for N chunks, which is four orders of magnitude
+/// past this bound at the size used here.
+#[test]
+fn test_feed_scan_work_is_linear_in_bytes_fed() {
+    const N: usize = 8192;
+    let payload = vec![b'x'; N]; // no terminator anywhere: every chunk leaves the buffer pending
+
+    let mut r = SseReader::default();
+    let _ = take_scanned_bytes();
+    for byte in payload.chunks(1) {
+        assert!(r.feed(byte).is_empty(), "no terminator yet, so no event");
+    }
+    let scanned = take_scanned_bytes();
+
+    assert_eq!(
+        r.pending(),
+        N,
+        "every byte is still held awaiting a terminator"
+    );
+    assert!(
+        scanned <= 16 * N,
+        "scanning {N} bytes across {N} chunks walked {scanned} bytes — the scan restarts at byte \
+         zero on every chunk (quadratic) instead of resuming where it left off"
+    );
+}
+
+/// The cursor rewind must not let a terminator SPLIT across a chunk boundary slip past: the longest
+/// terminator is four bytes, so resuming three bytes behind the previous end is exactly enough.
+/// Passes before and after the cursor exists — it guards the fix, not the defect.
+#[test]
+fn test_terminator_split_across_chunks_still_frames() {
+    for (head, tail) in [
+        ("data: a\r\n", "\r\n"),
+        ("data: a\r\n\r", "\n"),
+        ("data: a\n", "\n"),
+        ("data: a\r", "\r"),
+    ] {
+        let mut r = SseReader::default();
+        assert!(
+            r.feed(head.as_bytes()).is_empty(),
+            "a partial terminator waits for the rest ({head:?})"
+        );
+        let out = r.feed(tail.as_bytes());
+        assert_eq!(
+            out,
+            vec![format!("{head}{tail}")],
+            "a terminator straddling the chunk boundary still ends the event ({head:?}+{tail:?})"
+        );
+        assert_eq!(r.pending(), 0, "the framed event left the buffer");
+    }
+}
