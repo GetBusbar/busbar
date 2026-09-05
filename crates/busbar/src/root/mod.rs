@@ -51,3 +51,4 @@
 
 pub mod kernel;
 pub mod registry;
+pub mod vocabulary;
