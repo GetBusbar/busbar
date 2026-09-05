@@ -27,7 +27,8 @@ pub use bounded::{
     MAX_RECORD_BYTES, MAX_SESSION_UPSTREAMS, MAX_STEPS, MAX_USAGE_LINES,
 };
 pub use dest::{
-    AuthDecoration, CandidateIdx, CandidateSet, ClientMode, DestinationFacts, EgressBody, Leg,
+    AuthDecoration, CandidateIdx, CandidateSet, ClientMode, DestinationFacts, DestinationId,
+    EgressBody, Leg,
     OnEmpty, Permutation, RoutePlan, SecretOnce, SecretSlot, TransportKeyHandle,
     VerifiedDestination, VetoCode,
 };

@@ -28,8 +28,8 @@
 //!   exposed the FSM through a much larger `LaneRuntime` trait (concurrency, SWRR, `/stats`, health
 //!   snapshots — all egress/observability concerns); this crate exposes only the breaker's own two
 //!   verbs, sealed so no plugin can implement it.
-//! - `// contract:` [`DestinationId`] is a placeholder `u64` for whatever locator type
-//!   `busbar-contract` settles on for a pool member; a caller narrows it at the call site.
+//! - [`DestinationId`] is the contract crate's pool-member locator, named here and by the egress
+//!   unit, so the two units that key on a member key on one object.
 
 pub mod budget;
 pub mod cell;
@@ -47,10 +47,9 @@ use cell::{BreakerCell, BreakerState as CellState, BreakerVerdict, ProbeAdmit};
 use cfg::BreakerCfg;
 use journal::{JournalSink, NoopJournal, ProbeEvent};
 
-/// `// contract:` a placeholder for the pool-member locator `busbar-contract` will define. Every
-/// method in this crate that names a destination takes this bare `u64`; a real caller narrows its
-/// own locator type down to one before crossing into this unit.
-pub type DestinationId = u64;
+/// The pool-member locator, as the contract crate defines it. The egress unit names the same one,
+/// which is what makes `(transport, destination)` and `(pool, destination)` the same key.
+pub use busbar_contract::DestinationId;
 
 /// The at-capacity Retry-After floor in whole seconds — the answer when no admissible pool member
 /// reports a genuine cooldown to wait out. Matches the 1.5.5 constant (`AT_CAPACITY_RETRY_AFTER_SECS

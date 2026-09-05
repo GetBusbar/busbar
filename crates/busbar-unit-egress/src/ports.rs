@@ -23,9 +23,9 @@ use std::pin::Pin;
 /// exclusion and breaker calls all keyed on. Keeping the same key is what makes the pick order
 /// comparable hop for hop against the release that shipped.
 ///
-/// `// contract:` the breaker unit spells the same thing as a `u64`. The integrator narrows one
-/// into the other at the call site; nothing in either unit depends on the width.
-pub type DestinationId = usize;
+/// The contract crate defines it, and the breaker unit names the same one, so the two units that
+/// key on a pool member key on the same object at the same width. There is nothing left to narrow.
+pub use busbar_contract::DestinationId;
 
 /// The one boxed future this crate's ports return.
 ///

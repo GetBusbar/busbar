@@ -197,6 +197,35 @@ pub struct RoutePlan {
     pub legs: BoundedVec<Leg, MAX_LEGS>,
 }
 
+/// One member of a configured pool, as everything that keys on a member names it.
+///
+/// The egress unit owns the connection pool per `(transport, destination)` and the breaker unit
+/// owns trip, cooldown and fast-fail per `(pool, destination)` — the same object, keyed the same
+/// way, so it has one spelling and one width. It is a node-local identity sealed at registration,
+/// not a wire value: nothing outside the node ever sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+pub struct DestinationId(u64);
+
+impl DestinationId {
+    /// Name a pool member.
+    #[must_use]
+    pub const fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    /// The identity, as the pool's member list orders it.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for DestinationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "destination {}", self.0)
+    }
+}
+
 /// A candidate's position in the verified set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct CandidateIdx(pub u16);

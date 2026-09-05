@@ -5,9 +5,9 @@
 //! owns the real journal (`busbar-unit-wal` / the audit unit, per §4.1) can implement it without
 //! this crate depending on that unit's I/O, serialization, or journal-record framing.
 //!
-//! `// contract:` the event shape below (pool/destination as bare strings and `u64`s) is a
-//! placeholder for whatever locator types `busbar-contract` settles on; a caller of this crate
-//! narrows them at the call site today.
+//! The destination on an event is the contract crate's own pool-member locator, so a journal
+//! record and the breaker call that produced it name one object. The pool is still a bare string:
+//! a pool name is an open-vocabulary key and the contract does not close it.
 
 /// One journal-worthy breaker event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,7 +17,7 @@ pub enum ProbeEvent {
         /// The pool this cell belongs to (the default cell uses `""`).
         pool: String,
         /// The destination identifier.
-        destination: u64,
+        destination: busbar_contract::DestinationId,
         /// The owner-token epoch the winner must present to release the probe.
         epoch: u64,
         /// Unix seconds.
@@ -28,7 +28,7 @@ pub enum ProbeEvent {
         /// The pool this cell belongs to.
         pool: String,
         /// The destination identifier.
-        destination: u64,
+        destination: busbar_contract::DestinationId,
         /// Unix seconds.
         now: u64,
     },
@@ -38,7 +38,7 @@ pub enum ProbeEvent {
         /// The pool this cell belongs to.
         pool: String,
         /// The destination identifier.
-        destination: u64,
+        destination: busbar_contract::DestinationId,
         /// The new cooldown deadline, Unix seconds.
         cooldown_until: u64,
         /// Unix seconds.
@@ -49,7 +49,7 @@ pub enum ProbeEvent {
         /// The pool this cell belongs to.
         pool: String,
         /// The destination identifier.
-        destination: u64,
+        destination: busbar_contract::DestinationId,
         /// The owner-token epoch that was released.
         epoch: u64,
         /// Unix seconds.

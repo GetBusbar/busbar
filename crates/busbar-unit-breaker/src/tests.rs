@@ -22,7 +22,7 @@ use crate::classify::{
     classify, normalize_raw_error, parse_retry_after, status_class_from_str, CanonicalSignal,
     Disposition, NoopDiagnostics, RawUpstreamError, StatusClass, PROVIDER_CODE_CONTEXT_LENGTH,
 };
-use crate::{Admit, Breaker, BreakerUnit, LaneState, Outcome};
+use crate::{Admit, Breaker, BreakerUnit, DestinationId, LaneState, Outcome};
 use std::collections::HashMap;
 
 fn err_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -256,26 +256,26 @@ fn trip_then_cooldown_then_half_open_then_success_closes() {
     let now = 1_000;
 
     // One failure trips a Consecutive(1) cell.
-    let tripped = unit.observe("pool", 1, Outcome::Transient { retry_after: None }, &cfg, now);
+    let tripped = unit.observe("pool", DestinationId::new(1), Outcome::Transient { retry_after: None }, &cfg, now);
     assert!(tripped, "a single failure must trip a consecutive_n=1 cell");
-    let LaneState::Suppressed { until } = unit.state("pool", 1, now) else {
+    let LaneState::Suppressed { until } = unit.state("pool", DestinationId::new(1), now) else {
         panic!("expected Suppressed immediately after a trip");
     };
     assert!(until > now, "cooldown must extend into the future");
 
     // Still cooling: try_admit is refused.
-    assert_eq!(unit.try_admit("pool", 1, now), Err(LaneState::Suppressed { until }));
+    assert_eq!(unit.try_admit("pool", DestinationId::new(1), now), Err(LaneState::Suppressed { until }));
 
     // Past the cooldown: the cell is probe-winnable and try_admit wins the single-flight probe.
     let past = until;
-    let admit = unit.try_admit("pool", 1, past).expect("expired cooldown must admit a probe");
+    let admit = unit.try_admit("pool", DestinationId::new(1), past).expect("expired cooldown must admit a probe");
     assert!(matches!(admit, Admit { probe_epoch: Some(_) }));
-    assert_eq!(unit.state("pool", 1, past), LaneState::ProbeInFlight);
+    assert_eq!(unit.state("pool", DestinationId::new(1), past), LaneState::ProbeInFlight);
 
     // The probe succeeds: the cell recovers to Closed/Ready.
-    let re_tripped = unit.observe("pool", 1, Outcome::Success, &cfg, past);
+    let re_tripped = unit.observe("pool", DestinationId::new(1), Outcome::Success, &cfg, past);
     assert!(!re_tripped, "a success is never reported as a trip");
-    assert_eq!(unit.state("pool", 1, past), LaneState::Ready);
+    assert_eq!(unit.state("pool", DestinationId::new(1), past), LaneState::Ready);
 }
 
 #[test]
@@ -284,8 +284,8 @@ fn a_failed_probe_re_trips_with_the_shifted_cooldown() {
     let cfg = consecutive_cfg(200, 100_000);
     let now = 1_000;
 
-    unit.observe("pool", 1, Outcome::Transient { retry_after: None }, &cfg, now);
-    let LaneState::Suppressed { until: first_until } = unit.state("pool", 1, now) else {
+    unit.observe("pool", DestinationId::new(1), Outcome::Transient { retry_after: None }, &cfg, now);
+    let LaneState::Suppressed { until: first_until } = unit.state("pool", DestinationId::new(1), now) else {
         panic!("expected Suppressed after the first trip");
     };
     let first_cooldown = first_until - now;
@@ -296,10 +296,10 @@ fn a_failed_probe_re_trips_with_the_shifted_cooldown() {
     assert!((360..=440).contains(&first_cooldown), "got {first_cooldown}");
 
     // Win the probe, then fail it: reopens with a FURTHER escalated (streak == 2) cooldown.
-    let admit = unit.try_admit("pool", 1, first_until).unwrap();
+    let admit = unit.try_admit("pool", DestinationId::new(1), first_until).unwrap();
     assert!(admit.probe_epoch.is_some());
-    unit.observe("pool", 1, Outcome::Transient { retry_after: None }, &cfg, first_until);
-    let LaneState::Suppressed { until: second_until } = unit.state("pool", 1, first_until) else {
+    unit.observe("pool", DestinationId::new(1), Outcome::Transient { retry_after: None }, &cfg, first_until);
+    let LaneState::Suppressed { until: second_until } = unit.state("pool", DestinationId::new(1), first_until) else {
         panic!("expected Suppressed after the re-trip");
     };
     let second_cooldown = second_until - first_until;
@@ -369,23 +369,23 @@ fn an_exhausted_destination_budget_is_excluded_not_ordered_last() {
     let unit: BreakerUnit = BreakerUnit::new();
     let cfg = BreakerCfg::default();
     let now = 1_000;
-    unit.set_budget(1, 0); // already exhausted
+    unit.set_budget(DestinationId::new(1), 0); // already exhausted
 
     // The breaker cell itself is perfectly healthy (never observed a failure) — a
     // "budget exhausted" verdict must come from the budget check EXCLUDING the destination before
     // the breaker is even consulted, not from ranking it behind healthy destinations.
-    assert_eq!(unit.state("pool", 1, now), LaneState::BudgetExhausted);
-    assert_eq!(unit.try_admit("pool", 1, now), Err(LaneState::BudgetExhausted));
+    assert_eq!(unit.state("pool", DestinationId::new(1), now), LaneState::BudgetExhausted);
+    assert_eq!(unit.try_admit("pool", DestinationId::new(1), now), Err(LaneState::BudgetExhausted));
 
     // Confirm it really is budget, not the breaker: observing outcomes never touches budget state,
     // and the destination's own cell reads Ready underneath the budget exclusion.
-    unit.observe("pool", 1, Outcome::Success, &cfg, now);
-    assert_eq!(unit.state("pool", 1, now), LaneState::BudgetExhausted);
+    unit.observe("pool", DestinationId::new(1), Outcome::Success, &cfg, now);
+    assert_eq!(unit.state("pool", DestinationId::new(1), now), LaneState::BudgetExhausted);
 
     // PB-4's soonest-cooldown Retry-After walk must never see this destination as a candidate with
     // a cooldown of 0 (which would wrongly win the "soonest" comparison) — it contributes nothing.
     let retry_after = BreakerUnit::<crate::journal::NoopJournal>::on_exhausted_retry_after(
-        [unit.state("pool", 1, now)],
+        [unit.state("pool", DestinationId::new(1), now)],
         now,
     );
     assert_eq!(retry_after, crate::AT_CAPACITY_RETRY_AFTER_SECS);
@@ -399,22 +399,22 @@ fn hard_down_trips_every_pool_cell_for_the_destination() {
 
     // Touch three cells for the same destination (the default "" cell, and two named pools) so
     // each exists before the hard-down fan-out.
-    assert_eq!(unit.state("", 1, now), LaneState::Ready);
-    assert_eq!(unit.state("pool-a", 1, now), LaneState::Ready);
-    assert_eq!(unit.state("pool-b", 1, now), LaneState::Ready);
+    assert_eq!(unit.state("", DestinationId::new(1), now), LaneState::Ready);
+    assert_eq!(unit.state("pool-a", DestinationId::new(1), now), LaneState::Ready);
+    assert_eq!(unit.state("pool-b", DestinationId::new(1), now), LaneState::Ready);
 
-    let fresh = unit.observe("pool-a", 1, Outcome::HardDown, &cfg, now);
+    let fresh = unit.observe("pool-a", DestinationId::new(1), Outcome::HardDown, &cfg, now);
     assert!(fresh, "the first hard-down trip must be reported fresh");
 
     for pool in ["", "pool-a", "pool-b"] {
-        match unit.state(pool, 1, now) {
+        match unit.state(pool, DestinationId::new(1), now) {
             LaneState::Suppressed { until } => assert!(until > now, "pool {pool:?} must carry a sticky cooldown"),
             other => panic!("pool {pool:?} expected Suppressed after hard-down, got {other:?}"),
         }
     }
 
     // A second hard-down (e.g. a repeated probe failure) is not a FRESH trip.
-    let fresh_again = unit.observe("pool-a", 1, Outcome::HardDown, &cfg, now);
+    let fresh_again = unit.observe("pool-a", DestinationId::new(1), Outcome::HardDown, &cfg, now);
     assert!(!fresh_again);
 }
 

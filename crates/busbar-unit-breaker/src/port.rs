@@ -116,7 +116,7 @@ pub fn classify_upstream(
 mod tests {
     use super::*;
     use crate::cfg::BreakerCfg;
-    use crate::{Breaker, BreakerUnit, Outcome};
+    use crate::{Breaker, BreakerUnit, DestinationId, Outcome};
     use std::collections::HashMap;
 
     fn err_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -218,30 +218,30 @@ mod tests {
     #[test]
     fn breaker_unit_classify_reads_the_declared_error_map() {
         let unit: BreakerUnit = BreakerUnit::new();
-        unit.set_error_map(7, err_map(&[("1113", "billing")]));
+        unit.set_error_map(DestinationId::new(7), err_map(&[("1113", "billing")]));
 
-        let out = unit.classify(7, UpstreamStatus { code: Some(1113), retry_after: None });
+        let out = unit.classify(DestinationId::new(7), UpstreamStatus { code: Some(1113), retry_after: None });
         assert_eq!(out.disposition, Disposition::HardDown);
 
         // A different destination with no declared map falls back to plain HTTP-status
         // classification for the SAME numeric code.
-        let out2 = unit.classify(8, UpstreamStatus { code: Some(1113), retry_after: None });
+        let out2 = unit.classify(DestinationId::new(8), UpstreamStatus { code: Some(1113), retry_after: None });
         assert_eq!(out2.disposition, Disposition::ClientFault);
     }
 
     #[test]
     fn breaker_unit_classify_then_observe_trips_every_pool_cell_on_hard_down() {
         let unit: BreakerUnit = BreakerUnit::new();
-        unit.set_error_map(7, err_map(&[("1113", "billing")]));
+        unit.set_error_map(DestinationId::new(7), err_map(&[("1113", "billing")]));
         // Touch two pools so `hard_down_all`'s fan-out has more than the default cell to reach.
-        let _ = unit.try_admit("pool-a", 7, 0);
-        let _ = unit.try_admit("pool-b", 7, 0);
+        let _ = unit.try_admit("pool-a", DestinationId::new(7), 0);
+        let _ = unit.try_admit("pool-b", DestinationId::new(7), 0);
 
-        let out = unit.classify(7, UpstreamStatus { code: Some(1113), retry_after: None });
-        let tripped = unit.observe("pool-a", 7, out.outcome, &BreakerCfg::default(), 0);
+        let out = unit.classify(DestinationId::new(7), UpstreamStatus { code: Some(1113), retry_after: None });
+        let tripped = unit.observe("pool-a", DestinationId::new(7), out.outcome, &BreakerCfg::default(), 0);
         assert!(tripped, "the first hard-down observation must be a fresh trip");
 
-        assert_eq!(unit.state("pool-a", 7, 100), crate::LaneState::Suppressed { until: 1800 });
-        assert_eq!(unit.state("pool-b", 7, 100), crate::LaneState::Suppressed { until: 1800 });
+        assert_eq!(unit.state("pool-a", DestinationId::new(7), 100), crate::LaneState::Suppressed { until: 1800 });
+        assert_eq!(unit.state("pool-b", DestinationId::new(7), 100), crate::LaneState::Suppressed { until: 1800 });
     }
 }
