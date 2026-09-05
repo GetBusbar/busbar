@@ -137,6 +137,17 @@ impl VoiceRuntime {
     ) -> Option<Box<dyn MeteringLease>> {
         self.metering.reserve(estimate_nanos, fee_nanos, cap_nanos)
     }
+
+    /// Land ONE admin-audit row for a voice-plane mutation through the live host's `JournalHost` leg —
+    /// a no-op on a runtime with no bound host (the pre-host/dev-default runtime, or an ungoverned
+    /// deployment resolving no key has nothing to attribute the row to; callers pass a real principal
+    /// only when one was resolved). `outcome` is a fixed vocabulary literal, matching every other
+    /// plane's `audit_record` call shape.
+    pub(crate) fn audit_session(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
+        if let Some(host) = &self.host {
+            host.audit_record(action, resource, outcome, principal);
+        }
+    }
 }
 
 /// THE `PLANE_DECL.build_runtime` HOOK BODY — builds the plane's per-generation runtime object

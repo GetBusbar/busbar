@@ -341,13 +341,31 @@ pub(crate) fn open_admitted_session<C>(
 where
     C: DuplexReader + DuplexWriter + Send + Sync + 'static,
 {
+    // Captured before any move: `bind_session` and the exit-path audit call below both need their own
+    // copy, and the admin-audit row's principal/resource must name THIS session even though every
+    // downstream consumer (the durable handle, the audit call) takes owned strings.
+    let owner = owner.into();
+    let call_id = call_id.into();
+
     // The marquee guarantee's charge — no lease ⇒ no session (fail closed). Reserved AFTER admission.
     let lease = rt
         .open_lease(budget.estimate_nanos, budget.fee_nanos, budget.cap_nanos)
         .ok_or(StartError::BudgetRefused)?;
 
-    let handle = rt.bind_session(owner, call_id);
+    let handle = rt.bind_session(owner.clone(), call_id.clone());
     handle.open(now).map_err(StartError::Durable)?;
+
+    // ONE ADMIN-AUDIT ROW for this governed mutation — fired exactly once (this is the single `Ok`
+    // construction point below every early `?` return above), no-op on a runtime with no bound host
+    // (the pre-host/dev-default runtime). Voice posts no separate "kernel-floor" line at Admit the way
+    // ARCHITECTURE.md's Admit step describes for an already-dialed provider push: a refused reserve above never
+    // reaches here, so nothing is owed and nothing is journaled for it.
+    rt.audit_session(
+        "voice.session.open",
+        &format!("voice:{call_id}"),
+        "applied",
+        &owner,
+    );
 
     // Mint the by-value close guard from the lease BEFORE it moves into the core, so the topology owns a
     // handle that closes the reserve independent of the core's (possibly pinned) refcount.

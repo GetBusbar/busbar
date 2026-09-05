@@ -82,6 +82,17 @@ struct Lease {
     cap: Option<u128>,
 }
 
+/// One admin-audit row [`JournalHost::audit_record`] landed on the fixture — the read-back a plane's
+/// exit-path/mutation test asserts against (action literal, resource, outcome, principal), the fixture
+/// twin of the engine's in-process admin audit ring.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FixtureAuditEntry {
+    pub action: String,
+    pub resource: String,
+    pub outcome: String,
+    pub principal: String,
+}
+
 #[derive(Default)]
 struct Inner {
     cells: BTreeMap<(String, usize), Cell>,
@@ -90,6 +101,7 @@ struct Inner {
     ledger: BTreeMap<String, LedgerUsage>,
     leases: BTreeMap<u64, Lease>,
     slots: BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>,
+    audit: Vec<FixtureAuditEntry>,
 }
 
 /// The in-memory engine host a plane's tests drive through the neutral seam. Build one with
@@ -187,6 +199,13 @@ impl FixtureHost {
     #[must_use]
     pub fn leases_opened(&self) -> u64 {
         self.next_lease.load(Ordering::SeqCst) - 1
+    }
+
+    /// Every admin-audit row [`JournalHost::audit_record`] has landed on this host, in emission order —
+    /// the read-back a plane's audit/exit-path test asserts an exact count and shape against.
+    #[must_use]
+    pub fn audit_log(&self) -> Vec<FixtureAuditEntry> {
+        self.lock().audit.clone()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -360,7 +379,16 @@ impl TelemetryHost for FixtureHost {
 
 impl JournalHost for FixtureHost {
     fn audit_emit(&self, _action: &str, _resource: &str, _outcome: &str, _principal: &str) {}
-    fn audit_record(&self, _action: &str, _resource: &str, _outcome: &'static str, _p: &str) {}
+    fn audit_record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
+        // Recorded (not a no-op): this is the ONE JournalHost leg a plane's exit-path test needs read
+        // back — every other JournalHost leg stays a no-op fixture default (nothing today reads them).
+        self.lock().audit.push(FixtureAuditEntry {
+            action: action.to_string(),
+            resource: resource.to_string(),
+            outcome: outcome.to_string(),
+            principal: principal.to_string(),
+        });
+    }
     fn call_log_emit(&self, _principal: &str, _input: CallInput) {}
     fn call_log_emit_hostless(&self, _principal: &str, _input: CallInput) {}
 }

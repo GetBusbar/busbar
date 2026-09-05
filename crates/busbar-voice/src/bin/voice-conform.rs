@@ -1169,6 +1169,8 @@ fn composition(slice: &str) -> i32 {
         "provider-dial" => probe_provider_dial(),
         "admit-refusal" => probe_admit_refusal(),
         "route-failover" => probe_route_failover(),
+        "audit-record" => probe_audit_record(),
+        "exit-terminal" => probe_exit_terminal(),
         other => ("FAIL", format!("unknown composition slice '{other}'")),
     };
     println!("RESULT {slice} {verdict} {detail}");
@@ -1792,13 +1794,175 @@ fn probe_route_failover() -> (&'static str, String) {
     })
 }
 
+/// LEG 12 — audit-record: one governed session lands EXACTLY ONE new admin-audit entry, carrying the
+/// plane's own action literal and outcome — and a second, independent session adds exactly one more.
+fn probe_audit_record() -> (&'static str, String) {
+    let fixture = Arc::new(FixtureHost::new());
+    let host: Arc<dyn EngineHost> = Arc::clone(&fixture) as Arc<dyn EngineHost>;
+    let rt = hosted_runtime(host);
+
+    let budget = SessionBudget {
+        estimate_nanos: 1_000,
+        fee_nanos: 0,
+        cap_nanos: None,
+    };
+    let Ok(_first) = begin_session(
+        &rt,
+        OpenAiRealtimeCodec,
+        "alice",
+        "call-audit-1",
+        None,
+        Carrier::sideband(),
+        budget,
+        None,
+        0,
+    ) else {
+        return ("FAIL", "a clean session open was refused".into());
+    };
+    let log = fixture.audit_log();
+    if log.len() != 1 {
+        return (
+            "FAIL",
+            format!("expected exactly one admin-audit row after one session, got {}", log.len()),
+        );
+    }
+    let row = &log[0];
+    if row.action != "voice.session.open" || row.outcome != "applied" || row.principal != "alice" {
+        return ("FAIL", format!("wrong audit row shape: {row:?}"));
+    }
+    if row.resource != "voice:call-audit-1" {
+        return ("FAIL", format!("the audit row does not name this session: {row:?}"));
+    }
+
+    // A second, INDEPENDENT session must add exactly one MORE row.
+    let budget2 = SessionBudget {
+        estimate_nanos: 1_000,
+        fee_nanos: 0,
+        cap_nanos: None,
+    };
+    let Ok(_second) = begin_session(
+        &rt,
+        OpenAiRealtimeCodec,
+        "bob",
+        "call-audit-2",
+        None,
+        Carrier::sideband(),
+        budget2,
+        None,
+        0,
+    ) else {
+        return ("FAIL", "the second session's clean open was refused".into());
+    };
+    let log2 = fixture.audit_log();
+    if log2.len() != 2 {
+        return (
+            "FAIL",
+            format!("expected exactly two admin-audit rows after two sessions, got {}", log2.len()),
+        );
+    }
+
+    (
+        "PASS",
+        "each governed session open lands exactly one admin-audit row, carrying the \
+         `voice.session.open` action literal and the `applied` outcome -- two sessions land exactly \
+         two rows, never doubled, never dropped"
+            .into(),
+    )
+}
+
+/// LEG 13 — exit-terminal: one session ends ONCE. Two independent proofs over the same host: a
+/// metering lease settles exactly once under a double close (the "interrupted" shape a parked
+/// handler's stale guard plus the node's own sweep produce), and a session's one admin-audit row
+/// survives being torn down before it ever runs a frame.
+fn probe_exit_terminal() -> (&'static str, String) {
+    let fixture = Arc::new(FixtureHost::new());
+
+    // PART 1 — the metering primitive `LeaseCloseGuard::drop` calls is idempotent: a redundant close
+    // is a harmless no-op, never a double settlement/refund.
+    let Some(lease_id) = MeteringHost::cost_reserve(fixture.as_ref(), 1_000, 0, Some(5_000)) else {
+        return ("FAIL", "a live cap could not open a lease".into());
+    };
+    let Some(SettleOutcome { exhausted: false }) =
+        MeteringHost::cost_settle(fixture.as_ref(), lease_id, 3_000)
+    else {
+        return ("FAIL", "settling under the cap did not report Live".into());
+    };
+    let first_close = MeteringHost::cost_close(fixture.as_ref(), lease_id);
+    if first_close != Some(3_000) {
+        return (
+            "FAIL",
+            format!("the first close did not settle the exact accrued amount: {first_close:?}"),
+        );
+    }
+    // The "interrupted" double close: a second close of the SAME (already-removed) lease id.
+    let second_close = MeteringHost::cost_close(fixture.as_ref(), lease_id);
+    if second_close.is_some() {
+        return (
+            "FAIL",
+            format!(
+                "a second close after interruption settled AGAIN instead of a harmless no-op: \
+                 {second_close:?}"
+            ),
+        );
+    }
+
+    // PART 2 — the session's one admin-audit row survives an interruption: torn down (core AND close
+    // guard dropped) before it ever runs a single frame.
+    let host: Arc<dyn EngineHost> = Arc::clone(&fixture) as Arc<dyn EngineHost>;
+    let rt = hosted_runtime(host);
+    let budget = SessionBudget {
+        estimate_nanos: 1_000,
+        fee_nanos: 0,
+        cap_nanos: Some(5_000),
+    };
+    let Ok((core, _handle, guard)) = begin_session(
+        &rt,
+        OpenAiRealtimeCodec,
+        "carol",
+        "call-exit-1",
+        None,
+        Carrier::sideband(),
+        budget,
+        None,
+        0,
+    ) else {
+        return ("FAIL", "a clean session open was refused".into());
+    };
+    if fixture.audit_log().len() != 1 {
+        return (
+            "FAIL",
+            "the session's audit row did not land before the interruption".into(),
+        );
+    }
+    // INTERRUPTED: no frame is ever run; the core and the by-value close guard are simply dropped.
+    drop(core);
+    drop(guard);
+    if fixture.audit_log().len() != 1 {
+        return (
+            "FAIL",
+            format!(
+                "the interruption changed the audit row count: {}",
+                fixture.audit_log().len()
+            ),
+        );
+    }
+
+    (
+        "PASS",
+        "a metering lease settles exactly once under a double close (a redundant close is a harmless \
+         no-op, never a double settlement), and a session's one admin-audit row survives being torn \
+         down before it ever runs a frame"
+            .into(),
+    )
+}
+
 // ── entry point ─────────────────────────────────────────────────────────────────────────────────────
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let usage = || -> ! {
         eprintln!(
-            "usage:\n  voice-conform spec <openai|gemini> <fixtures_dir>\n  voice-conform replay <fixtures_root>\n  voice-conform cross <oo|og|go|gg> <openai_dir> <gemini_dir> <map.json>\n  voice-conform governance <checkpoint>\n  voice-conform composition <provider-credential|metering-lease|session-scope|gemini-live-route|provider-dial|admit-refusal|route-failover>"
+            "usage:\n  voice-conform spec <openai|gemini> <fixtures_dir>\n  voice-conform replay <fixtures_root>\n  voice-conform cross <oo|og|go|gg> <openai_dir> <gemini_dir> <map.json>\n  voice-conform governance <checkpoint>\n  voice-conform composition <provider-credential|metering-lease|session-scope|gemini-live-route|provider-dial|admit-refusal|route-failover|audit-record|exit-terminal>"
         );
         std::process::exit(2);
     };
