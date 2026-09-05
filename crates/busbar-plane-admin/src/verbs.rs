@@ -237,6 +237,75 @@ pub(crate) fn find_verb<'p>(
     })
 }
 
+/// One row of the closed table, as the composition root reads it.
+///
+/// The plane's own [`VerbEntry`] stays crate-private because the plane is entitled to change how it
+/// stores a row; what a root binds against is what a row MEANS. Four fields, all `&'static`: the
+/// operation's name, the method and templated path it was extracted under, and which side of the
+/// closed read-only/full split it falls on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedVerb {
+    /// The operation name — the snake-case `operationId` of the pinned tag for the 66, and the
+    /// design's own spelling for the 17.
+    pub verb: &'static str,
+    /// The HTTP method the table row was extracted under.
+    pub method: &'static str,
+    /// The templated path, `{param}` segments and all.
+    pub template: &'static str,
+    /// Whether the operation is on the read-only side of the closed split.
+    pub read_only: bool,
+}
+
+impl ResolvedVerb {
+    /// The operation class this row prices under.
+    #[must_use]
+    pub fn op_class(&self) -> OpClassId {
+        if self.read_only {
+            OP_READ
+        } else {
+            OP_WRITE
+        }
+    }
+}
+
+/// Resolve a concrete request line to the closed table's row for it.
+///
+/// The same lookup [`find_verb`] runs at decode, exposed for the one caller entitled to ask it
+/// outside a decode: the composition root, which has to know which kernel verb a unit is a
+/// destination for before the unit's own decode has produced a draft. A query string is not part of
+/// the operation's identity — `GET /audit?limit=4` and `GET /audit` are one row — so it is cut
+/// before the match rather than carried into it.
+///
+/// `None` means the table does not declare the pair, which is the plane's own answer for an
+/// unsupported operation and never an invitation to guess one.
+#[must_use]
+pub fn resolve(method: &str, path: &str) -> Option<ResolvedVerb> {
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    find_verb(method, path).map(|(entry, _params)| ResolvedVerb {
+        verb: entry.verb,
+        method: entry.method,
+        template: entry.path,
+        read_only: entry.read_only,
+    })
+}
+
+/// Every row the closed table declares, in the order the plane holds them.
+///
+/// The generated 1.5.5 rows first, then the 1.6.0 additions — so a caller counting them sees the
+/// 66 and the 17 as two runs rather than as one undifferentiated 83.
+#[must_use]
+pub fn table() -> Vec<ResolvedVerb> {
+    all_verbs()
+        .iter()
+        .map(|entry| ResolvedVerb {
+            verb: entry.verb,
+            method: entry.method,
+            template: entry.path,
+            read_only: entry.read_only,
+        })
+        .collect()
+}
+
 /// The representative body fields this plane extracts into `Facts` for the documented subset of
 /// mutation verbs — key-management, group, config, hook, identity-provider and export operations.
 /// See the crate-root doc comment for the honest boundary: this is ONE representative field per
@@ -271,6 +340,45 @@ pub(crate) fn documented_body_field(verb: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The root's view of a row and the plane's own view of it are the same row. If they ever
+    /// disagreed, a root would be binding a verb the codec never decodes to.
+    #[test]
+    fn the_public_table_is_the_same_table_the_codec_decodes_against() {
+        let public = table();
+        assert_eq!(public.len(), VERB_COUNT);
+        for (row, entry) in public.iter().zip(all_verbs().iter()) {
+            assert_eq!(row.verb, entry.verb);
+            assert_eq!(row.method, entry.method);
+            assert_eq!(row.template, entry.path);
+            assert_eq!(row.read_only, entry.read_only);
+            assert_eq!(
+                row.op_class(),
+                if entry.read_only { OP_READ } else { OP_WRITE }
+            );
+        }
+    }
+
+    /// A query string names arguments to an operation, not a different operation. The row a caller
+    /// resolves has to be the same one either way, or an admin request with a `?limit=` would be
+    /// an unsupported operation on a surface that has supported it since 1.5.5.
+    #[test]
+    fn resolve_reads_through_a_query_string_to_the_same_row() {
+        let bare = resolve("GET", "/api/v1/admin/audit").expect("audit is in the table");
+        let with_query =
+            resolve("GET", "/api/v1/admin/audit?limit=4").expect("a query names arguments");
+        assert_eq!(bare, with_query);
+        assert_eq!(bare.verb, "get_audit");
+        assert!(bare.read_only);
+    }
+
+    /// A pair the table does not declare has no answer. The point of a closed table is that its
+    /// silence is a refusal rather than a default.
+    #[test]
+    fn resolve_refuses_a_pair_the_table_does_not_declare() {
+        assert!(resolve("GET", "/api/v1/admin/not-a-verb").is_none());
+        assert!(resolve("TRACE", "/api/v1/admin/audit").is_none());
+    }
 
     #[test]
     fn table_has_exactly_83_rows() {
