@@ -23,7 +23,7 @@ fn origin() -> Origin {
 
 fn inputs(unit: u64) -> AuditInputs {
     AuditInputs {
-        subject: Subject::Principal(format!("pseudonym-{unit}")),
+        subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
         what: What {
             unit_key: UnitKey::new(unit),
             op_class: OpClassId::new("chat.completion"),
@@ -139,7 +139,7 @@ fn editing_any_recorded_fact_is_caught() {
             r.amount.bucket_chain_ref = "chain:other".into()
         }),
         ("the subject", |r| {
-            r.subject = Subject::Principal("somebody-else".into())
+            r.subject = Subject::PrincipalId("somebody-else".into())
         }),
         ("the destination", |r| {
             r.what.destination = Some("upstream-b".into())

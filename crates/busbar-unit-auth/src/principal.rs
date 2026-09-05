@@ -71,8 +71,8 @@ impl Principal {
 /// The kernel's own principal marker, as the capability crate spells it. The two types are kept
 /// apart on purpose: this crate's `Principal` carries the credential facts a chain produces, and
 /// the capability crate's carries only the identity an accrual is checked against.
-// contract: the kernel's `Principal` is `busbar_caps::Principal`; this is the conversion the loop
+// contract: the kernel's `Principal` is `busbar_caps::PrincipalId`; this is the conversion the loop
 // performs when it seals the answer.
-pub fn to_caps_principal(p: &Principal) -> busbar_caps::Principal {
-    busbar_caps::Principal::new(p.actor_id())
+pub fn to_caps_principal(p: &Principal) -> busbar_caps::PrincipalId {
+    busbar_caps::PrincipalId::new(p.actor_id())
 }

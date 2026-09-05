@@ -36,7 +36,7 @@ use busbar_caps::{Origin, Outcome, StepName, UnitKey};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subject {
     /// A resolved principal, as a pseudonym.
-    Principal(String),
+    PrincipalId(String),
     /// Something that arrived and was never attributed to a principal.
     Arrival,
     /// The node acting for itself.
@@ -467,7 +467,7 @@ impl std::error::Error for AuditBreak {}
 
 fn subject_tag(subject: &Subject) -> &'static str {
     match subject {
-        Subject::Principal(_) => "principal",
+        Subject::PrincipalId(_) => "principal",
         Subject::Arrival => "arrival",
         Subject::Node(_) => "node",
         Subject::Aggregate => "aggregate",
@@ -481,7 +481,7 @@ fn subject_tag(subject: &Subject) -> &'static str {
 /// leaving it out would let two nodes' records digest identically.
 fn subject_value(subject: &Subject) -> String {
     match subject {
-        Subject::Principal(p) => p.clone(),
+        Subject::PrincipalId(p) => p.clone(),
         Subject::Arrival | Subject::Aggregate => String::new(),
         Subject::Node(id) => id.to_string(),
     }

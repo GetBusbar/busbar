@@ -67,7 +67,7 @@ pub use price::{Pricer, RateNanos};
 pub use window::{budget_window, window_end};
 
 use busbar_caps::{
-    step::Admit, AdmitToken, Decision, Hold, HoldCell, Principal, ReasonCode, Refusal, UnitToken,
+    step::Admit, AdmitToken, Decision, Hold, HoldCell, PrincipalId, ReasonCode, Refusal, UnitToken,
 };
 
 /// The sealed step-4 shape: the door, asked.
@@ -81,7 +81,7 @@ pub trait Admission {
     fn admit(
         &mut self,
         estimate: &Estimate,
-        principal: &Principal,
+        principal: &PrincipalId,
         chain: &BucketChain,
         admit_token: &AdmitToken<Admit>,
         unit_token: &UnitToken<Admit>,
@@ -155,7 +155,7 @@ impl<S: CellStore> Admission for AdmissionUnit<'_, S> {
     fn admit(
         &mut self,
         estimate: &Estimate,
-        principal: &Principal,
+        principal: &PrincipalId,
         chain: &BucketChain,
         admit_token: &AdmitToken<Admit>,
         unit_token: &UnitToken<Admit>,

@@ -438,6 +438,7 @@ both through `Ctx.session`. Exceeding a cap is `Failed(Decode, SessionFactsExhau
 ```
 busbar-contract      traits, facts, locators, Frame, Ingress/Progress, UnitDraft, Ctx, bounded types   (plugin-visible)
 busbar-caps          capability types + tokens                                                    (kernel + units only)
+                     trusted base: `std` and `busbar-contract` — a capability is keyed on the contract's own objects, so it names them rather than restating them
 busbar-kernel        registry + generations, Teller, pump, in-flight table, sessions, Ticks, recovery, slices/leases, drain, grammars
 busbar-unit-*        auth · trust · scope · admission · cost · egress (pool) · breaker · egress-auth · transport-key · usage · ledger · audit · wal · verbs
 busbar-plane-*       (one per plane)         busbar-transport-*   (one per transport, in-tree, incl. peer)

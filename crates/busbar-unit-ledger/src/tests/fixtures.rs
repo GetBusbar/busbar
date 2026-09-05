@@ -9,7 +9,7 @@
 //! second one to shuffle some integers.
 
 use busbar_caps::{
-    Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, Principal, Usage, UsageLine,
+    Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId, Usage, UsageLine,
     UsageToken,
 };
 
@@ -32,11 +32,11 @@ pub fn usage_token() -> UsageToken {
 
 /// A hold for `who`, reserving `reserved`.
 pub fn hold(who: &str, reserved: u64) -> Hold {
-    Hold::open(&admit_token(), Principal::new(who), reserved)
+    Hold::open(&admit_token(), PrincipalId::new(who), reserved)
 }
 
 /// A usage report of one line.
-pub fn usage(class: &str, quantity: u64) -> Usage {
+pub fn usage(class: &'static str, quantity: u64) -> Usage {
     Usage::report(
         &usage_token(),
         vec![UsageLine {

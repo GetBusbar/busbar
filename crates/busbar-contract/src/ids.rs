@@ -108,6 +108,34 @@ impl fmt::Display for StreamId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct SessionId(pub u64);
 
+/// A unit's node-local identity, minted by the kernel when it builds the unit.
+///
+/// This is the key the in-flight table, the journal and every capability type name a unit by. It
+/// lives here rather than in the capability crate because a unit is the contract's object: the
+/// capability types are keyed on it, they do not own it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+pub struct UnitKey(u64);
+
+impl UnitKey {
+    /// Name a unit.
+    #[must_use]
+    pub const fn new(key: u64) -> Self {
+        Self(key)
+    }
+
+    /// The key as the journal writes it.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for UnitKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unit {}", self.0)
+    }
+}
+
 /// An upstream's index within one session.
 ///
 /// Returned by the session plane when it opens an upstream. The crate-graph section bounds the

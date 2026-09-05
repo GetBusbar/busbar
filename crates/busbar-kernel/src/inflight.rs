@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_caps::{
-    Hold, HoldCell, OriginKind, Principal, ReasonCode, SessionId, StepName, UnitKey,
+    Hold, HoldCell, OriginKind, PrincipalId, ReasonCode, SessionId, StepName, UnitKey,
 };
 
 use crate::pump::{Direction, StreamId};
@@ -311,7 +311,7 @@ pub struct CapRefused {
 /// it for the real reservation, once.
 // contract: the admission unit mints this with its own token at step 0 and hands it over; the
 // table calls through the kernel here while the two crates land side by side.
-pub fn arrival_hold(kernel: &Kernel, principal: Principal) -> Hold {
+pub fn arrival_hold(kernel: &Kernel, principal: PrincipalId) -> Hold {
     Hold::open(&kernel.admit_token(), principal, 0)
 }
 
@@ -505,7 +505,7 @@ pub enum Binding {
 pub struct SessionSlot {
     id: SessionId,
     binding: Binding,
-    principal: Mutex<Option<Principal>>,
+    principal: Mutex<Option<PrincipalId>>,
     open: Mutex<HashMap<(StreamId, Direction), UnitKey>>,
     upstreams: AtomicUsize,
     last_non_tick: AtomicU64,
@@ -524,7 +524,7 @@ impl SessionSlot {
     }
 
     /// The cached principal, on a bound session.
-    pub fn principal(&self) -> Option<Principal> {
+    pub fn principal(&self) -> Option<PrincipalId> {
         self.principal
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -533,7 +533,7 @@ impl SessionSlot {
 
     /// Cache the principal. Only a bound session keeps one; on an unbound session this is a
     /// record of who the last unit was, which is who an accrual between turns is charged to.
-    pub fn remember(&self, principal: Principal) {
+    pub fn remember(&self, principal: PrincipalId) {
         *self.principal.lock().unwrap_or_else(|e| e.into_inner()) = Some(principal);
     }
 

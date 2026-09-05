@@ -38,7 +38,7 @@
 use busbar_caps::{
     Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Canary, Decision, Decode,
     DurabilityLost, Encode, ExitToken, Hold, HoldCell, KernelSeal, LedgerToken, Meter,
-    MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags, Principal, ReasonCode,
+    MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags, PrincipalId, ReasonCode,
     Refusal, Route, SessionId, StepName, UnitEnd, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
     VerifiedDestination, Verify,
 };
@@ -389,7 +389,7 @@ pub trait Units {
         &self,
         token: &UnitToken<Verify>,
         ctx: &UnitCtx,
-        principal: &Principal,
+        principal: &PrincipalId,
     ) -> Decision<Verify>;
 
     /// Whether the caller may do this at all.
@@ -397,7 +397,7 @@ pub trait Units {
         &self,
         token: &UnitToken<Approve>,
         ctx: &UnitCtx,
-        principal: &Principal,
+        principal: &PrincipalId,
         destinations: &[VerifiedDestination],
     ) -> Decision<Approve>;
 
@@ -407,7 +407,7 @@ pub trait Units {
         token: &UnitToken<Admit>,
         admit: &AdmitToken<Admit>,
         ctx: &UnitCtx,
-        principal: &Principal,
+        principal: &PrincipalId,
         destinations: &[VerifiedDestination],
     ) -> Decision<Admit>;
 
@@ -704,7 +704,6 @@ pub fn exit<U: Units>(
             }
             let class = evidence
                 .class
-                .clone()
                 .unwrap_or_else(|| MeterClassId::new("nano_units"));
             let lines = vec![UsageLine {
                 class,

@@ -135,19 +135,19 @@ macro_rules! step_marker {
 step_marker!(
     /// Step 0 — the transport-level facts of a connection, read before any plane is known.
     Arrival,
-    ArrivalFacts,
+    ArrivalRecord,
     true
 );
 step_marker!(
     /// Step 0b — the plane says what shape arrived: a draft unit, a frame, a close, a discard.
     Decode,
-    DecodeFacts,
+    OpClassId,
     true
 );
 step_marker!(
     /// Step 1 — who is calling.
     Authenticate,
-    Principal,
+    PrincipalId,
     false
 );
 step_marker!(
@@ -171,7 +171,7 @@ step_marker!(
 step_marker!(
     /// Step 5 — dial, send, relay, all under the hold.
     Route,
-    RouteFacts,
+    RoutePlan,
     false
 );
 step_marker!(
@@ -189,111 +189,17 @@ step_marker!(
 step_marker!(
     /// Step 8 — the bytes that leave. The kernel's own step; no unit is asked.
     Encode,
-    EncodeFacts,
+    Frame,
     true
 );
 
-// contract: every placeholder below stands in for a type the contract crate owns. They are declared
-// here only so the step markers have a `Facts` type to name while the two crates land side by side;
-// the integrator replaces each one with the contract's own and deletes it from this module.
-
-/// Placeholder for the arrival record — source, port, ALPN, SNI, peer certificate, transport chain.
-// contract: ArrivalRecord
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ArrivalFacts;
-
-/// Placeholder for what decode produced — the draft unit, or the frame/close/discard verdict.
-// contract: Ingress / Progress / UnitDraft
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DecodeFacts;
-
-/// Placeholder for the scope facts approve reads — the resource locators the plane pointed at.
-// contract: ScopeFacts
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ScopeFacts;
-
-/// Placeholder for what route produced — the legs walked and what came back from each.
-// contract: RoutePlan / leg results
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RouteFacts;
-
-/// Placeholder for the audit facts the plane supplies — its operation class and its finish class.
-// contract: AuditFacts
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct AuditFacts;
-
-/// Placeholder for what encode produced — the framed bytes handed back to the transport.
-// contract: encoded frame
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct EncodeFacts;
-
-/// The caller, as authenticate resolved them.
-///
-/// Only the identity is modelled here, because that is the one thing a capability type needs: an
-/// accrual into a parent unit's hold is refused unless the two principals are the same.
-// contract: Principal (the full credential facts live in the contract crate)
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Principal(String);
-
-impl Principal {
-    /// Name a principal.
-    pub fn new(id: impl Into<String>) -> Self {
-        Principal(id.into())
-    }
-
-    /// The principal's identity as the journal spells it.
-    pub fn id(&self) -> &str {
-        &self.0
-    }
-}
-
-/// Placeholder for the priced axis a destination sits on.
-// contract: LaneId
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct LaneId(String);
-
-impl LaneId {
-    /// Name a lane.
-    pub fn new(id: impl Into<String>) -> Self {
-        LaneId(id.into())
-    }
-
-    /// The lane's configured name.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// Placeholder for a declared meter class — the open key a usage line is reported against.
-// contract: MeterClassId
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct MeterClassId(String);
-
-impl MeterClassId {
-    /// Name a meter class.
-    pub fn new(id: impl Into<String>) -> Self {
-        MeterClassId(id.into())
-    }
-
-    /// The class's declared name.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// Placeholder for the kernel's per-unit key.
-// contract: the unit key on `Unit`
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct UnitKey(u64);
-
-impl UnitKey {
-    /// Name a unit.
-    pub fn new(key: u64) -> Self {
-        UnitKey(key)
-    }
-
-    /// The key as the journal writes it.
-    pub fn get(self) -> u64 {
-        self.0
-    }
-}
+// The facts each step carries forward are the contract crate's own types, named here rather than
+// restated. A capability is keyed on the contract's objects; it does not own a second spelling of
+// them. Three steps carry a type whose contract spelling borrows the frame buffer and therefore
+// cannot be a step's `Facts` (which outlives the borrow): decode hands forward the operation class
+// it recognised, which is the part of the draft every later step reads, while the draft itself
+// stays with the kernel.
+pub use busbar_contract::{
+    ArrivalRecord, AuditFacts, Frame, LaneId, MeterClassId, OpClassId, PrincipalId, RoutePlan,
+    ScopeFacts, UnitKey,
+};

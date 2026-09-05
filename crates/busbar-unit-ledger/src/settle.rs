@@ -111,7 +111,7 @@ impl Ledger {
             // system of record, and failing a settlement because a legacy row would not write would
             // be a behavioural change in the direction nobody wants.
             let _ = rows.write(&LegacyPosting {
-                principal: posted.principal().id().to_string(),
+                principal: posted.principal().as_str().to_string(),
                 bucket: key.bucket.as_str().to_string(),
                 window_start: window,
                 reserved: posted.reserved(),

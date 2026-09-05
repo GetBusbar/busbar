@@ -44,7 +44,7 @@ fn anonymous_renders_as_the_literal_word() {
     };
     let principal = d.into_result(&seal).expect("the open door admits");
     assert_eq!(
-        principal.id(),
+        principal.as_str(),
         ANONYMOUS,
         "the anonymous caller renders as the plain word on every surface"
     );
@@ -225,7 +225,7 @@ fn revocation_gates_a_new_unit_and_not_one_in_flight() {
     assert_eq!(
         d.into_result(&seal)
             .expect("a unit already in flight runs to its end")
-            .id(),
+            .as_str(),
         "alice"
     );
 }

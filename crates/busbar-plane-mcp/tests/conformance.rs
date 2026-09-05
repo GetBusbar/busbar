@@ -489,7 +489,7 @@ fn every_operation_routes_somewhere() {
     for op in McpPlane::OP_CLASSES {
         let unit = busbar_contract::unit::Unit::new(
             &seal,
-            1,
+            busbar_contract::UnitKey::new(1),
             busbar_contract::unit::Origin::Client,
             None,
             None,
@@ -530,7 +530,7 @@ fn a_call_spends_its_grant_before_the_hop() {
     let seal = common::TestSeal;
     let unit = busbar_contract::unit::Unit::new(
         &seal,
-        1,
+        busbar_contract::UnitKey::new(1),
         busbar_contract::unit::Origin::Client,
         None,
         None,
@@ -580,7 +580,7 @@ fn the_metering_step_reports_what_it_read() {
     for (op, lines) in [(ops::OP_TOOL_CALL, 2), (ops::OP_TOOLS_LIST, 1)] {
         let unit = busbar_contract::unit::Unit::new(
             &seal,
-            1,
+            busbar_contract::UnitKey::new(1),
             busbar_contract::unit::Origin::Client,
             None,
             None,
@@ -645,7 +645,7 @@ fn a_local_server_narrows_to_the_environment_alternative() {
     let seal = common::TestSeal;
     let unit = busbar_contract::unit::Unit::new(
         &seal,
-        1,
+        busbar_contract::UnitKey::new(1),
         busbar_contract::unit::Origin::Client,
         None,
         None,
@@ -682,7 +682,7 @@ fn every_narrowing_is_declared() {
             let ctx = scaffold.ctx();
             let unit = busbar_contract::unit::Unit::new(
                 &seal,
-                1,
+                busbar_contract::UnitKey::new(1),
                 busbar_contract::unit::Origin::Client,
                 None,
                 None,

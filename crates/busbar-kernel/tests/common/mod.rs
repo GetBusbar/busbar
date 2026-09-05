@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use busbar_caps::{
     Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode,
-    Hold, HoldCell, Meter, MeterClassId, OriginKind, Outcome, Principal, ReasonCode, Refusal,
+    Hold, HoldCell, Meter, MeterClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal,
     Route, ScopeFacts, StepName, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
     VerifiedDestination, Verify,
 };
@@ -103,8 +103,38 @@ impl TestUnits {
 }
 
 /// A principal every test shares.
-pub fn principal() -> Principal {
-    Principal::new("acct:battery")
+/// The arrival record the battery's kernel-owned arrival step hands forward.
+pub fn arrival_record() -> busbar_caps::ArrivalRecord {
+    busbar_caps::ArrivalRecord {
+        source: "127.0.0.1:9".into(),
+        port: 9,
+        alpn: None,
+        sni: None,
+        peer_cert: None,
+        transport_chain: vec!["battery"],
+    }
+}
+
+/// What the battery's audit step seals.
+pub fn audit_facts() -> busbar_caps::AuditFacts {
+    busbar_caps::AuditFacts {
+        op_class: busbar_caps::OpClassId::new("battery"),
+        finish: busbar_contract::FinishClass::Complete,
+    }
+}
+
+/// The one frame the battery's encode step produces.
+pub fn encoded_frame() -> busbar_caps::Frame {
+    busbar_caps::Frame {
+        direction: busbar_contract::Direction::Outbound,
+        stream: busbar_contract::StreamId(0),
+        bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b""[..])),
+        meta: busbar_contract::FrameMeta::default(),
+    }
+}
+
+pub fn principal() -> PrincipalId {
+    PrincipalId::new("acct:battery")
 }
 
 /// A context for a client unit.
@@ -153,7 +183,7 @@ impl Units for TestUnits {
             token,
             Arrival,
             StepName::Arrival,
-            busbar_caps::ArrivalFacts
+            arrival_record()
         )
     }
 
@@ -163,7 +193,7 @@ impl Units for TestUnits {
             token,
             Decode,
             StepName::Decode,
-            busbar_caps::DecodeFacts
+            busbar_caps::OpClassId::new("battery")
         )
     }
 
@@ -185,7 +215,7 @@ impl Units for TestUnits {
         &self,
         token: &UnitToken<Verify>,
         _ctx: &UnitCtx,
-        _principal: &Principal,
+        _principal: &PrincipalId,
     ) -> Decision<Verify> {
         self.note(StepName::Verify);
         match self.refusal(StepName::Verify) {
@@ -198,10 +228,16 @@ impl Units for TestUnits {
         &self,
         token: &UnitToken<Approve>,
         _ctx: &UnitCtx,
-        _principal: &Principal,
+        _principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
-        step!(self, token, Approve, StepName::Approve, ScopeFacts)
+        step!(
+            self,
+            token,
+            Approve,
+            StepName::Approve,
+            ScopeFacts::default()
+        )
     }
 
     fn admit(
@@ -209,7 +245,7 @@ impl Units for TestUnits {
         token: &UnitToken<Admit>,
         admit: &AdmitToken<Admit>,
         _ctx: &UnitCtx,
-        principal: &Principal,
+        principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
     ) -> Decision<Admit> {
         self.note(StepName::Admit);
@@ -243,7 +279,7 @@ impl Units for TestUnits {
         meter.accrue(self.spend);
         match self.refusal(StepName::Route) {
             Some(refusal) => Decision::refuse(token, refusal),
-            None => Decision::proceed(token, busbar_caps::RouteFacts),
+            None => Decision::proceed(token, busbar_caps::RoutePlan::default()),
         }
     }
 
@@ -269,7 +305,7 @@ impl Units for TestUnits {
     ) -> Decision<Audit> {
         self.note(StepName::Audit);
         self.admitted_door.store(true, Ordering::Release);
-        Decision::proceed(token, busbar_caps::AuditFacts)
+        Decision::proceed(token, audit_facts())
     }
 
     fn audit_refused(
@@ -280,7 +316,7 @@ impl Units for TestUnits {
     ) -> Decision<Audit> {
         self.calls.lock().unwrap().push(StepName::Audit);
         self.refused_door.store(true, Ordering::Release);
-        Decision::proceed(token, busbar_caps::AuditFacts)
+        Decision::proceed(token, audit_facts())
     }
 
     fn encode(
@@ -290,7 +326,7 @@ impl Units for TestUnits {
         _outcome: &Outcome,
     ) -> Decision<Encode> {
         self.note(StepName::Encode);
-        Decision::proceed(token, busbar_caps::EncodeFacts)
+        Decision::proceed(token, encoded_frame())
     }
 
     fn evidence(&self, _ctx: &UnitCtx) -> Evidence {

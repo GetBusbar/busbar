@@ -64,7 +64,7 @@ pub struct DestinationFacts {
     /// What it is.
     pub kind: DestinationKind,
     /// The lane it sits on — the priced axis.
-    pub lane: String,
+    pub lane: busbar_caps::LaneId,
     /// The lane's position in the lane table, when it has one.
     pub lane_index: Option<usize>,
 }
@@ -148,7 +148,7 @@ pub fn kind_rule_passes(dest: &DestinationFacts, facts: &dyn KindFacts) -> bool 
         DestinationKind::Upstream => {
             facts.allow_listed(dest)
                 && facts.transport_key_resolves(dest)
-                && facts.lane_permitted_for_op_class(&dest.lane)
+                && facts.lane_permitted_for_op_class(dest.lane.as_str())
         }
         DestinationKind::SessionUpstream => {
             facts.session_upstream_ok() && facts.session_principal_matches()

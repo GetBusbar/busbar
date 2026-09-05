@@ -7,7 +7,7 @@
 use crate::bounded::{ArenaBytes, BoundedVec, Facts, Ir, Labels, MAX_USAGE_LINES};
 use crate::grammar::Location;
 use crate::ids::{
-    CorrelationRef, LaneId, MeterClassId, OpClassId, PrincipalId, SessionId, StreamId,
+    CorrelationRef, LaneId, MeterClassId, OpClassId, PrincipalId, SessionId, StreamId, UnitKey,
 };
 use crate::plugin::KernelSeal;
 use crate::wire::Direction;
@@ -469,7 +469,7 @@ pub struct LegResult<'u> {
 /// a unit it wrote itself would be a plane writing its own evidence.
 #[derive(Debug)]
 pub struct Unit<'u> {
-    key: u64,
+    key: UnitKey,
     origin: Origin,
     session: Option<SessionId>,
     stream: Option<StreamId>,
@@ -489,7 +489,7 @@ impl<'u> Unit<'u> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         _seal: &dyn KernelSeal,
-        key: u64,
+        key: UnitKey,
         origin: Origin,
         session: Option<SessionId>,
         stream: Option<StreamId>,
@@ -517,7 +517,7 @@ impl<'u> Unit<'u> {
 
     /// The unit's node-local identity.
     #[must_use]
-    pub fn key(&self) -> u64 {
+    pub fn key(&self) -> UnitKey {
         self.key
     }
 

@@ -437,6 +437,9 @@ dependencies = [
 [[package]]
 name = "busbar-caps"
 version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+]
 
 [[package]]
 name = "busbar-contract"
@@ -553,6 +556,7 @@ name = "busbar-kernel"
 version = "1.6.0"
 dependencies = [
  "busbar-caps",
+ "busbar-contract",
 ]
 
 [[package]]

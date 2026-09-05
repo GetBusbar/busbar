@@ -23,7 +23,7 @@
 //! truncated there. A torn tail is normal. A torn record in the MIDDLE is not, and says so.
 
 use busbar_caps::{
-    Canary, Hold, LedgerToken, MeterClassId, Outcome, Posted, Principal, ReasonCode, RecoveryToken,
+    Canary, Hold, LedgerToken, MeterClassId, Outcome, Posted, PrincipalId, ReasonCode, RecoveryToken,
     StepName, UnitKey, Usage, UsageLine, UsageToken,
 };
 
@@ -37,7 +37,7 @@ pub struct HoldRecord {
     /// Which unit.
     pub unit: UnitKey,
     /// Whose it was.
-    pub principal: Principal,
+    pub principal: PrincipalId,
     /// What the door reserved.
     pub reserved: u64,
     /// What the last checkpoint recorded as spent.

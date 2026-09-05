@@ -10,7 +10,7 @@
 //! here so adding a window word or a cap kind adds a row, not a copied test.
 
 use busbar_caps::{
-    step::Admit, Accrual, AdmitToken, Hold, KernelSeal, Principal, ReasonCode, UnitToken,
+    step::Admit, Accrual, AdmitToken, Hold, KernelSeal, PrincipalId, ReasonCode, UnitToken,
 };
 
 use super::*;
@@ -497,7 +497,7 @@ fn admit_yields_a_hold_sized_from_the_estimate() {
     )]);
     let c = chain(&t, "vk_hold", Some("g"));
     let now = 1_700_000_000;
-    let principal = Principal::new("vk_hold");
+    let principal = PrincipalId::new("vk_hold");
     let mut unit = AdmissionUnit::new(&d, &p, "", now);
     let decision = unit.admit(
         &estimate(1_000, 7),
@@ -510,7 +510,7 @@ fn admit_yields_a_hold_sized_from_the_estimate() {
     match admission {
         busbar_caps::Admission::Own(hold) => {
             assert_eq!(hold.reserved(), 7_000, "quantity x price, tier 1.0");
-            assert_eq!(hold.principal().id(), "vk_hold");
+            assert_eq!(hold.principal().as_str(), "vk_hold");
             std::mem::forget(hold); // the ledger settles it; nothing to settle in a unit test
         }
         other => panic!("expected the unit's own hold, got {other:?}"),
@@ -553,7 +553,7 @@ fn tier_scales_the_hold_and_not_the_decision() {
     let t = table(&[("g", g)]);
     let c = chain(&t, "vk_tier", Some("g"));
     assert_eq!(c.tier_bp(), 15_000);
-    let principal = Principal::new("vk_tier");
+    let principal = PrincipalId::new("vk_tier");
     let mut unit = AdmissionUnit::new(&d, &p, "", 1_700_000_000);
     let decision = unit.admit(&estimate(3, 1), &principal, &c, &admit_token, &unit_token);
     match decision.into_result(&seal).expect("admitted") {
@@ -577,7 +577,7 @@ fn a_zero_estimate_holds_nothing() {
     let p = no_card(0);
     let t = table(&[("g", group_cfg(None, true, vec![]))]);
     let c = chain(&t, "vk_zero", Some("g"));
-    let principal = Principal::new("vk_zero");
+    let principal = PrincipalId::new("vk_zero");
     let mut unit = AdmissionUnit::new(&d, &p, "", 1_700_000_000);
     let decision = unit.admit(&Estimate::zero(), &principal, &c, &admit_token, &unit_token);
     match decision.into_result(&seal).expect("admitted") {
@@ -593,7 +593,7 @@ fn a_zero_estimate_holds_nothing() {
 fn an_undersized_hold_tops_up_and_never_refuses() {
     let seal = KernelSeal::acquire_for_kernel();
     let admit_token: AdmitToken<Admit> = AdmitToken::mint(&seal);
-    let principal = Principal::new("vk_top");
+    let principal = PrincipalId::new("vk_top");
     let mut hold = Hold::open(&admit_token, principal, 100);
     // Spend inside the reservation.
     assert_eq!(hold.accrue(60), Accrual::Within { remaining: 40 });

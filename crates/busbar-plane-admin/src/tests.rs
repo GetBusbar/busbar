@@ -277,7 +277,7 @@ fn build_unit<'u>(
     let ir = busbar_contract::bounded::Ir::new(bytes.as_bytes(), &[]);
     busbar_contract::unit::Unit::new(
         &TestSeal,
-        0,
+        busbar_contract::UnitKey::new(0),
         busbar_contract::unit::Origin::Client,
         None,
         None,

@@ -7,10 +7,11 @@
 # types in the contract crate and every plugin can name them; put them in the kernel and the units
 # cannot. Hence a crate of its own, between the two.
 #
-# NO DEPENDENCIES. Not a convenience — a property. This crate is the thing everything else trusts,
-# so its trusted computing base is `std` and nothing more. It has no async runtime, no serializer,
-# no error library and no allocator opinion. A future need to serialize a capability belongs in the
-# crate that writes the journal, not here.
+# ONE DEPENDENCY. This crate is the thing everything else trusts, so its trusted computing base is
+# `std` plus `busbar-contract` and nothing more. It has no async runtime, no error library and no
+# allocator opinion. The contract edge is deliberate: a capability is keyed on the contract's own
+# objects — the principal, the lane, the meter class, the unit key — and the alternative to naming
+# them is a second spelling of each, which is exactly how one name came to mean two things before.
 [package]
 name = "busbar-caps"
 version = "1.6.0"
@@ -26,4 +27,4 @@ name = "busbar_caps"
 path = "src/lib.rs"
 
 [dependencies]
-# Deliberately empty. See the header.
+busbar-contract = { path = "../busbar-contract" }

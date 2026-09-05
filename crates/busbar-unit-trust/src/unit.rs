@@ -3,7 +3,7 @@
 
 //! The sealed answer: the unit the loop calls at the verify step.
 
-use busbar_caps::{Decision, LaneId, ReasonCode, Refusal, TrustToken, UnitToken, Verify};
+use busbar_caps::{Decision, ReasonCode, Refusal, TrustToken, UnitToken, Verify};
 use busbar_caps::VerifiedDestination;
 
 use crate::destination::{kind_permitted, kind_rule_passes, DestinationFacts, KindFacts, OriginKind};
@@ -59,7 +59,7 @@ impl Trust {
             .iter()
             .filter(|d| kind_permitted(req.origin, &d.kind))
             .filter(|d| kind_rule_passes(d, facts))
-            .map(|d| VerifiedDestination::seal(trust, LaneId::new(d.lane.clone())))
+            .map(|d| VerifiedDestination::seal(trust, d.lane))
             .collect();
 
         Decision::proceed(token, sealed)

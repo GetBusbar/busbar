@@ -32,7 +32,7 @@ pub(crate) fn token() -> UsageToken {
 }
 
 /// A located value: the destination reported this figure at a declared place in its payload.
-pub(crate) fn located(class: &str, quantity: u64, direction: Direction) -> LocatedValue {
+pub(crate) fn located(class: &'static str, quantity: u64, direction: Direction) -> LocatedValue {
     LocatedValue {
         class: MeterClassId::new(class),
         quantity,
@@ -44,7 +44,7 @@ pub(crate) fn located(class: &str, quantity: u64, direction: Direction) -> Locat
 }
 
 /// A cardinality a plane surfaced as a declared content fact.
-pub(crate) fn plane_count(class: &str, quantity: u64, fact: &str) -> LocatedValue {
+pub(crate) fn plane_count(class: &'static str, quantity: u64, fact: &'static str) -> LocatedValue {
     LocatedValue {
         class: MeterClassId::new(class),
         quantity,
@@ -55,7 +55,7 @@ pub(crate) fn plane_count(class: &str, quantity: u64, fact: &str) -> LocatedValu
 }
 
 /// One of the kernel's own counts, as a plain count.
-pub(crate) fn kernel_count(class: &str, quantity: u64) -> KernelLine {
+pub(crate) fn kernel_count(class: &'static str, quantity: u64) -> KernelLine {
     KernelLine {
         class: MeterClassId::new(class),
         quantity,
@@ -74,21 +74,21 @@ pub(crate) fn counts(lines: Vec<KernelLine>) -> KernelCounts {
 }
 
 /// A report built directly, for the settlement cases that are handed one.
-pub(crate) fn usage(lines: &[(&str, u64)]) -> Usage {
+pub(crate) fn usage(lines: &[(&'static str, u64)]) -> Usage {
     Usage::report(&token(), plain(lines)).expect("within the line bound")
 }
 
 /// The same, marked as the kernel's own floor.
-pub(crate) fn estimated_usage(lines: &[(&str, u64)]) -> Usage {
+pub(crate) fn estimated_usage(lines: &[(&'static str, u64)]) -> Usage {
     Usage::estimate(&token(), plain(lines)).expect("within the line bound")
 }
 
 /// Plain report lines.
-pub(crate) fn plain(lines: &[(&str, u64)]) -> Vec<UsageLine> {
+pub(crate) fn plain(lines: &[(&'static str, u64)]) -> Vec<UsageLine> {
     lines
         .iter()
         .map(|(class, quantity)| UsageLine {
-            class: MeterClassId::new(*class),
+            class: MeterClassId::new(class),
             quantity: *quantity,
         })
         .collect()

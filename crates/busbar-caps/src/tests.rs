@@ -41,8 +41,8 @@ impl Kernel {
     }
 }
 
-fn who(id: &str) -> Principal {
-    Principal::new(id)
+fn who(id: &str) -> PrincipalId {
+    PrincipalId::new(id)
 }
 
 fn usage_of(k: &Kernel, quantity: u64) -> Usage {
@@ -324,9 +324,11 @@ fn an_estimated_usage_report_flags_the_posting() {
 #[test]
 fn a_usage_report_is_bounded_by_the_record_size() {
     let k = Kernel::new();
+    // A meter class is a declared name, so the over-long report is built from declared names; the
+    // ceiling is on the line count, not on the class, so one repeated class proves it just as well.
     let lines: Vec<_> = (0..MAX_USAGE_LINES + 1)
-        .map(|i| UsageLine {
-            class: MeterClassId::new(format!("class-{i}")),
+        .map(|_| UsageLine {
+            class: MeterClassId::new("class"),
             quantity: 1,
         })
         .collect();

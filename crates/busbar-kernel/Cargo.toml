@@ -29,6 +29,7 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-caps = { path = "../busbar-caps" }
+busbar-contract = { path = "../busbar-contract" }
 
 # TEMPORARY (delete before hand-off, together with this comment): stand this crate up as its own
 # workspace root while sibling members are mid-landing. Several in-flight crates currently carry the

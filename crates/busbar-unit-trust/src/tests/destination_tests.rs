@@ -84,7 +84,7 @@ impl KindFacts for AllYes {
 pub(crate) fn dest(kind: DestinationKind) -> DestinationFacts {
     DestinationFacts {
         kind,
-        lane: "lane-a".to_string(),
+        lane: busbar_caps::LaneId::new("lane-a"),
         lane_index: Some(0),
     }
 }

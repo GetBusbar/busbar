@@ -1084,7 +1084,7 @@ impl PlaneContext {
 pub fn test_unit() -> Unit<'static> {
     Unit::new(
         &TestSeal,
-        1,
+        busbar_contract::UnitKey::new(1),
         busbar_contract::Origin::Client,
         None,
         Some(StreamId(0)),

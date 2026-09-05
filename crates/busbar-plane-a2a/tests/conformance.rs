@@ -395,7 +395,7 @@ fn every_operation_routes_somewhere() {
     for op in <A2aPlane as busbar_contract::plane::PlaneMeta>::OP_CLASSES {
         let unit = busbar_contract::unit::Unit::new(
             &seal,
-            1,
+            busbar_contract::UnitKey::new(1),
             busbar_contract::unit::Origin::Client,
             None,
             None,
@@ -434,7 +434,7 @@ fn the_metering_step_reports_what_it_read() {
     let answer = br#"{"id":1,"jsonrpc":"2.0","result":{}}"#;
     let unit = busbar_contract::unit::Unit::new(
         &seal,
-        1,
+        busbar_contract::UnitKey::new(1),
         busbar_contract::unit::Origin::Client,
         None,
         None,

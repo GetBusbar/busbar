@@ -143,7 +143,7 @@ pub fn frame(bytes: &[u8]) -> Frame {
 pub fn unit<'u>(op: OpClassId, body: Ir<'u>) -> Unit<'u> {
     Unit::new(
         &TestSeal,
-        1,
+        busbar_contract::UnitKey::new(1),
         Origin::Client,
         None,
         Some(StreamId(0)),
