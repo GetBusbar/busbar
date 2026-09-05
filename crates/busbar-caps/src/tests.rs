@@ -683,7 +683,10 @@ fn a_spend_past_the_reservation_grows_it_out_of_the_headroom_it_is_given() {
     let k = Kernel::new();
     let mut hold = Hold::open(&k.admit_token(), who("acct-1"), 1_000);
     let spend = hold.spend(1_500, 900);
-    assert_eq!(spend.topped_up, 500, "the shortfall fits inside the headroom");
+    assert_eq!(
+        spend.topped_up, 500,
+        "the shortfall fits inside the headroom"
+    );
     assert_eq!(spend.overdraft, 0);
     assert_eq!(hold.reserved(), 1_500);
     assert_eq!(hold.overdraft(), 0);

@@ -417,6 +417,44 @@ impl<S: CellStore> Door<S> {
         Ok(grant)
     }
 
+    /// What a hold on this chain may still be grown by, in whole cents, or `None` where no bucket
+    /// in play declares a spend cap at all.
+    ///
+    /// This is a READ. It charges nothing, blocks nothing and can refuse nothing — it exists so a
+    /// unit that runs past its reservation can be told how far the reservation may grow, and the
+    /// answer being zero means the top-up is refused, never that the unit is. The tightest bucket
+    /// answers, because a top-up drawn past any one cap would be a draw that bucket never had.
+    ///
+    /// `now` is the unit's pinned arrival epoch, the same one the admission charge used, so the
+    /// windows read here are the windows the charge landed in.
+    pub fn budget_headroom_cents(
+        &self,
+        pricer: &Pricer,
+        chain: &BucketChain,
+        pool: &str,
+        now: u64,
+    ) -> Option<i64> {
+        let buckets: Vec<&ChainBucket> = chain.pool_filtered(pool);
+        let ids: Vec<&str> = buckets.iter().map(|b| b.bucket_id.as_str()).collect();
+        let cells = self.cells.lock(&ids);
+        let mut tightest: Option<i64> = None;
+        for bucket in buckets.iter() {
+            let Some(cap) = bucket.budget_cap else {
+                continue;
+            };
+            let window = budget_window(bucket.window, now);
+            let derived = match cells.get(&bucket.bucket_id) {
+                Some(cell) if cell.window_start >= window => {
+                    pricer.derive_spend_cents(cell.model_views(), cell.billable_requests, true)
+                }
+                _ => 0,
+            };
+            let left = cap.saturating_sub(derived).max(0);
+            tightest = Some(tightest.map_or(left, |t: i64| t.min(left)));
+        }
+        tightest
+    }
+
     /// Refund the request charged at admission across every bucket of the chain, for a request
     /// that produced no usable result.
     ///

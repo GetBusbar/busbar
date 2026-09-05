@@ -14,8 +14,9 @@
 
 use std::collections::BTreeMap;
 
-/// Nano-units per cent: the divisor that lands a derived nano-unit total in whole cents.
-const NANOS_PER_CENT: u128 = 10_000_000;
+/// Nano-units per cent: the divisor that lands a derived nano-unit total in whole cents, and the
+/// multiplier that takes a configured cent cap back into the nano-units a hold is sized in.
+pub const NANOS_PER_CENT: u128 = 10_000_000;
 
 /// The uncached input token key.
 pub const UNIT_INPUT: &str = "input";
