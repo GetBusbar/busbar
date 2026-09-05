@@ -738,6 +738,29 @@ impl busbar_contract::Transport for TestTransport {
         })
     }
 
+    fn encode_envelope<'a>(
+        &self,
+        fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::Arena,
+    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract::Encode> {
+        // The fixture's own wire shape, standing in for a real transport's: every field, then the
+        // body. What the tests assert is that the cross-check and the write see the SAME bytes,
+        // and one buffer is what makes that true whatever the layout is.
+        let mut out = Vec::new();
+        for (name, value) in fields {
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(b": ");
+            out.extend_from_slice(value);
+            out.push(b'\n');
+        }
+        out.push(b'\n');
+        out.extend_from_slice(body);
+        arena
+            .alloc_bytes(&out)
+            .map_err(|_| busbar_contract::Encode::ArenaExhausted)
+    }
+
     fn adopt<'a>(
         &'a self,
         _from: &'a dyn busbar_contract::Transport,

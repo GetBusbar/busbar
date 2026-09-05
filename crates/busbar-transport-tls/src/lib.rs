@@ -465,6 +465,20 @@ impl Transport for TlsTransport {
         })
     }
 
+    /// A byte stream carries no envelope of its own: the bytes are the body, and a field written
+    /// beside them would be bytes the peer never asked for. A transport that named one anyway would
+    /// be inventing a framing this wire does not have.
+    fn encode_envelope<'a>(
+        &self,
+        _fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::Arena,
+    ) -> Result<ArenaBytes<'a>, busbar_contract::Encode> {
+        arena
+            .alloc_bytes(body)
+            .map_err(|_| busbar_contract::Encode::ArenaExhausted)
+    }
+
     /// The in-band upgrade, from this side: the STARTTLS-shaped handoff the transports table names.
     ///
     /// `tcp` gives up its stream and `tls` takes it, and the connection that comes out is one this

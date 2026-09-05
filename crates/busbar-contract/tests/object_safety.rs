@@ -378,6 +378,15 @@ impl Transport for FixtureTransport {
         Box::pin(async move { Ok(n) })
     }
 
+    fn encode_envelope<'a>(
+        &self,
+        _fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn Arena,
+    ) -> Result<ArenaBytes<'a>, Encode> {
+        arena.alloc_bytes(body).map_err(|_| Encode::ArenaExhausted)
+    }
+
     fn adopt<'a>(
         &'a self,
         _from: &'a dyn Transport,

@@ -424,6 +424,19 @@ impl Transport for WsTransport {
         })
     }
 
+    /// A WebSocket message is its payload. The envelope's fields belonged to the HTTP request that
+    /// carried the upgrade, and that request is long over by the time a message is written.
+    fn encode_envelope<'a>(
+        &self,
+        _fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::Arena,
+    ) -> Result<ArenaBytes<'a>, busbar_contract::Encode> {
+        arena
+            .alloc_bytes(body)
+            .map_err(|_| busbar_contract::Encode::ArenaExhausted)
+    }
+
     /// The `http` → `ws` upgrade, from the side that owns what comes out.
     ///
     /// `http` gives up the accepted socket without having read the upgrade request, because the

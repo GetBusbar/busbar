@@ -201,6 +201,16 @@ impl Transport for SseTransport {
         self.http.write(conn, stream, bytes)
     }
 
+    fn encode_envelope<'a>(
+        &self,
+        fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::Arena,
+    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract::Encode> {
+        // `sse` is a reading of an `http` response, and an outbound request on it is an HTTP one.
+        self.http.encode_envelope(fields, body, arena)
+    }
+
     fn adopt<'a>(
         &'a self,
         from: &'a dyn Transport,

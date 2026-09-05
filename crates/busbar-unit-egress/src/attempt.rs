@@ -324,24 +324,28 @@ fn assemble(hop: &Hop<'_>, unit: &Unit<'_>, ctx: &Ctx<'_>) -> Result<Wire, Shed>
         .decorate(&mut request)
         .map_err(|_| Shed::internal())?;
 
-    // `// contract:` the byte layout of an envelope belongs to the in-tree transport, which is why
-    // this is the neutral one: every field as `name: value`, a blank line, then the body. What
-    // matters to the design is not the layout but that the cross-check below and the write further
-    // down see the SAME bytes, which they do because there is one buffer.
-    let mut bytes = Vec::new();
-    for (name, value) in &request.fields {
-        bytes.extend_from_slice(name.as_bytes());
-        bytes.extend_from_slice(b": ");
-        bytes.extend_from_slice(value);
-        bytes.push(b'\n');
-    }
+    // The byte layout of an envelope belongs to the transport, and this asks the transport for it.
+    // This unit used to write a neutral one — every field as `name: value`, a blank line, the body
+    // — because it must run the lane cross-check over the same bytes it hands to `write` and had
+    // nothing else to run it over. That made the check honest about ONE buffer and wrong about
+    // which bytes were in it: no wire in the design has ever looked like that.
+    //
+    // The fields are the POST-DECORATION ones, so what the egress-auth unit added and what it
+    // substituted a secret into are in the bytes the cross-check reads.
+    let mut fields: Vec<(&str, &[u8])> = request
+        .fields
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_slice()))
+        .collect();
     if let Some(signature) = &request.body_signature {
-        bytes.extend_from_slice(b"signature: ");
-        bytes.extend_from_slice(signature);
-        bytes.push(b'\n');
+        fields.push(("signature", signature.as_slice()));
     }
-    bytes.push(b'\n');
-    bytes.extend_from_slice(request.body);
+    let bytes = hop
+        .transport
+        .encode_envelope(&fields, request.body, ctx.arena())
+        .map_err(|_| Shed::internal())?
+        .as_slice()
+        .to_vec();
 
     lane_cross_check(hop, &request)?;
     Ok(Wire { bytes })

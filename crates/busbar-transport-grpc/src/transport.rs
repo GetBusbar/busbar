@@ -276,6 +276,21 @@ impl Transport for GrpcTransport {
         })
     }
 
+    /// A gRPC message is its body. Everything an envelope would carry rides the HTTP/2 headers of
+    /// the call, which `tonic` writes when the call is opened — the method the destination named,
+    /// the authority, the content type. A message that carried them a second time would be a
+    /// message no gRPC peer can read.
+    fn encode_envelope<'a>(
+        &self,
+        _fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::Arena,
+    ) -> Result<ArenaBytes<'a>, busbar_contract::Encode> {
+        arena
+            .alloc_bytes(body)
+            .map_err(|_| busbar_contract::Encode::ArenaExhausted)
+    }
+
     fn adopt<'a>(
         &'a self,
         _from: &'a dyn Transport,

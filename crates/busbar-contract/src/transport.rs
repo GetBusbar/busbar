@@ -225,6 +225,32 @@ pub trait Transport: Plugin + Send + Sync + 'static {
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, usize>;
 
+    /// Render an outbound envelope and body as this transport's own wire bytes.
+    ///
+    /// The byte layout of an envelope belongs to the transport, and only to the transport: an
+    /// `http` request line and folded headers, a gRPC length-prefixed message, a WebSocket payload
+    /// are three different objects that no neutral layout describes. The egress unit used to write
+    /// one anyway — `name: value`, a blank line, the body — because it must run the lane
+    /// cross-check over the same bytes it hands to `write`, and had nothing else to run it over.
+    /// That made the check honest about ONE buffer and wrong about which bytes were in it.
+    ///
+    /// The fields arrive POST-DECORATION: what the egress-auth unit added, and what it substituted
+    /// a secret into, are already here. The bytes that come back are the bytes the cross-check
+    /// reads and the bytes `write` is given, which is what the design means by the envelope still
+    /// equalling the verified destination after decoration.
+    ///
+    /// Into the arena, because the hot path allocates nowhere else.
+    ///
+    /// # Errors
+    ///
+    /// The arena had no room, or the envelope names something this transport cannot express.
+    fn encode_envelope<'a>(
+        &self,
+        fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn crate::bounded::Arena,
+    ) -> Result<crate::bounded::ArenaBytes<'a>, crate::wire::Encode>;
+
     /// Adopt a connection a lower layer is handing up, becoming the new top of the stack.
     ///
     /// The upgrade belongs to the TARGET, not the source. The connection that comes out belongs to

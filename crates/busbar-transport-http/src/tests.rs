@@ -294,6 +294,75 @@ async fn an_egress_body_accumulates_across_calls_until_the_declared_length() {
     server.abort();
 }
 
+/// The envelope's bytes are an HTTP message, because that is what this wire is.
+///
+/// The egress unit used to write a neutral layout — every field as `name: value`, a blank line, the
+/// body — and hand it to `write` as if it were a request. It ran the lane cross-check over the same
+/// buffer, so the check was honest about there being ONE buffer and wrong about what was in it. The
+/// layout is the transport's, and this is the transport.
+#[test]
+fn the_envelope_encodes_as_an_http_message() {
+    let transport = HttpTransport::new(ClientSettings::default());
+    let arena = TestArena;
+    let bytes = transport
+        .encode_envelope(
+            &[
+                ("method", b"POST".as_slice()),
+                ("path", b"/v1/messages".as_slice()),
+                ("authorization", b"Bearer substituted".as_slice()),
+            ],
+            b"{\"model\":\"m\"}",
+            &arena,
+        )
+        .unwrap();
+    let text = String::from_utf8(bytes.as_slice().to_vec()).unwrap();
+
+    assert!(
+        text.starts_with("POST /v1/messages HTTP/1.1\r\n"),
+        "the method and the path are the request line, not headers: {text:?}"
+    );
+    assert!(text.contains("authorization: Bearer substituted\r\n"));
+    assert!(
+        text.contains("content-length: 13\r\n"),
+        "the length is a fact about the bytes below, stated by the transport"
+    );
+    assert!(text.ends_with("\r\n\r\n{\"model\":\"m\"}"));
+
+    // And the message this transport wrote is one this transport can read back.
+    let parsed = raw::parse_message(bytes.as_slice()).expect("a message it can read");
+    assert_eq!(
+        parsed.start,
+        raw::RawStartLine::Request {
+            method: "POST".to_string(),
+            path: "/v1/messages".to_string()
+        }
+    );
+    assert_eq!(parsed.body, b"{\"model\":\"m\"}");
+}
+
+/// A test arena that hands back what it was given. The real one is the kernel's per-unit one;
+/// what this stands in for is only "the bytes come back with the arena's lifetime".
+struct TestArena;
+
+impl busbar_contract::Arena for TestArena {
+    fn alloc_bytes<'a>(
+        &'a self,
+        src: &[u8],
+    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract::ArenaBudget> {
+        Ok(busbar_contract::ArenaBytes::new(Box::leak(
+            src.to_vec().into_boxed_slice(),
+        )))
+    }
+
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, busbar_contract::ArenaBudget> {
+        Ok(Box::leak(src.to_string().into_boxed_str()))
+    }
+
+    fn remaining(&self) -> usize {
+        usize::MAX
+    }
+}
+
 #[tokio::test]
 async fn every_transport_error_is_mapped_on_dial() {
     let transport = HttpTransport::new(ClientSettings::default());

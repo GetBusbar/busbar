@@ -329,6 +329,20 @@ impl Transport for TcpTransport {
         })
     }
 
+    /// A byte stream carries no envelope of its own: the bytes are the body, and a field written
+    /// beside them would be bytes the peer never asked for. A transport that named one anyway would
+    /// be inventing a framing this wire does not have.
+    fn encode_envelope<'a>(
+        &self,
+        _fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::Arena,
+    ) -> Result<ArenaBytes<'a>, busbar_contract::Encode> {
+        arena
+            .alloc_bytes(body)
+            .map_err(|_| busbar_contract::Encode::ArenaExhausted)
+    }
+
     fn adopt<'a>(
         &'a self,
         _from: &'a dyn Transport,

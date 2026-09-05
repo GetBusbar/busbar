@@ -536,6 +536,49 @@ impl Transport for HttpTransport {
         })
     }
 
+    /// An HTTP/1.1 message: the start line the envelope names, its headers, the blank line, and
+    /// the body. The `method` and `path` fields are the request line rather than headers, because
+    /// on this wire that is what they are — an envelope that wrote them as `method: POST` would
+    /// describe a request no server has ever answered.
+    fn encode_envelope<'a>(
+        &self,
+        fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::Arena,
+    ) -> Result<ArenaBytes<'a>, busbar_contract::Encode> {
+        let field = |name: &str| {
+            fields
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                .map(|(_, v)| *v)
+        };
+        let method = field("method").unwrap_or(b"POST");
+        let path = field("path").unwrap_or(b"/");
+
+        let mut out = Vec::with_capacity(body.len() + 128);
+        out.extend_from_slice(method);
+        out.push(b' ');
+        out.extend_from_slice(path);
+        out.extend_from_slice(b" HTTP/1.1\r\n");
+        for (name, value) in fields {
+            if name.eq_ignore_ascii_case("method") || name.eq_ignore_ascii_case("path") {
+                continue;
+            }
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(b": ");
+            out.extend_from_slice(value);
+            out.extend_from_slice(b"\r\n");
+        }
+        // The length is this transport's to state: it is a fact about the bytes below, not
+        // something an envelope gets to disagree with.
+        out.extend_from_slice(format!("content-length: {}\r\n", body.len()).as_bytes());
+        out.extend_from_slice(b"\r\n");
+        out.extend_from_slice(body);
+        arena
+            .alloc_bytes(&out)
+            .map_err(|_| busbar_contract::Encode::ArenaExhausted)
+    }
+
     fn adopt<'a>(
         &'a self,
         _from: &'a dyn Transport,
