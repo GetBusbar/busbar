@@ -11,6 +11,14 @@ license = "Apache-2.0"
 busbar-api = { path = "../api" }
 busbar-plugin = { path = "../busbar-plugin" }
 busbar-plugin-sign = { path = "../plugin-sign" }
+# The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
+# None of the three crates may name a store, so the adapter that implements all three lives on this
+# side of the seam — where the loaded plugin and its declared payload schema already are. All three
+# depend only on `busbar-caps`/`busbar-contract`, so there is no cycle back into this crate.
+busbar-caps = { path = "../busbar-caps" }
+busbar-kernel = { path = "../busbar-kernel" }
+busbar-unit-verbs = { path = "../busbar-unit-verbs" }
+busbar-unit-wal = { path = "../busbar-unit-wal" }
 libloading = { workspace = true }
 # The kind:hook seam: `DlopenPolicy` implements the async `busbar_api::RoutingPolicy` trait, running
 # the blocking `busbar_call` on `spawn_blocking` (a hook gate can be CPU-heavy). `async-trait` matches
