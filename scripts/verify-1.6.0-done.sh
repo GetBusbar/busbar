@@ -254,6 +254,21 @@ fi
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
+begin_group "KERNEL — the Teller loop battery, the capability fixtures and attempt identity are green"
+# The kernel crate's integration tests are the loop battery (step order, refusal stops at its step,
+# every reason posts, the settlement table, the two-sided canary, kill points). The caps crate's
+# compile-fail fixtures prove the tokens cannot be forged. attempt_identity proves the one attempt
+# seam produces the bytes and breaker mutations the two legacy twins produced.
+if [ -d crates/busbar-kernel ]; then
+  step "busbar-kernel battery"           cargo test -p busbar-kernel --quiet
+  step "busbar-caps fixtures"            cargo test -p busbar-caps --quiet
+  step "attempt identity (busbar-llm)"   cargo test -p busbar-llm --quiet attempt_identity
+else
+  absent_step "kernel battery" "crates/busbar-kernel"
+fi
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "ISOMORPHISM — plane_isomorphism gate present and green"
 if [ -f crates/busbar/tests/plane_isomorphism.rs ]; then
   step "plane_isomorphism test (incl. its selftests)" cargo test -p busbar --quiet --test plane_isomorphism
