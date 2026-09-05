@@ -1,0 +1,24 @@
+[package]
+name = "busbar-transport-stdio"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The stdio transport: a duplex framed byte pump over a process's own stdin/stdout, or over a spawned child's pipes."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_transport_stdio"
+path = "src/lib.rs"
+
+# DEPENDENCY POLICY. This is an in-tree transport, inside the trusted computing base — never
+# dynamically loaded. It carries the byte-level framing only: one frame per line, a single write
+# lock, and the process/child lifecycle. No protocol meaning (JSON-RPC ids, verbs, correlation)
+# lives here; that stays with the planes that ride this transport.
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+tokio = { workspace = true, features = ["rt", "macros", "io-util", "io-std", "process", "sync", "time"] }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "io-std", "process", "sync", "time"] }

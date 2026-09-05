@@ -1,0 +1,25 @@
+[package]
+name = "busbar-transport-ws"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The WebSocket transport: duplex message frames over an HTTP upgrade."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_transport_ws"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time"] }
+tokio-tungstenite = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+webpki-roots = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
