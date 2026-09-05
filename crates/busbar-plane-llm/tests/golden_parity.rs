@@ -113,7 +113,7 @@ fn translate_request(ingress: &str, egress: &str, body: &str) -> Vec<u8> {
         other => panic!("a whole request body must decode as one complete unit, got {other:?}"),
     };
 
-    let unit = harness::unit(draft.op, draft.body_ir);
+    let unit = harness::unit(draft.op, draft.body_ir, draft.facts);
     let dest = harness::destination(host_for(egress), lane_for(egress));
     let out = plane
         .encode_egress(&unit, &dest, None, &ctx)

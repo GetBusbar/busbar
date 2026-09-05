@@ -176,6 +176,15 @@ pub(crate) fn all_verbs() -> &'static [VerbEntry] {
     })
 }
 
+/// The table row a verb NAME belongs to.
+///
+/// This is how a step after `decode_ingress` gets back to the static row: the draft's fact map
+/// carries the verb the decode step resolved, and this turns that name into the one row that owns
+/// it. A lookup in a closed 83-row table, not a second reading of the body's bytes.
+pub(crate) fn verb_named(verb: &str) -> Option<&'static VerbEntry> {
+    all_verbs().iter().find(|e| e.verb == verb)
+}
+
 /// Whether a concrete path segment satisfies a template segment, capturing the template's `{name}`
 /// against the concrete value when it is a variable segment.
 fn segment_matches<'p>(

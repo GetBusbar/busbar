@@ -403,6 +403,7 @@ fn every_operation_routes_somewhere() {
             Some(common::principal()),
             *op,
             busbar_contract::bounded::Ir::new(b"{}", &[]),
+            busbar_contract::bounded::Facts::new(),
             None,
         );
         let plan = plane.route(&unit, &ctx);
@@ -442,6 +443,7 @@ fn the_metering_step_reports_what_it_read() {
         Some(common::principal()),
         ops::OP_MESSAGE_SEND,
         busbar_contract::bounded::Ir::new(b"{}", &[]),
+        busbar_contract::bounded::Facts::new(),
         None,
     );
     let r = Response {

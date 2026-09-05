@@ -2,13 +2,11 @@
 //!
 //! Every method here is pure over its inputs and performs no I/O, matching the plane trait's own
 //! doc comment. The one piece of shared logic — "which of the 66+17 verbs does this unit's body
-//! name" — is `identify`, and every step that needs to know the verb (`verify`, `approve`,
-//! `audit`, `content_facts`) calls it fresh over `Unit::body()` rather than trusting a fact carried
-//! from `decode_ingress`: `Unit` carries a decoded `Ir`, not the `Facts` map `UnitDraft` built (the
-//! kernel is the sole writer of `Unit`'s fields, and facts are not one of them), so re-deriving from
-//! the same bytes is the only way later steps can answer the same question decode already answered
-//! — and since `identify` is a pure function of `Ir::body()`, "re-deriving" costs nothing more
-//! than the first derivation and cannot disagree with it.
+//! name" — is `identify`, and it runs exactly once, at `decode_ingress`, which writes the verb it
+//! resolved into the draft's fact map. Every later step that needs the verb (`verify`, `approve`,
+//! `content_facts`) reads it back off `Unit::draft_facts()`. Decode is the step that is entitled to
+//! read the bytes; a later step re-deriving the same answer from the same bytes is a second reading
+//! of one closed grammar, and two readings can drift.
 
 use busbar_contract::bounded::{ArenaBytes, FactValue, Facts};
 use busbar_contract::dest::{DestinationFacts, EgressBody, RoutePlan, VerifiedDestination};
@@ -41,6 +39,18 @@ fn identify<'u>(bytes: &'u [u8]) -> Option<Decoded<'u>> {
     let path = core::str::from_utf8(&bytes[path_span.start..path_span.end]).ok()?;
     let (entry, params) = verbs::find_verb(method, path)?;
     Some(Decoded { entry, params })
+}
+
+/// The verb `decode_ingress` resolved, read back off the unit's sealed draft facts.
+///
+/// The fact's own string borrows the unit; the row it names is static, and the destination and
+/// resource locator shapes are `&'static str`, so the name is resolved against the closed table
+/// rather than re-derived from the body.
+fn draft_verb(u: &Unit<'_>) -> Option<&'static str> {
+    match u.draft_facts().get(FACT_VERB) {
+        Some(FactValue::Str(name)) => verbs::verb_named(name).map(|e| e.verb),
+        _ => None,
+    }
 }
 
 impl Plane for AdminPlane {
@@ -205,26 +215,25 @@ impl Plane for AdminPlane {
 
     fn verify<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> DestinationFacts {
         // `decode_ingress` already refused anything that does not resolve to one of the 66+17
-        // verbs, so this always finds an entry for a unit that reached this step. The `"unknown"`
+        // verbs, so the verb fact is always set on a unit that reached this step. The `"unknown"`
         // fallback exists only because `verify` cannot return a `Result`: it is unreachable in a
         // correctly wired loop, not a silently wrong answer — a destination named `"unknown"` is
         // refused by the trust unit rather than dialled.
-        let verb = identify(u.body().body())
-            .map(|d| d.entry.verb)
-            .unwrap_or("unknown");
-        DestinationFacts::KernelVerb { verb }
+        DestinationFacts::KernelVerb {
+            verb: draft_verb(u).unwrap_or("unknown"),
+        }
     }
 
     fn approve<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
         let mut resources = busbar_contract::bounded::BoundedVec::new();
-        if let Some(decoded) = identify(u.body().body()) {
+        if let Some(verb) = draft_verb(u) {
             // `kind: "admin_verb"` is this plane's own honest vocabulary for what is being asked
             // for: not a money resource, not a session, just "this one named kernel verb". The
             // scope unit is the one that turns this into a decision against the principal's held
             // scope; this plane only states what is being touched.
             let _ = resources.push(ResourceLocator {
                 kind: "admin_verb",
-                name: decoded.entry.verb,
+                name: verb,
             });
         }
         ScopeFacts { resources }
@@ -280,7 +289,7 @@ impl Plane for AdminPlane {
         let mut facts = Facts::new();
         let verb = match r.facts.get(FACT_VERB) {
             Some(FactValue::Str(v)) => Some(v),
-            _ => identify(u.body().body()).map(|d| d.entry.verb),
+            _ => draft_verb(u),
         };
         if let Some(verb) = verb {
             let _ = facts.set(FACT_VERB, FactValue::Str(verb));

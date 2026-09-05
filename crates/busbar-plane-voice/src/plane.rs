@@ -34,15 +34,11 @@
 //!   [`crate::session::TurnCounters::tool_calls`], and the delta/close frames that follow are folded
 //!   into the turn's own frame stream. Stated as a finding, not hidden.
 //! - **`encode_response` is a passthrough of bytes `decode_response` already rendered**, mirroring
-//!   `busbar-plane-admin`'s pattern, rather than the two-step `Pending::Egress` split
-//!   [`crate::session::Pending`]'s doc comment originally describes. Reason: `Response` carries an
-//!   `Ir` (bytes + spans) and a fact map, not a structured `IrServerEvent` — there is nothing for
-//!   `encode_response` to re-derive a dialect-specific wire event FROM without re-parsing state this
-//!   plane has already advanced once. `decode_response` reads the open turn's own client dialect off
+//!   `busbar-plane-admin`'s pattern. `decode_response` reads the open turn's own client dialect off
 //!   `Ctx::session()`'s declared `dialect` session fact (the one fact this plane's `SESSION_FACTS`
-//!   declares) and renders the client-shaped bytes immediately; `Pending::Egress` is consequently
-//!   unused by this implementation and is left in `session.rs` as the shape a future pass that
-//!   revisits this split would use.
+//!   declares) and renders the client-shaped bytes immediately. The downlink half of
+//!   [`crate::session::Pending`] is gone with the reason it existed: a step after decode can now
+//!   read what decode determined off the unit's own draft facts.
 //! - **Verify's upstream pick for a fresh session is a documented default, not a policy.** A session
 //!   whose own arriving dialect is one of the two duplex-upstream dialects dials the SAME dialect's
 //!   configured upstream when one exists; otherwise (Twilio, or no matching upstream configured) it
@@ -319,14 +315,12 @@ impl Plane for VoicePlane {
     fn authenticate<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> CredentialLocator {
         // Twilio, OpenAI Realtime and Gemini Live all authenticate once at session open and cache
         // the result for the session's life (`claims::Dialect::authenticates_from_session`); the two
-        // one-shot HTTP operations present a credential on the one request they are. This plane
-        // cannot see its own draft's dialect from `Unit` directly (dialect is a fact, not a field),
-        // so it reads the session's cached dialect fact where one exists — a `None` session (the
-        // one-shot case) falls through to `from_session: false`, which is the correct answer there.
-        let _ = u;
+        // one-shot HTTP operations present a credential on the one request they are. The dialect is
+        // the draft's own fact, sealed onto the unit by the kernel, so this step reads what decode
+        // determined rather than a session fact that a one-shot unit does not have at all.
         CredentialLocator {
             narrowing: None,
-            from_session: false,
+            from_session: draft_dialect(u).is_some_and(Dialect::authenticates_from_session),
         }
     }
 
@@ -355,11 +349,8 @@ impl Plane for VoicePlane {
                     .unwrap_or(busbar_contract::ids::LaneId::new("voice")),
             };
         }
-        let arriving = ctx
-            .session()
-            .and_then(|s| s.session_fact(meta::FACT_DIALECT))
-            .and_then(dialect_from_name)
-            .unwrap_or(Dialect::OpenaiRealtime);
+        // The dialect the decode step named, off the unit's own sealed draft facts.
+        let arriving = draft_dialect(u).unwrap_or(Dialect::OpenaiRealtime);
         match self.default_upstream(arriving) {
             Some(up) => DestinationFacts::Upstream {
                 transport: claims::WS_TRANSPORT,
@@ -507,6 +498,18 @@ fn upstream_dialect_for(plane: &VoicePlane, dest: &VerifiedDestination) -> Diale
             .first()
             .map(|u| u.dialect)
             .unwrap_or(Dialect::OpenaiRealtime),
+    }
+}
+
+/// The dialect the decode step named, read back off the unit's sealed draft facts.
+///
+/// The one place this plane's later steps ask what dialect a unit is: decode is the step that read
+/// the bytes and matched the claim, and what it determined travels on the unit. A one-shot unit has
+/// no session at all, so a session fact could not have answered for it.
+fn draft_dialect(u: &Unit<'_>) -> Option<Dialect> {
+    match u.draft_facts().get(meta::FACT_DIALECT) {
+        Some(FactValue::Str(name)) => dialect_from_name(name),
+        _ => None,
     }
 }
 

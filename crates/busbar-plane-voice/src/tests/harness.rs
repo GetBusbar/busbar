@@ -4,7 +4,7 @@
 //! arena, a clock, a configuration view, a transport view and a label set, plus the kernel-built
 //! values (a unit, a verified destination) handed through a seal. Nothing here is shipped.
 
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Ir, Labels, SlabBytes};
+use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels, SlabBytes};
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::ids::{LaneId, OpClassId, SessionId, StreamId};
 use busbar_contract::plugin::KernelSeal;
@@ -152,7 +152,7 @@ pub fn frame(bytes: &[u8]) -> Frame {
 
 /// A unit built the way the kernel builds one, over a decoded body.
 #[must_use]
-pub fn unit<'u>(op: OpClassId, body: Ir<'u>) -> Unit<'u> {
+pub fn unit<'u>(op: OpClassId, body: Ir<'u>, facts: Facts<'u>) -> Unit<'u> {
     Unit::new(
         &TestSeal,
         busbar_contract::UnitKey::new(1),
@@ -163,6 +163,7 @@ pub fn unit<'u>(op: OpClassId, body: Ir<'u>) -> Unit<'u> {
         None,
         op,
         body,
+        facts,
         None,
     )
 }

@@ -103,6 +103,19 @@ fn ingress_dialect<'u>(ctx: &Ctx<'u>) -> Option<&'static Dialect> {
     dialect::dialect(name)
 }
 
+/// The dialect the decode step named, read back off the unit's sealed draft facts.
+///
+/// The ladder is walked ONCE, at `decode_ingress`, which writes the rung it landed on into the
+/// draft. Every later step that holds a unit reads the name back and resolves it against the closed
+/// dialect table rather than walking fourteen rungs over the transport facts a second time — the
+/// walk is ordered, and an ordered walk repeated is an ordered walk that can disagree with itself.
+fn unit_dialect(u: &Unit<'_>) -> Option<&'static Dialect> {
+    match u.draft_facts().get(meta::FACT_DIALECT) {
+        Some(FactValue::Str(name)) => dialect::dialect(name),
+        _ => None,
+    }
+}
+
 /// Which dialect a verified destination speaks, and what to rewrite the model to.
 fn upstream_for(plane: &LlmPlane, dest: &VerifiedDestination) -> Option<&'static Upstream> {
     let lane = dest.lane()?;
@@ -342,7 +355,7 @@ impl Plane for LlmPlane {
     ) -> Result<EgressBody<'u>, Encode> {
         let upstream = upstream_for(self, dest).ok_or(Encode::Unrepresentable)?;
         let egress = dialect::dialect(upstream.dialect).ok_or(Encode::Unrepresentable)?;
-        let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
+        let ingress = unit_dialect(u).ok_or(Encode::Unrepresentable)?;
 
         let egress_protocol =
             busbar_llm_codec::proto_codec::protocol_for(egress.name).ok_or(Encode::Unrepresentable)?;
@@ -623,7 +636,7 @@ impl Plane for LlmPlane {
 
     fn encode_end<'u>(
         &self,
-        _u: &Unit<'u>,
+        u: &Unit<'u>,
         end: &UnitEnd,
         _st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
@@ -634,7 +647,7 @@ impl Plane for LlmPlane {
         let UnitEnd::Failed { .. } = end else {
             return Ok(None);
         };
-        let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
+        let ingress = unit_dialect(u).ok_or(Encode::Unrepresentable)?;
         let protocol =
             busbar_llm_codec::proto_codec::protocol_for(ingress.name).ok_or(Encode::Unrepresentable)?;
         let envelope = protocol.writer().write_error(
@@ -645,9 +658,9 @@ impl Plane for LlmPlane {
         Ok(Some(put(ctx, &serialize(&envelope)?)?))
     }
 
-    fn authenticate<'u>(&self, _u: &Unit<'u>, ctx: &Ctx<'u>) -> CredentialLocator {
+    fn authenticate<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> CredentialLocator {
         CredentialLocator {
-            narrowing: ingress_dialect(ctx).map(|d| SchemeAlt::new(d.scheme_alt)),
+            narrowing: unit_dialect(u).map(|d| SchemeAlt::new(d.scheme_alt)),
             // Every one of the six dialects presents its credential on the request itself. None of
             // them authenticates once and rides a session.
             from_session: false,
@@ -679,8 +692,8 @@ impl Plane for LlmPlane {
         facts
     }
 
-    fn admit<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> AdmitFacts {
-        let Some(d) = ingress_dialect(ctx) else {
+    fn admit<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
+        let Some(d) = unit_dialect(u) else {
             return AdmitFacts::default();
         };
         let body = u.body().body();

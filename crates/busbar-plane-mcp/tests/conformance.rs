@@ -497,6 +497,7 @@ fn every_operation_routes_somewhere() {
             Some(common::principal()),
             *op,
             busbar_contract::bounded::Ir::new(b"{}", &[]),
+            busbar_contract::bounded::Facts::new(),
             None,
         );
         let plan = plane.route(&unit, &ctx);
@@ -538,6 +539,7 @@ fn a_call_spends_its_grant_before_the_hop() {
         Some(common::principal()),
         ops::OP_TOOL_CALL,
         busbar_contract::bounded::Ir::new(b"{}", &[]),
+        busbar_contract::bounded::Facts::new(),
         None,
     );
     let plan = plane.route(&unit, &ctx);
@@ -588,6 +590,7 @@ fn the_metering_step_reports_what_it_read() {
             Some(common::principal()),
             op,
             busbar_contract::bounded::Ir::new(b"{}", &[]),
+            busbar_contract::bounded::Facts::new(),
             None,
         );
         let locators = plane.meter(&unit, &r, &ctx);
@@ -653,6 +656,7 @@ fn a_local_server_narrows_to_the_environment_alternative() {
         Some(common::principal()),
         ops::OP_TOOL_CALL,
         busbar_contract::bounded::Ir::new(b"{}", &[]),
+        busbar_contract::bounded::Facts::new(),
         None,
     );
     for (transport, expected) in [("stdio", "environment"), ("http", "bearer")] {
@@ -690,6 +694,7 @@ fn every_narrowing_is_declared() {
                 Some(common::principal()),
                 *op,
                 busbar_contract::bounded::Ir::new(b"{}", &[]),
+                busbar_contract::bounded::Facts::new(),
                 None,
             );
             let narrowing = plane

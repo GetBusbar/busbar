@@ -477,6 +477,7 @@ pub struct Unit<'u> {
     principal: Option<PrincipalId>,
     op: OpClassId,
     body: Ir<'u>,
+    facts: Facts<'u>,
     correlates: Option<CorrelationRef>,
     byte_counts: (u64, u64),
     frame_counts: (u32, u32),
@@ -497,6 +498,7 @@ impl<'u> Unit<'u> {
         principal: Option<PrincipalId>,
         op: OpClassId,
         body: Ir<'u>,
+        facts: Facts<'u>,
         correlates: Option<CorrelationRef>,
     ) -> Self {
         Self {
@@ -508,6 +510,7 @@ impl<'u> Unit<'u> {
             principal,
             op,
             body,
+            facts,
             correlates,
             byte_counts: (0, 0),
             frame_counts: (0, 0),
@@ -561,6 +564,17 @@ impl<'u> Unit<'u> {
     #[must_use]
     pub fn body(&self) -> Ir<'u> {
         self.body
+    }
+
+    /// The facts the draft carried, sealed by the kernel at construction.
+    ///
+    /// Decode is the step that reads the bytes, and what it determined there is evidence every
+    /// later step is entitled to. Without this a plane's only way to answer at `verify`, `approve`,
+    /// `audit` or `content_facts` a question decode already answered is to re-derive it from the
+    /// same bytes — or, where it cannot, to stash state of its own beside the loop.
+    #[must_use]
+    pub fn draft_facts(&self) -> &Facts<'u> {
+        &self.facts
     }
 
     /// Which request this unit answers, where it answers one.

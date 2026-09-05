@@ -148,7 +148,7 @@ fn run_once() -> Pass {
         other => panic!("expected one complete unit, got {other:?}"),
     };
 
-    let unit = harness::unit(draft.op, draft.body_ir);
+    let unit = harness::unit(draft.op, draft.body_ir, draft.facts);
     let dest = harness::destination("openai.invalid", LaneId::new("lane-openai"));
     let egress = plane
         .encode_egress(&unit, &dest, None, &ctx)

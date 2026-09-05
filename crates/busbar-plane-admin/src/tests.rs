@@ -204,7 +204,7 @@ fn decode_ingress_matches_the_pinned_1_5_5_fixture_for_every_operation() {
             }
 
             // `approve`'s resource locator names the same verb `decode_ingress` resolved.
-            let unit = build_unit(&text, draft.op);
+            let unit = build_unit(&text, draft.op, draft.facts);
             let scope = plane.approve(&unit, &ctx);
             let resource = scope.resources.as_slice().first().unwrap_or_else(|| {
                 panic!("approve named no resource for {method} {path_template}")
@@ -267,6 +267,7 @@ fn combined_table_has_83_unique_verb_names() {
 fn build_unit<'u>(
     bytes: &'u str,
     op: busbar_contract::ids::OpClassId,
+    facts: busbar_contract::bounded::Facts<'u>,
 ) -> busbar_contract::unit::Unit<'u> {
     struct TestSeal;
     impl busbar_contract::plugin::KernelSeal for TestSeal {
@@ -285,6 +286,7 @@ fn build_unit<'u>(
         None,
         op,
         ir,
+        facts,
         None,
     )
 }

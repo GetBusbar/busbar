@@ -5,7 +5,7 @@
 //! module is the concrete type this plane wraps in it.
 
 use busbar_contract::ids::CorrelationRef;
-use busbar_voice::ir::{DecodeState, IrClientEvent, IrServerEvent};
+use busbar_voice::ir::{DecodeState, IrClientEvent};
 
 use crate::claims::Dialect;
 
@@ -13,19 +13,20 @@ use crate::claims::Dialect;
 /// open.
 ///
 /// `decode_ingress`/`encode_ingress_frame` are two separate calls the kernel makes about the SAME
-/// inbound frame — the first says what it means, the second says what to send onward — and
-/// `decode_response`/`encode_response` are the same split on the way back. Both codecs' `read_up`/
-/// `read_down` methods are stateful (they advance the per-session frame sequence and, on the
-/// downlink, the barge-in playback-position counter), so calling them a second time to re-derive
-/// what the first call already decoded would double-count that state. Stashing the already-decoded
-/// event here and consuming it once is what keeps the codec state's counters correct across the
-/// split.
+/// inbound frame — the first says what it means, the second says what to send onward. The codecs'
+/// `read_up` method is stateful (it advances the per-session frame sequence), so calling it a second
+/// time to re-derive what the first call already decoded would double-count that state. Stashing the
+/// already-decoded event here and consuming it once is what keeps the codec state's counters correct
+/// across the split.
+///
+/// There is ONE arm, and there was only ever one reason for a second: the downlink split needed a
+/// stash because a later step could not see what decode had determined. It can now — a unit carries
+/// its draft's facts — and `encode_response` renders the bytes `decode_response` already produced,
+/// so the egress arm existed for a problem that is no longer the shape of the surface.
 #[derive(Debug, Clone)]
 pub enum Pending {
     /// A client→server event decoded at `decode_ingress`, consumed at `encode_ingress_frame`.
     Ingress(IrClientEvent),
-    /// A server→client event decoded at `decode_response`, consumed at `encode_response`.
-    Egress(IrServerEvent),
 }
 
 /// The plane's own bookkeeping for the current, still-open turn.

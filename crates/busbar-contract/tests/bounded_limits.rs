@@ -35,6 +35,46 @@ fn the_loop_fits_inside_the_step_ceiling() {
     assert!(Step::ALL.len() <= MAX_STEPS);
 }
 
+/// The kernel seals the draft's facts onto the unit, and a later step reads them back unchanged.
+///
+/// This is what stops a step after decode re-deriving from the same bytes what decode already
+/// determined. The map is the draft's, key for key: nothing is dropped and nothing is invented.
+#[test]
+fn a_unit_carries_the_drafts_facts() {
+    struct Seal;
+    impl busbar_contract::plugin::KernelSeal for Seal {
+        fn seal_origin(&self) -> &'static str {
+            "busbar-contract::tests"
+        }
+    }
+
+    let mut facts = Facts::new();
+    facts.set("verb", FactValue::Str("get_status")).expect("set");
+    facts.set("stream", FactValue::Bool(true)).expect("set");
+
+    let unit = busbar_contract::unit::Unit::new(
+        &Seal,
+        busbar_contract::UnitKey::new(1),
+        busbar_contract::unit::Origin::Client,
+        None,
+        None,
+        busbar_contract::wire::Direction::Inbound,
+        None,
+        busbar_contract::ids::OpClassId::new("op"),
+        busbar_contract::bounded::Ir::new(b"{}", &[]),
+        facts,
+        None,
+    );
+
+    assert_eq!(unit.draft_facts().len(), 2);
+    assert_eq!(
+        unit.draft_facts().get("verb"),
+        Some(FactValue::Str("get_status"))
+    );
+    assert_eq!(unit.draft_facts().get("stream"), Some(FactValue::Bool(true)));
+    assert_eq!(unit.draft_facts().get("absent"), None);
+}
+
 /// A fact map refuses the thirty-third distinct key and keeps the thirty-two it has.
 #[test]
 fn a_fact_map_refuses_past_its_key_ceiling() {

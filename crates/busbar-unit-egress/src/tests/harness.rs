@@ -1116,6 +1116,7 @@ pub fn test_unit() -> Unit<'static> {
         None,
         busbar_contract::OpClassId::new("test-op"),
         Ir::new(&[], &[]),
+        busbar_contract::bounded::Facts::new(),
         None,
     )
 }

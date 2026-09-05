@@ -13,7 +13,7 @@
 #![allow(dead_code)]
 
 use busbar_contract::bounded::SlabBytes;
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Ir, Labels};
+use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels};
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::ids::{LaneId, OpClassId, StreamId};
 use busbar_contract::plugin::KernelSeal;
@@ -155,7 +155,7 @@ pub fn frame(bytes: &[u8]) -> Frame {
 
 /// A unit built the way the kernel builds one, over a decoded body.
 #[must_use]
-pub fn unit<'u>(op: OpClassId, body: Ir<'u>) -> Unit<'u> {
+pub fn unit<'u>(op: OpClassId, body: Ir<'u>, facts: Facts<'u>) -> Unit<'u> {
     Unit::new(
         &TestSeal,
         busbar_contract::UnitKey::new(1),
@@ -166,6 +166,7 @@ pub fn unit<'u>(op: OpClassId, body: Ir<'u>) -> Unit<'u> {
         None,
         op,
         body,
+        facts,
         None,
     )
 }

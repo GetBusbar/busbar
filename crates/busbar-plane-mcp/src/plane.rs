@@ -411,6 +411,13 @@ impl Plane for McpPlane {
                     reason: DiscardCode::Unsupported,
                 });
             };
+            // The subject is read HERE, at the one step entitled to read the bytes, so the steps
+            // after this one read it off the draft rather than scanning the request a second time.
+            if let Some(pointer) = row.name_pointer {
+                if let Some(subject) = read_str(body, pointer) {
+                    let _ = facts.set(f::FACT_SUBJECT, FactValue::Str(subject));
+                }
+            }
             return Ok(Progress::OneShot(UnitDraft {
                 op: row.op,
                 body_ir: Ir::new(body, &[]),
@@ -800,13 +807,9 @@ impl Plane for McpPlane {
             }
         }
         // What the request was FOR travels with what came back, so the record joins them without a
-        // second read of the request.
-        if let Some(row) = Self::row_for_op(u.op()) {
-            if let Some(pointer) = row.name_pointer {
-                if let Some(subject) = read_str(u.body().body(), pointer) {
-                    let _ = facts.set(f::FACT_SUBJECT, FactValue::Str(subject));
-                }
-            }
+        // second read of the request: decode already found the subject and the unit carries it.
+        if let Some(FactValue::Str(subject)) = u.draft_facts().get(f::FACT_SUBJECT) {
+            let _ = facts.set(f::FACT_SUBJECT, FactValue::Str(subject));
         }
         if let Some(server) = self.servers().first() {
             let _ = facts.set(f::FACT_SERVER, FactValue::Str(server.id));
