@@ -50,7 +50,11 @@ BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracl
 LP="${GOV_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-49751}}" AP="${GOV_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-49752}}"
 fail() { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"$1\"}}" >"$RAW/captured.json"; exit 0; }
 
-W="$RAW/gov-work"; mkdir -p "$W/plugins" "$W/tmp"
+W="$RAW/gov-work"
+# record.sh reuses a FIXED raw dir per cell id across repeated recorder invocations (it is keyed by
+# id, not by run) — wipe any prior run's durable store first so the minted-key count (and every other
+# durable fact this cell asserts) starts from zero every time, not from whatever a previous run left.
+rm -rf "$W"; mkdir -p "$W/plugins" "$W/tmp"
 # `busbar_plugin_loader::sweep_dead_staging` scans `std::env::temp_dir()` (`$TMPDIR`) for orphaned
 # plugin staging directories left by a CRASHED prior run and prints `[info] removed N ...` when it
 # finds any — a real host-wide count that has nothing to do with this cell and is NOT the same on

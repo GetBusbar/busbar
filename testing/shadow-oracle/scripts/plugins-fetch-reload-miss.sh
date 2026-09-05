@@ -31,7 +31,10 @@ LP="${FETCH_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-49751}}" AP="${FETCH_ADMIN_PORT:-
 fail() { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"$1\"}}" >"$RAW/captured.json"; exit 0; }
 for p in "$LP" "$AP" "$FP"; do assert_port_free "$p" || fail "port $p busy"; done
 
-W="$RAW/fetch-work"; mkdir -p "$W/plugins" "$W/serve" "$W/tmp"
+W="$RAW/fetch-work"
+# see durable-governance-precondition.sh's header comment: record.sh reuses a FIXED raw dir per cell
+# id across repeated recorder invocations, so wipe any prior run's leftovers first.
+rm -rf "$W"; mkdir -p "$W/plugins" "$W/serve" "$W/tmp"
 # see durable-governance-precondition.sh's header comment: isolate `sweep_dead_staging`'s host-wide
 # `$TMPDIR` scan so its opportunistic `[info] removed N orphaned ...` line never fires here.
 export TMPDIR="$W/tmp"
