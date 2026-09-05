@@ -17161,7 +17161,9 @@
       "driver": "exec",
       "outcome": "ok",
       "exec": {
-        "args": [],
+        "args": [
+          "--version"
+        ],
         "mode": "cli",
         "config": "baseline",
         "env": {}

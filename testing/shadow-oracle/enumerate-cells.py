@@ -872,7 +872,7 @@ def documented_cells() -> list[dict]:
     # which the plain http driver cannot express (no sigv4 signer in this family's reuse set); the
     # route itself is already exhaustively pinned by the llm.wire family's own `llm|bedrock|*` cells
     # (which DO carry a sigv4 signer) — see qa/documented-claims.json.
-    cells.append(exec_("documented|readme|env-launch", F, args=[], mode="cli",
+    cells.append(exec_("documented|readme|env-launch", F, args=["--version"], mode="cli",
                         env={}, why="README:182 `BUSBAR_CONFIG=./config.yaml ./busbar &` — plain "
                                     "`--version` under the same BUSBAR_CONFIG-driven launch path "
                                     "(main.rs:120, :224) exits 0"))
