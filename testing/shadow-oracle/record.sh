@@ -147,11 +147,22 @@ record_exec_cell() {  # <id> <cell-json> <raw-dir> <safe>
     baseline) cfgfile="$WORK/config.yaml" ;;
     none) cfgfile="" ;;
     missing) cfgfile="$xwork/does-not-exist.yaml" ;;
-    migrated:*) # the corpus file migrated by THIS binary, then validated against ITS OWN catalog
+    migrated:*) # the corpus file migrated by THIS binary, then validated against ITS OWN catalog.
+      # `--migrate-config` alone is not enough: mirrors apply_deferred_decisions()/validate() in
+      # crates/busbar/tests/migration_corpus.rs — supply the two decisions a migrator explicitly
+      # refuses to invent (an admin-tokens credential when auth.chain names `keys`, a signing key
+      # when the migrator left a TODO for it), stand in a real file for any genuine `file:` secret
+      # ref the migrated document still carries (e.g. v1.5.1/v1.5.2 ship one already), and stub every
+      # `env:NAME` secret ref so --validate fails on the migration, never on this machine's env.
       "$BIN" --migrate-config "${repo}/${cfg#migrated:}" >"$xwork/migrated.yaml" 2>/dev/null
-      cfgfile="$xwork/migrated.yaml"
+      python3 "${here}/scripts/apply-deferred-decisions.py" "$xwork/migrated.yaml" \
+        --stand-in "$xwork/corpus-secret" >"$xwork/migrated-ready.yaml"
+      cfgfile="$xwork/migrated-ready.yaml"
       corpus_prov="$(corpus_providers_for "${cfg#migrated:}")"
-      [ -n "$corpus_prov" ] && cp "$corpus_prov" "$xwork/providers.yaml" ;;
+      [ -n "$corpus_prov" ] && cp "$corpus_prov" "$xwork/providers.yaml"
+      while IFS= read -r envname; do
+        [ -n "$envname" ] && envs+=("${envname}=$(printf 'a%.0s' {1..64})")
+      done < <(grep -o 'env:[[:space:]]*[A-Za-z0-9_]\+' "$cfgfile" | sed -E 's/env:[[:space:]]*//' | sort -u) ;;
     mutation:*) python3 "${here}/apply-mutation.py" --baseline "$WORK/config.yaml" --providers "$WORK/providers.yaml" \
         --mutation "${cfg#mutation:}" --out "$xwork" >"$xwork/mutation.env" 2>"$xwork/mutation.err" \
         || { record "$id" SKIP "UNSUPPORTED: $(tr '\n' ' ' <"$xwork/mutation.err" | cut -c1-200)" "mutation could not be applied (named gap)"; return; }
