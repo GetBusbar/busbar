@@ -778,9 +778,11 @@ enum Settling {
 /// It owns everything the terminal needs from the moment the door answered, so an abandoned unit
 /// leaves through the SAME audit door, the same settle and the same exit a finished unit leaves
 /// through — with the end named for what happened, the client went away. The upstream's own future
-/// is dropped by the same unwind, because it is what the loop was awaiting; the hold comes out of
-/// the cell and is forgotten rather than posted for delivery that did not happen, the leases go back
-/// to the gauge, and the slot the unit occupied is free before the loop's frame is gone.
+/// is dropped by the same unwind, because it is what the loop was awaiting. The hold comes out of
+/// the cell and is settled by the table's own row for an end that is not `Completed` — the kernel's
+/// floor, marked estimated, never a full charge for an answer nobody received — and the leases go
+/// back to the gauge in the same breath. Both are done before the loop's frame is gone, so the cell
+/// the sweep also holds a key to is already empty and the caller's slot is free to give back.
 ///
 /// [`reached`](Abandoned::reached) is how a unit that finished on its own takes its end back out. A
 /// guard whose terminal has been taken does nothing when it is dropped, which is the whole of the
