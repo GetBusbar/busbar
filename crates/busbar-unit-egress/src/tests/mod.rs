@@ -108,8 +108,14 @@ impl Node {
         let unit = test_unit();
         let keys = keys();
         let context = plane_ctx.ctx();
+        // Test-only: mints the capability token through the kernel seal exactly as CG-29 says a
+        // real deployment would (`KernelSeal::acquire_for_kernel` is `// contract:` kernel-only
+        // outside test modules).
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let token: busbar_caps::UnitToken<busbar_caps::Route> = busbar_caps::UnitToken::mint(&seal);
         let request = crate::walk::RouteRequest {
             breaker: self.breaker.as_ref(),
+            token: &token,
             capacity: self.capacity.as_ref(),
             journal: self.journal.as_ref(),
             egress_auth: self.egress_auth.as_ref(),

@@ -17,6 +17,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use busbar_caps::{Route, UnitToken};
+
 /// Which member of the verified set a call is about.
 ///
 /// This is a position in the pool's member list, which is what the previous release's selection,
@@ -199,7 +201,19 @@ pub trait Breaker: Send + Sync {
 
     /// Record what one attempt meant. Returns true only on a fresh logical trip — the one signal a
     /// trip counter should increment on, never a re-trip of an already-open cell.
-    fn observe(&self, pool: &str, destination: DestinationId, outcome: Outcome, now: u64) -> bool;
+    ///
+    /// `token` is the capability token that proves the loop is at the route step for this unit
+    /// right now (per `busbar-caps`'s `&UnitToken<Route>`, mirroring the breaker unit's own sealed
+    /// `Breaker::observe`, CG-29) — this unit's `route` entry point already receives one; every
+    /// call down through the walk to this port threads the same borrow.
+    fn observe(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        outcome: Outcome,
+        now: u64,
+        token: &UnitToken<Route>,
+    ) -> bool;
 
     /// Release a probe that was won but never dispatched. Owner-checked against the epoch that was
     /// captured at the win, so a late release cannot revert a newer probe.

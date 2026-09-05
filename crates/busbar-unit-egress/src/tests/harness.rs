@@ -308,7 +308,14 @@ impl Breaker for TestBreaker {
         }
     }
 
-    fn observe(&self, pool: &str, destination: DestinationId, outcome: Outcome, _now: u64) -> bool {
+    fn observe(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        outcome: Outcome,
+        _now: u64,
+        _token: &busbar_caps::UnitToken<busbar_caps::Route>,
+    ) -> bool {
         self.record(Recorded::Observed(pool.to_string(), destination, outcome));
         false
     }

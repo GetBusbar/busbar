@@ -23,6 +23,7 @@
 //! frame the answer belongs to that member: the walk returns it, and a later failure ends the
 //! answer rather than starting another attempt.
 
+use busbar_caps::{Route, UnitToken};
 use busbar_contract::{Ctx, Plane, Transport, Unit, VerifiedDestination};
 
 use crate::attempt::{attempt, AttemptInput, AttemptOutcome, Hop};
@@ -38,6 +39,10 @@ use crate::wire::{RouteOutcome, Shed};
 pub struct RouteRequest<'a> {
     /// The breaker unit.
     pub breaker: &'a dyn Breaker,
+    /// The capability token proving the loop is at the route step for this unit right now
+    /// (`busbar-caps`'s `&UnitToken<Route>`, per CG-29 and the design's unit-trait shape). Threaded down to
+    /// every [`crate::ports::Breaker::observe`] call the walk and its terminals make.
+    pub token: &'a UnitToken<Route>,
     /// The pool's permit store.
     pub capacity: &'a dyn Capacity,
     /// The write-ahead journal.
@@ -164,6 +169,7 @@ pub async fn walk(request: &RouteRequest<'_>, ctx: &mut RequestCtx) -> RouteOutc
         let outcome = attempt(AttemptInput {
             hop: Hop {
                 breaker: request.breaker,
+                token: request.token,
                 capacity: request.capacity,
                 journal: request.journal,
                 egress_auth: request.egress_auth,

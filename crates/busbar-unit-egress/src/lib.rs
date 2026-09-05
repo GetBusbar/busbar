@@ -141,6 +141,10 @@ impl Egress for EgressUnit {
         ctx: &'a mut RequestCtx,
         _token: &'a UnitToken<Route>,
     ) -> ports::BoxFut<'a, RouteOutcome> {
+        // `request.token` (not `_token`) is what actually reaches every `Breaker::observe` call
+        // through `Hop`/`RouteRequest` — see those types' own doc comments. `route`'s own token
+        // parameter is the step-shaped seal every unit trait in the design carries; the caller
+        // that builds `request` is the one that puts the SAME token borrow in both places.
         Box::pin(walk::walk(request, ctx))
     }
 }

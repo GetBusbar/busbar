@@ -22,6 +22,7 @@
 //! 6. the send;
 //! 7. the plane's response decode, per frame, relayed under the hold.
 
+use busbar_caps::{Route, UnitToken};
 use busbar_contract::{Conn, Ctx, EgressBody, Frame, Plane, StatusClass, Transport, Unit};
 use futures::StreamExt;
 
@@ -42,6 +43,10 @@ use crate::wire::{Delivered, Shed};
 pub struct Hop<'a> {
     /// The breaker unit.
     pub breaker: &'a dyn Breaker,
+    /// The capability token proving the loop is at the route step for this unit right now, lent
+    /// down from [`crate::Egress::route`]'s own `&UnitToken<Route>` and threaded through to every
+    /// [`Breaker::observe`] call this hop makes.
+    pub token: &'a UnitToken<Route>,
     /// The pool's permit store. Held so a failure can drop the permit at the exact point the
     /// previous release dropped it.
     pub capacity: &'a dyn Capacity,
@@ -435,6 +440,7 @@ fn attempt_timeout(hop: &Hop<'_>, _ms: u64, now: u64) -> AttemptOutcome {
         hop.destination,
         Outcome::Transient { retry_after: None },
         now,
+        hop.token,
     );
     if tripped {
         hop.telemetry.breaker_trip(hop.metric_pool, hop.destination);
@@ -460,6 +466,7 @@ fn transport_failure(hop: &Hop<'_>, label: &'static str, now: u64) -> AttemptOut
         hop.destination,
         Outcome::Transient { retry_after: None },
         now,
+        hop.token,
     );
     if tripped {
         hop.telemetry.breaker_trip(hop.metric_pool, hop.destination);
@@ -486,7 +493,9 @@ fn classify_failure(
         outcome,
         label,
     } = hop.breaker.classify(hop.destination, status);
-    let tripped = hop.breaker.observe(hop.pool, hop.destination, outcome, now);
+    let tripped = hop
+        .breaker
+        .observe(hop.pool, hop.destination, outcome, now, hop.token);
     if tripped {
         hop.telemetry.breaker_trip(hop.metric_pool, hop.destination);
     }
@@ -536,8 +545,13 @@ async fn deliver(
     ctx: &Ctx<'_>,
     now: u64,
 ) -> AttemptOutcome {
-    hop.breaker
-        .observe(hop.pool, hop.destination, Outcome::Success, now);
+    hop.breaker.observe(
+        hop.pool,
+        hop.destination,
+        Outcome::Success,
+        now,
+        hop.token,
+    );
     // The request now owns the probe through the outcome it just recorded; from here the answer's
     // own frames are responsible for the cell, so the guard must not also release.
     if let Some(guard) = probe_guard.as_mut() {
@@ -624,6 +638,7 @@ async fn deliver(
             hop.destination,
             Outcome::Transient { retry_after: None },
             hop.clock.now_secs(),
+            hop.token,
         );
         if tripped {
             hop.telemetry.breaker_trip(hop.metric_pool, hop.destination);

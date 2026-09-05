@@ -135,7 +135,7 @@ mod sealed {
 
 /// The breaker unit's sealed trait shape (`docs/design/ARCHITECTURE.md` §3.1: `Breaker::observe/
 /// state`). Sealed on a private supertrait so no plugin crate can implement it — only
-/// [`BreakerUnit`] does. Per CG-29 and §3.1's other seven token-taking unit traits, every call also
+/// [`BreakerUnit`] does. Per CG-29 and the design's other seven token-taking unit traits, every call also
 /// takes a `&UnitToken<Route>` (`busbar-caps`'s capability token): the proof that the loop is at
 /// the route step for this unit right now. The token is minted fresh per step call and taken by
 /// reference, never stored, so this trait cannot be driven outside the step it was lent for.
