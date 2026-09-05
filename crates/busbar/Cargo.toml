@@ -48,6 +48,33 @@ busbar-a2a = { path = "../busbar-a2a", optional = true }
 busbar-voice = { path = "../busbar-voice", optional = true }
 # Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
 busbar-plugin-loader = { path = "../plugin-loader" }
+
+# ── THE COMPOSITION ROOT'S OWN EDGES (src/root/) ────────────────────────────────────────────────
+# The binary is the one place entitled to name the kernel, the units, the planes and the transports
+# together: that is what a composition root IS. Everything below is reached only from `src/root/`,
+# and nothing below reaches back — the three axes stay blind to each other and only this crate
+# composes them. These edges exist so `ProductionUnits` (the one implementor of the kernel's `Units`
+# trait), the registry seal, the vocabulary interner, the durability branch and the listener
+# provisioning have somewhere to live that is not a unit and not a plane.
+busbar-kernel = { path = "../busbar-kernel" }
+busbar-caps = { path = "../busbar-caps" }
+busbar-contract = { path = "../busbar-contract" }
+# The fourteen units. Eight are facades reached as free functions; six carry a long-lived object the
+# root owns and holds in `ProductionUnits`.
+busbar-unit-admission = { path = "../busbar-unit-admission" }
+busbar-unit-audit = { path = "../busbar-unit-audit" }
+busbar-unit-auth = { path = "../busbar-unit-auth" }
+busbar-unit-breaker = { path = "../busbar-unit-breaker" }
+busbar-unit-cost = { path = "../busbar-unit-cost" }
+busbar-unit-egress = { path = "../busbar-unit-egress" }
+busbar-unit-egress-auth = { path = "../busbar-unit-egress-auth" }
+busbar-unit-ledger = { path = "../busbar-unit-ledger" }
+busbar-unit-scope = { path = "../busbar-unit-scope" }
+busbar-unit-transport-key = { path = "../busbar-unit-transport-key" }
+busbar-unit-trust = { path = "../busbar-unit-trust" }
+busbar-unit-usage = { path = "../busbar-unit-usage" }
+busbar-unit-verbs = { path = "../busbar-unit-verbs" }
+busbar-unit-wal = { path = "../busbar-unit-wal" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 axum = { workspace = true }
 tracing = { workspace = true }

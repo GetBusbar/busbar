@@ -2044,6 +2044,12 @@ fn signing_key_command_output(hex: &str) -> (String, String) {
     (secret_line, guidance)
 }
 
+// THE COMPOSITION ROOT. The kernel, the units, the planes and the transports composed in one
+// place — the only place in the tree entitled to name all four. Nothing in `main()` calls into it
+// yet: the root is built before any plane is switched onto it, so the shape can be checked against
+// the real traits while the serving path is untouched.
+mod root;
+
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
