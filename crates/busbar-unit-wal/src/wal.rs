@@ -26,6 +26,13 @@
 //! already there. It does not error, because a re-offer is the normal consequence of the poison rule
 //! rather than a caller's mistake.
 //!
+//! The check that enforces this is a BOUND, not a ledger. A writer numbers its own records upward,
+//! so what the log has to remember per writer is the highest number it has taken — one mark per
+//! node, whatever the run's length. The only thing a mark on its own gets wrong is a number below it
+//! that was never actually written, so the log also keeps a bounded window of exactly those holes.
+//! When a hole falls out of the window it reads as present, which passes over a record rather than
+//! writing one twice: the safe direction for a check whose whole job is to suppress duplicates.
+//!
 //! ## What happens when a sync fails
 //!
 //! The segment is poisoned and the caller is handed a `DurabilityLost`. The failed batch is retained
@@ -34,7 +41,7 @@
 //! segment fails too, the node has a disk that cannot be written to, and the log says so on every
 //! subsequent call rather than accumulating silently.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 
 use busbar_caps::{DurabilityLost, DurabilityToken, StepName};
@@ -44,6 +51,14 @@ use crate::record::Record;
 use crate::recover::{recover_and_truncate, Recovered};
 use crate::segment::{Segment, SegmentError, SEGMENT_BYTES};
 use crate::ship::{NullShipper, ShipError, Shipper};
+
+/// How many skipped numbers the idempotence check remembers below a node's mark.
+///
+/// A writer that numbers upward without gaps never uses one of these. The window exists so that a
+/// writer that does skip — a batch a bound dropped, a run stitched from two sources — is still
+/// answered exactly for as long as the skipped number could plausibly be offered again, and is
+/// answered conservatively rather than expensively after that.
+const RECENT_HOLES: usize = 8192;
 
 /// Where a log keeps its bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,8 +120,12 @@ pub struct Wal {
     mode: Mode,
     segment: Segment,
     ceiling: u64,
-    /// Every `(node, node_seq)` the log holds. The idempotence set.
-    seen: HashSet<(u64, u64)>,
+    /// The highest `node_seq` the log has taken from each node. The idempotence mark.
+    high_water: HashMap<u64, u64>,
+    /// Numbers below a node's mark that were never written, most recent first out of the window.
+    gaps: HashSet<(u64, u64)>,
+    /// The order the gaps were noticed in, so the oldest is the one the window drops.
+    gap_order: VecDeque<(u64, u64)>,
     /// The batch a poisoned segment lost, kept whole so it can be written again.
     lost_batch: Vec<Record>,
     /// Records recovered from the tail at open time, in order.
@@ -120,7 +139,7 @@ impl std::fmt::Debug for Wal {
         f.debug_struct("Wal")
             .field("mode", &self.mode)
             .field("segment", &self.segment)
-            .field("records_known", &self.seen.len())
+            .field("tracked_identities", &self.tracked_identities())
             .field("lost_batch", &self.lost_batch.len())
             .finish()
     }
@@ -181,18 +200,24 @@ impl Wal {
         // happened to leave behind.
         let recovered = recover_and_truncate(&mut segment)?;
         segment.truncate_to(recovered.durable_end)?;
-        let seen = recovered.records.iter().map(Record::identity).collect();
-        Ok(Wal {
+        let mut wal = Wal {
             factory,
             shipper,
             mode,
             segment,
             ceiling,
-            seen,
+            high_water: HashMap::new(),
+            gaps: HashSet::new(),
+            gap_order: VecDeque::new(),
             lost_batch: Vec::new(),
-            recovered: recovered.records,
+            recovered: Vec::new(),
             segments_used: 1,
-        })
+        };
+        for record in &recovered.records {
+            wal.mark_written(record.node, record.node_seq);
+        }
+        wal.recovered = recovered.records;
+        Ok(wal)
     }
 
     /// Which mode this log is in.
@@ -235,8 +260,53 @@ impl Wal {
     }
 
     /// Whether `(node, node_seq)` is already in the log.
+    ///
+    /// At or below that node's mark and not a remembered hole. A hole the window has dropped answers
+    /// yes, which passes over a record rather than writing it twice.
     pub fn holds(&self, node: u64, node_seq: u64) -> bool {
-        self.seen.contains(&(node, node_seq))
+        match self.high_water.get(&node) {
+            Some(&mark) => node_seq <= mark && !self.gaps.contains(&(node, node_seq)),
+            None => false,
+        }
+    }
+
+    /// Record that `(node, node_seq)` is now in the log: move that node's mark, and remember any
+    /// numbers the move skipped over as holes.
+    fn mark_written(&mut self, node: u64, node_seq: u64) {
+        match self.high_water.get(&node).copied() {
+            Some(mark) if node_seq <= mark => {
+                // A number that was a hole has now been filled.
+                self.gaps.remove(&(node, node_seq));
+                return;
+            }
+            mark => {
+                // Everything strictly between the old mark and this number was never written, and
+                // the mark alone would call it present. Remember the most recent of them; the
+                // window is what keeps this a bound rather than a set that grows with a gappy
+                // writer.
+                let floor = node_seq.saturating_sub(RECENT_HOLES as u64);
+                let from = mark.map_or(floor, |m| u64::max(m + 1, floor));
+                for hole in from..node_seq {
+                    if self.gaps.insert((node, hole)) {
+                        self.gap_order.push_back((node, hole));
+                    }
+                }
+                self.high_water.insert(node, node_seq);
+            }
+        }
+        while self.gap_order.len() > RECENT_HOLES {
+            if let Some(oldest) = self.gap_order.pop_front() {
+                self.gaps.remove(&oldest);
+            }
+        }
+    }
+
+    /// How many identities the idempotence check is holding in memory right now.
+    ///
+    /// The bound, made observable: this is what a test measures to prove the check costs a mark per
+    /// writer rather than an entry per record.
+    pub fn tracked_identities(&self) -> usize {
+        self.high_water.len() + self.gaps.len()
     }
 
     /// The shipper, so a caller can look at what was handed over.
@@ -269,7 +339,7 @@ impl Wal {
         let mut staged: HashSet<(u64, u64)> = HashSet::new();
         for record in owed.iter().chain(records.iter()) {
             let id = record.identity();
-            if self.seen.contains(&id) || !staged.insert(id) {
+            if self.holds(id.0, id.1) || !staged.insert(id) {
                 already_present += 1;
                 continue;
             }
@@ -297,7 +367,7 @@ impl Wal {
                     }
                 }
                 for record in &batch {
-                    self.seen.insert(record.identity());
+                    self.mark_written(record.node, record.node_seq);
                 }
                 if self.mode == Mode::OnDisk {
                     // On disk the local log is the record; shipping is catch-up work and its
