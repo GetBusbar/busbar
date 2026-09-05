@@ -742,6 +742,7 @@ class Judge:
         out = []
         if 200 <= status < 300:
             want_stream = outcome == "ok_stream"
+            want_stream_array = outcome == "ok_stream_array"
             stream_ct = STREAM_CT[cfg["stream_kind"]]
             if want_stream and ct != stream_ct:
                 out.append(Violation("/", "stream.content-type", f"stream=true request answered with content-type '{ct or '(none)'}'; the spec streams as {stream_ct}"))
@@ -758,6 +759,21 @@ class Judge:
             inst, err = self.parse_json(body_bytes)
             if err:
                 out.append(Violation("/", "body.json", err)); return out, f"{status} {ct}", None
+            if want_stream_array and not isinstance(inst, list):
+                out.append(Violation("/", "stream-array.shape", "ok_stream_array outcome expects a JSON array of response objects (gemini's non-SSE stream shape), got a single object"))
+            # Gemini quirk, not a busbar deviation: a request for a stream WITHOUT `?alt=sse` is
+            # served as a JSON ARRAY of GenerateContentResponse objects under application/json (see
+            # the Gemini API docs) instead of one object or an SSE stream. So for gemini specifically
+            # — and only when the body really is a JSON array under application/json, whatever the
+            # outcome label says — judge it element-by-element against the normal response schema
+            # instead of the whole-body object schema. Every OTHER dialect keeps the plain
+            # whole-body-is-an-object check below, so an array body there still fails as a type
+            # violation (array where an object is expected) — that stays a real deviation.
+            if dialect == "gemini" and isinstance(inst, list):
+                for i, elem in enumerate(inst):
+                    ck.check(elem, {"$ref": cfg["response"]}, f"/{i}", out)
+                what = f"JSON array of {len(inst)} {cfg['response'].rsplit('/', 1)[-1]} element(s), checked element-by-element (gemini stream without ?alt=sse is a JSON array, not one object or SSE)"
+                return out, f"{status} {ct}: {what}", None
             ck.check(inst, {"$ref": cfg["response"]}, "", out)
             return out, f"{status} {ct}: {cfg['response'].rsplit('/', 1)[-1]}", None
         # an error status: the dialect's error contract for that status
