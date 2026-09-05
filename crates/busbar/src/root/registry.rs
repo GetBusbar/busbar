@@ -364,7 +364,7 @@ mod tests {
     use busbar_contract::grammar::{Claim, Selector};
     use busbar_kernel::registry::{check_claims, claims_overlap, ConflictReason, PluginKind};
 
-    /// The sealed walk over the forty-nine declared claims, most specific first.
+    /// The sealed walk over the forty-eight declared claims, most specific first.
     ///
     /// Pinned as text rather than as indices so that a diff of it reads as a routing change. See
     /// the test that reads it for what a change to this array means.
@@ -390,7 +390,6 @@ mod tests {
         "llm PathPattern([Lit(\"v1\"), Lit(\"models\"), Tail])",
         "llm PathPattern([Lit(\"v1beta\"), Lit(\"models\"), Tail])",
         "a2a PathPattern([Lit(\"lf.a2a.v1.A2AService\"), Var])",
-        "voice PrefixOneLevel(\"/twilio\")",
         "llm HeaderPrefix(\"authorization\", \"AWS4-HMAC-SHA256\")",
         "llm HeaderPresent(\"anthropic-version\")",
         "llm HeaderPresent(\"anthropic-beta\")",
@@ -446,15 +445,15 @@ mod tests {
     /// what a reader checks the design's own table against; a plane that gains or loses a claim
     /// should have to say so here.
     #[test]
-    fn the_planes_declare_forty_nine_claims() {
+    fn the_planes_declare_forty_eight_claims() {
         let claims = plane_claims();
         let count = |plane: &str| claims.iter().filter(|c| c.plane == plane).count();
         assert_eq!(count("llm"), 25);
         assert_eq!(count("mcp"), 4);
         assert_eq!(count("a2a"), 14);
-        assert_eq!(count("voice"), 5);
+        assert_eq!(count("voice"), 4);
         assert_eq!(count("admin"), 1);
-        assert_eq!(claims.len(), 49);
+        assert_eq!(claims.len(), 48);
     }
 
     /// The measured overlap, split the way the rule splits it. Both counts are pinned because both
@@ -526,7 +525,7 @@ mod tests {
         }
     }
 
-    /// The sealed order of the forty-nine, written out.
+    /// The sealed order of the forty-eight, written out.
     ///
     /// A snapshot, and deliberately a verbose one: the walk every arriving connection is matched
     /// against is the thing this file produces, and a change to it is a change to which plane
@@ -534,7 +533,7 @@ mod tests {
     /// as a routing change rather than as a permutation of opaque indices. A claim added, removed or
     /// respelled has to update it, on purpose, with the new order visible in the same diff.
     #[test]
-    fn the_sealed_order_of_the_forty_nine_claims_is_pinned() {
+    fn the_sealed_order_of_the_forty_eight_claims_is_pinned() {
         let claims = plane_claims();
         let sealed = seal_claims(&claims);
         let walk: Vec<String> = sealed
@@ -767,19 +766,31 @@ mod tests {
         }
     }
 
-    /// **The second finding.** The other side of the same pairing: a claim on a transport no crate
-    /// provides. The design lists thirteen transports and seven exist; the voice plane claims on
-    /// `twilio-media`, which is one of the six with no crate in the tree. The check is the root's
-    /// because neither the kernel's claim check nor the contract's composition check can see both
-    /// halves, and the answer it gives is a refusal at boot with both names in it.
+    /// **The second finding, now closed on the declaration side and kept alive on the check side.**
+    /// The other side of the pairing above: a claim on a transport no crate provides. The design
+    /// lists thirteen transports and seven exist, and the voice plane used to claim its telephony
+    /// dialect on one of the six that do not — which made the seal refuse, so no node built on this
+    /// root could boot at all.
     ///
-    /// Now that the claims seal, it is also the refusal `seal` itself gives: the claim check no
-    /// longer answers ahead of it, so this is the one thing standing between the declared
-    /// composition and a node that boots, and the two are asserted together so neither can be
-    /// mistaken for the other.
+    /// The claim is gone (the plane's own claim table says why, and what has to land before it comes
+    /// back). The CHECK is not: it is the only thing in the tree that reads a claim and a registered
+    /// transport at the same time, and a check deleted along with the one claim that tripped it
+    /// would leave the next such claim to be discovered as a request that matched nothing. So it is
+    /// exercised here against a claim built for the purpose, on a transport deliberately not one of
+    /// the seven.
     #[test]
     fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
-        let refusal = check_claim_transports(&plane_claims(), &registered_rows())
+        let telephony = vec![PlaneClaim {
+            plane: "voice",
+            claim: Claim {
+                transport: "twilio-media",
+                selector: Selector::PrefixOneLevel("/twilio"),
+                scheme: Some("voice-key"),
+                scheme_alternatives: &["twilio-signature"],
+                idempotency: None,
+            },
+        }];
+        let refusal = check_claim_transports(&telephony, &registered_rows())
             .expect_err("`twilio-media` has no crate");
         assert!(matches!(
             refusal,
@@ -788,23 +799,25 @@ mod tests {
                 transport: "twilio-media",
             }
         ));
-
-        match seal(ClientSettings::default()) {
-            Err(BootRefusal::UnregisteredClaimTransport {
-                plane: "voice",
-                transport: "twilio-media",
-            }) => {}
-            Err(other) => panic!("the claims seal; the transport is what is left: got {other}"),
-            Ok(_) => panic!("`twilio-media` has no crate; the seal must refuse"),
-        }
     }
 
-    /// And the same check, over the claims of the four planes whose transports all exist: nothing
-    /// there names a transport the root did not register, so the gap is exactly one plane wide.
+    /// And the whole boot, end to end, now that nothing declares a claim the root cannot place: the
+    /// seal answers. This is the assertion the previous shape of the test above could not make —
+    /// the claims sealed, and the one transport gap was all that stood between the declared
+    /// composition and a node that boots.
     #[test]
-    fn every_other_planes_claims_name_a_registered_transport() {
+    fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
+        let sealed = seal(ClientSettings::default()).expect("every claim names a live transport");
+        assert_eq!(sealed.claims.len(), 48);
+        assert_eq!(sealed.precedence.len(), 48);
+    }
+
+    /// And the same check over every declared claim, voice included now that its telephony row is
+    /// gone: nothing anywhere names a transport the root did not register.
+    #[test]
+    fn every_planes_claims_name_a_registered_transport() {
         let registered = registered_rows();
-        for claim in plane_claims().iter().filter(|c| c.plane != "voice") {
+        for claim in plane_claims().iter() {
             assert!(
                 registered.iter().any(|r| r.key == claim.claim.transport),
                 "claim of plane `{}` names transport `{}`, which is not registered",
