@@ -22,6 +22,9 @@
 
 #![cfg(feature = "teller-waist")]
 
+/// The flip's rehearsal — one request driven through every step below, in order, against the
+/// legacy plane on the same fixtures. Tests only.
+pub mod chain;
 /// Step 0 — what arrived: the body read and the path-carried model splice.
 pub mod arrival;
 /// Step 1 — what it means: the model ladder and the handler lookup, in both live orders.
