@@ -4,7 +4,9 @@
 //! THE TWILIO MEDIA STREAMS ENVELOPE for the telephony topology (behind the `runtime` feature).
 //!
 //! Twilio speaks a JSON-over-WS protocol on its Media Streams leg: lifecycle events (`connected`,
-//! `start`, `mark`, `stop`) plus per-frame `media` events whose `payload` is base64 8 kHz µ-law. The
+//! `start`, `mark`, `dtmf`, `stop` — the whole set Twilio sends TO the socket, because an event
+//! this codec does not model is a decode REFUSAL to everything downstream) plus per-frame `media`
+//! events whose `payload` is base64 8 kHz µ-law. The
 //! generic [`crate::topology::telephony::TelephonyProxy`] bridge already carries raw `Vec<u8>` on its
 //! `client_in`/`client_out` halves, so the only carrier-specific work is this thin, stateless codec
 //! that:
@@ -126,6 +128,16 @@ pub enum TwilioEvent {
         /// The mark name the outbound side chose.
         name: String,
     },
+    /// A touch-tone keypress heard on the inbound track — sent only when the stream has DTMF
+    /// enabled. It carries no session audio: the adapter discards it exactly like [`Self::Mark`].
+    /// It is modelled rather than left unknown because an unmodelled event is a decode ERROR, and a
+    /// caller pressing a key must not be handled as a garbled or forged frame.
+    Dtmf {
+        /// The connection's `streamSid`.
+        stream_sid: String,
+        /// The key that was pressed (`0`-`9`, `*`, `#`, `A`-`D`), or empty when Twilio omits it.
+        digit: String,
+    },
     /// The terminal event; the adapter closes `client_in` on it.
     Stop,
 }
@@ -211,6 +223,20 @@ impl TwilioEnvelope {
                     .unwrap_or_default()
                     .to_string();
                 Ok(TwilioEvent::Mark { stream_sid, name })
+            }
+            "dtmf" => {
+                let stream_sid = v
+                    .get("streamSid")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let digit = v
+                    .get("dtmf")
+                    .and_then(|d| d.get("digit"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                Ok(TwilioEvent::Dtmf { stream_sid, digit })
             }
             "stop" => Ok(TwilioEvent::Stop),
             other => Err(TwilioError::UnknownEvent(other.to_string())),
