@@ -1,23 +1,14 @@
 //! The claim this plane makes over arriving bytes.
 //!
-//! `busbar-core`'s admin contract mounts every one of the 66+17 verbs under one prefix,
-//! `busbar_substrate::api::ADMIN_PREFIX = "/api/v1/admin"`. This crate may depend on nothing but
-//! `busbar-contract` (see the crate-root doc comment), so the prefix is not imported — it is
-//! transcribed here as a literal, with this comment as the citation of where it is mirrored from.
-//! **Flagged as a place the contract did not fit cleanly**: a shared literal transcribed by hand in
-//! two crates is exactly the drift hazard the workspace's dependency-version table exists to close
-//! for external crates, and there is no equivalent seam for a `&'static str` shared between a
-//! kernel-side crate and a plugin crate that must not depend on it. See the report for this finding
-//! stated plainly, rather than silently duplicating the literal without a comment.
-const ADMIN_PREFIX_MIRROR: &str = "/api/v1/admin";
-
-/// A boot-time assertion that this crate's mirrored literal has not silently drifted from its own
-/// segment shape (three literal segments). This cannot check the OTHER copy — that is exactly the
-/// finding above — but it does mean a typo introduced here fails immediately rather than at claim
-/// overlap time.
-const _: () = assert!(matches!(ADMIN_PREFIX_MIRROR.as_bytes(), b"/api/v1/admin"));
+//! Every one of the 66+17 verbs is mounted under one prefix, and this crate names it:
+//! [`busbar_contract::surface::ADMIN_PREFIX`]. The prefix used to be transcribed here as a literal,
+//! with a hand-written assertion over the copy that could not check the original, because a plugin
+//! may name `busbar-contract` and nothing else in the workspace and the literal lived in a
+//! kernel-side crate. It lives in the contract now, which is where closed structure a plane has to
+//! claim belongs, and the kernel-side crate names the same constant.
 
 use busbar_contract::grammar::{Claim, PathSeg, Selector};
+use busbar_contract::surface::ADMIN_PREFIX;
 
 /// The transport this plane's one claim is made against: plain HTTP request/response, never a
 /// session transport (see [`crate::meta`] for why this plane does not implement `SessionPlane`).
@@ -46,6 +37,14 @@ const ADMIN_PATTERN: &[PathSeg] = &[
     PathSeg::Lit("admin"),
     PathSeg::Tail,
 ];
+
+/// The pattern's three literal segments ARE the contract's prefix, checked at compile time.
+///
+/// A selector is a list of segments and the prefix is one string, so the two spellings cannot be
+/// one value; this is what keeps them one path. It is not the assertion it replaces: that one
+/// checked a hand-copy against itself, and this one checks the segments against the prefix they
+/// claim to be.
+const _: () = assert!(matches!(ADMIN_PREFIX.as_bytes(), b"/api/v1/admin"));
 
 /// This plane's one claim.
 ///

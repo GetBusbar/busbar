@@ -19,6 +19,7 @@ license = "Apache-2.0"
 # leaves — `busbar-api` depends only on `busbar-secret-ref`, `busbar-plugin` only on `busbar-api` — so
 # there is no path back to core and no cycle: core -> substrate -> {api, plugin}.
 busbar-api = { path = "../api" }
+busbar-contract = { path = "../busbar-contract" }
 busbar-plugin = { path = "../busbar-plugin" }
 axum = { workspace = true }
 serde_json = { workspace = true }

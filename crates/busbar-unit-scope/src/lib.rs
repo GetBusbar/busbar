@@ -191,7 +191,10 @@ pub fn is_kernel_granted(path: &str) -> bool {
 }
 
 /// The frozen Admin API v1 path prefix every operation in [`ADMIN_SCOPE_TABLE`] is mounted under.
-pub const ADMIN_PREFIX: &str = "/api/v1/admin";
+///
+/// The contract's own, re-exported: the prefix is closed structure of the node's surface, and every
+/// crate that has to name it names one literal.
+pub use busbar_contract::surface::ADMIN_PREFIX;
 
 /// `POST /config/validate` and `POST /plugins/inspect` — stateless dry-runs (reads in POST
 /// clothing: the body is the config to lint / tarball to preview) that stay `read-only` although
