@@ -110,12 +110,12 @@ impl tower::Service<Request<tonic::Streaming<Vec<u8>>>> for RpcHandler {
             // `is_response = false`: this is the REQUEST body, which carries no `grpc-status`
             // trailer — only a gRPC response does. See `forward_inbound`'s own note.
             tokio::spawn(forward_inbound(
-                state,
+                state.clone(),
                 stream_id,
                 request.into_inner(),
                 false,
             ));
-            Ok(Response::new(OutStream(out_rx)))
+            Ok(Response::new(OutStream::new(out_rx, state, stream_id)))
         })
     }
 }
@@ -204,11 +204,46 @@ fn map_status(status: &Status) -> busbar_contract_transport::wire::StatusClass {
 }
 
 /// The outbound message stream `write()` feeds, one message per queued `Vec<u8>`.
-pub(crate) struct OutStream(pub(crate) mpsc::UnboundedReceiver<Vec<u8>>);
+///
+/// It carries the connection and the call's id as well as the channel because this stream's life IS
+/// the call's: hyper drops it when the RPC ends, and that is the moment the connection's outbound
+/// map should stop holding a sender nothing will ever drain again.
+pub(crate) struct OutStream {
+    rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    state: Arc<ConnState>,
+    stream_id: StreamId,
+}
+
+impl OutStream {
+    pub(crate) fn new(
+        rx: mpsc::UnboundedReceiver<Vec<u8>>,
+        state: Arc<ConnState>,
+        stream_id: StreamId,
+    ) -> Self {
+        Self {
+            rx,
+            state,
+            stream_id,
+        }
+    }
+}
+
+/// The call is over when its outbound stream is: the entry the connection registered for it goes
+/// with it, so a connection serving many short calls holds senders for the ones still open and no
+/// others.
+impl Drop for OutStream {
+    fn drop(&mut self) {
+        self.state
+            .outbound
+            .lock()
+            .unwrap()
+            .remove(&self.stream_id.0);
+    }
+}
 
 impl Stream for OutStream {
     type Item = Result<Vec<u8>, Status>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.0.poll_recv(cx).map(|opt| opt.map(Ok))
+        self.rx.poll_recv(cx).map(|opt| opt.map(Ok))
     }
 }

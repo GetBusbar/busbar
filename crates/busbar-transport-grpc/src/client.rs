@@ -92,9 +92,12 @@ pub(crate) async fn open_stream(
         .await
         .map_err(|_| TransportError::Refused)?;
     let stream = response.into_inner();
-    tokio::spawn(crate::server::forward_inbound(
-        state, stream_id, stream, true,
-    ));
+    tokio::spawn(async move {
+        crate::server::forward_inbound(state.clone(), stream_id, stream, true).await;
+        // The upstream's answer has ended, trailer and all: this call is over, and the sender the
+        // connection registered for it is one nothing will drain again.
+        state.outbound.lock().unwrap().remove(&stream_id.0);
+    });
     Ok(out_tx)
 }
 

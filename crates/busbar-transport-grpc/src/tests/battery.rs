@@ -604,3 +604,112 @@ async fn two_writes_racing_on_one_fresh_stream_open_a_single_call() {
         "one fresh StreamId is one gRPC call, however many writers raced for it: {paths:?}"
     );
 }
+
+/// The outbound map is per-call, and `next_local_stream` only ever counts up: a long-lived HTTP/2
+/// connection serving many short calls must not accumulate one stale sender per call it has
+/// already finished. Both registration sites are checked — the dial side's, which registers when a
+/// call is opened, and the accept side's, which registers when one arrives.
+#[tokio::test]
+async fn a_finished_call_leaves_no_entry_behind() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+
+    const CALLS: u64 = 20;
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let mut client_frames = client_t.frames(client_conn.clone());
+    for n in 1..=CALLS {
+        client_t
+            .write(&client_conn, StreamId(n), ArenaBytes::new(b"ping"))
+            .await
+            .unwrap();
+        let (server_stream, _f) =
+            tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+                .await
+                .expect("the call arrives")
+                .unwrap()
+                .unwrap();
+        // The server finishes the call: writing the answer and ending its outbound stream is what
+        // emits the `grpc-status` trailer that completes an RPC.
+        server_t
+            .unit0_refusal(
+                server_conn.clone(),
+                Some(server_stream),
+                &refusal,
+                ArenaBytes::new(b"pong"),
+            )
+            .await
+            .unwrap();
+        // Drain the client's side of that call through to its terminal status frame, which is what
+        // tells the dial side the call is over.
+        loop {
+            let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), client_frames.next())
+                .await
+                .expect("the answer arrives")
+                .unwrap()
+                .unwrap();
+            if frame.meta.status.is_some() {
+                break;
+            }
+        }
+    }
+
+    let client_state = client_t.state_of(client_conn.id()).unwrap();
+    let left = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let n = client_state.outbound.lock().unwrap().len();
+            if n == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        left.is_ok(),
+        "the dial side kept a sender per finished call: {} left after {CALLS}",
+        client_state.outbound.lock().unwrap().len()
+    );
+}
+
+/// The accept side's half of the same rule, at the seam it actually happens on: an RPC's outbound
+/// stream being dropped — which is what hyper does when the peer resets the call — is what makes
+/// the call over, and the map entry must go with it.
+#[tokio::test]
+async fn dropping_a_served_calls_outbound_stream_prunes_its_entry() {
+    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    state
+        .outbound
+        .lock()
+        .unwrap()
+        .insert(3, crate::conn::opened(tx));
+    let out = crate::server::OutStream::new(rx, state.clone(), StreamId(3));
+    assert_eq!(state.outbound.lock().unwrap().len(), 1);
+    drop(out);
+    assert_eq!(
+        state.outbound.lock().unwrap().len(),
+        0,
+        "a served call whose outbound stream is gone is a call that is over"
+    );
+}
