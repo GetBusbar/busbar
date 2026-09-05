@@ -1,8 +1,8 @@
 //! A minimal Twilio Media Streams wire reader/writer, written independently for this crate.
 //!
 //! Twilio's Media Streams protocol is a JSON-framed message-per-WS-frame wire: lifecycle events
-//! (`connected`, `start`, `mark`, `stop`) and a per-chunk `media` event whose `payload` is base64
-//! 8 kHz G.711 µ-law audio — `{"event":"media","media":{"payload":"<base64>"},"streamSid":"..."}`.
+//! (`connected`, `start`, `mark`, `dtmf`, `stop`) and a per-chunk `media` event whose `payload` is
+//! base64 8 kHz G.711 µ-law audio — `{"event":"media","media":{"payload":"<base64>"},"streamSid":"..."}`.
 //!
 //! `busbar-voice` has no dialect codec for this wire (it is not one of its two duplex dialects), and
 //! the one Twilio-shaped module that exists in that crate's source tree
@@ -55,6 +55,14 @@ pub enum TwilioEvent {
         stream_sid: String,
         /// The mark name the outbound side chose.
         name: String,
+    },
+    /// A touch-tone keypress heard on the inbound track — sent only when the stream has DTMF
+    /// enabled. It carries no session audio and is discarded exactly like [`Self::Mark`].
+    Dtmf {
+        /// The connection's `streamSid`.
+        stream_sid: String,
+        /// The key that was pressed (`0`-`9`, `*`, `#`, `A`-`D`), or empty when Twilio omits it.
+        digit: String,
     },
     /// The terminal event.
     Stop,
@@ -123,6 +131,15 @@ pub fn decode(frame: &[u8]) -> Result<TwilioEvent, TwilioError> {
             name: v
                 .get("mark")
                 .and_then(|m| m.get("name"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        }),
+        "dtmf" => Ok(TwilioEvent::Dtmf {
+            stream_sid: str_field(&v, "streamSid").unwrap_or_default(),
+            digit: v
+                .get("dtmf")
+                .and_then(|d| d.get("digit"))
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_string(),

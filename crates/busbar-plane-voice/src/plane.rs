@@ -643,6 +643,9 @@ fn decode_twilio_frame<'u>(
         twilio::TwilioEvent::Mark { .. } => Ok(Ingress::Discard {
             reason: DiscardCode::Unsupported,
         }),
+        twilio::TwilioEvent::Dtmf { .. } => Ok(Ingress::Discard {
+            reason: DiscardCode::Unsupported,
+        }),
         twilio::TwilioEvent::Stop => {
             let for_ = state.turn_correlation;
             let _ = state.close_turn();
