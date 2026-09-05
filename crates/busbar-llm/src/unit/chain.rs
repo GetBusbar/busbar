@@ -46,9 +46,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 
 use busbar_caps::{
-    Admission, AdmitToken, Approve, Authenticate, KernelSeal, LaneId, PrincipalId, TrustToken,
-    UnitToken, VerifiedDestination, Verify,
+    Admission, AdmitToken, Approve, Authenticate, KernelSeal, PrincipalId, TrustToken, UnitToken,
+    VerifiedDestination, Verify,
 };
+use busbar_substrate::plane_host::EngineTablesView;
 
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use crate::unit::{admit, approve, arrival, audit, authenticate, decode, route, verify};
@@ -514,58 +515,25 @@ async fn leg_legacy(fixture: Fixture) -> Observed {
 // LEG 2 — the step files, in the design's order
 // ---------------------------------------------------------------------------------------------
 
-/// The deployment facts the three pre-admission guards read, as [`verify::PoolView`] asks for them.
+/// THE NODE'S ONE INTERNER, standing in for the composition root's.
 ///
-/// SEAM GAP — see [`the_verify_step_has_no_pool_view_over_a_live_deployment`]. Nothing in the plane
-/// implements `PoolView` over a running app: the live guard reaches the same facts through
-/// `EngineHost::destination_guard`, which answers with a finished response rather than with a view.
-/// This adapter is the missing one, written here so the chain can run at all; it is not a fake,
-/// because every field below is read off the same key row and the same routing tables the live
-/// guard reads — but it lives in a test, which is precisely why the gap is written down.
-struct LivePoolView<'a> {
-    key: Option<&'a Arc<busbar_api::VirtualKey>>,
-    rt: &'a Arc<crate::engine::NativeRuntime>,
-}
+/// A configured lane's name is read out of config at boot and a [`LaneId`] is a borrowed static
+/// name, so the two are bridged by interning the name ONCE — the root's job, and the recorded rule
+/// for every config-derived open-vocabulary key. This rehearsal has no root, so it holds the one
+/// interner itself: process-wide, filled from the deployment's own tables, and idempotent, so a
+/// second leg over the same lane name leaks nothing further. A per-leg interner would be a leak per
+/// request wearing a test's clothes, which is exactly the shape the rule forbids.
+static LANES: std::sync::LazyLock<std::sync::Mutex<busbar_contract::Registration>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(busbar_contract::Registration::new()));
 
-impl LivePoolView<'_> {
-    /// The routing tables, through the same neutral projection the live guard reads them through.
-    fn view(&self) -> &dyn busbar_substrate::plane_host::EngineTablesView {
-        &**self.rt
-    }
-}
-
-impl verify::PoolView for LivePoolView<'_> {
-    fn has_key(&self) -> bool {
-        self.key.is_some()
-    }
-    fn key_is_scoped(&self) -> bool {
-        // An OMITTED grant admits every scope; an explicit list — empty or not — is a restriction.
-        // The live fallback walk asks the same question of the same field.
-        self.key.is_some_and(|k| k.allowed_scopes.is_some())
-    }
-    fn pool_allowed(&self, pool: &str) -> bool {
-        // The key row's own encoding, not a second reading of it.
-        self.key.is_none_or(|k| k.scope_allowed("pool", pool))
-    }
-    fn on_exhausted_fallback(&self, pool: &str) -> Option<String> {
-        self.view().on_exhausted_fallback(pool)
-    }
-    fn is_configured(&self, name: &str) -> bool {
-        let view = self.view();
-        view.pools().iter().any(|(n, _)| *n == name) || view.model_index(name).is_some()
-    }
-    fn pricing_enabled(&self) -> bool {
-        // SEAM GAP — see `the_plane_cannot_read_whether_a_rate_card_is_present`. `CostModel::
-        // pricing_enabled` is `pub(crate)` to the core crate and `EngineHost::cost()` hands back an
-        // opaque `CostHandle`, so a plane has no way to ask. The fixtures here configure no card,
-        // which makes the honest answer `false` — but it is honest by fixture, not by seam.
-        false
-    }
-    fn is_unpriced(&self, _name: &str) -> bool {
-        // Unreachable while `pricing_enabled` is false, and unreadable for the same reason it is:
-        // `CostModel::model_unpriced` is core-private too.
-        false
-    }
+/// The destination set the trust unit would have sealed, over the lane this deployment CONFIGURED —
+/// the name read back off the running routing tables, not a literal spelled here.
+fn sealed_destinations(seal: &KernelSeal, lane: &str) -> Vec<VerifiedDestination> {
+    let lane = LANES
+        .lock()
+        .expect("the rehearsal's interner is never poisoned")
+        .lane(lane);
+    vec![VerifiedDestination::seal(&TrustToken::mint(seal), lane)]
 }
 
 /// The chained leg: every step file, in the loop's order, each fed from the one before it.
@@ -667,37 +635,30 @@ async fn drive(
     };
 
     // ---- STEP 2, VERIFY ---------------------------------------------------------------------
-    // The destination set the trust unit would have sealed. SEAM GAP — see
-    // `the_verified_set_has_no_producer_in_the_plane`: nothing in this plane builds one, and
-    // `LaneId::new` takes a `&'static str` where a configured lane name is a runtime `String`.
-    let destinations: Vec<VerifiedDestination> = vec![VerifiedDestination::seal(
-        &TrustToken::mint(seal),
-        LaneId::new(LANE),
-    )];
-    let view = LivePoolView {
-        key: gov.key.as_ref(),
-        rt,
-    };
+    // The destination set the trust unit would have sealed, over the lane this deployment
+    // configured — the runtime name read off the tables and interned once, which is how a
+    // config-derived name becomes the borrowed static one the priced axis is written in.
+    let configured_lane = rt
+        .lane_view(0)
+        .expect("the fixture configures one lane")
+        .model
+        .to_string();
+    let destinations = sealed_destinations(seal, &configured_lane);
+    let view = verify::HostPoolView::new(&**host, &**rt, gov.key.as_deref());
     let destinations = {
         let token: UnitToken<Verify> = UnitToken::mint(seal);
-        let decision = verify::verify(&token, &view, &model, &principal, destinations);
-        match decision.into_result(seal) {
+        let answer = verify::verify(&token, &view, &model, &principal, destinations);
+        // The step's own named refusal, carried back beside the decision — the guards are read once
+        // and the wire triple is the step's, not the driver's.
+        let named = answer.refusal;
+        match answer.decision.into_result(seal) {
             Ok(dests) => dests,
             Err(_) => {
-                // The step named its refusal; the bytes are the audit step's. Two things have to be
-                // done by hand here and both are seam gaps: the refusal VALUE is re-derived by
-                // re-running the guards, because `Decision`'s `Refusal` carries a reason code and no
-                // wire triple; and the `RefusalOutcome` is assembled at the CALL SITE, because
-                // `VerifyRefusal` has no `outcome()` the way `ArrivalRefusal` and `DecodeRefusal`
-                // now do. See `the_verify_refusal_reason_carries_no_wire_triple` and
-                // `the_verify_step_did_not_move_onto_the_typed_refusal_value`.
-                let refusal = verify::destination_guard(&view, &model)
-                    .expect_err("the decision refused, so the guards refuse");
-                let outcome = audit::RefusalOutcome::new(
-                    StatusCode::from_u16(refusal.status()).expect("a status the doors emit"),
-                    refusal.kind(),
-                    refusal.message(),
-                );
+                // A named refusal becomes bytes at the audit step and nowhere else, exactly as
+                // arrival's and decode's do.
+                let outcome = named
+                    .expect("a refused decision carries the refusal that named it")
+                    .outcome();
                 return audit::audit_refused(
                     host,
                     gov,
@@ -978,97 +939,147 @@ fn the_route_step_meters_before_the_meter_step_is_reached() {
     );
 }
 
-/// GAP 3 — the VERIFY step's refusal cannot be rendered from what the step returned.
+/// GAP 3, CLOSED — the VERIFY step hands its named refusal back with the decision.
 ///
-/// `verify::verify` answers `Decision<Verify>`, whose `Refusal` carries a `ReasonCode` and a retry
-/// hint. The wire triple — status, kind word, message — lives on `VerifyRefusal`, which the step
-/// consumes and does not hand back. The chain above re-runs `destination_guard` to recover it,
-/// which is a SECOND reading of the same guards: two readings of one fact are two answers waiting
-/// to disagree.
+/// `verify::verify` answers a [`verify::Verified`]: the `Decision<Verify>` the loop reads, whose
+/// `Refusal` carries the neutral reason code and retry hint, and beside it the `VerifyRefusal` the
+/// step actually raised. The wire triple therefore comes from the ONE reading of the guards that
+/// produced the refusal, rather than from a second reading that could answer differently.
+#[tokio::test]
+async fn the_verify_refusal_carries_the_wire_triple_the_guards_named() {
+    let rig = rig(Fixture::PoolAcl).await;
+    let (host, rt) = crate::engine::test_host_rt(&rig.app);
+    let gov = rig.gov();
+    let view = verify::HostPoolView::new(&*host, &*rt, gov.key.as_deref());
+    let seal = KernelSeal::acquire_for_kernel();
+    let answer = verify::verify(
+        &UnitToken::mint(&seal),
+        &view,
+        POOL,
+        &PrincipalId::new(rig.key.id.clone()),
+        Vec::new(),
+    );
+    let named = answer.refusal.clone().expect("the guards refused");
+    let refusal = answer
+        .decision
+        .into_result(&seal)
+        .expect_err("the decision refused");
+    // The two readings of one answer agree: the loop's reason code, and the step's own triple.
+    assert_eq!(refusal.reason(), named.reason());
+    assert_eq!(named.status(), 403);
+    assert_eq!(named.kind(), crate::engine::KIND_PERMISSION);
+    rig.server.shutdown().await;
+}
+
+/// GAP 3b, CLOSED — VERIFY is on the typed refusal value.
+///
+/// `VerifyRefusal::outcome()` answers an `audit::RefusalOutcome`, exactly as `ArrivalRefusal` and
+/// `DecodeRefusal` do, so the driver above names no status, no kind word and no sentence of its own
+/// — it hands the outcome to the terminal, which is the one place a refusal becomes bytes.
 #[test]
-#[should_panic(
-    expected = "SEAM GAP: Decision<Verify>'s Refusal carries a ReasonCode but not the \
-                           VerifyRefusal that names the wire triple"
-)]
-fn the_verify_refusal_reason_carries_no_wire_triple() {
-    panic!(
-        "SEAM GAP: Decision<Verify>'s Refusal carries a ReasonCode but not the VerifyRefusal that \
-         names the wire triple"
+fn the_verify_step_answers_with_the_typed_refusal_value() {
+    let outcome = verify::VerifyRefusal::NotAuthorized.outcome();
+    assert_eq!(outcome.status(), StatusCode::FORBIDDEN);
+    assert_eq!(outcome.kind(), crate::engine::KIND_PERMISSION);
+    assert_eq!(
+        outcome.message(),
+        "Your API key does not have permission to access this resource."
     );
 }
 
-/// GAP 3b — VERIFY did not move onto the typed refusal value.
+/// GAP 4, CLOSED — the VERIFY step reads a live deployment through a production `PoolView`.
 ///
-/// `ArrivalRefusal` and `DecodeRefusal` each answer `outcome() -> audit::RefusalOutcome`, and the
-/// terminal is the one place that renders one. `VerifyRefusal` still exposes `status()`, `kind()`
-/// and `message()` separately and has no `outcome()`, so the chain has to assemble the value at the
-/// call site — which is exactly the "an earlier step builds its own bytes" shape the typed value was
-/// introduced to close.
-#[test]
-#[should_panic(
-    expected = "SEAM GAP: VerifyRefusal has no outcome() -> RefusalOutcome, so the \
-                           verify refusal is assembled at the call site"
-)]
-fn the_verify_step_did_not_move_onto_the_typed_refusal_value() {
-    panic!(
-        "SEAM GAP: VerifyRefusal has no outcome() -> RefusalOutcome, so the verify refusal is \
-         assembled at the call site"
+/// `verify::HostPoolView` is that view, and the chain above drives it rather than an adapter of its
+/// own. This pins that it answers what the LIVE guard answers on the same deployment: the fixture's
+/// key may not reach the pool it names, `destination_guard` over the view refuses, and
+/// `EngineHost::destination_guard` — the shipped path, which answers with finished bytes — refuses
+/// the same request.
+#[tokio::test]
+async fn the_verify_step_reads_a_live_deployment_through_a_pool_view() {
+    let rig = rig(Fixture::PoolAcl).await;
+    let (host, rt) = crate::engine::test_host_rt(&rig.app);
+    let gov = rig.gov();
+    let view = verify::HostPoolView::new(&*host, &*rt, gov.key.as_deref());
+
+    let refused = verify::destination_guard(&view, POOL).expect_err("the key may not reach it");
+    assert_eq!(refused, verify::VerifyRefusal::NotAuthorized);
+    assert!(
+        host.destination_guard(&gov, PROTO, POOL, Instant::now(), rig.charged_at)
+            .is_err(),
+        "the shipped guard refuses the same request on the same deployment"
     );
+
+    // And an unrestricted name on the same deployment passes both.
+    let unkeyed = busbar_api::PlaneRequestCtx { key: None };
+    let open = verify::HostPoolView::new(&*host, &*rt, None);
+    assert_eq!(verify::destination_guard(&open, POOL), Ok(()));
+    assert!(host
+        .destination_guard(&unkeyed, PROTO, POOL, Instant::now(), rig.charged_at)
+        .is_ok());
+    rig.server.shutdown().await;
 }
 
-/// GAP 4 — the VERIFY step has no `PoolView` over a live deployment.
+/// GAP 4b, CLOSED — the plane can read whether a rate card is present.
 ///
-/// The step reads the deployment through `verify::PoolView`; the running plane reaches the same
-/// facts through `EngineHost::destination_guard`, which answers with an already-finished response.
-/// Nothing implements the trait over an app, so the only `PoolView` in the workspace outside the
-/// step's own harness is the one written in this file.
-#[test]
-#[should_panic(
-    expected = "SEAM GAP: no production implementation of verify::PoolView exists over \
-                           a live deployment"
-)]
-fn the_verify_step_has_no_pool_view_over_a_live_deployment() {
-    panic!(
-        "SEAM GAP: no production implementation of verify::PoolView exists over a live deployment"
+/// The two questions VERIFY's third guard asks are answered through the host's cost seam over the
+/// opaque handle, so the guard that refuses an unbillable name is answered from the plane side
+/// without the plane ever reading a rate. The fixtures configure no card, and the seam says so —
+/// which is the difference between an answer and a fixture-shaped guess.
+#[tokio::test]
+async fn the_plane_reads_whether_a_rate_card_is_present() {
+    use busbar_substrate::plane_host::BudgetHost as _;
+    use verify::PoolView as _;
+
+    let rig = rig(Fixture::BufferedOk).await;
+    let (host, rt) = crate::engine::test_host_rt(&rig.app);
+    let cost = host.cost();
+    assert!(
+        !host.cost_pricing_enabled(&cost),
+        "these fixtures configure no rate card"
     );
+    assert!(!host.cost_model_unpriced(&cost, "made-up-name"));
+
+    let gov = rig.gov();
+    let view = verify::HostPoolView::new(&*host, &*rt, gov.key.as_deref());
+    assert_eq!(view.pricing_enabled(), host.cost_pricing_enabled(&cost));
+    assert_eq!(
+        view.is_unpriced("made-up-name"),
+        host.cost_model_unpriced(&cost, "made-up-name")
+    );
+    rig.server.shutdown().await;
 }
 
-/// GAP 4b — the plane cannot read whether a rate card is present, so VERIFY's third guard is blind.
+/// GAP 5, CLOSED — a configured lane's runtime name can be sealed into a `VerifiedDestination`.
 ///
-/// `PoolView::pricing_enabled` and `PoolView::is_unpriced` are the third guard's two questions.
-/// `CostModel::pricing_enabled` and `CostModel::model_unpriced` are `pub(crate)` to the core crate,
-/// and the only cost seam a plane holds — `EngineHost::cost()` — hands back an opaque `CostHandle`
-/// with no methods on it. So the guard that refuses an unbillable name cannot be answered from the
-/// plane side at all; the chain above answers `false` because its fixtures configure no card.
-#[test]
-#[should_panic(
-    expected = "SEAM GAP: EngineHost::cost() is an opaque CostHandle, so a plane cannot \
-                           answer PoolView::pricing_enabled or PoolView::is_unpriced"
-)]
-fn the_plane_cannot_read_whether_a_rate_card_is_present() {
-    panic!(
-        "SEAM GAP: EngineHost::cost() is an opaque CostHandle, so a plane cannot answer \
-         PoolView::pricing_enabled or PoolView::is_unpriced"
-    );
-}
+/// The bridge is the registration interner, not a second id type: a config-derived name is leaked
+/// into a `&'static str` exactly once and `LaneId` stays the one `Copy` name the rate card, the
+/// verified destination and the locator comparison are all written in. Interning is idempotent, so
+/// sealing the same lane twice yields the same id and leaks once — which is what makes this legal on
+/// a request path at all.
+#[tokio::test]
+async fn a_configured_lanes_runtime_name_can_be_sealed() {
+    let rig = rig(Fixture::BufferedOk).await;
+    let (_host, rt) = crate::engine::test_host_rt(&rig.app);
+    // Read out of the running tables as a runtime `String` — nothing static about it.
+    let configured: String = rt
+        .lane_view(0)
+        .expect("the fixture configures one lane")
+        .model
+        .to_string();
+    assert_eq!(configured, LANE);
 
-/// GAP 5 — the VERIFIED SET has no producer in this plane, and `LaneId` cannot name a configured
-/// lane.
-///
-/// `verify::verify` takes the destinations already sealed and hands them on; the sealing is the
-/// trust unit's. Nothing in this plane produces one, and nothing could as the types stand:
-/// `VerifiedDestination::seal` takes a `LaneId`, `LaneId::new` takes a `&'static str`, and a
-/// configured lane's name is a runtime `String` read out of config.
-#[test]
-#[should_panic(
-    expected = "SEAM GAP: LaneId::new takes a &'static str, so a configured lane's \
-                           runtime name cannot be sealed into a VerifiedDestination"
-)]
-fn the_verified_set_has_no_producer_in_the_plane() {
-    panic!(
-        "SEAM GAP: LaneId::new takes a &'static str, so a configured lane's runtime name cannot \
-         be sealed into a VerifiedDestination"
-    );
+    let seal = KernelSeal::acquire_for_kernel();
+    let sealed = sealed_destinations(&seal, &configured);
+    assert_eq!(sealed.len(), 1);
+    assert_eq!(sealed[0].lane().as_str(), configured);
+    // Idempotent: the second seal of the same name is the same id, so this is a fixed cost.
+    let again = sealed_destinations(&seal, &configured);
+    assert_eq!(again[0].lane(), sealed[0].lane());
+    assert!(std::ptr::eq(
+        again[0].lane().as_str(),
+        sealed[0].lane().as_str()
+    ));
+    rig.server.shutdown().await;
 }
 
 /// GAP 6 — the ADMIT door finishes its own refusal, so the AUDIT step never sees it.

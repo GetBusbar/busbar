@@ -357,6 +357,18 @@ impl Registration {
         leaked
     }
 
+    /// The [`LaneId`] for one configured lane name.
+    ///
+    /// The priced axis is declared as a borrowed static name and a configured lane's name is read
+    /// at boot, so something has to bridge the two — and the bridge is this one, not a second id
+    /// type that owns its string. An owned lane id would double the type every rate-card key, every
+    /// verified destination and every locator comparison is written in, for one configured value;
+    /// interning keeps the axis one `Copy` name and pays a fixed registration-time allocation for
+    /// it. Idempotent for the same reason [`key`](Self::key) is.
+    pub fn lane(&mut self, name: &str) -> LaneId {
+        LaneId::new(self.key(name))
+    }
+
     /// How many distinct keys this registration has interned.
     ///
     /// The fixed resident-memory term is counted from here, so it is readable rather than inferred.

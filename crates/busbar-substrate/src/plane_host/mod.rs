@@ -1014,6 +1014,27 @@ pub trait BudgetHost: Send + Sync {
     /// for the sink's `cost` field.
     fn cost(&self) -> CostHandle;
 
+    /// Whether a RATE CARD is present on this deployment at all — the first of the two questions the
+    /// pre-admission pricing guard asks.
+    ///
+    /// The handle [`cost`](Self::cost) mints is opaque by design: a plane may hold the deployment's
+    /// cost model but may not read its rates, because a plane that could read a rate could price a
+    /// request. But "is anything priced here" is not a rate, it is a POSTURE — and the guard that
+    /// fails a request closed on an unbillable name cannot run without it. So the question is
+    /// answered by the host, over the same handle, exactly as
+    /// [`rate_headroom`](Self::rate_headroom) answers its own: the host downcasts and drives the
+    /// unchanged `CostModel::pricing_enabled` read. A host with no cost model answers `false`, which
+    /// is the honest posture of a deployment that prices nothing.
+    fn cost_pricing_enabled(&self, cost: &CostHandle) -> bool;
+
+    /// Whether a PRESENT card leaves `model` unpriced — the pricing guard's second question, and the
+    /// one that fails closed.
+    ///
+    /// The same seam and the same rule as [`cost_pricing_enabled`](Self::cost_pricing_enabled): the
+    /// host downcasts the opaque handle and drives the unchanged `CostModel::model_unpriced` read,
+    /// which is `false` for every name when no card is configured (there is no card to miss).
+    fn cost_model_unpriced(&self, cost: &CostHandle, model: &str) -> bool;
+
     /// LEDGER one delivered response's tier-split token usage against the key's budget chain — the
     /// host-driven form of `sink.gov.record_usage(&sink.cost, key, pool, model, tokens, now)`. `gov`
     /// and `cost` are the opaque handles the sink minted (via [`governance`](Self::governance) /

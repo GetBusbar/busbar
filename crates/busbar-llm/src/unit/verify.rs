@@ -43,6 +43,9 @@
 use busbar_caps::{
     Decision, PrincipalId, ReasonCode, Refusal, UnitToken, VerifiedDestination, Verify,
 };
+use busbar_substrate::plane_host::{CostHandle, EngineHost, EngineTablesView};
+
+use crate::unit::audit::RefusalOutcome;
 
 /// The closed refusal set of this step: two refusals, and there is no third.
 ///
@@ -101,6 +104,23 @@ impl VerifyRefusal {
             }
             VerifyRefusal::NoRate { name } => format!("no configured rate for model '{name}'"),
         }
+    }
+
+    /// THE NAMED OUTCOME — the three parts of this refusal as the one value the terminal renders.
+    ///
+    /// The twin of `ArrivalRefusal::outcome` and `DecodeRefusal::outcome`, and it exists for the
+    /// same reason: a caller that assembles the status, the kind word and the message itself is a
+    /// caller that could assemble a different three, and then two places decide what a refusal
+    /// looks like. Assembling them here means the step names its outcome and the audit step renders
+    /// it, which is one place each.
+    #[must_use]
+    pub fn outcome(&self) -> RefusalOutcome {
+        RefusalOutcome::new(
+            axum::http::StatusCode::from_u16(self.status())
+                .expect("the two statuses this step names are statuses the doors emit"),
+            self.kind(),
+            self.message(),
+        )
     }
 
     /// The reason code the record files this refusal under.
@@ -203,6 +223,101 @@ pub fn destination_guard(view: &dyn PoolView, pool: &str) -> Result<(), VerifyRe
     Ok(())
 }
 
+/// WHAT THE STEP ANSWERS WITH: the decision the loop reads, and the named refusal that produced it.
+///
+/// The two travel together because they are two readings of one answer for two different readers.
+/// The [`Decision`] is the kernel's: it carries the reason code and the retry hint, in the neutral
+/// vocabulary every step's decision is written in, and it must stay free of any dialect's status
+/// numbers and sentences — a `Refusal` that carried a wire triple would put HTTP into the one type
+/// every plane's every step shares. The [`VerifyRefusal`] is the terminal's: it is the same refusal
+/// as the step named it, and it is what [`VerifyRefusal::outcome`] renders from.
+///
+/// Carrying it here is what keeps the guards read ONCE. The alternative — handing back a decision
+/// alone and letting the driver re-run [`destination_guard`] to recover the triple — reads the same
+/// deployment twice, and two reads of one fact are two answers waiting to disagree: a key revoked
+/// between them, or a fallback edge re-read after a config swap, and the record says one thing while
+/// the client is told another. `refusal` is `Some` exactly when the decision refused.
+#[must_use = "a decision that is not returned to the loop silently skips the step"]
+pub struct Verified {
+    /// The loop's answer: proceed with the sealed destination set, or refuse at this step.
+    pub decision: Decision<Verify>,
+    /// The refusal as this step named it, present exactly when `decision` refused.
+    pub refusal: Option<VerifyRefusal>,
+}
+
+/// THE DEPLOYMENT, as the guards read it on a live node.
+///
+/// The production [`PoolView`]: every answer below is read off the running deployment through a
+/// neutral seam, so the step's three guards see what the shipped pre-admission guard sees. It reads
+/// the key's ACL off the key row itself, the fallback edges and the configured names through the
+/// engine's own tables projection, and the two pricing questions through the host's cost seam —
+/// never through a rendered response, which is what the shipped `EngineHost::destination_guard`
+/// hands back and what makes that call unusable as a view (a finished response answers "what does
+/// the client see", not "may this key reach this pool").
+///
+/// The cost handle is minted once per view rather than per question: it is one `Arc` bump, and
+/// minting it twice inside one unit would be two handles onto one model.
+pub struct HostPoolView<'a> {
+    host: &'a dyn EngineHost,
+    tables: &'a dyn EngineTablesView,
+    key: Option<&'a busbar_api::VirtualKey>,
+    cost: CostHandle,
+}
+
+impl<'a> HostPoolView<'a> {
+    /// Open a view over one deployment for one request.
+    ///
+    /// `key` is the resolved key row this request presented, or `None` for the ungoverned posture,
+    /// in which case every guard below is inert — exactly as the shipped guard is.
+    pub fn new(
+        host: &'a dyn EngineHost,
+        tables: &'a dyn EngineTablesView,
+        key: Option<&'a busbar_api::VirtualKey>,
+    ) -> Self {
+        let cost = host.cost();
+        HostPoolView {
+            host,
+            tables,
+            key,
+            cost,
+        }
+    }
+}
+
+impl PoolView for HostPoolView<'_> {
+    fn has_key(&self) -> bool {
+        self.key.is_some()
+    }
+
+    fn key_is_scoped(&self) -> bool {
+        // An OMITTED grant admits every scope; an explicit list — empty or not — is a restriction.
+        // The shipped fallback walk asks the same question of the same field.
+        self.key.is_some_and(|k| k.allowed_scopes.is_some())
+    }
+
+    fn pool_allowed(&self, pool: &str) -> bool {
+        // The key row's own encoding of its ACL, not a second reading of it.
+        self.key.is_none_or(|k| k.scope_allowed("pool", pool))
+    }
+
+    fn on_exhausted_fallback(&self, pool: &str) -> Option<String> {
+        self.tables.on_exhausted_fallback(pool)
+    }
+
+    fn is_configured(&self, name: &str) -> bool {
+        self.tables.pools().iter().any(|(n, _)| *n == name)
+            || self.tables.model_index(name).is_some()
+    }
+
+    fn pricing_enabled(&self) -> bool {
+        self.host.cost_pricing_enabled(&self.cost)
+    }
+
+    fn is_unpriced(&self, name: &str) -> bool {
+        self.host.cost_model_unpriced(&self.cost, name)
+    }
+}
+
 /// Where this unit may go.
 ///
 /// The guards run first and can refuse; what survives is the destination set the trust unit sealed,
@@ -220,9 +335,12 @@ pub fn verify(
     pool: &str,
     principal: &PrincipalId,
     destinations: Vec<VerifiedDestination>,
-) -> Decision<Verify> {
+) -> Verified {
     match destination_guard(view, pool) {
-        Ok(()) => Decision::proceed(token, destinations),
+        Ok(()) => Verified {
+            decision: Decision::proceed(token, destinations),
+            refusal: None,
+        },
         Err(refusal) => {
             // The operator's own diagnostics, which are where the key id and the pool go precisely
             // because the caller-facing body must not name either. The two lines are the live
@@ -235,7 +353,10 @@ pub fn verify(
                     tracing::info!(model = %name, "governance: no configured rate for model; rejecting (rate_card is authoritative and complete)");
                 }
             }
-            Decision::refuse(token, Refusal::new(refusal.reason()))
+            Verified {
+                decision: Decision::refuse(token, Refusal::new(refusal.reason())),
+                refusal: Some(refusal),
+            }
         }
     }
 }
@@ -451,7 +572,8 @@ mod tests {
             &PrincipalId::new("vk_x"),
             Vec::new(),
         );
-        assert!(d.into_result(&seal).expect("proceeds").is_empty());
+        assert!(d.refusal.is_none(), "proceeding names no refusal");
+        assert!(d.decision.into_result(&seal).expect("proceeds").is_empty());
     }
 
     /// The step's refusal is stamped with THIS step, so the record says where the unit stopped and
@@ -464,17 +586,47 @@ mod tests {
             scopes: Some(vec!["allowed".into()]),
             ..Default::default()
         };
-        let refusal = verify(
+        let answer = verify(
             &UnitToken::<Verify>::mint(&seal),
             &view,
             "denied",
             &PrincipalId::new("vk_x"),
             Vec::new(),
-        )
-        .into_result(&seal)
-        .expect_err("the key may not reach it");
+        );
+        // The step's own named refusal rides back with the decision, so the wire triple is read
+        // from what the step returned rather than recovered by running the guards a second time.
+        assert_eq!(answer.refusal, Some(VerifyRefusal::NotAuthorized));
+        let refusal = answer
+            .decision
+            .into_result(&seal)
+            .expect_err("the key may not reach it");
         assert_eq!(refusal.step(), StepName::Verify);
         assert_eq!(refusal.reason(), ReasonCode::PoolNotPermitted);
+    }
+
+    /// THE NAMED OUTCOME renders to the live envelope, and it is the same envelope the three parts
+    /// rendered separately produce — so moving the assembly onto the value moved no bytes.
+    #[test]
+    fn the_named_outcome_renders_the_live_refusal_bytes() {
+        for refusal in [
+            VerifyRefusal::NotAuthorized,
+            VerifyRefusal::NoRate {
+                name: "made-up".to_string(),
+            },
+        ] {
+            let outcome = refusal.outcome();
+            assert_eq!(outcome.status().as_u16(), refusal.status());
+            assert_eq!(outcome.kind(), refusal.kind());
+            assert_eq!(outcome.message(), refusal.message());
+            assert_eq!(
+                envelope(
+                    outcome.status().as_u16(),
+                    outcome.kind(),
+                    outcome.message()
+                ),
+                envelope(refusal.status(), refusal.kind(), &refusal.message())
+            );
+        }
     }
 
     /// THE CLOSED SET IS TWO. Every refusal this step can raise carries one of exactly two reason

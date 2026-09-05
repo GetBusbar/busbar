@@ -837,6 +837,26 @@ impl busbar_substrate::plane_host::BudgetHost for EngineHostImpl {
         )
     }
 
+    fn cost_pricing_enabled(&self, cost: &busbar_substrate::plane_host::CostHandle) -> bool {
+        // The SAME read the in-place pre-admission guard makes off `app.cost`; a handle that is not
+        // this deployment's cost model answers the no-card posture rather than guessing.
+        cost.0
+            .clone()
+            .downcast::<crate::cost::CostModel>()
+            .is_ok_and(|c| c.pricing_enabled())
+    }
+
+    fn cost_model_unpriced(
+        &self,
+        cost: &busbar_substrate::plane_host::CostHandle,
+        model: &str,
+    ) -> bool {
+        cost.0
+            .clone()
+            .downcast::<crate::cost::CostModel>()
+            .is_ok_and(|c| c.model_unpriced(model))
+    }
+
     fn meter_ledger(
         &self,
         gov: &busbar_substrate::plane_host::GovHandle,
