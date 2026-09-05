@@ -44,41 +44,81 @@ fn denied_entry_increments_the_gate_counter() {
     );
 }
 
-/// THE QUEUEING CONTRACT (replaces the instant-503 shed, whose fail/retry storm collapsed the
-/// gateway under a 12k-client herd on the rig): an over-cap arrival WAITS FIFO and is admitted
-/// the moment a slot frees; a waiter whose caller gives up leaves the queue with no residue; and
-/// the memory bound holds throughout — never more than N permits exist.
+/// THE SHED CONTRACT: an arrival that finds the cap full is answered IMMEDIATELY — it never parks
+/// waiting for a slot. Pinned on the layer's own service (not just the gate) because the parking
+/// hazard lives in the service's `call`: a version that awaited a permit here left the over-cap
+/// callers hanging for as long as the admitted work took, which reads to a client as a hung
+/// gateway. The shed response's exact bytes are pinned too — status, `Retry-After`, content type,
+/// and body are the observable contract.
 #[tokio::test]
-async fn a_saturated_gate_queues_fifo_and_cancelled_waiters_leave_cleanly() {
-    let gate = std::sync::Arc::new(AdmissionGate::new(1, "test-queue"));
-    let held = gate.enter_queued().await;
+async fn a_saturated_gate_sheds_instead_of_parking_the_caller() {
+    use tower::{Service as _, ServiceExt as _};
 
-    // Two queued waiters, in order.
-    let g1 = gate.clone();
-    let first = tokio::spawn(async move { g1.enter_queued().await });
-    tokio::task::yield_now().await;
-    let g2 = gate.clone();
-    let second = tokio::spawn(async move { g2.enter_queued().await });
-    tokio::task::yield_now().await;
-    assert!(!first.is_finished() && !second.is_finished(), "both parked");
+    // An inner service that never completes: if the layer ever awaits a permit behind this, the
+    // over-cap call cannot finish either, and the timeout below fires.
+    #[derive(Clone)]
+    struct NeverFinishes;
+    impl tower::Service<axum::extract::Request> for NeverFinishes {
+        type Response = axum::response::Response;
+        type Error = std::convert::Infallible;
+        type Future = std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+        >;
+        fn poll_ready(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn call(&mut self, _req: axum::extract::Request) -> Self::Future {
+            Box::pin(std::future::pending())
+        }
+    }
 
-    // The FIRST waiter (FIFO) is admitted when the slot frees; the second still waits.
-    drop(held);
-    let first_permit = first.await.expect("first waiter admitted");
+    let mut svc = <InboundAdmissionLayer as tower::Layer<NeverFinishes>>::layer(
+        &InboundAdmissionLayer::new(1),
+        NeverFinishes,
+    );
+    let req = || axum::extract::Request::new(axum::body::Body::empty());
+
+    // The one permit goes to a call that will never resolve.
+    let mut admitted = svc.clone();
+    let admitted = tokio::spawn(async move { admitted.ready().await.unwrap().call(req()).await });
     tokio::task::yield_now().await;
-    assert!(
-        !second.is_finished(),
-        "FIFO: the second waiter keeps waiting"
+
+    // The next arrival must be answered NOW, not parked behind the in-flight one.
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        svc.ready().await.unwrap().call(req()),
+    )
+    .await
+    .expect("an over-cap arrival must be shed immediately, never parked")
+    .expect("the shed arm is infallible");
+
+    assert_eq!(resp.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        resp.headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok()),
+        Some("1"),
+        "a shed names a concrete backoff so a client can retry sanely"
+    );
+    assert_eq!(
+        resp.headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some(crate::proxy::APPLICATION_JSON)
+    );
+    let body = http_body_util::BodyExt::collect(resp.into_body())
+        .await
+        .expect("the static shed body always collects")
+        .to_bytes();
+    assert_eq!(
+        std::str::from_utf8(&body).unwrap(),
+        r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#,
     );
 
-    // A cancelled waiter leaves no residue: abort the second, free the slot, and a FRESH
-    // arrival gets it immediately (a leaked queue position would starve it).
-    second.abort();
-    drop(first_permit);
-    let fresh = tokio::time::timeout(std::time::Duration::from_secs(5), gate.enter_queued())
-        .await
-        .expect("a cancelled waiter must not hold the freed slot");
-    drop(fresh);
+    admitted.abort();
 }
 
 /// CONCURRENT-CAP BOUNDARY at N > 1: a gate of N permits admits EXACTLY N in-flight holders and

@@ -420,12 +420,21 @@ pub trait TranslateCodec: OperationHandler {
         now: u64,
         wants_stream: bool,
         elapsed_ms: Option<u64>,
+        // The ORIGINAL ingress request body, when the caller has one parsed (the cross-protocol
+        // path always does — see `Hop::body`). Threaded to `IrHandle::apply_request_echo` so a
+        // dialect whose response spec requires certain members to MIRROR the request (OpenAI
+        // Responses) can answer with the client's actual values instead of the spec's bare
+        // defaults. `None` when the caller has no parsed ingress body (the opaque/audio bridge).
+        ingress_request_body: Option<&Value>,
     ) -> Result<(Option<crate::billing::Billing>, TranslatedResponse), CodecError> {
         match input {
             TranslateRespInput::Opaque(bytes) => {
                 let mut ir = self.read_response(bytes)?;
                 let usage = ir.billing();
                 ir.fill_response_model_if_absent(lane_model);
+                if let Some(body) = ingress_request_body {
+                    ir.apply_request_echo(body);
+                }
                 ir.prepare_for_ingress(ingress_protocol, now);
                 // A4b: the handle writes ITSELF onto the ingress dialect — present=>Typed /
                 // absent=>Untranslatable, keyed by `ingress_protocol` + `ingress_serves_op`.
@@ -438,6 +447,9 @@ pub trait TranslateCodec: OperationHandler {
                 let mut ir = self.read_response_value(v)?;
                 let usage = ir.billing();
                 ir.fill_response_model_if_absent(lane_model);
+                if let Some(body) = ingress_request_body {
+                    ir.apply_request_echo(body);
+                }
                 ir.prepare_for_ingress(ingress_protocol, now);
                 // Buffered-2xx-to-native-stream synthesis (a wants-stream ingress served a non-SSE
                 // upstream): try first; `None` falls through to the normal write. The handle resolves

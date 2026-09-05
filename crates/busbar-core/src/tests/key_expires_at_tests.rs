@@ -35,7 +35,24 @@ fn gov_and_store() -> (Arc<GovState>, Arc<MemoryStore>) {
 
 /// Mint a key, then stamp its row with an `expires_at` in the past and reload the caches.
 /// Returns the bearer token minted BEFORE the stamp (its own `exp` is still in the future).
-fn mint_then_expire_the_row(gov: &GovState, store: &MemoryStore, pools: Option<Vec<&str>>) -> String {
+///
+/// `mint_now`/`token_exp`/`row_expired_at` are threaded in rather than read off the module's fixed
+/// `NOW`/`TOKEN_EXP`/`ROW_EXPIRED_AT` constants: the governance-seam test below verifies with an
+/// EXPLICIT, caller-supplied clock (`gov.verify_token(&token, NOW, None)`), so a frozen epoch is
+/// fine there. The data-plane test runs the token through a REAL HTTP round trip, and the `keys`
+/// engine arm on that path (`keys_arm_verdict` in `crate::auth`) checks the token's `exp` against
+/// the process's real wall clock (`crate::store::now()`), never an injected one — so a token minted
+/// against a frozen historical epoch is genuinely expired by the time the request lands, and gets
+/// refused for exactly the reason the module doc says IS enforced (the token's own `exp`), not the
+/// row's `expires_at` this test is about.
+fn mint_then_expire_the_row(
+    gov: &GovState,
+    store: &MemoryStore,
+    pools: Option<Vec<&str>>,
+    mint_now: u64,
+    token_exp: u64,
+    row_expired_at: u64,
+) -> String {
     let spec = NewKeySpec {
         name: "long-lived".into(),
         allowed_pools: pools.map(|p| p.into_iter().map(str::to_string).collect()),
@@ -43,7 +60,7 @@ fn mint_then_expire_the_row(gov: &GovState, store: &MemoryStore, pools: Option<V
         labels: Default::default(),
         ..Default::default()
     };
-    let (binding, token) = gov.mint_signed(spec, TOKEN_EXP, NOW).expect("mint");
+    let (binding, token) = gov.mint_signed(spec, token_exp, mint_now).expect("mint");
     let mut row = store
         .get_key(&binding.id)
         .expect("store read")
@@ -52,7 +69,7 @@ fn mint_then_expire_the_row(gov: &GovState, store: &MemoryStore, pools: Option<V
         row.expires_at, None,
         "mint never stamps expires_at; it is a stored field nothing in the engine writes"
     );
-    row.expires_at = Some(ROW_EXPIRED_AT);
+    row.expires_at = Some(row_expired_at);
     store.put_key(&row).expect("rewrite the row");
     gov.refresh().expect("reload caches");
     token
@@ -64,7 +81,7 @@ fn mint_then_expire_the_row(gov: &GovState, store: &MemoryStore, pools: Option<V
 #[test]
 fn a_key_row_whose_expires_at_is_in_the_past_still_verifies() {
     let (gov, store) = gov_and_store();
-    let token = mint_then_expire_the_row(&gov, &store, None);
+    let token = mint_then_expire_the_row(&gov, &store, None, NOW, TOKEN_EXP, ROW_EXPIRED_AT);
 
     let resolved = gov
         .verify_token(&token, NOW, None)
@@ -88,11 +105,19 @@ fn a_key_row_whose_expires_at_is_in_the_past_still_verifies() {
 /// mock upstream) with the row's `expires_at` in the past, while a wrong token is still refused
 /// (401) on the same app — so the admission is a real gate, not an open chain.
 #[tokio::test]
-#[ignore = "fixture gap: this in-process app answers 401 where both real binaries answer 200 (the expired row is not read by the app's keys chain the way the release binary reads its store); the oracle cell key-expired-out-of-band is the judge until the fixture is fixed"]
 async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane() {
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 
     crate::metrics::init();
+    // Force the protocol registry's core-test built-in tail to seed BEFORE `TestApp::build()` banks
+    // `AppSlots` off `crate::proto::known_protocols()`. Any registry accessor seeds it (idempotent,
+    // process-wide), and ordinarily some earlier test in the same binary already has by the time this
+    // one runs — but filtered down to just this test tree there is no earlier caller, so
+    // `known_protocols()` is empty at bank time and grows later on the request path, and `AppSlots`
+    // (sized off the empty snapshot) then indexes out of bounds. Not this test's bug to fix twice;
+    // seeding here up front is what every real request path does implicitly by the time it reads the
+    // registry at all.
+    let _ = crate::proto::decl_for(crate::proto::PROTO_ANTHROPIC);
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: axum::http::StatusCode::OK,
@@ -104,8 +129,25 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
     });
     let server = MockServer::new(state).await;
 
+    // This request goes through a REAL HTTP round trip and the `keys` engine arm checks the
+    // token's own `exp` against the process's REAL wall clock (`crate::store::now()`), not an
+    // injected one — so, unlike the seam test above, the token here must be minted relative to the
+    // actual current time, not the module's frozen `NOW`/`TOKEN_EXP` constants (those would already
+    // be expired by wall-clock time and get refused for the token's own `exp`, not for anything to
+    // do with the row's `expires_at`).
+    let real_now = crate::store::now();
+    let real_token_exp = real_now + 3_600;
+    let real_row_expired_at = real_now - 30 * 86_400;
+
     let (gov, store) = gov_and_store();
-    let token = mint_then_expire_the_row(&gov, &store, Some(vec!["pa"]));
+    let token = mint_then_expire_the_row(
+        &gov,
+        &store,
+        Some(vec!["pa"]),
+        real_now,
+        real_token_exp,
+        real_row_expired_at,
+    );
 
     let app = TestApp::new()
         .lane(LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url()).api_key("up"))

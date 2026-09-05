@@ -390,12 +390,10 @@ pub struct HookCfg {
     /// plugin backs this instance" everywhere (`hooks.<n>.module`, `identity-providers.<n>.module`,
     /// `export.<n>.module`, `store.module`). The Rust field keeps the older `plugin` spelling only
     /// because it is referenced at ~100 internal sites; nothing user-facing says `plugin:` any more.
-    /// 1.6.0 CLEAN SLATE: the `alias = "plugin"` READ-ONLY back-compat was REMOVED — the only wire
-    /// spelling is `module`. A persisted OVERLAY written by a pre-1.6.0 build that still spells this
-    /// `plugin:` is auto-migrated to `module:` at boot (busbar-core's
-    /// `config::overlay::migrate_legacy_hook_keys`), and `busbar --migrate-config` rewrites
-    /// `plugin:` → `module:` in a config file, so removing the alias never bricks a durable overlay.
-    #[serde(rename = "module")]
+    /// 1.6.0 owner rule: a 1.5.5 config/overlay must still parse byte-for-byte, so `alias = "plugin"`
+    /// is RESTORED as READ-ONLY back-compat — a config overlay written by an earlier build still
+    /// loads. Serialization always emits `module`.
+    #[serde(rename = "module", alias = "plugin")]
     pub plugin: String,
     // ── shared runtime knobs ─────────────────────────────────────────────────────────────────────
     /// Hard wall-clock deadline for a gate decision, in milliseconds (default 1). An in-process gate
@@ -433,6 +431,15 @@ pub struct HookCfg {
     /// reconcile.
     #[serde(default)]
     pub on_empty: Option<PolicyOnError>,
+    /// TAP observation stage (`request`/`route`/`attempt`/`completion`; unset = `request`).
+    /// `request` observes the (post-rewrite) request; `route` the post-reconcile candidate set;
+    /// `attempt` every dispatch attempt (the failover story); `completion` the outcome — including
+    /// the SYNTHETIC rejected completion, so audit taps see denials. Inert on a gate.
+    /// 1.6.0 owner rule: a 1.5.5 hook definition carrying the legacy single `at:` key must still
+    /// parse and behave byte-for-byte, so this field is RESTORED (`fires_at_stage` precedence
+    /// below).
+    #[serde(default)]
+    pub at: Option<HookStage>,
     /// OPAQUE settings map pushed to the hook via the `configure` op: sent to the plugin at
     /// load and re-pushed (commit-on-ack) by `PATCH /api/v1/admin/hooks/{name}/settings`. Busbar
     /// never interprets the contents.
@@ -475,14 +482,14 @@ pub struct HookCfg {
     /// [`caller_in_hook_groups`]. Immutable after registration.
     #[serde(default)]
     pub groups: Vec<String>,
-    /// 1.5.3 named-hook PHASE set: the pipeline stages this hook fires at. This is the SOLE stage-
-    /// scoping spelling in 1.6.0 (the legacy single tap `at:` key it once generalized was REMOVED —
-    /// clean slate). EMPTY (the default) means the hook fires at THE FOUR CORE STAGES and only those —
-    /// the frozen meaning of an omitted `phase:`, see FREEZE BLOCKER on [`CORE_HOOK_PHASES`].
-    /// (`busbar --migrate-config` rewrites a legacy `at: <stage>` into `phase: [<stage>]` so a
-    /// single-stage tap keeps firing at exactly one stage; a persisted overlay is auto-migrated the
-    /// same way at boot.) Consulted by [`HookCfg::fires_at_stage`]. Inert on a gate (gates fire at
-    /// every decision point).
+    /// 1.5.3 named-hook PHASE set: the pipeline stages this hook fires at. GENERALIZES the single
+    /// tap `at:` to a list. EMPTY (the default) falls back to `at:`, which pins exactly one stage and
+    /// so preserves 1.5.5 single-stage behavior byte-for-byte; with BOTH omitted the hook fires at
+    /// THE FOUR CORE STAGES and only those — the frozen meaning of an omitted `phase:`, see FREEZE
+    /// BLOCKER on [`CORE_HOOK_PHASES`]. (`--migrate-config` still writes an EXPLICIT `phase:
+    /// [request]` onto a legacy tap that carried neither, so migrating never widens one, but the
+    /// legacy `at:` rung stays live so an un-migrated 1.5.5 overlay keeps behaving exactly as it did.)
+    /// Consulted by [`HookCfg::fires_at_stage`]. Inert on a gate (gates fire at every decision point).
     #[serde(default)]
     pub phase: Vec<HookStage>,
 }
@@ -490,24 +497,32 @@ pub struct HookCfg {
 impl HookCfg {
     /// Whether this hook observes at `stage` (freeze blocker — see [`CORE_HOOK_PHASES`]).
     ///
-    /// Precedence, frozen (1.6.0 dropped the legacy single `at:` rung — clean slate):
+    /// Precedence, frozen (1.6.0 owner rule: 1.5.5 must be felt byte-for-byte, so the legacy single
+    /// `at:` rung is RESTORED):
     /// 1. a non-empty `phase:` LIST is authoritative — the hook fires at exactly those stages;
-    /// 2. otherwise — `phase:` omitted — the hook fires at THE FOUR CORE STAGES, and only those. Never
+    /// 2. otherwise the legacy single `at:` (the admin-API registration surface still carries it),
+    ///    which pins one stage;
+    /// 3. otherwise — BOTH omitted — the hook fires at THE FOUR CORE STAGES, and only those. Never
     ///    "every stage that will ever exist": a stage added by a later release is not in
     ///    [`CORE_HOOK_PHASES`], so it cannot retroactively widen a hook that already shipped.
     pub fn fires_at_stage(&self, stage: HookStage) -> bool {
         if !self.phase.is_empty() {
             return self.phase.contains(&stage);
         }
-        CORE_HOOK_PHASES.contains(&stage)
+        match self.at {
+            Some(at) => at == stage,
+            None => CORE_HOOK_PHASES.contains(&stage),
+        }
     }
 
     /// The RESOLVED stage set: every stage this hook ACTUALLY fires at, in pipeline order.
     ///
     /// This is the honest answer to the only question an operator asks about stage scoping, and
-    /// `phase:` does not answer it alone. Reading `phase:` back tells you the literal echo, not what it
-    /// resolves to: an EMPTY `phase:` means "the four core stages", which the raw field does not say.
-    /// So the admin read projects this alongside the literal `phase:` spelling.
+    /// neither `phase:` nor `at:` answers it alone. Reading `phase:` back tells you which of the two
+    /// spellings happened to be used, not what it resolves to: an EMPTY `phase:` is ambiguous between
+    /// "falls back to `at:`" and "falls back to the four core stages", and `at:` is `None` for every
+    /// hook written in the current (1.5.3 named-definition) grammar, because `hook_cfg_from_def`
+    /// never sets it. So the admin read projects this alongside both spellings.
     ///
     /// Computed by asking [`Self::fires_at_stage`], the SAME predicate the firing path consults,
     /// once per stage, so the read cannot drift from the behavior it describes. A future stage is
@@ -559,4 +574,36 @@ pub const DEFAULT_POLICY_TIMEOUT_MS: u64 = 1;
 
 pub fn default_policy_timeout_ms() -> u64 {
     DEFAULT_POLICY_TIMEOUT_MS
+}
+
+#[cfg(test)]
+mod default_on_error_tests {
+    use super::*;
+
+    /// Binding: a migrated hook's `on_error` defaults to `nothing` — a failing or timed-out gate
+    /// does not participate in the decision (it cannot steer, it cannot displace another gate's
+    /// verdict) rather than the request being refused. `on_failure: closed` is a 1.6.0-native-only
+    /// knob and plays no part in this default.
+    #[test]
+    fn the_serde_default_is_nothing() {
+        assert_eq!(default_on_error(), ON_ERROR_NOTHING);
+    }
+
+    /// `nothing` and `weighted` resolve to the SAME terminal — "didn't participate" and "busbar's
+    /// normal ordering" are the same behavior — so a migrated gate that fails or times out under
+    /// the default takes exactly the non-participating path a `weighted` gate would.
+    #[test]
+    fn nothing_resolves_to_the_same_terminal_as_weighted() {
+        assert_eq!(
+            on_error_terminal(ON_ERROR_NOTHING),
+            on_error_terminal(ON_ERROR_WEIGHTED)
+        );
+        assert_eq!(on_error_terminal(ON_ERROR_NOTHING), Some(PolicyOnError::Weighted));
+    }
+
+    /// The reserved terminals stay distinct from `nothing`: only `reject` refuses on error.
+    #[test]
+    fn reject_is_not_the_default_terminal() {
+        assert_ne!(on_error_terminal(ON_ERROR_REJECT), on_error_terminal(ON_ERROR_NOTHING));
+    }
 }

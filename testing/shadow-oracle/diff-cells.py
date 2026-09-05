@@ -17,6 +17,10 @@ Divergence classes (a cell may carry several; the first names the earliest diver
   headers             header key set or value
   body                JSON: list of JSON-pointer paths with old/new; text/SSE: first differing line
   effects.usage       ledger delta differs (money)
+  effects.usage_after_restart  the usage a script cell read back after a restart differs (money the
+                      store was supposed to keep: a wrong-shaped store call loses it while every
+                      request still answers 200)
+  effects.store_errors  the number of `store error` lines a script cell's boots logged differs
   effects.metrics     metric delta differs
   effects.audit       audit delta differs
   effects.stderr      exec cells: the process's stderr (boot refusals, warnings, CLI errors)
@@ -36,11 +40,18 @@ import sys
 from collections import Counter, defaultdict
 
 CLASS_ORDER = ["missing.golden", "missing.candidate", "status", "headers", "body", "effects.stderr",
-               "effects.usage", "effects.metrics", "effects.audit", "norm.rules", "effects.egress", "effects.readback"]
+               "effects.usage", "effects.usage_after_restart", "effects.store_errors",
+               "effects.metrics", "effects.audit", "norm.rules", "effects.egress", "effects.readback"]
 # Weight per class; a cell's weight is its family's max class weight over the classes it diverged in.
 # Money and refusal semantics dominate; cosmetics count but cannot outvote them.
 CLASS_WEIGHT = {"missing.golden": 10, "missing.candidate": 10, "status": 10, "effects.usage": 10,
+                "effects.usage_after_restart": 10, "effects.store_errors": 10,
                 "body": 3, "effects.stderr": 3, "effects.audit": 3, "headers": 1, "effects.metrics": 1, "norm.rules": 1, "effects.egress": 10, "effects.readback": 10}
+# The classes that are MONEY: an accepted difference may only carry one of these if it is a declared
+# breaking change with a changelog line. Usage that a restart did not preserve, and a store the
+# binary could not write to, are both money — the request statuses look fine either way.
+MONEY_CLASSES = {"status", "effects.usage", "effects.usage_after_restart", "effects.store_errors",
+                 "missing.candidate"}
 # Families where BODY bytes are the contract itself (admin responses, boot messages, CLI output).
 BODY_IS_CONTRACT = {"admin.ops", "boot.refusal", "boot.warning", "config.migrate", "cli", "ops.scrape"}
 
@@ -144,7 +155,8 @@ def compare(g: dict, c: dict) -> tuple[list, dict]:
     if bd is not None:
         classes.append("body"); detail["body"] = bd
     ge, ce = g.get("effects", {}), c.get("effects", {})
-    for k in ("usage", "metrics", "audit", "stderr", "egress", "readback"):
+    for k in ("usage", "usage_after_restart", "store_errors", "metrics", "audit", "stderr",
+              "egress", "readback"):
         if ge.get(k) != ce.get(k):
             classes.append(f"effects.{k}")
             if k == "stderr" and isinstance(ge.get(k), str) and isinstance(ce.get(k), str):
@@ -243,7 +255,7 @@ def main() -> int:
                     "id": e.get("id", e.get("cells", "?")), "rationale": e.get("rationale", ""), "by": e.get("by", "")}
             # The register may never quietly forgive a status or a billing figure: only a `breaking` entry
             # that names its CHANGELOG line may accept those classes, and no entry may be a total blanket.
-            money = base["classes"] & {"status", "effects.usage", "missing.candidate"}
+            money = base["classes"] & MONEY_CLASSES
             if money and not (base["kind"] == "breaking" and e.get("changelog")):
                 sys.exit(f"accepted-differences: entry {base['id']!r} accepts {sorted(money)} but is not kind=breaking with a changelog line")
             if "cells" not in e and not base["classes"] and "transform" not in e:
@@ -335,7 +347,7 @@ def main() -> int:
         acc = pre_acc if classes and detail.get("accepted.transform") else None
         if classes and acc is None:
             for e in accepted:
-                allowed = e["classes"] or (set(CLASS_ORDER) - {"status", "effects.usage", "missing.candidate", "missing.golden"} if e["kind"] != "breaking" else set(CLASS_ORDER))
+                allowed = e["classes"] or (set(CLASS_ORDER) - MONEY_CLASSES - {"missing.golden"} if e["kind"] != "breaking" else set(CLASS_ORDER))
                 if e["rx"].search(cid) and set(classes) <= allowed:
                     acc = e; break
         wt = c.get("weight")

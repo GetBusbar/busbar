@@ -416,20 +416,46 @@ fn zero_responses_usage() -> serde_json::Value {
 /// `incomplete_details`. Each is inserted ONLY when absent, so an arm that already set a real value
 /// (an `incomplete_details` object on a truncated response) keeps it.
 ///
-/// The IR response carries no echo of the request it answered, so the values are the spec's own
-/// defaults: `instructions: null`, `tools: []`, `tool_choice: "auto"`, `parallel_tool_calls: true`,
+/// `echo` is the ORIGINAL ingress request body — `Some` on every reachable cross-dialect path (a
+/// request in another dialect, or Responses itself, answered in Responses shape; see
+/// `IrResponse::request_echo` / `ResponsesWriter::store_request_echo`), `None` only when the caller
+/// had no parsed ingress body to thread. Each echo member reads the CLIENT'S actual value straight
+/// off the wire body when present there (own spelling: Responses request and response share these
+/// six field names byte-for-byte, so no re-typing through the IR is needed); an absent member (the
+/// client never set it, or `echo` itself is `None`) falls back to the spec's own default —
+/// `instructions: null`, `tools: []`, `tool_choice: "auto"`, `parallel_tool_calls: true`,
 /// `metadata: {}`, `temperature: 1`, `top_p: 1`. A same-protocol passthrough never reaches this
-/// writer (the upstream body is forwarded verbatim), so a real echo is preserved wherever one exists.
-fn fill_required_response_members(obj: &mut serde_json::Map<String, serde_json::Value>) {
+/// writer at all (the upstream body is forwarded verbatim), so this only ever answers a genuine
+/// cross-dialect hop.
+fn fill_required_response_members(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    echo: Option<&serde_json::Value>,
+) {
+    let echoed = |key: &str| echo.and_then(|e| e.get(key)).filter(|v| !v.is_null()).cloned();
     let defaults: [(&str, serde_json::Value); 8] = [
         ("incomplete_details", serde_json::Value::Null),
-        ("instructions", serde_json::Value::Null),
-        ("tools", serde_json::json!([])),
-        ("tool_choice", serde_json::json!("auto")),
-        ("parallel_tool_calls", serde_json::json!(true)),
-        ("metadata", serde_json::json!({})),
-        ("temperature", serde_json::json!(1.0)),
-        ("top_p", serde_json::json!(1.0)),
+        (
+            "instructions",
+            echoed("instructions").unwrap_or(serde_json::Value::Null),
+        ),
+        ("tools", echoed("tools").unwrap_or_else(|| serde_json::json!([]))),
+        (
+            "tool_choice",
+            echoed("tool_choice").unwrap_or_else(|| serde_json::json!("auto")),
+        ),
+        (
+            "parallel_tool_calls",
+            echoed("parallel_tool_calls").unwrap_or(serde_json::Value::Bool(true)),
+        ),
+        (
+            "metadata",
+            echoed("metadata").unwrap_or_else(|| serde_json::json!({})),
+        ),
+        (
+            "temperature",
+            echoed("temperature").unwrap_or_else(|| serde_json::json!(1.0)),
+        ),
+        ("top_p", echoed("top_p").unwrap_or_else(|| serde_json::json!(1.0))),
     ];
     for (key, value) in defaults {
         obj.entry(key.to_string()).or_insert(value);
@@ -1204,6 +1230,16 @@ pub struct ResponsesWriter {
     /// concatenates them here and drains the joined text into the finalized reasoning item at
     /// BlockStop. A poisoned lock degrades to empty text rather than panicking.
     reasoning_accum: std::sync::Mutex<std::collections::BTreeMap<usize, String>>,
+    /// Per-stream request-echo context: the ORIGINAL ingress request body, captured via
+    /// [`ProtocolWriter::set_request_echo`] before the first event is written. The pinned spec
+    /// requires every `Response` object to MIRROR certain request members verbatim (`temperature`,
+    /// `top_p`, `instructions`, `metadata`, `tool_choice`, `parallel_tool_calls`, `tools`); this is
+    /// the streaming twin of the buffered path's `IrResponse::request_echo` (which `write_response`
+    /// reads directly off its `resp` argument — no per-instance state needed there, one call, one
+    /// response). `None` when never set (same-protocol streams, which never reach this writer at
+    /// all, and any cross-protocol stream whose caller has no parsed ingress body). A poisoned lock
+    /// degrades to `None` (the spec DEFAULTS below), never to a panic on the request path.
+    request_echo: std::sync::Mutex<Option<serde_json::Value>>,
 }
 
 /// Accumulated function-call item fields for one open `output_index`, finalized into the
@@ -1246,6 +1282,7 @@ pub const ResponsesWriter: ResponsesWriter = ResponsesWriter {
     output_items: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     open_reasoning_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
     reasoning_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+    request_echo: std::sync::Mutex::new(None),
 };
 
 impl Clone for ResponsesWriter {
@@ -1342,6 +1379,12 @@ impl Clone for ResponsesWriter {
                     .lock()
                     .map(|m| m.clone())
                     .unwrap_or_default(),
+            ),
+            // Carry the captured request-echo context across a mid-stream `Protocol::clone` so the
+            // cloned writer's remaining terminal events still answer with the client's actual
+            // request values; a poisoned lock degrades to `None` (the spec defaults then apply).
+            request_echo: std::sync::Mutex::new(
+                self.request_echo.lock().map(|e| e.clone()).unwrap_or(None),
             ),
         }
     }
@@ -1463,6 +1506,23 @@ impl ResponsesWriter {
             .ok()
             .and_then(|m| m.clone())
             .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+    }
+
+    /// Store the ORIGINAL ingress request body for this stream (see [`ProtocolWriter::set_request_echo`]).
+    /// Lock poisoning degrades to a no-op (the request-echo members then fall back to the spec's
+    /// bare defaults) rather than panicking on the request path.
+    fn store_request_echo(&self, body: &serde_json::Value) {
+        if let Ok(mut slot) = self.request_echo.lock() {
+            *slot = Some(body.clone());
+        }
+    }
+
+    /// Return the request-echo context captured for this stream, or `None` if never set (a
+    /// same-protocol stream, a cross-protocol stream whose caller had no parsed ingress body, or a
+    /// poisoned lock). `fill_required_response_members` treats `None` exactly like an empty object —
+    /// every echo member falls back to the spec's default.
+    fn carried_request_echo(&self) -> Option<serde_json::Value> {
+        self.request_echo.lock().ok().and_then(|e| e.clone())
     }
 
     /// Return the next `sequence_number` for this stream and advance the counter. The first call

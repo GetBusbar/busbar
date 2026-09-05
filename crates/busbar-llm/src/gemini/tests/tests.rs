@@ -624,6 +624,7 @@ fn test_writer_text_blockstart_is_none() {
 fn test_write_request_image_s3_dropped_not_corrupted() {
     let writer = GeminiWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1450,6 +1451,8 @@ fn foreign_stop_reason_maps_to_other_not_verbatim() {
             created: None,
             system_fingerprint: None,
             stop_sequence: None,
+        
+            request_echo: None,
         };
         let wire = writer.write_response(&ir);
         assert_eq!(
@@ -1507,7 +1510,9 @@ fn test_response_identity_cross_protocol_emits_foreign_id() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let wire = writer.write_response(&ir);
     assert_eq!(
         wire[FIELD_RESPONSE_ID],
@@ -1544,7 +1549,9 @@ fn test_response_identity_none_id_is_omitted_not_fabricated() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let wire = writer.write_response(&ir);
     assert!(
         wire.get(FIELD_RESPONSE_ID).is_none(),
@@ -1629,6 +1636,7 @@ fn test_stream_message_start_no_identity_synthesizes_response_id() {
 fn test_write_request_omits_stream_field() {
     let writer = GeminiWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1752,6 +1760,7 @@ fn test_extract_error_expired_api_key_prose_is_auth() {
 fn test_write_request_thinking_only_turn_survives_with_placeholder() {
     let writer = GeminiWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1848,6 +1857,7 @@ fn test_write_request_thinking_only_turn_survives_with_placeholder() {
 fn test_write_request_null_tool_result_coerced_to_struct() {
     let writer = GeminiWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1911,6 +1921,7 @@ fn test_write_request_null_tool_result_coerced_to_struct() {
 fn test_write_request_scalar_tool_result_coerced_to_struct() {
     let writer = GeminiWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2047,6 +2058,7 @@ fn test_read_request_model_preserved_in_extra_once() {
 fn test_write_request_tool_result_plaintext_wrapped_not_dropped() {
     let writer = GeminiWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2110,6 +2122,7 @@ fn test_write_request_tool_result_plaintext_wrapped_not_dropped() {
 fn test_write_request_tool_result_json_passthrough() {
     let writer = GeminiWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2179,7 +2192,9 @@ fn test_response_identity_cross_protocol_synthesizes_id_when_created_set() {
         created: Some(1_700_000_000),
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let wire = writer.write_response(&ir);
     let synth = wire
         .get(FIELD_RESPONSE_ID)
@@ -2873,6 +2888,7 @@ fn test_generation_config_typed_fields_override_raw_extra() {
         serde_json::json!({"maxOutputTokens": 100, "responseMimeType": "text/plain"}),
     );
     let ir = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3012,7 +3028,9 @@ fn test_write_response_includes_total_token_count_cross_protocol() {
         created: Some(1_700_000_000), // cross-protocol boundary signal
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let wire = writer.write_response(&ir);
     assert_eq!(
         wire.pointer("/usageMetadata/totalTokenCount"),
@@ -3058,7 +3076,9 @@ fn test_write_response_omits_total_token_count_same_protocol() {
         created: None, // same-protocol: no boundary signal
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let wire = writer.write_response(&ir);
     assert!(
         wire.pointer("/usageMetadata/totalTokenCount").is_none(),
@@ -3087,7 +3107,9 @@ fn test_write_response_total_token_count_saturates() {
         created: Some(1_700_000_000), // cross-protocol
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let wire = writer.write_response(&ir);
     assert_eq!(
         wire.pointer("/usageMetadata/totalTokenCount"),
@@ -3130,7 +3152,9 @@ fn test_write_response_includes_total_token_count_when_only_model_present() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let wire = writer.write_response(&ir);
     assert_eq!(
         wire.pointer("/usageMetadata/totalTokenCount"),
@@ -3169,7 +3193,9 @@ fn test_write_response_model_only_total_token_count_saturates() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let wire = writer.write_response(&ir);
     assert_eq!(
         wire.pointer("/usageMetadata/totalTokenCount"),
@@ -3270,7 +3296,9 @@ fn test_write_response_tool_use_maps_to_stop() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let wire = writer.write_response(&ir);
     assert_eq!(
         wire.pointer("/candidates/0/finishReason")
@@ -3318,6 +3346,7 @@ fn test_stream_message_delta_tool_use_maps_to_stop() {
 fn test_write_request_image_url_sentinel_emits_file_data() {
     let writer = GeminiWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3366,6 +3395,7 @@ fn test_write_request_image_url_sentinel_emits_file_data() {
 fn test_write_request_base64_image_still_inline_data() {
     let writer = GeminiWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3744,6 +3774,7 @@ fn test_auth_headers_control_byte_key_omits_header() {
 fn test_tool_role_maps_to_user_for_function_response() {
     let writer = GeminiWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3807,6 +3838,7 @@ fn test_tool_role_maps_to_user_for_function_response() {
 fn test_assistant_tool_use_stays_model_role() {
     let writer = GeminiWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4027,6 +4059,7 @@ fn test_write_request_cross_protocol_function_response_name_matches_call() {
     let writer = GeminiWriter;
     let synthetic_id = "call_00000000deadbeef".to_string();
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4110,6 +4143,7 @@ fn test_write_request_cross_protocol_function_response_name_matches_call() {
 fn test_write_request_same_protocol_function_response_name_falls_back_to_id() {
     let writer = GeminiWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4338,6 +4372,7 @@ fn test_tool_use_array_input_coerced_to_object_args() {
     // write_request path
     let writer = GeminiWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4396,7 +4431,9 @@ fn test_tool_use_array_input_coerced_to_object_args() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let rwire = writer.write_response(&resp);
     let rargs = rwire
         .pointer("/candidates/0/content/parts/0/functionCall/args")
@@ -4440,7 +4477,9 @@ fn test_tool_use_object_input_passes_through_unchanged() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let rwire = writer.write_response(&resp);
     let rargs = rwire
         .pointer("/candidates/0/content/parts/0/functionCall/args")
@@ -4816,6 +4855,7 @@ fn context_length_override_only_fires_on_400_or_413() {
 /// field(s) under test so the assertion targets exactly one gap.
 fn base_ir_request() -> crate::ir::IrRequest {
     crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -6032,7 +6072,9 @@ fn write_response_reconstructs_prompt_token_count_with_cached() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = {
         let w = GeminiWriter;
         w.write_response(&resp)
@@ -6170,6 +6212,7 @@ fn test_read_request_captures_function_call_thought_signature_from_history() {
 #[test]
 fn test_outage_cross_protocol_tool_use_gets_sentinel_thought_signature() {
     let mut ir_req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -6247,6 +6290,7 @@ fn test_outage_cross_protocol_tool_use_gets_sentinel_thought_signature() {
 #[test]
 fn test_prepare_for_egress_does_not_overwrite_real_thought_signature() {
     let mut ir_req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -6313,6 +6357,7 @@ fn test_prepare_for_egress_does_not_overwrite_real_thought_signature() {
 #[test]
 fn test_vertex_lane_gets_no_sentinel_thought_signature() {
     let mut ir_req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -6377,6 +6422,7 @@ fn test_vertex_lane_gets_no_sentinel_thought_signature() {
 #[test]
 fn test_prepare_for_egress_fills_only_missing_signatures_in_parallel_calls() {
     let mut ir_req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -6485,7 +6531,9 @@ fn test_write_response_emits_real_signature_never_sentinel() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let wire = writer.write_response(&with_sig);
     assert_eq!(
         wire.pointer("/candidates/0/content/parts/0/thoughtSignature")

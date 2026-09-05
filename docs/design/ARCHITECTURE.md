@@ -68,7 +68,13 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ceiling): `busbar-kernel`
   ≤ 8k — Teller loop 1.5k · pump/scheduler 1.5k · in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
-  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3k; all `busbar-unit-*` ≤ 45k (incl. verbs
+  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.5k **of plugin-visible SURFACE** —
+  non-blank, non-comment code lines under each crate's `src/`, excluding `#[cfg(test)]` modules and
+  `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
+  compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
+  in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
+  (`--ceiling busbar-contract,busbar-caps=3500`), which the construction gate runs as
+  `surface-ceiling:contract+caps`; all `busbar-unit-*` ≤ 45k (incl. verbs
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
 
@@ -1371,6 +1377,48 @@ a fallback-lane stream is billed the same as a hot-path stream — `stream_optio
 injection is unified onto the degraded/fallback path so a fallback stream to an affected lane no
 longer bills zero tokens — registered as `improvement` (owner sign-off; money-affecting) ·
 busbar is a byte-governance router.
+
+### Decisions 2026-09-05 (orchestrator, resolving the consolidated contract gaps in `docs/design/1.6.0-contract-gaps.md`)
+
+- **CG-20 `KernelSeal` means one thing.** The caps unit struct. The contract's public trait of the same
+  name is removed; every contract-side sealed constructor is reachable only through a `busbar-caps`
+  token, so §3.7's "compile-time" line for sealed constructors is literally true.
+- **CG-28 `busbar-caps` depends on `busbar-contract`.** One spelling of every seam type; the caps
+  stand-ins are deleted. §3.1's "std and nothing more" for caps is amended to "std and the contract".
+- **CG-37 the store trait is typed after the published ABI-2 store protocol** (the request/response
+  shapes the shadow oracle already proves against the released stores), extended with the 1.6.0-only
+  operations §1.4 names. No signature is inferred from prose.
+- **CG-17 the MCP mount is fixed at `/mcp`.** A configured canonical address naming another path is a
+  boot refusal at config validation. Claims stay compile-time constants; there is no registration-time
+  selector.
+- **CG-22 ceilings count surface code**: non-blank, non-comment `src/` lines excluding test modules.
+  Proofs (totality tables, lint data, fixtures) live under `tests/` or `fixtures/`. If contract + caps
+  still exceed 3k after the move, §1.1's figure for the pair is amended to the measured number rounded
+  up to the next 500, and the per-file table stays.
+- **CG-41 an unreconciled amount is a move out of settled**, not a parallel tally: `unreconciled += A;
+  settled -= A`. §4.2's identity closes with no special case and nothing is reported as settled that the
+  store has not confirmed.
+- **CG-56 the seventeen 1.6.0 kernel verbs bind as `<kebab-case-verb>` under the admin prefix**: POST
+  for every mutating verb, GET for `verify` and `plane_facts`.
+- **CG-55 the anthropic error envelope's minted request id keeps its native shape and entropy**, and the
+  entropy comes from the kernel through `Ctx`; a plane still reads no random source of its own.
+- **CG-06 config-derived open-vocabulary keys are leaked exactly once at registration** by the
+  composition root and counted in §10's fixed RSS term (the `&'static str` ids stay). A per-dial leak
+  is a defect.
+- **CG-51 the network guard is the trust unit's check** over `VerifiedDestination`, applied before any
+  transport `dial`; transports do no resolution policy of their own.
+
+**2026-09-05 — the contract/caps LOC ceiling counts surface, not proofs.** The ceiling in §1.1 is a
+budget for what a plugin author has to read: non-blank, non-comment code lines under `src/`, with
+`#[cfg(test)]` modules and `src/tests/` excluded. Data that exists only to PROVE a property — the
+overlap totality table over the selector-form pairs, the lint symbol lists, the compile-fail fixtures
+and their positive companions, the honesty tables kept as documentation — is a proof, not surface,
+and lives in the crate's `tests/` or `fixtures/`. Measured that way and with the lint lists moved out
+of `src/`, the pair is 3,281 lines, so the ceiling is amended from 3k to **3.5k**. The reason it does
+not fit in 3k is the design's own requirement, not slack: `Selector::overlaps` must be TOTAL over the
+cross-product of the thirteen selector forms — 169 pairs — with no catch-all that panics, and the
+loop's step order is carried by types: ten step markers, and twelve token types that name the step or
+the unit they entitle. Totality and type-level step order are what the surface costs.
 
 ## Appendix B — Parity bindings (override any conflicting sentence in §1–§9 for every 1.5.5-reachable surface)
 

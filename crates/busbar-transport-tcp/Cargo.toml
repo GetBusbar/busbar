@@ -1,0 +1,20 @@
+[package]
+name = "busbar-transport-tcp"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The tcp transport: a byte stream, the base every session transport composes over."
+license = "Apache-2.0"
+
+# DEPENDENCY POLICY. A transport is in-tree only and never dynamically loaded, so it sits inside
+# the trusted computing base and is reviewed rather than manifest-gated. It still names only
+# `busbar-contract` plus the async runtime and stream plumbing it actually needs: no plane, no
+# kernel crate, no capability crate.
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+futures = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt", "sync", "io-util", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros"] }

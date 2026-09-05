@@ -30,10 +30,10 @@ pub struct PrometheusExport;
 
 impl PluginHttpDispatch for PrometheusExport {
     /// The app-less arm (never reached in production — the route table always dispatches WITH the app
-    /// via `handle_http_with_app` below). Renders the registry without a fresh gauge refresh so a
-    /// direct call still yields a valid exposition rather than an empty body.
+    /// via `handle_http_with_app` below). Renders the registry without a fresh gauge refresh; see
+    /// [`render_or_refuse`] for why an uninstalled recorder is refused rather than rendered empty.
     fn handle_http(&self, _req: &HttpEndpointRequest) -> HttpEndpointResponse {
-        ok_exposition(crate::metrics::render())
+        render_or_refuse()
     }
 
     /// The production arm: refresh the scrape-time gauges from the CURRENT `App` snapshot, then render
@@ -45,8 +45,46 @@ impl PluginHttpDispatch for PrometheusExport {
         app: &crate::state::App,
         _req: &HttpEndpointRequest,
     ) -> HttpEndpointResponse {
+        // Refresh (and render) ONLY once the recorder is installed — see `render_or_refuse` for why
+        // an uninstalled recorder must REFUSE rather than render an empty gauge-less exposition.
+        if !crate::metrics::recorder_installed() {
+            return refused();
+        }
         crate::metrics::refresh_scrape_gauges(app);
         ok_exposition(crate::metrics::render())
+    }
+}
+
+/// Render the exposition if the recorder is installed, else REFUSE the scrape rather than answer
+/// `200` with an empty body.
+///
+/// The route is mounted only when `export.prometheus` is configured, which is exactly the condition
+/// under which `metrics::configure` requested a recorder install — so by the time this route can be
+/// hit, an install was always requested. But the install itself runs on a background thread (its
+/// one-time clock calibration must not delay the listener bind), and on the thread-per-core data
+/// plane EVERY worker's SO_REUSEPORT listener is live and accepting the instant its own bind
+/// completes — independent of whether that background install has finished. A scrape landing in
+/// that boot window (or, in the rarer permanent-install-failure case, at ANY time after) must not
+/// come back as a `200` with an empty body: an operator wiring up Prometheus before traffic starts
+/// would reasonably read that as "the endpoint has nothing to say" rather than "not ready yet, retry".
+/// Refusing makes the two states distinguishable on the wire, matching the module contract that a
+/// scrape is either FULL or REFUSED, never an empty success.
+fn render_or_refuse() -> HttpEndpointResponse {
+    if !crate::metrics::recorder_installed() {
+        return refused();
+    }
+    ok_exposition(crate::metrics::render())
+}
+
+/// `503 Service Unavailable` with a `Retry-After` hint: the recorder install is a one-time,
+/// sub-second background step (or, far more rarely, has permanently failed — logged at install
+/// time), so a short retry is the correct operator action either way. No body: there is no
+/// exposition to show, and a real one is not being padded.
+fn refused() -> HttpEndpointResponse {
+    HttpEndpointResponse {
+        status: 503,
+        headers: vec![("retry-after".to_string(), "1".to_string())],
+        body: Vec::new(),
     }
 }
 

@@ -153,6 +153,9 @@ impl ProtocolReader for CohereReader {
 
         let mut extra = serde_json::Map::new();
         let mut system_blocks: Vec<crate::ir::IrBlock> = Vec::new();
+        // Count of `system`-role entries folded out of `messages` below — restores the 1.5.5
+        // `message_count` semantics (the raw wire array length) onto `IrFacts::shape()`.
+        let mut system_turns_folded: usize = 0;
 
         let mut messages: Vec<crate::ir::IrMessage> = Vec::new();
         if let Some(messages_val) = obj.get("messages") {
@@ -202,6 +205,7 @@ impl ProtocolReader for CohereReader {
                 // protocols), not carried as a System-role message — so it survives translation
                 // to a protocol whose writer reads req.system.
                 if role == crate::ir::IrRole::System {
+                    system_turns_folded += 1;
                     if let Some(content_val) = msg_val.get("content") {
                         if let Some(s) = content_val.as_str() {
                             system_blocks.push(crate::ir::IrBlock::Text {
@@ -644,6 +648,7 @@ impl ProtocolReader for CohereReader {
             user: None,
             parallel_tool_calls: None,
             system: system_blocks,
+            system_turns_folded,
             messages,
             tools,
             max_tokens,
@@ -1273,6 +1278,8 @@ impl ProtocolReader for CohereReader {
             created: None,
             system_fingerprint: None,
             stop_sequence: None,
+        
+            request_echo: None,
         })
     }
 }

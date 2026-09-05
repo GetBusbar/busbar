@@ -118,8 +118,9 @@ fn prompt_projection_keeps_empty_entries_aligned() {
     assert_eq!(p.messages[1].0, "assistant");
     assert_eq!(p.messages[1].1, "second turn");
 
-    // The in-band system turn: hoisted into the system slot, and the turn count is one lower than
-    // the wire array's length. Operator-visible, deliberate, and in the CHANGELOG.
+    // The in-band system turn: hoisted into the system slot for the prompt view, but the turn count
+    // a hook sees stays the wire array's length, exactly as the previous release counted it (a hook
+    // written against 1.5.5 must read the same message_count).
     let v: Value = serde_json::json!({
         "messages": [
             {"role": "system", "content": "OPERATOR SYSTEM PROMPT"},
@@ -135,7 +136,7 @@ fn prompt_projection_keeps_empty_entries_aligned() {
         "the system turn is not a turn any more"
     );
     assert_eq!(p.messages[0].0, "user");
-    assert_eq!(f.shape().turn_count, 1);
+    assert_eq!(f.shape().turn_count, 2, "the folded system turn still counts on the wire");
 
     // A role no reader recognises is a 400, not a `role: ""` a guardrail is asked to screen.
     let v: Value = serde_json::json!({"messages": [{"role": "wizard", "content": "hi"}]});

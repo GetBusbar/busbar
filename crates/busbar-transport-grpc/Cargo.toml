@@ -1,0 +1,36 @@
+[package]
+name = "busbar-transport-grpc"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The gRPC transport: unary and multiplexed streams over HTTP/2, byte-blind (no protobuf message meaning)."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_transport_grpc"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time"] }
+# `tonic` here is used ONLY for its codec/status/streaming machinery (`tonic::codec::Codec`,
+# `tonic::Status`, `tonic::server::Grpc`, `tonic::client::Grpc`) — the gRPC WIRE FRAMING (the
+# 5-byte length-prefix per message, the `grpc-status` trailer) with a byte-blind custom `Codec`
+# (see `codec.rs`) that carries no protobuf meaning at all. `default-features = false` (the
+# workspace pin) keeps `tonic::transport` (the whole `Channel`/`Server` framework, `axum`
+# included) OUT of this crate's build: the HTTP/2 listener and dialer below are this crate's own,
+# built directly on `hyper`/`hyper-util` (already-pinned workspace deps), which is the deliberate
+# choice this crate's own report explains: `tonic::transport::Server`'s routing is by declared
+# service NAME, and this transport is protocol-blind — it has no service name to route by.
+tonic = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }

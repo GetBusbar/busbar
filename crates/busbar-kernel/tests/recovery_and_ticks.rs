@@ -11,7 +11,7 @@ use busbar_kernel::recovery::{
     frame, owed_after, recover_all, truncate_torn_tail, voids_claim, HoldRecord, KillPoint, Owed,
     TailVerdict,
 };
-use busbar_kernel::slice::Epoch;
+use busbar_kernel::slice::{BucketId, ConcurrencyGauge, Epoch, LeaseSet};
 use busbar_kernel::teller::{Evidence, Kernel};
 use busbar_kernel::tick::{
     drain_outcome, drain_verdict, fleet_action, session_tick, sweep, sweep_settle, DrainVerdict,
@@ -151,8 +151,26 @@ fn a_lost_task_is_settled_within_one_tick() {
         accrued_floor: 42,
         ..Evidence::default()
     };
-    let end = sweep_settle(&kernel, slot.cell(), verdict, &evidence, &canary)
-        .expect("the sweep is the second key to the cell");
+    // The unit was holding a concurrency lease when its task disappeared. The sweep is one of the
+    // two ends a unit has, so the lease goes back here or it never goes back at all.
+    let gauge = ConcurrencyGauge::new();
+    let bucket = BucketId::all("team");
+    gauge.acquire(&bucket, 4).expect("room in the gauge");
+    let mut leases = LeaseSet::new();
+    leases.take(bucket.clone());
+
+    let end = sweep_settle(
+        &kernel,
+        slot.cell(),
+        verdict,
+        &evidence,
+        &canary,
+        &mut leases,
+        &gauge,
+    )
+    .expect("the sweep is the second key to the cell");
+    assert_eq!(gauge.count(&bucket), 0, "the lost task kept its lease");
+    assert!(leases.is_empty());
     assert_eq!(
         end.outcome(),
         busbar_caps::Outcome::Failed(StepName::Route, ReasonCode::TaskLost)
@@ -161,7 +179,16 @@ fn a_lost_task_is_settled_within_one_tick() {
     assert_eq!(canary.counts().settlements, 1);
 
     // And there is no third settlement: a second sweep of the same cell does nothing.
-    assert!(sweep_settle(&kernel, slot.cell(), verdict, &evidence, &canary).is_none());
+    assert!(sweep_settle(
+        &kernel,
+        slot.cell(),
+        verdict,
+        &evidence,
+        &canary,
+        &mut leases,
+        &gauge
+    )
+    .is_none());
 }
 
 #[test]
@@ -200,12 +227,16 @@ fn a_slow_unit_is_not_a_lost_one() {
 
     let cell = HoldCell::new(arrival_hold(&kernel, principal()));
     let canary = Canary::new();
+    let gauge = ConcurrencyGauge::new();
+    let mut leases = LeaseSet::new();
     assert!(sweep_settle(
         &kernel,
         &cell,
         Sweep::AlarmOnly,
         &Evidence::default(),
-        &canary
+        &canary,
+        &mut leases,
+        &gauge
     )
     .is_none());
 }

@@ -41,6 +41,12 @@
 #   Then `cargo check` the three neutral crates (with the removed plane's feature off, the others kept)
 #   and the bin (default features, now minus the plane). Both compiling = the strong form PASSES for P.
 #
+#   LLM BOOT+SERVE (tracker C13): compiling is not booting. llm is a plane on the same seam as
+#   mcp/a2a/voice, not core, so its strong-form removal additionally BUILDS (not just checks) the bin
+#   from the same scratch and BOOTS it twice — once with `mcp:` mounted (its own closed auth chain),
+#   once with `agents:`/`public_url` (A2A, open) — serving one MCP request and one A2A request while
+#   `/v1/chat/completions` answers a plain 404 on the open boot. See `llm_boot_serve*` below.
+#
 # MODES (same posture as scripts/plane-purity-lint.sh — informational until the extraction lands):
 #   --selftest        Prove the harness itself works before its verdict is trusted (run FIRST in CI):
 #                     that the removal logic really removes the crate/member/dep (grep the scratch), and
@@ -61,8 +67,9 @@
 #   coupling scripts/plane-purity-lint.sh already ledgers. It is reported separately from the shipped-build
 #   verdict because a test-only dual-compile is not what "still compile" means to an operator.
 #
-# Fail-closed bash 3.2 + POSIX (awk for the manifest edits, tar for the copy). No python, no git-write —
-# the same bare-runner posture as proto-deletion-gate.sh / plane-purity-lint.sh.
+# Fail-closed bash 3.2 + POSIX (awk for the manifest edits, tar for the copy, python3 stdlib only for
+# the llm boot leg's port-pair picker — the same TOCTOU-minimising helper proto-deletion-gate.sh uses).
+# No git-write — the same bare-runner posture as proto-deletion-gate.sh / plane-purity-lint.sh.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 REPO="$(pwd)"
@@ -210,6 +217,158 @@ apply_removal() {
   strip_workspace_edges "$s" "$p"
 }
 
+# ── PICKING A FREE PORT PAIR ─────────────────────────────────────────────────────────────────────
+# Same TOCTOU-minimising approach as scripts/proto-deletion-gate.sh's `free_port`: bind a
+# CONSECUTIVE PAIR (data + admin) low in the range and hold both until the moment we print, so a
+# sibling gate's own boot cannot steal the number between our check and busbar's bind.
+free_port_pair() {
+  python3 - <<'PYEOF' 2>/dev/null
+import socket, random
+for _ in range(200):
+    base = random.randrange(30000, 45000, 2)
+    socks = []
+    try:
+        for port in (base, base + 1):
+            s = socket.socket()
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            s.bind(("127.0.0.1", port))
+            socks.append(s)
+        print(base)
+        break
+    except OSError:
+        continue
+    finally:
+        for s in socks:
+            s.close()
+PYEOF
+}
+
+# ── LLM BOOT+SERVE LEG (tracker C13) ─────────────────────────────────────────────────────────────
+# The two `strong_form` legs above are cargo-CHECK only — they prove the neutral crates and the bin
+# still COMPILE with busbar-llm physically gone, but "compiles" is not "boots and serves" (R-D:
+# scripts/proto-deletion-gate.sh already makes that boot-level claim for the FEATURE-off axis, per
+# protocol/plane). llm is a plane on the same seam as mcp/a2a/voice, not core, so its STRONG-FORM
+# removal gets the same boot-level proof this function supplies: with busbar-llm's crate directory
+# actually gone from the scratch (the same tar-copy + `apply_removal` mutation `strong_form` already
+# performed on `$1`), BUILD the bin for real and boot it against a config naming ZERO llm pools.
+#
+# TWO BOOTS, not one: an `mcp:` block REFUSES to boot with an open chain (config_validate:
+# "auth.chain is empty ... serves the MCP server endpoint to ANONYMOUS callers"), so mounting it
+# forces a closed `auth: { chain: [keys] }` that would then 401 an unauthenticated
+# `/v1/chat/completions` before routing ever sees it — masking "the route is gone" behind "the
+# request wasn't authenticated". `agents:`/`public_url` (A2A) carries no such requirement, so the
+# second boot mounts A2A on an OPEN config and takes its plain 404 there, where auth cannot be the
+# reason. Together the two boots serve one MCP request and one A2A request and pin the LLM route's
+# absence unambiguously.
+llm_boot_serve() {
+  local s="$1" log rc bin fail=0
+  log="$CACHE_TARGET/.plane-delete-llm-boot-build.log"; mkdir -p "$CACHE_TARGET"
+  CARGO_TARGET_DIR="$CACHE_TARGET" cargo build --manifest-path "$s/Cargo.toml" -p busbar >"$log" 2>&1; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    red "  llm boot leg: bin FAILED to build (not just check) with busbar-llm physically gone"
+    grep -m4 -E "error(\[|:)|couldn't read" "$log" | sed 's/^/      /'
+    return 1
+  fi
+  bin="$CACHE_TARGET/debug/busbar"
+  [ -x "$bin" ] || { red "  llm boot leg: built binary not found at $bin"; return 1; }
+
+  llm_boot_serve_mcp "$bin" || fail=1
+  llm_boot_serve_a2a "$bin" || fail=1
+  [ "$fail" -eq 0 ] && grn "  llm boot leg: binary BOOTS with busbar-llm physically gone, serves MCP + A2A, /v1/chat/completions 404s"
+  return "$fail"
+}
+
+# boot A — `mcp:` mounted on the closed chain it requires; zero llm pools. Asserts the MCP metadata
+# route (its one unauthenticated route) mounts, i.e. serves — the same up-signal
+# proto-deletion-gate.sh's mcp-b-mounted control uses.
+llm_boot_serve_mcp() {
+  local bin="$1" ports port admin_port fix pid up code
+  ports="$(free_port_pair)"; [ -n "$ports" ] || { red "  llm boot leg (mcp): no free port pair"; return 1; }
+  port="$ports"; admin_port=$((port + 1))
+  fix="$(mktemp -d "${TMPDIR:-/tmp}/plane-delete-llm-boot-mcp.XXXXXX")" || { red "  llm boot leg (mcp): mktemp failed"; return 1; }
+  printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nproviders: {}\nmodels: {}\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  signing_key: { env: BUSBAR_SIGNING_KEY }\n  chain: [keys]\n  admin_auth: [admin-tokens]\nmcp:\n  canonical_uri: https://busbar.example.com/mcp\n  authorization_servers:\n    - https://login.example.com\n' \
+    "$port" "$admin_port" >"$fix/config.yaml"
+  printf '{}\n' >"$fix/providers.yaml"
+
+  MOCK_KEY=test-key BUSBAR_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001 \
+  BUSBAR_ADMIN_TOKEN=admin-token-for-plane-delete-llm-boot \
+  BUSBAR_CONFIG="$fix/config.yaml" BUSBAR_PROVIDERS="$fix/providers.yaml" \
+  exec "$bin" >"$fix/boot.log" 2>&1 &
+  pid=$!
+
+  up=""
+  for _ in $(seq 1 60); do
+    if curl -fsS "http://127.0.0.1:$port/.well-known/oauth-protected-resource/mcp" >/dev/null 2>&1; then up=1; break; fi
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.5
+  done
+  if [ -z "$up" ]; then
+    red "  llm boot leg (mcp): the llm-deleted binary did not come up with mcp mounted"
+    tail -20 "$fix/boot.log" 2>/dev/null | sed 's/^/      /'
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
+    return 1
+  fi
+
+  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/.well-known/oauth-protected-resource/mcp")"
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
+  if [ "$code" = "200" ]; then
+    note "llm boot leg: MCP metadata route serves (200) with busbar-llm physically gone"
+    return 0
+  fi
+  red "  llm boot leg (mcp): MCP metadata route did not mount — expected 200, got $code"
+  return 1
+}
+
+# boot B — `agents:`+`public_url` (A2A) mounted on an OPEN chain (no `mcp:` block, so no closed-chain
+# requirement); zero llm pools. Asserts POST /a2a serves (non-404) and, on this SAME open boot,
+# POST /v1/chat/completions is a plain 404 — auth cannot be the reason, since this boot took none.
+llm_boot_serve_a2a() {
+  local bin="$1" ports port admin_port fix pid up code fail=0
+  ports="$(free_port_pair)"; [ -n "$ports" ] || { red "  llm boot leg (a2a): no free port pair"; return 1; }
+  port="$ports"; admin_port=$((port + 1))
+  fix="$(mktemp -d "${TMPDIR:-/tmp}/plane-delete-llm-boot-a2a.XXXXXX")" || { red "  llm boot leg (a2a): mktemp failed"; return 1; }
+  printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nproviders: {}\nmodels: {}\nagents:\n  probe:\n    url: https://remote-agent.example.com/a2a\n    pin:\n      mechanism: unpinned\n' \
+    "$port" "$admin_port" >"$fix/config.yaml"
+  printf '{}\n' >"$fix/providers.yaml"
+
+  MOCK_KEY=test-key BUSBAR_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001 \
+  BUSBAR_ADMIN_TOKEN=admin-token-for-plane-delete-llm-boot \
+  BUSBAR_CONFIG="$fix/config.yaml" BUSBAR_PROVIDERS="$fix/providers.yaml" \
+  exec "$bin" >"$fix/boot.log" 2>&1 &
+  pid=$!
+
+  up=""
+  for _ in $(seq 1 60); do
+    if curl -fsS "http://127.0.0.1:$port/stats" >/dev/null 2>&1; then up=1; break; fi
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.5
+  done
+  if [ -z "$up" ]; then
+    red "  llm boot leg (a2a): the llm-deleted binary did not come up"
+    tail -20 "$fix/boot.log" 2>/dev/null | sed 's/^/      /'
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
+    return 1
+  fi
+
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$port/a2a" \
+    -H 'content-type: application/json' -d '{"jsonrpc":"2.0","method":"message/send","id":1}')"
+  case "$code" in
+    404) fail=1; red "  llm boot leg (a2a): POST /a2a answered 404 — the A2A plane did not mount" ;;
+    *)   note "llm boot leg: POST /a2a serves ($code, non-404) with busbar-llm physically gone" ;;
+  esac
+
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$port/v1/chat/completions" \
+    -H 'content-type: application/json' -d '{"model":"test-model","messages":[{"role":"user","content":"hi"}]}')"
+  if [ "$code" = "404" ]; then
+    note "llm boot leg: POST /v1/chat/completions is a plain 404 (open boot, no auth involved) — the LLM plane's route left with the crate"
+  else
+    fail=1; red "  llm boot leg (a2a): POST /v1/chat/completions answered $code, not 404 — the LLM plane's route survived deletion"
+  fi
+
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
+  return "$fail"
+}
+
 # ── the check runner ──────────────────────────────────────────────────────────────────────────────
 # run_check <scratch> <logfile> -- <cargo args…>   → returns cargo's exit code.
 # A SHARED target dir keeps external-dep artifacts warm across planes. `--locked` is deliberately NOT
@@ -257,6 +416,15 @@ strong_form() {
   else
     fail=1; red "  bin (busbar) DOES NOT compile without busbar-$p"
     grep -m4 -E "error(\[|:)|couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
+  fi
+
+  # Leg 3 (llm only, tracker C13) — BOOT+SERVE, not just compile: build the bin for real from this
+  # same scratch (busbar-llm's directory already physically gone) and prove it boots serving MCP +
+  # A2A with a plain 404 on the LLM money-path route. mcp/a2a/voice already have the boot-level proof
+  # on the FEATURE-off axis (scripts/proto-deletion-gate.sh); this is llm's analogue on the
+  # STRONG-FORM (crate-physically-deleted) axis, which is what the tracker row asks for.
+  if [ "$p" = "llm" ] && [ "$rc" -eq 0 ]; then
+    llm_boot_serve "$s" || fail=1
   fi
 
   # Optional witness probe (informational): the test-support #[path] dual-compile.

@@ -297,6 +297,7 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![IrMessage {
             role: IrRole::Tool,
             content: vec![crate::ir::IrBlock::ToolResult {
@@ -361,6 +362,7 @@ fn write_request_emits_max_tokens_from_modeled_cap() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![IrMessage {
             role: IrRole::User,
             content: vec![text_block("hi")],
@@ -494,6 +496,7 @@ fn write_request_omits_token_cap_when_absent() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![IrMessage {
             role: IrRole::User,
             content: vec![text_block("hi")],
@@ -531,6 +534,7 @@ fn write_request_keeps_tool_use_on_user_message() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![IrMessage {
             role: IrRole::User,
             content: vec![IrBlock::ToolUse {
@@ -584,6 +588,7 @@ fn write_request_pure_tool_result_message_emits_only_flat_entries() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![IrMessage {
             role: IrRole::Tool,
             content: vec![IrBlock::ToolResult {
@@ -634,6 +639,7 @@ fn write_request_tool_role_mixed_content_not_dropped() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![IrMessage {
             role: IrRole::Tool,
             content: vec![
@@ -717,6 +723,7 @@ fn write_request_tool_result_on_user_message_emits_tool_message() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![IrMessage {
             role: IrRole::User,
             content: vec![IrBlock::ToolResult {
@@ -790,7 +797,9 @@ fn write_response_joins_text_blocks_and_keeps_tool_calls() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = OpenAiWriter.write_response(&resp);
     let msg = &out["choices"][0]["message"];
     assert_eq!(msg["content"], serde_json::json!("Hello world"));
@@ -826,7 +835,9 @@ fn write_response_content_null_when_no_text() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = OpenAiWriter.write_response(&resp);
     assert_eq!(
         out["choices"][0]["message"]["content"],
@@ -955,7 +966,9 @@ fn cross_protocol_write_synthesizes_valid_id() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = OpenAiWriter.write_response(&resp);
     let id = out["id"].as_str().expect("synthesized id is a string");
     assert!(
@@ -999,7 +1012,9 @@ fn cross_protocol_write_response_emits_fallback_model() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = OpenAiWriter.write_response(&resp);
     let obj = out.as_object().expect("response object");
     assert!(
@@ -1031,7 +1046,9 @@ fn write_response_preserves_upstream_model_over_fallback() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = OpenAiWriter.write_response(&resp);
     assert_eq!(out["model"], serde_json::json!("gpt-4o-mini"));
 }
@@ -1301,7 +1318,9 @@ fn write_response_total_tokens_saturates_on_overflow() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     // Must not panic (debug) or wrap (release); saturates at u64::MAX.
     let out = OpenAiWriter.write_response(&resp);
     assert_eq!(out["usage"]["total_tokens"], serde_json::json!(u64::MAX));
@@ -1405,6 +1424,7 @@ fn write_request_tool_call_only_assistant_has_null_content() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![IrMessage {
             role: IrRole::Assistant,
             content: vec![IrBlock::ToolUse {
@@ -1678,6 +1698,7 @@ fn write_request_non_text_system_block_does_not_vanish_silently() {
                 cache_control: None,
             },
         ],
+        system_turns_folded: 0,
         messages: vec![IrMessage {
             role: IrRole::User,
             content: vec![text_block("hi")],
@@ -1868,6 +1889,7 @@ fn write_request_assistant_tool_result_block_not_emitted_as_content() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![IrMessage {
             role: IrRole::Assistant,
             content: vec![
@@ -1927,6 +1949,7 @@ fn write_request_thinking_block_dropped_from_message_content() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![IrMessage {
             role: IrRole::Assistant,
             content: vec![
@@ -2176,7 +2199,9 @@ fn write_response_emits_null_finish_reason_when_stop_reason_none() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = OpenAiWriter.write_response(&resp);
     let choice = out["choices"][0].as_object().expect("choice object");
     assert!(
@@ -2220,6 +2245,8 @@ fn write_response_maps_finish_reason_enum_values() {
             created: None,
             system_fingerprint: None,
             stop_sequence: None,
+        
+            request_echo: None,
         };
         let out = OpenAiWriter.write_response(&resp);
         assert_eq!(
@@ -3008,6 +3035,7 @@ fn req_with_tool(
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: Vec::new(),
         tools: vec![crate::ir::IrTool {
             name: "get_weather".to_string(),
@@ -3212,7 +3240,9 @@ fn write_response_safety_round_trips_to_content_filter() {
         created: Some(1),
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = OpenAiWriter.write_response(&resp);
     assert_eq!(
         out["choices"][0]["finish_reason"],
@@ -3404,6 +3434,7 @@ fn write_request_string_tool_arguments_emitted_verbatim() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![IrMessage {
             role: IrRole::Assistant,
             content: vec![crate::ir::IrBlock::ToolUse {
@@ -3464,7 +3495,9 @@ fn write_response_string_tool_arguments_emitted_verbatim() {
         created: Some(1),
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = OpenAiWriter.write_response(&resp);
     let args = &out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"];
     assert_eq!(
@@ -3768,6 +3801,7 @@ fn test_ir_request() -> crate::ir::IrRequest {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![IrMessage {
             role: IrRole::User,
             content: vec![text_block("hi")],
@@ -4245,6 +4279,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
             content: vec![
@@ -4317,6 +4352,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
             content: vec![
@@ -4468,7 +4504,9 @@ fn write_response_reconstructs_prompt_tokens_total_with_cached_details() {
         created: Some(1_700_000_000),
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = OpenAiWriter.write_response(&resp);
     assert_eq!(
         out["usage"]["prompt_tokens"],
@@ -4504,7 +4542,9 @@ fn write_response_omits_cached_details_when_no_cache_read() {
         created: Some(1),
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = OpenAiWriter.write_response(&resp);
     assert_eq!(out["usage"]["prompt_tokens"], serde_json::json!(7));
     assert!(
@@ -4795,7 +4835,9 @@ fn write_response_carries_citations_with_join_relative_offsets() {
             detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
-    };
+    
+            request_echo: None,
+        };
 
     let v = OpenAiWriter.write_response(&resp);
     let anns = v["choices"][0]["message"]["annotations"]
@@ -4885,7 +4927,9 @@ fn url_annotation_base_accumulates_in_characters() {
             detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
-    };
+    
+            request_echo: None,
+        };
     let v = OpenAiWriter.write_response(&resp);
     let anns = v["choices"][0]["message"]["annotations"]
         .as_array()
@@ -4953,7 +4997,9 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
             detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
-    };
+    
+            request_echo: None,
+        };
     let v = OpenAiWriter.write_response(&resp);
     assert!(v["choices"][0]["message"].get("annotations").is_none());
 }
@@ -5253,7 +5299,9 @@ fn openai_write_drops_thinking_observably() {
         system_fingerprint: None,
         stop_sequence: None,
         logprobs: Vec::new(),
-    };
+    
+            request_echo: None,
+        };
 
     let cap = WarnCapture::default();
     let sub = tracing_subscriber::registry().with(cap.clone());
@@ -5399,6 +5447,7 @@ fn plain_ir_response(logprobs: Vec<crate::ir::IrTokenLogprob>) -> crate::ir::IrR
         created: Some(1),
         system_fingerprint: None,
         stop_sequence: None,
+        request_echo: None,
     }
 }
 

@@ -11,6 +11,14 @@ impl ProtocolWriter for ResponsesWriter {
         "/v1/responses"
     }
 
+    /// Latch the ORIGINAL ingress request body for this stream so `write_response_events` can answer
+    /// the spec's request-echo members (`temperature`/`top_p`/`instructions`/`metadata`/
+    /// `tool_choice`/`parallel_tool_calls`/`tools`) with the client's actual values. See
+    /// `ResponsesWriter::store_request_echo` / `fill_required_response_members`.
+    fn set_request_echo(&self, ingress_request_body: &serde_json::Value) {
+        self.store_request_echo(ingress_request_body);
+    }
+
     fn dropped_egress_controls(&self, req: &crate::ir::IrRequest) -> Vec<&'static str> {
         // Mirrors the `write_request` drop-warns: the `/v1/responses` create API models `top_p` and
         // `top_logprobs` but NOT `top_k`, `stop`, `frequency_penalty`, `presence_penalty`, `seed`, or
@@ -733,7 +741,7 @@ impl ProtocolWriter for ResponsesWriter {
                 // The spec requires the request-echo members (`instructions`, `tools`,
                 // `tool_choice`, `parallel_tool_calls`, `metadata`, `temperature`, `top_p`) and a
                 // nullable `incomplete_details` on EVERY Response object, including this skeleton.
-                fill_required_response_members(&mut resp_obj);
+                fill_required_response_members(&mut resp_obj, self.carried_request_echo().as_ref());
                 vec![(
                     EVT_RESPONSE_CREATED.to_string(),
                     serde_json::json!({ "type": EVT_RESPONSE_CREATED, "response": resp_obj }),
@@ -1222,7 +1230,7 @@ impl ProtocolWriter for ResponsesWriter {
                 resp_obj.insert("error".to_string(), serde_json::Value::Null);
                 // Spec-required request-echo members plus `incomplete_details: null` on a completed
                 // response (the incomplete arm above already set the real object, which is kept).
-                fill_required_response_members(&mut resp_obj);
+                fill_required_response_members(&mut resp_obj, self.carried_request_echo().as_ref());
 
                 // The terminal event's NAME and inner `type` MUST agree with the inner
                 // `response.status`: a native /v1/responses stream emits `response.completed` for a
@@ -1306,7 +1314,7 @@ impl ProtocolWriter for ResponsesWriter {
                     serde_json::json!({ "code": code, "message": message }),
                 );
                 // The same spec-required members every Response object carries.
-                fill_required_response_members(&mut resp_obj);
+                fill_required_response_members(&mut resp_obj, self.carried_request_echo().as_ref());
                 vec![(
                     EVT_RESPONSE_FAILED.to_string(),
                     serde_json::json!({ "type": EVT_RESPONSE_FAILED, "response": resp_obj }),
@@ -1525,7 +1533,7 @@ impl ProtocolWriter for ResponsesWriter {
         }
         // Spec-required request-echo members plus `incomplete_details: null` on a completed
         // response (the incomplete branch above already set the real object, which is kept).
-        fill_required_response_members(&mut obj);
+        fill_required_response_members(&mut obj, resp.request_echo.as_ref());
 
         serde_json::Value::Object(obj)
     }

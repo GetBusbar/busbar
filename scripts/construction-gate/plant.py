@@ -37,6 +37,14 @@ TOUCHED = [
     "crates/busbar-substrate/src/plane_host/mod.rs",
     "crates/busbar-substrate/src/teller/run.rs",
     "crates/busbar-core/src/router.rs",
+    "crates/busbar-kernel/src/arena.rs",
+    "crates/busbar-kernel/src/teller.rs",
+    "crates/busbar-kernel/src/lib.rs",
+    "crates/hook-test-plugin/Cargo.toml",
+    "crates/busbar-plane-llm/src/lib.rs",
+    "crates/busbar-contract/src/kinds.rs",
+    "crates/busbar-unit-breaker/src/lib.rs",
+    "crates/busbar-unit-admission/src/cells.rs",
 ]
 
 
@@ -127,6 +135,94 @@ def plant(rule, pristine, scratch, cfg, baseline):
     elif rule == "one-pick-site":
         append(scratch, "crates/busbar-llm/src/engine/select.rs",
                "async fn planted_pick() { let _ = pick_among(a, b, c, d, e, f, g).await; }")
+    elif rule == "token-sealed:kernel-seal":
+        # A unit crate's PRODUCTION source (not its own test module) minting the kernel seal
+        # directly -- the forged-seal case the unit test modules are allowed but production never
+        # is.
+        append(scratch, "crates/busbar-unit-admission/src/cells.rs",
+               "pub(crate) fn planted_forge_seal() { let _ = busbar_caps::KernelSeal::acquire_for_kernel(); }")
+    elif rule == "token-sealed:admit-token-mint":
+        append(scratch, "crates/busbar-unit-admission/src/cells.rs",
+               "pub(crate) fn planted_forge_admit(seal: &busbar_caps::KernelSeal) { "
+               "let _ = busbar_caps::AdmitToken::mint(seal); }")
+    elif rule == "loc-ceilings:kernel:arena":
+        # A file whose own ceiling has no slack (275/300): a modest append breaches only its own
+        # row and, thanks to the aggregate rows' calibration slack (see plant.py's calibrate note
+        # in construction-gate.sh), leaves the kernel/union totals with room to spare.
+        n = 40
+        body = "\n".join(f"    let _planted_{i} = 1;" for i in range(n))
+        append(scratch, "crates/busbar-kernel/src/arena.rs", f"fn planted_bloat() {{\n{body}\n}}")
+    elif rule == "manifest-allowlist:hook-test-plugin":
+        path = os.path.join(scratch, "crates/hook-test-plugin/Cargo.toml")
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        if "[dependencies]" not in src:
+            nothing_to_plant("crates/hook-test-plugin/Cargo.toml has no [dependencies] table")
+        src = src.replace("[dependencies]", '[dependencies]\nbusbar-kernel = { path = "../busbar-kernel" }', 1)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(src)
+    elif rule == "source-denylist:busbar-plane-llm":
+        append(scratch, "crates/busbar-plane-llm/src/lib.rs",
+               "pub(crate) fn planted_io() { let _ = reqwest::Client::new(); }")
+    elif rule == "lean-core":
+        # lib.rs carries no per-file loc-ceilings row, so one planted literal here trips only
+        # lean-core, not a LOC ceiling too.
+        append(scratch, "crates/busbar-kernel/src/lib.rs",
+               'pub(crate) fn planted_dialect_literal() -> &\'static str { "openai" }')
+    elif rule == "no-default-bodies":
+        rel = "crates/busbar-contract/src/kinds.rs"
+        path = os.path.join(scratch, rel)
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        needle = "fn hook_kind(&self) -> HookKindDecl;"
+        if needle not in src:
+            nothing_to_plant(f"`{needle}` not found in {rel}")
+        src = src.replace(needle, "fn hook_kind(&self) -> HookKindDecl { HookKindDecl::Tap }", 1)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(src)
+    elif rule == "sealed-unit-traits":
+        rel = "crates/busbar-unit-breaker/src/lib.rs"
+        path = os.path.join(scratch, rel)
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        needle = "pub trait Breaker: sealed::Sealed {"
+        if needle not in src:
+            nothing_to_plant(f"`{needle}` not found in {rel}")
+        src = src.replace(needle, "pub trait Breaker {", 1)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(src)
+    elif rule == "hold-discipline:no-early-exit":
+        # Edits the take() line IN PLACE (appends the early return on the same line) rather than
+        # inserting a new line, so the file's line count -- and its exact-ratchet loc-ceilings row
+        # -- does not move; only the hold-discipline finding should fire. Anchored to AFTER the
+        # `pub fn exit<U: Units>(` signature so it patches the real function, not the doc comment's
+        # illustrative copy of the same two lines above it.
+        rel = "crates/busbar-kernel/src/teller.rs"
+        path = os.path.join(scratch, rel)
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        sig = "pub fn exit<U: Units>("
+        sig_at = src.find(sig)
+        needle = "let taken = run.cell.take(&ExitToken::mint(seal));"
+        needle_at = src.find(needle, sig_at) if sig_at >= 0 else -1
+        if sig_at < 0 or needle_at < 0:
+            nothing_to_plant(f"the exit()'s take() line not found in {rel}")
+        src = (src[:needle_at]
+               + needle + " if run.meter.total() == u64::MAX { return Ended::AlreadySettled; }"
+               + src[needle_at + len(needle):])
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(src)
+    elif rule == "forbid-unsafe:busbar-plane-llm":
+        rel = "crates/busbar-plane-llm/src/lib.rs"
+        path = os.path.join(scratch, rel)
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        needle = "#![forbid(unsafe_code)]\n"
+        if needle not in src:
+            nothing_to_plant(f"`{needle.strip()}` not found in {rel}")
+        src = src.replace(needle, "", 1)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(src)
     elif rule == "duplicate-dispatch":
         # Copy a brace-balanced block of the hot-path twin into the degraded twin, from a region
         # the baseline did not already report as shared, so the duplicated-line total must rise.

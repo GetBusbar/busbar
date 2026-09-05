@@ -30,6 +30,10 @@
 #                    binding is mapped to a check that still exists in the tree (test, oracle cell,
 #                    lint, gate). An unmapped binding is a named gap and is RED here -- "done" means
 #                    nothing we designed is unproven. Existence only; the checks run in their own tiers.
+#   changelog        scripts/changelog-register-check.sh --check: every `kind: breaking` entry in
+#                    testing/shadow-oracle/accepted-differences.json has its `changelog` field's exact
+#                    line present, verbatim, in CHANGELOG.md -- a named break the owner accepted cannot
+#                    silently fall out of the release notes.
 # Every sub-gate runs its own `--selftest` FIRST where it has one, then its `--check`, so a gate that
 # could not fire is refused before its verdict is trusted (the house rule).
 #
@@ -241,6 +245,19 @@ fi
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
+begin_group "CHANGELOG — every breaking register entry is named"
+# testing/shadow-oracle/accepted-differences.json's own differ refuses an entry that accepts
+# status/effects.usage without kind=breaking and a `changelog` field; this gate closes the other
+# half -- that the named line was actually WRITTEN, verbatim, in CHANGELOG.md, not just declared.
+if [ -f scripts/changelog-register-check.sh ]; then
+  step "changelog-register-check --selftest" bash scripts/changelog-register-check.sh --selftest
+  step "changelog-register-check --check"    bash scripts/changelog-register-check.sh --check
+else
+  absent_step "changelog register gate" "scripts/changelog-register-check.sh"
+fi
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "INVENTORY-COVERAGE — every docs/design/inventory/*.md row id is bound to an oracle cell"
 # Appendix B says every inventory row is a parity binding AND an oracle cell; this is the check that
 # was missing. qa/inventory-gaps.json names every row id with no citing cell yet, so a gap is a
@@ -254,11 +271,36 @@ fi
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
+begin_group "KERNEL — the Teller loop battery, the capability fixtures and attempt identity are green"
+# The kernel crate's integration tests are the loop battery (step order, refusal stops at its step,
+# every reason posts, the settlement table, the two-sided canary, kill points). The caps crate's
+# compile-fail fixtures prove the tokens cannot be forged. attempt_identity proves the one attempt
+# seam produces the bytes and breaker mutations the two legacy twins produced.
+if [ -d crates/busbar-kernel ]; then
+  step "busbar-kernel battery"           cargo test -p busbar-kernel --quiet
+  step "busbar-caps fixtures"            cargo test -p busbar-caps --quiet
+  step "attempt identity (busbar-llm)"   cargo test -p busbar-llm --quiet attempt_identity
+else
+  absent_step "kernel battery" "crates/busbar-kernel"
+fi
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "ISOMORPHISM — plane_isomorphism gate present and green"
 if [ -f crates/busbar/tests/plane_isomorphism.rs ]; then
   step "plane_isomorphism test (incl. its selftests)" cargo test -p busbar --quiet --test plane_isomorphism
 else
   absent_step "plane_isomorphism test" "crates/busbar/tests/plane_isomorphism.rs"
+fi
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+begin_group "TELLER-STEPS — H2: one conformance cell per Teller step per plane (qa/teller-steps.json)"
+if [ -f scripts/teller-steps-check.py ] && [ -f qa/teller-steps.json ]; then
+  step "teller-steps-check self-test"  python3 scripts/teller-steps-check.py --selftest
+  step "teller-steps-check --check"    python3 scripts/teller-steps-check.py --check
+else
+  absent_step "teller-steps-check" "scripts/teller-steps-check.py / qa/teller-steps.json"
 fi
 end_group
 

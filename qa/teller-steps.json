@@ -1,0 +1,76 @@
+{
+  "_comment": [
+    "H2 (docs/design/1.6.0-TRACKER.md): 'conformance rigs carry one cell per Teller step per plane'.",
+    "Steps are ARCHITECTURE.md #2.2 (arrival, decode, authenticate, verify, approve, admit, route,",
+    "meter, audit, exit). This is the plane x step MATRIX: for every cell, either an id that names a",
+    "real, run scenario in one of the conformance rigs (or the shadow oracle, for the llm plane), or",
+    "the literal string \"none\" naming a genuine gap. 'gating' marks the 7 steps whose contract H2",
+    "spells out explicitly (a refusal/outcome that must never leak past its step); the other 3",
+    "(arrival, decode, approve) are mapped for completeness but do not fail the --check by themselves",
+    "when a shared, plane-agnostic kernel cell already covers them for every plane at once.",
+    "Checked by: scripts/teller-steps-check.py --check. Wired into scripts/verify-1.6.0-done.sh",
+    "beside the ISOMORPHISM group."
+  ],
+  "steps": {
+    "arrival": {"gating": false, "note": "in_flight_cap: pre-decode, kernel-only, plane-agnostic -- one shared cell covers every plane"},
+    "decode": {"gating": false, "note": "plane.decode_ingress Discard/malformed -- plane-specific wire shape"},
+    "authenticate": {"gating": true, "note": "a bad credential refused before Verify is ever reached; zero egress"},
+    "verify": {"gating": true, "note": "a destination/pool the credential is not permitted to reach refused before Admit draws a bucket"},
+    "approve": {"gating": false, "note": "required scope from (claim, op_class); overlaps authenticate/verify's own credential-scope checks on most planes"},
+    "admit": {"gating": true, "note": "over-budget refused before Route ever dials; no charge"},
+    "route": {"gating": true, "note": "a down lane fails over (or ends terminal) within the same unit"},
+    "meter": {"gating": true, "note": "usage delta of exactly one request, priced"},
+    "audit": {"gating": true, "note": "the audit chain gains exactly one entry, right action/outcome"},
+    "exit": {"gating": true, "note": "one terminal, no double-post"}
+  },
+  "matrix": {
+    "llm": {
+      "arrival": {"cell": "concurrency|inbound-shed|n8", "status": "mapped", "note": "shared kernel gate; B11's judge cell"},
+      "decode": {"cell": "llm|openai-chat|openai-chat|request|malformed", "status": "mapped", "note": "representative of the llm.wire malformed outcome, enumerated per dialect"},
+      "authenticate": {"cell": "teller|authenticate-refusal", "status": "new", "note": "shadow-oracle family teller; recorded PASS on the 1.5.5 golden"},
+      "verify": {"cell": "teller|verify-refusal", "status": "new", "note": "shadow-oracle family teller; recorded PASS on the 1.5.5 golden"},
+      "approve": {"cell": "llm|openai-chat|openai-chat|request|out_of_scope", "status": "mapped", "note": "existing OUTCOMES cross, enumerated per dialect"},
+      "admit": {"cell": "teller|admit-refusal", "status": "new", "note": "shadow-oracle family teller; recorded PASS on the 1.5.5 golden"},
+      "route": {"cell": "teller|route-failover", "status": "new", "note": "shadow-oracle family teller; recorded PASS on the 1.5.5 golden"},
+      "meter": {"cell": "teller|meter-row", "status": "new", "note": "shadow-oracle family teller; recorded PASS on the 1.5.5 golden"},
+      "audit": {"cell": "teller|audit-record", "status": "new", "note": "shadow-oracle family teller; recorded PASS on the 1.5.5 golden"},
+      "exit": {"cell": "teller|exit-terminal", "status": "new", "note": "shadow-oracle family teller; recorded PASS on the 1.5.5 golden"}
+    },
+    "mcp": {
+      "arrival": {"cell": "concurrency|inbound-shed|n8", "status": "mapped", "note": "shared kernel gate; plane-agnostic"},
+      "decode": {"cell": "mcp.battery|ADV.MALFORMED-JSON", "status": "mapped", "note": "testing/mcp-conformance/src/suites/server-adversarial.mjs; battery-subject role=server, not yet folded into rigs-ledger.sh's mcp.rig|* rows (those read only --official-subject's checks.json)"},
+      "authenticate": {"cell": "none", "status": "none", "note": "scripts/mcp-subject/boot.sh's prove_the_boundary_is_intact() proves this exact contract (no/wrong/tampered audience -> 401) on every official-subject boot, but as a boot-time assertion, not a named, ledgered scenario -- promote it to a checks.json row, or add a standalone script cell, to close this"},
+      "verify": {"cell": "none", "status": "none", "note": "no scenario mints an MCP key scoped away from a registered upstream and asserts the pool-not-permitted refusal before dispatch"},
+      "approve": {"cell": "none", "status": "none", "note": "no scenario exercises allowed_scopes narrowing for a tools/call"},
+      "admit": {"cell": "none", "status": "none", "note": "no scenario mints an MCP key in a budget-exhausted group and asserts the tools/call is refused before the registered upstream is dialled"},
+      "route": {"cell": "mcp.battery|SEAM.UPSTREAM-FAILURE-IS-TOOL-ERROR", "status": "mapped", "note": "testing/mcp-conformance/src/suites/seam.mjs; upstream stall surfaces as a tool error, not a protocol error -- proves Route's failure path, not yet a failover-to-a-second-lane cell"},
+      "meter": {"cell": "none", "status": "none", "note": "no scenario reads /usage before/after a tools/call and asserts a one-request delta"},
+      "audit": {"cell": "none", "status": "none", "note": "no scenario reads the admin audit chain around an MCP-triggered mutation"},
+      "exit": {"cell": "none", "status": "none", "note": "no scenario proves a single MCP unit settles exactly once"}
+    },
+    "a2a": {
+      "arrival": {"cell": "concurrency|inbound-shed|n8", "status": "mapped", "note": "shared kernel gate; plane-agnostic"},
+      "decode": {"cell": "none", "status": "none", "note": "no a2a-tck/a2a-battery/a2a-supplement row is named for a malformed-envelope refusal specifically"},
+      "authenticate": {"cell": "a2a.supplement|AUTH-SERVER-002", "status": "mapped", "note": "testing/a2a-supplement/a2asup/checks_auth.py; anonymous/forged credentials refused -- reported SEPARATELY per its own README and never added to the a2a.tck count, so this mapping is non-gating evidence until it is also a ledgered a2a.tck|* or a2a.battery|* row"},
+      "verify": {"cell": "none", "status": "none", "note": "no check mints a token scoped away from the target agent/skill and asserts a pool-not-permitted refusal"},
+      "approve": {"cell": "a2a.supplement|AUTH-SCOPE-001", "status": "mapped", "note": "testing/a2a-supplement/a2asup/checks_auth.py; per-operation authorization check -- same non-gating caveat as AUTH-SERVER-002"},
+      "admit": {"cell": "none", "status": "none", "note": "no check mints a key in a budget-exhausted group and asserts message/send is refused before Route"},
+      "route": {"cell": "none", "status": "none", "note": "no a2a rig scenario names an upstream-down failover/terminal outcome"},
+      "meter": {"cell": "none", "status": "none", "note": "no check reads /usage before/after a message/send and asserts a one-request delta"},
+      "audit": {"cell": "none", "status": "none", "note": "no check reads the admin audit chain around an A2A-triggered mutation"},
+      "exit": {"cell": "none", "status": "none", "note": "no check proves a single A2A unit settles exactly once"}
+    },
+    "voice": {
+      "arrival": {"cell": "concurrency|inbound-shed|n8", "status": "mapped", "note": "shared kernel gate; plane-agnostic"},
+      "decode": {"cell": "voice.rig|spec-per-dialect", "status": "mapped", "note": "testing/voice-conformance/legs/spec-per-dialect.sh; the per-dialect spec battery includes decode-shape checks"},
+      "authenticate": {"cell": "voice.rig|provider-credential", "status": "mapped", "note": "testing/voice-conformance/legs/provider-credential.sh; K1 -- credential threaded from the composition root before a session opens"},
+      "verify": {"cell": "voice.rig|provider-credential", "status": "mapped", "note": "same leg also proves the mounted door can reach a real realtime provider -- VerifiedDestination in voice terms"},
+      "approve": {"cell": "voice.rig|session-scope", "status": "mapped", "note": "testing/voice-conformance/legs/session-scope.sh; K3 -- the session scope kind is a gate, not vocabulary"},
+      "admit": {"cell": "none", "status": "none", "note": "governance.sh's D2-hard-close-on-exhaustion checkpoint probes this exact contract but is explicitly NOT A CONFORMANCE RESULT (governance leg findings never move the verdict, by design, same rule as testing/a2a-governance/) -- closing this needs a new READY, gating leg or slice, which needs a new checkpoint name inside crates/busbar-voice/src/bin/voice-conform.rs (out of scope for a change that must not touch crates/**)"},
+      "route": {"cell": "none", "status": "none", "note": "no ready leg names a down-provider failover/terminal outcome; cross-parity.sh covers dialect equivalence, not a failed dial"},
+      "meter": {"cell": "voice.rig|metering-lease", "status": "mapped", "note": "testing/voice-conformance/legs/metering-lease.sh; K2 -- the session's money hop is the host's reserve-then-settle lease, capped by the caller's own budget"},
+      "audit": {"cell": "none", "status": "none", "note": "no leg reads the admin audit chain around a voice-plane mutation; needs a new voice-conform subcommand (crates/busbar-voice), out of scope for a change that must not touch crates/**"},
+      "exit": {"cell": "none", "status": "none", "note": "no leg proves a single voice session settles exactly once; needs a new voice-conform subcommand (crates/busbar-voice), out of scope for a change that must not touch crates/**"}
+    }
+  }
+}

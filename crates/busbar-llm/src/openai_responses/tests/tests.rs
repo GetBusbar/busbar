@@ -94,6 +94,7 @@ fn write_request_drops_top_k_with_warn() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
             content: vec![crate::ir::IrBlock::Text {
@@ -147,6 +148,7 @@ fn test_write_request() {
             cache_control: None,
             citations: Vec::new(),
         }],
+        system_turns_folded: 0,
         messages: vec![
             crate::ir::IrMessage {
                 role: crate::ir::IrRole::User,
@@ -404,6 +406,7 @@ fn test_roundtrip_identity() {
             cache_control: None,
             citations: Vec::new(),
         }],
+        system_turns_folded: 0,
         messages: vec![
             crate::ir::IrMessage {
                 role: crate::ir::IrRole::User,
@@ -657,7 +660,9 @@ fn test_write_response_function_call_item_has_native_id() {
             detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
-    };
+    
+            request_echo: None,
+        };
     let writer = ResponsesWriter;
     let out = writer.write_response(&resp);
     let fc = out["output"]
@@ -802,7 +807,9 @@ fn test_write_response_preserves_text_after_tool_order() {
             detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
-    };
+    
+            request_echo: None,
+        };
     let writer = ResponsesWriter;
     let out = writer.write_response(&resp);
     let arr = out["output"].as_array().expect("output is an array");
@@ -981,7 +988,9 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
 
     let out1 = writer.write_response(&make_ir());
     let id1 = out1
@@ -1639,6 +1648,7 @@ fn test_tool_only_assistant_turn_no_empty_message_wrapper() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::Assistant,
             content: vec![crate::ir::IrBlock::ToolUse {
@@ -1705,6 +1715,7 @@ fn test_assistant_text_then_tool_call_order() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::Assistant,
             content: vec![
@@ -2031,6 +2042,7 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::Tool,
             content: vec![multi()],
@@ -2070,6 +2082,7 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::Assistant,
             content: vec![multi()],
@@ -2189,7 +2202,9 @@ fn test_unknown_stop_reason_maps_to_completed() {
         created: Some(1),
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = writer.write_response(&resp);
     assert_eq!(
         out.get("status").and_then(|s| s.as_str()),
@@ -2304,6 +2319,7 @@ fn test_input_image_roundtrip_lossless() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
             content: vec![crate::ir::IrBlock::Image {
@@ -2381,6 +2397,7 @@ fn test_input_image_https_url_sentinel_roundtrip() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
             content: vec![crate::ir::IrBlock::Image {
@@ -2423,6 +2440,7 @@ fn test_write_request_emits_stream() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
             content: vec![crate::ir::IrBlock::Text {
@@ -4777,7 +4795,9 @@ fn test_write_response_emits_model_fallback() {
         created: Some(1),
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
 
     // Cross-protocol: no model in the IR → DEFAULT_MODEL, never an absent key.
     let writer = ResponsesWriter;
@@ -4897,7 +4917,9 @@ fn test_write_response_emits_error_null_for_completed_and_incomplete() {
         created: Some(1),
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let writer = ResponsesWriter;
 
     // Completed: error key present and explicitly null.
@@ -5573,6 +5595,7 @@ fn empty_ir_request() -> crate::ir::IrRequest {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
+        system_turns_folded: 0,
         messages: Vec::new(),
         tools: Vec::new(),
         max_tokens: None,
@@ -5717,6 +5740,7 @@ fn reasoning_input_item_round_trips_through_request() {
 #[test]
 fn user_role_thinking_is_not_emitted_as_a_reasoning_item() {
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
             content: vec![crate::ir::IrBlock::Thinking {
@@ -6154,7 +6178,9 @@ fn write_response_reconstructs_input_tokens_total_with_cached_details() {
         created: Some(1_700_000_000),
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let writer = ResponsesWriter;
     let out = writer.write_response(&resp);
     assert_eq!(
@@ -6645,7 +6671,9 @@ fn responses_spec_required_members_present_on_every_response_shape() {
         system_fingerprint: None,
         stop_sequence: None,
         logprobs: Vec::new(),
-    });
+    
+            request_echo: None,
+        });
     assert_required(&body, "non-stream body");
     assert_eq!(body["incomplete_details"], serde_json::Value::Null);
 
@@ -6661,7 +6689,9 @@ fn responses_spec_required_members_present_on_every_response_shape() {
         system_fingerprint: None,
         stop_sequence: None,
         logprobs: Vec::new(),
-    });
+    
+            request_echo: None,
+        });
     assert_required(&truncated, "non-stream incomplete body");
     assert_eq!(
         truncated["incomplete_details"]["reason"],
@@ -6867,7 +6897,9 @@ fn write_response_emits_url_citations_without_inventing_fields() {
             detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
-    };
+    
+            request_echo: None,
+        };
 
     let writer = ResponsesWriter;
     let v = writer.write_response(&resp);

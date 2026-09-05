@@ -3031,11 +3031,17 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
 /// Requires config files on disk (the base to merge onto); an ephemeral busbar has none, so this is a
 /// `400 invalid_request` there, exactly like `config/reload`.
 ///
-/// 1.6.0 CLEAN SLATE: the accepted-then-ignored `persist:` control key was REMOVED. Durable-by-default
-/// (1.5.3) already made its value inert — a mutable config is always durable, a locked config always
-/// refuses — so the only thing keeping it was pre-1.5.3 back-compat. The body is now parsed straight
-/// into `RootSettings`, whose `deny_unknown_fields` rejects a stray `persist:` (a pre-1.5.3 client that
-/// still sends it gets a `400 invalid_request` naming the unknown field — see `docs/migration-1.6.md`).
+/// The one request-scoped control key on the `/config/settings` PUT body. It is REMOVED before the
+/// typed `RootSettings` parse, so `RootSettings`'s `deny_unknown_fields` still rejects every other
+/// unknown key — including a typo of this one.
+///
+/// 1.5.3: its VALUE no longer changes behavior. Durable-by-default made "apply in memory only"
+/// unreachable — a mutable config is always durable, a locked config always refuses — so `persist:
+/// true`/`false` are both accepted (still boolean-validated, so a typo/non-boolean is a loud 400) and
+/// then IGNORED (`let _ = requested_persist;` in the handler). 1.6.0 owner rule: a 1.5.5 client must
+/// still be able to send this field byte-for-byte, so it is RESTORED here rather than dropped.
+const PERSIST_FIELD: &str = "persist";
+
 pub(crate) async fn put_config_settings(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
@@ -3047,11 +3053,21 @@ pub(crate) async fn put_config_settings(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let raw: serde_json::Value = match serde_json::from_slice(&body) {
+    let mut raw: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {
             return err_json(&AdminError::Validation(format!(
                 "malformed config settings body: {e}"
+            )))
+        }
+    };
+    let requested_persist = match raw.as_object_mut().and_then(|o| o.remove(PERSIST_FIELD)) {
+        None => false,
+        Some(serde_json::Value::Bool(b)) => b,
+        Some(other) => {
+            return err_json(&AdminError::Validation(format!(
+                "config settings '{PERSIST_FIELD}' must be a boolean (got {other}); it asserts the \
+                 change must be stored in the config overlay"
             )))
         }
     };
@@ -3073,8 +3089,9 @@ pub(crate) async fn put_config_settings(
         // 1.5.3: a config with no overlay backend is a LOCKED config (the boot invariant guarantees a
         // MUTABLE config always has a writable overlay). Refuse ANY settings PUT up front — there is no
         // "apply in memory only" outcome anymore, because a live-but-non-durable mutation is exactly
-        // the silent-loss failure this release removes. The config is either mutable-and-durable or
-        // locked. (Same reasoning as `plugins/rollback`.)
+        // the silent-loss failure this release removes. `requested_persist` is now irrelevant: the
+        // config is either mutable-and-durable or locked. (Same reasoning as `plugins/rollback`.)
+        let _ = requested_persist;
         if current.overlay_path.is_none() {
             return Err(AdminError::Validation(
                 crate::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),

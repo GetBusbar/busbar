@@ -37,6 +37,7 @@ pub mod cfg;
 pub mod classify;
 pub mod clock;
 pub mod journal;
+pub mod port;
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -166,6 +167,10 @@ pub struct BreakerUnit<J: JournalSink = NoopJournal> {
     /// destination is touched.
     pools_by_destination: RwLock<HashMap<DestinationId, Vec<String>>>,
     budgets: RwLock<HashMap<DestinationId, Arc<LifetimeBudget>>>,
+    /// Each destination's declared operator `error_map` override (see [`Self::set_error_map`]).
+    /// Undeclared is an EMPTY map — HTTP-status classification alone still applies, matching
+    /// 1.5.5's "empty error_map is valid".
+    error_maps: RwLock<HashMap<DestinationId, HashMap<String, String>>>,
     hard_down_cooldown_secs: u64,
     max_honored_retry_after_secs: u64,
     journal: J,
@@ -191,6 +196,7 @@ impl<J: JournalSink> BreakerUnit<J> {
             cells: RwLock::new(HashMap::new()),
             pools_by_destination: RwLock::new(HashMap::new()),
             budgets: RwLock::new(HashMap::new()),
+            error_maps: RwLock::new(HashMap::new()),
             hard_down_cooldown_secs: DEFAULT_HARD_DOWN_COOLDOWN_SECS,
             max_honored_retry_after_secs: DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
             journal,
@@ -249,6 +255,33 @@ impl<J: JournalSink> BreakerUnit<J> {
         if let Some(b) = self.budgets.read().unwrap_or_else(|e| e.into_inner()).get(&destination) {
             b.refund();
         }
+    }
+
+    /// Declare (or replace) `destination`'s operator `error_map` override: the same
+    /// provider-code/structured-type → status-class table 1.5.5 read from `ModelCfg::error_map`.
+    /// Calling this again for the same destination replaces its map wholesale (a config-apply
+    /// rebuild, not a per-request merge), matching [`Self::set_budget`]'s own replace semantics.
+    pub fn set_error_map(&self, destination: DestinationId, error_map: HashMap<String, String>) {
+        self.error_maps
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(destination, error_map);
+    }
+
+    /// Turn one upstream answer into a [`port::Classified`] disposition/outcome/label, reading
+    /// `destination`'s declared `error_map` (empty when none was ever declared). The stateful
+    /// method [`port::classify_upstream`] is implemented over — this is the one the egress unit's
+    /// `Breaker::classify` port is bound to.
+    #[must_use]
+    pub fn classify(&self, destination: DestinationId, status: port::UpstreamStatus) -> port::Classified {
+        let error_map = self
+            .error_maps
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&destination)
+            .cloned()
+            .unwrap_or_default();
+        port::classify_upstream(&error_map, status)
     }
 
     fn cell(&self, pool: &str, destination: DestinationId) -> Arc<BreakerCell> {

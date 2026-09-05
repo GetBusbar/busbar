@@ -66,7 +66,13 @@ fn the_unit_names_only_the_contract_and_the_capability_crate() {
     let allowed = ["busbar-caps", "busbar-contract"];
     for line in deps.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
+        if line.starts_with('[') {
+            // The next manifest section — `[dev-dependencies]` and beyond are a different
+            // concern (test-only bindings that prove a seam is implementable, not a production
+            // coupling); this check is about what the unit's OWN code is allowed to name.
+            break;
+        }
+        if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let name = line.split_whitespace().next().unwrap_or_default();

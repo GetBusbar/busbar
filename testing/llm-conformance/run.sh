@@ -35,6 +35,13 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$OUT" ] || OUT="${repo}/target/llm-conformance/$(basename "$RECORDING")"
 mkdir -p "$OUT"
+# Resolve to an absolute path: verdict.sh below `cd`s into its OWN directory before reading
+# $LEDGER (so its `awk` can find it regardless of the caller's cwd), which silently turns a
+# relative --out into a nonexistent path once verdict.sh has cd'ed away -- the ledger.tsv this
+# very script just populated then reads as 0 lines and the whole run reports a false VACUOUS RUN,
+# even though every row above passed. Absolutizing here (once, right after mkdir -p guarantees the
+# directory exists) keeps every downstream consumer of $OUT/$LEDGER correct regardless of cwd.
+OUT="$(cd "$OUT" && pwd)"
 export LEDGER="${OUT}/ledger.tsv"
 : >"$LEDGER"
 

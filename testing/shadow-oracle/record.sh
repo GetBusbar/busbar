@@ -68,6 +68,14 @@ wait_for_http "http://127.0.0.1:${MOCK_PORT}/" 8 || fail_setup "mock upstream di
 # ── busbar under the oracle config ──────────────────────────────────────────────────────────────
 oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || fail_setup "oracle config could not be written"
 oracle_env "$BIN" --validate >"$WORK/validate.log" 2>&1 || fail_setup "busbar rejected the oracle config (run selftest.sh)" "$(tail -c 400 "$WORK/validate.log")"
+# The hooks variant loads the published first-party plugins, which a candidate can only verify with
+# the release public key embedded at build time (BUSBAR_RELEASE_PUBKEY). A binary built without it
+# refuses every hooks-variant boot, so that is judged ONCE here instead of as 29 failed cells.
+if ORACLE_VARIANT=hooks oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" 2>/dev/null; then
+  oracle_env "$BIN" --validate >"$WORK/validate-hooks.log" 2>&1 \
+    || fail_setup "busbar rejected the hooks-variant config: a candidate must be built with BUSBAR_RELEASE_PUBKEY exported (see plugin-sign)" "$(tail -c 400 "$WORK/validate-hooks.log")"
+  oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || fail_setup "oracle config could not be written"
+fi
 
 BUSBAR_PID="" CUR_VARIANT=""
 boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three keys, prime the BROKE key
@@ -142,6 +150,12 @@ corpus_providers_for() {  # <repo-relative corpus config path>
 record_exec_cell() {  # <id> <cell-json> <raw-dir> <safe>
   local id="$1" cell="$2" raw="$3" safe="$4" mode cfg cfgfile envkv rc corpus_prov
   mode="$(jq -r '.exec.mode' <<<"$cell")"; cfg="$(jq -r '.exec.config // "baseline"' <<<"$cell")"
+  # An exec cell's contract can ALSO be "what is NOT there" (`body_lines`) or "keep this one value
+  # raw" (`keep`) — the same two opt-ins the http path already honors — so a boot-log cell can pin
+  # only the INFO-and-above lines instead of every DEBUG line a level bump might add.
+  local xkeep_lines xkeep_spec
+  xkeep_lines="$(jq -r '.body_lines // empty' <<<"$cell")"
+  xkeep_spec="$(jq -c '.keep // empty' <<<"$cell")"
   local -a args=() envs=()
   while IFS= read -r a; do args+=("$a"); done < <(jq -r '.exec.args[]' <<<"$cell")
   while IFS= read -r envkv; do [ -n "$envkv" ] && envs+=("$envkv"); done < <(jq -r '.exec.env // {} | to_entries[] | "\(.key)=\(.value)"' <<<"$cell")
@@ -220,7 +234,7 @@ PY
   printf '%s\n' "$rc" >"$raw/status"
   python3 "${here}/capture-exec.py" "$rc" "$raw/stdout" "$raw/stderr" --strip-path "$WORK" --strip-path "$xwork" --strip-path "$repo" --strip-path "$BIN" >"$raw/captured.json" 2>"$raw/capture.err" \
     || { record "$id" FAIL "capture-exec.py failed" "$(tail -c 300 "$raw/capture.err")"; return; }
-  python3 "${here}/normalize.py" "$raw/captured.json" >"$OUT/cells/$safe.json" 2>"$raw/normalize.err" \
+  python3 "${here}/normalize.py" "$raw/captured.json" ${xkeep_lines:+--keep-body-lines "$xkeep_lines"} ${xkeep_spec:+--keep "$xkeep_spec"} >"$OUT/cells/$safe.json" 2>"$raw/normalize.err" \
     || { record "$id" FAIL "normalize.py failed" "$(tail -c 300 "$raw/normalize.err")"; return; }
   record "$id" PASS "exit ${rc}; $(head -c 60 "$raw/stdout" | tr '\n' ' ')" ""
   n=$((n + 1))
@@ -298,6 +312,8 @@ run_readback() {  # <request-json {path,headers,auth,listener}> <write-response-
   normd="$(printf '%s' "$cap" | python3 "${here}/normalize.py" --key-id "$kid" 2>/dev/null)"
   [ -n "$normd" ] || normd='{"status":0,"body":{"text":""}}'
   rm -f "$rbody"
+  # the path names the minted key by id, which differs per boot: normalize it as bodies are
+  pth="$(sed -E 's/vk_[0-9a-f]+/vk_<KEY>/g' <<<"$pth")"
   jq -c --arg p "$pth" '{path: $p, status: .status, body: .body}' <<<"$normd"
 }
 
@@ -356,6 +372,7 @@ record_concurrent_cell() {  # <id> <cell-json> <raw-dir> <safe>
   if ! python3 "${here}/capture-concurrent.py" "$statuses" "$raw/before" "$raw/after" >"$raw/captured.json" 2>"$raw/capture.err"; then
     record "$id" FAIL "capture-concurrent.py failed" "$(tail -c 300 "$raw/capture.err")"; return
   fi
+  printf '%s\n' "$kid" >"$raw/key-id"   # so renormalize.sh can re-run this cell faithfully
   if ! python3 "${here}/normalize.py" "$raw/captured.json" --key-id "$kid" >"$OUT/cells/$safe.json" 2>"$raw/normalize.err"; then
     record "$id" FAIL "normalize.py failed" "$(tail -c 300 "$raw/normalize.err")"; return
   fi
@@ -392,9 +409,11 @@ while IFS= read -r cell; do
     sname="$(jq -r .script.name <<<"$cell")"
     local_args=(); while IFS= read -r a; do [ -n "$a" ] && local_args+=("$a"); done < <(jq -r '.script.args[]? // empty' <<<"$cell")
     stop_busbar   # a script cell never needs the recording busbar; free its ports and CPU
-    # the script reuses this recording's own (now free) ports so two recordings never collide
+    # the script reuses this recording's own (now free) listen/admin ports so two recordings never
+    # collide; the recording's mock upstream is still up on MOCK_PORT, so the script's mock takes
+    # the port after the admin one (inside this recording's own block)
     BUSBAR_BIN="$BIN" RAW="$raw" WORK="$WORK" ORACLE_ADMIN_TOKEN="$ORACLE_ADMIN_TOKEN" \
-      SCRIPT_LISTEN_PORT="$LISTEN_PORT" SCRIPT_ADMIN_PORT="$ADMIN_PORT" SCRIPT_MOCK_PORT="$MOCK_PORT" \
+      SCRIPT_LISTEN_PORT="$LISTEN_PORT" SCRIPT_ADMIN_PORT="$ADMIN_PORT" SCRIPT_MOCK_PORT="$((ADMIN_PORT+1))" \
       bash "${here}/scripts/${sname}" "${local_args[@]}" >"$raw/script.log" 2>&1
     [ -s "$raw/captured.json" ] || { record "$id" FAIL "script ${sname} produced no captured.json" "$(tail -c 300 "$raw/script.log")"; continue; }
     python3 "${here}/normalize.py" "$raw/captured.json" >"$OUT/cells/$safe.json" 2>"$raw/normalize.err" \

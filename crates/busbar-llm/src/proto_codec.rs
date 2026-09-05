@@ -509,6 +509,17 @@ pub trait ProtocolWriter: Send + Sync {
         None
     }
 
+    /// Capture the ORIGINAL ingress request body so this writer can answer a spec that requires
+    /// certain response members to MIRROR client-set request values instead of the spec's bare
+    /// defaults (OpenAI Responses: `temperature`, `top_p`, `instructions`, `metadata`,
+    /// `tool_choice`, `parallel_tool_calls`, `tools`). `&self` (not `&mut`) so a stateful writer
+    /// held for the life of a stream can latch it via interior mutability, matching how
+    /// `ResponsesWriter` already carries `response.id`/`created_at`/`model` forward across events.
+    /// Called on the BUFFERED path (via `IrResponse::request_echo`, read directly by
+    /// `write_response`) AND the STREAMING path (via [`StreamTranslator::set_request_echo`] on the
+    /// held ingress writer). Default no-op: every writer without such a requirement ignores it.
+    fn set_request_echo(&self, _ingress_request_body: &serde_json::Value) {}
+
     /// Clone this writer as a trait object.
     fn clone_box(&self) -> Box<dyn ProtocolWriter>;
 }

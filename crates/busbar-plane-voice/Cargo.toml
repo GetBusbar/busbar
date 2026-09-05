@@ -1,0 +1,51 @@
+# busbar-plane-voice — THE VOICE PLANE, as a CODEC and nothing else.
+#
+# WHAT THIS CRATE IS. One implementation of the plugin contract's plane kind (and its session
+# extension) for busbar's duplex/live-voice surface (§6 of ARCHITECTURE.md): the openai-realtime,
+# gemini-live, twilio-media-streams and one-shot transcribe/tts dialects, with a turn as the unit,
+# a provider tool call as `Progress::OneShot`, an interrupt fact and a pacing fact. It calls
+# `busbar-voice`'s own dialect codecs to read and write bytes; it invents no wire shape of its own.
+#
+# THE SEAM, STATED HONESTLY. `busbar-voice` (Plane 4) is built against ITS OWN plane-declaration
+# surface (`busbar_substrate::PlaneDecl` / `ProtocolDecl`) rather than against `busbar-contract`'s
+# `Plane` trait — its own header says core/substrate/api "never learn the word audio", and it depends
+# on `busbar-substrate` and `busbar-api`, never on `busbar-contract`. This crate is the adapter that
+# closes that gap for the 1.6.0 contract world: it depends on `busbar-voice` for its dialect codecs
+# and IR types alone (the OpenAI Realtime / Gemini Live event readers and writers, the μ-law↔PCM16
+# transform, the tool-call and interrupt/pacing vocabulary) and never touches `PlaneDecl` or the T2
+# session runtime, which stay behind `busbar-voice`'s own `runtime` feature and its own mount path.
+[package]
+name = "busbar-plane-voice"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# One pinned number, set to what CI verifies — the same rationale every other member states.
+rust-version = "1.97"
+description = "The voice plane for busbar: the plugin contract's plane and session-plane kinds implemented as a thin codec over the busbar-voice dialect codecs."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_plane_voice"
+path = "src/lib.rs"
+
+# NO FEATURES, ON PURPOSE. A plane compiled two ways is two planes, and the kernel would have no way
+# to tell which one it registered. The contract crate holds itself to the same rule and asserts it.
+
+[dependencies]
+# THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
+busbar-contract = { path = "../busbar-contract" }
+# THE CODECS. Read-only from here: this crate calls busbar-voice's dialect readers/writers and its
+# IR types and edits none of them. Named with no features, so this crate's closure never pulls the
+# T2 async session runtime (busbar-voice's `runtime` feature) or busbar-substrate/busbar-api along
+# with it.
+busbar-voice = { path = "../busbar-voice", default-features = false }
+# The object notation the dialect wire (OpenAI Realtime, Gemini Live) is written in. The adapter
+# hands values across the seam and never invents a second parser.
+serde_json = { workspace = true }
+# THE MEDIA-FRAME CARRIER. `busbar_voice::ir::media::IrAudioFrame::media` and the tool IR's opaque
+# payloads are `bytes::Bytes`; this crate reads and builds them at the same seam, so it names the
+# same crate rather than converting through an owned `Vec<u8>` at the boundary.
+bytes = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

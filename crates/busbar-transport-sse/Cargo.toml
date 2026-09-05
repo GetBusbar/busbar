@@ -1,0 +1,19 @@
+[package]
+name = "busbar-transport-sse"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The sse transport: request plus N response frames, composed over http."
+license = "Apache-2.0"
+
+# DEPENDENCY POLICY. In-tree only. Names `busbar-contract` for the plugin surface and
+# `busbar-transport-http` for the request/response byte stream it composes over.
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+busbar-transport-http = { path = "../busbar-transport-http" }
+futures = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros"] }

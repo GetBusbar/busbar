@@ -685,7 +685,9 @@ fn cross_protocol_write_synthesizes_valid_unique_id() {
         created: Some(1_700_000_000),
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out1 = AnthropicWriter.write_response(&make());
     let out2 = AnthropicWriter.write_response(&make());
     let id1 = out1.get("id").and_then(|v| v.as_str()).expect("synth id 1");
@@ -730,7 +732,9 @@ fn write_response_synthesizes_id_when_neither_id_nor_created() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = AnthropicWriter.write_response(&resp);
     let id = out
         .get("id")
@@ -1843,7 +1847,9 @@ fn write_response_keeps_unsigned_thinking_block() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = AnthropicWriter.write_response(&resp);
     let content = out
         .get("content")
@@ -2012,7 +2018,9 @@ fn write_response_emits_empty_model_when_none() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = AnthropicWriter.write_response(&resp);
     assert_eq!(
         out.get("model").and_then(|v| v.as_str()),
@@ -2042,7 +2050,9 @@ fn write_response_preserves_present_model() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = AnthropicWriter.write_response(&resp);
     assert_eq!(
         out.get("model").and_then(|v| v.as_str()),
@@ -2155,7 +2165,9 @@ fn write_response_emits_null_stop_sequence_when_absent() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = AnthropicWriter.write_response(&resp);
     let ss = out
         .get("stop_sequence")
@@ -2190,7 +2202,9 @@ fn write_response_emits_matched_stop_sequence_string() {
         created: None,
         system_fingerprint: None,
         stop_sequence: Some("STOP".to_string()),
-    };
+    
+            request_echo: None,
+        };
     let out = AnthropicWriter.write_response(&resp);
     assert_eq!(
         out.get("stop_sequence").and_then(|s| s.as_str()),
@@ -2481,6 +2495,7 @@ fn read_request_promotes_system_role_message_into_system_blocks() {
 #[test]
 fn write_request_never_emits_system_role_message() {
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2883,7 +2898,9 @@ fn test_anthropic_safety_stop_reason_maps_to_end_turn() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = AnthropicWriter.write_response(&resp);
     assert_eq!(
         out["stop_reason"],
@@ -3284,7 +3301,9 @@ fn thinking_block_with_signature_survives_response_egress() {
         created: None,
         system_fingerprint: None,
         stop_sequence: None,
-    };
+    
+            request_echo: None,
+        };
     let out = AnthropicWriter.write_response(&resp);
     let content = out
         .get("content")
@@ -3313,6 +3332,7 @@ fn thinking_block_with_signature_survives_response_egress() {
 fn test_write_request_file_id_image_dropped_not_corrupted() {
     let writer = AnthropicWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3385,6 +3405,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
 fn test_write_request_image_s3_dropped_not_corrupted() {
     let writer = AnthropicWriter;
     let req = crate::ir::IrRequest {
+        system_turns_folded: 0,
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,

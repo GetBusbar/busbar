@@ -505,8 +505,42 @@ def hooks_cells() -> list[dict]:
         http("hooks|hooked-pool|ok_stream", F, "POST", "/v1/chat/completions", body=body(True), why="streamed through the gate", config_variant=V),
         http("hooks|hooked-pool|unauth", F, "POST", "/v1/chat/completions", auth="none", body=body(), why="refused before any hook", config_variant=V),
         http("hooks|metrics-hooks", F, "GET", "/metrics/hooks", why="the hook's own scrape exposition (PB-43)", config_variant=V),
-        http("hooks|admin-list", F, "GET", "/api/v1/admin/hooks", auth="admin", listener="admin", why="registry with the loaded hook", config_variant=V),
+        http("hooks|admin-list", F, "GET", "/api/v1/admin/hooks", auth="admin", listener="admin", why="registry with the loaded hook, incl. the 1.5.5 legacy `at` field alongside `phase`/`fires_at` (A15)", config_variant=V),
         http("hooks|unhooked-pool|ok", F, "POST", "/v1/chat/completions", body=json.dumps({"model": "m-openai-chat", "messages": [{"role": "user", "content": "ping"}]}), why="a pool without the hook is untouched", config_variant=V),
+        # A15 — 1.5.5 spellings HEAD 1.6.0 dropped and the owner rule restored: a hook def's
+        # `plugin:` alias for `module:` (read-only back-compat), and the settings PUT `persist:`
+        # control key (boolean-validated, accepted, then ignored). Both must round-trip on the
+        # golden 1.5.5 binary AND on HEAD post-fix.
+        # POST /hooks returns 201 with the registered hook VIEW itself (the same `HookView` GET
+        # serves) — a single self-contained cell proves both the `plugin:` alias is accepted AND
+        # that it resolves to `module: busbar-webrequest` on readback, with no cross-cell ordering
+        # dependency.
+        http("hooks|register|plugin-alias", F, "POST", "/api/v1/admin/hooks", auth="admin", listener="admin",
+             headers={"Content-Type": "application/json"},
+             body=json.dumps({"name": "oracle-plugin-alias", "config": {"kind": "tap", "plugin": "busbar-webrequest"}}, separators=(",", ":"), sort_keys=True),
+             why="1.5.5 `hooks.<h>.plugin` back-compat alias for `module:` — must still register, and the 201 body's `module` must resolve to `busbar-webrequest` (A15)", config_variant=V),
+        http("hooks|config-settings-put|persist-true", F, "PUT", "/api/v1/admin/config/settings", auth="admin", listener="admin",
+             headers={"Content-Type": "application/json"},
+             body=json.dumps({"persist": True}, separators=(",", ":"), sort_keys=True),
+             why="1.5.5 `persist:` boolean control key — accepted (boolean-validated) then ignored, never an unknown-field 400 (A15)", config_variant=V),
+        http("hooks|config-settings-put|persist-non-boolean", F, "PUT", "/api/v1/admin/config/settings", auth="admin", listener="admin",
+             headers={"Content-Type": "application/json"},
+             body=json.dumps({"persist": "yes"}, separators=(",", ":"), sort_keys=True),
+             why="a non-boolean `persist:` is refused naming `persist`+`boolean`, not `unknown field` (A15)", config_variant=V),
+        # A16 — the hook payload's `message_count` on the normalized IR: an OpenAI chat body may embed
+        # a `system`-role turn inside `messages`. 1.5.5 counted the raw wire array length (including
+        # that turn); the IR folds it out of `messages` into `system`. This cell exercises the hooked
+        # pool end to end with such a body so a `message_count` regression that changes the hook's
+        # decide/rewrite outcome (and therefore the response byte shape) surfaces as a diff — the
+        # literal wire integer busbar sends the plugin is not independently observable through this
+        # black-box published plugin, so the numeric parity is additionally pinned at the unit level
+        # (`cargo test -p busbar-core hooks::wire`, `IrFacts::shape().turn_count`).
+        http("hooks|hooked-pool|embedded-system-turn", F, "POST", "/v1/chat/completions",
+             body=json.dumps({"model": "oracle-hooked", "messages": [
+                 {"role": "system", "content": "be terse"},
+                 {"role": "user", "content": "ping " * 40},
+             ]}, separators=(",", ":"), sort_keys=True),
+             why="an embedded system-role turn folded out of `messages` by the IR — message_count parity (A16)", config_variant=V),
     ]
 
 
@@ -578,19 +612,25 @@ def queue_cells() -> list[dict]:
 
 def cooldown_cells() -> list[dict]:
     """Trip pool oracle-cd's one member (mock `down`, base_cooldown_secs 1, consecutive_n 1), settle
-    the mock, wait past the jittered cooldown, and send the same request again: served 200. Fully
-    self-contained (scripts/cooldown-trip.sh boots its own busbar on its own ports), because the
-    sleep-past-cooldown step needs precise timing no shared-boot bookkeeping here provides."""
+    the mock, prove the refusal while still inside the cooldown, then wait past the LONGEST cooldown
+    the jitter can draw and send the same request again: served 200. Fully self-contained
+    (scripts/cooldown-trip.sh boots its own busbar on its own ports), because both waits are taken
+    against the wall-clock second the trip landed in — timing no shared-boot bookkeeping provides."""
     return [{
         "id": "cooldown|trip-then-serve", "plane": "core", "family": "cooldown", "driver": "script",
         "script": {"name": "cooldown-trip.sh"}, "outcome": "ok",
-        "why": ("base_cooldown_secs 1: a tripped member is refused (503, nothing billed), then once "
-                "the jittered cooldown elapses the SAME request is served (200, billed) — the "
-                "breaker's own trip-then-recover cycle. Proven on the CUMULATIVE counters "
-                "busbar_breaker_trips_total / busbar_upstream_failures_total, which survive the "
-                "scrape-time busbar_lane_state gauge settling back to its starting value (0 -> 2 -> "
-                "0) by the time this cell's one before/after snapshot is taken, plus the "
-                "requests-vs-billable_requests split in the usage delta."),
+        "why": ("base_cooldown_secs 1 with a consecutive-1 trip: the failing member is tripped (503, "
+                "nothing billed), the SAME request is still refused 503 while the cooldown runs even "
+                "though the upstream is healthy again, and once the cooldown is past it is served "
+                "(200, billed) — the breaker's own trip-then-recover cycle, both arms. The first "
+                "trip computes off streak 1, so the draw is a whole second in [1, 3] (base << 1 = 2, "
+                "+/-1s jitter, clamped): the script issues the trip just after a second boundary, "
+                "refuses at +0.3s (inside every possible draw) and serves at +4.5s (past every "
+                "possible draw), so neither arm can land in the jitter window. Proven on the "
+                "CUMULATIVE counters busbar_breaker_trips_total / busbar_upstream_failures_total, "
+                "which survive the scrape-time busbar_lane_state gauge settling back to its starting "
+                "value (0 -> 2 -> 0) by the time this cell's one before/after snapshot is taken, "
+                "plus the requests-vs-billable_requests split in the usage delta."),
     }]
 
 
@@ -680,6 +720,115 @@ def auth_lifecycle_cells() -> list[dict]:
     ]
 
 
+def teller_cells() -> list[dict]:
+    """`teller`: H2 -- one named cell per Teller step (ARCHITECTURE.md #2.2), llm plane, each its own
+    self-contained boot (script driver, mirrors auth.lifecycle's own-boot shape) so a step's cell can
+    assert the ORDER around it (what happened before/after) rather than just one response's shape.
+    1.5.5 carries no "Teller" vocabulary, but it already realises the order these cells name -- every
+    cell here is recorded against, and must PASS on, the published 1.5.5 golden."""
+    F = "teller"
+    return [
+        {"id": "teller|authenticate-refusal", "plane": "llm", "family": F, "driver": "script",
+         "script": {"name": "teller-authenticate-refusal.sh"}, "outcome": "ok", "weight": 10,
+         "why": "step 1 AUTHENTICATE: a bad credential is refused before step 2 VERIFY is ever "
+                "reached -- native 401, zero upstream egress recorded, zero usage drawn"},
+        {"id": "teller|verify-refusal", "plane": "llm", "family": F, "driver": "script",
+         "script": {"name": "teller-verify-refusal.sh"}, "outcome": "ok", "weight": 10,
+         "why": "step 2 VERIFY: a credential whose allowed_pools excludes the target pool is refused "
+                "before step 4 ADMIT ever draws a bucket -- native 403, zero egress, zero usage delta"},
+        {"id": "teller|admit-refusal", "plane": "llm", "family": F, "driver": "script",
+         "script": {"name": "teller-admit-refusal.sh"}, "outcome": "ok", "weight": 10,
+         "why": "step 4 ADMIT: a principal already past authenticate/verify/approve but over budget "
+                "is refused before step 5 ROUTE ever dials -- native 429, zero further egress, zero "
+                "further usage/spend delta on the refused call"},
+        {"id": "teller|route-failover", "plane": "llm", "family": F, "driver": "script",
+         "script": {"name": "teller-route-failover.sh"}, "outcome": "ok", "weight": 10,
+         "why": "step 5 ROUTE: the first lane in a pool is down, the walk fails over to the next "
+                "verified destination within the same unit -- one served terminal, one egress on the "
+                "live lane, exactly one usage posting even though two lanes were attempted"},
+        {"id": "teller|meter-row", "plane": "llm", "family": F, "driver": "script",
+         "script": {"name": "teller-meter-row.sh"}, "outcome": "ok", "weight": 10,
+         "why": "step 6 METER: a single served request settles to a usage delta of exactly one "
+                "request, with the priced token/spend figures matching the mock's fixed response, "
+                "never a partial or doubled posting"},
+        {"id": "teller|audit-record", "plane": "llm", "family": F, "driver": "script",
+         "script": {"name": "teller-audit-record.sh"}, "outcome": "ok", "weight": 10,
+         "why": "step 7 AUDIT: a governed mutation seals its own audit record -- the chain gains "
+                "exactly one entry naming the right action and outcome, first entry's prev_hash empty"},
+        {"id": "teller|exit-terminal", "plane": "llm", "family": F, "driver": "script",
+         "script": {"name": "teller-exit-terminal.sh"}, "outcome": "ok", "weight": 10,
+         "why": "exit: a unit relaying multiple response frames (a streamed answer) still settles to "
+                "exactly one terminal and one usage posting -- no post per frame, no late double-post"},
+    ]
+
+
+def neutrality_cells() -> list[dict]:
+    """`neutrality`: the oracle's own baseline config is already 1.5.5-shaped (no mcp:/agents:/
+    streams: section — see oracle-config.sh), so these cells pin the operator-visible surfaces that
+    must stay IDENTICAL when a binary with every plane compiled in boots it: the boot banner, the
+    /metrics series set, every deny_unknown_fields section's own accepted-key list, the route set,
+    and an idle boot's in-flight accounting. A later binary that starts a plane, mounts a route, or
+    emits a series just because it CAN, without the operator asking for it, is a diff here."""
+    F = "neutrality"
+    cells = []
+    # (a) the boot banner: RUST_LOG=info pinned explicitly (not the recorder's default `warn`) so the
+    # golden and candidate are compared at the same verbosity regardless of any default-filter drift;
+    # `body_lines` keeps only lines the tracing formatter tagged INFO/WARN/ERROR, in emission order —
+    # a line that only shows at DEBUG (Bootstrap/Migration/Policy/keyset) must stay invisible here.
+    cells.append(exec_(
+        "neutrality|boot-lines", F, args=[], mode="boot", config="baseline", env={"RUST_LOG": "info"},
+        body_lines=r"\b(INFO|WARN|ERROR)\b",
+        why="the exact ordered set of boot log lines at INFO and above on a pure 1.5.5-shaped config "
+            "(no mcp/agents/streams section) — every 1.6.0-additive plane stays silent and out of order"))
+    # (b) /metrics: the published series NAMES + TYPES (the `# HELP` / `# TYPE` preamble lines,
+    # sample values already dropped by metrics.shape) plus an explicit absence check for any plane
+    # series, so a plane compiled in but never configured cannot register even an empty series.
+    cells.append(http(
+        "neutrality|metrics-series", F, "GET", "/metrics", body_lines=r"^# (HELP|TYPE) ",
+        why="the /metrics series NAME + TYPE set on a pure 1.5.5-shaped config: no busbar_plane_* or "
+            "ledger series may appear just because the binary can compile them in"))
+    cells.append(http(
+        "neutrality|metrics-no-plane-series", F, "GET", "/metrics",
+        body_lines=r"^busbar_(plane|ledger|journal|hold|wal)_",
+        why="an ABSENCE contract like ops.scrape's own ledger check, extended to the plane-prefixed "
+            "series: the golden is an empty body, and any surviving line on a later binary is a diff"))
+    # (c) unknown-key `expected one of` lists: the top-level struct plus every NAMED-MAP section that
+    # actually appears in a 1.5.5-shaped config, fed one bogus sibling key each — added to
+    # fixtures/boot-mutations.json under family "neutrality" (ids NEUT-U-*) so boot_cells() below
+    # already turns each into its own `neutrality|NEUT-U-<section>|validate` cell; nothing to add here.
+    # (d) the route set on a plane-neutral config: the operational routes plus a 404 on a path shaped
+    # like an unconfigured plane's own mount — proves the route table gained nothing it was not asked
+    # for, not merely that the configured routes still answer.
+    cells.append(http("neutrality|routes|stats", F, "GET", "/stats",
+                       why="the pool/lane topology route answers on a plane-neutral config exactly as the "
+                           "operational-routes rule in ARCHITECTURE.md describes"))
+    cells.append(http("neutrality|routes|healthz", F, "GET", "/healthz", auth="none",
+                       why="unconditional bypass, unaffected by which planes are compiled in"))
+    cells.append(http("neutrality|routes|v1-models", F, "GET", "/v1/models",
+                       why="the openai-envelope model listing on a plane-neutral config"))
+    cells.append(http("neutrality|routes|admin-openapi-paths", F, "GET", "/api/v1/admin/openapi.json",
+                       auth="admin", listener="admin", keep={"json_keys": ["paths"]},
+                       why="the served path list: absent mcp:/agents:/streams: sections, the document "
+                           "must list only the 1.5.5 admin surface — the `paths` object is kept raw "
+                           "(no version/id scrubbing under it) so an added path is a visible diff"))
+    cells.append(http("neutrality|routes|mcp-shaped-404", F, "GET", "/mcp",
+                       why="no mcp: block is configured: the MCP plane's own mount path falls through "
+                           "to the ordinary path-inferred 404 like any other unmatched path"))
+    cells.append(http("neutrality|routes|a2a-shaped-404", F, "GET", "/.well-known/agent-card.json",
+                       why="no agents: block is configured: the A2A well-known agent-card path is unmounted"))
+    cells.append(http("neutrality|routes|voice-shaped-404", F, "GET", "/v1/realtime",
+                       why="no streams: block is configured: the voice plane's realtime-shaped path is unmounted"))
+    # (e) /stats in-flight accounting at rest: an explicit FRESH boot (never sharing state with an
+    # earlier cell) so every lane's inflight/free_slots fields are pinned at their idle value — the
+    # absence of any reserved headroom a session-transport plane would otherwise draw against.
+    stats_idle = http("neutrality|stats-idle-zero", F, "GET", "/stats",
+                       why="on an idle fresh boot every lane's in-flight fields read their zero/unbounded "
+                           "rest state: no session-transport plane is claimed, so nothing is pre-reserved")
+    stats_idle["fresh"] = True
+    cells.append(stats_idle)
+    return cells
+
+
 def main() -> int:
     minv = json.loads(METHOD_INV.read_text())
     finv = json.loads(FIELD_INV.read_text())
@@ -687,7 +836,7 @@ def main() -> int:
                    + scrape_cells() + crosscut_cells() + admin_cells() + boot_cells() + failover_cells()
                    + plugin_cells() + billing_cells() + hooks_cells()
                    + concurrency_cells() + queue_cells() + cooldown_cells()
-                   + crosscut_traps_cells() + auth_lifecycle_cells(),
+                   + crosscut_traps_cells() + auth_lifecycle_cells() + teller_cells() + neutrality_cells(),
                    key=lambda c: c["id"])
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "cell ids must be unique"

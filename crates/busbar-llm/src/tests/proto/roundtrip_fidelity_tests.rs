@@ -1452,7 +1452,9 @@ fn bedrock_uncited_text_keeps_the_plain_shape() {
         system_fingerprint: None,
         stop_sequence: None,
         logprobs: Vec::new(),
-    });
+    
+            request_echo: None,
+        });
     assert_eq!(
         out["output"]["message"]["content"][0]["text"], "plain",
         "{out}"

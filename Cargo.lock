@@ -549,6 +549,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-kernel"
+version = "1.6.0"
+dependencies = [
+ "busbar-caps",
+]
+
+[[package]]
 name = "busbar-llm"
 version = "1.6.0"
 dependencies = [
@@ -626,6 +633,52 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "busbar-plane-a2a"
+version = "1.6.0"
+dependencies = [
+ "busbar-a2a",
+ "busbar-contract",
+ "serde_json",
+]
+
+[[package]]
+name = "busbar-plane-admin"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "serde_json",
+]
+
+[[package]]
+name = "busbar-plane-llm"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-llm",
+ "serde_json",
+ "sonic-rs",
+]
+
+[[package]]
+name = "busbar-plane-mcp"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-mcp",
+ "serde_json",
+]
+
+[[package]]
+name = "busbar-plane-voice"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-voice",
+ "bytes",
+ "serde_json",
 ]
 
 [[package]]
@@ -796,10 +849,209 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-transport-grpc"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "bytes",
+ "futures",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "tokio",
+ "tonic",
+ "tower",
+]
+
+[[package]]
+name = "busbar-transport-http"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-transport-tcp",
+ "busbar-transport-tls",
+ "bytes",
+ "futures",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots",
+]
+
+[[package]]
+name = "busbar-transport-sse"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-transport-http",
+ "futures",
+ "tokio",
+]
+
+[[package]]
+name = "busbar-transport-stdio"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "futures",
+ "tokio",
+]
+
+[[package]]
+name = "busbar-transport-tcp"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "futures",
+ "tokio",
+]
+
+[[package]]
+name = "busbar-transport-tls"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-transport-tcp",
+ "futures",
+ "rcgen",
+ "ring",
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
+name = "busbar-transport-ws"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "futures",
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "webpki-roots",
+]
+
+[[package]]
 name = "busbar-unit-admission"
 version = "1.6.0"
 dependencies = [
  "busbar-caps",
+]
+
+[[package]]
+name = "busbar-unit-audit"
+version = "1.6.0"
+dependencies = [
+ "busbar-caps",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
+name = "busbar-unit-auth"
+version = "1.6.0"
+dependencies = [
+ "busbar-caps",
+]
+
+[[package]]
+name = "busbar-unit-breaker"
+version = "1.6.0"
+dependencies = [
+ "busbar-caps",
+]
+
+[[package]]
+name = "busbar-unit-cost"
+version = "1.6.0"
+dependencies = [
+ "busbar-caps",
+]
+
+[[package]]
+name = "busbar-unit-egress"
+version = "1.6.0"
+dependencies = [
+ "busbar-caps",
+ "busbar-contract",
+ "busbar-unit-breaker",
+ "futures",
+]
+
+[[package]]
+name = "busbar-unit-egress-auth"
+version = "1.6.0"
+dependencies = [
+ "busbar-caps",
+ "hex",
+ "hmac",
+ "sha2 0.11.0",
+]
+
+[[package]]
+name = "busbar-unit-ledger"
+version = "1.6.0"
+dependencies = [
+ "busbar-caps",
+ "sha2 0.11.0",
+]
+
+[[package]]
+name = "busbar-unit-scope"
+version = "1.6.0"
+dependencies = [
+ "busbar-caps",
+]
+
+[[package]]
+name = "busbar-unit-transport-key"
+version = "1.6.0"
+dependencies = [
+ "busbar-caps",
+ "rcgen",
+ "rustls",
+]
+
+[[package]]
+name = "busbar-unit-trust"
+version = "1.6.0"
+dependencies = [
+ "busbar-caps",
+]
+
+[[package]]
+name = "busbar-unit-usage"
+version = "1.6.0"
+dependencies = [
+ "busbar-caps",
+]
+
+[[package]]
+name = "busbar-unit-verbs"
+version = "1.6.0"
+dependencies = [
+ "busbar-caps",
+ "serde_json",
+]
+
+[[package]]
+name = "busbar-unit-wal"
+version = "1.6.0"
+dependencies = [
+ "busbar-caps",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -821,6 +1073,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "url",
 ]

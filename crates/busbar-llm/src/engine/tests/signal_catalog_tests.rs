@@ -50,6 +50,7 @@ fn declaring_hook(signals: Vec<Signal>) -> busbar_core::config::HookCfg {
         prompt: busbar_core::config::PromptAccess::No,
         user: busbar_core::config::UserAccess::No,
         priority: 0,
+        at: None,
         settings: serde_json::Map::new(),
         on_empty: None,
         global: false,

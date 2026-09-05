@@ -375,6 +375,13 @@ impl IrHandle for ChatRespHandle {
     fn prepare_for_ingress(&mut self, ingress_protocol: &str, now_epoch: u64) {
         chat_prepare_for_ingress(&mut self.0, ingress_protocol, now_epoch);
     }
+    // Stash the ORIGINAL ingress request body verbatim. Which members (if any) it echoes onto the
+    // wire is the WRITER's own business (`ResponsesWriter::write_response` reads specific keys off
+    // it; every non-Responses writer ignores the field entirely), so this is dialect-agnostic: no
+    // `match ingress_protocol` here, just carrying the fact forward for whichever writer wants it.
+    fn apply_request_echo(&mut self, ingress_request_body: &Value) {
+        self.0.request_echo = Some(ingress_request_body.clone());
+    }
     fn wrap_buffered_as_stream(
         &self,
         ingress_protocol: &str,

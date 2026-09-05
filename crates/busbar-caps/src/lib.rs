@@ -21,7 +21,10 @@
 //! - [`VerifiedDestination`], [`AuthDecoration`], [`SecretSlot`], [`TransportKeyHandle`],
 //!   [`SecretOnce`] — the capabilities on the way out.
 //! - [`Origin`], [`SessionId`], [`IdempotencyKey`], [`UnitEnd`] — the kernel's own.
-//! - The [canary] the kernel balances, and the [lint hooks](lint) for the rules Rust cannot carry.
+//! - The [canary] the kernel balances.
+//!
+//! The rules Rust cannot carry are written down as data in `fixtures/lint_rules.rs`, next to the
+//! crate rather than inside it, because nothing that uses this crate ever names them.
 //!
 //! ## What Rust actually enforces here, honestly
 //!
@@ -44,9 +47,9 @@
 //! | Two holds never enter one cell | the second offer is refused and handed back | runtime |
 //! | A child's accrual belongs to its parent | the cell checks state and principal | runtime |
 //! | A hold accidentally dropped is caught | `#[must_use]`, denied as a lint in the kernel | compile-time (lint) |
-//! | A hold DELIBERATELY forgotten, leaked or `ManuallyDrop`ped is caught | source scan over the list in [`lint::HOLD_ESCAPES`] | CI |
+//! | A hold DELIBERATELY forgotten, leaked or `ManuallyDrop`ped is caught | source scan over the hold-escape list in `fixtures/lint_rules.rs` | CI |
 //! | Only the kernel mints tokens | one audited symbol, [`KernelSeal::acquire_for_kernel`] | CI |
-//! | The recovery token stays in the recovery module | source scan, [`lint::SEAL_SITES`] | CI |
+//! | The recovery token stays in the recovery module | source scan over the seal-site list, same file | CI |
 //! | There are exactly two take sites | source scan, plus a fixture | CI |
 //! | Every unit that was admitted actually settled | the two-sided [`canary::Canary`] | runtime + CI |
 //!
@@ -63,7 +66,6 @@ pub mod canary;
 pub mod decision;
 pub mod egress;
 pub mod hold;
-pub mod lint;
 pub mod step;
 pub mod token;
 pub mod unit_end;

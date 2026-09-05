@@ -1,0 +1,31 @@
+# busbar-unit-ledger — the ledger unit.
+#
+# WHAT IT OWNS. Turning a hold and a usage report into a posting; folding postings into the totals a
+# checkpoint seals; the one identity those totals have to satisfy; the recompute that checks a
+# posting's arithmetic against the policy it was priced under; and the hook that writes the same
+# money onto the previous release's rows so nothing that reads them notices a change.
+#
+# WHAT IT DOES NOT OWN. Bytes on a disk (that is the log's), and admission (that is the door's). A
+# posting exists here because a hold was settled, and a hold exists because the door said yes — the
+# capability crate makes both of those statements enforceable rather than conventional.
+#
+# DEPENDENCIES. `busbar-caps`, and `sha2` because a checkpoint's body is digested before it is
+# signed and a digest is not a thing to hand-roll. Nothing else: the identity is integer arithmetic
+# and the totals are a map, so a serializer or a decimal library would only be a second opinion
+# about what a number is.
+[package]
+name = "busbar-unit-ledger"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The ledger unit: settlement through the capability token, the per-bucket totals a checkpoint seals, the balance identity as a pure function, the independent recompute, and the dual-write hook onto the previous release's rows."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_unit_ledger"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-caps = { path = "../busbar-caps" }
+sha2 = { workspace = true }

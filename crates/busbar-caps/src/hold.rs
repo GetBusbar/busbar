@@ -79,7 +79,7 @@
 //! and it is worth being exact about which does what. `#[must_use]` catches the accident above. The
 //! cell catches the double take. The canary catches the omission, after the fact, in arithmetic.
 //! The deliberate escape is caught by a source scan, and the symbols it looks for are written down
-//! in [`crate::lint::HOLD_ESCAPES`] rather than left to a reviewer to remember.
+//! in the crate's `fixtures/lint_rules.rs` rather than left to a reviewer to remember.
 
 use crate::step::{Principal, Step};
 use crate::token::{AdmitToken, ExitToken, LedgerToken, RecoveryToken};

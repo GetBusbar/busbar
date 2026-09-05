@@ -8,6 +8,13 @@
 
 use crate::*;
 
+/// The lint rule data. It is a proof, not surface: no plugin, unit or kernel path names it, so it
+/// lives beside the crate rather than inside it and is pulled in here for the test that keeps it
+/// from going empty or stale.
+mod lint {
+    include!("../fixtures/lint_rules.rs");
+}
+
 /// Everything a test needs to act as the kernel, in one place, so no test quietly reaches for the
 /// seal on its own.
 struct Kernel {

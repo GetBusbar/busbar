@@ -21,6 +21,7 @@ import sys
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 VERSION = re.compile(r"\bbusbar (\d+\.\d+\.\d+)(?:-[0-9A-Za-z.]+)?\b")
+VERSION_KV = re.compile(r'version="(\d+\.\d+\.\d+)(?:-[0-9A-Za-z.]+)?"')
 # A bare duration token (`120000 ms`) is ambiguous: it is exactly as likely to be a CONFIG VALUE
 # quoted back in a warning ("on_exhausted.queue.max_ms (120001 ms) exceeds ...") as it is to be a
 # measured elapsed time. Only scrub it when it follows a word that actually reports elapsed time —
@@ -46,6 +47,8 @@ def scrub(text: str, strip_paths: list[str], applied: set) -> str:
         applied.add("exec.paths"); text = TMPDIR.sub("<TMP>", text)
     if VERSION.search(text):
         applied.add("ver.string"); text = VERSION.sub("busbar <VERSION>", text)
+    if VERSION_KV.search(text):
+        applied.add("ver.string"); text = VERSION_KV.sub('version="<VERSION>"', text)
     if TIMESTAMP.search(text):
         applied.add("ts.unix"); text = TIMESTAMP.sub("<TS>", text)
     if DURATION.search(text):

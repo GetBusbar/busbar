@@ -111,19 +111,17 @@ async fn test_inbound_concurrency_layer_added_only_when_positive() {
     );
 }
 
-/// THE ADMISSION CONTRACT, second generation. Bug 4's original defect was HEAD-OF-LINE BLOCKING:
-/// `GlobalConcurrencyLimitLayer` queued in `poll_ready`, so a saturated cap wedged the whole
-/// CONNECTION (and its unrelated requests). The first fix shed with an instant 503 — which the
-/// bench rig later falsified at scale: under a 12k-client herd the gateway spent its cores
-/// minting fast 503s that deadline-driven clients instantly retried (17k rps goodput, 130k
-/// failures/20s), where FIFO queueing serves the full line rate with tens of ms of wait. The
-/// current contract keeps BOTH truths: `poll_ready` never blocks (no connection HOL — parking
-/// happens in the REQUEST future, where the client's own cancellation reaches it), and an
-/// over-cap arrival WAITS FIFO for a slot instead of 503ing. This test pins that shape: with
-/// cap = 1 held, a second request neither errors nor completes while the permit is held (it
-/// queues), then completes 200 the moment the permit frees.
+/// THE ADMISSION CONTRACT. The original defect here was HEAD-OF-LINE BLOCKING: the old tower
+/// concurrency layer queued in `poll_ready`, so a saturated cap wedged the whole CONNECTION and
+/// every unrelated request sharing it. The fix keeps `poll_ready` always-ready and makes the
+/// decision per REQUEST: an over-cap arrival is SHED IMMEDIATELY with the static 503 rather than
+/// parked waiting for a slot. A queueing arm was tried in its place and had to be reverted — an
+/// over-cap burst turned into an unbounded stall, which a client cannot tell apart from a hung
+/// gateway, and it burns the caller's own deadline while holding the connection. This test pins
+/// that shape: with cap = 1 held, a second request is answered AT ONCE with the 503, and the
+/// admitted one still completes normally when it is released.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_inbound_over_capacity_queues_fifo_and_serves_when_freed() {
+async fn test_inbound_over_capacity_sheds_immediately_and_admitted_request_completes() {
     use std::sync::Arc;
     use tokio::sync::Notify;
 
@@ -158,35 +156,39 @@ async fn test_inbound_over_capacity_queues_fifo_and_serves_when_freed() {
     let req1 = tokio::spawn(async move { reqwest::Client::new().get(&url1).send().await });
     started.notified().await; // permit is now held
 
-    // Request 2 arrives with the cap full: it must QUEUE — neither a 503 nor a completion while
-    // the permit is held. (On a NEW connection, so this also witnesses that the layer's
-    // always-ready `poll_ready` kept the shed-era no-HOL property: the second connection is
-    // serviced far enough to park in admission rather than wedging in the accept path.)
-    let url2 = url.clone();
-    let req2 = tokio::spawn(async move { reqwest::Client::new().get(&url2).send().await });
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert!(
-        !req2.is_finished(),
-        "an over-capacity inbound request must WAIT for a slot — neither shed nor served while \
-         the cap is full"
+    // Request 2 arrives with the cap full: it must be SHED, and shed NOW — not parked until the
+    // permit frees. (On a NEW connection, so this also witnesses the no-head-of-line property:
+    // the second connection is serviced far enough to reach admission rather than wedging in the
+    // accept path.) The timeout is the teeth: a parking layer never answers this call at all.
+    let r2 = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        reqwest::Client::new().get(&url).send(),
+    )
+    .await
+    .expect("an over-capacity inbound request must be answered immediately, never parked")
+    .expect("request 2 gets a response");
+    assert_eq!(
+        r2.status().as_u16(),
+        503,
+        "an over-capacity inbound request is shed with the at-capacity 503"
+    );
+    assert_eq!(
+        r2.headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok()),
+        Some("1"),
+        "the shed names a concrete backoff"
+    );
+    assert_eq!(
+        r2.text().await.unwrap(),
+        r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#,
+        "the static shed body is part of the observable contract"
     );
 
-    // Free the permit: the parked request is admitted and completes normally. The handler parks
-    // on `release` per-call, so notify twice: once to free request 1, once for request 2's turn.
+    // Shedding never disturbs the ADMITTED request: free the permit and request 1 completes 200.
     release.notify_one();
     let r1 = req1.await.unwrap().expect("request 1 completes");
     assert_eq!(r1.status().as_u16(), 200);
-    release.notify_one();
-    let r2 = tokio::time::timeout(std::time::Duration::from_secs(5), req2)
-        .await
-        .expect("the queued request must be admitted once a slot frees")
-        .unwrap()
-        .expect("request 2 completes");
-    assert_eq!(
-        r2.status().as_u16(),
-        200,
-        "the queued request is served, not shed"
-    );
     server.abort();
 }
 

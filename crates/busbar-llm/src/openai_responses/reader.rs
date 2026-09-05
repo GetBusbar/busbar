@@ -147,6 +147,11 @@ impl ProtocolReader for ResponsesReader {
 
         let mut extra = serde_json::Map::new();
         let mut system_blocks: Vec<crate::ir::IrBlock> = Vec::new();
+        // Count of `system`/`developer`-role ITEMS folded out of the `input` array below (the
+        // top-level `instructions` string is a separate wire field and is NOT counted here) —
+        // restores the 1.5.5 `message_count` semantics (the raw `input` array length) onto
+        // `IrFacts::shape()`.
+        let mut system_turns_folded: usize = 0;
 
         if let Some(instructions) = obj.get("instructions").and_then(|v| v.as_str()) {
             if !instructions.is_empty() {
@@ -360,6 +365,7 @@ impl ProtocolReader for ResponsesReader {
                                          takes effect relative to the native Responses behavior"
                                     );
                                 }
+                                system_turns_folded += 1;
                                 push_system_content(&mut system_blocks, item.get("content"));
                                 continue;
                             }
@@ -469,6 +475,7 @@ impl ProtocolReader for ResponsesReader {
                                      takes effect relative to the native Responses behavior"
                                 );
                             }
+                            system_turns_folded += 1;
                             push_system_content(&mut system_blocks, content_val);
                             continue;
                         }
@@ -676,6 +683,7 @@ impl ProtocolReader for ResponsesReader {
             user: None,
             parallel_tool_calls,
             system: system_blocks,
+            system_turns_folded,
             messages,
             tools,
             max_tokens,
@@ -1647,6 +1655,8 @@ impl ProtocolReader for ResponsesReader {
             created,
             system_fingerprint: None,
             stop_sequence: None,
+        
+            request_echo: None,
         })
     }
 

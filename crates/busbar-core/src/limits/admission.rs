@@ -48,29 +48,6 @@ impl AdmissionGate {
         self.sem.available_permits()
     }
 
-    /// Take one slot, WAITING FIFO when the gate is saturated — the inbound layer's arm. The wait
-    /// is naturally cancelled when the caller's future drops (a disconnecting client leaves the
-    /// queue with no residue: tokio semaphore waiters are cancel-safe), so parked arrivals cost a
-    /// waker each and nothing more. Saturation waits are counted on the same denial counter the
-    /// shed arm uses — the operator's pressure signal survives the semantics change.
-    pub(crate) async fn enter_queued(self: &Arc<Self>) -> OwnedSemaphorePermit {
-        if let Some(permit) = self.try_enter_uncounted() {
-            return permit;
-        }
-        metrics::counter!(crate::metrics::ADMISSION_DENIED_TOTAL, "gate" => self.name).increment(1);
-        self.sem
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("admission semaphores are never closed")
-    }
-
-    /// The uncontended fast path of [`enter_queued`](Self::enter_queued) — one atomic, no metric
-    /// (nothing was denied).
-    fn try_enter_uncounted(&self) -> Option<OwnedSemaphorePermit> {
-        self.sem.clone().try_acquire_owned().ok()
-    }
-
     /// Try to take one slot, without waiting. `Some` carries an owned, `'static` permit — drop it (or
     /// let it fall out of scope, including inside a spawned task or an async block it was moved into)
     /// to return the slot. `None` means the gate is saturated: the caller decides what that means
@@ -89,21 +66,43 @@ impl AdmissionGate {
     }
 }
 
+/// The static "gateway is at capacity" 503 the inbound cap sheds an over-cap arrival with. Fixed
+/// bytes, fixed `Retry-After: 1` — no per-request formatting and no protocol sniffing, because a
+/// shed happens BEFORE any routing or body work and must stay the cheapest possible response to
+/// produce. Callers depend on these exact bytes (the shed body is part of the gateway's observable
+/// contract), so change it only alongside the tests that pin it.
+fn inbound_overloaded_response() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let mut resp = (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static(crate::proxy::APPLICATION_JSON),
+        )],
+        r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#,
+    )
+        .into_response();
+    resp.headers_mut().insert(
+        axum::http::header::RETRY_AFTER,
+        axum::http::HeaderValue::from_static("1"),
+    );
+    resp
+}
+
 /// Lean, hand-rolled `Layer`/`Service` pair for the OUTERMOST inbound-concurrency cap. The cap is
 /// an OOM DEFENSE — a bound on how many requests are concurrently BUFFERED AND PROCESSED — and an
-/// over-cap arrival now WAITS FIFO for a slot instead of being shed with an instant 503. The shed
-/// semantics this replaces caused a measured collapse under a connection herd: at 12k clients
-/// against the 8192 default, the gateway spent its cores minting fast 503s that deadline-driven
-/// clients instantly retried — a self-sustaining fail/retry storm (17k rps goodput, 130k failures
-/// per 20s run) where queueing serves the full ~46k rps with ~tens of ms of added wait (Little's
-/// law: the slots turn over in ~180ms). 1.5.5 behaved gracefully here precisely because it had no
-/// shed layer — over-cap work queued implicitly in the runtime; this layer makes that queueing
-/// EXPLICIT and BOUNDED. The memory invariant is unchanged: this layer sits OUTSIDE body
-/// buffering, so a parked arrival holds its connection and headers only (bounded by the fd
-/// budget), never a buffered body; at most `max_inbound_concurrent` requests are ever in flight
-/// past it. A parked waiter whose client disconnects leaves the queue with no residue
-/// (cancel-safe), and saturation still counts on `busbar_admission_denied_total{gate="inbound"}`
-/// so operator dashboards keep their pressure signal.
+/// arrival that finds the cap FULL is SHED IMMEDIATELY with the static 503 above, never queued
+/// behind the cap. Shedding, not queueing, is the contract callers see: a client that is told "at
+/// capacity, retry in a second" can shed load itself, fail over, or back off, whereas a silently
+/// parked request looks indistinguishable from a hung gateway and burns the caller's own deadline
+/// while holding its connection. A queueing arm was tried here and is exactly what that costs — an
+/// over-cap burst turns into a stall whose latency grows without bound with the size of the burst.
+/// A shed costs one non-blocking permit attempt and nothing else: no inner call, no body buffering,
+/// no allocation beyond the response. Every shed counts on
+/// `busbar_admission_denied_total{gate="inbound"}` so operator dashboards keep their pressure
+/// signal. The memory invariant: this layer sits OUTSIDE body buffering, so at most
+/// `max_inbound_concurrent` requests are ever in flight past it, and a shed arrival never buffered
+/// a body at all.
 #[derive(Clone)]
 pub(crate) struct InboundAdmissionLayer {
     gate: Arc<AdmissionGate>,
@@ -154,9 +153,10 @@ where
         Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
     >;
 
-    /// Always ready: saturation parks the REQUEST FUTURE (in `call`'s returned future, where the
-    /// connection's own cancellation reaches it), never the service — propagating backpressure
-    /// through `poll_ready` would head-of-line-block unrelated requests on a shared connection.
+    /// Always ready: admission never parks the caller — it either grabs a free slot synchronously
+    /// in `call` or sheds immediately, so there is nothing for `poll_ready` to wait on. Propagating
+    /// backpressure through `poll_ready` would also head-of-line-block unrelated requests sharing
+    /// the same connection.
     fn poll_ready(
         &mut self,
         _cx: &mut std::task::Context<'_>,
@@ -165,20 +165,26 @@ where
     }
 
     fn call(&mut self, req: axum::extract::Request) -> Self::Future {
-        // tower's standard clone-out-of-`self` idiom: `inner` may not be `Poll::Ready` again
-        // until this call's future resolves, so the service driving THIS request must be a
-        // fresh clone, not `&mut self.inner` (which stays in `self`, ready for the NEXT call).
-        let mut inner = self.inner.clone();
-        let gate = self.gate.clone();
-        Box::pin(async move {
-            // FIFO admission: immediate on a free slot (one atomic — the steady-state path), a
-            // parked waiter under saturation. The permit is held for the ENTIRE inner call and
-            // released by Drop the instant this future resolves — including on early drop
-            // (client disconnect cancels the future, which still runs the destructor, and a
-            // still-WAITING arrival just leaves the queue).
-            let _permit = gate.enter_queued().await;
-            inner.call(req).await
-        })
+        match self.gate.try_enter() {
+            Some(permit) => {
+                // tower's standard clone-out-of-`self` idiom: `inner` may not be `Poll::Ready`
+                // again until this call's future resolves, so the service driving THIS request
+                // must be a fresh clone, not `&mut self.inner` (which stays in `self`, ready for
+                // the NEXT call).
+                let mut inner = self.inner.clone();
+                Box::pin(async move {
+                    // Move the permit into the future so it is held for the ENTIRE inner call and
+                    // released (by the permit's `Drop`) the instant this future resolves —
+                    // including on early drop (a client disconnect cancels the future, which still
+                    // runs the permit's destructor, so a slot is never leaked).
+                    let _permit = permit;
+                    inner.call(req).await
+                })
+            }
+            // Gate saturated: shed immediately rather than queue behind the cap — no inner call at
+            // all, so a full gate costs one non-blocking permit attempt and nothing else.
+            None => Box::pin(async move { Ok(inbound_overloaded_response()) }),
+        }
     }
 }
 

@@ -87,6 +87,36 @@ measure() {
     done <"$OUT/rows.tsv"
   fi
 
+  # The surface ceiling. Self-contained on purpose: scripts/loc-surface.py owns the counting rule
+  # (non-blank, non-comment code lines under src/, minus #[cfg(test)] mods and src/tests/), this
+  # block only turns its exit code into one ledger row. The figure is the amended ceiling in
+  # ARCHITECTURE.md section 1.1 and is deliberately NOT calibratable: it is an owner decision, not a
+  # ratchet that drifts upward with the tree.
+  local surface_id="surface-ceiling:contract+caps" surface_limit=3500 surface_out surface_rc
+  surface_out="$(python3 "$ROOT/scripts/loc-surface.py" \
+                   --ceiling "busbar-contract,busbar-caps=$surface_limit" 2>&1)"; surface_rc=$?
+  local surface_now
+  surface_now="$(printf '%s\n' "$surface_out" | awk '$1=="total"{print $2}')"
+  surface_now="${surface_now:-?}"
+  local surface_status surface_detail
+  if [ "$surface_rc" -eq 0 ]; then
+    surface_status=PASS
+    surface_detail="plugin-visible surface of busbar-contract + busbar-caps is $surface_now lines"
+  else
+    surface_status=FAIL
+    surface_detail="$(printf '%s\n' "$surface_out" | tail -3 | tr '\n' ' ')"
+  fi
+  if [ -n "$quiet" ]; then
+    record "$surface_id" "$surface_status" \
+      "the contract pair's plugin-visible surface stays under its ceiling" "$surface_detail" >/dev/null
+  else
+    record "$surface_id" "$surface_status" \
+      "the contract pair's plugin-visible surface stays under its ceiling" "$surface_detail"
+  fi
+  printf '%s\n' "$surface_id" >>"$OUT/expected-ids"
+  printf '%-4s  %-32s %6s / %-6s  %s\n' "$surface_status" "$surface_id" "$surface_now" \
+    "$surface_limit" "the contract pair's plugin-visible surface" >>"$OUT/summary.txt"
+
   local verdict_out rc
   verdict_out="$(GATE_NAME="construction" EXPECTED_IDS="$(cat "$OUT/expected-ids")" \
                  LEDGER="$LEDGER" bash "$ROOT/testing/fleet-fixtures/verdict.sh" 2>&1)"
@@ -107,12 +137,15 @@ run_selftest() {
   local scratch="$ROOT/target/construction/selftest"
   local pristine="$scratch/pristine" tree="$scratch/tree"
   rm -rf "$scratch"; mkdir -p "$pristine" "$tree"
-  # The scratch copy carries everything the gate reads: every crate's src, the scripts, the ceilings
-  # and the ledger machinery. No target/, so the copy is small and never recurses into itself.
-  local src_dirs
+  # The scratch copy carries everything the gate reads: every crate's src, every crate's Cargo.toml
+  # (manifest-allowlist reads `[dependencies]` straight from disk, not from the Tree scan), the
+  # scripts, the ceilings and the ledger machinery. No target/, so the copy is small and never
+  # recurses into itself.
+  local src_dirs manifests
   src_dirs="$(cd "$ROOT" && ls -d crates/*/src)"
+  manifests="$(cd "$ROOT" && ls crates/*/Cargo.toml)"
   # shellcheck disable=SC2086
-  (cd "$ROOT" && tar -cf - $src_dirs scripts qa testing/fleet-fixtures) | tar -C "$pristine" -xf -
+  (cd "$ROOT" && tar -cf - $src_dirs $manifests scripts qa testing/fleet-fixtures) | tar -C "$pristine" -xf -
   (cd "$pristine" && tar -cf - .) | tar -C "$tree" -xf -
   local gate="$tree/scripts/construction-gate.sh" fail=0
 
@@ -150,7 +183,11 @@ run_selftest() {
   for rule in one-attempt-seam request-path-fn-size ports-only:busbar-voice ports-only-tests:busbar-voice \
               no-uninstalled-seam neutral-no-dialect single-terminal \
               token-sealed teller-step-order one-teller-loop one-teller-loop:run_gauntlet \
-              no-response-escapes-audit terminal-doors-in-audit-step one-pick-site; do
+              no-response-escapes-audit terminal-doors-in-audit-step one-pick-site \
+              loc-ceilings:kernel:arena manifest-allowlist:hook-test-plugin \
+              source-denylist:busbar-plane-llm lean-core no-default-bodies sealed-unit-traits \
+              hold-discipline:no-early-exit forbid-unsafe:busbar-plane-llm \
+              token-sealed:kernel-seal token-sealed:admit-token-mint; do
     python3 "$HELPERS/plant.py" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
     # exit 3 = the rule's subject is absent from this tree (nothing to plant): noted, not failed
     [ "$rc" -ne 3 ] || { note "SKIP $rule: nothing to plant (subject absent from this tree)"; continue; }

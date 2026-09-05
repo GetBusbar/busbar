@@ -896,3 +896,50 @@ fn recv_side_from_std_failure_releases_the_sender_increment() {
         "a from_std-failure continue must release the sender's increment, not strand it"
     );
 }
+
+/// Binding: the ingress server posture is ALPN `http/1.1` only (never advertise h2, since axum's
+/// server here does not speak it), a hyper HTTP/1 header-read timeout of 30s, a
+/// `tls_handshake_timeout_secs` default of 10, and a `request_body_read_timeout_secs` default of
+/// 30. Asserted against the real `build_server_config` output and the real default-limits
+/// accessors (uninstalled state), not a re-typed copy of the literals.
+#[tokio::test]
+async fn server_posture_matches_the_1_5_5_defaults() {
+    let _guard = LIMITS_TEST_LOCK.lock().await;
+    // Uninstalled `crate::limits` state: the historical hardcoded defaults these two accessors
+    // fall back to, exactly like `uninstalled_accessors_return_historical_defaults` pins for the
+    // sibling probe-interval/timeout accessors.
+    assert_eq!(
+        crate::limits::tls_handshake_timeout_secs(),
+        10,
+        "tls_handshake_timeout_secs default"
+    );
+    assert_eq!(
+        crate::limits::request_body_read_timeout_secs(),
+        30,
+        "request_body_read_timeout_secs default"
+    );
+
+    super::install_crypto_provider();
+    let (cert_pem, key_pem) = gen_self_signed();
+    let cert_file = temp_pem("posture-cert", &cert_pem);
+    let key_file = temp_pem("posture-key", &key_pem);
+    let tls = TlsCfg {
+        cert: crate::config::SecretRef::file(cert_file.to_string_lossy().into_owned()),
+        key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
+        client_ca: None,
+    };
+    let server_config =
+        super::build_server_config(&tls, &crate::config::secret::SecretResolver::builtins_only())
+            .expect("valid test TLS config");
+    assert_eq!(
+        server_config.alpn_protocols,
+        vec![b"http/1.1".to_vec()],
+        "ALPN must advertise http/1.1 only, never h2"
+    );
+
+    // The hyper HTTP/1 connection builder: `header_read_timeout` requires a `Timer` or hyper
+    // panics on the call, so simply building it without panicking is a live regression guard on
+    // the `.timer(...)` wiring that makes the 30s `header_read_timeout` at this call site (see its
+    // doc comment) actually take effect rather than being silently ignored.
+    let _ = super::hardened_conn_builder();
+}

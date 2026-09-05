@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The lint hooks: the exact symbol lists the source scan enforces, kept next to the types they
-//! are about rather than buried in a build script.
-//!
-//! Everything in this module exists because Rust cannot express the rule. A hold has to be consumed
-//! by exactly one function; Rust has no linear types, so `std::mem::forget` will always compile.
-//! Rather than pretend otherwise, the rules that the compiler cannot carry are written down HERE,
-//! as data, and the workspace's source scan reads them. The scan is the enforcement; this module is
-//! the specification, and a test in this crate keeps it from going empty or stale.
-//!
-//! The scan's shape is deliberately dull: for each entry, a literal substring search over the Rust
-//! sources of the crates named by the entry's scope, with one reviewed allow-list of exceptions. No
-//! parsing, no cleverness, nothing that can be argued with in review.
+// The lint hooks: the exact symbol lists the source scan enforces.
+//
+// This file is DATA, not surface. Everything in it exists because Rust cannot express the rule: a
+// hold has to be consumed by exactly one function, Rust has no linear types, so `std::mem::forget`
+// will always compile. Rather than pretend otherwise, the rules the compiler cannot carry are
+// written down here and the workspace's source scan reads them. The scan is the enforcement; this
+// file is the specification, and a test in this crate keeps it from going empty or stale.
+//
+// The scan's shape is deliberately dull: for each entry, a literal substring search over the Rust
+// sources of the crates named by the entry's scope, with one reviewed allow-list of exceptions. No
+// parsing, no cleverness, nothing that can be argued with in review.
+//
+// It lives under `fixtures/` rather than under `src/` because a plugin author never names any of
+// it; it is included into the crate's test module and nowhere else.
 
 /// One rule the compiler cannot enforce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

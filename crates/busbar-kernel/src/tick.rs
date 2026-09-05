@@ -27,6 +27,7 @@ use busbar_caps::{
 };
 
 use crate::inflight::UnitSlot;
+use crate::slice::{ConcurrencyGauge, LeaseSet};
 use crate::teller::{settle_amount, Evidence, Kernel};
 use crate::Millis;
 
@@ -266,30 +267,46 @@ pub fn sweep_settle(
     verdict: Sweep,
     evidence: &Evidence,
     canary: &Canary,
+    leases: &mut LeaseSet,
+    gauge: &ConcurrencyGauge,
 ) -> Option<UnitEnd> {
     match sweep_outcome(verdict) {
         None => None,
-        Some(outcome) => match cell.take(&ExitToken::mint(kernel.seal())) {
-            None => None,
-            Some(hold) => {
-                let (amount, flags) = settle_amount(&outcome, evidence);
-                let usage = Usage::estimate(
-                    &UsageToken::mint(kernel.seal()),
-                    vec![UsageLine {
+        Some(outcome) => {
+            let taken = cell.take(&ExitToken::mint(kernel.seal()));
+            // A lost task holds its concurrency leases until somebody gives them back, and the
+            // exit path it would have used is never going to run. The rule is that leases go back
+            // on every end; this is one of the two ends, so they go back here, in the same breath
+            // as the take — including when the take loses, because the unit ended either way.
+            leases.release_all(gauge);
+            match taken {
+                None => None,
+                Some(hold) => {
+                    let (amount, flags) = settle_amount(&outcome, evidence);
+                    let lines = vec![UsageLine {
                         class: MeterClassId::new("nano_units"),
                         quantity: amount,
-                    }],
-                )
-                .expect("one usage line is always within the record's bound");
-                let posted = Posted::settle(hold, &usage, &LedgerToken::mint(kernel.seal()))
-                    .flagged(flags.with(PostingFlags::ESTIMATED));
-                canary.settled();
-                Some(UnitEnd::seal(
-                    &ExitToken::mint(kernel.seal()),
-                    outcome,
-                    Ok(posted),
-                ))
+                    }];
+                    let token = UsageToken::mint(kernel.seal());
+                    // Estimated or reported is the settlement table's answer, not the sweep's: a
+                    // unit whose locator DID arrive before its task disappeared is settled at the
+                    // figure the destination reported, unflagged, exactly as the table says.
+                    let usage = if flags.contains(PostingFlags::ESTIMATED) {
+                        Usage::estimate(&token, lines)
+                    } else {
+                        Usage::report(&token, lines)
+                    }
+                    .expect("one usage line is always within the record's bound");
+                    let posted = Posted::settle(hold, &usage, &LedgerToken::mint(kernel.seal()))
+                        .flagged(flags);
+                    canary.settled();
+                    Some(UnitEnd::seal(
+                        &ExitToken::mint(kernel.seal()),
+                        outcome,
+                        Ok(posted),
+                    ))
+                }
             }
-        },
+        }
     }
 }

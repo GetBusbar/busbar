@@ -73,6 +73,17 @@ pub(super) fn deliver<'a>(
             .unwrap_or(false);
         let cross_protocol = hop.ingress_protocol != hop.egress_name;
 
+        // The ORIGINAL ingress request body, parsed once (when it was JSON), so a cross-protocol
+        // response can be threaded a request-echo context: a dialect whose response spec requires
+        // certain members to MIRROR the request (OpenAI Responses: `temperature`, `top_p`,
+        // `instructions`, `metadata`, `tool_choice`, `parallel_tool_calls`, `tools`) answers with the
+        // client's actual values instead of the spec's bare defaults. `None` for a non-JSON ingress
+        // body (the opaque/audio bridge) or a body that fails to parse.
+        let ingress_request_body: Option<Value> = hop
+            .body_is_json
+            .then(|| busbar_substrate::json::parse::<Value>(hop.body).ok())
+            .flatten();
+
         // A non-stream cross-protocol response is buffered whole and translated egress → IR → ingress.
         // A same-protocol buffered response also takes this path when the client asked to stream:
         // the client's dialect stream (SSE framing, metering-at-end) must be served even though the
@@ -99,6 +110,7 @@ pub(super) fn deliver<'a>(
                 upstream_started,
                 hop.chosen_policy_name,
                 hop.degraded,
+                ingress_request_body.clone(),
             ))
             .await;
         }
@@ -117,6 +129,14 @@ pub(super) fn deliver<'a>(
         // framing surfaces it to the client ONLY when the client itself opted in.
         let translate = translate.map(|mut t| {
             t.set_client_include_usage(hop.client_include_usage);
+            // The live-stream twin of the buffered-path `apply_request_echo` above: a dialect whose
+            // response spec requires certain members to MIRROR the request (OpenAI Responses) reads
+            // this off the writer it holds for the life of the stream (`response.created`/
+            // `response.completed` each carry a full `response` object). Every other ingress writer's
+            // override is a no-op.
+            if let Some(body) = ingress_request_body.as_ref() {
+                t.set_request_echo(body);
+            }
             t
         });
         let json_array = (hop.gemini_json_array && is_sse)

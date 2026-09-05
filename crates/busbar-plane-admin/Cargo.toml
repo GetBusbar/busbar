@@ -1,0 +1,46 @@
+# busbar-plane-admin — THE HTTP CODEC for the admin surface, and nothing else.
+#
+# WHAT THIS CRATE IS. One implementation of the plugin contract's plane kind for busbar's own admin
+# API: it translates the 1.5.5-shaped HTTP request/response shapes (66 operations over 49 paths,
+# mechanically extracted from the pinned `openapi-1.5.5.json` fixture) plus the 1.6.0-additive
+# money-governance verbs into `DestinationFacts::KernelVerb` destinations and back. Every one of
+# those verbs is EXECUTED by `busbar-unit-verbs`, on the far side of the kernel from this plane; this
+# crate never holds `AdminToken`, never touches the store and never computes a result. If a byte
+# differs between what this crate renders and the 1.5.5 admin API's own JSON envelope, the envelope
+# in `busbar-core`'s admin contract is the answer and this crate has the bug.
+#
+# WHAT THIS CRATE IS NOT. There is no governance here, no dual-control arithmetic, no ledger and no
+# scope check: the scope UNIT reads the required scope out of policy and compares it against the
+# principal, and this plane's `approve` only says which resource is being asked for. The routing
+# method returns an empty plan, because the `KernelVerb` destination this plane names IS the routing
+# — the kernel dials its own verb table, never a leg this plane opened.
+#
+# THE DEPENDENCY EDGE, STATED HONESTLY. Only the contract crate is named here. `busbar-core`'s admin
+# contract module (the error taxonomy, the frozen `code` strings, `Scope`) is READ-ONLY REFERENCE for
+# this crate's authors, never a dependency edge: the closed error codes this plane renders are
+# transcribed by hand into `refusal.rs`, with a doc-comment table recording the mapping, precisely so
+# this crate never needs to pull in the whole admin JSON-REST stack to render four closed strings.
+[package]
+name = "busbar-plane-admin"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# One pinned number, set to what CI verifies — the same rationale every other member states.
+rust-version = "1.97"
+description = "The admin plane for busbar: the plugin contract's plane kind implemented as a thin HTTP codec over the closed 66+17 kernel-verb table."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_plane_admin"
+path = "src/lib.rs"
+
+# NO FEATURES, ON PURPOSE. A plane compiled two ways is two planes, and the kernel would have no way
+# to tell which one it registered. The contract crate holds itself to the same rule and asserts it.
+
+[dependencies]
+# THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
+busbar-contract = { path = "../busbar-contract" }
+# The object notation the admin wire speaks. Used only in tests, to read the pinned openapi fixture
+# and assert this plane's table against it; the codec itself never parses a whole document; it scans
+# spans by hand (see `scan.rs`) over the arena-free, borrowed body bytes.
+serde_json = { workspace = true }

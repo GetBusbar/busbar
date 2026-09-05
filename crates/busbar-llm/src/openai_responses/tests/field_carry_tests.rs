@@ -86,6 +86,7 @@ fn mk_response(
         created: Some(1_700_000_000),
         system_fingerprint: None,
         stop_sequence: None,
+        request_echo: None,
     }
 }
 
@@ -552,6 +553,134 @@ fn responses_response_identity_fields_emitted() {
         "response.model must survive: {out}"
     );
     assert_eq!(out["status"], "completed", "response.status: {out}");
+}
+
+/// E8 (tracker): the pinned spec's `Response` schema REQUIRES `temperature`/`top_p`/`instructions`/
+/// `metadata`/`tool_choice`/`parallel_tool_calls`/`tools` on every response object, and they must
+/// MIRROR the client's actual request values on a cross-dialect hop — not the spec's bare defaults.
+/// `write_response` (the BUFFERED path) reads them straight off `IrResponse::request_echo`, which the
+/// cross-protocol seam populates from the ORIGINAL ingress wire body before this writer ever runs.
+#[test]
+fn responses_response_request_echo_members_mirror_the_client_request_buffered() {
+    let mut resp = mk_response(vec![text_block("hi")], Some(crate::ir::IrStopReason::EndTurn));
+    resp.request_echo = Some(serde_json::json!({
+        "model": "gpt-carry",
+        "input": "hi",
+        "temperature": 0.31,
+        "top_p": 0.42,
+        "instructions": "be terse",
+        "metadata": {"session": "abc123"},
+        "tool_choice": "required",
+        "parallel_tool_calls": false,
+        "tools": [{"type": "function", "name": "lookup", "parameters": {}}],
+    }));
+    let out = write_response(&resp);
+
+    assert_eq!(out["temperature"], 0.31, "temperature must echo the client's value: {out}");
+    assert_eq!(out["top_p"], 0.42, "top_p must echo the client's value: {out}");
+    assert_eq!(
+        out["instructions"], "be terse",
+        "instructions must echo the client's value: {out}"
+    );
+    assert_eq!(
+        out["metadata"],
+        serde_json::json!({"session": "abc123"}),
+        "metadata must echo the client's value: {out}"
+    );
+    assert_eq!(
+        out["tool_choice"], "required",
+        "tool_choice must echo the client's value: {out}"
+    );
+    assert_eq!(
+        out["parallel_tool_calls"], false,
+        "parallel_tool_calls must echo the client's value: {out}"
+    );
+    assert_eq!(
+        out["tools"],
+        serde_json::json!([{"type": "function", "name": "lookup", "parameters": {}}]),
+        "tools must echo the client's value: {out}"
+    );
+}
+
+/// E8: absent `request_echo` (no parsed ingress body was available to thread) falls back to the
+/// spec's own documented defaults, exactly as before this change — never a panic, never an omitted
+/// required member.
+#[test]
+fn responses_response_request_echo_absent_falls_back_to_spec_defaults() {
+    let out = write_response(&mk_response(
+        vec![text_block("hi")],
+        Some(crate::ir::IrStopReason::EndTurn),
+    ));
+    assert_eq!(out["temperature"], 1.0, "default temperature: {out}");
+    assert_eq!(out["top_p"], 1.0, "default top_p: {out}");
+    assert_eq!(out["instructions"], serde_json::Value::Null, "default instructions: {out}");
+    assert_eq!(out["metadata"], serde_json::json!({}), "default metadata: {out}");
+    assert_eq!(out["tool_choice"], "auto", "default tool_choice: {out}");
+    assert_eq!(out["parallel_tool_calls"], true, "default parallel_tool_calls: {out}");
+    assert_eq!(out["tools"], serde_json::json!([]), "default tools: {out}");
+}
+
+/// E8: a `null` echoed member (the client's wire body carried the key as JSON `null`, distinct from
+/// "absent") still falls back to the spec default rather than emitting a bare `null` for a
+/// non-nullable member — `temperature`/`top_p` are typed numbers, not `anyOf null`, on the pinned
+/// schema.
+#[test]
+fn responses_response_request_echo_null_member_falls_back_to_default() {
+    let mut resp = mk_response(vec![text_block("hi")], Some(crate::ir::IrStopReason::EndTurn));
+    resp.request_echo = Some(serde_json::json!({"temperature": null, "top_p": null}));
+    let out = write_response(&resp);
+    assert_eq!(out["temperature"], 1.0, "null echo falls back to default: {out}");
+    assert_eq!(out["top_p"], 1.0, "null echo falls back to default: {out}");
+}
+
+/// E8 (tracker): the STREAMING twin — `set_request_echo` (called once by the cross-protocol stream
+/// seam before the first event) latches the ORIGINAL ingress request onto the writer's per-stream
+/// state, and `response.created`'s embedded `response` object answers with those values rather than
+/// the spec's bare defaults. Every terminal event shares the same writer instance for the life of the
+/// stream, so this must hold for `response.created` specifically (the earliest point a client can read
+/// these fields).
+#[test]
+fn responses_response_request_echo_members_mirror_the_client_request_streaming() {
+    let w = ResponsesWriter;
+    w.set_request_echo(&serde_json::json!({
+        "temperature": 0.55,
+        "top_p": 0.9,
+        "instructions": "streaming instructions",
+        "metadata": {"k": "v"},
+        "tool_choice": "none",
+        "parallel_tool_calls": false,
+    }));
+    let frames = w.write_response_events(&crate::ir::IrStreamEvent::MessageStart {
+        role: crate::ir::IrRole::Assistant,
+        usage: None,
+        id: Some("resp_stream".to_string()),
+        created: Some(1_700_000_000),
+        model: Some("gpt-carry".to_string()),
+    });
+    let (_, data) = frames.first().expect("response.created must emit a frame");
+    let response = &data["response"];
+    assert_eq!(
+        response["temperature"], 0.55,
+        "streaming response.created must echo temperature: {data}"
+    );
+    assert_eq!(response["top_p"], 0.9, "streaming response.created must echo top_p: {data}");
+    assert_eq!(
+        response["instructions"], "streaming instructions",
+        "streaming response.created must echo instructions: {data}"
+    );
+    assert_eq!(
+        response["metadata"],
+        serde_json::json!({"k": "v"}),
+        "streaming response.created must echo metadata: {data}"
+    );
+    assert_eq!(
+        response["tool_choice"], "none",
+        "streaming response.created must echo tool_choice: {data}"
+    );
+    assert_eq!(
+        response["parallel_tool_calls"], false,
+        "streaming response.created must echo parallel_tool_calls: {data}"
+    );
 }
 
 /// responses/response/{output,output_text}
