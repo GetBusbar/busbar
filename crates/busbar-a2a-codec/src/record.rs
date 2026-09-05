@@ -173,5 +173,5 @@ fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> StoreResult<T> {
 }
 
 #[cfg(test)]
-#[path = "a2a/tests/record_tests.rs"]
+#[path = "tests/record_tests.rs"]
 mod record_tests;

@@ -36,7 +36,7 @@
 
 /// Which direction a metered A2A event belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Direction {
+pub enum Direction {
     /// busbar is the SERVER: an external agent delegated a task to a busbar-fronted agent.
     Receiving,
     /// busbar is the CLIENT: a fronted agent delegated out to a registered agent.
@@ -45,39 +45,39 @@ pub(crate) enum Direction {
 
 /// WHAT IS BILLED, TO WHOM, AND HOW FAR THE CLAIM REACHES.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Attribution {
-    pub(crate) direction: Direction,
+pub struct Attribution {
+    pub direction: Direction,
     /// The key whose budget this bills.
     ///
     /// RECEIVING: the PRESENTING key. DELEGATING: the INITIATING key — the one that started the
     /// chain, not a synthetic identity for the fronted agent. A hop billed to the agent rather than
     /// to whoever set it in motion is a hop nobody's budget constrains, and a budget nobody's
     /// budget constrains is not a budget.
-    pub(crate) billed_key_id: String,
+    pub billed_key_id: String,
     /// The fronted agent, on the receiving side; the DELEGATING fronted agent, on the outbound one.
-    pub(crate) agent_id: String,
+    pub agent_id: String,
     /// The registered agent the hop went TO. Delegating only.
-    pub(crate) target_agent_id: Option<String>,
+    pub target_agent_id: Option<String>,
     /// The session grouping key: busbar's metering attribution and provenance key.
-    pub(crate) context_id: String,
-    pub(crate) task_id: String,
+    pub context_id: String,
+    pub task_id: String,
     /// Whether busbar's downstream L2 MCP spend on this task is billed to the same key.
     ///
     /// TRUE on receiving (it is busbar's own traffic) and FALSE on delegating (there is none:
     /// busbar made one hop).
-    pub(crate) covers_downstream_l2_spend: bool,
+    pub covers_downstream_l2_spend: bool,
     /// ALWAYS FALSE, on both arms, and it is a field rather than an omission so that the claim is
     /// visible where the numbers are read.
     ///
     /// The callee's internal tool and model spend is the vendor's plane. It never touches busbar,
     /// so busbar cannot meter it, and a gateway that quietly reported it as zero would be reporting
     /// a number that reads as "they spent nothing".
-    pub(crate) covers_callee_internal_spend: bool,
+    pub covers_callee_internal_spend: bool,
 }
 
 impl Attribution {
     /// RECEIVING: the task and its downstream L2 MCP calls bill the presenting key.
-    pub(crate) fn receiving(
+    pub fn receiving(
         presenting_key_id: impl Into<String>,
         agent_id: impl Into<String>,
         context_id: impl Into<String>,
@@ -97,7 +97,7 @@ impl Attribution {
 
     /// DELEGATING: THE HOP is metered, billed to the initiating key. The black box behind it is
     /// not.
-    pub(crate) fn delegating(
+    pub fn delegating(
         initiating_key_id: impl Into<String>,
         from_agent_id: impl Into<String>,
         target_agent_id: impl Into<String>,
@@ -121,7 +121,7 @@ impl Attribution {
 
 /// The admission answer for one task, before any backend runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Admission {
+pub enum Admission {
     /// Admitted; charge it.
     Admit,
     /// Over the key's limit. 429, with `Retry-After` in seconds.
@@ -129,7 +129,7 @@ pub(crate) enum Admission {
 }
 
 impl Admission {
-    pub(crate) fn status(&self) -> Option<u16> {
+    pub fn status(&self) -> Option<u16> {
         match self {
             Admission::Admit => None,
             Admission::OverLimit { .. } => Some(429),
@@ -141,7 +141,7 @@ impl Admission {
 ///
 /// Reaching the limit is over it: an operator who wrote the number they consider unacceptable did
 /// not mean "one more than this".
-pub(crate) fn admit(used: u64, limit: Option<u64>, window_remaining_secs: u64) -> Admission {
+pub fn admit(used: u64, limit: Option<u64>, window_remaining_secs: u64) -> Admission {
     match limit {
         None => Admission::Admit,
         Some(limit) if used < limit => Admission::Admit,

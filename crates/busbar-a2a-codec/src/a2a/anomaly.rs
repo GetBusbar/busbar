@@ -39,7 +39,7 @@ use std::fmt::Write as _;
 /// Which runtime signal tripped. Card identity is deliberately absent: this breaker exists for the
 /// case where the card is beyond reproach.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum AnomalySignal {
+pub enum AnomalySignal {
     /// Transport and protocol errors as a fraction of dispatches.
     ErrorRate,
     /// A sudden surge of tasks reaching a `failed` or `rejected` terminal state. Distinct from
@@ -55,7 +55,7 @@ pub(crate) enum AnomalySignal {
 
 impl AnomalySignal {
     /// The operator-facing name, which is also what an audit row records.
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             AnomalySignal::ErrorRate => "error_rate",
             AnomalySignal::TerminalFailureRate => "terminal_failure_rate",
@@ -72,44 +72,44 @@ impl AnomalySignal {
 /// feature shipped, which is the largest availability event this design could cause and it would be
 /// caused by a default rather than by an attack.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Thresholds {
+pub struct Thresholds {
     /// The floor below which NO signal can trip, however bad the ratios look.
     ///
     /// This is the single most important field. Without it the first dispatch of the day failing is
     /// a 100 percent error rate, and the agent is suspended on a sample of one. Ratios over tiny
     /// samples are noise, and a security control that fires on noise is an availability control
     /// pointed at the operator.
-    pub(crate) min_observations: u32,
-    pub(crate) error_rate: Option<f64>,
-    pub(crate) terminal_failure_rate: Option<f64>,
-    pub(crate) latency_p95_ms: Option<u64>,
-    pub(crate) egress_budget_ratio: Option<f64>,
+    pub min_observations: u32,
+    pub error_rate: Option<f64>,
+    pub terminal_failure_rate: Option<f64>,
+    pub latency_p95_ms: Option<u64>,
+    pub egress_budget_ratio: Option<f64>,
 }
 
 /// What was observed over the breaker's window. Store, therefore accumulation.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Window {
+pub struct Window {
     /// Dispatches in the window. The denominator for every ratio, and the sample the floor judges.
-    pub(crate) observations: u32,
-    pub(crate) errors: u32,
-    pub(crate) terminal_failures: u32,
-    pub(crate) latency_p95_ms: u64,
-    pub(crate) egress_spend_ratio: f64,
+    pub observations: u32,
+    pub errors: u32,
+    pub terminal_failures: u32,
+    pub latency_p95_ms: u64,
+    pub egress_spend_ratio: f64,
     /// The window the contributing observations actually span. Carried into the reason so an
     /// operator can line a suspension up against a deploy or an incident.
-    pub(crate) first_observation_ms: u64,
-    pub(crate) last_observation_ms: u64,
+    pub first_observation_ms: u64,
+    pub last_observation_ms: u64,
 }
 
 /// A trip, with everything an operator needs to judge it.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Trip {
-    pub(crate) signal: AnomalySignal,
-    pub(crate) observed: String,
-    pub(crate) threshold: String,
-    pub(crate) observations: u32,
-    pub(crate) first_observation_ms: u64,
-    pub(crate) last_observation_ms: u64,
+pub struct Trip {
+    pub signal: AnomalySignal,
+    pub observed: String,
+    pub threshold: String,
+    pub observations: u32,
+    pub first_observation_ms: u64,
+    pub last_observation_ms: u64,
 }
 
 impl Trip {
@@ -119,7 +119,7 @@ impl Trip {
     /// The sample size is in there because "error_rate 1.00" reads like a catastrophe and means
     /// nothing without it, and the window is in there because the first question anyone asks about
     /// a suspension is what else happened at that time.
-    pub(crate) fn reason(&self) -> String {
+    pub fn reason(&self) -> String {
         let mut s = String::new();
         let _ = write!(
             s,
@@ -146,7 +146,7 @@ impl Trip {
 /// which was checked first or which looked worst. A reason string that flapped between evaluations
 /// would be one an operator cannot correlate with anything, and "worst" is not comparable across
 /// signals measured in different units anyway.
-pub(crate) fn evaluate(window: &Window, thresholds: &Thresholds) -> Option<Trip> {
+pub fn evaluate(window: &Window, thresholds: &Thresholds) -> Option<Trip> {
     // THE FLOOR, checked before any ratio is formed. It is also what keeps the divisions below from
     // ever meeting a zero denominator: a window with no observations cannot clear a floor of at
     // least one, and a floor of zero with no observations is still refused here.

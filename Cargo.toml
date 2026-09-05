@@ -9,6 +9,7 @@ members = [
     "crates/busbar-mcp",
     "crates/busbar-mcp-codec",
     "crates/busbar-a2a",
+    "crates/busbar-a2a-codec",
     "crates/busbar-voice",
     "crates/busbar-substrate",
     "crates/busbar-substrate-values",

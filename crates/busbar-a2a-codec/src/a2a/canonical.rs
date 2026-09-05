@@ -27,7 +27,7 @@ use serde_json::Value;
 /// A document that cannot be canonicalized. Every arm is a case where producing SOME string would be
 /// worse than refusing: a fingerprint nobody can reproduce is a permanent false drift alarm.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum CanonicalError {
+pub enum CanonicalError {
     /// RFC 8785 section 3.2.2.3: NaN and the infinities have no canonical form. JSON cannot even
     /// carry them, so their presence means the document was built in memory, not parsed.
     NonFiniteNumber,
@@ -44,7 +44,7 @@ impl std::fmt::Display for CanonicalError {
 }
 
 /// The RFC 8785 canonical serialization of `value`.
-pub(crate) fn canonicalize(value: &Value) -> Result<String, CanonicalError> {
+pub fn canonicalize(value: &Value) -> Result<String, CanonicalError> {
     let mut out = String::new();
     write_value(value, &mut out)?;
     Ok(out)

@@ -32,13 +32,20 @@
 
 pub mod a2a;
 pub mod diagnostics;
-pub mod record;
 pub mod taskstore;
+
+/// THE DURABLE RECORD VOCABULARY, RE-EXPORTED FROM `busbar-a2a-codec`.
+///
+/// The task and task-event row shapes moved to the pure half of this plugin — split out so
+/// `busbar-plane-a2a` can name the record kinds without linking this crate's axum routes, tonic
+/// binding and reqwest relay leg. Re-exported HERE, under its old name, so every caller that spells
+/// `busbar_a2a::record::…` resolves exactly what it always did.
+pub use busbar_a2a_codec::record;
 
 /// THE A2A PLANE'S OWN DURABLE RECORD TYPES — relocated here from `busbar-api` (1.7.0 plane
 /// extraction), re-exported at the crate root so `busbar_a2a::TaskRow` / `busbar_a2a::TaskEventRow`
 /// resolve. The neutral crates name neither.
-pub use record::{TaskEventRow, TaskRow};
+pub use busbar_a2a_codec::{TaskEventRow, TaskRow};
 
 /// THE A2A PLANE'S TEST-KIT (feature `test-support` only): the fixture builders that name A2A plane
 /// types, kept on the plane so busbar-core's neutral `test_support::TestApp` names none of them. This

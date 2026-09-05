@@ -71,10 +71,12 @@
 /// length (> 1) is what earns this plane a superset IR and denies it a `sole_wire_format`.
 pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
     busbar_substrate::plane::registry::PlaneDecl {
-        key: "a2a",
+        // THE KEY IS THE CODEC'S OWN, named once on the pure side of the split so this declaration
+        // and the contract plane in `busbar-plane-a2a` cannot drift apart.
+        key: busbar_a2a_codec::PLANE_KEY,
         // A MOUNTED plane, not the fallback catch-all.
         fallback: false,
-        config_section: "agents",
+        config_section: busbar_a2a_codec::CONFIG_SECTION,
         scope_kinds: &["agent"],
         subject_noun: "fronted agent",
         admin_noun: "agent",
@@ -543,8 +545,12 @@ pub(crate) fn openapi_fragment() -> serde_json::Value {
 }
 
 pub mod admin_view;
-pub(crate) mod anomaly;
-pub(crate) mod canonical;
+/// MOVED to `busbar-a2a-codec` (pure wire vocabulary), re-exported here under its old in-crate path
+/// so `super::anomaly::…` and `crate::a2a::anomaly::…` resolve unchanged.
+pub(crate) use busbar_a2a_codec::a2a::anomaly;
+/// MOVED to `busbar-a2a-codec` (pure wire vocabulary), re-exported here under its old in-crate path
+/// so `super::canonical::…` and `crate::a2a::canonical::…` resolve unchanged.
+pub(crate) use busbar_a2a_codec::a2a::canonical;
 pub(crate) mod card;
 pub mod config;
 pub(crate) mod creds;
@@ -554,7 +560,9 @@ pub(crate) mod idmap;
 pub mod inbound;
 pub(crate) mod jws;
 pub(crate) mod local;
-pub(crate) mod meter;
+/// MOVED to `busbar-a2a-codec` (pure wire vocabulary), re-exported here under its old in-crate path
+/// so `super::meter::…` and `crate::a2a::meter::…` resolve unchanged.
+pub(crate) use busbar_a2a_codec::a2a::meter;
 /// THE HOPS BUSBAR ORIGINATES ITSELF, on verbs `local` also answers: the callback substitution and
 /// the task-list poll. One relay, one egress gate, one framing lookup — see the module header.
 pub(crate) mod originate;

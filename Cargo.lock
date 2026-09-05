@@ -398,6 +398,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
+ "busbar-a2a-codec",
  "busbar-api",
  "busbar-core",
  "busbar-plugin",
@@ -432,6 +433,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "busbar-a2a-codec"
+version = "1.6.0"
+dependencies = [
+ "busbar-api",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -725,7 +735,7 @@ dependencies = [
 name = "busbar-plane-a2a"
 version = "1.6.0"
 dependencies = [
- "busbar-a2a",
+ "busbar-a2a-codec",
  "busbar-contract",
  "serde_json",
 ]
