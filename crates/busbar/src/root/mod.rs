@@ -49,6 +49,7 @@
 // It comes off with the last plane switch, when `main()` calls into this module.
 #![allow(dead_code)]
 
+pub mod adapters;
 pub mod durability;
 pub mod kernel;
 pub mod registry;
