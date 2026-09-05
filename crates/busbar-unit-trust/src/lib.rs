@@ -22,6 +22,15 @@
 //! 3. The unpriced-destination gate, which refuses with the invalid-request shape rather than a
 //!    quota shape, because an unpriced arbitrary name is a bad request and not an exhausted budget.
 //!
+//! ## The network guard is here, not in a transport
+//!
+//! Where a unit may go is this unit's question, and the address a destination resolves to is part
+//! of it. A transport that resolved a name itself was a transport that had to remember to guard it,
+//! and every new carrier was a new place to forget. [`net::check_destination`] runs once, before
+//! any dial, for every carrier there will ever be: the metadata denylist over the configured base
+//! AND over the paths joined to it, then exactly one resolution, then a judgement of every answered
+//! address, then a pin. What a transport receives is an address that has already been looked at.
+//!
 //! ## The exclusion rule
 //!
 //! A tripped, budget-exhausted or at-capacity lane is EXCLUDED from the walk, never "ordered last
@@ -49,6 +58,7 @@
 pub mod destination;
 pub mod guard;
 pub mod lane;
+pub mod net;
 pub mod order;
 pub mod swrr;
 pub mod unit;
@@ -59,6 +69,10 @@ pub use destination::{
 pub use guard::{
     destination_guard, fallback_pools_authorized, pool_authorized, priced, GuardRefusal, PoolView,
     RefusalKind,
+};
+pub use net::{
+    check_destination, AddressRefusal, Denylist, GuardPolicy, NetworkRefusal, PinnedTarget,
+    Resolver,
 };
 pub use lane::{survives_prewalk_filter, BreakerView, LaneCandidate, LaneTable, Unavailable};
 pub use order::{

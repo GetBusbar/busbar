@@ -5,6 +5,7 @@
 
 mod destination_tests;
 mod guard_tests;
+mod net_tests;
 mod order_tests;
 mod swrr_tests;
 mod unit_tests;
