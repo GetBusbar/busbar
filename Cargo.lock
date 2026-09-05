@@ -796,6 +796,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-unit-admission"
+version = "1.6.0"
+dependencies = [
+ "busbar-caps",
+]
+
+[[package]]
 name = "busbar-voice"
 version = "1.6.0"
 dependencies = [

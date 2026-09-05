@@ -1,0 +1,27 @@
+# busbar-unit-transport-key — the transport-key unit (§3.4's key-material paragraph).
+#
+# WHY A SEPARATE CRATE. `listen`/`dial`/`upgrade` need key material exactly once each, and nothing
+# downstream of that point may ever see it again: the unit resolves it through a secret source,
+# journals the access, and hands back an opaque `TransportKeyHandle` that a transport can carry
+# without being able to turn it back into bytes. That is a small, self-contained job — parse PEM,
+# build a `rustls::ServerConfig`, mint a handle — so it depends on `busbar-caps` for the handle and
+# on `rustls` for the one thing this crate actually builds, and nothing else in the tree.
+[package]
+name = "busbar-unit-transport-key"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The transport-key unit: resolves key material through a secret source at listen/dial/upgrade, journals Access, hands out an opaque TransportKeyHandle."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_unit_transport_key"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-caps = { path = "../busbar-caps" }
+rustls = { workspace = true }
+
+[dev-dependencies]
+rcgen = { workspace = true }
