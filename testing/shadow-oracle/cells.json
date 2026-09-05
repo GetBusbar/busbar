@@ -11359,7 +11359,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b is a tap with `default: true`, but a tap cannot be a pool's base ordering",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-056|validate",
@@ -11393,7 +11393,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b more than one hook sets `default: true`",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-058a|validate",
@@ -12481,7 +12481,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b was written by a newer busbar (overlay version",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-124|validate",
@@ -12650,7 +12650,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b but it was not loaded:",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-137c|boot",
@@ -12695,7 +12695,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b but it was not loaded:",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-138c|boot",
@@ -12740,7 +12740,7 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b but it was not loaded:",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.refusal|BOOT-140|boot",
@@ -13989,7 +13989,7 @@
         "env": {}
       },
       "why": "expect exit 0; stderr \u220b definition this binary cannot parse; it is NOT applied (edit or remove it, then ",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.warning|BOOT-W22|boot",
@@ -14004,7 +14004,7 @@
         "env": {}
       },
       "why": "expect exit 0; stderr \u220b plugin present but NOT loaded (trust policy)",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.warning|BOOT-W23|boot",
@@ -14019,7 +14019,7 @@
         "env": {}
       },
       "why": "expect exit 0; stderr \u220b plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)",
-      "needs_fixture": true
+      "needs_fixture": false
     },
     {
       "id": "boot.warning|BOOT-W24|boot",
