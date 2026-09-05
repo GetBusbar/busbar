@@ -17,16 +17,21 @@
 //! `pool_idle_timeout` from [`ClientSettings`], and `upstream_http1_only` /
 //! `upstream_h2_prior_knowledge` selecting the connector's ALPN offer exactly as the engine did.
 //!
-//! ## The seam this delivery leaves named rather than guessed
+//! ## Bodies larger than one call
 //!
 //! [`Transport::dial`]/`listen`/`accept` return an opaque `Conn`; the actual HTTP exchange happens
-//! at `write`/`frames`, because the trait carries no request payload at dial time. This crate's
-//! `write` therefore expects ONE call carrying a complete raw HTTP/1.1 message (request line or
-//! status line, headers, the blank line, and the body) — exactly the shape
-//! `busbar_contract::EgressBody`/`TransportEnvelope` already produce — and reconstructs an
-//! `http::Request`/response from it. True multi-call body streaming (bytes arriving across several
-//! `write` calls before the message is complete) is not implemented in this delivery; see the
-//! crate's delivery notes for why and what a follow-up would need.
+//! at `write`/`frames`, because the trait carries no request payload at dial time. A body is not
+//! one call's worth of bytes, though: the large-body design is a HEAD frame followed by body-chunk
+//! frames, and a request body is accepted up to the configured maximum regardless of how many
+//! chunks it took.
+//!
+//! So `write` ACCUMULATES. Each call appends to the connection's pending message, and the exchange
+//! runs when the message is complete and not before — at the declared `Content-Length`, or at the
+//! terminal chunk of a chunked body, or immediately for a message that declares neither and
+//! therefore carries no body. The reader is the mirror of that: it reads a `Content-Length` body or
+//! decodes a chunked one across as many reads as it arrives in, emits one body frame per chunk the
+//! sender wrote, and hands the trailer section up as its own final frame rather than folding it
+//! into the body.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -108,13 +113,18 @@ enum Inner {
         write: AsyncMutex<OwnedWriteHalf>,
         leftover: AsyncMutex<Vec<u8>>,
     },
-    /// A dialled destination: the exchange happens inside `write`, which pushes the response's
-    /// frames into this channel for `frames` to drain.
+    /// A dialled destination: the exchange happens inside `write` once the message it is
+    /// accumulating is complete, and pushes the response's frames into this channel for `frames` to
+    /// drain.
     Egress {
         uri: http::Uri,
         client: Arc<EgressClient>,
         resp_tx: Mutex<Option<RespSender>>,
         resp_rx: AsyncMutex<RespReceiver>,
+        /// What `write` has been handed so far, and not yet sent. A body arrives across as many
+        /// calls as the plane chose to write it in, and the exchange runs when the message is
+        /// whole — never on a prefix of one.
+        pending: AsyncMutex<Vec<u8>>,
     },
 }
 
@@ -358,6 +368,7 @@ impl Transport for HttpTransport {
                 client: self.egress_client.clone(),
                 resp_tx: Mutex::new(Some(tx)),
                 resp_rx: AsyncMutex::new(rx),
+                pending: AsyncMutex::new(Vec::new()),
             });
             self.conns.lock().expect("poisoned").insert(id, inner);
             Ok(Conn::new(Arc::new(HttpConnHandle {
@@ -433,18 +444,37 @@ impl Transport for HttpTransport {
                     uri,
                     client,
                     resp_tx,
+                    pending,
                     ..
                 } => {
-                    let raw = raw::parse_message(bytes.as_slice())
-                        .ok_or(TransportError::Framing)?;
+                    let queued = bytes.len();
+                    let mut buffered = pending.lock().await;
+                    buffered.extend_from_slice(bytes.as_slice());
+                    let Some(raw) = complete_message(&buffered)? else {
+                        // A prefix of a message. Nothing goes on the wire until the declared length
+                        // or the terminal chunk says the message is whole.
+                        return Ok(queued);
+                    };
+                    buffered.clear();
+                    drop(buffered);
+
                     let mut builder = http::Request::builder()
                         .method(raw.start.method_or("GET"))
                         .uri(uri.clone());
                     for (k, v) in &raw.headers {
+                        // `Transfer-Encoding` and `Content-Length` describe a framing this
+                        // transport has already undone: the body below is the decoded one, and
+                        // the client sets the length it actually sends. Forwarding either would
+                        // describe a wire that is not the one going out.
+                        if k.eq_ignore_ascii_case("transfer-encoding")
+                            || k.eq_ignore_ascii_case("content-length")
+                        {
+                            continue;
+                        }
                         builder = builder.header(k, v);
                     }
                     let req = builder
-                        .body(Full::new(Bytes::copy_from_slice(&raw.body)))
+                        .body(Full::new(Bytes::from(raw.body)))
                         .map_err(|_| TransportError::Framing)?;
                     let resp = client
                         .request(req)
@@ -500,7 +530,7 @@ impl Transport for HttpTransport {
                             let _ = tx.send(Ok((StreamId(0), body_frame)));
                         }
                     }
-                    Ok(bytes.len())
+                    Ok(queued)
                 }
             }
         })
@@ -564,10 +594,52 @@ impl Transport for HttpTransport {
     }
 }
 
-/// Read one HTTP/1.1 request off an ingress connection: the scanned header prefix (bounded by
-/// [`READ_CHUNK_BYTES`], mirroring the design's cursor cap) becomes the HEAD frame, and a declared
-/// `Content-Length` body becomes one further body-chunk frame. No chunked-transfer-encoding
-/// support in this delivery (see the crate doc's named simplifications).
+/// A message this transport has been handed enough of to send, or `None` for a prefix of one.
+///
+/// The three endings are the wire's own: a declared `Content-Length` reached, the terminal chunk of
+/// a chunked body seen, or a message that declares neither coding and therefore carries no body at
+/// all. A chunked message is decoded here, so what comes back always carries the body itself rather
+/// than a framing of it.
+fn complete_message(buffered: &[u8]) -> Result<Option<raw::RawMessage>, TransportError> {
+    let Some(header_end) = find_header_end(buffered) else {
+        return Ok(None);
+    };
+    let mut message =
+        raw::parse_message(&buffered[..header_end]).ok_or(TransportError::Framing)?;
+    let rest = &buffered[header_end..];
+
+    if raw::is_chunked(&message.headers) {
+        let mut decoder = raw::ChunkedDecoder::default();
+        decoder
+            .feed(rest)
+            .map_err(|_| TransportError::Framing)?;
+        if !decoder.is_done() {
+            return Ok(None);
+        }
+        let (chunks, trailers) = decoder.take();
+        message.body = chunks.concat();
+        // A trailer is a header that arrived late; it goes where every other header went, so
+        // nothing downstream has to know which side of the body it was written on.
+        message.headers.extend(trailers);
+        return Ok(Some(message));
+    }
+
+    let declared = raw::content_length(&message.headers).unwrap_or(0);
+    if rest.len() < declared {
+        return Ok(None);
+    }
+    message.body = rest[..declared].to_vec();
+    Ok(Some(message))
+}
+
+/// Read one HTTP/1.1 request off an ingress connection.
+///
+/// The scanned header prefix (bounded by [`READ_CHUNK_BYTES`], mirroring the design's cursor cap)
+/// becomes the HEAD frame. The body follows as body-chunk frames: one frame for a declared
+/// `Content-Length` body, and for a chunked one, one frame per chunk the sender wrote — the sender's
+/// own framing, kept rather than flattened, so a megabyte body arrives as the chunks it was sent as
+/// however the reads happened to fall. A trailer section becomes one final frame carrying it in
+/// wire form, which is where a reader that folded it into the body would have lost it.
 async fn read_ingress_message(inner: &Inner) -> Result<Option<Vec<(StreamId, Frame)>>, TransportError> {
     let Inner::Ingress { read, leftover, .. } = inner else {
         return Err(TransportError::Framing);
@@ -593,57 +665,84 @@ async fn read_ingress_message(inner: &Inner) -> Result<Option<Vec<(StreamId, Fra
     };
 
     let header_bytes = buf[..header_end].to_vec();
-    let content_len = raw::parse_message(&header_bytes)
-        .and_then(|m| m.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.parse::<usize>().ok()))
-        .unwrap_or(0);
-
-    let mut body = buf[header_end..].to_vec();
+    let headers = raw::parse_message(&header_bytes)
+        .map(|m| m.headers)
+        .unwrap_or_default();
+    let mut rest = buf[header_end..].to_vec();
     buf.clear();
-    while body.len() < content_len {
-        let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
-        let n = r
-            .read(&mut chunk)
-            .await
-            .map_err(|e| HttpTransport::map_io_err(&e))?;
-        if n == 0 {
-            break;
-        }
-        body.extend_from_slice(&chunk[..n]);
-    }
-    body.truncate(content_len);
+    drop(buf);
 
-    let head_arc: Arc<[u8]> = Arc::from(header_bytes.into_boxed_slice());
-    let head_len = head_arc.len() as u64;
-    let mut frames = vec![(
+    let (bodies, trailers) = if raw::is_chunked(&headers) {
+        let mut decoder = raw::ChunkedDecoder::default();
+        decoder
+            .feed(&rest)
+            .map_err(|_| TransportError::Framing)?;
+        while !decoder.is_done() {
+            let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
+            let n = r
+                .read(&mut chunk)
+                .await
+                .map_err(|e| HttpTransport::map_io_err(&e))?;
+            if n == 0 {
+                // The peer stopped before the terminal chunk: the declared framing did not happen,
+                // and guessing where the body ended is the one thing a transport must not do.
+                return Err(TransportError::Framing);
+            }
+            decoder
+                .feed(&chunk[..n])
+                .map_err(|_| TransportError::Framing)?;
+        }
+        decoder.take()
+    } else {
+        let declared = raw::content_length(&headers).unwrap_or(0);
+        while rest.len() < declared {
+            let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
+            let n = r
+                .read(&mut chunk)
+                .await
+                .map_err(|e| HttpTransport::map_io_err(&e))?;
+            if n == 0 {
+                break;
+            }
+            rest.extend_from_slice(&chunk[..n]);
+        }
+        rest.truncate(declared);
+        (if rest.is_empty() { Vec::new() } else { vec![rest] }, Vec::new())
+    };
+
+    let mut frames = vec![body_frame(header_bytes)];
+    frames.extend(bodies.into_iter().filter(|b| !b.is_empty()).map(body_frame));
+    if !trailers.is_empty() {
+        let mut rendered = String::new();
+        for (name, value) in &trailers {
+            rendered.push_str(name);
+            rendered.push_str(": ");
+            rendered.push_str(value);
+            rendered.push_str("\r\n");
+        }
+        frames.push(body_frame(rendered.into_bytes()));
+    }
+    Ok(Some(frames))
+}
+
+/// One inbound frame over bytes this connection read, with honest meta: the byte count is what
+/// actually moved, and there is no status leg on the ingress side.
+fn body_frame(bytes: Vec<u8>) -> (StreamId, Frame) {
+    let len = bytes.len() as u64;
+    let arc: Arc<[u8]> = Arc::from(bytes.into_boxed_slice());
+    (
         StreamId(0),
         Frame {
             direction: Direction::Inbound,
             stream: StreamId(0),
-            bytes: SlabBytes::new(head_arc),
+            bytes: SlabBytes::new(arc),
             meta: FrameMeta {
-                bytes: head_len,
+                bytes: len,
                 transport_units: None,
                 status: None,
             },
         },
-    )];
-    if !body.is_empty() {
-        let body_arc: Arc<[u8]> = Arc::from(body.clone().into_boxed_slice());
-        frames.push((
-            StreamId(0),
-            Frame {
-                direction: Direction::Inbound,
-                stream: StreamId(0),
-                bytes: SlabBytes::new(body_arc),
-                meta: FrameMeta {
-                    bytes: body.len() as u64,
-                    transport_units: None,
-                    status: None,
-                },
-            },
-        ));
-    }
-    Ok(Some(frames))
+    )
 }
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {
