@@ -1372,6 +1372,36 @@ injection is unified onto the degraded/fallback path so a fallback stream to an 
 longer bills zero tokens — registered as `improvement` (owner sign-off; money-affecting) ·
 busbar is a byte-governance router.
 
+### Decisions 2026-09-05 (orchestrator, resolving the consolidated contract gaps in `docs/design/1.6.0-contract-gaps.md`)
+
+- **CG-20 `KernelSeal` means one thing.** The caps unit struct. The contract's public trait of the same
+  name is removed; every contract-side sealed constructor is reachable only through a `busbar-caps`
+  token, so §3.7's "compile-time" line for sealed constructors is literally true.
+- **CG-28 `busbar-caps` depends on `busbar-contract`.** One spelling of every seam type; the caps
+  stand-ins are deleted. §3.1's "std and nothing more" for caps is amended to "std and the contract".
+- **CG-37 the store trait is typed after the published ABI-2 store protocol** (the request/response
+  shapes the shadow oracle already proves against the released stores), extended with the 1.6.0-only
+  operations §1.4 names. No signature is inferred from prose.
+- **CG-17 the MCP mount is fixed at `/mcp`.** A configured canonical address naming another path is a
+  boot refusal at config validation. Claims stay compile-time constants; there is no registration-time
+  selector.
+- **CG-22 ceilings count surface code**: non-blank, non-comment `src/` lines excluding test modules.
+  Proofs (totality tables, lint data, fixtures) live under `tests/` or `fixtures/`. If contract + caps
+  still exceed 3k after the move, §1.1's figure for the pair is amended to the measured number rounded
+  up to the next 500, and the per-file table stays.
+- **CG-41 an unreconciled amount is a move out of settled**, not a parallel tally: `unreconciled += A;
+  settled -= A`. §4.2's identity closes with no special case and nothing is reported as settled that the
+  store has not confirmed.
+- **CG-56 the seventeen 1.6.0 kernel verbs bind as `<kebab-case-verb>` under the admin prefix**: POST
+  for every mutating verb, GET for `verify` and `plane_facts`.
+- **CG-55 the anthropic error envelope's minted request id keeps its native shape and entropy**, and the
+  entropy comes from the kernel through `Ctx`; a plane still reads no random source of its own.
+- **CG-06 config-derived open-vocabulary keys are leaked exactly once at registration** by the
+  composition root and counted in §10's fixed RSS term (the `&'static str` ids stay). A per-dial leak
+  is a defect.
+- **CG-51 the network guard is the trust unit's check** over `VerifiedDestination`, applied before any
+  transport `dial`; transports do no resolution policy of their own.
+
 ## Appendix B — Parity bindings (override any conflicting sentence in §1–§9 for every 1.5.5-reachable surface)
 
 **PB-0 (master rule).** EVERY row of every inventory file under `inventory/` is a parity binding and an oracle cell, whether or not it is restated below: the 1.5.5 behaviour it cites is reproduced byte for byte on every 1.5.5-reachable surface. Appendix B restates only the rows where a sentence in §1–§9 needed an explicit override or where a reviewer found the transcription worth pinning; absence of a row from this table binds nothing looser. Where a binding paraphrases its row imprecisely, the row wins (PB-72). Consequently the reviewer's question for §1–§9 is only: does a body sentence introduce a user-observable behaviour that contradicts an inventory row without an override here?
