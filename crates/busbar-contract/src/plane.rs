@@ -1,15 +1,7 @@
-//! The plane kind: what bytes mean.
-//!
-//! A plane names a transport only as a claim and never holds a connection. It names no unit and no
-//! other plane except through a nested destination whose key its claim configuration declares. It
-//! returns facts and locators — never an amount, never a decision, never a credential, never a
-//! price, never a scheme outside its claim. It is pure over its inputs and performs no input or
-//! output of its own; the only state it may keep across frames is the codec state the kernel holds
-//! for it, one half per connection.
-//!
-//! Every method below is required. The honesty table of the design forbids default bodies on this
-//! trait, and the reason is worth stating: a default body is a plane silently declining to answer a
-//! question the loop asked, and the loop has no way to tell that apart from an answer.
+//! The plane kind: what bytes mean. A plane names a transport only as a claim, never holds a
+//! connection, names no unit or other plane except through a nested destination, and returns
+//! facts and locators only — never an amount, a decision, a credential, a price or a scheme
+//! outside its claim. Pure over its inputs; no default bodies (see `docs/design/contract-notes.md`).
 
 use crate::bounded::{ArenaBytes, Facts, Ir};
 use crate::dest::{EgressBody, RoutePlan, VerifiedDestination};
@@ -188,12 +180,13 @@ pub enum Progress<'u> {
 ///
 /// Seven codec methods, seven fact methods and two introspection methods. Every one of them is
 /// pure over its inputs, and none of them may perform input or output.
+///
+/// # Errors
+/// Every codec method returns [`Decode`] or [`Encode`] when the bytes, or the unit, cannot be
+/// expressed in this dialect's shape; the kernel then falls back to its own minimal rendering. A
+/// decode error is not itself a refusal — a refusal is rendered through the refusal encoder.
 pub trait Plane: Plugin + Send + Sync + 'static {
     /// Read inbound bytes.
-    ///
-    /// # Errors
-    /// Returns a decode error when the bytes are not this dialect's shape. A refusal is rendered
-    /// through the refusal encoder; a decode error is not itself a refusal.
     fn decode_ingress<'u>(
         &self,
         frames: &mut FrameCursor<'u>,
@@ -202,9 +195,6 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     ) -> Result<Ingress<'u>, Decode>;
 
     /// Write the outbound request for one verified destination.
-    ///
-    /// # Errors
-    /// Returns an encode error when the unit cannot be expressed for this destination.
     fn encode_egress<'u>(
         &self,
         u: &Unit<'u>,
@@ -213,12 +203,8 @@ pub trait Plane: Plugin + Send + Sync + 'static {
         ctx: &Ctx<'u>,
     ) -> Result<EgressBody<'u>, Encode>;
 
-    /// Write one inbound frame of an open unit onward to its destination.
-    ///
-    /// Returning nothing means the frame is consumed and nothing goes out for it.
-    ///
-    /// # Errors
-    /// Returns an encode error when the frame cannot be expressed for this destination.
+    /// Write one inbound frame of an open unit onward to its destination. Returning nothing means
+    /// the frame is consumed and nothing goes out for it.
     fn encode_ingress_frame<'u>(
         &self,
         u: &Unit<'u>,
@@ -229,9 +215,6 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     ) -> Result<Option<ArenaBytes<'u>>, Encode>;
 
     /// Read bytes coming back from an upstream.
-    ///
-    /// # Errors
-    /// Returns a decode error when the bytes are not this dialect's shape.
     fn decode_response<'u>(
         &self,
         frames: &mut FrameCursor<'u>,
@@ -241,9 +224,6 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     ) -> Result<Progress<'u>, Decode>;
 
     /// Write one response frame back to the client.
-    ///
-    /// # Errors
-    /// Returns an encode error when the response cannot be expressed.
     fn encode_response<'u>(
         &self,
         r: &Response<'u>,
@@ -251,15 +231,9 @@ pub trait Plane: Plugin + Send + Sync + 'static {
         ctx: &Ctx<'u>,
     ) -> Result<ArenaBytes<'u>, Encode>;
 
-    /// Write a refusal in this dialect's shape.
-    ///
-    /// The codec state is borrowed immutably on purpose. A refusal must not advance codec state:
-    /// a sequence-numbered protocol that incremented its counter on a refusal would desynchronise
-    /// against a client that never saw the message the number belonged to.
-    ///
-    /// # Errors
-    /// Returns an encode error when the refusal cannot be expressed; the kernel then emits its own
-    /// minimal ending instead.
+    /// Write a refusal in this dialect's shape. The codec state is borrowed immutably on purpose:
+    /// a refusal must not advance codec state, or a sequence-numbered protocol that incremented
+    /// its counter on one would desynchronise against a client that never saw the numbered message.
     fn encode_refusal<'u>(
         &self,
         refusal: &Refusal,
@@ -269,10 +243,6 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     ) -> Result<ArenaBytes<'u>, Encode>;
 
     /// Write the end of a unit, where the dialect has one to write.
-    ///
-    /// # Errors
-    /// Returns an encode error when the ending cannot be expressed; the kernel then emits its own
-    /// minimal ending instead.
     fn encode_end<'u>(
         &self,
         u: &Unit<'u>,
@@ -308,10 +278,8 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     /// that differs from the draft's is a dispute; the draft's class is what priced the unit.
     fn audit<'u>(&self, u: &Unit<'u>, out: &UnitEnd, ctx: &Ctx<'u>) -> AuditFacts;
 
-    /// Answer one of this plane's declared read-only introspection verbs.
-    ///
-    /// # Errors
-    /// Returns a decode error when the verb is not one this plane declares.
+    /// Answer one of this plane's declared read-only introspection verbs. Errors when the verb
+    /// is not one this plane declares.
     fn plane_facts<'u>(
         &self,
         verb: AdminVerbId,

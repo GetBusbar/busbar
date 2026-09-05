@@ -1,15 +1,10 @@
-//! The other plugin kinds: auth, egress auth, store, secret, hook and export.
+//! The other plugin kinds: auth, egress auth, store, secret, hook and export — one closed shape
+//! per trait, transcribed from the plugin-kinds table of the design. See
+//! `docs/design/contract-notes.md` for why four of the six reach outside the process on a bounded
+//! blocking pool while the other two (hook, egress-auth scheme) are pure.
 //!
-//! The plugin-kinds table of the design gives each kind a closed shape the kernel calls and an
-//! open vocabulary the plugin declares. The shapes are transcribed below, one trait per row.
-//!
-//! Two of these kinds are pure — a hook and an egress-auth scheme perform no input or output and
-//! are held to the source denylist. Four own their input and output by definition: a store, a
-//! secret plugin, an export sink and a network-backed auth scheme all reach outside the process.
-//! Those four are not trusted more for it; they are bounded instead by the signature below, by a
-//! load entry, by a kernel-enforced per-call deadline, by an access entry per external call, and by
-//! review. Every one of their calls runs on a bounded blocking pool, which is why they are written
-//! as ordinary blocking methods rather than as futures.
+//! Fallibility: every fallible method below returns its trait's own error enum; see the trait doc
+//! for what a failure means, rather than repeating it per method.
 
 use crate::bounded::{ArenaBytes, BoundedVec, Facts, IrPatch, MAX_KEYS, MAX_RECORD_BYTES};
 use crate::dest::{
@@ -155,10 +150,8 @@ pub trait AuthScheme: Plugin + Send + Sync + 'static {
 /// The scheme asks for a signature; it never holds the key. Only the auth, egress-auth and
 /// transport-key units can expose a secret, and this handle is the egress-auth unit's own.
 pub trait Signer: Send + Sync {
-    /// Sign these bytes with the named key.
-    ///
-    /// # Errors
-    /// Returns the failure when the named key cannot be resolved or the signature cannot be made.
+    /// Sign these bytes with the named key. Errors when the key cannot be resolved or the
+    /// signature cannot be made.
     fn sign(&self, key: &str, bytes: &[u8]) -> Result<Vec<u8>, SignFailed>;
 }
 
@@ -280,17 +273,16 @@ impl std::error::Error for StoreError {}
 /// decides how it loads: a store built against an older generation loads through an in-tree
 /// adapter rather than being refused, so a configuration written for the previous release boots
 /// unchanged.
+///
+/// # Errors
+/// Every method returns [`StoreError`] on failure (unavailable, timeout, a fencing race, a gap
+/// between what was written and what read back, or an outright rejection); see the enum for what
+/// each variant means. A method's own doc only adds words when its failure mode is distinctive.
 pub trait Store: Plugin + Send + Sync + 'static {
     /// Append a batch of journal records.
-    ///
-    /// # Errors
-    /// Returns a store error when the batch is not durable.
     fn append_batch(&self, stream: &str, records: &[RecordBytes]) -> Result<Head, StoreError>;
 
     /// Read a batch of journal records back.
-    ///
-    /// # Errors
-    /// Returns a store error when the range cannot be read.
     fn replay_batch(
         &self,
         stream: &str,
@@ -298,64 +290,34 @@ pub trait Store: Plugin + Send + Sync + 'static {
         limit: u32,
     ) -> Result<Vec<RecordBytes>, StoreError>;
 
-    /// Draw this node's slice of a bucket window.
-    ///
-    /// # Errors
-    /// Returns a store error when the draw fails or this node's epoch is fenced out.
+    /// Draw this node's slice of a bucket window. Fails if this node's epoch is fenced out.
     fn reserve(&self, bucket: &str, amount: u64, epoch: u64) -> Result<SliceGrant, StoreError>;
 
     /// Hand an undrawn slice back.
-    ///
-    /// # Errors
-    /// Returns a store error when the release fails.
     fn release(&self, bucket: &str, grant: SliceGrant) -> Result<(), StoreError>;
 
     /// Where each stream has reached.
-    ///
-    /// # Errors
-    /// Returns a store error when the heads cannot be read.
     fn heads(&self) -> Result<Vec<(String, Head)>, StoreError>;
 
-    /// Say this node is alive at this epoch.
-    ///
-    /// # Errors
-    /// Returns a store error when the heartbeat fails or this node has been fenced out.
+    /// Say this node is alive at this epoch. Fails if this node has been fenced out.
     fn heartbeat(&self, node: &str, epoch: u64) -> Result<(), StoreError>;
 
     /// Elect which node writes the next checkpoint.
-    ///
-    /// # Errors
-    /// Returns a store error when the election cannot be run.
     fn elect_checkpoint(&self, node: &str, epoch: u64) -> Result<bool, StoreError>;
 
     /// Claim an idempotency key for this unit.
-    ///
-    /// # Errors
-    /// Returns a store error when the claim cannot be made.
     fn claim_key(&self, namespace: &str, key: &[u8], unit: u64) -> Result<bool, StoreError>;
 
     /// Drop the claims a failed unit made.
-    ///
-    /// # Errors
-    /// Returns a store error when the claims cannot be voided.
     fn void_claims(&self, namespace: &str, unit: u64) -> Result<(), StoreError>;
 
     /// Seal a replayable answer under its key.
-    ///
-    /// # Errors
-    /// Returns a store error when the answer cannot be stored.
     fn replay_put(&self, namespace: &str, key: &[u8], value: &[u8]) -> Result<(), StoreError>;
 
     /// Read a sealed replayable answer back.
-    ///
-    /// # Errors
-    /// Returns a store error when the read fails.
     fn replay_get(&self, namespace: &str, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError>;
 
     /// Register a live session in the fleet directory.
-    ///
-    /// # Errors
-    /// Returns a store error when the registration fails.
     fn session_put(
         &self,
         session: SessionId,
@@ -364,22 +326,13 @@ pub trait Store: Plugin + Send + Sync + 'static {
     ) -> Result<(), StoreError>;
 
     /// Drop a session from the directory, at close or at lease expiry.
-    ///
-    /// # Errors
-    /// Returns a store error when the removal fails.
     fn session_remove(&self, session: SessionId) -> Result<(), StoreError>;
 
     /// Which sessions a principal holds across the fleet.
-    ///
-    /// # Errors
-    /// Returns a store error when the lookup fails.
     fn sessions_for(&self, principal: &PrincipalId)
         -> Result<Vec<(SessionId, String)>, StoreError>;
 
     /// Write one of a plane's kernel-held durable records.
-    ///
-    /// # Errors
-    /// Returns a store error when the write fails.
     fn record_put(
         &self,
         schema: RecordSchemaId,
@@ -388,9 +341,6 @@ pub trait Store: Plugin + Send + Sync + 'static {
     ) -> Result<(), StoreError>;
 
     /// Read one of a plane's kernel-held durable records.
-    ///
-    /// # Errors
-    /// Returns a store error when the read fails.
     fn record_get(
         &self,
         schema: RecordSchemaId,
@@ -398,9 +348,6 @@ pub trait Store: Plugin + Send + Sync + 'static {
     ) -> Result<Option<RecordBytes>, StoreError>;
 
     /// Walk a plane's records under a prefix.
-    ///
-    /// # Errors
-    /// Returns a store error when the scan fails.
     fn record_scan(
         &self,
         schema: RecordSchemaId,
@@ -409,33 +356,18 @@ pub trait Store: Plugin + Send + Sync + 'static {
     ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError>;
 
     /// Read the previous release's own cells, for a migrating deployment.
-    ///
-    /// # Errors
-    /// Returns a store error when the read fails.
     fn legacy_cells_read(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError>;
 
     /// Write the previous release's own cells, for a migrating deployment.
-    ///
-    /// # Errors
-    /// Returns a store error when the write fails.
     fn legacy_cells_write(&self, key: &str, value: &[u8]) -> Result<(), StoreError>;
 
     /// Where the previous release's audit stream had reached.
-    ///
-    /// # Errors
-    /// Returns a store error when the head cannot be read.
     fn legacy_audit_head(&self) -> Result<Option<Head>, StoreError>;
 
     /// How far a backup has captured.
-    ///
-    /// # Errors
-    /// Returns a store error when the watermark cannot be read.
     fn backup_watermark(&self) -> Result<Option<Head>, StoreError>;
 
     /// Drop everything older than a sequence, under the retention the operator set.
-    ///
-    /// # Errors
-    /// Returns a store error when the purge fails.
     fn purge_before(&self, stream: &str, seq: u64) -> Result<u64, StoreError>;
 }
 
@@ -500,42 +432,29 @@ impl std::error::Error for SecretError {}
 ///
 /// Sealing is deterministic and misuse-resistant: the same plaintext under the same key and
 /// context seals to the same bytes, which is what lets a replay cache be sealed at all.
+///
+/// # Errors
+/// Every method returns [`SecretError`] on failure (unknown reference, unavailable backing
+/// store, sealed bytes that fail to authenticate, or a reference outside this plugin's grammar).
 pub trait Secret: Plugin + Send + Sync + 'static {
     /// The reference grammar this plugin accepts.
     fn ref_grammar(&self) -> &'static str;
 
     /// Resolve a reference.
-    ///
-    /// # Errors
-    /// Returns the failure when the reference does not resolve.
     fn resolve(&self, r: &SecretRef) -> Result<SecretValue, SecretError>;
 
-    /// Watch a reference for change.
-    ///
-    /// Returning nothing means the value does not change under this plugin. Every reference
-    /// migrated from the previous release is inert here: it was resolved once at the site the old
-    /// release resolved it, and re-resolving would be a behaviour change.
-    ///
-    /// # Errors
-    /// Returns the failure when the reference cannot be watched.
+    /// Watch a reference for change. Returning nothing means the value does not change under this
+    /// plugin. Every reference migrated from the previous release is inert here: it was resolved
+    /// once at the site the old release resolved it, and re-resolving would be a behaviour change.
     fn watch(&self, r: &SecretRef) -> Result<Option<u64>, SecretError>;
 
     /// Sign bytes with a named key.
-    ///
-    /// # Errors
-    /// Returns the failure when the key does not resolve.
     fn sign(&self, key: &str, bytes: &[u8]) -> Result<Vec<u8>, SecretError>;
 
     /// Seal bytes under a key and a context.
-    ///
-    /// # Errors
-    /// Returns the failure when the key does not resolve.
     fn seal(&self, key: &str, context: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, SecretError>;
 
-    /// Unseal bytes under a key and a context.
-    ///
-    /// # Errors
-    /// Returns the failure when the key does not resolve or the bytes do not authenticate.
+    /// Unseal bytes under a key and a context. Fails if the bytes do not authenticate.
     fn unseal(&self, key: &str, context: &[u8], sealed: &[u8]) -> Result<Vec<u8>, SecretError>;
 }
 
@@ -697,17 +616,14 @@ pub trait Export: Plugin + Send + Sync + 'static {
 ///
 /// Anchoring is what makes the chain checkable by someone who does not trust the node: the head is
 /// written where the node cannot rewrite it, and read back to compare.
+///
+/// # Errors
+/// Both methods return [`StoreError`] when the anchor cannot be written or read.
 pub trait Anchor: Export {
     /// Write a head out.
-    ///
-    /// # Errors
-    /// Returns the failure when the anchor cannot be written.
     fn write_head(&self, head: Head) -> Result<(), StoreError>;
 
     /// Read one of the last heads back.
-    ///
-    /// # Errors
-    /// Returns the failure when the anchor cannot be read.
     fn read_head(&self, n: u32) -> Result<Option<Head>, StoreError>;
 }
 

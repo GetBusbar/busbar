@@ -1,10 +1,7 @@
-//! The bounded types every other module is built out of.
-//!
-//! The crate-graph section of the design pins each of these numbers. They are not tuning knobs:
-//! a plugin that wants more keys, more legs or more bytes than the constants below allow is a
-//! plugin the kernel refuses, and it refuses at the type, not at a runtime check buried in a
-//! handler. The one resource a plugin is handed is the per-unit arena, and every byte a plugin
-//! produces comes out of it.
+//! The bounded types every other module is built out of. Every ceiling below is pinned by the
+//! crate-graph section of the design and enforced at the type, not by a runtime check buried in a
+//! handler; the one resource a plugin is handed is the per-unit arena, and every byte a plugin
+//! produces comes out of it. See `docs/design/contract-notes.md`.
 
 use core::fmt;
 
@@ -101,10 +98,7 @@ impl<T, const N: usize> BoundedVec<T, N> {
         self.items.len() >= N
     }
 
-    /// Append an item, handing it back when the list is already at capacity.
-    ///
-    /// # Errors
-    /// Returns the item unchanged when the list is full.
+    /// Append an item. Errors with the item handed back unchanged when the list is already full.
     pub fn push(&mut self, item: T) -> Result<(), Overflow<T>> {
         if self.is_full() {
             return Err(Overflow { item, capacity: N });
@@ -249,17 +243,15 @@ impl SlabBytes {
 /// arena — and that everything else on the context is a borrowed read-only view. Allocation is
 /// fallible because the arena is fixed size: exhaustion ends the unit at the step that asked, it
 /// does not grow the arena.
+///
+/// # Errors
+/// Both allocation methods return [`ArenaBudget`] when the request does not fit in what is left
+/// of the arena.
 pub trait Arena: Send + Sync {
     /// Copy bytes into the arena.
-    ///
-    /// # Errors
-    /// Returns the budget error when the request does not fit in what is left of the arena.
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget>;
 
     /// Copy a string into the arena.
-    ///
-    /// # Errors
-    /// Returns the budget error when the request does not fit in what is left of the arena.
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget>;
 
     /// How many bytes remain before the next allocation fails.
@@ -344,11 +336,9 @@ impl<'u> Facts<'u> {
         self.len == 0
     }
 
-    /// Set a key, replacing any earlier value for it.
-    ///
-    /// # Errors
-    /// Returns the exhaustion marker when the map already holds [`MAX_KEYS`] distinct keys and the
-    /// key is a new one. The loop renders that as the session-facts-exhausted failure.
+    /// Set a key, replacing any earlier value for it. Errors with [`FactsExhausted`] when the map
+    /// already holds [`MAX_KEYS`] distinct keys and the key is a new one (the loop's
+    /// session-facts-exhausted failure).
     pub fn set(&mut self, key: &'u str, value: FactValue<'u>) -> Result<(), FactsExhausted> {
         for (k, v) in self.entries.iter_mut().take(self.len).flatten() {
             if *k == key {
@@ -414,10 +404,7 @@ impl<'u> Labels<'u> {
         }
     }
 
-    /// Set a label.
-    ///
-    /// # Errors
-    /// Returns the exhaustion marker at the key ceiling.
+    /// Set a label. Errors with [`FactsExhausted`] at the key ceiling.
     pub fn set(&mut self, key: &'u str, value: &'u str) -> Result<(), FactsExhausted> {
         self.entries.set(key, FactValue::Str(value))
     }

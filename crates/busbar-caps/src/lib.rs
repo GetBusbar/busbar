@@ -3,17 +3,12 @@
 
 //! # busbar-caps — the capability types, and the tokens that seal them
 //!
-//! Everything in this crate is one idea: a value whose existence is a permission. A hold exists
-//! only because the door said yes. A verified destination exists only because the trust unit judged
-//! it. A posting exists only because the ledger settled a hold. None of them can be built by saying
-//! "make me one" — each constructor demands a token, and each token is handed out by the loop, to
-//! one unit, for the length of one step call.
-//!
-//! That is what "sealed by token, not by visibility" means. A `pub(crate)` constructor only keeps
-//! out other crates; a token keeps out everyone who is not, at this instant, the unit entitled to
-//! act. The trust unit holds a trust token for the length of `verify` and never sees an admission
-//! token at all, so it cannot open a hold — not because it is well behaved, but because the value
-//! it would need does not exist in its scope.
+//! Everything here is one idea: a value whose existence IS a permission. A hold exists only
+//! because the door said yes; a posting only because the ledger settled a hold; none can be built
+//! by saying "make me one" — each constructor demands a token, handed out by the loop to one unit
+//! for the length of one step call. That is "sealed by token, not by visibility": a `pub(crate)`
+//! constructor only keeps out other crates, a token keeps out everyone who is not, at this
+//! instant, the unit entitled to act. See `docs/design/contract-notes.md` for the longer version.
 //!
 //! ## What is in here
 //!

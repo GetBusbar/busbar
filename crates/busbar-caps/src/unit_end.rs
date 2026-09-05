@@ -2,11 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The kernel's own capability types: where a unit came from, how it is keyed, which session it
-//! belongs to, and — the one that closes every unit — how it ended.
-//!
-//! These four are not built by any unit. The kernel builds the first three and the exit path builds
-//! the last, which is why they are sealed on the kernel seal and the exit token rather than on a
-//! unit's token.
+//! belongs to, and — the one that closes every unit — how it ended. None of the four is built by
+//! any unit: the kernel builds the first three and the exit path builds the last, so all four are
+//! sealed on the kernel seal or the exit token rather than on a unit's own token.
 //!
 //! # What a unit cannot do
 //!

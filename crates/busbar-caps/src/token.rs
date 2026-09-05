@@ -2,20 +2,17 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The tokens. Holding one is the proof that you are entitled to build the capability it seals.
-//!
-//! Every token here is neither `Clone` nor `Copy`: the loop mints a fresh one for each step call
-//! and drops it when the call returns, so a unit cannot keep one and answer again later. A token is
-//! handed to a unit BY REFERENCE, never by value, so the unit never owns one at all.
+//! Neither `Clone` nor `Copy`: the loop mints a fresh one per step call and drops it when the call
+//! returns, and it is handed to a unit BY REFERENCE, never by value, so a unit never owns one.
 //!
 //! # The one hole, named out loud
 //!
 //! A token's real constructor is private to this crate, which is what makes the compile-fail
 //! fixtures below genuine. But the kernel is a DIFFERENT crate, and Rust has no way to say "this
-//! public function may be called by exactly one other crate". So there is exactly one hole, and it
-//! is [`KernelSeal`]: every mint takes one by reference, and the only way to obtain a `KernelSeal`
-//! is a hidden constructor that CI's symbol scan allows in the kernel's own source and nowhere
-//! else. The honest summary is in the crate documentation's table: the SHAPE of every token rule is
-//! compile-time; WHO may hold a seal is a lint.
+//! public function may be called by exactly one other crate", so there is exactly one hole:
+//! [`KernelSeal`]. Every mint takes one by reference, and the only way to obtain a `KernelSeal` is
+//! a hidden constructor CI's symbol scan confines to the kernel's own source. See the crate-level
+//! table: the SHAPE of every token rule is compile-time, WHO may hold a seal is a lint.
 //!
 //! # What a caller without a token cannot do
 //!
@@ -109,45 +106,43 @@ macro_rules! plain_token {
     };
 }
 
-/// The proof that the loop is running step `S` for the current unit right now.
-///
-/// Handed by reference to the unit that owns step `S`, and to no one else. It is the only thing
-/// that can build a [`crate::Decision`] for `S`, so a unit cannot answer a question it was not
-/// asked, and it is the only thing that can read one back, so a unit cannot open its own answer.
-pub struct UnitToken<S: Step>(PhantomData<fn() -> S>);
+macro_rules! step_token {
+    ($(#[$doc:meta])* $name:ident) => {
+        $(#[$doc])*
+        pub struct $name<S: Step>(PhantomData<fn() -> S>);
 
-impl<S: Step> UnitToken<S> {
-    /// Mint the token for step `S`. Kernel only, by way of the seal.
-    pub fn mint(_seal: &KernelSeal) -> Self {
-        UnitToken(PhantomData)
-    }
+        impl<S: Step> $name<S> {
+            /// Mint the token for step `S`. Kernel only, by way of the seal.
+            pub fn mint(_seal: &KernelSeal) -> Self {
+                $name(PhantomData)
+            }
+        }
+
+        impl<S: Step> std::fmt::Debug for $name<S> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, concat!(stringify!($name), "<{}>"), S::NAME)
+            }
+        }
+    };
 }
 
-impl<S: Step> std::fmt::Debug for UnitToken<S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "UnitToken<{}>", S::NAME)
-    }
-}
-
-/// The admission unit's own token for step `S`: the one thing that can open a [`crate::Hold`].
-///
-/// It is separate from [`UnitToken`] on purpose. Every unit is lent a `UnitToken` for its step, and
-/// if that were enough to open a hold then every unit could open one. Only the admission unit is
-/// lent an `AdmitToken`, and only at the door.
-pub struct AdmitToken<S: Step>(PhantomData<fn() -> S>);
-
-impl<S: Step> AdmitToken<S> {
-    /// Mint the admission token for step `S`. Kernel only, by way of the seal.
-    pub fn mint(_seal: &KernelSeal) -> Self {
-        AdmitToken(PhantomData)
-    }
-}
-
-impl<S: Step> std::fmt::Debug for AdmitToken<S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "AdmitToken<{}>", S::NAME)
-    }
-}
+step_token!(
+    /// The proof that the loop is running step `S` for the current unit right now.
+    ///
+    /// Handed by reference to the unit that owns step `S`, and to no one else. It is the only
+    /// thing that can build a [`crate::Decision`] for `S`, so a unit cannot answer a question it
+    /// was not asked, and it is the only thing that can read one back, so a unit cannot open its
+    /// own answer.
+    UnitToken
+);
+step_token!(
+    /// The admission unit's own token for step `S`: the one thing that can open a [`crate::Hold`].
+    ///
+    /// Separate from [`UnitToken`] on purpose — every unit is lent a `UnitToken` for its step, and
+    /// if that were enough to open a hold then every unit could open one. Only the admission unit
+    /// is lent an `AdmitToken`, and only at the door.
+    AdmitToken
+);
 
 plain_token!(
     /// The trust unit's token: seals a destination the unit is allowed to reach.

@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The hold, the cell it lives in, the accrual that borrows a parent's, and the posting that closes
-//! it.
-//!
-//! A hold is the accounting side of admission: the door decides, and the hold is the reservation
-//! that decision sized. It comes into being at the door and it is taken out of its cell exactly
-//! once, on the one exit path. It has no `Drop` of its own on purpose — there is no such thing as
-//! "the hold cleaned itself up"; a hold that goes away without a posting is a bug the canary must
-//! see, not a thing a destructor should paper over.
+//! The hold, the cell it lives in, the accrual that borrows a parent's, and the posting that
+//! closes it. A hold is the accounting side of admission — the door decides, the hold is the
+//! reservation that decision sized — and it has no `Drop` of its own on purpose: a hold that goes
+//! away without a posting is a bug the canary must see, not a thing a destructor should paper
+//! over. See `docs/design/contract-notes.md` for the fuller rationale.
 //!
 //! # What the rest of the system cannot do
 //!
