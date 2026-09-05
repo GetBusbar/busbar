@@ -7,9 +7,11 @@ rust-version = "1.97"
 description = "The sse transport: request plus N response frames, composed over http."
 license = "Apache-2.0"
 
-# DEPENDENCY POLICY. In-tree only. Names `busbar-contract` for the plugin surface and
-# `busbar-transport-http` for the request/response byte stream it composes over.
+# DEPENDENCY POLICY. In-tree only. Names `busbar-contract` for the plugin surface,
+# `busbar-transport-http` for the request/response byte stream it composes over, and `memchr` for
+# the terminator scan — already in the lock through hyper's tree, so it adds no crate to the graph.
 [dependencies]
+memchr = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 busbar-contract-transport = { path = "../busbar-contract-transport" }
 busbar-transport-http = { path = "../busbar-transport-http" }
