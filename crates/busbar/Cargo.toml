@@ -210,6 +210,10 @@ txn-fence-red = ["busbar-core/txn-fence-red"]
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through core's test_support, which core exposes to dependents only behind this feature.
 busbar-core = { path = "../busbar-core", features = ["test-support"] }
+# `root/units_llm.rs` drives the switched-over plane against the shipped one on the same fixture, so
+# the bin's own tests need the plane's composition-root-shaped install seams (its protocol decls, its
+# plane decl, its arrival tables, its stream-translator factory) present in the test binary.
+busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # The integration suite under tests/ (black-box: boots the binary / reads generated inventories).
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }
