@@ -7,19 +7,35 @@ use std::sync::Arc;
 
 use busbar_kernel::grammar::{Segment, Selector};
 use busbar_kernel::registry::{
-    bootstrap, check_claims, overlaps, precedence_order, BootstrapVerdict, Claim, Plugin,
-    PluginKind, Registry, RegistryError,
+    bootstrap, check_claims, overlaps, precedence_order, BootstrapVerdict, Claim, PlaneClaim,
+    Plugin, PluginKind, Registry, RegistryError,
 };
 
 struct Fake(&'static str, PluginKind);
 
 impl Plugin for Fake {
-    fn key(&self) -> &str {
+    fn key(&self) -> &'static str {
         self.0
     }
 
     fn kind(&self) -> PluginKind {
         self.1
+    }
+
+    fn abi(&self) -> busbar_contract::AbiVersion {
+        busbar_contract::AbiVersion(1)
+    }
+}
+
+/// A claim on a transport with a selector, and the scheme every fixture here shares. The overlap
+/// question is about the transport and the selector; the rest of a claim does not enter it.
+fn claim(transport: &'static str, selector: Selector) -> Claim {
+    Claim {
+        transport,
+        selector,
+        scheme: "none",
+        scheme_alternatives: &[],
+        idempotency: None,
     }
 }
 
@@ -31,18 +47,18 @@ fn plane(key: &'static str) -> Arc<dyn Plugin> {
 /// these, which is what this fixture is for.
 fn every_form() -> Vec<Selector> {
     vec![
-        Selector::ExactPath("/a/b".into()),
-        Selector::PrefixOneLevel("/a".into()),
-        Selector::PathPattern(vec![Segment::Lit("a".into()), Segment::Var]),
-        Selector::PathSuffix("/b".into()),
-        Selector::PathContains("a".into()),
-        Selector::HeaderExact("x-key".into(), "one".into()),
-        Selector::HeaderPresent("x-key".into()),
-        Selector::HeaderPrefix("x-key".into(), "on".into()),
-        Selector::Sni("example.invalid".into()),
-        Selector::ClientCertSubject("CN=one".into()),
-        Selector::StreamName("control".into()),
-        Selector::Alpn("h2".into()),
+        Selector::ExactPath("/a/b"),
+        Selector::PrefixOneLevel("/a"),
+        Selector::PathPattern(&[Segment::Lit("a"), Segment::Var]),
+        Selector::PathSuffix("/b"),
+        Selector::PathContains("a"),
+        Selector::HeaderExact("x-key", "one"),
+        Selector::HeaderPresent("x-key"),
+        Selector::HeaderPrefix("x-key", "on"),
+        Selector::Sni("example.invalid"),
+        Selector::ClientCertSubject("CN=one"),
+        Selector::StreamName("control"),
+        Selector::Alpn("h2"),
         Selector::Port(443),
     ]
 }
@@ -66,15 +82,16 @@ fn overlap_is_total_reflexive_and_symmetric_over_every_form_pair() {
 #[test]
 fn two_claims_that_could_both_match_are_refused_at_boot() {
     let claims = vec![
-        Claim {
-            plane: "left".into(),
-            transport: "wire".into(),
-            selector: Selector::ExactPath("/v1/thing".into()),
+        PlaneClaim {
+            plane: "left",
+            claim: claim("wire", Selector::ExactPath("/v1/thing")),
         },
-        Claim {
-            plane: "right".into(),
-            transport: "wire".into(),
-            selector: Selector::PathPattern(vec![Segment::Lit("v1".into()), Segment::Var]),
+        PlaneClaim {
+            plane: "right",
+            claim: claim(
+                "wire",
+                Selector::PathPattern(&[Segment::Lit("v1"), Segment::Var]),
+            ),
         },
     ];
     let conflict = check_claims(&claims).expect_err("a variable segment covers the literal one");
@@ -85,15 +102,13 @@ fn two_claims_that_could_both_match_are_refused_at_boot() {
 #[test]
 fn claims_on_different_transports_never_collide() {
     let claims = vec![
-        Claim {
-            plane: "left".into(),
-            transport: "wire".into(),
-            selector: Selector::ExactPath("/same".into()),
+        PlaneClaim {
+            plane: "left",
+            claim: claim("wire", Selector::ExactPath("/same")),
         },
-        Claim {
-            plane: "right".into(),
-            transport: "other".into(),
-            selector: Selector::ExactPath("/same".into()),
+        PlaneClaim {
+            plane: "right",
+            claim: claim("other", Selector::ExactPath("/same")),
         },
     ];
     assert!(check_claims(&claims).is_ok(), "the bytes never reach both");
@@ -102,15 +117,16 @@ fn claims_on_different_transports_never_collide() {
 #[test]
 fn one_plane_may_overlap_its_own_claims_and_they_are_ordered_most_specific_first() {
     let claims = vec![
-        Claim {
-            plane: "one".into(),
-            transport: "wire".into(),
-            selector: Selector::PathPattern(vec![Segment::Lit("v1".into()), Segment::Var]),
+        PlaneClaim {
+            plane: "one",
+            claim: claim(
+                "wire",
+                Selector::PathPattern(&[Segment::Lit("v1"), Segment::Var]),
+            ),
         },
-        Claim {
-            plane: "one".into(),
-            transport: "wire".into(),
-            selector: Selector::ExactPath("/v1/thing".into()),
+        PlaneClaim {
+            plane: "one",
+            claim: claim("wire", Selector::ExactPath("/v1/thing")),
         },
     ];
     assert!(check_claims(&claims).is_ok());
@@ -121,12 +137,12 @@ fn one_plane_may_overlap_its_own_claims_and_they_are_ordered_most_specific_first
 #[test]
 fn distinct_exact_paths_and_distinct_headers_do_not_overlap() {
     assert!(!overlaps(
-        &Selector::ExactPath("/one".into()),
-        &Selector::ExactPath("/two".into())
+        &Selector::ExactPath("/one"),
+        &Selector::ExactPath("/two")
     ));
     assert!(!overlaps(
-        &Selector::HeaderExact("x-a".into(), "1".into()),
-        &Selector::HeaderExact("x-b".into(), "1".into())
+        &Selector::HeaderExact("x-a", "1"),
+        &Selector::HeaderExact("x-b", "1")
     ));
     assert!(!overlaps(&Selector::Port(80), &Selector::Port(443)));
 }
@@ -134,16 +150,16 @@ fn distinct_exact_paths_and_distinct_headers_do_not_overlap() {
 #[test]
 fn a_present_header_claim_overlaps_every_claim_on_that_header() {
     assert!(overlaps(
-        &Selector::HeaderPresent("x-key".into()),
-        &Selector::HeaderExact("x-key".into(), "anything".into())
+        &Selector::HeaderPresent("x-key"),
+        &Selector::HeaderExact("x-key", "anything")
     ));
     assert!(overlaps(
-        &Selector::HeaderPrefix("x-key".into(), "ab".into()),
-        &Selector::HeaderExact("x-key".into(), "abc".into())
+        &Selector::HeaderPrefix("x-key", "ab"),
+        &Selector::HeaderExact("x-key", "abc")
     ));
     assert!(!overlaps(
-        &Selector::HeaderPrefix("x-key".into(), "ab".into()),
-        &Selector::HeaderExact("x-key".into(), "zz".into())
+        &Selector::HeaderPrefix("x-key", "ab"),
+        &Selector::HeaderExact("x-key", "zz")
     ));
 }
 

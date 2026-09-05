@@ -6,8 +6,9 @@
 
 use busbar_caps::{OriginKind, ReasonCode};
 use busbar_kernel::slice::{
-    overdraft, takes_lease, BucketId, BucketScope, CapDimension, ConcurrencyGauge, Draw, Epoch,
-    LeaseSet, Overdraft, Posture, SliceBook, SliceGrant, SliceId,
+    accrues_mid_unit, bucket_all, bucket_pool, draws_for, overdraft, takes_lease, BucketScope,
+    CapDimension, ConcurrencyGauge, Draw, Epoch, LeaseSet, Overdraft, Posture, SliceBook,
+    SliceGrant, SliceId,
 };
 
 fn grant(granted: u64, valid_until: u64, epoch: u64) -> SliceGrant {
@@ -22,12 +23,8 @@ fn grant(granted: u64, valid_until: u64, epoch: u64) -> SliceGrant {
 #[test]
 fn a_draw_that_fits_is_local_and_one_that_does_not_asks_the_store() {
     let mut book = SliceBook::new();
-    let bucket = BucketId::all("team");
-    book.install(
-        bucket.clone(),
-        CapDimension::NanoUnits,
-        grant(1_000, 60_000, 1),
-    );
+    let bucket = bucket_all("team");
+    book.install(bucket, CapDimension::NanoUnits, grant(1_000, 60_000, 1));
 
     assert_eq!(
         book.draw(
@@ -56,12 +53,8 @@ fn a_draw_that_fits_is_local_and_one_that_does_not_asks_the_store() {
 #[test]
 fn a_slice_behind_the_fleets_epoch_cannot_be_spent() {
     let mut book = SliceBook::new();
-    let bucket = BucketId::all("team");
-    book.install(
-        bucket.clone(),
-        CapDimension::NanoUnits,
-        grant(1_000, 60_000, 1),
-    );
+    let bucket = bucket_all("team");
+    book.install(bucket, CapDimension::NanoUnits, grant(1_000, 60_000, 1));
     assert_eq!(
         book.draw(
             &bucket,
@@ -79,12 +72,8 @@ fn a_slice_behind_the_fleets_epoch_cannot_be_spent() {
 #[test]
 fn an_expired_slice_stays_spendable_through_a_store_outage_but_not_otherwise() {
     let mut book = SliceBook::new();
-    let bucket = BucketId::all("team");
-    book.install(
-        bucket.clone(),
-        CapDimension::NanoUnits,
-        grant(1_000, 100, 1),
-    );
+    let bucket = bucket_all("team");
+    book.install(bucket, CapDimension::NanoUnits, grant(1_000, 100, 1));
 
     // Normally an expired slice is stale.
     assert_eq!(
@@ -116,24 +105,16 @@ fn an_expired_slice_stays_spendable_through_a_store_outage_but_not_otherwise() {
 #[test]
 fn a_chain_draw_is_all_or_nothing_and_the_refusal_releases_what_was_taken() {
     let mut book = SliceBook::new();
-    let child = BucketId::all("child");
-    let parent = BucketId::all("parent");
-    book.install(
-        child.clone(),
-        CapDimension::NanoUnits,
-        grant(1_000, 60_000, 1),
-    );
-    book.install(
-        parent.clone(),
-        CapDimension::NanoUnits,
-        grant(10, 60_000, 1),
-    );
+    let child = bucket_all("child");
+    let parent = bucket_all("parent");
+    book.install(child, CapDimension::NanoUnits, grant(1_000, 60_000, 1));
+    book.install(parent, CapDimension::NanoUnits, grant(10, 60_000, 1));
 
     let refused = book
         .draw_chain(
             &[
-                (child.clone(), CapDimension::NanoUnits, 500),
-                (parent.clone(), CapDimension::NanoUnits, 500),
+                (child, CapDimension::NanoUnits, 500),
+                (parent, CapDimension::NanoUnits, 500),
             ],
             0,
             Epoch(1),
@@ -154,23 +135,15 @@ fn a_chain_draw_is_all_or_nothing_and_the_refusal_releases_what_was_taken() {
 #[test]
 fn a_chain_that_fits_draws_every_line() {
     let mut book = SliceBook::new();
-    let child = BucketId::all("child");
-    let parent = BucketId::all("parent");
-    book.install(
-        child.clone(),
-        CapDimension::NanoUnits,
-        grant(1_000, 60_000, 1),
-    );
-    book.install(
-        parent.clone(),
-        CapDimension::NanoUnits,
-        grant(1_000, 60_000, 1),
-    );
+    let child = bucket_all("child");
+    let parent = bucket_all("parent");
+    book.install(child, CapDimension::NanoUnits, grant(1_000, 60_000, 1));
+    book.install(parent, CapDimension::NanoUnits, grant(1_000, 60_000, 1));
     assert!(book
         .draw_chain(
             &[
-                (child.clone(), CapDimension::NanoUnits, 500),
-                (parent.clone(), CapDimension::NanoUnits, 500),
+                (child, CapDimension::NanoUnits, 500),
+                (parent, CapDimension::NanoUnits, 500),
             ],
             0,
             Epoch(1),
@@ -185,22 +158,22 @@ fn a_chain_that_fits_draws_every_line() {
 
 #[test]
 fn a_scoped_bucket_draws_only_for_the_pool_it_names() {
-    let scoped = BucketId::pool("team", "fast");
-    assert!(scoped.draws_for(Some("fast")));
+    let scoped = bucket_pool("team", "fast");
+    assert!(draws_for(&scoped, Some("fast")));
     assert!(
-        !scoped.draws_for(Some("slow")),
+        !draws_for(&scoped, Some("slow")),
         "a fallback hop draws nothing"
     );
-    assert!(!scoped.draws_for(None));
-    assert!(BucketId::all("team").draws_for(Some("anything")));
-    assert_eq!(scoped.scope, BucketScope::Pool("fast".into()));
+    assert!(!draws_for(&scoped, None));
+    assert!(draws_for(&bucket_all("team"), Some("anything")));
+    assert_eq!(scoped.scope, BucketScope::Pool("fast"));
 }
 
 #[test]
 fn a_draw_on_a_scope_the_unit_did_not_route_through_is_given_back() {
     let mut book = SliceBook::new();
-    let bucket = BucketId::pool("team", "fast");
-    book.install(bucket.clone(), CapDimension::Requests, grant(10, 60_000, 1));
+    let bucket = bucket_pool("team", "fast");
+    book.install(bucket, CapDimension::Requests, grant(10, 60_000, 1));
     assert_eq!(
         book.draw(
             &bucket,
@@ -221,11 +194,13 @@ fn a_draw_on_a_scope_the_unit_did_not_route_through_is_given_back() {
 
 #[test]
 fn only_the_dimensions_that_accrue_mid_unit_can_overdraw() {
-    assert!(CapDimension::NanoUnits.accrues_mid_unit());
-    assert!(CapDimension::Class(busbar_caps::MeterClassId::new("tokens")).accrues_mid_unit());
+    assert!(accrues_mid_unit(&CapDimension::NanoUnits));
+    assert!(accrues_mid_unit(&CapDimension::Class(
+        busbar_caps::MeterClassId::new("tokens")
+    )));
     // These two are known at the door, so there is nothing left to discover about them.
-    assert!(!CapDimension::Requests.accrues_mid_unit());
-    assert!(!CapDimension::Concurrent.accrues_mid_unit());
+    assert!(!accrues_mid_unit(&CapDimension::Requests));
+    assert!(!accrues_mid_unit(&CapDimension::Concurrent));
 }
 
 #[test]
@@ -240,11 +215,11 @@ fn running_out_mid_unit_carries_rather_than_refusing() {
 #[test]
 fn the_gauge_counts_units_and_gives_the_lease_back() {
     let gauge = ConcurrencyGauge::new();
-    let bucket = BucketId::all("team");
+    let bucket = bucket_all("team");
     let mut leases = LeaseSet::new();
 
     gauge.acquire(&bucket, 2).expect("room");
-    leases.take(bucket.clone());
+    leases.take(bucket);
     gauge.acquire(&bucket, 2).expect("room");
     assert_eq!(gauge.count(&bucket), 2);
     assert_eq!(gauge.acquire(&bucket, 2), Err(ReasonCode::OverBudget));

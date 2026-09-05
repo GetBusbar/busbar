@@ -271,14 +271,14 @@ fn a_second_open_on_an_occupied_direction_is_refused_and_the_session_stays_up() 
         Some(&session),
         &table,
         StreamId(1),
-        Direction::Ingress,
+        Direction::Inbound,
         Shape::Open { interrupt: None },
     );
     assert_eq!(first, Dispatch::OpenUnit);
     session
         .claim_open(
             StreamId(1),
-            Direction::Ingress,
+            Direction::Inbound,
             busbar_caps::UnitKey::new(1),
         )
         .expect("the slot was free");
@@ -287,7 +287,7 @@ fn a_second_open_on_an_occupied_direction_is_refused_and_the_session_stays_up() 
         Some(&session),
         &table,
         StreamId(1),
-        Direction::Ingress,
+        Direction::Inbound,
         Shape::Open { interrupt: None },
     );
     assert_eq!(
@@ -318,7 +318,7 @@ fn a_superseding_open_reaches_the_compare_and_set_even_on_an_occupied_direction(
         .expect("under the cap");
     slot.step().advance_to(StepName::Route);
     session
-        .claim_open(StreamId(1), Direction::Ingress, target)
+        .claim_open(StreamId(1), Direction::Inbound, target)
         .expect("the slot was free");
 
     let scheduler = Scheduler::default();
@@ -326,14 +326,14 @@ fn a_superseding_open_reaches_the_compare_and_set_even_on_an_occupied_direction(
         Some(&session),
         &table,
         StreamId(1),
-        Direction::Ingress,
+        Direction::Inbound,
         Shape::Open {
             interrupt: Some(target),
         },
     );
     assert_eq!(verdict, Dispatch::Supersede { target, won: true });
     assert_eq!(
-        session.open_unit(StreamId(1), Direction::Ingress),
+        session.open_unit(StreamId(1), Direction::Inbound),
         None,
         "the direction is free for the unit taking over"
     );
@@ -350,7 +350,7 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
             None,
             &table,
             StreamId(0),
-            Direction::Ingress,
+            Direction::Inbound,
             Shape::OneShot
         ),
         Dispatch::OpenOneShot
@@ -360,7 +360,7 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
             None,
             &table,
             StreamId(0),
-            Direction::Ingress,
+            Direction::Inbound,
             Shape::OneShot
         ),
         Dispatch::OpenOneShot
@@ -370,7 +370,7 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
             None,
             &table,
             StreamId(0),
-            Direction::Ingress,
+            Direction::Inbound,
             Shape::OneShot
         ),
         Dispatch::Wait,
@@ -382,7 +382,7 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
             None,
             &table,
             StreamId(0),
-            Direction::Ingress,
+            Direction::Inbound,
             Shape::OneShot
         ),
         Dispatch::OpenOneShot
@@ -425,7 +425,7 @@ fn a_discarded_frame_changes_no_state() {
             Some(&session),
             &table,
             StreamId(4),
-            Direction::Ingress,
+            Direction::Inbound,
             Shape::Discard
         ),
         Dispatch::Drop

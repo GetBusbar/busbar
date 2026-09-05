@@ -23,8 +23,7 @@
 
 use busbar_caps::{
     Abort, Canary, ExitToken, HoldCell, LedgerToken, MeterClassId, Outcome, Posted, PostingFlags,
-    QuantitySource,
-    ReasonCode, StepName, UnitEnd, Usage, UsageLine, UsageToken,
+    QuantitySource, ReasonCode, StepName, UnitEnd, Usage, UsageLine, UsageToken,
 };
 
 use crate::inflight::UnitSlot;

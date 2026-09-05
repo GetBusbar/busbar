@@ -322,7 +322,7 @@ fn running_past_the_reservation_posts_the_overdraft_rather_than_refusing() {
 fn the_leases_go_back_on_every_end_whatever_it_was() {
     let kernel = Kernel::new();
     let gauge = ConcurrencyGauge::new();
-    let bucket = busbar_kernel::slice::BucketId::all("team");
+    let bucket = busbar_kernel::slice::bucket_all("team");
     for outcome in [
         Outcome::Completed,
         Outcome::Failed(StepName::Route, ReasonCode::ClientGone),
@@ -331,7 +331,7 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
         gauge.acquire(&bucket, 4).expect("room in the gauge");
         assert_eq!(gauge.count(&bucket), 1);
         let mut leases = LeaseSet::new();
-        leases.take(bucket.clone());
+        leases.take(bucket);
         let units = TestUnits::passing();
         let cell = cell(&kernel);
         let canary = Canary::new();

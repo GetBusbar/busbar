@@ -55,72 +55,23 @@ impl Span {
     }
 }
 
-/// How the bytes at a location are hidden once the credential has been copied out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MaskKind {
-    /// Overwrite the span with the same number of fill bytes, so every later offset still holds.
-    SameLengthFill,
-    /// Nothing is masked, because the credential was never in the byte stream.
-    Nothing,
-    /// Only the signature's own span is masked; the signed material stays readable.
-    SignatureSpanOnly,
-    /// A bounded prefix of the frame is masked and the rest is left alone.
-    BoundedPrefix {
-        /// How many bytes of prefix.
-        max_bytes: usize,
-    },
-}
-
-/// One segment of a path pattern.
-// contract: SelectorForm's path-pattern segment
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Segment {
-    /// A literal segment: it matches itself and nothing else.
-    Lit(String),
-    /// A variable segment: it matches any one segment.
-    Var,
-    /// A tail: it matches every remaining segment, including none.
-    Tail,
-}
-
-/// What bytes a claim says are its own.
+/// The claim grammar and the credential grammar, as the contract crate declares them.
 ///
-/// Closed on purpose. A plane declares which of these it uses and with what values; it can never
-/// add a sixteenth shape, so the boot-time question "do these two claims overlap?" stays decidable.
-// contract: Selector
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Selector {
-    /// Exactly this path.
-    ExactPath(String),
-    /// This path and exactly one segment below it.
-    PrefixOneLevel(String),
-    /// This server name, from the transport handshake.
-    Sni(String),
-    /// This client-certificate subject.
-    ClientCertSubject(String),
-    /// A path read segment by segment.
-    PathPattern(Vec<Segment>),
-    /// This header with exactly this value.
-    HeaderExact(String, String),
-    /// This header, whatever its value.
-    HeaderPresent(String),
-    /// This header, where the value starts with this.
-    HeaderPrefix(String, String),
-    /// A path ending with this.
-    PathSuffix(String),
-    /// A path containing this anywhere.
-    PathContains(String),
-    /// A named stream on the transport.
-    StreamName(String),
-    /// A negotiated application protocol.
-    Alpn(String),
-    /// A listening port.
-    Port(u16),
-}
+/// Both are plugin-visible: a plane writes its claims and an auth scheme names where its credential
+/// lives, so the kernel evaluates values that arrived from outside it. It does not get a second
+/// spelling of them. The contract owns the shapes, the overlap decision, the form-to-family map and
+/// the masking rule; what stays here is the one thing the loop alone needs — how specific one
+/// selector is against another, which is the within-a-plane precedence order, not part of what a
+/// selector IS.
+pub use busbar_contract::{
+    ArrivalLocation, Location, MaskKind, PathSeg as Segment, Selector, SelectorForm, SignedOver,
+};
 
-/// The family a selector matches within: two selectors in different families can never both match
-/// the same bytes on the same axis, which is what keeps the overlap check from being a table of
-/// every pair.
+/// The three axes the boot-time overlap check groups selector forms onto.
+///
+/// Deliberately coarser than the contract's per-form family: the overlap decision only needs to
+/// know whether two selectors read the same axis at all, and every handshake-derived form is one
+/// axis for that purpose. It is the kernel's own grouping, which is why it lives here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectorFamily {
     /// The request path.
@@ -131,141 +82,53 @@ pub enum SelectorFamily {
     Transport,
 }
 
-impl Selector {
-    /// Which axis this selector reads.
-    pub fn family(&self) -> SelectorFamily {
-        match self {
-            Selector::ExactPath(_)
-            | Selector::PrefixOneLevel(_)
-            | Selector::PathPattern(_)
-            | Selector::PathSuffix(_)
-            | Selector::PathContains(_) => SelectorFamily::Path,
-            Selector::HeaderExact(..) | Selector::HeaderPresent(_) | Selector::HeaderPrefix(..) => {
-                SelectorFamily::Header
-            }
-            Selector::Sni(_)
-            | Selector::ClientCertSubject(_)
-            | Selector::StreamName(_)
-            | Selector::Alpn(_)
-            | Selector::Port(_) => SelectorFamily::Transport,
+/// Which axis a selector reads.
+#[must_use]
+pub fn family(selector: &Selector) -> SelectorFamily {
+    match selector {
+        Selector::ExactPath(_)
+        | Selector::PrefixOneLevel(_)
+        | Selector::PathPattern(_)
+        | Selector::PathSuffix(_)
+        | Selector::PathContains(_) => SelectorFamily::Path,
+        Selector::HeaderExact(..) | Selector::HeaderPresent(_) | Selector::HeaderPrefix(..) => {
+            SelectorFamily::Header
         }
-    }
-
-    /// The header this selector reads, where it reads one.
-    pub fn header(&self) -> Option<&str> {
-        match self {
-            Selector::HeaderExact(name, _)
-            | Selector::HeaderPresent(name)
-            | Selector::HeaderPrefix(name, _) => Some(name.as_str()),
-            _ => None,
-        }
-    }
-
-    /// How specific this selector is, for the within-one-plane precedence order: a literal beats a
-    /// variable, longer beats shorter, a whole path beats a fragment of one.
-    pub fn specificity(&self) -> u32 {
-        match self {
-            Selector::ExactPath(p) => 10_000 + p.len() as u32,
-            Selector::PathPattern(segments) => {
-                let literals = segments
-                    .iter()
-                    .filter(|s| matches!(s, Segment::Lit(_)))
-                    .count() as u32;
-                let open = segments
-                    .iter()
-                    .filter(|s| matches!(s, Segment::Tail))
-                    .count() as u32;
-                5_000 + literals * 100 + segments.len() as u32 - open * 50
-            }
-            Selector::PrefixOneLevel(p) => 4_000 + p.len() as u32,
-            Selector::HeaderExact(n, v) => 3_000 + (n.len() + v.len()) as u32,
-            Selector::HeaderPrefix(n, v) => 2_000 + (n.len() + v.len()) as u32,
-            Selector::HeaderPresent(n) => 1_500 + n.len() as u32,
-            Selector::PathSuffix(s) | Selector::PathContains(s) => 1_000 + s.len() as u32,
-            Selector::Sni(s) | Selector::ClientCertSubject(s) | Selector::StreamName(s) => {
-                800 + s.len() as u32
-            }
-            Selector::Alpn(a) => 600 + a.len() as u32,
-            Selector::Port(_) => 500,
-        }
+        Selector::Sni(_)
+        | Selector::ClientCertSubject(_)
+        | Selector::StreamName(_)
+        | Selector::Alpn(_)
+        | Selector::Port(_) => SelectorFamily::Transport,
     }
 }
 
-/// Where a credential can be found at arrival — the only forms an auth scheme may name.
-// contract: ArrivalLocation
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ArrivalLocation {
-    /// In a header.
-    Header(String),
-    /// In a query parameter.
-    Query(String),
-    /// At a pointer into the first frame's JSON.
-    FirstFrameJsonPointer(String),
-    /// In the client certificate, which is not in the byte stream at all.
-    ClientCert,
-    /// As a signature over the url, the body, or both.
-    Signed {
-        /// What the signature covers.
-        over: SignedOver,
-    },
-    /// In a bounded prefix of the opening frames of a protocol handshake.
-    HandshakeFrames {
-        /// How many frames at most.
-        max_frames: u32,
-        /// How many bytes at most.
-        max_bytes: usize,
-    },
-}
-
-/// What a signature covers.
-// contract: SignedOver
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SignedOver {
-    /// The request line and its query.
-    Url,
-    /// The body.
-    Body,
-    /// Both.
-    Both,
-}
-
-/// Where the kernel looks for something: at arrival, or at a pointer into the decoded unit.
-// contract: Location
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Location {
-    /// One of the arrival forms.
-    Arrival(ArrivalLocation),
-    /// A pointer into the unit's own body. Idempotency keys only; the kernel extracts it from the
-    /// span the scanner found, and no auth scheme may name this form.
-    UnitJsonPointer(String),
-}
-
-impl ArrivalLocation {
-    /// How bytes at this location are hidden once they have been copied into the slab.
-    pub fn mask_kind(&self) -> MaskKind {
-        match self {
-            ArrivalLocation::Header(_)
-            | ArrivalLocation::Query(_)
-            | ArrivalLocation::FirstFrameJsonPointer(_) => MaskKind::SameLengthFill,
-            ArrivalLocation::ClientCert => MaskKind::Nothing,
-            ArrivalLocation::Signed { .. } => MaskKind::SignatureSpanOnly,
-            ArrivalLocation::HandshakeFrames { max_bytes, .. } => MaskKind::BoundedPrefix {
-                max_bytes: *max_bytes,
-            },
+/// How specific a selector is, for the within-one-plane precedence order: a literal beats a
+/// variable, longer beats shorter, a whole path beats a fragment of one.
+#[must_use]
+pub fn specificity(selector: &Selector) -> u32 {
+    match selector {
+        Selector::ExactPath(p) => 10_000 + p.len() as u32,
+        Selector::PathPattern(segments) => {
+            let literals = segments
+                .iter()
+                .filter(|s| matches!(s, Segment::Lit(_)))
+                .count() as u32;
+            let open = segments
+                .iter()
+                .filter(|s| matches!(s, Segment::Tail))
+                .count() as u32;
+            5_000 + literals * 100 + segments.len() as u32 - open * 50
         }
-    }
-
-    /// Whether resolving this location needs the whole body rather than the scanned prefix.
-    ///
-    /// A body signature has to see every byte it signs, so a claim that names one pushes the
-    /// deepest pointer to the end of the body and the unit does not open until the body has landed.
-    pub fn needs_whole_body(&self) -> bool {
-        matches!(
-            self,
-            ArrivalLocation::Signed {
-                over: SignedOver::Body | SignedOver::Both
-            }
-        )
+        Selector::PrefixOneLevel(p) => 4_000 + p.len() as u32,
+        Selector::HeaderExact(n, v) => 3_000 + (n.len() + v.len()) as u32,
+        Selector::HeaderPrefix(n, v) => 2_000 + (n.len() + v.len()) as u32,
+        Selector::HeaderPresent(n) => 1_500 + n.len() as u32,
+        Selector::PathSuffix(s) | Selector::PathContains(s) => 1_000 + s.len() as u32,
+        Selector::Sni(s) | Selector::ClientCertSubject(s) | Selector::StreamName(s) => {
+            800 + s.len() as u32
+        }
+        Selector::Alpn(a) => 600 + a.len() as u32,
+        Selector::Port(_) => 500,
     }
 }
 

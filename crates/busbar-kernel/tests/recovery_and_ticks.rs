@@ -11,7 +11,7 @@ use busbar_kernel::recovery::{
     frame, owed_after, recover_all, truncate_torn_tail, voids_claim, HoldRecord, KillPoint, Owed,
     TailVerdict,
 };
-use busbar_kernel::slice::{BucketId, ConcurrencyGauge, Epoch, LeaseSet};
+use busbar_kernel::slice::{bucket_all, ConcurrencyGauge, Epoch, LeaseSet};
 use busbar_kernel::teller::{Evidence, Kernel};
 use busbar_kernel::tick::{
     drain_outcome, drain_verdict, fleet_action, session_tick, sweep, sweep_settle, DrainVerdict,
@@ -154,10 +154,10 @@ fn a_lost_task_is_settled_within_one_tick() {
     // The unit was holding a concurrency lease when its task disappeared. The sweep is one of the
     // two ends a unit has, so the lease goes back here or it never goes back at all.
     let gauge = ConcurrencyGauge::new();
-    let bucket = BucketId::all("team");
+    let bucket = bucket_all("team");
     gauge.acquire(&bucket, 4).expect("room in the gauge");
     let mut leases = LeaseSet::new();
-    leases.take(bucket.clone());
+    leases.take(bucket);
 
     let end = sweep_settle(
         &kernel,

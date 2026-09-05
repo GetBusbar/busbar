@@ -34,40 +34,17 @@ use crate::Nanos;
 /// How many one-shot units may run at once beside the open unit.
 pub const DEFAULT_ONE_SHOT_K: usize = 4;
 
-/// A stream on a connection. One number; the transport says what it means.
-// contract: StreamId
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct StreamId(pub u64);
-
-/// Which way a frame is going.
-// contract: Direction
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Direction {
-    /// From the client towards the node.
-    Ingress,
-    /// From the node towards the client.
-    Egress,
-}
-
-/// Transport bytes with a direction, a stream and nothing else. It has no meaning yet.
-// contract: Frame
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Frame<'b> {
-    /// Which stream it arrived on.
-    pub stream: StreamId,
-    /// Which way it is going.
-    pub direction: Direction,
-    /// The bytes.
-    pub bytes: &'b [u8],
-    /// The transport's own count of payload units, where the transport decodes the payload.
-    pub transport_units: Option<u64>,
-}
+/// A stream, a direction and a frame, as the contract crate declares them.
+///
+/// A transport writes all three, so all three arrive from outside the kernel; the pump reads what
+/// it was handed rather than a restatement of it.
+pub use busbar_contract::{Direction, Frame, StreamId};
 
 /// What the plane made of a frame.
 ///
-/// This is the pump's input, not the plane's trait: the plane's own answer is richer, and the pump
-/// only needs to know which of these shapes it was.
-// contract: Ingress / Progress
+/// This is the pump's input, not the plane's trait: the contract's own `Ingress` and `Progress`
+/// are richer and borrow the frame buffer, and the pump only needs to know which of these shapes it
+/// was. It is a reduction of them, not a second spelling: nothing outside the kernel writes one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
     /// Not a whole anything yet.

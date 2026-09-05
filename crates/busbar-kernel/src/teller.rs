@@ -39,9 +39,8 @@ use busbar_caps::{
     Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Canary, Decision, Decode,
     DurabilityLost, Encode, ExitToken, Hold, HoldCell, KernelSeal, LedgerToken, Meter,
     MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags, PrincipalId, QuantitySource,
-    ReasonCode,
-    Refusal, Route, SessionId, StepName, UnitEnd, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
-    VerifiedDestination, Verify,
+    ReasonCode, Refusal, Route, SessionId, StepName, UnitEnd, UnitKey, UnitToken, Usage, UsageLine,
+    UsageToken, VerifiedDestination, Verify,
 };
 
 use crate::registry::Generation;
@@ -146,43 +145,13 @@ impl AccrualMeter {
     }
 }
 
-/// How a stream's status is reported, where the transport reports one at all.
-// contract: StatusAt
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusAt {
-    /// On the first response frame — a status line.
-    FirstFrame,
-    /// On the terminal frame — a status trailer.
-    Terminal,
-}
-
-/// The transport's own verdict on a response, as per-frame meta.
-// contract: StatusClass
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusClass {
-    /// It worked.
-    Success,
-    /// The caller got it wrong.
-    ClientError,
-    /// The upstream got it wrong.
-    ServerError,
-    /// Something else.
-    Other,
-}
-
-/// The plane's own verdict on how a unit finished.
-// contract: FinishClass
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FinishClass {
-    /// A whole answer.
-    Complete,
-    /// A whole turn of a conversation.
-    TurnComplete,
-    /// Some of an answer.
-    Partial,
-    /// An error, in the protocol's own terms.
-    Error,
-}
+/// Where a transport reports a status, what it reported, and what the plane made of the ending.
+///
+/// All three are the contract's own. They are plugin-visible: a transport declares where its status
+/// arrives, a plane declares how a unit finished, and the settlement table below reads both. A
+/// kernel-local restatement of any of them would be a second spelling of a value that crosses the
+/// plugin boundary in both directions.
+pub use busbar_contract::{FinishClass, StatusAt, StatusClass};
 
 /// Everything the settlement table reads.
 ///

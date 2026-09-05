@@ -43,42 +43,13 @@ impl Generation {
     }
 }
 
-/// The kinds of plugin the kernel knows how to hold.
+/// The kinds of plugin the kernel knows how to hold, and the one base trait every one of them
+/// implements.
 ///
-/// Closed, because it is structure: what each kind is FOR is open vocabulary the plugin declares.
-// contract: the plugin kind table
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PluginKind {
-    /// Says what bytes mean.
-    Plane,
-    /// Moves bytes. In-tree only.
-    Transport,
-    /// Turns a credential into a principal.
-    Auth,
-    /// Decorates an outbound request.
-    EgressAuth,
-    /// Keeps the journal and the windows.
-    Store,
-    /// Resolves and seals key material.
-    Secret,
-    /// Observes, and at a gate seat may restrict, veto or rewrite.
-    Hook,
-    /// Receives journal entries and content facts.
-    Export,
-}
-
-/// The one base trait everything registered implements.
-///
-/// Deliberately tiny: a key and a kind. Everything a kind can actually DO lives on that kind's own
-/// trait, which the caller looks up by key.
-// contract: Plugin
-pub trait Plugin: Send + Sync + 'static {
-    /// The plugin's declared key. Its whole open vocabulary hangs off this.
-    fn key(&self) -> &str;
-
-    /// Which kind it is.
-    fn kind(&self) -> PluginKind;
-}
+/// Both are the contract's: a plugin declares its own kind and its own key, so these are the very
+/// values that arrive from outside the kernel. A registry that named its own copy would be
+/// registering something other than what was handed to it.
+pub use busbar_contract::{Kind as PluginKind, Plugin};
 
 /// Why a registration was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,7 +59,7 @@ pub enum RegistryError {
         /// The kind they both are.
         kind: PluginKind,
         /// The key they both claimed.
-        key: String,
+        key: &'static str,
     },
 }
 
@@ -105,7 +76,7 @@ impl std::fmt::Display for RegistryError {
 impl std::error::Error for RegistryError {}
 
 struct Registered {
-    key: String,
+    key: &'static str,
     kind: PluginKind,
     since: Generation,
     until: Option<Generation>,
@@ -147,8 +118,8 @@ impl Registry {
 
     /// Add a plugin. Refused if its kind already has that key live.
     pub fn register(&mut self, plugin: Arc<dyn Plugin>) -> Result<Generation, RegistryError> {
-        let (key, kind) = (plugin.key().to_string(), plugin.kind());
-        if self.live(kind, &key).is_some() {
+        let (key, kind) = (plugin.key(), plugin.kind());
+        if self.live(kind, key).is_some() {
             return Err(RegistryError::DuplicateKey { kind, key });
         }
         self.entries.push(Registered {
@@ -166,7 +137,7 @@ impl Registry {
     /// The old entry is not deleted: it stays reachable at every generation it was live for, so a
     /// unit that started before the swap finishes against what it started with.
     pub fn replace(&mut self, plugin: Arc<dyn Plugin>) -> Generation {
-        let (key, kind) = (plugin.key().to_string(), plugin.kind());
+        let (key, kind) = (plugin.key(), plugin.kind());
         let next = self.generation.next();
         for entry in &mut self.entries {
             if entry.kind == kind && entry.key == key && entry.until.is_none() {
@@ -234,26 +205,30 @@ impl Registry {
     }
 }
 
-/// One claim: a plane saying which bytes on which transport belong to it.
-// contract: Claim
+/// One claim, paired with the plane that made it.
+///
+/// The claim itself is the contract's — a plane writes it as an associated constant, so it is the
+/// plane's own words. What the kernel adds is which plane said it, because the registry is what
+/// knows that and because the across-planes overlap rule is the one thing a claim cannot answer
+/// about itself.
+pub use busbar_contract::Claim;
+
+/// A claim as the registry holds it: the plane's words, and which plane said them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Claim {
+pub struct PlaneClaim {
     /// The plane that made the claim.
-    pub plane: String,
-    /// The transport it is claimed on, as a key. Two claims on different transports can never both
-    /// match, because the bytes never reach both.
-    pub transport: String,
-    /// What it matches.
-    pub selector: Selector,
+    pub plane: &'static str,
+    /// What the plane claimed.
+    pub claim: Claim,
 }
 
 /// Two claims that could both match.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimConflict {
     /// The first claim.
-    pub left: Claim,
+    pub left: PlaneClaim,
     /// The second.
-    pub right: Claim,
+    pub right: PlaneClaim,
 }
 
 impl std::fmt::Display for ClaimConflict {
@@ -261,7 +236,7 @@ impl std::fmt::Display for ClaimConflict {
         write!(
             f,
             "claims of {} and {} on transport {} can both match",
-            self.left.plane, self.right.plane, self.left.transport
+            self.left.plane, self.right.plane, self.left.claim.transport
         )
     }
 }
@@ -272,13 +247,15 @@ impl std::error::Error for ClaimConflict {}
 ///
 /// Within ONE plane the claims are an ordered pattern set with most-specific-wins precedence, so
 /// two of a plane's own claims are allowed to overlap; across planes they are not.
-pub fn check_claims(claims: &[Claim]) -> Result<(), Box<ClaimConflict>> {
+pub fn check_claims(claims: &[PlaneClaim]) -> Result<(), Box<ClaimConflict>> {
     for (i, left) in claims.iter().enumerate() {
         for right in &claims[i + 1..] {
             if left.plane == right.plane {
                 continue;
             }
-            if left.transport == right.transport && overlaps(&left.selector, &right.selector) {
+            if left.claim.transport == right.claim.transport
+                && overlaps(&left.claim.selector, &right.claim.selector)
+            {
                 return Err(Box::new(ClaimConflict {
                     left: left.clone(),
                     right: right.clone(),
@@ -291,13 +268,11 @@ pub fn check_claims(claims: &[Claim]) -> Result<(), Box<ClaimConflict>> {
 
 /// One plane's claims in the order they are tried: most specific first, and ties broken by the
 /// order they were declared so the walk is stable across boots.
-pub fn precedence_order(claims: &[Claim]) -> Vec<usize> {
+pub fn precedence_order(claims: &[PlaneClaim]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..claims.len()).collect();
     order.sort_by(|a, b| {
-        claims[*b]
-            .selector
-            .specificity()
-            .cmp(&claims[*a].selector.specificity())
+        crate::grammar::specificity(&claims[*b].claim.selector)
+            .cmp(&crate::grammar::specificity(&claims[*a].claim.selector))
             .then(a.cmp(b))
     });
     order
@@ -312,11 +287,11 @@ pub fn precedence_order(claims: &[Claim]) -> Vec<usize> {
 ///
 /// Reflexive and symmetric by construction, and both are asserted by the battery.
 pub fn overlaps(left: &Selector, right: &Selector) -> bool {
-    if left.family() != right.family() {
+    if crate::grammar::family(left) != crate::grammar::family(right) {
         // Different axes. Nothing here can prove they do not coincide, so they might.
         return true;
     }
-    match left.family() {
+    match crate::grammar::family(left) {
         SelectorFamily::Header => header_overlaps(left, right),
         SelectorFamily::Path => path_overlaps(left, right),
         SelectorFamily::Transport => transport_overlaps(left, right),
@@ -326,16 +301,16 @@ pub fn overlaps(left: &Selector, right: &Selector) -> bool {
 /// Header forms: different headers never collide; the same header collides unless two exact values
 /// differ, or a prefix rules the value out.
 fn header_overlaps(left: &Selector, right: &Selector) -> bool {
-    let (ln, rn) = (left.header(), right.header());
+    let (ln, rn) = (left.header_name(), right.header_name());
     if !matches!((ln, rn), (Some(a), Some(b)) if a.eq_ignore_ascii_case(b)) {
         return false;
     }
     match (left, right) {
         (Selector::HeaderExact(_, a), Selector::HeaderExact(_, b)) => a == b,
         (Selector::HeaderExact(_, v), Selector::HeaderPrefix(_, p))
-        | (Selector::HeaderPrefix(_, p), Selector::HeaderExact(_, v)) => v.starts_with(p.as_str()),
+        | (Selector::HeaderPrefix(_, p), Selector::HeaderExact(_, v)) => v.starts_with(p),
         (Selector::HeaderPrefix(_, a), Selector::HeaderPrefix(_, b)) => {
-            a.starts_with(b.as_str()) || b.starts_with(a.as_str())
+            a.starts_with(b) || b.starts_with(a)
         }
         // Presence matches every value of that header, so it overlaps anything on it.
         _ => true,
@@ -359,13 +334,11 @@ fn path_overlaps(left: &Selector, right: &Selector) -> bool {
         | (Selector::PathPattern(pattern), Selector::PrefixOneLevel(prefix)) => {
             patterns_overlap(pattern, &one_level_pattern(prefix))
         }
-        (Selector::PathSuffix(a), Selector::PathSuffix(b)) => {
-            a.ends_with(b.as_str()) || b.ends_with(a.as_str())
-        }
+        (Selector::PathSuffix(a), Selector::PathSuffix(b)) => a.ends_with(b) || b.ends_with(a),
         (Selector::PathSuffix(s), Selector::ExactPath(p))
-        | (Selector::ExactPath(p), Selector::PathSuffix(s)) => p.ends_with(s.as_str()),
+        | (Selector::ExactPath(p), Selector::PathSuffix(s)) => p.ends_with(s),
         (Selector::PathContains(c), Selector::ExactPath(p))
-        | (Selector::ExactPath(p), Selector::PathContains(c)) => p.contains(c.as_str()),
+        | (Selector::ExactPath(p), Selector::PathContains(c)) => p.contains(c),
         // Fragment forms against pattern forms: a path satisfying both can always be written.
         _ => true,
     }
@@ -395,10 +368,8 @@ fn one_level_under(prefix: &str, path: &str) -> bool {
 }
 
 /// A one-level prefix as the pattern it is: the prefix's literals, then one variable.
-fn one_level_pattern(prefix: &str) -> Vec<Segment> {
-    let mut segments: Vec<Segment> = split_path(prefix)
-        .map(|s| Segment::Lit(s.to_string()))
-        .collect();
+fn one_level_pattern(prefix: &'static str) -> Vec<Segment> {
+    let mut segments: Vec<Segment> = split_path(prefix).map(Segment::Lit).collect();
     segments.push(Segment::Var);
     segments
 }
@@ -422,7 +393,7 @@ fn pattern_matches(pattern: &[Segment], path: &str) -> bool {
                 i += 1;
             }
             Segment::Lit(lit) => {
-                if segments.get(i) != Some(&lit.as_str()) {
+                if segments.get(i) != Some(lit) {
                     return false;
                 }
                 i += 1;

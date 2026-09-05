@@ -248,7 +248,7 @@ pub enum BucketScope {
 }
 
 /// One bucket in a principal's chain.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct BucketRef {
     /// The bucket's identity as the refusal text prints it.
     pub id: &'static str,

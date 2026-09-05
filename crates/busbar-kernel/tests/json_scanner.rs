@@ -177,39 +177,40 @@ fn an_oversize_credential_is_refused_against_the_slab_and_not_the_cursor() {
 #[test]
 fn every_location_form_says_how_it_is_masked() {
     assert_eq!(
-        ArrivalLocation::Header("authorization".into()).mask_kind(),
+        ArrivalLocation::Header("authorization").mask(),
         MaskKind::SameLengthFill
     );
-    assert_eq!(ArrivalLocation::ClientCert.mask_kind(), MaskKind::Nothing);
+    assert_eq!(ArrivalLocation::ClientCert.mask(), MaskKind::Nothing);
     assert_eq!(
         ArrivalLocation::Signed {
             over: SignedOver::Body
         }
-        .mask_kind(),
-        MaskKind::SignatureSpanOnly
+        .mask(),
+        MaskKind::SignatureSpan
     );
     assert_eq!(
         ArrivalLocation::HandshakeFrames {
             max_frames: 4,
             max_bytes: 256,
         }
-        .mask_kind(),
-        MaskKind::BoundedPrefix { max_bytes: 256 }
+        .mask(),
+        MaskKind::BoundedPrefix
     );
     // A body signature has to see every byte it signs, so the unit does not open until the body has.
     assert!(ArrivalLocation::Signed {
         over: SignedOver::Both
     }
     .needs_whole_body());
-    assert!(!ArrivalLocation::Header("x".into()).needs_whole_body());
+    assert!(!ArrivalLocation::Header("x").needs_whole_body());
 }
 
 #[test]
 fn a_client_certificate_masks_nothing_because_it_was_never_in_the_bytes() {
     let mut cursor = b"hello".to_vec();
     let mut slab = CredentialSlab::with_capacity(64);
+    // A client certificate is the one form that masks nothing, because it was never in the bytes.
     let masked = slab
-        .mask_as(&mut cursor, Span::new(0, 5), MaskKind::Nothing)
+        .mask_as(&mut cursor, Span::new(0, 5), &ArrivalLocation::ClientCert)
         .expect("nothing to do");
     assert!(masked.is_empty());
     assert_eq!(cursor, b"hello");
