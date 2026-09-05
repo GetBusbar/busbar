@@ -409,18 +409,26 @@ fn replay_is_byte_identical_and_never_a_fresh_mint() {
 /// could not guarantee.
 #[test]
 fn two_mints_with_a_real_nonce_source_produce_different_nonces() {
-    struct RecordingNonceSource(std::sync::Arc<Mutex<Vec<[u8; 16]>>>);
+    struct RecordingNonceSource {
+        seen: std::sync::Arc<Mutex<Vec<[u8; 16]>>>,
+        draws: AtomicU64,
+    }
     impl NonceSource for RecordingNonceSource {
         fn fill(&self, buf: &mut [u8; 16]) {
-            // Stands in for the secret plugin's CSPRNG: varies with wall-clock time down to the
-            // nanosecond, so it is not a function of the unit key or the secret's shape (the
-            // property that made the deleted placeholder predictable).
+            // Stands in for the secret plugin's CSPRNG: it varies with wall-clock time, and it
+            // varies with a per-source counter as well. The counter is what makes the variation a
+            // property of the SOURCE rather than of the host's clock granularity — on a platform
+            // whose clock ticks more coarsely than the gap between two mints, a clock-only source
+            // would hand out the same nonce twice and fail this test for a reason that has nothing
+            // to do with what it is proving. Neither term is a function of the unit key or the
+            // secret's shape, which is the property that made the deleted placeholder predictable.
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")
                 .as_nanos();
-            *buf = nanos.to_be_bytes();
-            self.0.lock().unwrap().push(*buf);
+            let draw = u128::from(self.draws.fetch_add(1, Ordering::SeqCst));
+            *buf = (nanos ^ draw.rotate_left(64)).to_be_bytes();
+            self.seen.lock().unwrap().push(*buf);
         }
     }
 
@@ -429,7 +437,10 @@ fn two_mints_with_a_real_nonce_source_produce_different_nonces() {
     let verbs = Verbs::new(
         gov,
         FakeStore,
-        RecordingNonceSource(seen.clone()),
+        RecordingNonceSource {
+            seen: seen.clone(),
+            draws: AtomicU64::new(0),
+        },
         FakeReplayEncoder,
         CONFIG_CLASS_RULES,
     );
@@ -448,7 +459,6 @@ fn two_mints_with_a_real_nonce_source_produce_different_nonces() {
             None,
         )
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_micros(1));
     verbs
         .create_key(
             &admin,
