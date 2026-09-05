@@ -242,6 +242,18 @@ impl Walk {
         self.lock().arrived = Some(arrived);
     }
 
+    /// Read what the Arrival step kept, without taking it.
+    ///
+    /// The one seam the model ladder crosses. The ladder's third rung is a point read of the head
+    /// projection step 0 captured, and a projection is an engine value — so the projection stays
+    /// here and the LADDER stays where it belongs, at the caller, which is handed the arrival and
+    /// passes its fields straight into the step file without naming any of their types. `None` where
+    /// the Arrival step never answered, which the loop's order makes unreachable.
+    #[must_use]
+    pub fn with_arrival<R>(&self, read: impl FnOnce(&BodyArrival) -> R) -> Option<R> {
+        self.lock().arrived.as_ref().map(read)
+    }
+
     /// Hold bytes a step rendered until the terminal posts them.
     ///
     /// Rendering and posting are two jobs: a step names its refusal, one place turns it into bytes,
