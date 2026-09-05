@@ -87,35 +87,47 @@ measure() {
     done <"$OUT/rows.tsv"
   fi
 
-  # The surface ceiling. Self-contained on purpose: scripts/loc-surface.py owns the counting rule
+  # The surface ceilings. Self-contained on purpose: scripts/loc-surface.py owns the counting rule
   # (non-blank, non-comment code lines under src/, minus #[cfg(test)] mods and src/tests/), this
-  # block only turns its exit code into one ledger row. The figure is the amended ceiling in
-  # ARCHITECTURE.md section 1.1 and is deliberately NOT calibratable: it is an owner decision, not a
-  # ratchet that drifts upward with the tree.
-  local surface_id="surface-ceiling:contract+caps" surface_limit=3500 surface_out surface_rc
-  surface_out="$(python3 "$ROOT/scripts/loc-surface.py" \
-                   --ceiling "busbar-contract,busbar-caps=$surface_limit" 2>&1)"; surface_rc=$?
-  local surface_now
-  surface_now="$(printf '%s\n' "$surface_out" | awk '$1=="total"{print $2}')"
-  surface_now="${surface_now:-?}"
-  local surface_status surface_detail
-  if [ "$surface_rc" -eq 0 ]; then
-    surface_status=PASS
-    surface_detail="plugin-visible surface of busbar-contract + busbar-caps is $surface_now lines"
-  else
-    surface_status=FAIL
-    surface_detail="$(printf '%s\n' "$surface_out" | tail -3 | tr '\n' ' ')"
-  fi
-  if [ -n "$quiet" ]; then
-    record "$surface_id" "$surface_status" \
-      "the contract pair's plugin-visible surface stays under its ceiling" "$surface_detail" >/dev/null
-  else
-    record "$surface_id" "$surface_status" \
-      "the contract pair's plugin-visible surface stays under its ceiling" "$surface_detail"
-  fi
-  printf '%s\n' "$surface_id" >>"$OUT/expected-ids"
-  printf '%-4s  %-32s %6s / %-6s  %s\n' "$surface_status" "$surface_id" "$surface_now" \
-    "$surface_limit" "the contract pair's plugin-visible surface" >>"$OUT/summary.txt"
+  # block only turns its exit code into one ledger row per ceiling. Every figure is the one in
+  # ARCHITECTURE.md section 1.1 and none is calibratable: they are owner decisions, not ratchets
+  # that drift upward with the tree.
+  #
+  # THREE rows, not one, because the pair's ceiling is a budget for what a PLUGIN AUTHOR reads. The
+  # closed span grammar and the transport-facing contract each moved out from under it into a crate
+  # of their own, and a ceiling nothing measures is a ceiling that has been abolished rather than
+  # met: each split crate is gated at its own figure here, beside the pair it left.
+  local surface_spec surface_id surface_crates surface_limit surface_what
+  for surface_spec in \
+    "contract+caps|busbar-contract,busbar-caps|3500|the contract pair's plugin-visible surface" \
+    "grammar|busbar-grammar|500|the closed span grammar's surface" \
+    "contract-transport|busbar-contract-transport|1000|the transport-facing contract's surface"
+  do
+    IFS='|' read -r surface_id surface_crates surface_limit surface_what <<<"$surface_spec"
+    surface_id="surface-ceiling:$surface_id"
+    local surface_out surface_rc surface_now surface_status surface_detail
+    surface_out="$(python3 "$ROOT/scripts/loc-surface.py" \
+                     --ceiling "$surface_crates=$surface_limit" 2>&1)"; surface_rc=$?
+    surface_now="$(printf '%s\n' "$surface_out" | awk '$1=="total"{print $2}')"
+    surface_now="${surface_now:-?}"
+    if [ "$surface_rc" -eq 0 ]; then
+      surface_status=PASS
+      surface_detail="$surface_what is $surface_now lines"
+    else
+      surface_status=FAIL
+      surface_detail="$(printf '%s\n' "$surface_out" | tail -3 | tr '\n' ' ')"
+    fi
+    if [ -n "$quiet" ]; then
+      record "$surface_id" "$surface_status" \
+        "$surface_what stays under its ceiling" "$surface_detail" >/dev/null
+    else
+      record "$surface_id" "$surface_status" \
+        "$surface_what stays under its ceiling" "$surface_detail"
+    fi
+    printf '%s\n' "$surface_id" >>"$OUT/expected-ids"
+    printf '%-4s  %-32s %6s / %-6s  %s\n' "$surface_status" "$surface_id" "$surface_now" \
+      "$surface_limit" "$surface_what" >>"$OUT/summary.txt"
+  done
 
   local verdict_out rc
   verdict_out="$(GATE_NAME="construction" EXPECTED_IDS="$(cat "$OUT/expected-ids")" \

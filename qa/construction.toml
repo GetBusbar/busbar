@@ -311,7 +311,8 @@ ceiling = 300
 # ── 15. manifest-allowlist (ARCHITECTURE.md section 1.2) ────────────────────────────────────────────────────
 [rules.manifest-allowlist]
 why = """Core → plugin, never plugin → core. A plugin-kind crate (plane, store, auth, hook, export, \
-secret) may name `busbar-contract` freely; every other workspace crate it names is either an \
+secret) may name `busbar-contract` and the closed grammar it is written on (`busbar-grammar`) freely; \
+every other workspace crate it names is either an \
 automatic RED (busbar-kernel, busbar-caps, a busbar-unit-*, another plane, a transport — the \
 coupling the ABI exists to prevent, and no allow-list can excuse it) or must be on the reviewed \
 list below, named once with its reason. Parsed straight from each crate's `[dependencies]` table \
@@ -321,9 +322,11 @@ consulted when present to widen the same check to transitive path/workspace deps
 (noted, not failed) when cargo is unavailable, keeping this gate cargo-optional."""
 # Every dependency a plugin-kind crate may name beyond busbar-contract, with the review recorded in
 # the commit that added it: busbar-api / busbar-plugin-sdk are the 1.5.5-era loader ABI every
-# example plugin still bridges through until it moves onto busbar-contract; the rest are ordinary
+# example plugin still bridges through until it moves onto busbar-contract; busbar-grammar is the
+# closed JSON span grammar the contract itself is written on and re-exports as `spans`, so naming it
+# directly is naming a piece of the contract rather than reaching past it; the rest are ordinary
 # third-party crates.
-reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec"]
+reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-grammar"]
 # busbar-llm-codec: the pure codec half of the split llm crate (no I/O in its closure); the plane adapts it.
 # Per-crate additions beyond the global list above, each a one-line review.
 [rules.manifest-allowlist.reviewed_extra]

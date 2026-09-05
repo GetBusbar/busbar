@@ -267,6 +267,22 @@ pub trait Arena: Send + Sync {
     /// Copy a string into the arena.
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget>;
 
+    /// Copy a resolved span table into the arena.
+    ///
+    /// The one thing a plane could not build before this existed. An [`Ir`] borrows its body AND
+    /// its span table for the unit's lifetime, and a plane holds neither: the body is the frame
+    /// buffer's and the table has to outlive the frame it was scanned in. With only bytes and
+    /// strings on offer, every plane in the tree passed an EMPTY table and the kernel re-scanned
+    /// bytes the plane had already scanned. This is the allocation that makes a plane's own scan
+    /// the one the loop reads.
+    ///
+    /// The pointers are already `'a` because they are the plane's declared pointers — static
+    /// strings or arena strings — so only the pairs themselves are copied.
+    fn alloc_spans<'a>(
+        &'a self,
+        src: &[(&'a str, Span)],
+    ) -> Result<&'a [(&'a str, Span)], ArenaBudget>;
+
     /// How many bytes remain before the next allocation fails.
     fn remaining(&self) -> usize;
 }
@@ -481,6 +497,20 @@ impl<'u> Ir<'u> {
     /// Every pointer the scanner resolved.
     pub fn pointers(&self) -> impl Iterator<Item = (&'u str, Span)> + '_ {
         self.spans.iter().copied()
+    }
+
+    /// A view over no bytes at all.
+    ///
+    /// The honest shape for a unit that carries no body — a session tick, a close, a keepalive.
+    /// It exists so that an empty span table is something a caller MEANT rather than something a
+    /// caller could not build: `Ir::new(body, &[])` says the same words whether the body was empty
+    /// or the pointers were never resolved, and only one of those is a defect.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            body: &[],
+            spans: &[],
+        }
     }
 }
 

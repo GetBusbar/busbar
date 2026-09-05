@@ -1042,6 +1042,13 @@ impl busbar_contract::Arena for LeakArena {
         Ok(Box::leak(src.to_string().into_boxed_str()))
     }
 
+    fn alloc_spans<'a>(
+        &'a self,
+        src: &[(&'a str, busbar_contract::Span)],
+    ) -> Result<&'a [(&'a str, busbar_contract::Span)], busbar_contract::ArenaBudget> {
+        Ok(Box::leak(src.to_vec().into_boxed_slice()))
+    }
+
     fn remaining(&self) -> usize {
         usize::MAX
     }

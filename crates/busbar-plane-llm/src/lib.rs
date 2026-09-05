@@ -30,7 +30,6 @@ pub mod claims;
 pub mod codec;
 pub mod dialect;
 pub mod meta;
-pub mod spans;
 
 use busbar_contract::ids::LaneId;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};

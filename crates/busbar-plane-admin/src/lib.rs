@@ -47,7 +47,6 @@ pub mod codec;
 pub mod generated;
 pub mod meta;
 pub mod refusal;
-pub mod scan;
 #[cfg(test)]
 mod tests;
 pub mod verbs;

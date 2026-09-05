@@ -13,7 +13,7 @@
 
 #![allow(dead_code)]
 
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Labels, SlabBytes};
+use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Labels, SlabBytes, Span};
 use busbar_contract::ids::{PrincipalId, SessionId};
 use busbar_contract::plugin::KernelSeal;
 use busbar_contract::unit::{Clock, ConfigView, Ctx, SessionView, TransportView};
@@ -83,6 +83,21 @@ impl Arena for TestArena {
         self.used.fetch_add(src.len(), Ordering::Relaxed);
         let leaked: &'static str = Box::leak(src.to_string().into_boxed_str());
         Ok(leaked)
+    }
+
+    fn alloc_spans<'a>(
+        &'a self,
+        src: &[(&'a str, Span)],
+    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+        let wanted = std::mem::size_of_val(src);
+        let remaining = self
+            .ceiling
+            .saturating_sub(self.used.load(Ordering::Relaxed));
+        if wanted > remaining {
+            return Err(ArenaBudget { wanted, remaining });
+        }
+        self.used.fetch_add(wanted, Ordering::Relaxed);
+        Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
 
     fn remaining(&self) -> usize {

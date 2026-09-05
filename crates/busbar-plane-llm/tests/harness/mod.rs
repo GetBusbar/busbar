@@ -13,7 +13,7 @@
 #![allow(dead_code)]
 
 use busbar_contract::bounded::SlabBytes;
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels};
+use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels, Span};
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::ids::{LaneId, OpClassId, StreamId};
 use busbar_contract::plugin::KernelSeal;
@@ -36,6 +36,13 @@ impl Arena for LeakArena {
 
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
         Ok(Box::leak(src.to_string().into_boxed_str()))
+    }
+
+    fn alloc_spans<'a>(
+        &'a self,
+        src: &[(&'a str, Span)],
+    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+        Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
 
     fn remaining(&self) -> usize {

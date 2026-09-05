@@ -128,6 +128,46 @@ impl Envelope {
     }
 }
 
+/// Every pointer this plane declares over a REQUEST body, in one table.
+///
+/// The table is what the unit's span view is built from: the plane resolves these once, at the one
+/// step entitled to read the bytes, and the loop reads the spans off the draft rather than scanning
+/// the body again. A pointer named here that the body does not carry is simply absent from the
+/// view, which is how "not sent" stays distinguishable from "sent empty".
+pub const REQUEST_PTRS: &[&str] = &[PTR_VERSION, PTR_METHOD, PTR_ID, PTR_PARAMS, PTR_PARAMS_ID];
+
+/// Every pointer this plane declares over a RESPONSE body, in one table.
+pub const RESPONSE_PTRS: &[&str] = &[
+    PTR_ID,
+    PTR_RESULT,
+    PTR_ERROR,
+    PTR_ERROR_CODE,
+    PTR_RESULT_STATE,
+    PTR_RESULT_ID,
+    PTR_RESULT_CONTEXT_ID,
+    PTR_RESULT_FINAL,
+    PTR_RESULT_KIND,
+    PTR_TASK_ID,
+];
+
+/// Where an answer reports the task's state.
+pub const PTR_RESULT_STATE: &str = "/result/status/state";
+
+/// Where an answer names the task it is about.
+pub const PTR_RESULT_ID: &str = "/result/id";
+
+/// Where an answer names the conversation the task belongs to.
+pub const PTR_RESULT_CONTEXT_ID: &str = "/result/contextId";
+
+/// Where a streamed answer says it is the last one.
+pub const PTR_RESULT_FINAL: &str = "/result/final";
+
+/// Where a streamed answer says what kind of event it is.
+pub const PTR_RESULT_KIND: &str = "/result/kind";
+
+/// Where an agent's own pushed event names its task.
+pub const PTR_TASK_ID: &str = "/taskId";
+
 /// Read one envelope out of a request body.
 ///
 /// # Errors
@@ -135,8 +175,10 @@ impl Envelope {
 /// wrong one, no method member or a method that is not a string, or an identifier that is present
 /// and is neither a string nor a number.
 pub fn read(body: &[u8]) -> Result<Envelope, Decode> {
-    let found = crate::spans::resolve(body, &[PTR_VERSION, PTR_METHOD, PTR_ID, PTR_PARAMS]);
-    let at = |ptr: &str| found.iter().find(|(p, _)| *p == ptr).map(|(_, s)| *s);
+    let at = |ptr: &str| match busbar_contract::spans::resolve_pointer(body, ptr) {
+        busbar_contract::spans::Resolved::Found(span) => Some(span),
+        _ => None,
+    };
 
     // The version member, exactly. A different value is a different protocol, not a variation.
     let version = at(PTR_VERSION).ok_or(Decode::MissingDeclaredFact)?;

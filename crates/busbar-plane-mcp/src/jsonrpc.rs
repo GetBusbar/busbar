@@ -166,6 +166,45 @@ impl Envelope {
     }
 }
 
+/// Every pointer this plane declares over a REQUEST body, in one table.
+///
+/// The table is what the unit's span view is built from: the plane resolves these once, at the one
+/// step entitled to read the bytes, and the loop reads the spans off the draft rather than scanning
+/// the body again. A pointer named here that the body does not carry is simply absent from the
+/// view, which is how "not sent" stays distinguishable from "sent empty".
+pub const REQUEST_PTRS: &[&str] = &[
+    PTR_VERSION,
+    PTR_METHOD,
+    PTR_ID,
+    PTR_PARAMS,
+    PTR_PARAMS_NAME,
+    PTR_PARAMS_URI,
+    PTR_PARAMS_TASK_ID,
+    PTR_PARAMS_META,
+];
+
+/// Every pointer this plane declares over a RESPONSE body, in one table.
+pub const RESPONSE_PTRS: &[&str] = &[
+    PTR_ID,
+    PTR_RESULT,
+    PTR_RESULT_TYPE,
+    PTR_IS_ERROR,
+    PTR_ERROR,
+    PTR_ERROR_CODE,
+];
+
+/// Where a request's subject is, for the methods whose subject is a name.
+pub const PTR_PARAMS_NAME: &str = "/params/name";
+
+/// Where a request's subject is, for the methods whose subject is a resource.
+pub const PTR_PARAMS_URI: &str = "/params/uri";
+
+/// Where a request's subject is, for the methods whose subject is a task.
+pub const PTR_PARAMS_TASK_ID: &str = "/params/taskId";
+
+/// The caller's own metadata block.
+pub const PTR_PARAMS_META: &str = "/params/_meta";
+
 /// Read one envelope out of a request body.
 ///
 /// # Errors
@@ -173,8 +212,10 @@ impl Envelope {
 /// wrong one, no method member or a method that is not a string, or an identifier that is present
 /// and is neither a string nor a number.
 pub fn read(body: &[u8]) -> Result<Envelope, Decode> {
-    let found = crate::spans::resolve(body, &[PTR_VERSION, PTR_METHOD, PTR_ID, PTR_PARAMS]);
-    let at = |ptr: &str| found.iter().find(|(p, _)| *p == ptr).map(|(_, s)| *s);
+    let at = |ptr: &str| match busbar_contract::spans::resolve_pointer(body, ptr) {
+        busbar_contract::spans::Resolved::Found(span) => Some(span),
+        _ => None,
+    };
 
     let version = at(PTR_VERSION).ok_or(Decode::MissingDeclaredFact)?;
     if body.get(version.start..version.end) != Some(b"\"2.0\"".as_slice()) {

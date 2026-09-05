@@ -527,6 +527,21 @@ fn dialect_from_name(name: &str) -> Option<Dialect> {
     }
 }
 
+/// Every body pointer this plane declares: none.
+///
+/// This plane's frames are decoded by the codec rather than located by pointer — a duplex event
+/// carries its own shape, and the quantities are counted as audio moves rather than pointed at in
+/// a document. The span table is still built by the one scanner from this declaration, so
+/// "declares nothing" is something the loop can read instead of a table nobody filled in.
+const BODY_PTRS: &[&str] = &[];
+
+/// The span view of a body, built from the pointers this plane declares.
+fn view<'u>(body: &'u [u8], ctx: &Ctx<'u>) -> Result<Ir<'u>, Decode> {
+    let spans = busbar_contract::spans::resolve(body, BODY_PTRS, ctx.arena())
+        .map_err(|_| Decode::Oversize)?;
+    Ok(Ir::new(body, spans))
+}
+
 /// Decode a one-shot (`http`) transcribe/tts request: no session, a single `OneShot` unit.
 fn decode_one_shot<'u>(frames: &mut FrameCursor<'u>, ctx: &Ctx<'u>) -> Result<Ingress<'u>, Decode> {
     let path = ctx
@@ -547,7 +562,7 @@ fn decode_one_shot<'u>(frames: &mut FrameCursor<'u>, ctx: &Ctx<'u>) -> Result<In
         .map_err(|_| Decode::Oversize)?;
     Ok(Ingress::OneShot(UnitDraft {
         op,
-        body_ir: Ir::new(body, &[]),
+        body_ir: view(body, ctx)?,
         correlates: None,
         correlation_out: None,
         facts,
@@ -614,12 +629,7 @@ fn decode_twilio_frame<'u>(
                 .arena()
                 .alloc_bytes(&payload)
                 .map_err(|_| Decode::Oversize)?;
-            Ok(open_or_relay(
-                state,
-                Dialect::TwilioMediaStreams,
-                arena_bytes,
-                None,
-            ))
+            open_or_relay(state, Dialect::TwilioMediaStreams, arena_bytes, None, ctx)
         }
         twilio::TwilioEvent::Mark { .. } => Ok(Ingress::Discard {
             reason: DiscardCode::Unsupported,
@@ -663,7 +673,7 @@ fn ingress_from_client_event<'u>(
         }) => (ArenaBytes::new(&[]), Some(*audio_played_ms)),
         IrClientEvent::Control(_) | IrClientEvent::Tool(_) => (ArenaBytes::new(&[]), None),
     };
-    Ok(open_or_relay(state, dialect, relay, interrupt_ms))
+    open_or_relay(state, dialect, relay, interrupt_ms, ctx)
 }
 
 /// Open a fresh turn (this is its first frame) or relay onto the one already open, attaching the
@@ -673,7 +683,8 @@ fn open_or_relay<'u>(
     dialect: Dialect,
     relay: ArenaBytes<'u>,
     interrupt_ms: Option<u64>,
-) -> Ingress<'u> {
+    ctx: &Ctx<'u>,
+) -> Result<Ingress<'u>, Decode> {
     let mut facts = Facts::new();
     if let Some(ms) = interrupt_ms {
         let _ = facts.set(
@@ -684,20 +695,20 @@ fn open_or_relay<'u>(
     if !state.turn_open {
         let correlation = state.open_turn();
         let _ = facts.set(meta::FACT_DIALECT, FactValue::Str(dialect.name()));
-        let ir = Ir::new(relay.as_slice(), &[]);
-        Ingress::Open(UnitDraft {
+        let ir = view(relay.as_slice(), ctx)?;
+        Ok(Ingress::Open(UnitDraft {
             op: OpClassId::new("duplex_turn"),
             body_ir: ir,
             correlates: None,
             correlation_out: Some(correlation),
             facts,
-        })
+        }))
     } else {
-        Ingress::Frame {
+        Ok(Ingress::Frame {
             for_: state.turn_correlation,
             relay,
             facts,
-        }
+        })
     }
 }
 
@@ -730,7 +741,7 @@ fn progress_from_server_event<'u>(
                 .map_err(|_| Decode::Oversize)?;
             Ok(Progress::OneShot(UnitDraft {
                 op: OpClassId::new("tool_call"),
-                body_ir: Ir::new(&[], &[]),
+                body_ir: Ir::empty(),
                 correlates: None,
                 // The call identifier travels as itself. It is a string on the wire and it is a
                 // string here, allocated in the unit's own arena — a fold into sixty four bits
@@ -745,7 +756,7 @@ fn progress_from_server_event<'u>(
         IrServerEvent::Tool(_) => Ok(Progress::Frame {
             for_,
             r: Response {
-                ir: Ir::new(&[], &[]),
+                ir: Ir::empty(),
                 finish: FinishClass::Partial,
                 facts: Facts::new(),
             },
@@ -762,7 +773,7 @@ fn progress_from_server_event<'u>(
             Ok(Progress::Frame {
                 for_,
                 r: Response {
-                    ir: Ir::new(&[], &[]),
+                    ir: Ir::empty(),
                     finish: FinishClass::Partial,
                     facts,
                 },
@@ -772,7 +783,7 @@ fn progress_from_server_event<'u>(
             Ok(Progress::Frame {
                 for_,
                 r: Response {
-                    ir: Ir::new(&[], &[]),
+                    ir: Ir::empty(),
                     finish: FinishClass::Partial,
                     facts: Facts::new(),
                 },
@@ -804,7 +815,7 @@ fn progress_from_server_event<'u>(
             Ok(Progress::Frame {
                 for_,
                 r: Response {
-                    ir: Ir::new(bytes.as_slice(), &[]),
+                    ir: view(bytes.as_slice(), ctx)?,
                     finish: FinishClass::Partial,
                     facts,
                 },
@@ -847,7 +858,7 @@ fn progress_from_server_event<'u>(
             Ok(Progress::Terminal {
                 for_,
                 r: Response {
-                    ir: Ir::new(&[], &[]),
+                    ir: Ir::empty(),
                     finish: FinishClass::TurnComplete,
                     facts,
                 },
@@ -870,7 +881,7 @@ fn progress_from_server_event<'u>(
             Ok(Progress::Terminal {
                 for_,
                 r: Response {
-                    ir: Ir::new(&[], &[]),
+                    ir: Ir::empty(),
                     finish: FinishClass::Error,
                     facts,
                 },

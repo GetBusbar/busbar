@@ -5,7 +5,9 @@
 //! asks for. The interesting reading is in the codec crate; the interesting decisions are in the
 //! units. What is here is the wiring, and it is meant to stay boring enough to check by eye.
 
-use busbar_contract::bounded::{ArenaBytes, BoundedVec, FactValue, Facts, Ir, Span};
+use busbar_contract::bounded::{
+    ArenaBytes, BoundedVec, FactValue, Facts, Ir, Span, MAX_RESPONSE_PTRS,
+};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::grammar::{ArrivalLocation, Location};
 use busbar_contract::ids::{AdminVerbId, MeterClassId, OpClassId, SchemeAlt, SchemeKey};
@@ -278,6 +280,51 @@ fn decode_state(st: Option<&mut PlaneSessionState>) -> StreamDecodeState {
         .unwrap_or_default()
 }
 
+/// The span view of a REQUEST body, built from the pointers this dialect declares.
+///
+/// The conversation itself and every place the dialect accepts the client's response ceiling,
+/// resolved once by the contract's own span grammar and copied into the unit's arena. The plane
+/// used to hand the loop an empty table because nothing on the arena could allocate one, so the
+/// kernel re-walked bytes this step had already walked.
+fn request_view<'u>(d: &Dialect, body: &'u [u8], ctx: &Ctx<'u>) -> Result<Ir<'u>, Decode> {
+    let mut ptrs = [d.input_pointer; 1 + MAX_RESPONSE_PTRS];
+    let mut len = 1;
+    for ptr in d.max_response_pointers.iter().take(MAX_RESPONSE_PTRS) {
+        ptrs[len] = ptr;
+        len += 1;
+    }
+    view(body, &ptrs[..len], ctx)
+}
+
+/// The span view of a RESPONSE body, built from the quantity pointers this dialect declares.
+///
+/// The two quantities every dialect reports and the two only some do. A frame that is not a
+/// document of this shape — an event frame, the end-of-stream marker — resolves none of them, and
+/// an unresolved pointer is absent from the table rather than present and empty.
+fn response_view<'u>(d: &Dialect, body: &'u [u8], ctx: &Ctx<'u>) -> Result<Ir<'u>, Decode> {
+    let mut ptrs = [d.tokens_in_pointer; 4];
+    let mut len = 1;
+    for ptr in [
+        Some(d.tokens_out_pointer),
+        d.cache_read_pointer,
+        d.cache_write_pointer,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        ptrs[len] = ptr;
+        len += 1;
+    }
+    view(body, &ptrs[..len], ctx)
+}
+
+/// One scan of one closed grammar, into the unit's own arena.
+fn view<'u>(body: &'u [u8], pointers: &[&'u str], ctx: &Ctx<'u>) -> Result<Ir<'u>, Decode> {
+    let spans = busbar_contract::spans::resolve(body, pointers, ctx.arena())
+        .map_err(|_| Decode::Oversize)?;
+    Ok(Ir::new(body, spans))
+}
+
 impl Plane for LlmPlane {
     fn decode_ingress<'u>(
         &self,
@@ -335,11 +382,7 @@ impl Plane for LlmPlane {
 
         Ok(Ingress::OneShot(UnitDraft {
             op: op_class_for(path),
-            // The span table is empty on purpose: the arena hands out bytes and strings, and there
-            // is no way through it to allocate a table of resolved pointers. The kernel's own
-            // scanner resolves the locations the admission step names, which is where the design
-            // says the authoritative resolution happens anyway.
-            body_ir: Ir::new(body.as_slice(), &[]),
+            body_ir: request_view(d, body.as_slice(), ctx)?,
             correlates: None,
             correlation_out: None,
             facts,
@@ -478,7 +521,7 @@ impl Plane for LlmPlane {
                 return Ok(Progress::Terminal {
                     for_: None,
                     r: Response {
-                        ir: Ir::new(body.as_slice(), &[]),
+                        ir: response_view(egress, body.as_slice(), ctx)?,
                         finish: FinishClass::Complete,
                         facts,
                     },
@@ -504,7 +547,7 @@ impl Plane for LlmPlane {
                 })
                 .unwrap_or(FinishClass::Partial);
             let r = Response {
-                ir: Ir::new(body.as_slice(), &[]),
+                ir: response_view(egress, body.as_slice(), ctx)?,
                 finish,
                 facts,
             };
@@ -525,7 +568,7 @@ impl Plane for LlmPlane {
         Ok(Progress::Terminal {
             for_: None,
             r: Response {
-                ir: Ir::new(body.as_slice(), &[]),
+                ir: response_view(egress, body.as_slice(), ctx)?,
                 finish: finish_of(response.stop_reason),
                 facts,
             },
@@ -700,9 +743,13 @@ impl Plane for LlmPlane {
         // Which bytes are the priced input: the conversation the client sent, not the controls
         // around it. A dialect whose container the scanner does not reach prices the whole body,
         // which is the conservative reading.
-        let input_span = crate::spans::resolve(body, &[d.input_pointer])
-            .first()
-            .map(|(_, s)| *s)
+        // Read off the table the decode step resolved, never scanned a second time here: the
+        // whole point of the unit carrying its spans is that the answer is already in it.
+        let input_span = u
+            .body()
+            .pointers()
+            .find(|(ptr, _)| *ptr == d.input_pointer)
+            .map(|(_, span)| span)
             .unwrap_or(Span {
                 start: 0,
                 end: body.len(),

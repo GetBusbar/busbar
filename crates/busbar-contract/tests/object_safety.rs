@@ -9,7 +9,7 @@
 //! no-default-bodies rule the same way a reviewer would: the fixture below names every method,
 //! because leaving one out does not compile.
 
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels};
+use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels, Span};
 use busbar_contract::dest::{
     AuthDecoration, DestinationFacts, EgressBody, RoutePlan, TransportKeyHandle,
     VerifiedDestination,
@@ -74,6 +74,16 @@ impl Arena for NoArena {
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
         Err(ArenaBudget {
             wanted: src.len(),
+            remaining: 0,
+        })
+    }
+
+    fn alloc_spans<'a>(
+        &'a self,
+        src: &[(&'a str, Span)],
+    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+        Err(ArenaBudget {
+            wanted: std::mem::size_of_val(src),
             remaining: 0,
         })
     }
