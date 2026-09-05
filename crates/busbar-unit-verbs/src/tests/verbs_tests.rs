@@ -743,7 +743,10 @@ fn a_create_that_arrives_while_the_first_is_in_flight_is_refused_not_minted() {
     );
 
     let first = first.expect("the first call succeeds once it is let go");
-    assert!(first.minted_outcome().is_some(), "exactly one key was minted");
+    assert!(
+        first.minted_outcome().is_some(),
+        "exactly one key was minted"
+    );
     assert_eq!(
         mints.load(Ordering::SeqCst),
         1,
@@ -778,7 +781,9 @@ fn a_rotate_that_arrives_while_the_first_is_in_flight_is_refused() {
             )
         });
 
-        entered_rx.recv().expect("the first call reached the rotate");
+        entered_rx
+            .recv()
+            .expect("the first call reached the rotate");
         let admin = admin();
         let retry = verbs.rotate_key(
             &admin,
@@ -814,7 +819,16 @@ fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
     // Mint: the group plan is fine, the store underneath is not.
     let verbs = make_verbs(FakeGovernance::new().failing_with(GovernanceError::Store));
     let err = verbs
-        .create_key(&admin, "alice", VerbScope::Full, 0, UnitKey::new(1), None, None, None)
+        .create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            UnitKey::new(1),
+            None,
+            None,
+            None,
+        )
         .unwrap_err();
     assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
     assert_eq!(err.step, crate::refusal::RefusalStep::Verify);
@@ -846,7 +860,15 @@ fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
             .failing_with(GovernanceError::Store),
     );
     let err = verbs
-        .rotate_key(&admin, "alice", VerbScope::Full, 0, UnitKey::new(1), None, "k1")
+        .rotate_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            UnitKey::new(1),
+            None,
+            "k1",
+        )
         .unwrap_err();
     assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
 
@@ -930,8 +952,14 @@ fn a_store_failure_mid_mint_clears_the_reservation_rather_than_committing_it() {
 fn the_other_governance_errors_keep_their_own_reasons() {
     let admin = admin();
     for (error, expected) in [
-        (GovernanceError::NotFound, crate::refusal::ReasonCode::NotFound),
-        (GovernanceError::Conflict, crate::refusal::ReasonCode::Conflict),
+        (
+            GovernanceError::NotFound,
+            crate::refusal::ReasonCode::NotFound,
+        ),
+        (
+            GovernanceError::Conflict,
+            crate::refusal::ReasonCode::Conflict,
+        ),
         (
             GovernanceError::Validation,
             crate::refusal::ReasonCode::Validation,
@@ -939,7 +967,16 @@ fn the_other_governance_errors_keep_their_own_reasons() {
     ] {
         let verbs = make_verbs(FakeGovernance::new().failing_with(error));
         let err = verbs
-            .create_key(&admin, "alice", VerbScope::Full, 0, UnitKey::new(1), None, None, None)
+            .create_key(
+                &admin,
+                "alice",
+                VerbScope::Full,
+                0,
+                UnitKey::new(1),
+                None,
+                None,
+                None,
+            )
             .unwrap_err();
         assert_eq!(err.reason, expected);
     }

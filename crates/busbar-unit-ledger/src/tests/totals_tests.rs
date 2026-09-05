@@ -34,7 +34,11 @@ fn retiring_below_a_watermark_drops_exactly_the_windows_beneath_it() {
         "a retired window reads as zeros, the same as a window never touched"
     );
     assert_eq!(book.get(&key("b"), 20).settled, 0);
-    assert_eq!(book.get(&key("b"), 30).settled, 30, "the watermark survives");
+    assert_eq!(
+        book.get(&key("b"), 30).settled,
+        30,
+        "the watermark survives"
+    );
     assert_eq!(book.get(&pool_key("b", "west"), 40).settled, 80);
 }
 

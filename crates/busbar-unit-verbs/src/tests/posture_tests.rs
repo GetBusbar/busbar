@@ -139,7 +139,10 @@ fn set_dual_control_required_needs_at_least_two_admin_principals() {
     // its call site returns.
     let err = check_set_dual_control_required(1).unwrap_err();
     assert_eq!(err.reason, ReasonCode::InsufficientApprovers);
-    assert_eq!(check_set_dual_control_required(0).unwrap_err().reason, ReasonCode::InsufficientApprovers);
+    assert_eq!(
+        check_set_dual_control_required(0).unwrap_err().reason,
+        ReasonCode::InsufficientApprovers
+    );
     assert!(check_set_dual_control_required(2).is_ok());
 }
 

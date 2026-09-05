@@ -779,7 +779,8 @@ fn a_refund_reaches_the_cell_a_straddling_charge_reached() {
     assert_eq!(rolled.billable_requests, 1);
 
     // Our request arrived just before the boundary; its charge lands IN PLACE on the rolled cell.
-    d.try_admit(&p, &c, "", earlier).expect("the straddler admits");
+    d.try_admit(&p, &c, "", earlier)
+        .expect("the straddler admits");
     assert_eq!(
         d.cells().snapshot(bucket).expect("cell").billable_requests,
         2,

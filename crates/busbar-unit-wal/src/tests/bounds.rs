@@ -92,4 +92,3 @@ fn a_bounded_idempotence_check_still_suppresses_a_re_offer_from_a_rolled_segment
     assert_eq!(again.already_present, 4);
     assert!(wal.holds(1, 1), "the log still says it holds the identity");
 }
-

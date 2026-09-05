@@ -67,7 +67,8 @@ fn the_rotation_order_is_byte_identical_across_the_restructure() {
     let other: Vec<DestinationId> = (0..3)
         .filter_map(|_| floor.take_turn("q", &members))
         .collect();
-    let expected_other: Vec<DestinationId> = [0, 1, 0].into_iter().map(DestinationId::new).collect();
+    let expected_other: Vec<DestinationId> =
+        [0, 1, 0].into_iter().map(DestinationId::new).collect();
     assert_eq!(other, expected_other);
 }
 
