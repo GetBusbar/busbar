@@ -1078,6 +1078,37 @@ impl busbar_substrate::plane_host::AdmissionHost for EngineHostImpl {
         )
     }
 
+    fn admission_check(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
+        charged_at: u64,
+    ) -> Result<
+        (
+            Option<busbar_substrate::plane_host::AdmitHandle>,
+            Option<String>,
+        ),
+        Box<axum::response::Response>,
+    > {
+        // The door's own body, minus the `finish_rejected` the door wraps its refusing arm in: same
+        // buckets, same charge, same downgrade, same bytes. The grant is wrapped in the opaque
+        // handle exactly as `admission_door` wraps it, so the two seams differ in nothing but which
+        // side of them posts the refusal.
+        crate::ingress::admit_check(&self.app, gov, proto, pool, charged_at).map(
+            |(admit, downgraded)| {
+                (
+                    admit.map(|a| {
+                        busbar_substrate::plane_host::AdmitHandle(
+                            Arc::new(a) as Arc<dyn std::any::Any + Send + Sync>
+                        )
+                    }),
+                    downgraded,
+                )
+            },
+        )
+    }
+
     fn finish_admitted(
         &self,
         gov: &busbar_api::PlaneRequestCtx,

@@ -15,6 +15,16 @@
 //! the key's budget chain, in the window the pinned arrival epoch names) and `meter_series` (the
 //! raw per-model consumption row). This step calls them once, in that order, exactly as today.
 //!
+//! # One posting per unit, and which side of the walk makes it
+//!
+//! Those taps are inside the walk, and they have to be: a streamed answer's usage is known at
+//! stream end and nowhere earlier, which is after the Route step returned, after this step ran and
+//! after the Audit step gave the client its bytes. So for a unit that reached the walk holding the
+//! admission's meter half, the walk's tap IS this step's body — the same function, the same four
+//! arguments — and what this step does is SEAL what was posted rather than post it a second time.
+//! [`MeterFacts::accrued`] is Route saying which of the two happened, and it is the only thing
+//! standing between one accrual and two.
+//!
 //! # Where the money is
 //!
 //! **The fee basis is the client-facing status, decided once.** The flat per-request fee posts on a
@@ -60,6 +70,43 @@ use busbar_caps::{
 use busbar_contract::ClassDirection;
 use busbar_substrate::plane_host::EngineHost;
 
+/// WHAT THE ROUTE STEP OBSERVED — the facts this step is bound to, as the step before it hands
+/// them over.
+///
+/// This is the value that was missing: `Routed` used to carry a response and nothing else, so no
+/// expression a driver could write produced a [`MeterCtx`] from what Route returned. Every field
+/// here is read off the walk that actually ran.
+///
+/// [`MeterFacts::accrued`] is the load-bearing one, and it says where this unit's ONE posting is
+/// made. The walk is handed the admission's meter half and its taps — the buffered tap and the
+/// stream-end tap — are the only places a streamed answer's usage becomes known at all; a stream is
+/// still flowing when Route returns and when this step runs, so no shape of this type could carry
+/// its figures forward. So the walk's tap IS this step's body for a unit that reached it, and this
+/// step's job on that unit is to SEAL what was posted rather than to post it again. Where the walk
+/// held no sink there is nothing to seal and this step is the posting.
+// Built by the Route step and read by the chain that drives the two together; both are dark until
+// the composition root installs these steps, which is what this allow covers and what retires it.
+#[allow(dead_code)]
+pub(crate) struct MeterFacts {
+    /// The serving lane, as an index into the engine's lane table — the lane that actually answered
+    /// after any failover. `None` where the walk owns the accrual, because the lane that answers is
+    /// resolved inside the walk at the tap and the walk hands back a response, not a lane.
+    pub(crate) lane: Option<usize>,
+    /// The usage the dialect's reader found. `None` for the same reason, and additionally for a
+    /// stream, whose terminal usage frame has not arrived when this step runs.
+    pub(crate) usage: Option<busbar_substrate::billing::TokenUsage>,
+    /// The status the CLIENT saw — the fee basis, decided at the frame that carried it.
+    pub(crate) status: u16,
+    /// The terminal-error/abort fact the stream taps read off the translator.
+    pub(crate) billing_failed: bool,
+    /// Whether the unit reached an upstream at all, which is what makes it a fee-bearing client
+    /// request rather than a turn-away that never dialled.
+    pub(crate) upstream_leg: bool,
+    /// Whether the walk's own taps hold this unit's accrual. When true this step seals; when false
+    /// this step posts.
+    pub(crate) accrued: bool,
+}
+
 /// What the accrual needs that the step shape has nowhere to put.
 ///
 /// Built by the Route step out of what the response actually was, so every figure here is observed
@@ -74,6 +121,7 @@ pub struct MeterCtx<'a> {
     charged: bool,
     upstream_leg: bool,
     billing_failed: bool,
+    accrued: bool,
 }
 
 impl<'a> MeterCtx<'a> {
@@ -108,6 +156,35 @@ impl<'a> MeterCtx<'a> {
             charged,
             upstream_leg,
             billing_failed,
+            // The step is the posting unless something before it says otherwise; `bind` is what
+            // says otherwise.
+            accrued: false,
+        }
+    }
+
+    /// Bind the step to what the ROUTE step observed.
+    ///
+    /// The expression that did not exist: a [`MeterFacts`] plus the two things the facts cannot
+    /// own — the host seam and the borrowed lane the index names — is a context. `charged` is still
+    /// the admit step's, because whether the admission charge landed is not a fact about the walk.
+    #[allow(dead_code)]
+    pub(crate) fn bind(
+        host: &'a Arc<dyn EngineHost>,
+        sink: Option<&'a crate::engine::UsageSink>,
+        lane: Option<&'a crate::engine::Lane>,
+        facts: &'a MeterFacts,
+        charged: bool,
+    ) -> Self {
+        MeterCtx {
+            host,
+            sink,
+            lane,
+            usage: facts.usage.as_ref(),
+            status: facts.status,
+            charged,
+            upstream_leg: facts.upstream_leg,
+            billing_failed: facts.billing_failed,
+            accrued: facts.accrued,
         }
     }
 
@@ -187,13 +264,21 @@ pub fn meter(
     // THE LIVE ACCRUAL, unchanged: the tier split onto the key's budget chain in the pinned
     // window, then the raw per-model series row. Both through the one seam the stream-end tap,
     // its drop-time partial and the buffered tap already call.
+    //
+    // ONE POSTING PER UNIT. Where the Route step handed the admission's meter half to the walk, the
+    // walk's own tap already made this call with these arguments — it is where a streamed answer's
+    // usage becomes known — and making it again here would post the same tokens twice. So this step
+    // SEALS that unit: it reports the same row and the same figures, and it does not accrue them a
+    // second time. Where the walk held no sink, this step is the accrual and makes the call itself.
     let mut row = None;
     if bills {
         if let (Some(sink), Some(lane)) = (ctx.sink, ctx.lane) {
-            let tier = reported
-                .map(crate::engine::usage::tier_usage)
-                .unwrap_or_default();
-            crate::engine::usage::ledger_and_meter(ctx.host, sink, lane, reported, &tier);
+            if !ctx.accrued {
+                let tier = reported
+                    .map(crate::engine::usage::tier_usage)
+                    .unwrap_or_default();
+                crate::engine::usage::ledger_and_meter(ctx.host, sink, lane, reported, &tier);
+            }
             row = Some(metering_row(sink, lane, reported));
         }
     }

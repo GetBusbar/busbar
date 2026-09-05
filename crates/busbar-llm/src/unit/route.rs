@@ -11,7 +11,7 @@
 //!    single bare lane, or to nothing at all. Nothing-at-all is a REFUSAL, and — because the door
 //!    has already run and the caller has already been charged — it is a refusal the Audit step must
 //!    post with the pool label and the charge flag, not one that can be quietly turned away. This
-//!    step therefore hands it back as [`Routed::Refused`] and calls no terminal door itself.
+//!    step therefore refuses in its own [`Routed::decision`] and calls no terminal door itself.
 //! 2. **The affinity header and the forwardable client headers**, read off the arrival's headers.
 //! 3. **The correlation id, stamped exactly once**, and only on a unit that reaches this step. It is
 //!    the join key between the routing messages emitted before the response and the completion tap
@@ -30,9 +30,15 @@
 //!
 //! It does not open or close a hold, it does not meter, and it never returns a finished response.
 //! The two terminal doors live in the Audit step and are reached from there and from nowhere else —
-//! including on the candidate-miss path above, which is why that path returns a variant rather than
-//! a `Response`. It also does not select: `pick_among` is the one selection site and the engine's
-//! walk owns it, so a second ordering policy cannot grow beside the first by growing here.
+//! including on the candidate-miss path above, which is why that path answers with a refusing
+//! decision rather than with a posted `Response`. It also does not select: `pick_among` is the one
+//! selection site and the engine's walk owns it, so a second ordering policy cannot grow beside the
+//! first by growing here.
+//!
+//! It does not meter, and that is now a claim with a mechanism behind it rather than a promise: the
+//! walk it calls is handed the admission's meter half and ITS taps accrue, which is where a streamed
+//! answer's usage becomes known at all. What this step does is report that — [`MeterFacts`] — so the
+//! Meter step seals what the tap posted instead of posting a second copy of it.
 //!
 //! ## The bodies are today's functions
 //!
@@ -55,8 +61,12 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use serde_json::Value;
 
+use busbar_caps::{step::Route, Decision, LaneId, ReasonCode, Refusal, RoutePlan, UnitToken};
+use busbar_contract::{DestinationFacts, Leg, Registration, UpstreamAddress};
 use busbar_substrate::observability::HOTPATH_LEVEL;
 use busbar_substrate::plane_host::EngineHost;
+
+use crate::unit::meter::MeterFacts;
 
 use crate::engine::{
     capture_stage_shape, fire_stage_taps, forwardable_client_header_names, EngineTables,
@@ -93,22 +103,48 @@ pub(crate) struct RouteInput<'a> {
     pub(crate) usage_sink: Option<UsageSink>,
     /// A dialect's pre-shaped candidate-miss body, or `None` for the neutral copy.
     pub(crate) model_not_found_message: Option<&'a str>,
+    /// THE NODE'S INTERNER, held by the composition root and lent for the length of the unit.
+    ///
+    /// A leg names a lane and a dial target, and both are `&'static str` on the contract's side
+    /// while a configured lane's name and base URL are runtime `String`s read out of config. The
+    /// bridge is interning them ONCE — the root's job, and the same one the trust unit crosses to
+    /// seal a verified destination — so the plan this step returns names the deployment's own lanes
+    /// rather than a literal spelled in a source file. Idempotent and bounded by the number of
+    /// configured lanes, so a request path may cross it.
+    pub(crate) lanes: &'a std::sync::Mutex<Registration>,
 }
 
 /// What the Route step produced.
 ///
-/// Both arms carry a response, and neither is finished: the Audit step posts one of them. The split
-/// is which door it posts through — a unit that reached an upstream (or the pool's own exhaustion
-/// answer) is a completed route; a destination that never resolved is a refusal taken AFTER the
-/// door, so it is charged and audited as one.
-pub(crate) enum Routed {
-    /// The walk ran. The response is whatever it produced — a delivered body, a relayed upstream
-    /// error, or the exhaustion disposition's own answer.
-    Completed(Response),
-    /// The destination did not resolve to any lane. Nothing was dispatched; the caller was still
-    /// charged at the door.
-    Refused(Response),
+/// [`Routed::decision`] is exactly what the kernel's `Units::route` returns: proceed with the plan
+/// the walk ran, or refuse where the destination resolved to no lane at all. That refusal is taken
+/// AFTER the door, so the unit was charged and it is audited through the CHARGED terminal like any
+/// other post-door end — the decision says which end it was, and the response is the bytes either
+/// way. Nothing here is finished: the Audit step posts it, as it posts every other unit.
+///
+/// [`Routed::facts`] is the half that did not exist. The Meter step asks for the serving lane, the
+/// reported usage, the client-facing status and the billing-failed fact, and a response carries
+/// none of them; now the step that watched the walk hands them over, along with the one fact that
+/// decides where the unit's single accrual is made.
+pub(crate) struct Routed {
+    /// The sealed step-5 answer.
+    pub(crate) decision: Decision<Route>,
+    /// The bytes the walk produced — a delivered body, a relayed upstream error, the exhaustion
+    /// disposition's own answer, or the candidate-miss refusal. Never posted here.
+    pub(crate) response: Response,
+    /// What the Meter step is bound to.
+    pub(crate) facts: MeterFacts,
+    /// The admission's meter half, handed BACK unspent when this step never reached the walk. A
+    /// walk that ran took it, and its taps own the accrual; a candidate miss never dispatched, so
+    /// the sink returns for the Meter step to decide about.
+    pub(crate) meter_sink: Option<UsageSink>,
 }
+
+// The shape of this step is not pinned as a `fn` alias the way the synchronous steps' are, and the
+// reason is the `async`: an async fn's future is an opaque type with no name, so a type alias for
+// it would have to box the future and would then be pinning the shape of a boxed adapter rather
+// than the shape of the step. The signature is held by the compiler at the one call site instead —
+// the token in, the sealed answer out — which is the same guarantee by a different instrument.
 
 /// The candidate set for one destination: a configured pool's members, or the single lane a bare
 /// model name resolves to, or nothing.
@@ -136,8 +172,47 @@ pub(crate) fn candidates<'a>(
     }
 }
 
+/// The plan a resolved destination names: one leg per candidate lane, in the order the walk takes
+/// them.
+///
+/// A candidate the tables no longer hold is skipped rather than guessed at, and the leg count is
+/// bounded by the contract (`MAX_LEGS`) because a unit is one authorization — a pool wider than the
+/// bound plans the legs it is allowed to plan and the walk still walks every candidate it was
+/// handed, because the walk is driven by the candidate list and not by this value.
+fn plan_over(
+    rt: &Arc<NativeRuntime>,
+    cands: &[WeightedLane],
+    lanes: &std::sync::Mutex<Registration>,
+) -> RoutePlan {
+    let tables = EngineTables::new(rt);
+    let all = tables.lanes();
+    let mut plan = RoutePlan::default();
+    let mut reg = lanes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for c in cands {
+        let Some(lane) = all.get(c.idx) else {
+            continue;
+        };
+        let facts = DestinationFacts::Upstream {
+            // The family that dials an LLM lane. A lane's `protocol` is its DIALECT, which is a
+            // different question from which transport carries it.
+            transport: busbar_substrate::transport::Transport::Http.name(),
+            address: UpstreamAddress::Socket {
+                authority: reg.key(&lane.base_url),
+                sni: None,
+            },
+            lane: LaneId::new(reg.key(&lane.model)),
+        };
+        if plan.legs.push(Leg { destination: facts }).is_err() {
+            break;
+        }
+    }
+    plan
+}
+
 /// The Route step.
-pub(crate) async fn route(input: RouteInput<'_>) -> Routed {
+pub(crate) async fn route(unit_token: &UnitToken<Route>, input: RouteInput<'_>) -> Routed {
     let RouteInput {
         host,
         rt,
@@ -151,17 +226,35 @@ pub(crate) async fn route(input: RouteInput<'_>) -> Routed {
         resolved_gov_key,
         usage_sink,
         model_not_found_message,
+        lanes,
     } = input;
 
     // Candidate resolution. A miss is a post-door refusal, shaped in the caller's own dialect and
-    // handed back for the Audit step to post — this step opens no door and closes none.
+    // handed back for the Audit step to post — this step opens no door and closes none. The meter
+    // half comes back unspent with it: nothing was dispatched, so nothing took it.
     let Some((cands, pool_name)) = candidates(rt, destination) else {
-        return Routed::Refused(busbar_substrate::proxy::ingress_error(
+        let response = busbar_substrate::proxy::ingress_error(
             proto,
             StatusCode::NOT_FOUND,
             KIND_NOT_FOUND,
             &busbar_substrate::ingress::not_found_message(destination, model_not_found_message),
-        ));
+        );
+        return Routed {
+            facts: MeterFacts {
+                // No lane answered and none could: the name resolved to nothing.
+                lane: None,
+                usage: None,
+                status: response.status().as_u16(),
+                billing_failed: false,
+                // Nothing was dialled, so this is not a fee-bearing upstream leg.
+                upstream_leg: false,
+                // The walk never ran, so no tap of its can have accrued anything.
+                accrued: false,
+            },
+            meter_sink: usage_sink,
+            decision: Decision::refuse(unit_token, Refusal::new(ReasonCode::NoDestination)),
+            response,
+        };
     };
 
     // The egress content type is the arrival's own, borrowed — the byte-level codecs need the
@@ -183,6 +276,16 @@ pub(crate) async fn route(input: RouteInput<'_>) -> Routed {
         headers,
         &forwardable_client_header_names(),
     );
+
+    // THE PLAN, named before the walk runs it: one leg per candidate the destination resolved to,
+    // in the order the walk was handed them. The lane and the dial target are the deployment's own
+    // runtime strings, interned once through the node's registration.
+    let plan = plan_over(rt, &cands, lanes);
+
+    // The walk is about to take the meter half, and its taps are where this unit's accrual is made
+    // — see the Meter step's header for why a streamed answer's usage can become known nowhere
+    // else. Recorded here, before the move, because after it there is nothing left to ask.
+    let accrued = usage_sink.is_some();
 
     let span = tracing::span!(
         HOTPATH_LEVEL,
@@ -282,7 +385,31 @@ pub(crate) async fn route(input: RouteInput<'_>) -> Routed {
         .instrument(span)
         .await
     };
-    Routed::Completed(resp)
+    Routed {
+        facts: MeterFacts {
+            // The serving lane and the usage the reader found are resolved INSIDE the walk, at the
+            // tap that accrues them, and the walk hands back a response rather than a lane. For a
+            // streamed answer they do not exist yet at all: the terminal usage frame arrives after
+            // the client has the bytes. Both are the tap's, which is why `accrued` is what this
+            // step reports about them rather than the figures themselves.
+            lane: None,
+            usage: None,
+            // The status the CLIENT saw, which is the fee basis.
+            status: resp.status().as_u16(),
+            // A terminal reader error or an aborted translation is read at stream end, inside the
+            // tap that skips the accrual on it. A unit whose accrual is the tap's carries that fact
+            // there; one whose accrual is not has no stream to fail.
+            billing_failed: false,
+            // The walk resolved candidates and dialled, so this is a fee-bearing client request.
+            upstream_leg: true,
+            accrued,
+        },
+        // The walk took it.
+        meter_sink: None,
+        // The plan the walk ran, sealed as the step's answer.
+        decision: Decision::proceed(unit_token, plan),
+        response: resp,
+    }
 }
 
 /// THE ROUTE-STEP IDENTITY HARNESS: this step against the live path it was lifted from.
@@ -297,8 +424,23 @@ pub(crate) async fn route(input: RouteInput<'_>) -> Routed {
 mod tests {
     use super::*;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+    use busbar_caps::KernelSeal;
     use busbar_substrate::store::{now as store_now, BreakerState};
     use serde_json::json;
+
+    /// THE INTERNER the composition root would lend, standing in for it here — process-wide and
+    /// idempotent, so a second leg over the same deployment leaks nothing further. A per-call one
+    /// would be a leak per request wearing a test's clothes.
+    static LANES: std::sync::LazyLock<std::sync::Mutex<Registration>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Registration::new()));
+
+    /// A kernel seal for the length of one leg, and the step-5 token minted from it — exactly as
+    /// the loop lends it, and dropped when the call it was lent to returns.
+    fn tokens() -> (KernelSeal, UnitToken<Route>) {
+        let seal = KernelSeal::acquire_for_kernel();
+        let token = UnitToken::mint(&seal);
+        (seal, token)
+    }
 
     const INGRESS: [&str; 6] = [
         crate::proto_codec::PROTO_ANTHROPIC,
@@ -534,26 +676,32 @@ mod tests {
         let body = Bytes::from(request_body(proto, "p"));
         let headers = HeaderMap::new();
         let before = host.next_request_id();
-        let routed = route(RouteInput {
-            host: &host,
-            rt: &rt,
-            proto,
-            op: crate::test_support::CHAT,
-            destination: "p",
-            headers: &headers,
-            body: body.clone(),
-            parsed: LazyBody::parse(&body).ok(),
-            caller_token: None,
-            resolved_gov_key: None,
-            usage_sink: None,
-            model_not_found_message: None,
-        })
+        let (seal, token) = tokens();
+        let routed = route(
+            &token,
+            RouteInput {
+                host: &host,
+                rt: &rt,
+                proto,
+                op: crate::test_support::CHAT,
+                destination: "p",
+                headers: &headers,
+                body: body.clone(),
+                parsed: LazyBody::parse(&body).ok(),
+                caller_token: None,
+                resolved_gov_key: None,
+                usage_sink: None,
+                model_not_found_message: None,
+                lanes: &LANES,
+            },
+        )
         .await;
         let drawn = host.next_request_id() - before - 1;
-        let resp = match routed {
-            Routed::Completed(resp) => resp,
-            Routed::Refused(_) => panic!("a resolvable pool must not refuse at Route"),
-        };
+        let resp = routed.response;
+        routed
+            .decision
+            .into_result(&seal)
+            .expect("a resolvable pool must not refuse at Route");
         let observed = observe(resp, &*app.store, &state, drawn).await;
         server.shutdown().await;
         observed
@@ -629,25 +777,31 @@ mod tests {
             for _ in 0..rounds {
                 let body = Bytes::from(request_body(proto, "p"));
                 let resp = if unit_step {
-                    match route(RouteInput {
-                        host: &host,
-                        rt: &rt,
-                        proto,
-                        op: crate::test_support::CHAT,
-                        destination: "p",
-                        headers: &headers,
-                        body: body.clone(),
-                        parsed: LazyBody::parse(&body).ok(),
-                        caller_token: None,
-                        resolved_gov_key: None,
-                        usage_sink: None,
-                        model_not_found_message: None,
-                    })
-                    .await
-                    {
-                        Routed::Completed(resp) => resp,
-                        Routed::Refused(_) => panic!("a resolvable pool must not refuse at Route"),
-                    }
+                    let (seal, token) = tokens();
+                    let routed = route(
+                        &token,
+                        RouteInput {
+                            host: &host,
+                            rt: &rt,
+                            proto,
+                            op: crate::test_support::CHAT,
+                            destination: "p",
+                            headers: &headers,
+                            body: body.clone(),
+                            parsed: LazyBody::parse(&body).ok(),
+                            caller_token: None,
+                            resolved_gov_key: None,
+                            usage_sink: None,
+                            model_not_found_message: None,
+                            lanes: &LANES,
+                        },
+                    )
+                    .await;
+                    routed
+                        .decision
+                        .into_result(&seal)
+                        .expect("a resolvable pool must not refuse at Route");
+                    routed.response
                 } else {
                     let (cands, pool_name) = candidates(&rt, "p").expect("the pool resolves");
                     crate::engine::forward_with_pool_parsed(
@@ -709,30 +863,47 @@ mod tests {
         let body = Bytes::from(request_body(proto, "nope"));
         let headers = HeaderMap::new();
         let before = host.next_request_id();
-        let routed = route(RouteInput {
-            host: &host,
-            rt: &rt,
-            proto,
-            op: crate::test_support::CHAT,
-            destination: "nope",
-            headers: &headers,
-            body: body.clone(),
-            parsed: LazyBody::parse(&body).ok(),
-            caller_token: None,
-            resolved_gov_key: None,
-            usage_sink: None,
-            model_not_found_message: None,
-        })
+        let (seal, token) = tokens();
+        let routed = route(
+            &token,
+            RouteInput {
+                host: &host,
+                rt: &rt,
+                proto,
+                op: crate::test_support::CHAT,
+                destination: "nope",
+                headers: &headers,
+                body: body.clone(),
+                parsed: LazyBody::parse(&body).ok(),
+                caller_token: None,
+                resolved_gov_key: None,
+                usage_sink: None,
+                model_not_found_message: None,
+                lanes: &LANES,
+            },
+        )
         .await;
         assert_eq!(
             host.next_request_id() - before - 1,
             0,
             "a unit that never reaches the walk draws no correlation id"
         );
-        let resp = match routed {
-            Routed::Refused(resp) => resp,
-            Routed::Completed(_) => panic!("an unresolved destination must refuse"),
-        };
+        let resp = routed.response;
+        // The facts a miss hands the Meter step: nothing was dialled, so there is no fee-bearing
+        // leg and no tap of anyone's accrued anything.
+        assert!(!routed.facts.upstream_leg);
+        assert!(!routed.facts.accrued);
+        assert_eq!(routed.facts.status, 404);
+        let refusal = routed
+            .decision
+            .into_result(&seal)
+            .expect_err("an unresolved destination must refuse");
+        assert_eq!(refusal.reason(), busbar_caps::ReasonCode::NoDestination);
+        assert_eq!(
+            refusal.step(),
+            busbar_caps::StepName::Route,
+            "the decision stamps the step, so the record cannot claim it stopped elsewhere"
+        );
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
@@ -815,24 +986,27 @@ mod tests {
             let body = Bytes::from(request_body(proto, destination));
             let headers = HeaderMap::new();
             let resp = if unit_step {
-                match route(RouteInput {
-                    host: &host,
-                    rt: &rt,
-                    proto,
-                    op: crate::test_support::CHAT,
-                    destination,
-                    headers: &headers,
-                    body: body.clone(),
-                    parsed: LazyBody::parse(&body).ok(),
-                    caller_token: None,
-                    resolved_gov_key: None,
-                    usage_sink: None,
-                    model_not_found_message: None,
-                })
+                let (_seal, token) = tokens();
+                route(
+                    &token,
+                    RouteInput {
+                        host: &host,
+                        rt: &rt,
+                        proto,
+                        op: crate::test_support::CHAT,
+                        destination,
+                        headers: &headers,
+                        body: body.clone(),
+                        parsed: LazyBody::parse(&body).ok(),
+                        caller_token: None,
+                        resolved_gov_key: None,
+                        usage_sink: None,
+                        model_not_found_message: None,
+                        lanes: &LANES,
+                    },
+                )
                 .await
-                {
-                    Routed::Completed(resp) | Routed::Refused(resp) => resp,
-                }
+                .response
             } else {
                 match candidates(&rt, destination) {
                     Some((cands, pool_name)) => {

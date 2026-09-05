@@ -20,12 +20,15 @@
 //!
 //! ## Which pool the record says
 //!
-//! A unit that reached routing names the pool the charge landed on, bounded through the host's own
-//! label so an unconfigured model name can never open a new metric series. A unit refused BEFORE
-//! routing has no pool to name — the destination never resolved, or was never read — so it is
-//! recorded against the reserved unresolved label. Both are still counted and still fire the
-//! request-log webhook: a pre-routing turn-away that is invisible to the operator is the failure
-//! mode this rule exists to prevent, and a raw early return is exactly that failure.
+//! Both doors name the destination the same way: through [`EngineHost::pool_label`], the host's own
+//! bound, so an unconfigured model name can never open a new metric series on either path. A unit
+//! that reached routing names the pool the charge landed on. A unit refused before routing names
+//! whatever destination it had got as far as reading — a CONFIGURED pool it was not permitted to
+//! reach is recorded under that pool's name, exactly as the live pre-admission guard records it —
+//! and a unit refused before any destination was read names the reserved unresolved label, which
+//! the same bound maps to itself. Both are still counted and still fire the request-log webhook: a
+//! pre-routing turn-away that is invisible to the operator is the failure mode this rule exists to
+//! prevent, and a raw early return is exactly that failure.
 //!
 //! ## Why the doors live here and nowhere else
 //!
@@ -57,9 +60,9 @@ use std::time::Instant;
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
 
+use busbar_caps::{step::Audit, AuditFacts, Decision, OpClassId, UnitToken};
+use busbar_contract::FinishClass;
 use busbar_substrate::plane_host::EngineHost;
-
-use crate::engine::POOL_LABEL_UNRESOLVED;
 
 /// A REFUSAL AS A VALUE — what an earlier step answers with instead of bytes.
 ///
@@ -148,49 +151,131 @@ pub(crate) fn render_refusal(proto: &str, refusal: &RefusalOutcome) -> Response 
     resp
 }
 
+/// What the terminal needs that the step shape has nowhere to put.
+///
+/// The same evidence the two doors always took — who was calling, on what wire, as what operation
+/// class, to what destination, since when, and in which charge window — gathered into one value so
+/// the step itself can be what every other step is: a token in, a decision out. The destination is
+/// the only field either door reads differently, and it does not: both bound it through
+/// [`EngineHost::pool_label`], so an unconfigured name can never open a metric series on either
+/// path, and a CONFIGURED one is recorded under its own name on both.
+pub(crate) struct AuditCtx<'a> {
+    /// The neutral host seam the terminal is reached through.
+    pub(crate) host: &'a Arc<dyn EngineHost>,
+    /// This request's governance context — the resolved key, or none.
+    pub(crate) gov: &'a busbar_api::PlaneRequestCtx,
+    /// The ingress protocol name, as the record spells the wire.
+    pub(crate) proto: &'static str,
+    /// The operation class the unit was, as the sealed facts name it.
+    pub(crate) op_class: OpClassId,
+    /// The destination the record names. For a unit that reached routing, the pool the charge
+    /// landed on — post-downgrade. For one refused before a destination was ever read, the reserved
+    /// unresolved label, which the host's own bound maps to itself.
+    pub(crate) destination: &'a str,
+    /// When the request started, for the finish-stage latency observation.
+    pub(crate) started: Instant,
+    /// The pinned header-arrival epoch the refund, where one is owed, lands in.
+    pub(crate) charged_at: u64,
+}
+
+/// The terminal's answer: the sealed step-7 facts, and the bytes the loop gives the client.
+///
+/// [`Audited::decision`] is exactly what the kernel's `Units::audit` returns. The response rides
+/// beside it because this step is the only one in the plane that has one to give, and the loop —
+/// not this step — is what hands it back to the transport.
+pub(crate) struct Audited {
+    /// The sealed step-7 answer: what the plane says this unit was, and how it says it ended.
+    pub(crate) decision: Decision<Audit>,
+    /// The posted response.
+    pub(crate) response: Response,
+}
+
+impl Audited {
+    /// The step's answer on its own, which is what the loop takes.
+    pub(crate) fn into_decision(self) -> Decision<Audit> {
+        self.decision
+    }
+}
+
+/// The shape of this step, as a value — the `Units::audit` row with the plane's own context.
+///
+/// The kernel's row takes a `UnitCtx` and a `UnitEnd` the kernel owns and this crate cannot name; a
+/// plane is a plugin on the neutral ABI and does not depend on the kernel. So the context is the
+/// plane's and the provisional end is the response itself, while the token and the sealed answer
+/// are the kernel's own vocabulary, named at `busbar-caps` where a plugin may name it.
+pub(crate) type AuditStep = for<'a> fn(&UnitToken<Audit>, &AuditCtx<'a>, Response, bool) -> Audited;
+
+/// How the plane says a unit ended, read off the bytes the client is actually given.
+///
+/// The client-facing status and nothing else: an upstream that answered 200 into a client-facing
+/// 502 ended in error, because the end a record seals is the end the caller experienced.
+fn finish_of(resp: &Response) -> FinishClass {
+    if resp.status().is_success() {
+        FinishClass::Complete
+    } else {
+        FinishClass::Error
+    }
+}
+
 /// Seal the end of a unit that PASSED the door.
 ///
 /// `charged` is the door's own answer, carried through Route unchanged: an admission that
 /// fail-opened without charging must not refund, because the refund is a decrement of a shared
 /// window and there is nothing of this unit's in it.
-// Plumbing function: each parameter is an independent piece of the unit's own evidence — who was
-// calling, on what wire, to what destination, since when, charged or not, and what it is being
-// answered with. Grouping them into a struct would name a shape nothing else in the plane has, and
-// the terminal it forwards to takes them one by one anyway.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn audit(
-    host: &Arc<dyn EngineHost>,
-    gov: &busbar_api::PlaneRequestCtx,
-    proto: &'static str,
-    // The destination the charge landed on — post-downgrade, and bounded to a configured pool or
-    // lane by the host's label.
-    destination: &str,
-    started: Instant,
-    charged_at: u64,
+    unit_token: &UnitToken<Audit>,
+    ctx: &AuditCtx<'_>,
     resp: Response,
     charged: bool,
-) -> Response {
-    host.finish_admitted(
-        gov,
-        proto,
-        host.pool_label(destination),
-        started,
-        charged_at,
-        resp,
-        charged,
-    )
+) -> Audited {
+    let facts = AuditFacts {
+        op_class: ctx.op_class,
+        finish: finish_of(&resp),
+    };
+    Audited {
+        response: ctx.host.finish_admitted(
+            ctx.gov,
+            ctx.proto,
+            ctx.host.pool_label(ctx.destination),
+            ctx.started,
+            ctx.charged_at,
+            resp,
+            charged,
+        ),
+        decision: Decision::proceed(unit_token, facts),
+    }
 }
 
 /// Seal the end of a unit that never passed the door. Nothing was charged, so nothing is refunded.
+///
+/// The label is the SAME bound the admitted door applies, over the same destination, and that is
+/// the whole of the difference this function used to get wrong: it named the reserved unresolved
+/// label unconditionally, so a 403 raised against a CONFIGURED pool was recorded as if the pool had
+/// never resolved, while the live pre-admission guard recorded it under the pool's own name. The
+/// bytes agreed and the record did not. A caller that genuinely has no destination yet — a refusal
+/// taken before the model was ever read — passes [`crate::engine::POOL_LABEL_UNRESOLVED`], which
+/// the bound maps to itself because no deployment may configure a pool by that name.
 pub(crate) fn audit_refused(
-    host: &Arc<dyn EngineHost>,
-    gov: &busbar_api::PlaneRequestCtx,
-    proto: &'static str,
-    started: Instant,
-    charged_at: u64,
+    unit_token: &UnitToken<Audit>,
+    ctx: &AuditCtx<'_>,
     resp: Response,
-) -> Response {
-    host.finish_rejected(gov, proto, POOL_LABEL_UNRESOLVED, started, charged_at, resp)
+) -> Audited {
+    // A refusal is never a completion, whatever status it wears.
+    let facts = AuditFacts {
+        op_class: ctx.op_class,
+        finish: FinishClass::Error,
+    };
+    Audited {
+        response: ctx.host.finish_rejected(
+            ctx.gov,
+            ctx.proto,
+            ctx.host.pool_label(ctx.destination),
+            ctx.started,
+            ctx.charged_at,
+            resp,
+        ),
+        decision: Decision::proceed(unit_token, facts),
+    }
 }
 
 /// THE AUDIT-STEP IDENTITY HARNESS: this step against the live terminal it was lifted from.
@@ -202,11 +287,42 @@ pub(crate) fn audit_refused(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::POOL_LABEL_UNRESOLVED;
     use crate::test_support::{LaneSpec, TestApp};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
+    use busbar_caps::KernelSeal;
     use busbar_core::governance::{GovState, MemoryStore};
     use busbar_core::proxy::reqlog::{RequestRecord, REQUESTS};
+
+    /// The one operation class these fixtures seal, as a plane names its own.
+    const OP: OpClassId = OpClassId::new("chat");
+
+    /// A kernel seal for the length of one test, and the step-7 token minted from it — exactly as
+    /// the loop lends it, and dropped when the call it was lent to returns.
+    fn tokens() -> (KernelSeal, UnitToken<Audit>) {
+        let seal = KernelSeal::acquire_for_kernel();
+        let token = UnitToken::mint(&seal);
+        (seal, token)
+    }
+
+    /// The terminal's context for one leg.
+    fn ctx<'a>(
+        host: &'a Arc<dyn EngineHost>,
+        gov: &'a busbar_api::PlaneRequestCtx,
+        destination: &'a str,
+        at: u64,
+    ) -> AuditCtx<'a> {
+        AuditCtx {
+            host,
+            gov,
+            proto: "openai",
+            op_class: OP,
+            destination,
+            started: Instant::now(),
+            charged_at: at,
+        }
+    }
 
     /// A governed deployment with one key per leg, so each leg's terminal writes to a chain nothing
     /// else in this process is writing to.
@@ -313,16 +429,24 @@ mod tests {
         let unit_gov = busbar_api::PlaneRequestCtx {
             key: Some(Arc::new(keys[1].clone())),
         };
+        let (seal, token) = tokens();
         let unit = audit(
-            &host,
-            &unit_gov,
-            "openai",
-            "p",
-            Instant::now(),
-            at,
+            &token,
+            &ctx(&host, &unit_gov, "p", at),
             (StatusCode::BAD_GATEWAY, "upstream said no").into_response(),
             true,
         );
+        assert_eq!(
+            unit.decision
+                .into_result(&seal)
+                .expect("the terminal seals rather than refuses"),
+            AuditFacts {
+                op_class: OP,
+                finish: FinishClass::Error
+            },
+            "a client-facing 502 is sealed as an error end"
+        );
+        let unit = unit.response;
 
         assert_eq!(body_of(live).await, body_of(unit).await);
         assert_eq!(
@@ -366,7 +490,13 @@ mod tests {
         let unit_gov = busbar_api::PlaneRequestCtx {
             key: Some(Arc::new(keys[1].clone())),
         };
-        let unit = audit_refused(&host, &unit_gov, "openai", Instant::now(), at, refusal());
+        let (_seal, token) = tokens();
+        let unit = audit_refused(
+            &token,
+            &ctx(&host, &unit_gov, POOL_LABEL_UNRESOLVED, at),
+            refusal(),
+        )
+        .response;
 
         assert_eq!(body_of(live).await, body_of(unit).await);
         let live_record = one_record(&keys[0].id);
@@ -393,13 +523,10 @@ mod tests {
         let admitted_gov = busbar_api::PlaneRequestCtx {
             key: Some(Arc::new(keys[0].clone())),
         };
+        let (_seal, token) = tokens();
         let _ = audit(
-            &host,
-            &admitted_gov,
-            "openai",
-            "p",
-            Instant::now(),
-            at,
+            &token,
+            &ctx(&host, &admitted_gov, "p", at),
             (StatusCode::NOT_FOUND, "no such model").into_response(),
             true,
         );
@@ -407,11 +534,8 @@ mod tests {
             key: Some(Arc::new(keys[1].clone())),
         };
         let _ = audit_refused(
-            &host,
-            &refused_gov,
-            "openai",
-            Instant::now(),
-            at,
+            &token,
+            &ctx(&host, &refused_gov, POOL_LABEL_UNRESOLVED, at),
             (StatusCode::NOT_FOUND, "no such model").into_response(),
         );
 
@@ -437,14 +561,11 @@ mod tests {
         let gov = busbar_api::PlaneRequestCtx {
             key: Some(Arc::new(keys[0].clone())),
         };
+        let (_seal, token) = tokens();
         for _ in 0..3 {
             let _ = audit(
-                &host,
-                &gov,
-                "openai",
-                "p",
-                Instant::now(),
-                at,
+                &token,
+                &ctx(&host, &gov, "p", at),
                 (StatusCode::OK, "ok").into_response(),
                 true,
             );
@@ -453,15 +574,70 @@ mod tests {
             key: Some(Arc::new(keys[1].clone())),
         };
         let _ = audit_refused(
-            &host,
-            &refused,
-            "openai",
-            Instant::now(),
-            at,
+            &token,
+            &ctx(&host, &refused, POOL_LABEL_UNRESOLVED, at),
             (StatusCode::FORBIDDEN, "no").into_response(),
         );
         assert_eq!(REQUESTS.records_for(&keys[0].id).len(), 3);
         assert!(REQUESTS.verify_principal_chain(&keys[0].id).is_ok());
         assert!(REQUESTS.verify_principal_chain(&keys[1].id).is_ok());
+    }
+
+    /// THE PRE-ADMISSION LABEL IDENTITY. A refusal raised against a CONFIGURED pool is recorded
+    /// under that pool's name through the not-charged door, exactly as the live pre-admission guard
+    /// records it — and an unconfigured name still reads back as the reserved unresolved label, so
+    /// the fix widens nothing.
+    ///
+    /// The literal is the pool's own name, `p`, on both legs: the live guard's terminal is
+    /// `finish_rejected` with `pool_label(app, pool)`, and this step's is the same call with the
+    /// same bound over the same string.
+    #[tokio::test]
+    async fn the_refused_door_labels_a_configured_pool_with_its_own_name() {
+        crate::testkit::install_test_seams();
+        busbar_core::metrics::init();
+        let (app, keys) = governed([&unique("label-live"), &unique("label-unit")]);
+        let (host, _rt) = crate::engine::test_host_rt(&app);
+        let at = busbar_substrate::store::now();
+
+        let live_gov = busbar_api::PlaneRequestCtx {
+            key: Some(Arc::new(keys[0].clone())),
+        };
+        let _ = host.finish_rejected(
+            &live_gov,
+            "openai",
+            host.pool_label("p"),
+            Instant::now(),
+            at,
+            (StatusCode::FORBIDDEN, "not permitted").into_response(),
+        );
+
+        let unit_gov = busbar_api::PlaneRequestCtx {
+            key: Some(Arc::new(keys[1].clone())),
+        };
+        let (_seal, token) = tokens();
+        let _ = audit_refused(
+            &token,
+            &ctx(&host, &unit_gov, "p", at),
+            (StatusCode::FORBIDDEN, "not permitted").into_response(),
+        );
+
+        let live_record = one_record(&keys[0].id);
+        let unit_record = one_record(&keys[1].id);
+        assert_eq!(live_record.pool, "p", "the live guard names the pool");
+        assert_eq!(shape(&live_record), shape(&unit_record));
+        assert_eq!(
+            unit_record.pool, "p",
+            "the step names it too, rather than calling a configured pool unresolved"
+        );
+        // And the bound still holds on the way out: a name no deployment configured cannot open a
+        // series of its own on this door any more than on the other.
+        assert_eq!(host.pool_label("no-such-pool"), POOL_LABEL_UNRESOLVED);
+    }
+
+    /// The step is the `Units::audit` row's shape, as a value: a mismatch in the token, the context
+    /// or the answer stops compiling here rather than at the root.
+    #[test]
+    fn the_step_has_the_terminals_shape() {
+        let _: AuditStep = audit;
     }
 }

@@ -1244,6 +1244,28 @@ pub trait AdmissionHost: Send + Sync {
         charged_at: u64,
     ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>>;
 
+    /// THE SAME DOOR, WITHOUT THE TERMINAL — the check-and-charge on its own.
+    ///
+    /// [`admission_door`](Self::admission_door) is exactly this call followed by
+    /// `finish_rejected` on the refusing arm, which is right for a caller whose refusal ends there
+    /// and wrong for one whose terminal is a step of its own: posting the refusal at the door and
+    /// then posting it again at the terminal would put two links on one unit's chain. So a plane
+    /// that owns an Audit step takes this one and hands the refusal — bytes, not a posted record —
+    /// to that step, and a unit posts exactly one link whichever way it ended.
+    ///
+    /// Identical to `busbar_core::ingress::admit_check` over the bound snapshot: the same buckets,
+    /// the same charge, the same downgrade re-pool, and on the refusing arm the same
+    /// protocol-native bytes the door would have finished. The label the terminal records those
+    /// bytes under is [`pool_label`](EngineHost::pool_label) of the same `pool`, which is what the
+    /// door computes for itself before it finishes.
+    fn admission_check(
+        &self,
+        gov: &PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
+        charged_at: u64,
+    ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>>;
+
     /// POST-ADMISSION finish through the host: emit the per-request metric family + request-log
     /// webhook and, on a NON-2xx outcome, REFUND the flat per-request fee IFF it actually landed at
     /// admission (`charged`). Identical to `busbar_core::ingress::finish_admitted` over the bound

@@ -679,6 +679,15 @@ impl AdmissionHost for FixtureHost {
     ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>> {
         Ok((None, None))
     }
+    fn admission_check(
+        &self,
+        _gov: &PlaneRequestCtx,
+        _proto: &'static str,
+        _pool: &str,
+        _charged_at: u64,
+    ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>> {
+        Ok((None, None))
+    }
     fn finish_admitted(
         &self,
         _gov: &PlaneRequestCtx,

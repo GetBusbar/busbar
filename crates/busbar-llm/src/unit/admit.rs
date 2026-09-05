@@ -10,8 +10,9 @@
 //!
 //! # The body is today's door, unchanged
 //!
-//! One call: `EngineHost::admission_door`, with the same five arguments the live path passes at
-//! `native_ingress.rs`'s `drive`. Behind that seam is core's `admission_door` → `admit_check` →
+//! One call: `EngineHost::admission_check`, with the same arguments the live path passes to
+//! `EngineHost::admission_door` at `native_ingress.rs`'s `drive`, minus the one the door needs only
+//! to post its own refusal. Behind that seam is core's `admit_check` →
 //! `GovState::try_admit`, which is the check-then-charge at the tag: pass one tests every bucket of
 //! the pool-filtered chain and returns on the first blocking one having charged nothing, pass two
 //! charges `requests` and `billable_requests` on every bucket under the same shard guards. Nothing
@@ -33,9 +34,15 @@
 //! **The refusal is free.** A door refusal has charged nothing, so nothing is refunded and nothing
 //! may be. The refund is a blind decrement of a shared window counter; issuing one for a request
 //! that never charged erodes another request's spend in the same window. The door has already
-//! rendered and finished the refusal by the time it returns it — those are the bytes the client
-//! gets, and this step carries them through untouched rather than re-deriving them from the reason
-//! code.
+//! RENDERED the refusal by the time it returns it — those are the bytes the client gets, and this
+//! step carries them through untouched rather than re-deriving them from the reason code.
+//!
+//! **It has not POSTED it.** That is what `admission_check` is for and what `admission_door` is
+//! not: the door's own arm finishes its refusal through the not-charged terminal, which for a plane
+//! whose terminal is its own Audit step would put a second link on a unit that ends at that step
+//! anyway. This step takes the check, carries the unposted bytes out on [`Admitted::refusal`], and
+//! the Audit step is the single place any unit of this plane is sealed — the over-budget path
+//! included.
 //!
 //! **The fee is a lookahead, not a posting.** The flat per-request fee enters the budget
 //! comparison inside `try_admit` (derived spend plus the fee against the cap) and is *posted* by
@@ -53,7 +60,6 @@
 //! settle it exactly once.
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use axum::response::Response;
 use busbar_caps::{
@@ -68,6 +74,10 @@ use busbar_substrate::plane_host::EngineHost;
 /// charged at stream end are attributed to the window this epoch implies, so a request whose
 /// response completes in a later window than its headers arrived cannot split its two charges
 /// across two windows.
+///
+/// There is no start instant here, and that absence is the point: the only thing the door ever
+/// needed one for was observing the finish-stage latency of the refusal it posted itself, and it no
+/// longer posts one. The instant travels with the step that does.
 pub struct AdmitCtx<'a> {
     /// The neutral host seam the door is reached through.
     pub host: &'a Arc<dyn EngineHost>,
@@ -77,8 +87,6 @@ pub struct AdmitCtx<'a> {
     pub proto: &'static str,
     /// The destination the caller named: a pool, or a model that resolves to one lane.
     pub destination: &'a str,
-    /// When the request started, for the finish-stage latency observation.
-    pub started: Instant,
     /// The pinned header-arrival epoch every charge and every refund lands in.
     pub charged_at: u64,
 }
@@ -110,8 +118,9 @@ pub struct Admitted {
     /// compiler until the Route step lands.
     #[allow(dead_code)]
     pub(crate) sink: Option<crate::engine::UsageSink>,
-    /// The door's own rendered refusal, already finished through the not-charged terminal. Present
-    /// exactly when the decision refuses.
+    /// The door's own rendered refusal — bytes, not a posted record. Present exactly when the
+    /// decision refuses, and handed to the Audit step's not-charged terminal there and nowhere
+    /// else, so this path has the same single terminal every other path has.
     pub refusal: Option<Response>,
 }
 
@@ -148,16 +157,13 @@ pub fn admit(
     principal: &PrincipalId,
     destinations: &[VerifiedDestination],
 ) -> Admitted {
-    // THE door. Its `Err` is the refusal ALREADY rendered in the ingress protocol's native
-    // envelope and already finished through the not-charged terminal — nothing was charged, so
-    // nothing is refunded on the way out.
-    match ctx.host.admission_door(
-        ctx.gov,
-        ctx.proto,
-        ctx.destination,
-        ctx.started,
-        ctx.charged_at,
-    ) {
+    // THE door, taken without its terminal. Its `Err` is the refusal ALREADY rendered in the
+    // ingress protocol's native envelope and NOT yet posted — nothing was charged, so nothing is
+    // refunded on the way out, and the one place it is sealed is the Audit step.
+    match ctx
+        .host
+        .admission_check(ctx.gov, ctx.proto, ctx.destination, ctx.charged_at)
+    {
         Err(resp) => refused(unit_token, *resp),
         Ok((admit, downgraded)) => {
             // `Some` iff the charge landed. Governance off or no resolved key admits without
@@ -185,7 +191,8 @@ pub fn admit(
     }
 }
 
-/// A door refusal: no hold, no charge, no refund, and the door's own bytes carried through.
+/// A door refusal: no hold, no charge, no refund, no posted link, and the door's own bytes carried
+/// through to the one step that posts.
 ///
 /// The reason code is the record's closed vocabulary, and the seam this step reaches the door
 /// through hands back a rendered response rather than the blocking bucket, so the code cannot be
@@ -224,6 +231,7 @@ mod tests {
     use busbar_core::governance::{GovState, MemoryStore};
     use busbar_core::test_support::TestApp;
     use std::collections::BTreeMap;
+    use std::time::Instant;
 
     /// The three ledger figures every identity here is pinned on.
     ///
@@ -379,7 +387,6 @@ mod tests {
             gov: &gov,
             proto: crate::proto_codec::PROTO_OPENAI,
             destination: "p",
-            started: Instant::now(),
             charged_at,
         };
         let admitted = admit(
@@ -526,7 +533,6 @@ mod tests {
             gov: &gov,
             proto: crate::proto_codec::PROTO_OPENAI,
             destination: "p",
-            started: Instant::now(),
             charged_at,
         };
         let refused = admit(
