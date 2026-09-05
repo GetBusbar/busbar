@@ -129,6 +129,7 @@ impl WeightedFloor {
     ///
     /// The bound made observable: the first number is what the pool name costs, and it is a
     /// function of the number of pools alone.
+    #[cfg(test)]
     pub(crate) fn tracked(&self) -> (usize, usize) {
         let credits = self.credits.lock().unwrap_or_else(|e| e.into_inner());
         (

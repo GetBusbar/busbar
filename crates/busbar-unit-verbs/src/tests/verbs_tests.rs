@@ -732,7 +732,9 @@ fn a_create_that_arrives_while_the_first_is_in_flight_is_refused_not_minted() {
         (retry, held.join().expect("the first call did not panic"))
     });
 
-    let err = retry.err().expect("a retry inside the first call's window is refused");
+    let Err(err) = retry else {
+        panic!("a retry inside the first call's window must be refused, not served");
+    };
     assert_eq!(err.step, crate::refusal::RefusalStep::Admit);
     assert_eq!(
         err.reason,
@@ -792,7 +794,9 @@ fn a_rotate_that_arrives_while_the_first_is_in_flight_is_refused() {
         (retry, held.join().expect("the first call did not panic"))
     });
 
-    let err = retry.err().expect("a retry inside the first call's window is refused");
+    let Err(err) = retry else {
+        panic!("a retry inside the first call's window must be refused, not served");
+    };
     assert_eq!(err.step, crate::refusal::RefusalStep::Admit);
     assert_eq!(err.reason, crate::refusal::ReasonCode::IdempotencyInFlight);
     first.expect("the rotate succeeds once it is let go");
