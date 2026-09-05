@@ -2011,6 +2011,8 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
         prompt: def.prompt.unwrap_or_default(),
         user: def.user.unwrap_or_default(),
         priority: def.priority.unwrap_or(0),
+        // `phase:` is the 1.5.3 stage set; the legacy single `at:` is unused by a named definition.
+        at: None,
         on_empty: def.on_empty.clone(),
         settings: def.settings.clone(),
         // A named-definition shorthand has no `signals:` sub-key in this pass.

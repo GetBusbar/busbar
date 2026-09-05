@@ -107,6 +107,9 @@ impl ProtocolReader for OpenAiReader {
 
         let mut extra = serde_json::Map::new();
         let mut system_blocks: Vec<crate::ir::IrBlock> = Vec::new();
+        // Count of `system`/`developer`-role entries folded out of `messages` below — restores the
+        // 1.5.5 `message_count` semantics (the raw wire array length) onto `IrFacts::shape()`.
+        let mut system_turns_folded: usize = 0;
 
         // Extract scalar fields and extra
         let _model = obj.get("model").and_then(|v| v.as_str()).map(String::from);
@@ -226,6 +229,7 @@ impl ProtocolReader for OpenAiReader {
                 // `"role": "system"` by the Anthropic writer and rejected with a 400. We therefore
                 // never push a System IrMessage; we accumulate its content into system_blocks.
                 if role == crate::ir::IrRole::System {
+                    system_turns_folded += 1;
                     let blocks_before = system_blocks.len();
                     if let Some(content) = content_val {
                         if let Some(text) = content.as_str() {
@@ -559,6 +563,7 @@ impl ProtocolReader for OpenAiReader {
             user,
             parallel_tool_calls,
             system: system_blocks,
+            system_turns_folded,
             messages,
             tools,
             max_tokens,
@@ -1278,6 +1283,8 @@ impl ProtocolReader for OpenAiReader {
             created,
             system_fingerprint,
             stop_sequence: None,
+        
+            request_echo: None,
         })
     }
 }

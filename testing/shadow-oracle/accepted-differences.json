@@ -62,7 +62,7 @@
       "id": "F-011 additive admin views",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^admin\\.ops\\|DeleteOverlaySection\\|not-found$",
+      "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^hooks\\|register\\|plugin-alias$|^admin\\.ops\\|DeleteOverlaySection\\|not-found$",
       "classes": [
         "body",
         "headers"

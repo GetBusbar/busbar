@@ -542,18 +542,26 @@ pub(crate) struct HookView {
     pub(crate) user: &'static str,
     /// Rewrite/reject ordering key (transform-chain order + reject tie-break).
     pub(crate) priority: u16,
+    /// The LEGACY single-valued tap stage (`"request"`/`"candidate"`/`"routing"`/`"response"`), or
+    /// `null`. Kept for back-compat and NOT the field to read: `null` here does NOT mean "a gate"
+    /// and does not mean "unscoped". Every hook written in the current top-level `hooks:` grammar
+    /// has `at: null` by construction (`config::hook_cfg_from_def` never sets it, and
+    /// `--migrate-config` rewrites a legacy `at:` into `phase:`), so this field is `null` for
+    /// essentially every hook a running deployment has. Read `fires_at`.
+    /// 1.6.0 owner rule: a 1.5.5 client reading this view must see this field byte-for-byte, so it
+    /// is RESTORED alongside `phase`/`fires_at`.
+    pub(crate) at: Option<&'static str>,
     /// The `phase:` STAGE LIST exactly as configured, empty when unset. The literal config echo,
     /// for an operator diffing what they wrote against what busbar parsed. It is NOT the effective
-    /// answer on its own: empty means "fall back to the four core stages". For the effective answer
-    /// read `fires_at`. (1.6.0 removed the legacy single `at:` field this view once carried alongside
-    /// `phase`; clients read `fires_at` for the resolved set — see `docs/migration-1.6.md`.)
+    /// answer on its own: empty means "fall back", and what it falls back TO is `at:` if set and the
+    /// four core stages otherwise. For the effective answer read `fires_at`.
     pub(crate) phase: Vec<&'static str>,
     /// The RESOLVED stage set: the stages this hook ACTUALLY fires at, in pipeline order, never
     /// empty. This is the field that answers "when does this hook run", and it is computed by
     /// `config::HookCfg::resolved_stages` through the same `fires_at_stage` predicate the firing
     /// path uses, so it cannot disagree with runtime behavior. It reflects the frozen precedence
-    /// (a non-empty `phase:` wins, else the four core stages) without asking the reader to re-derive
-    /// it from the `phase` spelling above.
+    /// (a non-empty `phase:` wins, else the legacy single `at:`, else the four core stages) without
+    /// asking the reader to re-derive it from the two spellings above.
     pub(crate) fires_at: Vec<&'static str>,
     /// Gate fallback on timeout/error, a CLOSED, unambiguous string union: one of the
     /// reserved terminals (`"weighted"` | `"reject"` | `"first"` | `"nothing"`) or the NAME of the

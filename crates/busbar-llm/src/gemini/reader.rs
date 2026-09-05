@@ -756,6 +756,9 @@ impl ProtocolReader for GeminiReader {
             user: None,
             parallel_tool_calls: None,
             system: system_blocks,
+            // Gemini's `systemInstruction` is its own top-level wire field, never folded out of
+            // `contents` — the 1.5.5 raw-array count and the IR-normalized count already agree.
+            system_turns_folded: 0,
             messages,
             tools,
             max_tokens,
@@ -1315,7 +1318,9 @@ impl ProtocolReader for GeminiReader {
                     created: None,
                     system_fingerprint: None,
                     stop_sequence: None,
-                });
+                
+            request_echo: None,
+        });
             }
         }
 
@@ -1545,6 +1550,8 @@ impl ProtocolReader for GeminiReader {
             created: None,
             system_fingerprint: None,
             stop_sequence: None,
+        
+            request_echo: None,
         })
     }
 

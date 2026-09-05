@@ -111,6 +111,7 @@ pub fn ping_request() -> crate::ir::IrRequest {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
+        system_turns_folded: 0,
         messages: vec![IrMessage {
             role: IrRole::User,
             content: vec![IrBlock::Text {

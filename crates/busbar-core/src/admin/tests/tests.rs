@@ -3765,6 +3765,7 @@ async fn test_admin_v1_hooks_read_surface() {
         user: crate::config::UserAccess::Ro,
         priority: 7,
         settings: serde_json::Map::new(),
+        at: None,
         on_empty: None,
         global: false,
         default: false,
@@ -3849,6 +3850,7 @@ async fn test_admin_v1_hook_health_best_effort() {
         user: crate::config::UserAccess::No,
         priority: 0,
         settings: serde_json::Map::new(),
+        at: None,
         on_empty: None,
         global: false,
         default: false,
@@ -3927,6 +3929,7 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         user: crate::config::UserAccess::No,
         priority: 0,
         settings: serde_json::Map::new(),
+        at: None,
         on_empty: None,
         global: false,
         default: false,
@@ -4152,6 +4155,7 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
         user: crate::config::UserAccess::No,
         priority: 0,
         settings: serde_json::Map::new(),
+        at: None,
         on_empty: None,
         global: false,
         default: false,
@@ -10660,8 +10664,10 @@ async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A settings PUT on a LOCKED config must REFUSE (400) naming the locked/overlay posture. The
-/// assertion is on the message, since the status alone does not discriminate.
+/// 1.5.3: `"persist": true` on a LOCKED config must REFUSE (400) naming the locked/overlay posture —
+/// not the old `BUSBAR_CONFIG_OVERLAY` precondition, and NOT the `deny_unknown_fields` 400 (`persist`
+/// is stripped before the typed parse). The assertion is on the message, since the status alone does
+/// not discriminate.
 #[tokio::test]
 async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitly_requested_and_unavailable(
 ) {
@@ -10671,7 +10677,7 @@ async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitl
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "listen": "127.0.0.1:0" }).to_string())
+        .body(serde_json::json!({ "listen": "127.0.0.1:0", "persist": true }).to_string())
         .send()
         .await
         .unwrap();
@@ -10682,13 +10688,18 @@ async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitl
         msg.contains("config.locked") || msg.contains("no writable config overlay"),
         "the refusal must name the locked/no-overlay posture, not just be a generic 400: {body}"
     );
+    assert!(
+        !msg.contains("unknown field"),
+        "this must be the locked-config refusal, not the OLD deny_unknown_fields 400 \
+         that fires on this body today: {body}"
+    );
 
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A settings PUT WITH an overlay present persists to disk (durable-by-default; there is no explicit
-/// `persist:` control any more — 1.6.0 removed the accepted-then-ignored field).
+/// The positive half of case 3: `"persist": true` WITH an overlay present must still persist
+/// exactly as an implicit persist does today.
 #[tokio::test]
 async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when_overlay_exists() {
     let (dir, overlay, addr, handle) = settings_test_app("persist-true").await;
@@ -10697,7 +10708,7 @@ async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "per_request_fee": 7 }).to_string())
+        .body(serde_json::json!({ "per_request_fee": 7, "persist": true }).to_string())
         .send()
         .await
         .unwrap();
@@ -10708,16 +10719,16 @@ async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when
     assert_eq!(
         on_disk.per_request_fee,
         Some(7),
-        "a settings PUT with an overlay present stores the value on disk"
+        "persist:true with an overlay present stores the value on disk"
     );
 
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 1.6.0 CLEAN SLATE: the removed `persist:` field is now an UNKNOWN field. A pre-1.5.3 client that
-/// still sends it gets a `deny_unknown_fields` 400 naming it (see `docs/migration-1.6.md`), instead
-/// of the old accept-then-ignore.
+/// `"persist"` rejects a non-boolean — the message must name it, discriminating from the OLD
+/// `unknown field` 400 the same body triggers today (status alone does not discriminate here
+/// either, since both are 400s).
 #[tokio::test]
 async fn test_admin_v1_config_settings_put_rejects_a_non_boolean_persist() {
     let (dir, addr, handle) = settings_test_app_no_overlay("nonbool").await;
@@ -10726,7 +10737,7 @@ async fn test_admin_v1_config_settings_put_rejects_a_non_boolean_persist() {
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "persist": true }).to_string())
+        .body(serde_json::json!({ "persist": "yes" }).to_string())
         .send()
         .await
         .unwrap();
@@ -10734,17 +10745,17 @@ async fn test_admin_v1_config_settings_put_rejects_a_non_boolean_persist() {
     let body: serde_json::Value = put.json().await.unwrap();
     let msg = body["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        msg.contains("unknown field") && msg.contains("persist"),
-        "the removed `persist` field must be rejected as an unknown field: {body}"
+        msg.contains("persist") && msg.contains("boolean"),
+        "the refusal must name `persist` as needing a boolean: {body}"
     );
 
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// REGRESSION PROOF: `deny_unknown_fields` rejects a key the typed `RootSettings` does not know — a
-/// TYPO (or the removed `persist` control key) is a loud 400, never a silently-ignored request, which
-/// is the whole justification for a body field over a query param (the in-tree
+/// REGRESSION PROOF (passes before AND after): stripping `persist` before the typed parse must NOT
+/// weaken `deny_unknown_fields` — a TYPO of the control key is still a loud 400, which is the whole
+/// justification for choosing a body field over a query param (the in-tree
 /// `Query<HashMap<String,String>>` idiom drops unknown keys silently).
 #[tokio::test]
 async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_including_persist_typo() {
@@ -11396,6 +11407,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
                 user: crate::config::UserAccess::No,
                 priority: 0,
                 settings: serde_json::Map::new(),
+                at: None,
                 on_empty: None,
                 global: false,
                 default: false,

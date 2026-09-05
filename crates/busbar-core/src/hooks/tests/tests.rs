@@ -271,6 +271,7 @@ fn base_gate() -> HookCfg {
         user: UserAccess::No,
         priority: 0,
         settings: serde_json::Map::new(),
+        at: None,
         on_empty: None,
         global: false,
         default: false,

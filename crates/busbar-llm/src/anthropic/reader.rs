@@ -201,6 +201,10 @@ impl ProtocolReader for AnthropicReader {
 
         let mut extra = serde_json::Map::new();
         let mut system_blocks: Vec<crate::ir::IrBlock> = Vec::new();
+        // Count of `role:"system"` entries folded out of `messages` below (a real Anthropic wire body
+        // never carries one, but a cross-protocol-shaped or malformed body legally can) — restores the
+        // 1.5.5 `message_count` semantics (the raw `messages` array length) onto `IrFacts::shape()`.
+        let mut system_turns_folded: usize = 0;
 
         // Handle system field (string or array)
         if let Some(system_val) = obj.get("system") {
@@ -246,6 +250,7 @@ impl ProtocolReader for AnthropicReader {
             for msg_val in messages_arr {
                 let msg = read_message(msg_val)?;
                 if msg.role == crate::ir::IrRole::System {
+                    system_turns_folded += 1;
                     system_blocks.extend(msg.content);
                 } else {
                     stash_unmodeled_blocks(msg_val, messages.len(), &mut unmodeled_blocks);
@@ -377,6 +382,7 @@ impl ProtocolReader for AnthropicReader {
             user,
             parallel_tool_calls,
             system: system_blocks,
+            system_turns_folded,
             messages,
             tools,
             max_tokens,
@@ -749,6 +755,8 @@ impl ProtocolReader for AnthropicReader {
             created: None,
             system_fingerprint: None,
             stop_sequence,
+        
+            request_echo: None,
         })
     }
 }

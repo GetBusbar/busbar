@@ -14,6 +14,15 @@ use serde_json::Value;
 pub struct IrRequest {
     pub system: Vec<IrBlock>,
     pub messages: Vec<IrMessage>,
+    /// Count of WIRE turns that were promoted out of the same array as `messages` and folded into
+    /// `system` (OpenAI/Cohere/Responses readers accept a `system`/`developer`-role entry anywhere in
+    /// `messages`/`input` and fold it here rather than modeling a System-role `IrMessage`).
+    /// Zero for a protocol whose wire already carries system as its own separate field
+    /// (Anthropic/Bedrock/Gemini never fold from the turn array). 1.6.0 owner rule: a 1.5.5 hook's
+    /// `message_count` counted the RAW wire array length, including any embedded system turn — so
+    /// `IrFacts::shape().turn_count` adds this back onto `messages.len()` to stay byte-for-byte with
+    /// 1.5.5 rather than reporting the IR-normalized (system-excluded) count.
+    pub system_turns_folded: usize,
     pub tools: Vec<IrTool>,
     pub max_tokens: Option<u32>,
     // f64 (not ADR-0005's f32): JSON numbers are f64; an f32 round-trip silently mutates a
@@ -316,6 +325,15 @@ pub struct IrResponse {
     /// zipped). Empty == the backend sent none (nothing emitted). Carried protocol-neutrally so a
     /// Gemini backend's logprobs reach an OpenAI-dialect caller in its own shape, and vice versa.
     pub logprobs: Vec<IrTokenLogprob>,
+    /// The ORIGINAL ingress request body, captured on the cross-protocol response seam
+    /// (`IrHandle::apply_request_echo` / `StreamTranslator::set_request_echo`) so an ingress writer
+    /// whose spec requires certain response members to MIRROR client-set request values (OpenAI
+    /// Responses: `temperature`, `top_p`, `instructions`, `metadata`, `tool_choice`,
+    /// `parallel_tool_calls`, `tools`) can answer with the caller's actual values instead of the
+    /// spec's bare defaults. `None` on same-protocol (never reaches a writer — the body is relayed
+    /// verbatim) and for every writer that echoes nothing (every non-Responses dialect ignores this
+    /// field entirely). Additive: every reader that never sets it leaves prior behavior unchanged.
+    pub request_echo: Option<Value>,
 }
 
 /// The normalized reasoning/thinking ask (see [`IrRequest::reasoning`]).

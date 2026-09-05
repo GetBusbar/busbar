@@ -2377,10 +2377,12 @@ pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[Strin
                 UserAccess::Ro => "ro",
             },
             priority: cfg.priority,
-            // STAGE SCOPING, projected honestly: the `phase:` list as configured, and the RESOLVED
-            // set it actually means. `resolved_stages` runs the same `fires_at_stage` predicate the
-            // firing path does, so this read cannot claim a stage busbar does not fire at. (1.6.0
-            // removed the legacy single `at:` projection; `fires_at` is the resolved answer.)
+            // STAGE SCOPING, projected honestly: the legacy single `at:` (null for every hook
+            // written in the current `hooks:` grammar), the `phase:` list as configured, and the
+            // RESOLVED set the two of them actually mean. `resolved_stages` runs the same
+            // `fires_at_stage` predicate the firing path does, so this read cannot claim a stage
+            // busbar does not fire at.
+            at: cfg.at.map(HookStage::as_str),
             phase: cfg.phase.iter().copied().map(HookStage::as_str).collect(),
             fires_at: cfg
                 .resolved_stages()
