@@ -273,7 +273,6 @@ impl Walk {
     /// The plane's own half of it — the meter half of the hold, whether the charge landed, and which
     /// pool it landed on — stays here; the kernel's half is handed straight back. The refusal, where
     /// the door raised one, waits with the other rendered bytes for the terminal.
-    #[must_use]
     pub fn take_admission(&self, admitted: Admitted) -> Decision<busbar_caps::Admit> {
         let mut carry = self.lock();
         carry.charged = admitted.charged;
@@ -367,7 +366,6 @@ impl Walk {
     /// The loop is on a blocking worker and the walk is a task; the two are joined by a channel, so
     /// the crossing does not depend on which runtime flavour this node was configured with. What
     /// travels back is what the walk SAW; the sealing happens here, where the token is.
-    #[must_use]
     pub fn route(&self, token: &UnitToken<Route>, destination: &str) -> Decision<Route> {
         let (host, rt, proto) = (self.host.clone(), self.rt.clone(), self.proto);
         let lanes = Arc::clone(&self.lanes);
@@ -473,7 +471,6 @@ impl Walk {
     /// exit is the one place it comes out again. What the step does here is what it does on the
     /// rehearsal's admitted fixtures — seal the accrual the walk's tap already made, or make it
     /// where the walk held no meter half — and answer with the report the posting is made against.
-    #[must_use]
     pub fn meter(&self, token: &UnitToken<Meter>, usage: &UsageToken) -> Decision<Meter> {
         let mut carry = self.lock();
         let charged = carry.charged;

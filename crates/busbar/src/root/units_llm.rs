@@ -205,7 +205,9 @@ impl LlmNode {
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
                 // cannot be taken still has to say something if it is.
-                unit.walk.take_terminal().unwrap_or_else(|| unavailable(proto))
+                unit.walk
+                    .take_terminal()
+                    .unwrap_or_else(|| unavailable(proto))
             }
         }
     }
@@ -339,7 +341,12 @@ impl Units for LlmUnit<'_> {
                 .hold_bytes(audit::render_refusal(self.walk.proto(), &refusal.outcome()));
             Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
         };
-        if let Some(refusal) = self.deferred.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(refusal) = self
+            .deferred
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
             return refuse(refusal);
         }
         // THE MODEL LADDER, walked once. The arrival's fields go straight into the step file: the
@@ -506,7 +513,12 @@ impl Units for LlmUnit<'_> {
         self.walk.meter(token, usage)
     }
 
-    fn audit(&self, token: &UnitToken<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Audit> {
+    fn audit(
+        &self,
+        token: &UnitToken<Audit>,
+        _ctx: &UnitCtx,
+        _outcome: &Outcome,
+    ) -> Decision<Audit> {
         // THE CHARGED TERMINAL. A unit that passed the door leaves here, whatever it ended on: a
         // delivered answer, a relayed upstream failure, or a destination that resolved to nothing
         // after the caller was already charged. All three are the same door.
@@ -696,11 +708,17 @@ body_arrivals! {
 /// before they reach any step this file drives. Their BODY entries are here, because the generic
 /// body-model dispatch arm resolves them by name like every other dialect.
 pub static BODY_INGRESS: &[(&str, busbar_substrate::ingress::arrival::BodyIngress)] = &[
-    (busbar_llm::proto_codec::PROTO_ANTHROPIC, anthropic_body_arrival),
+    (
+        busbar_llm::proto_codec::PROTO_ANTHROPIC,
+        anthropic_body_arrival,
+    ),
     (busbar_llm::proto_codec::PROTO_OPENAI, openai_body_arrival),
     (busbar_llm::proto_codec::PROTO_GEMINI, gemini_body_arrival),
     (busbar_llm::proto_codec::PROTO_BEDROCK, bedrock_body_arrival),
-    (busbar_llm::proto_codec::PROTO_RESPONSES, responses_body_arrival),
+    (
+        busbar_llm::proto_codec::PROTO_RESPONSES,
+        responses_body_arrival,
+    ),
     (busbar_llm::proto_codec::PROTO_COHERE, cohere_body_arrival),
 ];
 
