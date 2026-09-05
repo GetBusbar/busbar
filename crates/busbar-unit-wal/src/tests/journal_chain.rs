@@ -14,6 +14,7 @@ use busbar_caps::StepName;
 use crate::journal::{
     decode_run, tail_of, verify, Entry, Journal, JournalBreakKind, JournalRecord, RecordClass,
     JOURNAL_HEADER_BYTES, JOURNAL_MAGIC, JOURNAL_VERSION, MEMORY_BUFFER_RECORDS,
+    OVERFLOW_HISTORY_RECORDS,
 };
 use crate::ship::{BufferShipper, NullShipper, ShipError, Shipper};
 use crate::wal::{Mode, Wal};
@@ -394,6 +395,69 @@ fn a_full_buffer_seals_a_chain_break_rather_than_dropping_silently() {
         "the break names how many went and which"
     );
     assert_eq!(breaks[0].node_seq, overflows[0].chain_break_seq);
+}
+
+/// The overflow history is a window plus a running total, not one entry per overflowing append.
+///
+/// Once the buffer is full EVERY append overflows, so an unbounded history is a per-request memory
+/// cost for the whole length of a store outage — growth that starts precisely when the node is
+/// already degraded. The detail the window forgets is not lost: it is in the sealed `ChainBreak`
+/// record, which is where it was always the durable answer.
+#[test]
+fn overflow_history_is_a_window_while_the_dropped_total_keeps_rising() {
+    let mut journal = Journal::memory_buffered_to(4, Box::new(RefusingShipper)).with_capacity(4);
+    let token = durability_token();
+
+    for round in 0..80u8 {
+        journal
+            .append(
+                &token,
+                StepName::Meter,
+                &entries(RecordClass::Transaction, 2, round),
+            )
+            .expect_err("the store refuses every time");
+    }
+
+    assert!(
+        journal.overflows().len() <= OVERFLOW_HISTORY_RECORDS,
+        "the history is a window, got {} entries",
+        journal.overflows().len()
+    );
+    assert!(
+        journal.overflows_seen() > OVERFLOW_HISTORY_RECORDS,
+        "the run has to pass the window for the bound to mean anything"
+    );
+    assert!(
+        journal.dropped_total() >= 100,
+        "the running total keeps counting past the window, got {}",
+        journal.dropped_total()
+    );
+    let window: Vec<u64> = journal
+        .overflows()
+        .iter()
+        .map(|o| o.chain_break_seq)
+        .collect();
+    assert!(
+        window.windows(2).all(|p| p[0] < p[1]),
+        "the window reads oldest first"
+    );
+    assert!(
+        window.first().is_some_and(|&seq| seq > 20),
+        "the window keeps the NEWEST overflows, not the first ones the run made"
+    );
+
+    // And the durable side is untouched: a break is still sealed for every single overflow.
+    let on_the_medium =
+        decode_run(&journal.log().read_back().expect("readable").records).expect("journal records");
+    let breaks: Vec<&JournalRecord> = on_the_medium
+        .iter()
+        .filter(|r| r.class == RecordClass::ChainBreak)
+        .collect();
+    assert_eq!(
+        breaks.len(),
+        journal.overflows_seen(),
+        "one sealed ChainBreak per overflow, however few of them the history still names"
+    );
 }
 
 /// The bound is pinned, and it is the one an operator cannot raise. Stated as a test because a

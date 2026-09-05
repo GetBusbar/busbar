@@ -66,6 +66,8 @@
 //!   need, and a break at a known old position is easier to reconcile from a backup than a hole
 //!   punched at the tail.
 
+use std::collections::VecDeque;
+
 use busbar_caps::{DurabilityLost, DurabilityToken, StepName};
 use sha2::{Digest as _, Sha256};
 
@@ -90,6 +92,13 @@ pub const JOURNAL_HEADER_BYTES: usize = 160;
 /// store may consume, and an operator who could raise it could turn a store outage into an
 /// out-of-memory kill, which is strictly worse than a named break.
 pub const MEMORY_BUFFER_RECORDS: usize = 8192;
+
+/// How many overflows the in-memory history names in detail.
+///
+/// Every overflow seals a `ChainBreak` record carrying the same detail durably, so this window is a
+/// convenience for a caller reading the node's current state, not the record of what was dropped.
+/// Unbounded it would be a per-request cost for the whole length of a store outage.
+pub const OVERFLOW_HISTORY_RECORDS: usize = 16;
 
 /// Where in the header each field sits. Offsets are named rather than spelled at each use so that a
 /// layout change is one edit and a reader can check the table against the module preamble.
@@ -693,7 +702,13 @@ pub struct Journal {
     next_seq: u64,
     head: [u8; 32],
     capacity: usize,
-    overflows: Vec<Overflow>,
+    /// The most recent overflows, oldest first. A window, because during an outage every append
+    /// overflows and the detail is already durable in the sealed break.
+    overflows: VecDeque<Overflow>,
+    /// How many overflows there have been, window or not.
+    overflows_seen: usize,
+    /// How many records the bound has cost in total.
+    dropped_total: u64,
 }
 
 impl std::fmt::Debug for Journal {
@@ -750,7 +765,9 @@ impl Journal {
             next_seq: 1,
             head: [0u8; 32],
             capacity: MEMORY_BUFFER_RECORDS,
-            overflows: Vec::new(),
+            overflows: VecDeque::new(),
+            overflows_seen: 0,
+            dropped_total: 0,
         };
         // A tail that does not decode leaves the chain at genesis rather than resuming from bytes
         // this build cannot read. The records are still on the medium; nothing is destroyed by
@@ -827,10 +844,26 @@ impl Journal {
         self.log.owed().len()
     }
 
-    /// Every time the bound was reached, in order.
+    /// The most recent times the bound was reached, oldest first, at most
+    /// [`OVERFLOW_HISTORY_RECORDS`] of them.
+    ///
+    /// Every one of them also sealed a `ChainBreak` record naming the same thing, so this window is
+    /// what the node can tell you about right now — not the record of what was dropped.
     #[must_use]
-    pub fn overflows(&self) -> &[Overflow] {
-        &self.overflows
+    pub fn overflows(&self) -> Vec<Overflow> {
+        self.overflows.iter().cloned().collect()
+    }
+
+    /// How many times the bound has been reached, including the ones the window has forgotten.
+    #[must_use]
+    pub fn overflows_seen(&self) -> usize {
+        self.overflows_seen
+    }
+
+    /// How many records the bound has cost in total, across every overflow.
+    #[must_use]
+    pub fn dropped_total(&self) -> u64 {
+        self.dropped_total
     }
 
     /// The log underneath, for a caller that needs to ask it about segments or poison.
@@ -931,7 +964,12 @@ impl Journal {
             last,
             chain_break_seq: self.next_seq,
         };
-        self.overflows.push(overflow.clone());
+        self.overflows_seen = self.overflows_seen.saturating_add(1);
+        self.dropped_total = self.dropped_total.saturating_add(dropped.len() as u64);
+        self.overflows.push_back(overflow.clone());
+        while self.overflows.len() > OVERFLOW_HISTORY_RECORDS {
+            self.overflows.pop_front();
+        }
         Some(overflow)
     }
 }
