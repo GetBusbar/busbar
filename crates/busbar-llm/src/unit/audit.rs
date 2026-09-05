@@ -138,7 +138,7 @@ impl RefusalOutcome {
 /// This does NOT post the unit. Rendering and sealing are two jobs and they are two functions: a
 /// refusal is rendered here and then handed to [`audit_refused`], which is what makes the record and
 /// the response come from one place without making them one call.
-pub(crate) fn render_refusal(proto: &str, refusal: &RefusalOutcome) -> Response {
+pub fn render_refusal(proto: &str, refusal: &RefusalOutcome) -> Response {
     let mut resp = busbar_substrate::proxy::ingress_error(
         proto,
         refusal.status(),
@@ -159,23 +159,23 @@ pub(crate) fn render_refusal(proto: &str, refusal: &RefusalOutcome) -> Response 
 /// the only field either door reads differently, and it does not: both bound it through
 /// [`EngineHost::pool_label`], so an unconfigured name can never open a metric series on either
 /// path, and a CONFIGURED one is recorded under its own name on both.
-pub(crate) struct AuditCtx<'a> {
+pub struct AuditCtx<'a> {
     /// The neutral host seam the terminal is reached through.
-    pub(crate) host: &'a Arc<dyn EngineHost>,
+    pub host: &'a Arc<dyn EngineHost>,
     /// This request's governance context — the resolved key, or none.
-    pub(crate) gov: &'a busbar_api::PlaneRequestCtx,
+    pub gov: &'a busbar_api::PlaneRequestCtx,
     /// The ingress protocol name, as the record spells the wire.
-    pub(crate) proto: &'static str,
+    pub proto: &'static str,
     /// The operation class the unit was, as the sealed facts name it.
-    pub(crate) op_class: OpClassId,
+    pub op_class: OpClassId,
     /// The destination the record names. For a unit that reached routing, the pool the charge
     /// landed on — post-downgrade. For one refused before a destination was ever read, the reserved
     /// unresolved label, which the host's own bound maps to itself.
-    pub(crate) destination: &'a str,
+    pub destination: &'a str,
     /// When the request started, for the finish-stage latency observation.
-    pub(crate) started: Instant,
+    pub started: Instant,
     /// The pinned header-arrival epoch the refund, where one is owed, lands in.
-    pub(crate) charged_at: u64,
+    pub charged_at: u64,
 }
 
 /// The terminal's answer: the sealed step-7 facts, and the bytes the loop gives the client.
@@ -183,16 +183,16 @@ pub(crate) struct AuditCtx<'a> {
 /// [`Audited::decision`] is exactly what the kernel's `Units::audit` returns. The response rides
 /// beside it because this step is the only one in the plane that has one to give, and the loop —
 /// not this step — is what hands it back to the transport.
-pub(crate) struct Audited {
+pub struct Audited {
     /// The sealed step-7 answer: what the plane says this unit was, and how it says it ended.
-    pub(crate) decision: Decision<Audit>,
+    pub decision: Decision<Audit>,
     /// The posted response.
-    pub(crate) response: Response,
+    pub response: Response,
 }
 
 impl Audited {
     /// The step's answer on its own, which is what the loop takes.
-    pub(crate) fn into_decision(self) -> Decision<Audit> {
+    pub fn into_decision(self) -> Decision<Audit> {
         self.decision
     }
 }
@@ -203,7 +203,7 @@ impl Audited {
 /// plane is a plugin on the neutral ABI and does not depend on the kernel. So the context is the
 /// plane's and the provisional end is the response itself, while the token and the sealed answer
 /// are the kernel's own vocabulary, named at `busbar-caps` where a plugin may name it.
-pub(crate) type AuditStep = for<'a> fn(&UnitToken<Audit>, &AuditCtx<'a>, Response, bool) -> Audited;
+pub type AuditStep = for<'a> fn(&UnitToken<Audit>, &AuditCtx<'a>, Response, bool) -> Audited;
 
 /// How the plane says a unit ended, read off the bytes the client is actually given.
 ///
@@ -222,7 +222,7 @@ fn finish_of(resp: &Response) -> FinishClass {
 /// `charged` is the door's own answer, carried through Route unchanged: an admission that
 /// fail-opened without charging must not refund, because the refund is a decrement of a shared
 /// window and there is nothing of this unit's in it.
-pub(crate) fn audit(
+pub fn audit(
     unit_token: &UnitToken<Audit>,
     ctx: &AuditCtx<'_>,
     resp: Response,
@@ -255,7 +255,7 @@ pub(crate) fn audit(
 /// bytes agreed and the record did not. A caller that genuinely has no destination yet — a refusal
 /// taken before the model was ever read — passes [`crate::engine::POOL_LABEL_UNRESOLVED`], which
 /// the bound maps to itself because no deployment may configure a pool by that name.
-pub(crate) fn audit_refused(
+pub fn audit_refused(
     unit_token: &UnitToken<Audit>,
     ctx: &AuditCtx<'_>,
     resp: Response,
