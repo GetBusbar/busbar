@@ -88,12 +88,12 @@ impl A2aPlane {
         match self.agents().first() {
             Some(agent) => DestinationFacts::Upstream {
                 transport: agent.transport,
-                host: agent.host,
+                address: busbar_contract::UpstreamAddress::socket(agent.host),
                 lane: agent.lane,
             },
             None => DestinationFacts::Upstream {
                 transport: crate::claims::TRANSPORT_HTTP,
-                host: "",
+                address: busbar_contract::UpstreamAddress::socket(""),
                 lane: LaneId::new(""),
             },
         }

@@ -929,7 +929,7 @@ impl busbar_contract::Plane for TestPlane {
     fn verify<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> DestinationFacts {
         DestinationFacts::Upstream {
             transport: "test-transport",
-            host: "test-host",
+            address: busbar_contract::UpstreamAddress::socket("test-host"),
             lane: LaneId::new("test-lane"),
         }
     }
@@ -1102,7 +1102,7 @@ pub fn sealed(lane: &'static str) -> VerifiedDestination {
         &TestSeal,
         DestinationFacts::Upstream {
             transport: "test-transport",
-            host: "test-host",
+            address: busbar_contract::UpstreamAddress::socket("test-host"),
             lane: LaneId::new(lane),
         },
         "test-transport",

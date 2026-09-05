@@ -46,12 +46,22 @@ pub(crate) struct ConnState {
     /// call it opens needs, so `write()` can lazily open a new RPC for a `StreamId` it has not
     /// seen before. `None` for an accepted (server-side) connection, whose streams are opened by
     /// the PEER — see the crate's own report on this asymmetry.
-    pub(crate) dialer: Option<(Arc<crate::client::Dialer>, http::Uri)>,
+    /// The dial-side connection, the origin URI, and the gRPC method every call it opens is
+    /// dialled against — the method the destination named, so two destinations on one transport
+    /// can name two different upstream methods.
+    pub(crate) dialer: Option<(Arc<crate::client::Dialer>, http::Uri, &'static str)>,
     pub(crate) next_local_stream: std::sync::atomic::AtomicU64,
+    /// The `:path` of every RPC served on this connection, in arrival order. gRPC names each call
+    /// by a path, so this is what the transport actually answered on — recorded rather than
+    /// assumed, because "the method a destination named is the method dialled" is otherwise a
+    /// claim nothing checks.
+    pub(crate) served_paths: SyncMutex<Vec<String>>,
 }
 
 impl ConnState {
-    pub(crate) fn new(dialer: Option<(Arc<crate::client::Dialer>, http::Uri)>) -> Arc<Self> {
+    pub(crate) fn new(
+        dialer: Option<(Arc<crate::client::Dialer>, http::Uri, &'static str)>,
+    ) -> Arc<Self> {
         let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
         Arc::new(Self {
             inbound_tx,
@@ -59,6 +69,7 @@ impl ConnState {
             outbound: SyncMutex::new(HashMap::new()),
             dialer,
             next_local_stream: std::sync::atomic::AtomicU64::new(1),
+            served_paths: SyncMutex::new(Vec::new()),
         })
     }
 }

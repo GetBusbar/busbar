@@ -334,11 +334,11 @@ impl Transport for TlsTransport {
         keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
-            let host = match dest.facts() {
-                busbar_contract::DestinationFacts::Upstream { host, .. } => host,
+            let address = match dest.facts() {
+                busbar_contract::DestinationFacts::Upstream { address, .. } => address,
                 _ => return Err(TransportError::AddressRefused),
             };
-            let (name, addr) = split_host(host)?;
+            let (name, addr) = split_address(&address)?;
             let cfg = self
                 .client_configs
                 .lock()
@@ -464,17 +464,37 @@ impl Transport for TlsTransport {
     }
 }
 
-fn split_host(host: &str) -> Result<(&'static str, SocketAddr), TransportError> {
-    let addr: SocketAddr = host.parse().map_err(|_| TransportError::AddressRefused)?;
-    // No separate hostname is carried by `DestinationFacts::Upstream` beyond `host` (an already
-    // "host:port" string), so the connect address's own IP is offered as the SNI name — accurate
-    // for an IP-addressed upstream, and named here as the ambiguity this crate cannot resolve on
-    // its own: a real deployment names a DNS hostname in its lane config, resolves it upstream of
-    // this transport (the resolve-then-pin guard the rest of the tree already uses), and would
-    // need `DestinationFacts` to carry that hostname alongside the pinned address for SNI to be
-    // the name a certificate was actually issued for rather than the address it resolved to.
-    let name: &'static str = Box::leak(addr.ip().to_string().into_boxed_str());
-    Ok((name, addr))
+/// The pinned socket to connect to, and the name to offer as SNI.
+///
+/// The destination carries both: the address the trust unit pinned, and — separately — the name a
+/// deployment says a certificate was issued for. Where a name is declared, that is what is offered,
+/// so a certificate issued for a DNS name matches. Where none is declared the address itself stands
+/// in, which is only ever right for an IP-addressed upstream, and there is nothing else honest to
+/// offer. Nothing is leaked per dial: both halves are already `'static`, which is what the closed
+/// address shape bought.
+fn split_address(
+    address: &busbar_contract::UpstreamAddress,
+) -> Result<(&'static str, SocketAddr), TransportError> {
+    let authority = address
+        .authority()
+        .ok_or(TransportError::AddressRefused)?;
+    let addr: SocketAddr = authority
+        .parse()
+        .map_err(|_| TransportError::AddressRefused)?;
+    match address.sni() {
+        Some(name) => Ok((name, addr)),
+        None if addr.is_ipv4() || addr.is_ipv6() => {
+            // No name declared: the literal the authority already spells, without its port, is the
+            // only name this transport can offer without inventing one.
+            let host_part = authority
+                .rsplit_once(':')
+                .map_or(authority, |(h, _)| h)
+                .trim_start_matches('[')
+                .trim_end_matches(']');
+            Ok((host_part, addr))
+        }
+        None => Err(TransportError::AddressRefused),
+    }
 }
 
 /// Turn a raw stream a lower transport handed off (a `tcp`-produced [`Conn`], detached via

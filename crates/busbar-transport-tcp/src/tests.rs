@@ -58,7 +58,7 @@ fn upstream_dest(addr: &str) -> busbar_contract::VerifiedDestination {
         &FixtureSeal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "tcp",
-            host,
+            address: busbar_contract::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test"),
         },
         "tcp",

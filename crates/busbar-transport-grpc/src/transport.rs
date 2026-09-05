@@ -168,20 +168,27 @@ impl Transport for GrpcTransport {
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
-            let DestinationFacts::Upstream { host, .. } = dest.facts() else {
+            let DestinationFacts::Upstream { address, .. } = dest.facts() else {
                 return Err(TransportError::AddressRefused);
             };
-            let (host_name, port) = host
+            let authority = address
+                .authority()
+                .ok_or(TransportError::AddressRefused)?;
+            // The method the destination names is the `:path` every call this connection opens is
+            // dialled against. A destination that names none falls back to this crate's own frame
+            // method, which is the only path a byte-blind transport can serve on its own.
+            let method = address.method().unwrap_or(crate::server::RPC_PATH);
+            let (host_name, port) = authority
                 .rsplit_once(':')
                 .and_then(|(h, p)| p.parse::<u16>().ok().map(|p| (h.to_string(), p)))
                 .ok_or(TransportError::AddressRefused)?;
             let (dialer, origin) = client::dial_h2(&host_name, port).await?;
             let id = self.mint_id();
-            let state = ConnState::new(Some((Arc::new(dialer), origin)));
+            let state = ConnState::new(Some((Arc::new(dialer), origin, method)));
             self.conns.lock().unwrap().insert(id, state);
             Ok(Conn::new(Arc::new(GrpcConnHandle {
                 id,
-                peer: host.to_string(),
+                peer: authority.to_string(),
             })))
         })
     }
@@ -223,12 +230,17 @@ impl Transport for GrpcTransport {
                     // OPENS a new gRPC call. An accepted (server) connection cannot originate a
                     // call — its streams are opened by the peer — so an unseen id there is a
                     // caller error, not something this transport can serve.
-                    let Some((dialer, origin)) = state.dialer.clone() else {
+                    let Some((dialer, origin, method)) = state.dialer.clone() else {
                         return Err(TransportError::Framing);
                     };
-                    let tx =
-                        client::open_stream(state.clone(), (*dialer).clone(), origin, stream)
-                            .await?;
+                    let tx = client::open_stream(
+                        state.clone(),
+                        (*dialer).clone(),
+                        origin,
+                        method,
+                        stream,
+                    )
+                    .await?;
                     state.outbound.lock().unwrap().insert(stream.0, tx.clone());
                     tx
                 }

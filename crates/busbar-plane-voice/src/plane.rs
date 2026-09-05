@@ -363,12 +363,12 @@ impl Plane for VoicePlane {
         match self.default_upstream(arriving) {
             Some(up) => DestinationFacts::Upstream {
                 transport: claims::WS_TRANSPORT,
-                host: up.host,
+                address: busbar_contract::UpstreamAddress::socket(up.host),
                 lane: up.lane,
             },
             None => DestinationFacts::Upstream {
                 transport: claims::WS_TRANSPORT,
-                host: "",
+                address: busbar_contract::UpstreamAddress::socket(""),
                 lane: busbar_contract::ids::LaneId::new("voice"),
             },
         }
@@ -496,10 +496,10 @@ impl SessionPlane for VoicePlane {
 /// function cannot resolve a host for, or names no configured upstream at all.
 fn upstream_dialect_for(plane: &VoicePlane, dest: &VerifiedDestination) -> Dialect {
     match dest.facts() {
-        DestinationFacts::Upstream { host, .. } => plane
+        DestinationFacts::Upstream { address, .. } => plane
             .upstreams()
             .iter()
-            .find(|u| u.host == host)
+            .find(|u| Some(u.host) == address.authority())
             .map(|u| u.dialect)
             .unwrap_or(Dialect::OpenaiRealtime),
         _ => plane

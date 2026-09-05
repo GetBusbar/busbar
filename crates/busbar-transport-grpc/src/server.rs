@@ -59,6 +59,11 @@ async fn handle_one_rpc(
     state: Arc<ConnState>,
     req: hyper::Request<Incoming>,
 ) -> hyper::Response<tonic::body::Body> {
+    state
+        .served_paths
+        .lock()
+        .unwrap()
+        .push(req.uri().path().to_string());
     let local = state.next_local_stream.fetch_add(1, Ordering::Relaxed);
     let stream_id = StreamId(local);
     let (out_tx, out_rx) = mpsc::unbounded_channel::<Vec<u8>>();

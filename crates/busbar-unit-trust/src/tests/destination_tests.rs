@@ -93,7 +93,7 @@ pub(crate) mod kinds {
     pub(crate) fn upstream() -> DestinationFacts {
         DestinationFacts::Upstream {
             transport: "wire",
-            host: "upstream.example",
+            address: busbar_contract::UpstreamAddress::socket("upstream.example"),
             lane: LANE,
         }
     }

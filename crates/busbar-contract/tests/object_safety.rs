@@ -242,7 +242,7 @@ impl Plane for FixturePlane {
     fn verify<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> DestinationFacts {
         DestinationFacts::Upstream {
             transport: "fixture",
-            host: "example",
+            address: busbar_contract::UpstreamAddress::socket("example"),
             lane: LaneId::new("fixture-lane"),
         }
     }

@@ -29,7 +29,7 @@ pub use bounded::{
 pub use dest::{
     AuthDecoration, CandidateIdx, CandidateSet, ClientMode, DestinationFacts, DestinationId,
     EgressBody, Leg, OnEmpty, Permutation, RoutePlan, SecretOnce, SecretSlot, TransportKeyHandle,
-    VerifiedDestination, VetoCode,
+    UpstreamAddress, VerifiedDestination, VetoCode,
 };
 pub use grammar::{
     ArrivalLocation, Claim, Idempotency, Location, MaskKind, PathSeg, ReplayMatch, Selector,

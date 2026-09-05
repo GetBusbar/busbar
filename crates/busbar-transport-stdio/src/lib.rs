@@ -27,14 +27,12 @@
 //! ## The lower-layer boundary (placeholder, see the crate's own report)
 //!
 //! stdio composes over nothing (`COMPOSES_OVER` is empty): it is either the process's own
-//! stdin/stdout, or a spawned child's pipes. [`busbar_contract::dest::DestinationFacts::Upstream`]
-//! carries only a single `host: &'static str` for a dial target, which is not enough to spell a
-//! program plus an argument vector plus an environment. This transport reads `host` as the
-//! absolute path of the program to spawn, with NO arguments and NO inherited environment (mirroring
-//! the security posture of the 1.5.5-era MCP stdio client: no shell, an absolute path only,
-//! `env_clear()` first). A real deployment needs a way to carry an argument vector through
-//! `VerifiedDestination`, which the contract does not yet have — flagged as an open gap in the
-//! crate's own report, not silently worked around.
+//! stdin/stdout, or a spawned child's pipes. A dial target reaches it as
+//! [`busbar_contract::UpstreamAddress::Program`], which spells the three things a spawn needs and a
+//! single opaque string could not: the absolute path, the argument vector, and the environment. The
+//! security posture of the 1.5.5-era MCP stdio client is kept exactly — no shell, an absolute path
+//! only, `env_clear()` before anything the destination declared is set — so a child inherits
+//! nothing the deployment did not write down.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

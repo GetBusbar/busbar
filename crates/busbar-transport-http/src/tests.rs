@@ -43,7 +43,7 @@ fn upstream_dest(uri: &str) -> busbar_contract::VerifiedDestination {
         &FixtureSeal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "http",
-            host,
+            address: busbar_contract::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test"),
         },
         "http",

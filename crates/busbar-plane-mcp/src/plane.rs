@@ -94,12 +94,12 @@ impl McpPlane {
         match self.servers().first() {
             Some(server) => DestinationFacts::Upstream {
                 transport: server.transport,
-                host: server.host,
+                address: busbar_contract::UpstreamAddress::socket(server.host),
                 lane: server.lane,
             },
             None => DestinationFacts::Upstream {
                 transport: crate::claims::TRANSPORT_HTTP,
-                host: "",
+                address: busbar_contract::UpstreamAddress::socket(""),
                 lane: LaneId::new(""),
             },
         }

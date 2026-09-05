@@ -35,7 +35,7 @@ fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "grpc",
-            host,
+            address: busbar_contract::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test-lane"),
         },
         "grpc",
@@ -268,6 +268,70 @@ async fn upgrade_is_always_refused() {
     let _ = tokio::time::timeout(Duration::from_millis(200), accept_task).await;
     let err = dialer_t.upgrade(conn, "http", &keys).await.unwrap_err();
     assert_eq!(err, TransportError::Framing);
+}
+
+/// The method the destination names is the `:path` the call is actually opened against. Before the
+/// address shape closed there was nowhere to put a method name, so every call answered to one
+/// fixed path and two plane operations could not reach two upstream methods.
+#[tokio::test]
+async fn the_destinations_method_is_the_path_the_call_opens_against() {
+    let server_t = std::sync::Arc::new(GrpcTransport::new());
+    let client_t = GrpcTransport::new();
+    let cfg = crate::StaticConfig::bind_to("127.0.0.1:0");
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    struct Seal;
+    impl busbar_contract::KernelSeal for Seal {
+        fn seal_origin(&self) -> &'static str {
+            "test"
+        }
+    }
+    let dest = busbar_contract::VerifiedDestination::seal(
+        &Seal,
+        busbar_contract::DestinationFacts::Upstream {
+            transport: "grpc",
+            address: busbar_contract::UpstreamAddress::Grpc {
+                authority: host,
+                sni: None,
+                method: "/vendor.Inference/Chat",
+            },
+            lane: busbar_contract::LaneId::new("test-lane"),
+        },
+        "grpc",
+        None,
+    );
+
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+    client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .await
+        .unwrap();
+
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let (_, frame) = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"ping");
+
+    let served = server_t
+        .state_of(server_conn.id())
+        .unwrap()
+        .served_paths
+        .lock()
+        .unwrap()
+        .clone();
+    assert_eq!(served, vec!["/vendor.Inference/Chat".to_string()]);
 }
 
 #[allow(clippy::assertions_on_constants)]

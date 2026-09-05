@@ -219,7 +219,7 @@ fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "ws",
-            host,
+            address: busbar_contract::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test-lane"),
         },
         "ws",

@@ -177,7 +177,7 @@ pub fn destination(host: &'static str, lane: LaneId) -> VerifiedDestination {
         &TestSeal,
         DestinationFacts::Upstream {
             transport: "http",
-            host,
+            address: busbar_contract::UpstreamAddress::socket(host),
             lane,
         },
         "http",

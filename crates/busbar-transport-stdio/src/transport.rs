@@ -114,16 +114,27 @@ impl StdioTransport {
         }))
     }
 
-    /// Spawn a child process and wrap its stdin/stdout as a live connection. No shell, an absolute
-    /// path only, and the child's environment is NOT inherited — see the module header on the gap
-    /// between this and a real argv-carrying destination.
-    async fn spawn_child(&self, program: &str) -> Result<Conn, TransportError> {
+    /// Spawn a child process and wrap its stdin/stdout as a live connection.
+    ///
+    /// No shell and an absolute path only. The environment is cleared first and then set from what
+    /// the destination declared, so a child never inherits the node's own credentials by accident:
+    /// an empty declaration is an empty environment, which is the posture to default to.
+    async fn spawn_child(
+        &self,
+        program: &str,
+        args: &[&str],
+        env: &[(&str, &str)],
+    ) -> Result<Conn, TransportError> {
         if !program.starts_with('/') {
             return Err(TransportError::AddressRefused);
         }
         let mut cmd = tokio::process::Command::new(program);
-        cmd.env_clear()
-            .stdin(Stdio::piped())
+        cmd.args(args);
+        cmd.env_clear();
+        for (name, value) in env {
+            cmd.env(name, value);
+        }
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
@@ -230,10 +241,12 @@ impl Transport for StdioTransport {
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
-            let DestinationFacts::Upstream { host, .. } = dest.facts() else {
+            let DestinationFacts::Upstream { address, .. } = dest.facts() else {
                 return Err(TransportError::AddressRefused);
             };
-            self.spawn_child(host).await
+            let program = address.program().ok_or(TransportError::AddressRefused)?;
+            self.spawn_child(program, address.args(), address.env())
+                .await
         })
     }
 

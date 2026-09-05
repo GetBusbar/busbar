@@ -77,7 +77,7 @@ fn upstream_dest(addr: &str) -> busbar_contract::VerifiedDestination {
         &FixtureSeal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "tls",
-            host,
+            address: busbar_contract::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test"),
         },
         "tls",
@@ -256,4 +256,57 @@ async fn composition_over_tcp_via_the_upgrade_seam() {
         .await
         .unwrap();
     assert_eq!(&buf, payload);
+}
+
+/// The destination names the certificate's own DNS name, and that is what the handshake offers —
+/// not the address it was pinned to. Before the address shape closed, the only name available was
+/// the connect address's IP, so a certificate issued for a DNS name could never match.
+#[tokio::test]
+async fn a_declared_certificate_name_is_what_the_handshake_offers() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+
+    let leaked: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = busbar_contract::VerifiedDestination::seal(
+        &FixtureSeal,
+        busbar_contract::DestinationFacts::Upstream {
+            transport: "tls",
+            address: busbar_contract::UpstreamAddress::Socket {
+                authority: leaked,
+                sni: Some("localhost"),
+            },
+            lane: busbar_contract::LaneId::new("test"),
+        },
+        "tls",
+        None,
+    );
+    let client_conn = client.dial(&dest, &fixture_key(0)).await.unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    assert_eq!(server.arrival(&server_conn).sni.as_deref(), Some("localhost"));
+    client.close(client_conn, CloseReason::Normal);
+}
+
+/// With no name declared, the authority's own host part is offered — the only name a transport can
+/// name honestly, and right exactly when the upstream is addressed by IP.
+#[tokio::test]
+async fn with_no_declared_name_the_address_itself_stands_in() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+
+    let client_conn = client.dial(&upstream_dest(&addr), &fixture_key(0)).await.unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    // A dial to an IP literal offers no SNI at all on the wire, which is the correct reading of
+    // "the address is the name": rustls does not send a server_name extension for an IP.
+    assert_eq!(server.arrival(&server_conn).sni, None);
+    client.close(client_conn, CloseReason::Normal);
 }

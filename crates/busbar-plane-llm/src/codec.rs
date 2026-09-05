@@ -658,7 +658,7 @@ impl Plane for LlmPlane {
         match self.first_upstream() {
             Some(u) => DestinationFacts::Upstream {
                 transport: crate::claims::TRANSPORT,
-                host: u.host,
+                address: busbar_contract::UpstreamAddress::socket(u.host),
                 lane: u.lane,
             },
             // Nothing is configured, so there is nowhere to go. Naming a kernel verb that does not

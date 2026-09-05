@@ -265,10 +265,13 @@ impl Transport for WsTransport {
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
-            let DestinationFacts::Upstream { host, .. } = dest.facts() else {
+            let DestinationFacts::Upstream { address, .. } = dest.facts() else {
                 return Err(TransportError::AddressRefused);
             };
-            let (secure, host_name, port, path) = split_ws_url(host)?;
+            let url = address
+                .authority()
+                .ok_or(TransportError::AddressRefused)?;
+            let (secure, host_name, port, path) = split_ws_url(url)?;
             // NOT resolve-then-pin: see the module header. A real deployment dials through the
             // tcp/tls transport crates once they exist; this crate resolves the name directly,
             // which is the placeholder this report flags rather than silently narrows.

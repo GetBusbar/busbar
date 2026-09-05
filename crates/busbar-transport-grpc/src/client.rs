@@ -20,7 +20,6 @@ use busbar_contract::StreamId;
 
 use crate::codec::RawCodec;
 use crate::conn::ConnState;
-use crate::server::RPC_PATH;
 
 /// The dial-side HTTP/2 sender. `Clone`-able (it is a cheap handle onto the connection's dispatch
 /// channel), so every RPC this connection opens gets its own owned handle rather than sharing a
@@ -67,13 +66,15 @@ pub(crate) async fn dial_h2(host: &str, port: u16) -> Result<(Dialer, http::Uri)
     Ok((Dialer(send_request), origin))
 }
 
-/// Open a fresh gRPC call for `stream_id` over `dialer`, registering its outbound channel and
+/// Open a fresh gRPC call for `stream_id` over `dialer` against `method`, registering its outbound
+/// channel and
 /// spawning the task that forwards the call's inbound messages into `state`'s shared inbound
 /// channel — the client-side mirror of [`crate::server::handle_one_rpc`].
 pub(crate) async fn open_stream(
     state: Arc<ConnState>,
     dialer: Dialer,
     origin: http::Uri,
+    method: &'static str,
     stream_id: StreamId,
 ) -> Result<mpsc::UnboundedSender<Vec<u8>>, TransportError> {
     let (out_tx, out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -83,7 +84,7 @@ pub(crate) async fn open_stream(
     // this fix.
     let mut grpc = tonic::client::Grpc::with_origin(dialer, origin);
     grpc.ready().await.map_err(|_| TransportError::Refused)?;
-    let path = PathAndQuery::from_static(RPC_PATH);
+    let path = PathAndQuery::from_static(method);
     let response = grpc
         .streaming(tonic::Request::new(InStream(out_rx)), path, RawCodec)
         .await

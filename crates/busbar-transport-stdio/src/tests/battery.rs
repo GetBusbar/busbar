@@ -253,3 +253,70 @@ impl CloneForTest for busbar_contract::wire::Conn {
         self.clone()
     }
 }
+
+/// The destination's argument vector and environment both reach the child. A single opaque path
+/// could carry neither, so a deployment naming a program with arguments had no way to say so.
+#[tokio::test]
+async fn argv_and_env_reach_the_spawned_child() {
+    // `sh -c SCRIPT NAME`: the script reads the environment this destination declared and the
+    // argument vector it was spawned with, and writes both back as one line — one stdio frame.
+    let dest = program_dest(
+        &["-c", "printf '%s %s\\n' \"$MARK\" \"$0\""],
+        &[("MARK", "declared")],
+    );
+    let t = StdioTransport::new();
+    let conn = t.dial(&dest, &test_key_handle()).await.unwrap();
+    let mut frames = t.frames(conn.clone_for_test());
+    let (_, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"declared argzero");
+    t.close(conn, busbar_contract::wire::CloseReason::Normal);
+}
+
+/// The environment is cleared before anything the destination declared is set, so a child never
+/// inherits a variable the deployment did not write down. `HOME` is set in this process and
+/// must not survive into a child that was given an empty environment.
+#[tokio::test]
+async fn the_child_inherits_no_environment_it_was_not_given() {
+    assert!(
+        std::env::var_os("HOME").is_some(),
+        "the parent has a HOME to leak"
+    );
+    let dest = program_dest(&["-c", "printf 'home=[%s]\\n' \"$HOME\""], &[]);
+    let t = StdioTransport::new();
+    let conn = t.dial(&dest, &test_key_handle()).await.unwrap();
+    let mut frames = t.frames(conn.clone_for_test());
+    let (_, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"home=[]");
+    t.close(conn, busbar_contract::wire::CloseReason::Normal);
+}
+
+/// A sealed destination naming `/bin/sh`, the given argument vector (with `argzero` appended to
+/// stand in for the shell's own `$0`) and the given environment.
+fn program_dest(
+    args: &[&'static str],
+    env: &'static [(&'static str, &'static str)],
+) -> busbar_contract::VerifiedDestination {
+    struct Seal;
+    impl busbar_contract::KernelSeal for Seal {
+        fn seal_origin(&self) -> &'static str {
+            "test"
+        }
+    }
+    let mut argv: Vec<&'static str> = args.to_vec();
+    argv.push("argzero");
+    let argv: &'static [&'static str] = Box::leak(argv.into_boxed_slice());
+    busbar_contract::VerifiedDestination::seal(
+        &Seal,
+        busbar_contract::DestinationFacts::Upstream {
+            transport: "stdio",
+            address: busbar_contract::UpstreamAddress::Program {
+                path: "/bin/sh",
+                args: argv,
+                env,
+            },
+            lane: busbar_contract::LaneId::new("test"),
+        },
+        "stdio",
+        None,
+    )
+}

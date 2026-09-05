@@ -711,7 +711,7 @@ fn sealed_destination() -> busbar_contract::dest::VerifiedDestination {
         &seal,
         busbar_contract::dest::DestinationFacts::Upstream {
             transport: "http",
-            host: "server.example",
+            address: busbar_contract::UpstreamAddress::socket("server.example"),
             lane: busbar_contract::ids::LaneId::new("standard"),
         },
         "http",

@@ -344,7 +344,9 @@ impl Transport for HttpTransport {
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
             let host = match dest.facts() {
-                busbar_contract::DestinationFacts::Upstream { host, .. } => host,
+                busbar_contract::DestinationFacts::Upstream { address, .. } => address
+                    .authority()
+                    .ok_or(TransportError::AddressRefused)?,
                 _ => return Err(TransportError::AddressRefused),
             };
             let uri: http::Uri = host.parse().map_err(|_| TransportError::AddressRefused)?;

@@ -261,11 +261,15 @@ impl Transport for TcpTransport {
         _keys: &'a busbar_contract::TransportKeyHandle,
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
-            let host = match dest.facts() {
-                busbar_contract::DestinationFacts::Upstream { host, .. } => host,
+            let authority = match dest.facts() {
+                busbar_contract::DestinationFacts::Upstream { address, .. } => address
+                    .authority()
+                    .ok_or(TransportError::AddressRefused)?,
                 _ => return Err(TransportError::AddressRefused),
             };
-            let addr: SocketAddr = host.parse().map_err(|_| TransportError::AddressRefused)?;
+            let addr: SocketAddr = authority
+                .parse()
+                .map_err(|_| TransportError::AddressRefused)?;
             let stream = TcpStream::connect(addr)
                 .await
                 .map_err(|e| Self::map_connect_err(&e))?;
