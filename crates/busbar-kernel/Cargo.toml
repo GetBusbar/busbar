@@ -1,0 +1,37 @@
+# busbar-kernel — the registry and the Teller, plus exactly what the loop needs.
+#
+# WHY THIS CRATE IS SMALL AND WHY IT DEPENDS ON ALMOST NOTHING. The kernel is the one place that
+# composes the three blind axes, so it is the one place a protocol detail would be able to hide.
+# The design gives it a line ceiling per subject and one union ceiling; the way to stay under a
+# ceiling is not to be terse, it is to own less. So the kernel owns the loop, the pump, the
+# in-flight table, recovery, slices and leases, the registry, the closed grammars, the ticks and the
+# arena — and nothing else. The write-ahead log, the ledger, cost, usage and the verbs are units
+# behind sealed traits; the store, the transports and the planes are behind traits too.
+#
+# DEPENDENCIES. `busbar-caps` and the standard library. Not a convenience: the capability types are
+# what make "every unit is settled exactly once" a compile-time fact rather than a code-review
+# habit, and everything else the loop touches reaches it through a trait the integrator implements.
+# There is deliberately no async runtime here: the loop's ORDER, its two audit doors and its one
+# exit path are what this crate fixes, and none of those are made truer by an executor.
+[package]
+name = "busbar-kernel"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: one pinned number, the same one busbar-caps pins, set to what CI checks.
+rust-version = "1.97"
+description = "The kernel: the Teller loop, the frame pump and scheduler, the in-flight and session tables, recovery, slices and leases, the plugin registry, the closed grammars, the ticks and the per-unit arena."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_kernel"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-caps = { path = "../busbar-caps" }
+
+# TEMPORARY (delete before hand-off, together with this comment): stand this crate up as its own
+# workspace root while sibling members are mid-landing. Several in-flight crates currently carry the
+# same table, which makes the repository root workspace unloadable; this lets `-p busbar-kernel`
+# build, test, lint and document in isolation. The `members` line in the root manifest is already in
+# place, so removing this table is the only step needed to fold the crate back in.
