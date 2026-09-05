@@ -10,10 +10,10 @@
 //!
 //! # Assumptions and simplifications, stated once
 //!
-//! - **HTTP/WS path arrives as a transport fact.** The same assumption `busbar-plane-admin` states
-//!   for the same reason: nothing in `busbar-contract` pins the `http`/`ws` transports' fact key
-//!   names, so `FACT_PATH` is this crate's own guess (`"path"`), used to resolve which one-shot
-//!   operation or which duplex dialect a session's Unit 0 is.
+//! - **HTTP/WS path arrives as a transport fact**, under the kernel's own reserved key
+//!   (`busbar_contract::transport::facts::PATH`), used to resolve which one-shot operation or which
+//!   duplex dialect a session's Unit 0 is. This used to be a guess, and both transports now declare
+//!   the key they publish it under.
 //! - **Only the first decoded IR event per wire frame is acted on.** Both `read_up`/`read_down`
 //!   return `Vec<..Event>` (one wire message can map to 0..n IR events); this plane surfaces the
 //!   first and drops the rest. A wire frame that genuinely carries more than one IR event (not
@@ -34,15 +34,11 @@
 //!   [`crate::session::TurnCounters::tool_calls`], and the delta/close frames that follow are folded
 //!   into the turn's own frame stream. Stated as a finding, not hidden.
 //! - **`encode_response` is a passthrough of bytes `decode_response` already rendered**, mirroring
-//!   `busbar-plane-admin`'s pattern, rather than the two-step `Pending::Egress` split
-//!   [`crate::session::Pending`]'s doc comment originally describes. Reason: `Response` carries an
-//!   `Ir` (bytes + spans) and a fact map, not a structured `IrServerEvent` — there is nothing for
-//!   `encode_response` to re-derive a dialect-specific wire event FROM without re-parsing state this
-//!   plane has already advanced once. `decode_response` reads the open turn's own client dialect off
+//!   `busbar-plane-admin`'s pattern. `decode_response` reads the open turn's own client dialect off
 //!   `Ctx::session()`'s declared `dialect` session fact (the one fact this plane's `SESSION_FACTS`
-//!   declares) and renders the client-shaped bytes immediately; `Pending::Egress` is consequently
-//!   unused by this implementation and is left in `session.rs` as the shape a future pass that
-//!   revisits this split would use.
+//!   declares) and renders the client-shaped bytes immediately. The downlink half of
+//!   [`crate::session::Pending`] is gone with the reason it existed: a step after decode can now
+//!   read what decode determined off the unit's own draft facts.
 //! - **Verify's upstream pick for a fresh session is a documented default, not a policy.** A session
 //!   whose own arriving dialect is one of the two duplex-upstream dialects dials the SAME dialect's
 //!   configured upstream when one exists; otherwise (Twilio, or no matching upstream configured) it
@@ -59,7 +55,9 @@ use busbar_contract::bounded::{ArenaBytes, FactValue, Facts, Ir};
 use busbar_contract::dest::{
     ClientMode, DestinationFacts, EgressBody, RoutePlan, VerifiedDestination,
 };
-use busbar_contract::ids::{AdminVerbId, CorrelationRef, MeterClassId, OpClassId, SchemeKey};
+use busbar_contract::ids::{
+    AdminVerbId, CorrelationRef, CorrelationValue, MeterClassId, OpClassId, SchemeKey,
+};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
 use busbar_contract::plane::{
     Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
@@ -83,13 +81,14 @@ use crate::meta;
 use crate::session::{Pending, VoiceSessionState};
 use crate::{twilio, ulaw, VoicePlane};
 
-/// The transport fact key this plane assumes `http`/`ws` carry the request path under.
+/// The transport fact key the request path is published under.
 ///
-/// See the module doc comment's first assumption.
-const FACT_PATH: &str = "path";
+/// The kernel's own reserved key, named rather than assumed. It used to be this crate's guess, and
+/// the module header said so; the header's first assumption is retired with it.
+const FACT_PATH: &str = busbar_contract::transport::facts::PATH;
 
 /// The fact key a tool call's provider-origin `OneShot` correlates on.
-const FACT_TOOL_CORRELATION: &str = "call_id_hash";
+const FACT_TOOL_CORRELATION: &str = "call_id";
 
 /// Both duplex dialects' reader, boxed so the same call site works for either without a generic
 /// parameter leaking into every method signature. Cheap: both codecs are zero-sized.
@@ -106,19 +105,6 @@ fn writer_for(dialect: Dialect) -> Box<dyn DuplexWriter> {
         Dialect::GeminiLive => Box::new(GeminiLiveCodec),
         _ => Box::new(OpenAiRealtimeCodec),
     }
-}
-
-/// Fold a `u64` into the correlation value space, for the tool-call correlation fact.
-///
-/// A `CorrelationRef` carries a `u64`; a wire `call_id` is a string. This is a stable, deterministic
-/// (not cryptographic) fold, adequate for correlating within one session's small live-call set.
-fn fnv1a(s: &str) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for b in s.as_bytes() {
-        hash ^= u64::from(*b);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
 }
 
 impl VoicePlane {
@@ -319,14 +305,12 @@ impl Plane for VoicePlane {
     fn authenticate<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> CredentialLocator {
         // Twilio, OpenAI Realtime and Gemini Live all authenticate once at session open and cache
         // the result for the session's life (`claims::Dialect::authenticates_from_session`); the two
-        // one-shot HTTP operations present a credential on the one request they are. This plane
-        // cannot see its own draft's dialect from `Unit` directly (dialect is a fact, not a field),
-        // so it reads the session's cached dialect fact where one exists — a `None` session (the
-        // one-shot case) falls through to `from_session: false`, which is the correct answer there.
-        let _ = u;
+        // one-shot HTTP operations present a credential on the one request they are. The dialect is
+        // the draft's own fact, sealed onto the unit by the kernel, so this step reads what decode
+        // determined rather than a session fact that a one-shot unit does not have at all.
         CredentialLocator {
             narrowing: None,
-            from_session: false,
+            from_session: draft_dialect(u).is_some_and(Dialect::authenticates_from_session),
         }
     }
 
@@ -337,7 +321,7 @@ impl Plane for VoicePlane {
                 mode: ClientMode::AwaitReply {
                     correlation: CorrelationRef {
                         fact_key: FACT_TOOL_CORRELATION,
-                        value: 0,
+                        value: CorrelationValue::Num(0),
                     },
                     deadline_secs: 30,
                 },
@@ -355,20 +339,17 @@ impl Plane for VoicePlane {
                     .unwrap_or(busbar_contract::ids::LaneId::new("voice")),
             };
         }
-        let arriving = ctx
-            .session()
-            .and_then(|s| s.session_fact(meta::FACT_DIALECT))
-            .and_then(dialect_from_name)
-            .unwrap_or(Dialect::OpenaiRealtime);
+        // The dialect the decode step named, off the unit's own sealed draft facts.
+        let arriving = draft_dialect(u).unwrap_or(Dialect::OpenaiRealtime);
         match self.default_upstream(arriving) {
             Some(up) => DestinationFacts::Upstream {
                 transport: claims::WS_TRANSPORT,
-                host: up.host,
+                address: busbar_contract::UpstreamAddress::socket(up.host),
                 lane: up.lane,
             },
             None => DestinationFacts::Upstream {
                 transport: claims::WS_TRANSPORT,
-                host: "",
+                address: busbar_contract::UpstreamAddress::socket(""),
                 lane: busbar_contract::ids::LaneId::new("voice"),
             },
         }
@@ -443,7 +424,12 @@ impl Plane for VoicePlane {
         }
     }
 
-    fn plane_facts<'u>(&self, verb: AdminVerbId, ctx: &Ctx<'u>) -> Result<PlaneFacts<'u>, Decode> {
+    fn plane_facts<'u>(
+        &self,
+        verb: AdminVerbId,
+        _subject: Option<&'u str>,
+        ctx: &Ctx<'u>,
+    ) -> Result<PlaneFacts<'u>, Decode> {
         if verb != meta::VERB_DIALECTS {
             return Err(Decode::UnsupportedOperation);
         }
@@ -496,10 +482,10 @@ impl SessionPlane for VoicePlane {
 /// function cannot resolve a host for, or names no configured upstream at all.
 fn upstream_dialect_for(plane: &VoicePlane, dest: &VerifiedDestination) -> Dialect {
     match dest.facts() {
-        DestinationFacts::Upstream { host, .. } => plane
+        DestinationFacts::Upstream { address, .. } => plane
             .upstreams()
             .iter()
-            .find(|u| u.host == host)
+            .find(|u| Some(u.host) == address.authority())
             .map(|u| u.dialect)
             .unwrap_or(Dialect::OpenaiRealtime),
         _ => plane
@@ -507,6 +493,18 @@ fn upstream_dialect_for(plane: &VoicePlane, dest: &VerifiedDestination) -> Diale
             .first()
             .map(|u| u.dialect)
             .unwrap_or(Dialect::OpenaiRealtime),
+    }
+}
+
+/// The dialect the decode step named, read back off the unit's sealed draft facts.
+///
+/// The one place this plane's later steps ask what dialect a unit is: decode is the step that read
+/// the bytes and matched the claim, and what it determined travels on the unit. A one-shot unit has
+/// no session at all, so a session fact could not have answered for it.
+fn draft_dialect(u: &Unit<'_>) -> Option<Dialect> {
+    match u.draft_facts().get(meta::FACT_DIALECT) {
+        Some(FactValue::Str(name)) => dialect_from_name(name),
+        _ => None,
     }
 }
 
@@ -734,9 +732,12 @@ fn progress_from_server_event<'u>(
                 op: OpClassId::new("tool_call"),
                 body_ir: Ir::new(&[], &[]),
                 correlates: None,
+                // The call identifier travels as itself. It is a string on the wire and it is a
+                // string here, allocated in the unit's own arena — a fold into sixty four bits
+                // would be one collision away from answering a tool call with another's reply.
                 correlation_out: Some(CorrelationRef {
                     fact_key: FACT_TOOL_CORRELATION,
-                    value: fnv1a(&call_id),
+                    value: CorrelationValue::Str(call_id_arena),
                 }),
                 facts,
             }))

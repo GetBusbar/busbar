@@ -125,7 +125,12 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 
 # The neutral crates (the ABI side) and the plane crates (the plugin side). Derived once; a plane or
 # neutral crate that appears/disappears is a one-line edit here, never N stale paths scattered below.
-NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/api/src"
+# `busbar-substrate-values` is the PURE HALF of the substrate — the value families the codecs and the
+# planes name, split out so a plane's closure resolves no hyper/reqwest/tokio edge. It is every bit as
+# NEUTRAL as the crate it came out of, and the bulk of the surface a plane talks to (proto, ir,
+# breaker, handlers) now lives there. Omitting it would leave those files scanned by nothing, which is
+# the exact failure mode this file's header describes: a boundary with no instrument watching it.
+NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/busbar-substrate-values/src crates/api/src"
 # The plane src roots are single-sourced (scripts/plane-keys.sh) so a plane added there is scanned
 # here without a human remembering to append its path — a plane this lint never lists is a plane it
 # scans zero files of, and zero is the passing answer to every ban.

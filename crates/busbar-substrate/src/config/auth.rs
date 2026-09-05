@@ -315,7 +315,11 @@ pub struct AuthDeployCfg {
     pub key_ttl: Option<String>,
     /// The `auth.policy:` token-mint POLICY block (1.6.0, additive). See [`AuthPolicyCfg`]. Absent ⇒
     /// `Default` (no policy caps), unchanged behavior.
-    #[serde(default)]
+    ///
+    /// A CARRIER, not a parsed field: the key is lifted out of the `auth:` mapping by the config
+    /// pre-pass before this struct parses, so this struct's accepted key set — and the unknown-key
+    /// refusal built from it — stays exactly the five keys 1.5.5 accepts here.
+    #[serde(skip)]
     pub policy: AuthPolicyCfg,
 }
 

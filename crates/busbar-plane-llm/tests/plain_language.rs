@@ -107,7 +107,9 @@ fn the_manifest_names_only_what_a_plane_may_name() {
         .split("[dependencies]")
         .nth(1)
         .expect("the manifest has a dependency section");
-    let allowed = ["busbar-contract", "busbar-llm"];
+    // `busbar-llm-codec`, not `busbar-llm`: the codecs are their own crate now, and the crate they
+    // used to share carried an HTTP stack and an async runtime that a plane may not link.
+    let allowed = ["busbar-contract", "busbar-llm-codec"];
     for line in deps.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with('[') {

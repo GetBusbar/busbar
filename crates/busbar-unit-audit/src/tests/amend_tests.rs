@@ -16,7 +16,7 @@ fn an_access() -> AmendBody {
     content_access(
         Reader::Hook,
         "compress",
-        Subject::Principal("pseudonym-1".into()),
+        Subject::PrincipalId("pseudonym-1".into()),
         OpClassId::new("chat.completion"),
         vec!["messages".into(), "system".into()],
         1_700_000_000,
@@ -26,7 +26,7 @@ fn an_access() -> AmendBody {
 fn a_correction() -> AmendBody {
     correction(
         "the-entry-being-amended",
-        Subject::Principal("pseudonym-1".into()),
+        Subject::PrincipalId("pseudonym-1".into()),
         1_000,
         800,
         "operator",
@@ -180,7 +180,7 @@ fn an_amendment_names_the_audit_record_it_amends() {
     let mut audit = AuditChain::new();
     let record = audit.seal(
         AuditInputs {
-            subject: Subject::Principal("p".into()),
+            subject: Subject::PrincipalId("p".into()),
             what: What {
                 unit_key: UnitKey::new(1),
                 op_class: OpClassId::new("chat.completion"),
@@ -220,7 +220,7 @@ fn an_amendment_names_the_audit_record_it_amends() {
     let amendment = chain.append(
         correction(
             &amends(&record),
-            Subject::Principal("p".into()),
+            Subject::PrincipalId("p".into()),
             100,
             0,
             "operator",

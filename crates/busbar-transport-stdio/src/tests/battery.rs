@@ -12,15 +12,22 @@ use std::time::Duration;
 use futures::StreamExt;
 use tokio::io::{split, AsyncWriteExt};
 
-use busbar_contract::wire::{Direction, TransportError};
 use busbar_contract::{ArenaBytes, Transport};
+use busbar_contract_transport::wire::Direction;
+use busbar_contract_transport::wire::TransportError;
 
 use crate::StdioTransport;
 
 /// Build a connected pair of live connections over an in-memory duplex, standing in for two ends
 /// of a real pipe. `cap` is the duplex's byte capacity, which is what makes the backpressure test
 /// deterministic.
-fn pair(t: &StdioTransport, cap: usize) -> (busbar_contract::wire::Conn, busbar_contract::wire::Conn) {
+fn pair(
+    t: &StdioTransport,
+    cap: usize,
+) -> (
+    busbar_contract_transport::wire::Conn,
+    busbar_contract_transport::wire::Conn,
+) {
     let (end_a, end_b) = tokio::io::duplex(cap);
     // `tokio::io::duplex` already returns a connected PAIR: writes on `end_a` are what `end_b`
     // reads, and vice versa. Splitting each end and wrapping the two halves of the SAME end
@@ -69,9 +76,13 @@ async fn multiple_frames_in_order_no_data_loss() {
     let t = StdioTransport::new();
     let (a, b) = pair(&t, 64 * 1024);
     for line in ["one", "two", "three"] {
-        t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(line.as_bytes()))
-            .await
-            .unwrap();
+        t.write(
+            &a,
+            busbar_contract::StreamId(0),
+            ArenaBytes::new(line.as_bytes()),
+        )
+        .await
+        .unwrap();
     }
     let mut frames = t.frames(b);
     for expect in ["one", "two", "three"] {
@@ -85,9 +96,13 @@ async fn half_close_peer_sees_clean_eof_and_can_still_be_written_to() {
     let t = StdioTransport::new();
     let (a, b) = pair(&t, 64 * 1024);
 
-    t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(b"last words"))
-        .await
-        .unwrap();
+    t.write(
+        &a,
+        busbar_contract::StreamId(0),
+        ArenaBytes::new(b"last words"),
+    )
+    .await
+    .unwrap();
 
     // `a` shuts down its OWN write half only — the wire-level half-close — without touching its
     // read half and without going through `Transport::close` (which the contract defines as
@@ -102,7 +117,10 @@ async fn half_close_peer_sees_clean_eof_and_can_still_be_written_to() {
     let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), b"last words");
     // The half-close is a clean EOF, not an error: the NEXT poll ends the stream quietly.
-    assert!(frames.next().await.is_none(), "half-close reads as EOF, not Reset");
+    assert!(
+        frames.next().await.is_none(),
+        "half-close reads as EOF, not Reset"
+    );
 }
 
 #[tokio::test]
@@ -149,7 +167,10 @@ async fn backpressure_is_bidirectional() {
     });
     // Give the writer a moment to fill the 8-byte duplex and block.
     tokio::time::sleep(Duration::from_millis(20)).await;
-    assert!(!writer.is_finished(), "an oversized write must block on a full duplex");
+    assert!(
+        !writer.is_finished(),
+        "an oversized write must block on a full duplex"
+    );
     let mut frames = t.frames(b);
     let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.len(), payload.len());
@@ -167,9 +188,13 @@ async fn k_writers_serialise_without_interleaving() {
         let a = a.clone_for_test();
         handles.push(tokio::spawn(async move {
             let line = format!("writer-{i:02}");
-            t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(line.as_bytes()))
-                .await
-                .unwrap();
+            t.write(
+                &a,
+                busbar_contract::StreamId(0),
+                ArenaBytes::new(line.as_bytes()),
+            )
+            .await
+            .unwrap();
         }));
     }
     for h in handles {
@@ -183,16 +208,23 @@ async fn k_writers_serialise_without_interleaving() {
         assert!(line.starts_with("writer-"), "no interleaving: {line:?}");
         seen.insert(line);
     }
-    assert_eq!(seen.len(), K, "every writer's line arrived exactly once, unmangled");
+    assert_eq!(
+        seen.len(),
+        K,
+        "every writer's line arrived exactly once, unmangled"
+    );
 }
 
+/// stdio composes over nothing, so a handoff offered to it is one neither leg declared. The refusal
+/// is a mismatch and not a framing error, because the bytes were never the problem.
 #[tokio::test]
-async fn upgrade_is_always_refused() {
+async fn a_handoff_onto_stdio_is_a_mismatch() {
     let t = StdioTransport::new();
     let (a, _b) = pair(&t, 4096);
     let keys = test_key_handle();
-    let err = t.upgrade(a, "tls", &keys).await.unwrap_err();
-    assert_eq!(err, TransportError::Framing);
+    let err = t.adopt(&t, a, &keys).await.unwrap_err();
+    assert_eq!(err, TransportError::HandoffMismatch);
+    assert!(<StdioTransport as busbar_contract::TransportMeta>::COMPOSES_OVER.is_empty());
 }
 
 #[tokio::test]
@@ -206,7 +238,7 @@ async fn unit0_refusal_writes_then_closes() {
         stream: None,
         correlates: None,
     };
-    t.unit0_refusal(a, &refusal, ArenaBytes::new(b"refused"))
+    t.unit0_refusal(a, None, &refusal, ArenaBytes::new(b"refused"))
         .await
         .unwrap();
     let mut frames = t.frames(b);
@@ -217,8 +249,8 @@ async fn unit0_refusal_writes_then_closes() {
 #[allow(clippy::assertions_on_constants)]
 #[tokio::test]
 async fn transport_meta_matches_the_architecture_row() {
-    use busbar_contract::wire::Unit0Trigger;
     use busbar_contract::TransportMeta;
+    use busbar_contract_transport::wire::Unit0Trigger;
     assert_eq!(<StdioTransport as TransportMeta>::KEY, "stdio");
     assert!(<StdioTransport as TransportMeta>::SESSION);
     assert!(<StdioTransport as TransportMeta>::SESSION_BOUND);
@@ -239,17 +271,84 @@ fn test_key_handle() -> busbar_contract::TransportKeyHandle {
             "test"
         }
     }
-    busbar_contract::TransportKeyHandle::seal(&Seal, 0, "test")
+    busbar_contract::TransportKeyHandle::issue(&Seal, 0, "test")
 }
 
-/// Test-only: [`busbar_contract::wire::Conn`] is `Clone` (a cheap `Arc` handle), which is exactly
+/// Test-only: [`busbar_contract_transport::wire::Conn`] is `Clone` (a cheap `Arc` handle), which is exactly
 /// what lets several tasks hold "the same connection" the way a real caller's writer/closer/frame
 /// pump each hold their own clone. Named to make every call site read as what it is.
 trait CloneForTest {
     fn clone_for_test(&self) -> Self;
 }
-impl CloneForTest for busbar_contract::wire::Conn {
+impl CloneForTest for busbar_contract_transport::wire::Conn {
     fn clone_for_test(&self) -> Self {
         self.clone()
     }
+}
+
+/// The destination's argument vector and environment both reach the child. A single opaque path
+/// could carry neither, so a deployment naming a program with arguments had no way to say so.
+#[tokio::test]
+async fn argv_and_env_reach_the_spawned_child() {
+    // `sh -c SCRIPT NAME`: the script reads the environment this destination declared and the
+    // argument vector it was spawned with, and writes both back as one line — one stdio frame.
+    let dest = program_dest(
+        &["-c", "printf '%s %s\\n' \"$MARK\" \"$0\""],
+        &[("MARK", "declared")],
+    );
+    let t = StdioTransport::new();
+    let conn = t.dial(&dest, &test_key_handle()).await.unwrap();
+    let mut frames = t.frames(conn.clone_for_test());
+    let (_, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"declared argzero");
+    t.close(conn, busbar_contract_transport::wire::CloseReason::Normal);
+}
+
+/// The environment is cleared before anything the destination declared is set, so a child never
+/// inherits a variable the deployment did not write down. `HOME` is set in this process and
+/// must not survive into a child that was given an empty environment.
+#[tokio::test]
+async fn the_child_inherits_no_environment_it_was_not_given() {
+    assert!(
+        std::env::var_os("HOME").is_some(),
+        "the parent has a HOME to leak"
+    );
+    let dest = program_dest(&["-c", "printf 'home=[%s]\\n' \"$HOME\""], &[]);
+    let t = StdioTransport::new();
+    let conn = t.dial(&dest, &test_key_handle()).await.unwrap();
+    let mut frames = t.frames(conn.clone_for_test());
+    let (_, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"home=[]");
+    t.close(conn, busbar_contract_transport::wire::CloseReason::Normal);
+}
+
+/// A sealed destination naming `/bin/sh`, the given argument vector (with `argzero` appended to
+/// stand in for the shell's own `$0`) and the given environment.
+fn program_dest(
+    args: &[&'static str],
+    env: &'static [(&'static str, &'static str)],
+) -> busbar_contract::VerifiedDestination {
+    struct Seal;
+    impl busbar_contract::KernelSeal for Seal {
+        fn seal_origin(&self) -> &'static str {
+            "test"
+        }
+    }
+    let mut argv: Vec<&'static str> = args.to_vec();
+    argv.push("argzero");
+    let argv: &'static [&'static str] = Box::leak(argv.into_boxed_slice());
+    busbar_contract::VerifiedDestination::seal(
+        &Seal,
+        busbar_contract::DestinationFacts::Upstream {
+            transport: "stdio",
+            address: busbar_contract_transport::dest::UpstreamAddress::Program {
+                path: "/bin/sh",
+                args: argv,
+                env,
+            },
+            lane: busbar_contract::LaneId::new("test"),
+        },
+        "stdio",
+        None,
+    )
 }

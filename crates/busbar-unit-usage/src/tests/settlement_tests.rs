@@ -339,3 +339,42 @@ fn a_drawn_requests_slot_is_never_released() {
         "nothing drawn, nothing settled"
     );
 }
+
+/// Every settlement mark has a posting flag behind it, and the late-accrual mark reaches the one
+/// the capability crate declared for it. Before this, the two vocabularies were never bridged: a
+/// settlement could be marked late and the posting it produced could not say so.
+#[test]
+fn every_settlement_mark_carries_onto_the_posting() {
+    use crate::settlement::{posting_flags, SettleFlag};
+    use busbar_caps::PostingFlags as P;
+
+    assert_eq!(SettleFlag::LateAccrual.posting_flag(), P::LATE_ACCRUAL);
+    assert_eq!(SettleFlag::Estimated.posting_flag(), P::ESTIMATED);
+    assert_eq!(SettleFlag::MeterDisputed.posting_flag(), P::METER_DISPUTED);
+    assert_eq!(SettleFlag::Recovered.posting_flag(), P::RECOVERED);
+    assert_eq!(SettleFlag::Voided.posting_flag(), P::VOIDED);
+    assert_eq!(SettleFlag::Overdraft.posting_flag(), P::OVERDRAFT);
+    assert_eq!(SettleFlag::Unposted.posting_flag(), P::UNPOSTED);
+
+    // No two marks collapse onto one flag, so a posting can always be read back to the marks that
+    // produced it.
+    let all = [
+        SettleFlag::Estimated,
+        SettleFlag::MeterDisputed,
+        SettleFlag::Recovered,
+        SettleFlag::Voided,
+        SettleFlag::LateAccrual,
+        SettleFlag::Overdraft,
+        SettleFlag::Unposted,
+    ];
+    for (i, a) in all.iter().enumerate() {
+        for b in &all[i + 1..] {
+            assert_ne!(a.posting_flag(), b.posting_flag(), "{a:?} and {b:?}");
+        }
+    }
+
+    let folded = posting_flags([&SettleFlag::LateAccrual, &SettleFlag::Overdraft]);
+    assert!(folded.contains(P::LATE_ACCRUAL));
+    assert!(folded.contains(P::OVERDRAFT));
+    assert!(!folded.contains(P::ESTIMATED));
+}

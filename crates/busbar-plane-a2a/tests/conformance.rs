@@ -18,7 +18,9 @@
 
 mod common;
 
-use busbar_contract::plane::{Ingress, Plane, Progress, Response, SessionPlane, UnitDraft};
+use busbar_contract::plane::{
+    Ingress, Plane, PlaneMeta, Progress, Response, SessionPlane, UnitDraft,
+};
 use busbar_contract::wire::{Decode, FrameCursor};
 use busbar_plane_a2a::{facts, jsonrpc, ops, A2aPlane};
 use common::{frame, response_frame, Scaffold};
@@ -61,7 +63,7 @@ fn request(id: &str, method: &str) -> Vec<u8> {
 }
 
 /// Drive one body through the decode step and hand back what the plane made of it.
-fn decode(plane: &A2aPlane, body: &[u8]) -> Result<(ops::MethodRow, u64), Decode> {
+fn decode(plane: &A2aPlane, body: &[u8]) -> Result<(ops::MethodRow, String), Decode> {
     let scaffold = Scaffold::new("http");
     let ctx = scaffold.ctx();
     let frames = vec![frame(body)];
@@ -79,10 +81,16 @@ fn decode(plane: &A2aPlane, body: &[u8]) -> Result<(ops::MethodRow, u64), Decode
     };
     let row = *ops::row_for(method).expect("the recorded method is one the plane carries");
     assert_eq!(row.op, draft.op, "{method} was drafted under another class");
-    let correlation = draft
-        .correlation_out
-        .expect("a request with an identifier correlates")
-        .value;
+    // Rendered rather than returned: the value borrows the scaffold's arena, and the arena
+    // does not outlive this call. The rendering keeps the two arms distinct, which is the
+    // property under test.
+    let correlation = format!(
+        "{:?}",
+        draft
+            .correlation_out
+            .expect("a request with an identifier correlates")
+            .value
+    );
     Ok((row, correlation))
 }
 
@@ -100,7 +108,7 @@ fn every_method_of_the_later_vocabulary_decodes() {
             ops::Wording::Verb,
             "{method} is the verb wording"
         );
-        assert_eq!(correlation, 1, "{method} lost its identifier");
+        assert_eq!(correlation, "Num(1)", "{method} lost its identifier");
         assert!(!slot.is_empty());
     }
 }
@@ -211,7 +219,7 @@ fn a_streamed_method_opens_a_unit() {
 
 /// A named identifier survives the round trip, bytes for bytes.
 ///
-/// The correlation carries a number the identifier cannot be; the identifier itself travels as a
+/// The correlation carries the identifier itself; the raw bytes travel beside it as a
 /// fact, and this is the assertion that it arrives intact.
 #[test]
 fn a_named_identifier_survives_the_round_trip() {
@@ -229,8 +237,11 @@ fn a_named_identifier_survives_the_round_trip() {
         other => panic!("the identifier was recorded as {other:?}"),
     };
     assert_eq!(recorded, r#""a2a-http-json""#);
-    // And the correlation is the digested form, which is above every bare counter.
-    assert!(draft.correlation_out.expect("it correlates").value >= 1 << 63);
+    // And the correlation carries the identifier itself, not a number standing in for it.
+    assert_eq!(
+        draft.correlation_out.expect("it correlates").value,
+        busbar_contract::ids::CorrelationValue::Str("a2a-http-json")
+    );
 }
 
 /// An answer that already is an envelope goes back exactly as it arrived.
@@ -315,7 +326,10 @@ fn an_error_answer_is_terminal() {
     {
         Progress::Terminal { for_, r } => {
             assert_eq!(r.finish, busbar_contract::unit::FinishClass::Error);
-            assert_eq!(for_.expect("it correlates").value, 1);
+            assert_eq!(
+                for_.expect("it correlates").value,
+                busbar_contract::ids::CorrelationValue::Num(1)
+            );
         }
         other => panic!("an error answer decoded as {other:?}"),
     }
@@ -395,7 +409,7 @@ fn every_operation_routes_somewhere() {
     for op in <A2aPlane as busbar_contract::plane::PlaneMeta>::OP_CLASSES {
         let unit = busbar_contract::unit::Unit::new(
             &seal,
-            1,
+            busbar_contract::UnitKey::new(1),
             busbar_contract::unit::Origin::Client,
             None,
             None,
@@ -403,6 +417,7 @@ fn every_operation_routes_somewhere() {
             Some(common::principal()),
             *op,
             busbar_contract::bounded::Ir::new(b"{}", &[]),
+            busbar_contract::bounded::Facts::new(),
             None,
         );
         let plan = plane.route(&unit, &ctx);
@@ -434,7 +449,7 @@ fn the_metering_step_reports_what_it_read() {
     let answer = br#"{"id":1,"jsonrpc":"2.0","result":{}}"#;
     let unit = busbar_contract::unit::Unit::new(
         &seal,
-        1,
+        busbar_contract::UnitKey::new(1),
         busbar_contract::unit::Origin::Client,
         None,
         None,
@@ -442,6 +457,7 @@ fn the_metering_step_reports_what_it_read() {
         Some(common::principal()),
         ops::OP_MESSAGE_SEND,
         busbar_contract::bounded::Ir::new(b"{}", &[]),
+        busbar_contract::bounded::Facts::new(),
         None,
     );
     let r = Response {
@@ -465,15 +481,78 @@ fn the_introspection_verb_answers_only_what_is_declared() {
     let scaffold = Scaffold::new("http");
     let ctx = scaffold.ctx();
     let facts = plane
-        .plane_facts(busbar_plane_a2a::meta::VERB_AGENTS, &ctx)
+        .plane_facts(busbar_plane_a2a::meta::VERB_AGENTS, None, &ctx)
         .expect("the declared verb answers");
     assert_eq!(
         facts.facts.get("count"),
         Some(busbar_contract::bounded::FactValue::Int(0))
     );
     assert!(plane
-        .plane_facts(busbar_contract::ids::AdminVerbId::new("secrets"), &ctx)
+        .plane_facts(
+            busbar_contract::ids::AdminVerbId::new("secrets"),
+            None,
+            &ctx
+        )
         .is_err());
+}
+
+/// The per-name projection answers for the agent the subject names, and for no other.
+///
+/// This is the projection that could not be declared at all while the introspection verb carried no
+/// argument: one verb, one subject, one agent. A subject naming nothing is refused rather than
+/// answered empty, because "there is no such agent" is not "that agent has nothing to say".
+#[test]
+fn the_per_name_projection_answers_for_the_named_agent() {
+    static AGENTS: &[busbar_plane_a2a::Agent] = &[
+        busbar_plane_a2a::Agent {
+            id: "alpha",
+            lane: busbar_contract::ids::LaneId::new("a2a-a"),
+            host: "alpha.invalid:443",
+            transport: "http",
+        },
+        busbar_plane_a2a::Agent {
+            id: "beta",
+            lane: busbar_contract::ids::LaneId::new("a2a-b"),
+            host: "beta.invalid:443",
+            transport: "grpc",
+        },
+    ];
+    let plane = A2aPlane::new(AGENTS);
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let verb = busbar_plane_a2a::meta::VERB_AGENT;
+
+    let alpha = plane
+        .plane_facts(verb, Some("alpha"), &ctx)
+        .expect("a named agent answers");
+    assert_eq!(
+        alpha.facts.get("name"),
+        Some(busbar_contract::bounded::FactValue::Str("alpha"))
+    );
+    assert_eq!(
+        alpha.facts.get("lane"),
+        Some(busbar_contract::bounded::FactValue::Str("a2a-a"))
+    );
+    assert_eq!(
+        alpha.facts.get("transport"),
+        Some(busbar_contract::bounded::FactValue::Str("http"))
+    );
+
+    // The other agent answers for itself, so the subject is what selects, not the order.
+    let beta = plane
+        .plane_facts(verb, Some("beta"), &ctx)
+        .expect("the other named agent answers");
+    assert_eq!(
+        beta.facts.get("lane"),
+        Some(busbar_contract::bounded::FactValue::Str("a2a-b"))
+    );
+
+    // A subject that names nothing, and no subject at all, are both refusals.
+    assert!(plane.plane_facts(verb, Some("gamma"), &ctx).is_err());
+    assert!(plane.plane_facts(verb, None, &ctx).is_err());
+
+    // And the per-name verb is declared, so the loop can reach it.
+    assert!(<A2aPlane as PlaneMeta>::INTROSPECTION_VERBS.contains(&verb));
 }
 
 /// The session halves open, and each one starts fresh.
@@ -499,7 +578,7 @@ fn sealed_destination() -> busbar_contract::dest::VerifiedDestination {
         &seal,
         busbar_contract::dest::DestinationFacts::Upstream {
             transport: "http",
-            host: "agent.example",
+            address: busbar_contract::UpstreamAddress::socket("agent.example"),
             lane: busbar_contract::ids::LaneId::new("standard"),
         },
         "http",

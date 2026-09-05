@@ -229,34 +229,7 @@ pub(crate) fn shape_cross_protocol_error(
 /// short-circuit safety contract: a `true` here makes a same-protocol request NON-pristine. A
 /// same-proto request that carries NEITHER of these keys is left byte-for-byte untouched and can
 /// short-circuit to its retained original bytes.
-pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
-    let mut changed = false;
-    if let Some(obj) = v.as_object_mut() {
-        // A protocol's array-stream shim key is never native to ANY backend wire → strip every
-        // registered protocol's key unconditionally (also closes the leak where a body-model client
-        // smuggles a key in its own controlled body). Iterating the cached registry set keeps this
-        // strip from naming any shim-key literal (and from re-sweeping `protocol_for` per request).
-        // `remove` returns the previous value iff the key was present → a real mutation (#1).
-        for &key in busbar_substrate::proto::array_stream_shim_keys() {
-            if obj.remove(key).is_some() {
-                changed = true;
-            }
-        }
-        // `stream` is a path-model shim for the EGRESS protocols gemini/bedrock (stream intent and
-        // model both ride the URL there; `has_model_in_url()` covers both). For body-model egress
-        // `stream` is the writer-authored field the backend needs to start streaming, so it must be
-        // PRESERVED. Gate on egress, never ingress.
-        if busbar_substrate::proto::decl_for(egress_protocol)
-            .map(|d| d.has_model_in_url)
-            .unwrap_or(false)
-            && obj.remove("stream").is_some()
-        {
-            // #2: `stream` was present AND the egress is path-model → real mutation.
-            changed = true;
-        }
-    }
-    changed
-}
+pub use busbar_llm_codec::wire_shim::strip_router_shim_keys;
 
 /// Remove the SHIM `model` key on the SAME-PROTOCOL gemini/bedrock passthrough path, AFTER
 /// `rewrite_model` has run. On same-protocol gemini/bedrock the model rides the URL, not the body, so
@@ -612,9 +585,7 @@ pub(crate) use busbar_substrate::proxy::max_upstream_buffered_bytes;
 /// (core's `limits::translate_body_max_bytes` returns the same value), so they can never diverge.
 /// A function (not a `const`) so the installed value is read at each use site; falls back to the
 /// historical 32 MiB default when the limits aren't installed (e.g. unit tests).
-pub(crate) fn max_translated_body_bytes() -> usize {
-    busbar_substrate::proxy::max_translate_body_bytes()
-}
+pub(crate) use busbar_llm_codec::wire_shim::max_translated_body_bytes;
 
 // THE CAPPED READ and its `ReadEnd` outcome moved DOWN into the neutral `busbar-substrate` crate in
 // Phase-B B0-b (both core's proxy engine and the egress/auth paths read upstream bodies this way,

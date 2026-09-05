@@ -5,12 +5,16 @@ members = [
     "crates/busbar-core",
     "crates/busbar-timing",
     "crates/busbar-llm",
+    "crates/busbar-llm-codec",
     "crates/busbar-mcp",
     "crates/busbar-a2a",
     "crates/busbar-voice",
     "crates/busbar-substrate",
+    "crates/busbar-substrate-values",
     "crates/busbar-caps",
     "crates/busbar-contract",
+    "crates/busbar-contract-transport",
+    "crates/busbar-grammar",
     "crates/busbar-transport-tcp",
     "crates/busbar-transport-tls",
     "crates/busbar-transport-http",
@@ -56,6 +60,7 @@ members = [
     "crates/busbar-transport-ws",
     "crates/busbar-transport-grpc",
     "crates/busbar-transport-stdio",
+    "xtask",
 ]
 
 # ── the single source of truth for external dependency VERSIONS ──────────────────────────────────
@@ -261,6 +266,11 @@ tikv-jemallocator = "0.6"
 # No feature floor: each consumer needs a different slice of the runtime and tokio's default set is
 # empty, so the whole feature choice belongs to the member.
 tokio = "1"
+# The bridge between the two duplex-stream vocabularies. `busbar-contract` names a detached byte
+# stream in the `futures` traits it already depends on, because the seam between two transport
+# layers must not name a runtime; every concrete socket in the tree is a tokio one. `compat` is what
+# carries a stream across that boundary and back, and it is the only feature any member wants.
+tokio-util = { version = "0.7", default-features = false, features = ["compat"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 # The neutral full-duplex WEBSOCKET transport (busbar-substrate `ingress`/`egress` duplex-ws): the
 # egress dialer runs the client WS handshake OVER a stream this crate has already TLS-wrapped to a

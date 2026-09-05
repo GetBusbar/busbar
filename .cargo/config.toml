@@ -4,3 +4,8 @@
 # published first-party plugin, which the shadow oracle judges as a failed candidate at setup.
 [env]
 BUSBAR_RELEASE_PUBKEY = "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f59dec197bacba7"
+
+# The standard cargo-xtask pattern: `cargo xtask <verb>` runs the `xtask` workspace member as a
+# plain `cargo run`, so xtask needs no separate build system and no PATH entry of its own.
+[alias]
+xtask = "run --package xtask --"

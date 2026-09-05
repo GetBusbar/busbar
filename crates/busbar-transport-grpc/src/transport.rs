@@ -8,30 +8,41 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as SyncMutex};
 
 use futures::Stream;
-use tokio::net::TcpListener as TokioTcpListener;
 
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::unit::Refusal;
-use busbar_contract::wire::{
-    ArrivalRecord, CloseReason, Conn, Frame, Listener, ListenerHandle, TransportError,
-    Unit0Trigger,
-};
+use busbar_contract::wire::Frame;
 use busbar_contract::{
-    grammar::SelectorForm, AbiVersion, ArenaBytes, Fut, Kind, Plugin, StreamId, Transport,
-    TransportConfigView, TransportKeyHandle, TransportMeta,
+    grammar::SelectorForm, ArenaBytes, Fut, Kind, Plugin, StreamId, Transport, TransportConfigView,
+    TransportKeyHandle, TransportMeta,
 };
+use busbar_contract_transport::registry::facts as tfacts;
+use busbar_contract_transport::wire::ArrivalRecord;
+use busbar_contract_transport::wire::CloseReason;
+use busbar_contract_transport::wire::Conn;
+use busbar_contract_transport::wire::Listener;
+use busbar_contract_transport::wire::TransportError;
+use busbar_contract_transport::wire::Unit0Trigger;
+use busbar_contract_transport::AbiVersion;
 
 use crate::client;
 use crate::conn::{ConnState, GrpcConnHandle};
 
-type FrameStream = std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
+type FrameStream =
+    std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
 
 /// The gRPC transport: unary and multiplexed streams over HTTP/2, byte-blind. In-tree, inside the
 /// trusted computing base — see the architecture doc's transport and transports-table sections.
+///
+/// It opens no socket of its own. The layer it composes over binds, accepts and dials, and this one
+/// drives HTTP/2 over the stream that layer gives up — so the composed chain is real rather than
+/// declared, and the network guard sits in front of the dial for the whole stack at once.
 pub struct GrpcTransport {
     next_id: AtomicU64,
     conns: SyncMutex<HashMap<u64, Arc<ConnState>>>,
-    listeners: SyncMutex<HashMap<String, Arc<TokioTcpListener>>>,
+    /// The layer this one composes over. `None` for an instance that will only ever be handed a
+    /// stream directly, which is all a transport owning no socket can otherwise do.
+    lower: Option<Arc<dyn Transport>>,
 }
 
 impl Default for GrpcTransport {
@@ -41,14 +52,41 @@ impl Default for GrpcTransport {
 }
 
 impl GrpcTransport {
-    /// A fresh transport instance with no live connections.
+    /// A transport with no layer under it. `listen`, `accept` and `dial` all need one.
     #[must_use]
     pub fn new() -> Self {
         Self {
             next_id: AtomicU64::new(1),
             conns: SyncMutex::new(HashMap::new()),
-            listeners: SyncMutex::new(HashMap::new()),
+            lower: None,
         }
+    }
+
+    /// A transport composed over `lower` — the layer that binds, accepts and dials for it.
+    #[must_use]
+    pub fn over(lower: Arc<dyn Transport>) -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            conns: SyncMutex::new(HashMap::new()),
+            lower: Some(lower),
+        }
+    }
+
+    fn lower(&self) -> Result<&Arc<dyn Transport>, TransportError> {
+        self.lower.as_ref().ok_or(TransportError::HandoffMismatch)
+    }
+
+    /// Take the stream out of a connection the layer below owns, with the chain it stood on.
+    fn take(
+        &self,
+        lower: &Arc<dyn Transport>,
+        conn: &Conn,
+    ) -> Result<(crate::conn::LowerIo, Vec<&'static str>), TransportError> {
+        let mut chain = lower.arrival(conn).transport_chain;
+        let raw = lower.detach(conn).ok_or(TransportError::HandoffMismatch)?;
+        chain.push(<Self as TransportMeta>::KEY);
+        let stream = tokio_util::compat::FuturesAsyncReadCompatExt::compat(raw.into_io());
+        Ok((Box::new(stream), chain))
     }
 
     fn mint_id(&self) -> u64 {
@@ -68,15 +106,15 @@ impl Plugin for GrpcTransport {
         Kind::Transport
     }
     fn abi(&self) -> AbiVersion {
-        AbiVersion(1)
+        busbar_contract_transport::registry::TRANSPORT_ABI
     }
 }
 
 impl TransportMeta for GrpcTransport {
     const KEY: &'static str = "grpc";
-    // See `busbar-transport-ws`'s identical note: grpc is the top transport of its stack (over
-    // `http`) and therefore the one that would own claim selection over the request that opens
-    // each call, including its `:path`.
+    // See `busbar-transport-ws`'s identical note: grpc is the top transport of its stack and
+    // therefore the one that owns claim selection over the request that opens each call, including
+    // its `:path`.
     const SELECTOR_FORMS: &'static [SelectorForm] = &[
         SelectorForm::ExactPath,
         SelectorForm::PrefixOneLevel,
@@ -89,19 +127,23 @@ impl TransportMeta for GrpcTransport {
         SelectorForm::Port,
     ];
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = &[];
-    const COMPOSES_OVER: &'static [&'static str] = &["http"];
-    const HANDOFF: Option<busbar_contract::wire::Handoff> = None;
+    // The layers this one is actually built over, and the Cargo edges say the same: `http`
+    // carries an inbound connection, `tcp` carries a dialled one.
+    const COMPOSES_OVER: &'static [&'static str] = &["http", "tcp"];
+    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract_transport::wire::Framing =
+        busbar_contract_transport::wire::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = true;
     const UNIT0_TRIGGER: Option<Unit0Trigger> = Some(Unit0Trigger::FirstMessage);
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract::wire::HandshakeTrigger> = None;
-    const TRANSPORT_FACTS: &'static [&'static str] = &[];
+    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::PATH, tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;
     // "carries the per-frame StatusClass at Terminal (the grpc-status trailer)" — the transports
     // table's own words for this row.
-    const STATUS_CLASS: Option<busbar_contract::wire::StatusAt> =
-        Some(busbar_contract::wire::StatusAt::Terminal);
+    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> =
+        Some(busbar_contract_transport::wire::StatusAt::Terminal);
 }
 
 impl Transport for GrpcTransport {
@@ -112,75 +154,73 @@ impl Transport for GrpcTransport {
             alpn: None,
             sni: None,
             peer_cert: None,
-            // See the crate's own report: the real stack is `tcp`/`tls`/`http`/`grpc`, and this
-            // crate only ever sees the already-established HTTP/2 connection it built itself.
-            transport_chain: vec!["grpc"],
+            // The chain the layer below reported, plus this one.
+            transport_chain: self
+                .state_of(conn.id())
+                .map_or_else(|| vec!["grpc"], |s| s.chain.clone()),
         }
     }
 
+    /// The listener is the layer below's. This transport binds nothing.
     fn listen<'a>(
         &'a self,
         cfg: &'a dyn TransportConfigView,
-        _keys: &'a TransportKeyHandle,
+        keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Listener> {
-        Box::pin(async move {
-            let addr = cfg.bind().ok_or(TransportError::AddressRefused)?;
-            let listener = TokioTcpListener::bind(addr)
-                .await
-                .map_err(|_| TransportError::AddressRefused)?;
-            let local = listener
-                .local_addr()
-                .map_err(|_| TransportError::AddressRefused)?
-                .to_string();
-            self.listeners
-                .lock()
-                .unwrap()
-                .insert(local.clone(), Arc::new(listener));
-            Ok(Listener::new(Arc::new(GrpcListenerHandle { addr: local })))
-        })
+        Box::pin(async move { self.lower()?.listen(cfg, keys).await })
     }
 
+    /// Take the next connection off the layer below and serve HTTP/2 over the stream it gives up.
     fn accept<'a>(&'a self, l: &'a Listener) -> Fut<'a, Conn> {
         Box::pin(async move {
-            let listener = self
-                .listeners
-                .lock()
-                .unwrap()
-                .get(&l.local_addr())
-                .cloned()
-                .ok_or(TransportError::Closed)?;
-            let (tcp, peer) = listener.accept().await.map_err(|_| TransportError::Closed)?;
+            let lower = self.lower()?;
+            let conn = lower.accept(l).await?;
+            let peer = conn.peer();
+            let (stream, chain) = self.take(lower, &conn)?;
             let id = self.mint_id();
-            let state = ConnState::new(None);
+            let state = ConnState::new(None, chain);
             self.conns.lock().unwrap().insert(id, state.clone());
-            crate::server::serve_connection(tcp, state);
-            Ok(Conn::new(Arc::new(GrpcConnHandle {
-                id,
-                peer: peer.to_string(),
-            })))
+            crate::server::serve_connection(stream, state);
+            Ok(Conn::new(Arc::new(GrpcConnHandle { id, peer })))
         })
     }
 
     fn dial<'a>(
         &'a self,
         dest: &'a VerifiedDestination,
-        _keys: &'a TransportKeyHandle,
+        keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
-            let DestinationFacts::Upstream { host, .. } = dest.facts() else {
+            let DestinationFacts::Upstream { address, .. } = dest.facts() else {
                 return Err(TransportError::AddressRefused);
             };
-            let (host_name, port) = host
-                .rsplit_once(':')
-                .and_then(|(h, p)| p.parse::<u16>().ok().map(|p| (h.to_string(), p)))
+            let authority = address.authority().ok_or(TransportError::AddressRefused)?;
+            // The method the destination names is the `:path` every call this connection opens is
+            // dialled against. A destination that names none falls back to this crate's own frame
+            // method, which is the only path a byte-blind transport can serve on its own.
+            let method = address.method().unwrap_or(crate::server::RPC_PATH);
+            // The socket is the layer below's, dialled against the address this destination
+            // already carries. Re-addressing narrows the sealed destination to what that layer
+            // reads; it does not re-seal it, and it cannot widen where the unit may go.
+            let lower = self.lower()?;
+            let beneath = dest
+                .beneath(
+                    lower.key(),
+                    busbar_contract_transport::dest::UpstreamAddress::Socket {
+                        authority,
+                        sni: address.sni(),
+                    },
+                )
                 .ok_or(TransportError::AddressRefused)?;
-            let (dialer, origin) = client::dial_h2(&host_name, port).await?;
+            let conn = lower.dial(&beneath, keys).await?;
+            let (stream, chain) = self.take(lower, &conn)?;
+            let (dialer, origin) = client::handshake_h2(stream, authority).await?;
             let id = self.mint_id();
-            let state = ConnState::new(Some((Arc::new(dialer), origin)));
+            let state = ConnState::new(Some((Arc::new(dialer), origin, method)), chain);
             self.conns.lock().unwrap().insert(id, state);
             Ok(Conn::new(Arc::new(GrpcConnHandle {
                 id,
-                peer: host.to_string(),
+                peer: authority.to_string(),
             })))
         })
     }
@@ -222,12 +262,17 @@ impl Transport for GrpcTransport {
                     // OPENS a new gRPC call. An accepted (server) connection cannot originate a
                     // call — its streams are opened by the peer — so an unseen id there is a
                     // caller error, not something this transport can serve.
-                    let Some((dialer, origin)) = state.dialer.clone() else {
+                    let Some((dialer, origin, method)) = state.dialer.clone() else {
                         return Err(TransportError::Framing);
                     };
-                    let tx =
-                        client::open_stream(state.clone(), (*dialer).clone(), origin, stream)
-                            .await?;
+                    let tx = client::open_stream(
+                        state.clone(),
+                        (*dialer).clone(),
+                        origin,
+                        method,
+                        stream,
+                    )
+                    .await?;
                     state.outbound.lock().unwrap().insert(stream.0, tx.clone());
                     tx
                 }
@@ -237,13 +282,32 @@ impl Transport for GrpcTransport {
         })
     }
 
-    fn upgrade<'a>(
+    /// A gRPC message is its body. Everything an envelope would carry rides the HTTP/2 headers of
+    /// the call, which `tonic` writes when the call is opened — the method the destination named,
+    /// the authority, the content type. A message that carried them a second time would be a
+    /// message no gRPC peer can read.
+    fn encode_envelope<'a>(
+        &self,
+        _fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::Arena,
+    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+        arena
+            .alloc_bytes(body)
+            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+    }
+
+    fn adopt<'a>(
         &'a self,
+        _from: &'a dyn Transport,
         _conn: Conn,
-        _to: &'a str,
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
-        Box::pin(async move { Err(TransportError::Framing) })
+        Box::pin(async move { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn composed_over(&self) -> Option<&'static str> {
+        self.lower.as_ref().map(|l| l.key())
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {
@@ -261,39 +325,46 @@ impl Transport for GrpcTransport {
         }
     }
 
+    /// Refuse one call, or the whole connection where the caller names no call.
+    ///
+    /// `Unit0Trigger::FirstMessage` opens a session PER STREAM here, on a connection that may be
+    /// carrying several at once. A refusal of request *n* is therefore about request *n*: its
+    /// outbound stream is written and ended, and *n±1* go on to complete on the same connection,
+    /// untouched. Only a refusal that names no stream is about the connection, and that one closes
+    /// it — which is what a transport with a single stream would have meant all along.
     fn unit0_refusal<'a>(
         &'a self,
         conn: Conn,
+        stream: Option<StreamId>,
         _refusal: &'a Refusal,
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()> {
         Box::pin(async move {
-            // AMBIGUITY (see the crate's own report): `unit0_refusal` takes a whole `Conn`, but on
-            // this transport `Unit0Trigger::FirstMessage` opens a session PER STREAM on a
-            // connection that may carry several. The contract gives no stream to target, so this
-            // best-effort broadcasts the refusal onto every stream currently open on the
-            // connection, then closes the whole connection — safe (nothing is left half-served)
-            // but almost certainly wider than a real deployment wants.
             let id = conn.id();
-            if let Some(state) = self.state_of(id) {
-                let payload = bytes.as_slice().to_vec();
-                let senders: Vec<_> = state.outbound.lock().unwrap().values().cloned().collect();
-                for tx in senders {
-                    let _ = tx.send(payload.clone());
+            let Some(state) = self.state_of(id) else {
+                return Ok(());
+            };
+            let payload = bytes.as_slice().to_vec();
+            match stream {
+                Some(stream) => {
+                    // Remove the sender as well as writing to it: dropping it is what ends this
+                    // call's response stream (and so emits its `grpc-status` trailer), which is the
+                    // difference between refusing one call and leaving it half-served.
+                    let tx = state.outbound.lock().unwrap().remove(&stream.0);
+                    if let Some(tx) = tx {
+                        let _ = tx.send(payload);
+                    }
+                }
+                None => {
+                    let senders: Vec<_> =
+                        state.outbound.lock().unwrap().values().cloned().collect();
+                    for tx in senders {
+                        let _ = tx.send(payload.clone());
+                    }
+                    self.close(conn, CloseReason::Normal);
                 }
             }
-            self.close(conn, CloseReason::Normal);
             Ok(())
         })
-    }
-}
-
-struct GrpcListenerHandle {
-    addr: String,
-}
-
-impl ListenerHandle for GrpcListenerHandle {
-    fn local_addr(&self) -> String {
-        self.addr.clone()
     }
 }

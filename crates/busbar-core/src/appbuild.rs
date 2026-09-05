@@ -323,12 +323,16 @@ pub fn load_config_from_disk(
             ));
         }
     }
-    let deploy: config::DeployCfg = serde_yaml::from_str(&interpolated_config).map_err(|e| {
-        format!(
-            "config.yaml: invalid YAML: {}",
-            config::augment_config_error(e)
-        )
-    })?;
+    // The 1.6.0-additive keys come off the document FIRST (see `config::prepass`), so what the
+    // frozen 1.5.5-shaped structs parse — and what they name in an unknown-key refusal — is the
+    // 1.5.5 document and nothing else.
+    let deploy: config::DeployCfg =
+        config::deploy_from_yaml_str(&interpolated_config).map_err(|e| {
+            format!(
+                "config.yaml: invalid YAML: {}",
+                config::augment_config_error(e)
+            )
+        })?;
 
     // 1.6.0: resolve the providers CATALOG path. Precedence: the explicit override (the `--providers`
     // flag, or a runtime reload re-using its boot path) > `config.providers_file`
@@ -772,6 +776,13 @@ pub fn build_app_from_config(
                 tags: m.tags.clone(),
             });
         }
+        if let Some(ref on_exc) = pool.on_exhausted {
+            // Same INFO line 1.5.5 logged from `main.rs`'s per-pool `on_exhausted` parse, carried
+            // here now that pool construction lives core-side (neutrality: no boot-line drift).
+            let mode = on_exc.to_runtime();
+            tracing::info!(pool = %name, on_exhausted = ?mode, "pool exhaustion policy");
+        }
+
         pool_inputs.push(PoolInput {
             name: name.clone(),
             members,

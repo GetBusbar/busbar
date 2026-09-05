@@ -24,12 +24,14 @@ use std::task::{Context, Poll};
 use futures::Stream;
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tonic::{Request, Response, Status};
 
-use busbar_contract::wire::{Direction, Frame, FrameMeta, TransportError};
+use busbar_contract::wire::Frame;
 use busbar_contract::{SlabBytes, StreamId};
+use busbar_contract_transport::wire::Direction;
+use busbar_contract_transport::wire::FrameMeta;
+use busbar_contract_transport::wire::TransportError;
 
 use crate::codec::RawCodec;
 use crate::conn::ConnState;
@@ -37,10 +39,10 @@ use crate::conn::ConnState;
 /// The fixed path every RPC this crate serves or dials answers to. See the module header.
 pub(crate) const RPC_PATH: &str = "/busbar.raw/Frames";
 
-/// Serve one accepted TCP connection as an HTTP/2 gRPC connection until it closes.
-pub(crate) fn serve_connection(tcp: TcpStream, state: Arc<ConnState>) {
+/// Serve one stream the layer below handed up as an HTTP/2 gRPC connection until it closes.
+pub(crate) fn serve_connection(stream: crate::conn::LowerIo, state: Arc<ConnState>) {
     tokio::spawn(async move {
-        let io = TokioIo::new(tcp);
+        let io = TokioIo::new(stream);
         let svc = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
             let state = state.clone();
             async move { Ok::<_, std::convert::Infallible>(handle_one_rpc(state, req).await) }
@@ -59,6 +61,11 @@ async fn handle_one_rpc(
     state: Arc<ConnState>,
     req: hyper::Request<Incoming>,
 ) -> hyper::Response<tonic::body::Body> {
+    state
+        .served_paths
+        .lock()
+        .unwrap()
+        .push(req.uri().path().to_string());
     let local = state.next_local_stream.fetch_add(1, Ordering::Relaxed);
     let stream_id = StreamId(local);
     let (out_tx, out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -98,7 +105,12 @@ impl tower::Service<Request<tonic::Streaming<Vec<u8>>>> for RpcHandler {
         Box::pin(async move {
             // `is_response = false`: this is the REQUEST body, which carries no `grpc-status`
             // trailer — only a gRPC response does. See `forward_inbound`'s own note.
-            tokio::spawn(forward_inbound(state, stream_id, request.into_inner(), false));
+            tokio::spawn(forward_inbound(
+                state,
+                stream_id,
+                request.into_inner(),
+                false,
+            ));
             Ok(Response::new(OutStream(out_rx)))
         })
     }
@@ -144,9 +156,10 @@ pub(crate) async fn forward_inbound(
         }
     };
     if is_response {
-        let status = final_status
-            .as_ref()
-            .map_or(busbar_contract::wire::StatusClass::Success, map_status);
+        let status = final_status.as_ref().map_or(
+            busbar_contract_transport::wire::StatusClass::Success,
+            map_status,
+        );
         let meta = FrameMeta {
             bytes: 0,
             transport_units: None,
@@ -165,9 +178,9 @@ pub(crate) async fn forward_inbound(
 }
 
 /// The transport's own honest reading of the `grpc-status` trailer, into the closed
-/// [`busbar_contract::wire::StatusClass`] — never a judgement about what the RPC's bytes meant.
-fn map_status(status: &Status) -> busbar_contract::wire::StatusClass {
-    use busbar_contract::wire::StatusClass;
+/// [`busbar_contract_transport::wire::StatusClass`] — never a judgement about what the RPC's bytes meant.
+fn map_status(status: &Status) -> busbar_contract_transport::wire::StatusClass {
+    use busbar_contract_transport::wire::StatusClass;
     use tonic::Code;
     match status.code() {
         Code::Ok => StatusClass::Success,

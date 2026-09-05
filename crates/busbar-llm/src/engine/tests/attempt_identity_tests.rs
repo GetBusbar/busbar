@@ -301,9 +301,20 @@ impl Observed {
     }
 }
 
-/// Blank the values that are synthesized per response (ids, clocks) so byte comparison is about
-/// shape and content, not about a fresh UUID. JSON bodies are normalized structurally; SSE bodies
-/// line by line on their `data:` payloads; anything else is compared as-is.
+/// Blank the values that are synthesized per response (ids, clocks, measured latency) so byte
+/// comparison is about shape and content, not about a fresh UUID or a real wall-clock reading. JSON
+/// bodies are normalized structurally; SSE bodies line by line on their `data:` payloads; anything
+/// else is compared as-is.
+///
+/// `latencyMs` (Bedrock's `metrics.latencyMs`, see `busbar-llm-codec`'s `bedrock::mod` doc on
+/// `FIELD_LATENCY_MS`) is busbar's OWN measured elapsed wall-clock time, injected when the upstream
+/// response omits it — never a fixture value. `run_legacy` and `run_attempt` race each other via
+/// `tokio::join!` against the SAME fast mock round trip, so under CPU contention (this whole
+/// workspace's tests running in parallel) one leg can measure 0ms and the other 1ms purely from
+/// scheduling jitter, with no difference in the two paths' actual behavior. That is exactly the
+/// class of "synthesized, not identity-bearing" value this function already blanks ids and clocks
+/// for, so it belongs here rather than in the `ALLOWED` divergence table (which is for BEHAVIORAL
+/// differences, not measurement noise).
 fn normalize(s: &str) -> String {
     fn blank(v: &mut serde_json::Value) {
         match v {
@@ -311,9 +322,10 @@ fn normalize(s: &str) -> String {
                 for (k, val) in map.iter_mut() {
                     let is_id = k.ends_with("id") || k.ends_with("Id") || k.ends_with("ID");
                     let is_clock = matches!(k.as_str(), "created" | "created_at" | "createTime");
+                    let is_latency = k == "latencyMs";
                     if is_id && val.is_string() {
                         *val = serde_json::Value::String("<id>".to_string());
-                    } else if is_clock && val.is_number() {
+                    } else if (is_clock || is_latency) && val.is_number() {
                         *val = serde_json::Value::from(0);
                     } else {
                         blank(val);

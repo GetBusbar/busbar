@@ -24,3 +24,4 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-caps = { path = "../busbar-caps" }
+busbar-contract = { path = "../busbar-contract" }

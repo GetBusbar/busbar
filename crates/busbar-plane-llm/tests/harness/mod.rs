@@ -13,7 +13,7 @@
 #![allow(dead_code)]
 
 use busbar_contract::bounded::SlabBytes;
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Ir, Labels};
+use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels};
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::ids::{LaneId, OpClassId, StreamId};
 use busbar_contract::plugin::KernelSeal;
@@ -114,9 +114,24 @@ pub fn ctx<'u>(
     transport: &'u HttpStack,
     labels: &'u Labels<'u>,
 ) -> Ctx<'u> {
+    ctx_at(arena, config, transport, labels, 1_752_000_000)
+}
+
+/// The same context, with the clock reading chosen by the caller.
+///
+/// A test that asks whether an answer follows the values it was handed needs two readings to hand
+/// over; every other test wants the one fixed reading, which is what `ctx` supplies.
+#[must_use]
+pub fn ctx_at<'u>(
+    arena: &'u LeakArena,
+    config: &'u EmptyConfig,
+    transport: &'u HttpStack,
+    labels: &'u Labels<'u>,
+    unix_secs: u64,
+) -> Ctx<'u> {
     Ctx::new(
         Clock {
-            unix_secs: 1_752_000_000,
+            unix_secs,
             monotonic_nanos: 0,
         },
         config,
@@ -140,10 +155,10 @@ pub fn frame(bytes: &[u8]) -> Frame {
 
 /// A unit built the way the kernel builds one, over a decoded body.
 #[must_use]
-pub fn unit<'u>(op: OpClassId, body: Ir<'u>) -> Unit<'u> {
+pub fn unit<'u>(op: OpClassId, body: Ir<'u>, facts: Facts<'u>) -> Unit<'u> {
     Unit::new(
         &TestSeal,
-        1,
+        busbar_contract::UnitKey::new(1),
         Origin::Client,
         None,
         Some(StreamId(0)),
@@ -151,6 +166,7 @@ pub fn unit<'u>(op: OpClassId, body: Ir<'u>) -> Unit<'u> {
         None,
         op,
         body,
+        facts,
         None,
     )
 }
@@ -162,7 +178,7 @@ pub fn destination(host: &'static str, lane: LaneId) -> VerifiedDestination {
         &TestSeal,
         DestinationFacts::Upstream {
             transport: "http",
-            host,
+            address: busbar_contract::UpstreamAddress::socket(host),
             lane,
         },
         "http",

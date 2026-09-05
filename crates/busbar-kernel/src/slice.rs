@@ -26,7 +26,7 @@
 
 use std::collections::HashMap;
 
-use busbar_caps::{MeterClassId, OriginKind, ReasonCode};
+use busbar_caps::{OriginKind, ReasonCode};
 
 use crate::Millis;
 
@@ -35,76 +35,51 @@ use crate::Millis;
 ///
 /// The SHAPE is closed and the key is open: a plane that declares a class gets volume control over
 /// it for free, and the kernel never learns what the class means.
-// contract: CapDimension
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum CapDimension {
-    /// Money, in nano-units.
-    NanoUnits,
-    /// A count of admitted units.
-    Requests,
-    /// A gauge of how many are in flight at once.
-    Concurrent,
-    /// Any declared meter class, by its key.
-    Class(MeterClassId),
+///
+/// The dimension, the scope and the bucket itself are the contract's own, because a plane declares
+/// the class a cap is taken on and a refusal names the bucket back to the caller. What stays here
+/// is the kernel's reading OF a bucket — how to build one, and whether it draws for a given pool —
+/// which is loop policy rather than part of what a bucket is.
+pub use busbar_contract::{BucketRef as BucketId, BucketScope, CapDimension};
+
+/// Whether a dimension accrues DURING a unit, and can therefore overdraw.
+///
+/// Requests and concurrency are known at the door; money and class quantities are not, which is
+/// why only they can end a unit owing something.
+pub fn accrues_mid_unit(dimension: &CapDimension) -> bool {
+    matches!(dimension, CapDimension::NanoUnits | CapDimension::Class(_))
 }
 
-impl CapDimension {
-    /// Whether this dimension accrues DURING a unit, and can therefore overdraw.
-    ///
-    /// Requests and concurrency are known at the door; money and class quantities are not, which is
-    /// why only they can end a unit owing something.
-    pub fn accrues_mid_unit(&self) -> bool {
-        matches!(self, CapDimension::NanoUnits | CapDimension::Class(_))
+/// A bucket that applies to everything.
+#[must_use]
+pub const fn bucket_all(id: &'static str) -> BucketId {
+    BucketId {
+        id,
+        scope: BucketScope::All,
+        capped: true,
     }
 }
 
-/// Whether a bucket applies everywhere, or only to one pool.
-// contract: BucketScope
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum BucketScope {
-    /// Every unit of the principal.
-    All,
-    /// Only units routed through this pool.
-    Pool(String),
+/// A bucket scoped to one pool.
+#[must_use]
+pub const fn bucket_pool(id: &'static str, pool: &'static str) -> BucketId {
+    BucketId {
+        id,
+        scope: BucketScope::Pool(pool),
+        capped: true,
+    }
 }
 
-/// One bucket of one principal's chain.
-// contract: the bucket id
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct BucketId {
-    /// The bucket's configured name.
-    pub name: String,
-    /// What it applies to.
-    pub scope: BucketScope,
-}
-
-impl BucketId {
-    /// A bucket that applies to everything.
-    pub fn all(name: impl Into<String>) -> Self {
-        BucketId {
-            name: name.into(),
-            scope: BucketScope::All,
-        }
-    }
-
-    /// A bucket scoped to one pool.
-    pub fn pool(name: impl Into<String>, pool: impl Into<String>) -> Self {
-        BucketId {
-            name: name.into(),
-            scope: BucketScope::Pool(pool.into()),
-        }
-    }
-
-    /// Whether this bucket draws for a unit that routed through `pool`.
-    ///
-    /// A scoped bucket draws when its scope EQUALS the effective pool: a hop into a fallback pool
-    /// draws nothing from the pool it fell back from.
-    pub fn draws_for(&self, pool: Option<&str>) -> bool {
-        match (&self.scope, pool) {
-            (BucketScope::All, _) => true,
-            (BucketScope::Pool(mine), Some(theirs)) => mine == theirs,
-            (BucketScope::Pool(_), None) => false,
-        }
+/// Whether a bucket draws for a unit that routed through `pool`.
+///
+/// A scoped bucket draws when its scope EQUALS the effective pool: a hop into a fallback pool
+/// draws nothing from the pool it fell back from.
+#[must_use]
+pub fn draws_for(bucket: &BucketId, pool: Option<&str>) -> bool {
+    match (&bucket.scope, pool) {
+        (BucketScope::All, _) => true,
+        (BucketScope::Pool(mine), Some(theirs)) => *mine == theirs,
+        (BucketScope::Pool(_), None) => false,
     }
 }
 
@@ -245,7 +220,7 @@ impl SliceBook {
 
     /// What the node holds for a bucket and dimension.
     pub fn get(&self, bucket: &BucketId, dimension: &CapDimension) -> Option<Slice> {
-        self.held.get(&(bucket.clone(), dimension.clone())).copied()
+        self.held.get(&(*bucket, *dimension)).copied()
     }
 
     /// Spend against a held slice.
@@ -262,7 +237,7 @@ impl SliceBook {
         epoch: Epoch,
         posture: Posture,
     ) -> Draw {
-        let key = (bucket.clone(), dimension.clone());
+        let key = (*bucket, *dimension);
         match self.held.get_mut(&key) {
             None => Draw::NeedReserve { shortfall: amount },
             Some(slice) => {
@@ -287,7 +262,7 @@ impl SliceBook {
     /// Give a draw back — the release at route of every dimension drawn on a scope the unit did
     /// not route through.
     pub fn give_back(&mut self, bucket: &BucketId, dimension: &CapDimension, amount: u64) {
-        if let Some(slice) = self.held.get_mut(&(bucket.clone(), dimension.clone())) {
+        if let Some(slice) = self.held.get_mut(&(*bucket, *dimension)) {
             slice.spent = slice.spent.saturating_sub(amount);
         }
     }
@@ -303,7 +278,7 @@ impl SliceBook {
         let mut done: Vec<(BucketId, CapDimension, u64)> = Vec::new();
         for (index, (bucket, dimension, amount)) in lines.iter().enumerate() {
             match self.draw(bucket, dimension, *amount, now, epoch, posture) {
-                Draw::Granted => done.push((bucket.clone(), dimension.clone(), *amount)),
+                Draw::Granted => done.push((*bucket, *dimension, *amount)),
                 other => {
                     // All or nothing: every line that drew gives it straight back, so a refusal at
                     // the parent bucket releases the child's slice.
@@ -312,8 +287,8 @@ impl SliceBook {
                     }
                     return Err(ChainRefused {
                         at: index,
-                        bucket: bucket.clone(),
-                        dimension: dimension.clone(),
+                        bucket: *bucket,
+                        dimension: *dimension,
                         draw: other,
                     });
                 }
@@ -418,7 +393,7 @@ impl ConcurrencyGauge {
     /// Take a lease, if the group has room.
     pub fn acquire(&self, bucket: &BucketId, cap: usize) -> Result<(), ReasonCode> {
         let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = counts.entry(bucket.clone()).or_insert(0);
+        let entry = counts.entry(*bucket).or_insert(0);
         if *entry >= cap {
             return Err(ReasonCode::OverBudget);
         }

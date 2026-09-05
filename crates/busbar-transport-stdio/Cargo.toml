@@ -17,6 +17,7 @@ path = "src/lib.rs"
 # lives here; that stays with the planes that ride this transport.
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
+busbar-contract-transport = { path = "../busbar-contract-transport" }
 tokio = { workspace = true, features = ["rt", "macros", "io-util", "io-std", "process", "sync", "time"] }
 futures = { workspace = true }
 

@@ -70,22 +70,9 @@ pub struct PlaneAdmission {
     pub resource_metadata: String,
 }
 
-/// THE WIRE FORMAT both mounted planes speak: JSON-RPC 2.0. Named once, here, because it is read
-/// twice as a `wire_format_names` entry and once more by the error-shaping boundary, which
-/// decides that a refusal on a mounted plane is a JSON-RPC error object rather than a vendor
-/// envelope. A literal spelled per site is how those two answers start to differ.
-pub const WIRE_JSONRPC: &str = "jsonrpc";
-
-/// THE SECOND WIRE FORMAT THE A2A PLANE SPEAKS: A2A's HTTP+JSON binding, where the REQUEST LINE
-/// names the operation rather than a body member. Named once, here, because it is read three ways
-/// and all three must agree — as a `wire_format_names` entry, as the
-/// `busbar_core::transport::Transport::HttpJson` label, and (upper-cased by
-/// `a2a::serve::servable_bindings`) as the `protocolBinding` a served agent card advertises. The
-/// card spelling is `HTTP+JSON`, so this is that string lower-cased and nothing else.
-pub const WIRE_HTTP_JSON: &str = "http+json";
-
-/// The A2A specification's gRPC binding, as a wire-format name. Lower-case here and upper-cased
-/// once, by `busbar_core::a2a::serve::servable_bindings`, into the `GRPC` an agent card advertises
-/// — so the card cannot claim a binding the plane does not list, which is the whole reason that
-/// function reads this list rather than writing one of its own.
-pub const WIRE_GRPC: &str = "grpc";
+/// THE THREE WIRE-FORMAT NAMES, re-exported at their historical path. They are read by
+/// `Transport::name` as well as by the declarations here — one spelling for the metric label, the
+/// plane's wire-format list and the served card's `protocolBinding`, which is the entire reason they
+/// are constants — so they moved into the values crate with the transport axis. Nothing about them
+/// changed: `busbar_substrate::plane::WIRE_JSONRPC` and its siblings still resolve to these strings.
+pub use busbar_substrate_values::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};

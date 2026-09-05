@@ -21,6 +21,11 @@ Divergence classes (a cell may carry several; the first names the earliest diver
                       store was supposed to keep: a wrong-shaped store call loses it while every
                       request still answers 200)
   effects.store_errors  the number of `store error` lines a script cell's boots logged differs
+  effects.files       the EXACT file set a script cell found in the directories it watched (the
+                      process's working directory and the config's own directory). The contract is
+                      an ABSENCE — a binary that writes a WAL, a keyset or a probe file where 1.5.5
+                      wrote nothing serves every request identically while doing it, so nothing else
+                      in the cell moves and only this class says so
   effects.metrics     metric delta differs
   effects.audit       audit delta differs
   effects.stderr      exec cells: the process's stderr (boot refusals, warnings, CLI errors)
@@ -41,12 +46,13 @@ from collections import Counter, defaultdict
 
 CLASS_ORDER = ["missing.golden", "missing.candidate", "status", "headers", "body", "effects.stderr",
                "effects.usage", "effects.usage_after_restart", "effects.store_errors",
-               "effects.metrics", "effects.audit", "norm.rules", "effects.egress", "effects.readback"]
+               "effects.metrics", "effects.audit", "norm.rules", "effects.egress", "effects.readback",
+               "effects.files"]
 # Weight per class; a cell's weight is its family's max class weight over the classes it diverged in.
 # Money and refusal semantics dominate; cosmetics count but cannot outvote them.
 CLASS_WEIGHT = {"missing.golden": 10, "missing.candidate": 10, "status": 10, "effects.usage": 10,
                 "effects.usage_after_restart": 10, "effects.store_errors": 10,
-                "body": 3, "effects.stderr": 3, "effects.audit": 3, "headers": 1, "effects.metrics": 1, "norm.rules": 1, "effects.egress": 10, "effects.readback": 10}
+                "body": 3, "effects.stderr": 3, "effects.audit": 3, "headers": 1, "effects.metrics": 1, "norm.rules": 1, "effects.egress": 10, "effects.readback": 10, "effects.files": 10}
 # The classes that are MONEY: an accepted difference may only carry one of these if it is a declared
 # breaking change with a changelog line. Usage that a restart did not preserve, and a store the
 # binary could not write to, are both money — the request statuses look fine either way.
@@ -156,7 +162,7 @@ def compare(g: dict, c: dict) -> tuple[list, dict]:
         classes.append("body"); detail["body"] = bd
     ge, ce = g.get("effects", {}), c.get("effects", {})
     for k in ("usage", "usage_after_restart", "store_errors", "metrics", "audit", "stderr",
-              "egress", "readback"):
+              "egress", "readback", "files"):
         if ge.get(k) != ce.get(k):
             classes.append(f"effects.{k}")
             if k == "stderr" and isinstance(ge.get(k), str) and isinstance(ce.get(k), str):

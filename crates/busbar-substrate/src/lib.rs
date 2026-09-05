@@ -29,7 +29,17 @@ pub mod auth {
     pub mod challenge;
 }
 pub mod detached;
-pub mod diagnostics;
+// THE VALUE HALF, RE-EXPORTED AT ITS HISTORICAL PATH. `diagnostics` — and the twelve sibling modules
+// re-exported further down — now live in `busbar-substrate-values`, the pure crate a codec names
+// directly. A `pub use` at this crate's root makes each resolve unchanged from BOTH sides: an
+// outside caller still writes `busbar_substrate::diagnostics::…`, and this crate's own source still
+// writes `crate::diagnostics::…`. Nothing about the items changed; only the crate they compile in.
+pub use busbar_substrate_values::diagnostics;
+// The three cross-crate emit macros are `#[macro_export]`ed, so they sit at the VALUES crate's root;
+// re-export them at this root too, and `busbar_substrate::diag_warn!` (and `crate::diag_warn!`
+// in-crate) keeps resolving. Deliberately re-exported at the ROOT only, never under `diagnostics` —
+// core glob-imports that module and a macro there would collide with core's own `pub(crate)` twins.
+pub use busbar_substrate_values::{diag_debug, diag_error, diag_warn};
 pub mod net_guard;
 // A′ (ABI-purity P4): the ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`),
 // relocated DOWN from `busbar-core` so the `busbar-llm` engine names it via the ABI instead of
@@ -56,18 +66,7 @@ pub mod observability {
 // depth-guarded parser seam (`sonic-rs`), the base64/media-type helper, the AWS EventStream (SSE)
 // framing codec, the source-scoped lossless-extras namespace, and the hand-rolled SigV4 signer.
 // Core re-exports each from its old `busbar_core::<mod>` path so its own call sites are unchanged.
-pub mod eventstream;
-pub mod json;
-pub mod lossless;
-pub mod media;
-pub mod sigv4;
-// A test-only tracing Layer that captures WARN/ERROR (and, lowered, DEBUG) events so the relocated
-// `eventstream` framing tests can assert a `diag_*!` fired without a global subscriber. Copied with
-// the module it serves; core keeps its own copy for its remaining test sites.
-#[cfg(test)]
-mod test_support {
-    pub mod warn_capture;
-}
+pub use busbar_substrate_values::{eventstream, json, lossless, media, sigv4};
 pub mod audit {
     pub mod vocab;
 
@@ -113,8 +112,7 @@ pub mod ingress {
         }
     }
 }
-pub mod billing;
-pub mod breaker;
+pub use busbar_substrate_values::{billing, breaker};
 // The proleptic-Gregorian civil-date split shared by the plane crates that render an epoch timestamp
 // (MCP task `iso8601_ms`, A2A push `status.timestamp`) without pulling a date-time crate into their
 // closure. One copy here, in the substrate both planes depend on, rather than one per plane.
@@ -124,14 +122,13 @@ pub mod duration;
 // value families (`Cell`/`cell_of`/`IngressReject`/`CodecError`/`TranslateCodec`). Relocated from
 // `busbar-core` so the dialect crates implement them here; core re-exports each from
 // `busbar_core::handlers`. The engine dispatch handle and registry-resolved chat/op_for stay in core.
-pub mod handlers;
+pub use busbar_substrate_values::handlers;
 // The neutral cross-plane IR leaves (`Invoke`/`Subscribe` request/response data) and the wire/egress
 // value types (`WireBody`/`EgressCtx`). Pure value families a plane crate names directly; core keeps
 // the `IrFacts` projection + the `IrHandle` wrappers and re-exports these types from their old paths.
 pub mod egress;
-pub mod ir;
 pub mod plane;
-pub mod wire;
+pub use busbar_substrate_values::{ir, wire};
 // D1: the NEUTRAL HOST SEAM — the `EngineHost` trait a plane calls to reach engine host capabilities
 // without naming a core type, plus the relocated lifecycle-scope arena (`DispatchScope` et al.) those
 // capabilities register handles into. Core implements `EngineHost` over its live `App` and re-exports
@@ -147,7 +144,11 @@ pub mod plane_routes;
 // core JSON envelope. Core re-exports the resolve/look half from `busbar_core::admin::planeverbs`.
 pub mod admin_verbs;
 pub mod admin_witness;
-pub mod proto;
+pub use busbar_substrate_values::proto;
+// `proxy` is the ONE module the split had to cut in half rather than move whole: three of its items
+// (the `tokio` task-local RTT slot, the egress-client shim over the engine, and the axum-`Response`
+// ingress-error shaper) name I/O types and stayed here, beside the engine; everything else moved and
+// is re-exported by this crate's own `proxy`, so every historical path still resolves.
 pub mod proxy;
 
 // ── Phase-B B1: the trust value families + decision engines, the egress gate, the catalogue and the
@@ -155,7 +156,7 @@ pub mod proxy;
 // (`VirtualKey`) and `busbar-plugin` (`hot::VerifyDecision`) — both leaves — plus this crate's own
 // audit vocabulary. Core re-exports each relocated item so the in-core call sites do not change.
 pub mod tls;
-pub mod transport;
+pub use busbar_substrate_values::transport;
 pub mod trust;
 // THE EGRESS-AUTH SEAM: the outbound credential dispatch (`resolve`/`prebuild_auth`/
 // `CredentialProvider`/`MetadataSsrfPolicy`), the two self-minting OAuth mechanisms (`jwt_bearer` /

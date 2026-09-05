@@ -73,8 +73,10 @@ pub fn reconcile_order(
     let mut winner: Option<(Vec<usize>, &'static str)> = None;
     for hook in chain {
         if let OrderVerdict::Order(order) = hook.order(candidates) {
-            let filtered: Vec<usize> =
-                order.into_iter().filter(|i| surviving.contains(i)).collect();
+            let filtered: Vec<usize> = order
+                .into_iter()
+                .filter(|i| surviving.contains(i))
+                .collect();
             if !filtered.is_empty() {
                 winner = Some((filtered, hook.name()));
             } else {
@@ -261,9 +263,7 @@ fn next_position(
     let hop: Vec<LaneCandidate> = candidates
         .iter()
         .enumerate()
-        .filter(|(position, c)| {
-            !excluded.contains(&c.idx) && !local_excluded.contains(position)
-        })
+        .filter(|(position, c)| !excluded.contains(&c.idx) && !local_excluded.contains(position))
         .map(|(_, c)| *c)
         .collect();
     if hop.is_empty() {
@@ -281,9 +281,7 @@ fn next_position(
             // qualifies nowhere falls THROUGH to the floor over the same set, so an unranked but
             // healthy lane is lowest-priority rather than stranded.
             let preferred = order.iter().copied().find(|idx| {
-                hop.iter()
-                    .any(|c| c.idx == *idx && c.weight != 0)
-                    && breaker.ready(pool, *idx, now)
+                hop.iter().any(|c| c.idx == *idx && c.weight != 0) && breaker.ready(pool, *idx, now)
             });
             match preferred {
                 Some(idx) => idx,

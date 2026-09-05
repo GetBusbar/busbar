@@ -18,6 +18,20 @@ use std::sync::Mutex;
 /// Replay window (seconds) — 600 s, exactly `IDEMPOTENCY_TTL_SECS` in 1.5.5/1.6.0-legacy admin.
 pub const IDEMPOTENCY_TTL_SECS: u64 = 600;
 
+/// CG-40: the idempotency cache's encoder seam. This crate has no serializer of its own, so a
+/// replayable verb's cached value must be the EXACT bytes the composition root's own writer would
+/// send as the response body for a fresh call — never an intermediate representation this crate
+/// decodes back into a fresh capability. The composition root binds this to the admin plane's own
+/// writer (the JSON body it was about to send), so a replay returns the post-substitution response
+/// bytes verbatim and can never re-mint a `SecretOnce`: there is no decode step at all, only the
+/// cached `Vec<u8>` returned as-is.
+pub trait ReplayEncoder<T> {
+    /// Encode `value` into the exact bytes a fresh call's response body would carry. The returned
+    /// bytes are what a same-idempotency-key replay returns verbatim for the lifetime of the
+    /// [`IDEMPOTENCY_TTL_SECS`] window.
+    fn encode(&self, value: &T) -> Vec<u8>;
+}
+
 /// One cache slot: `(inserted_at, value)`. `value: None` is the in-flight reservation sentinel
 /// (1.5.5 used `serde_json::Value::Null` for the same purpose; `None` says the same thing without
 /// requiring a JSON value type).

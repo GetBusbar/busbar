@@ -5,7 +5,7 @@
 //! asks for. The interesting reading is in the codec crate; the interesting decisions are in the
 //! units. What is here is the wiring, and it is meant to stay boring enough to check by eye.
 
-use busbar_contract::bounded::{ArenaBytes, FactValue, Facts, Ir, Span};
+use busbar_contract::bounded::{ArenaBytes, BoundedVec, FactValue, Facts, Ir, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::grammar::{ArrivalLocation, Location};
 use busbar_contract::ids::{AdminVerbId, MeterClassId, OpClassId, SchemeAlt, SchemeKey};
@@ -17,7 +17,7 @@ use busbar_contract::unit::{
 };
 use busbar_contract::wire::{Decode, Encode, EnvelopeField, Frame, FrameCursor, TransportEnvelope};
 
-use busbar_llm::ir::{IrResponse, IrStopReason, IrStreamEvent, StreamDecodeState};
+use busbar_llm_codec::ir::{IrResponse, IrStopReason, IrStreamEvent, StreamDecodeState};
 
 use crate::dialect::{self, Dialect};
 use crate::meta;
@@ -47,10 +47,35 @@ const KIND_API_ERROR: &str = "api_error";
 
 /// The transport fact the request target is published under.
 ///
-/// A plane cannot see a connection, so the request target reaches it as a transport fact. This is
-/// the key the transport writes it under; a transport that writes none leaves this plane unable to
-/// name a dialect, and the decode step says so rather than guessing.
-const FACT_PATH: &str = "path";
+/// A plane cannot see a connection, so the request target reaches it as a transport fact. The key
+/// is the kernel's, not this plane's guess at one: a transport that writes none leaves this plane
+/// unable to name a dialect, and the decode step says so rather than inventing a target.
+const FACT_PATH: &str = busbar_contract::transport::facts::PATH;
+
+/// How long the upstream took, in milliseconds, if the transport published the figure.
+///
+/// One dialect stamps this into the answer's metrics. The plane does not measure it and does not
+/// invent it: an unpublished or unparsable fact yields `None`, and the writer then stamps nothing.
+fn elapsed_ms(ctx: &Ctx<'_>) -> Option<u64> {
+    ctx.transport()
+        .fact(meta::TRANSPORT_FACT_ELAPSED_MS)
+        .and_then(|v| v.parse::<u64>().ok())
+}
+
+/// The bytes the codec builds a minted envelope identifier from.
+///
+/// A plane holds no random source, so the entropy for the one identifier a refusal envelope carries
+/// comes from the kernel through the context. The context's per-call value today is its clock
+/// reading — both halves of it, the wall reading and the monotonic one — and that is what is handed
+/// over here. When the context grows a value source of its own, this is the one place that changes:
+/// nothing else in the plane names entropy.
+fn minted_id_entropy(ctx: &Ctx<'_>) -> [u8; 24] {
+    let clock = ctx.clock();
+    let mut bytes = [0u8; 24];
+    bytes[..8].copy_from_slice(&clock.unix_secs.to_be_bytes());
+    bytes[8..].copy_from_slice(&clock.monotonic_nanos.to_be_bytes());
+    bytes
+}
 
 /// The default response ceiling used when a dialect requires one and the client sent none.
 ///
@@ -76,6 +101,19 @@ fn ingress_dialect<'u>(ctx: &Ctx<'u>) -> Option<&'static Dialect> {
     let header = |name: &str| transport.fact(name);
     let name = crate::claims::dialect_for(path, &header)?;
     dialect::dialect(name)
+}
+
+/// The dialect the decode step named, read back off the unit's sealed draft facts.
+///
+/// The ladder is walked ONCE, at `decode_ingress`, which writes the rung it landed on into the
+/// draft. Every later step that holds a unit reads the name back and resolves it against the closed
+/// dialect table rather than walking fourteen rungs over the transport facts a second time — the
+/// walk is ordered, and an ordered walk repeated is an ordered walk that can disagree with itself.
+fn unit_dialect(u: &Unit<'_>) -> Option<&'static Dialect> {
+    match u.draft_facts().get(meta::FACT_DIALECT) {
+        Some(FactValue::Str(name)) => dialect::dialect(name),
+        _ => None,
+    }
 }
 
 /// Which dialect a verified destination speaks, and what to rewrite the model to.
@@ -257,8 +295,8 @@ impl Plane for LlmPlane {
         // The codec's own reader is what says whether these bytes are this dialect's shape. A
         // second opinion here would be a second dialect.
         let value = parse(bytes)?;
-        let protocol =
-            busbar_llm::proto_codec::protocol_for(d.name).ok_or(Decode::UnsupportedOperation)?;
+        let protocol = busbar_llm_codec::proto_codec::protocol_for(d.name)
+            .ok_or(Decode::UnsupportedOperation)?;
         let request = protocol
             .reader()
             .read_request(&value)
@@ -317,10 +355,10 @@ impl Plane for LlmPlane {
     ) -> Result<EgressBody<'u>, Encode> {
         let upstream = upstream_for(self, dest).ok_or(Encode::Unrepresentable)?;
         let egress = dialect::dialect(upstream.dialect).ok_or(Encode::Unrepresentable)?;
-        let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
+        let ingress = unit_dialect(u).ok_or(Encode::Unrepresentable)?;
 
-        let egress_protocol =
-            busbar_llm::proto_codec::protocol_for(egress.name).ok_or(Encode::Unrepresentable)?;
+        let egress_protocol = busbar_llm_codec::proto_codec::protocol_for(egress.name)
+            .ok_or(Encode::Unrepresentable)?;
         let bytes = u.body().body();
         let mut value: serde_json::Value =
             sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
@@ -344,7 +382,7 @@ impl Plane for LlmPlane {
                 bytes.to_vec()
             }
         } else {
-            let ingress_protocol = busbar_llm::proto_codec::protocol_for(ingress.name)
+            let ingress_protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
                 .ok_or(Encode::Unrepresentable)?;
             let mut request = ingress_protocol
                 .reader()
@@ -421,7 +459,7 @@ impl Plane for LlmPlane {
         };
         let upstream = upstream_for(self, dest).ok_or(Decode::UnsupportedOperation)?;
         let egress = dialect::dialect(upstream.dialect).ok_or(Decode::UnsupportedOperation)?;
-        let protocol = busbar_llm::proto_codec::protocol_for(egress.name)
+        let protocol = busbar_llm_codec::proto_codec::protocol_for(egress.name)
             .ok_or(Decode::UnsupportedOperation)?;
         let bytes = frame.bytes.as_slice();
         let body = ctx
@@ -506,9 +544,9 @@ impl Plane for LlmPlane {
             _ => ingress.name,
         };
         let source_protocol =
-            busbar_llm::proto_codec::protocol_for(source).ok_or(Encode::Unrepresentable)?;
-        let ingress_protocol =
-            busbar_llm::proto_codec::protocol_for(ingress.name).ok_or(Encode::Unrepresentable)?;
+            busbar_llm_codec::proto_codec::protocol_for(source).ok_or(Encode::Unrepresentable)?;
+        let ingress_protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
+            .ok_or(Encode::Unrepresentable)?;
         let bytes = r.ir.body();
 
         let is_event = matches!(
@@ -545,14 +583,29 @@ impl Plane for LlmPlane {
             // Same dialect: the upstream's own bytes are already what the client reads.
             return put(ctx, bytes);
         }
-        let response = source_protocol
+        let mut response = source_protocol
             .reader()
             .read_response(&value)
             .map_err(|_| Encode::Unrepresentable)?;
+        // THE ANSWER-NORMALIZATION PASS. The reference forward path runs exactly this between
+        // reading an answer and writing it, and the four members this plane used to get wrong were
+        // all it: the upstream's own identity is cleared (so the client-facing writer mints one in
+        // the client's native shape rather than passing a foreign dialect's id through), the
+        // creation time is filled in, and the tool-call ids are rewritten so an identity minted by
+        // one vendor is recognisable when it comes back through another.
+        //
+        // The creation time is an INPUT, taken from the context's clock. That is the whole reason
+        // this call can live in a plane: the pass reads no clock of its own, so a plane running it
+        // stays pure over its inputs, and two calls with the same context produce the same answer.
+        busbar_llm_codec::chat_handle::chat_prepare_for_ingress(
+            &mut response,
+            ingress.name,
+            ctx.clock().unix_secs,
+        );
         let mut written = ingress_protocol.writer().write_response(&response);
         ingress_protocol
             .writer()
-            .inject_response_metrics(&mut written, None);
+            .inject_response_metrics(&mut written, elapsed_ms(ctx));
         put(ctx, &serialize(&written)?)
     }
 
@@ -564,18 +617,26 @@ impl Plane for LlmPlane {
         ctx: &Ctx<'u>,
     ) -> Result<ArenaBytes<'u>, Encode> {
         let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
-        let protocol =
-            busbar_llm::proto_codec::protocol_for(ingress.name).ok_or(Encode::Unrepresentable)?;
         let (status, kind) = refusal_shape(refusal.reason);
-        let envelope = protocol
-            .writer()
-            .write_error(status, kind, refusal_message(refusal.reason));
+        // One dialect puts a minted identifier at the top of its error envelope, because a native
+        // envelope carries one. A plane reads no random source, so the entropy for it is an input:
+        // the codec builds the identifier from bytes handed to it, which keeps the envelope's native
+        // shape while leaving this method a pure function of what it was given. Two refusals built
+        // from the same context are therefore the same bytes.
+        let envelope = busbar_llm_codec::write_error_envelope(
+            ingress.name,
+            status,
+            kind,
+            refusal_message(refusal.reason),
+            &minted_id_entropy(ctx),
+        )
+        .ok_or(Encode::Unrepresentable)?;
         put(ctx, &serialize(&envelope)?)
     }
 
     fn encode_end<'u>(
         &self,
-        _u: &Unit<'u>,
+        u: &Unit<'u>,
         end: &UnitEnd,
         _st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
@@ -586,9 +647,9 @@ impl Plane for LlmPlane {
         let UnitEnd::Failed { .. } = end else {
             return Ok(None);
         };
-        let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
-        let protocol =
-            busbar_llm::proto_codec::protocol_for(ingress.name).ok_or(Encode::Unrepresentable)?;
+        let ingress = unit_dialect(u).ok_or(Encode::Unrepresentable)?;
+        let protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
+            .ok_or(Encode::Unrepresentable)?;
         let envelope = protocol.writer().write_error(
             500,
             KIND_API_ERROR,
@@ -597,9 +658,9 @@ impl Plane for LlmPlane {
         Ok(Some(put(ctx, &serialize(&envelope)?)?))
     }
 
-    fn authenticate<'u>(&self, _u: &Unit<'u>, ctx: &Ctx<'u>) -> CredentialLocator {
+    fn authenticate<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> CredentialLocator {
         CredentialLocator {
-            narrowing: ingress_dialect(ctx).map(|d| SchemeAlt::new(d.scheme_alt)),
+            narrowing: unit_dialect(u).map(|d| SchemeAlt::new(d.scheme_alt)),
             // Every one of the six dialects presents its credential on the request itself. None of
             // them authenticates once and rides a session.
             from_session: false,
@@ -610,7 +671,7 @@ impl Plane for LlmPlane {
         match self.first_upstream() {
             Some(u) => DestinationFacts::Upstream {
                 transport: crate::claims::TRANSPORT,
-                host: u.host,
+                address: busbar_contract::UpstreamAddress::socket(u.host),
                 lane: u.lane,
             },
             // Nothing is configured, so there is nowhere to go. Naming a kernel verb that does not
@@ -631,8 +692,8 @@ impl Plane for LlmPlane {
         facts
     }
 
-    fn admit<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> AdmitFacts {
-        let Some(d) = ingress_dialect(ctx) else {
+    fn admit<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
+        let Some(d) = unit_dialect(u) else {
             return AdmitFacts::default();
         };
         let body = u.body().body();
@@ -647,12 +708,21 @@ impl Plane for LlmPlane {
                 end: body.len(),
             });
         AdmitFacts {
-            lane_locator: Some(Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(
-                d.model_pointer,
-            ))),
-            max_response_ptr: Some(Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(
-                d.max_response_pointer,
-            ))),
+            // The dialect's own table says where the model IS: a body pointer for the four that
+            // carry it in the body, a path segment for the two that carry it in the request target.
+            lane_locator: Some(d.model_location),
+            // Every place this dialect accepts the ceiling, in the dialect table's own order. The
+            // kernel takes the first that resolves, so a dialect with two spellings reads whichever
+            // the client actually sent.
+            max_response_ptrs: {
+                let mut ptrs = BoundedVec::new();
+                for ptr in d.max_response_pointers {
+                    let _ = ptrs.push(Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(
+                        ptr,
+                    )));
+                }
+                ptrs
+            },
             input_span: Some(input_span),
         }
     }
@@ -673,7 +743,7 @@ impl Plane for LlmPlane {
         }) else {
             return locators;
         };
-        let Some(protocol) = busbar_llm::proto_codec::protocol_for(source.name) else {
+        let Some(protocol) = busbar_llm_codec::proto_codec::protocol_for(source.name) else {
             return locators;
         };
         let Ok(value) = sonic_rs::from_slice::<serde_json::Value>(r.ir.body()) else {
@@ -735,7 +805,12 @@ impl Plane for LlmPlane {
         }
     }
 
-    fn plane_facts<'u>(&self, verb: AdminVerbId, ctx: &Ctx<'u>) -> Result<PlaneFacts<'u>, Decode> {
+    fn plane_facts<'u>(
+        &self,
+        verb: AdminVerbId,
+        _subject: Option<&'u str>,
+        ctx: &Ctx<'u>,
+    ) -> Result<PlaneFacts<'u>, Decode> {
         let mut facts = Facts::new();
         if verb == meta::VERB_DIALECTS {
             for d in dialect::DIALECTS {
@@ -765,7 +840,7 @@ impl Plane for LlmPlane {
             Some(FactValue::Str(name)) => name,
             _ => return ContentFacts { facts },
         };
-        let Some(protocol) = busbar_llm::proto_codec::protocol_for(source) else {
+        let Some(protocol) = busbar_llm_codec::proto_codec::protocol_for(source) else {
             return ContentFacts { facts };
         };
         let Ok(value) = sonic_rs::from_slice::<serde_json::Value>(r.ir.body()) else {
@@ -804,7 +879,7 @@ fn response_facts<'u>(ctx: &Ctx<'u>, response: &IrResponse, facts: &mut Facts<'u
     let tool_calls = response
         .content
         .iter()
-        .filter(|b| matches!(b, busbar_llm::ir::IrBlock::ToolUse { .. }))
+        .filter(|b| matches!(b, busbar_llm_codec::ir::IrBlock::ToolUse { .. }))
         .count();
     let _ = facts.set(
         meta::FACT_TOOL_CALLS,

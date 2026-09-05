@@ -178,11 +178,11 @@ impl RouteOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delivered {
     /// Which member of the verified set served the request.
-    pub destination: usize,
+    pub destination: crate::ports::DestinationId,
     /// Which pool cell the attempt was recorded against.
     pub pool: String,
     /// The transport's own reading of the first relayed frame, where it carries one.
-    pub status: Option<busbar_contract::StatusClass>,
+    pub status: Option<busbar_contract_transport::wire::StatusClass>,
     /// How many response frames were relayed to the client.
     pub frames: usize,
     /// The plane's reading of how the answer ended.

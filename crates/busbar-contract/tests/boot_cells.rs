@@ -145,7 +145,7 @@ fn every_rung_is_a_claim_that_a_boot_would_check() {
         let claim = Claim {
             transport: "http",
             selector: rung.selector,
-            scheme: "bearer",
+            scheme: Some("bearer"),
             scheme_alternatives: &[],
             idempotency: None,
         };
@@ -179,4 +179,61 @@ fn overlapping_rungs_within_one_plane_are_an_ordering_question_not_a_refusal() {
     let other = Selector::ExactPath("/anthropic/v1/messages");
     assert!(general.overlaps(&other));
     assert!(!specific.overlaps(&other));
+}
+
+/// A registration interns each configured key exactly once, and reuses it after that.
+///
+/// This is the leak-once rule as a value rather than as a sentence. A plane's declarations are
+/// associated constants, so a configured lane or host has to become a static name somewhere; here
+/// is where, and here only. The idempotence is the whole point: a key interned per unit would be a
+/// leak that grows with traffic, which is precisely what one transport was doing per dial.
+#[test]
+fn a_registration_interns_a_configured_key_exactly_once() {
+    let mut reg = busbar_contract::ids::Registration::new();
+    assert!(reg.is_empty());
+
+    let lane = String::from("openai-frontier");
+    let first = reg.key(&lane);
+    let second = reg.key(&lane);
+
+    assert_eq!(first, "openai-frontier");
+    assert_eq!(first, second);
+    // The SAME name, not an equal one: interning twice leaks once.
+    assert!(std::ptr::eq(first, second));
+    assert_eq!(reg.len(), 1);
+
+    // A different key is a second entry, and the fixed term is readable from the count.
+    let other = reg.key("anthropic-frontier");
+    assert_ne!(first, other);
+    assert_eq!(reg.len(), 2);
+}
+
+/// Registration refuses a transport that publishes a reserved fact key it did not declare.
+///
+/// The six reserved keys are the structural values the arrival grammar resolves against, and a
+/// plane cannot see a connection, so the request target reaches it as one of them. A transport that
+/// writes one without declaring it is a value a plane reads and no boot check knows about.
+#[test]
+fn a_transport_must_declare_every_reserved_key_it_publishes() {
+    use busbar_contract::transport::facts;
+
+    assert_eq!(facts::RESERVED.len(), 6);
+    for key in facts::RESERVED {
+        assert!(facts::is_reserved(key));
+    }
+    // A transport's own facts are open vocabulary, and none of this applies to them.
+    assert!(!facts::is_reserved("tls_session_ticket"));
+
+    // Declared and published agree: nothing to report.
+    let declared = [facts::PATH, facts::METHOD, facts::PEER];
+    assert_eq!(facts::undeclared(&declared, &[facts::PATH]), None);
+    // A transport's own key is published freely, declared or not.
+    assert_eq!(facts::undeclared(&declared, &["retries"]), None);
+    // A reserved key published without a declaration is named, and it is the one at fault.
+    assert_eq!(
+        facts::undeclared(&declared, &["retries", facts::SNI, facts::PATH]),
+        Some(facts::SNI)
+    );
+    // A transport declaring nothing may still publish its own; it may not publish a reserved key.
+    assert_eq!(facts::undeclared(&[], &[facts::PEER]), Some(facts::PEER));
 }

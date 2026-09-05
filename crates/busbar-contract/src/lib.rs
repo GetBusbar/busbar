@@ -17,6 +17,8 @@ pub mod ids;
 pub mod kinds;
 pub mod plane;
 pub mod plugin;
+pub mod spans;
+pub mod surface;
 pub mod transport;
 pub mod unit;
 pub mod wire;
@@ -24,21 +26,22 @@ pub mod wire;
 pub use bounded::{
     Arena, ArenaBudget, ArenaBytes, BoundedVec, FactValue, Facts, Ir, IrPatch, Labels, SlabBytes,
     Span, ARENA_BYTES, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS, MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES,
-    MAX_RECORD_BYTES, MAX_SESSION_UPSTREAMS, MAX_STEPS, MAX_USAGE_LINES,
+    MAX_RECORD_BYTES, MAX_RESPONSE_PTRS, MAX_SESSION_UPSTREAMS, MAX_STEPS, MAX_USAGE_LINES,
 };
 pub use dest::{
-    AuthDecoration, CandidateIdx, CandidateSet, ClientMode, DestinationFacts, EgressBody, Leg,
-    OnEmpty, Permutation, RoutePlan, SecretOnce, SecretSlot, TransportKeyHandle,
-    VerifiedDestination, VetoCode,
+    AuthDecoration, CandidateIdx, CandidateSet, ClientMode, DestinationFacts, DestinationId,
+    EgressBody, Leg, OnEmpty, Permutation, RoutePlan, SecretOnce, SecretSlot, TransportKeyHandle,
+    UpstreamAddress, VerifiedDestination, VetoCode,
 };
 pub use grammar::{
     ArrivalLocation, Claim, Idempotency, Location, MaskKind, PathSeg, ReplayMatch, Selector,
     SelectorFamily, SelectorForm, SignedOver,
 };
 pub use ids::{
-    AdminVerbId, BucketChain, BucketRef, BucketScope, CapDimension, ClassDirection, ClassEstimate,
-    CorrelationRef, Estimate, LaneId, MeterClassDecl, MeterClassId, OpClassId, PrincipalId,
-    RecordSchemaId, SchemeAlt, SchemeKey, SessionId, StreamId, TransportId, UpstreamIdx,
+    AdminVerbId, BucketChain, BucketRef, BucketScope, CapDimension, ClaimKey, ClassDirection,
+    ClassEstimate, CorrelationRef, CorrelationValue, Estimate, LaneId, MeterClassDecl,
+    MeterClassId, OpClassId, PrincipalId, RecordSchemaId, Registration, SchemeAlt, SchemeKey,
+    SessionId, StreamId, TransportId, UnitKey, UpstreamIdx,
 };
 pub use kinds::{
     Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
@@ -50,7 +53,10 @@ pub use plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 pub use plugin::{AbiVersion, KernelSeal, Kind, KindMarker, Plugin, STORE_ABI};
-pub use transport::{Fut, Transport, TransportConfigView, TransportMeta};
+pub use transport::{
+    check_composition, CompositionError, Fut, Registered, Transport, TransportConfigView,
+    TransportMeta, TRANSPORT_ABI,
+};
 pub use unit::{
     AbortBy, AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FailureReason, FinishClass, LegResult,
     Origin, Refusal, RefusalReason, ResourceLocator, ScopeFacts, SessionView, Step, TransportView,
@@ -58,6 +64,7 @@ pub use unit::{
 };
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
-    Encode, EnvelopeField, Frame, FrameCursor, FrameMeta, Handoff, HandshakeTrigger, Listener,
-    ListenerHandle, StatusAt, StatusClass, TransportEnvelope, TransportError, Unit0Trigger,
+    Encode, EnvelopeField, Frame, FrameCursor, FrameMeta, Framing, Handoff, HandshakeTrigger,
+    Listener, ListenerHandle, RawIo, RawStream, StatusAt, StatusClass, TransportEnvelope,
+    TransportError, Unit0Trigger,
 };

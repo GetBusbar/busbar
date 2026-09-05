@@ -43,10 +43,14 @@ const SCHEME: &str = "mcp-inbound";
 /// The alternatives a unit may be narrowed to.
 ///
 /// The bearer form is what a caller over the document transport presents. The environment form is
-/// what a locally launched server is handed, because there is no request to carry a header on. The
-/// anonymous form is declared because the discovery document is deliberately unauthenticated, and
-/// the contract gives a plane no other way to say so; that is written down in the crate's notes.
-const SCHEME_ALTS: &[&str] = &["bearer", "environment", "anonymous"];
+/// what a locally launched server is handed, because there is no request to carry a header on.
+///
+/// There is no third, anonymous form. There used to be one, invented as a scheme alternative
+/// because a claim could not say "these units carry no credential" any other way — and a scheme
+/// alternative meaning "none" is exactly what makes the authenticate step's narrowing check
+/// toothless, because narrowing DOWN to it would pass. The discovery document says it in the one
+/// place it belongs instead: its own claim declares no scheme.
+const SCHEME_ALTS: &[&str] = &["bearer", "environment"];
 
 /// The path this protocol is served at when the configured address has no other.
 ///
@@ -65,11 +69,25 @@ const fn claim(transport: &'static str, selector: Selector) -> Claim {
     Claim {
         transport,
         selector,
-        scheme: SCHEME,
+        scheme: Some(SCHEME),
         scheme_alternatives: SCHEME_ALTS,
         // No idempotency location is declared. The codec reads no client-supplied idempotency key
         // today, and declaring one here would change the shape of every request that reaches a
         // server, which is precisely the behaviour this crate is not allowed to change.
+        idempotency: None,
+    }
+}
+
+/// Build one claim whose units carry no credential at all.
+///
+/// Not "a scheme called anonymous": no scheme. The claim admits the anonymous principal without
+/// consulting one, which is what a deliberately open surface actually is.
+const fn open(transport: &'static str, selector: Selector) -> Claim {
+    Claim {
+        transport,
+        selector,
+        scheme: None,
+        scheme_alternatives: &[],
         idempotency: None,
     }
 }
@@ -80,7 +98,9 @@ const fn claim(transport: &'static str, selector: Selector) -> Claim {
 /// because it is the one surface here that carries no credential; ordering it first is what keeps a
 /// looser claim from swallowing it.
 pub const CLAIMS: &[Claim] = &[
-    claim(TRANSPORT_HTTP, Selector::ExactPath(DEFAULT_METADATA)),
+    // The discovery document is deliberately open: it is what a caller reads to find out how to
+    // authenticate, so requiring a credential for it would be a closed loop.
+    open(TRANSPORT_HTTP, Selector::ExactPath(DEFAULT_METADATA)),
     claim(TRANSPORT_HTTP, Selector::ExactPath(DEFAULT_MOUNT)),
     // The streamed answer arrives on the same path, framed as events.
     claim(TRANSPORT_SSE, Selector::ExactPath(DEFAULT_MOUNT)),
@@ -175,13 +195,39 @@ mod tests {
         }
     }
 
-    /// Every claim declares the same scheme and the same alternatives.
+    /// Every claim either declares the one scheme and its alternatives, or declares none.
+    ///
+    /// The discovery document is the one open surface: no scheme, and therefore no alternatives.
+    /// The emptiness is what makes the authenticate step's narrowing check meaningful, because
+    /// there is nothing there to narrow DOWN to.
     #[test]
-    fn every_claim_declares_one_scheme() {
+    fn every_claim_declares_one_scheme_or_none() {
+        let mut open = 0usize;
         for c in CLAIMS {
-            assert_eq!(c.scheme, SCHEME);
-            assert_eq!(c.scheme_alternatives, SCHEME_ALTS);
+            match c.scheme {
+                Some(scheme) => {
+                    assert_eq!(scheme, SCHEME);
+                    assert_eq!(c.scheme_alternatives, SCHEME_ALTS);
+                }
+                None => {
+                    open += 1;
+                    assert!(c.is_anonymous());
+                    assert!(c.scheme_alternatives.is_empty());
+                }
+            }
             assert!(c.idempotency.is_none());
+        }
+        assert_eq!(open, 1, "the discovery document is the one open surface");
+    }
+
+    /// No declared alternative is the word "anonymous".
+    ///
+    /// The absence of a credential is a property of the CLAIM, not one more thing a plane may
+    /// narrow to. This is the assertion that keeps the invented alternative from coming back.
+    #[test]
+    fn no_alternative_stands_in_for_having_no_credential() {
+        for c in CLAIMS {
+            assert!(!c.scheme_alternatives.contains(&"anonymous"));
         }
     }
 

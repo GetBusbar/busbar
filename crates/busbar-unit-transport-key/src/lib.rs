@@ -5,7 +5,7 @@
 //!
 //! `Transport::listen` / `dial` / `upgrade` each need key material exactly once, resolved through
 //! the secret plugin, journaled as an `Access` entry, and handed back as an opaque
-//! [`TransportKeyHandle`] (`busbar-caps`) rather than as bytes — nothing downstream of this unit can
+//! [`TransportKeyHandle`] (`busbar-contract`, re-exported by `busbar-caps`) rather than as bytes — nothing downstream of this unit can
 //! turn a handle back into key material. This crate is that resolution step, standing alone from
 //! the transport it serves: given a [`SecretSource`] (the abstract "read this named secret" seam a
 //! real deployment's secret plugin sits behind) and an [`AccessJournal`] (the "record that this
@@ -150,7 +150,9 @@ fn load_cert_chain(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot parse TLS cert: {e}"))?;
     if certs.is_empty() {
-        return Err("TLS cert contains no certificates (expected a PEM chain, leaf first)".to_string());
+        return Err(
+            "TLS cert contains no certificates (expected a PEM chain, leaf first)".to_string(),
+        );
     }
     Ok(certs)
 }
@@ -203,7 +205,9 @@ pub fn build_server_config(material: &TlsMaterial) -> Result<ServerConfig, Strin
             let roots = load_client_roots(ca_pem)?;
             let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
                 .build()
-                .map_err(|e| format!("cannot build client-cert verifier from TLS client_ca: {e}"))?;
+                .map_err(|e| {
+                    format!("cannot build client-cert verifier from TLS client_ca: {e}")
+                })?;
             builder.with_client_cert_verifier(verifier)
         }
         None => builder.with_no_client_auth(),
@@ -219,10 +223,100 @@ pub fn build_server_config(material: &TlsMaterial) -> Result<ServerConfig, Strin
 
 /// Hand out an opaque handle for resolved key material. The transport-key unit is the only caller —
 /// `TransportKeyHandle::issue` demands a [`TransportKeyToken`], which only the kernel lends to this
-/// unit. `registry_id` is whatever local key the caller keeps the actual material under; nothing
-/// about the material itself is recoverable from the handle.
-pub fn issue_handle(token: &TransportKeyToken, registry_id: u64) -> TransportKeyHandle {
-    TransportKeyHandle::issue(token, registry_id)
+/// unit. `slot` is whatever local slot the caller keeps the actual material under, and
+/// `fingerprint` is what the journal's access entry records; nothing about the material itself is
+/// recoverable from the handle. The handle is the contract's own, which is what the transports and
+/// the egress unit consume, so the unit that resolves a key and the code that dials with it now
+/// name one type.
+pub fn issue_handle(
+    token: &TransportKeyToken,
+    slot: u64,
+    fingerprint: &'static str,
+) -> TransportKeyHandle {
+    TransportKeyHandle::issue(token, slot, fingerprint)
+}
+
+/// Where one listener's material is kept, and what the journal records it as.
+///
+/// The two travel together because they name one thing from two sides: the slot is what a transport
+/// looks a config up by, and the fingerprint is what the access entry says was read. Neither is the
+/// material, and neither can be turned back into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Slot {
+    /// The node-local slot the config is registered under.
+    pub index: u64,
+    /// What the journal's access entry records.
+    pub fingerprint: &'static str,
+}
+
+/// Where one listener's TLS material is resolved from, as the secret source spells it.
+///
+/// `client_ca` present means mTLS: the client MUST present a certificate chaining to that CA or the
+/// handshake fails. Absent means server-only TLS. The grammar of each location is the caller's and
+/// its own secret source's; this unit never interprets one.
+#[derive(Debug, Clone, Copy)]
+pub struct TlsLocations<'a> {
+    /// The certificate chain, leaf first.
+    pub cert: &'a str,
+    /// The private key.
+    pub key: &'a str,
+    /// The CA bundle a presented client certificate is verified against, where mTLS is configured.
+    pub client_ca: Option<&'a str>,
+}
+
+/// What a transport that speaks TLS offers this unit: somewhere to put the material it resolved.
+///
+/// A transport is handed an opaque handle and looks a config up by its slot. Something has to have
+/// put the config there, and it cannot be the transport — a transport may not read a secret. This
+/// is that seam, and the whole of it: the unit resolves, journals and registers, and the transport
+/// only ever sees a slot number.
+pub trait TlsConfigSink {
+    /// Take the server-side config for a slot.
+    fn register_server_config(&self, slot: u64, cfg: Arc<ServerConfig>);
+    /// Take the client-side config for a slot.
+    fn register_client_config(&self, slot: u64, cfg: Arc<rustls::ClientConfig>);
+}
+
+/// Resolve a listener's TLS material, journal the access, register the config, and hand back the
+/// handle the transport will present at `listen`, `accept` and every adoption over it.
+///
+/// This is the one call a composition root makes, and it is the whole path the design draws: the
+/// secret plugin is read here and nowhere else, the `Access` entry is written for every secret
+/// actually read, the config lands in the transport's slot, and what leaves this function carries
+/// no material at all. Before it existed the only thing that ever registered a config was the
+/// transport's own tests, which meant a production listener had no key.
+///
+/// # Errors
+///
+/// The material could not be resolved through the secret source, or it did not parse into a usable
+/// certificate and key. The message names the secret's SOURCE, never its bytes.
+pub fn provision_server(
+    source: &dyn SecretSource,
+    journal: &dyn AccessJournal,
+    sink: &dyn TlsConfigSink,
+    token: &TransportKeyToken,
+    slot: Slot,
+    at: &TlsLocations<'_>,
+) -> Result<TransportKeyHandle, String> {
+    let material = resolve_tls_material(source, journal, at.cert, at.key, at.client_ca)?;
+    sink.register_server_config(slot.index, Arc::new(build_server_config(&material)?));
+    Ok(issue_handle(token, slot.index, slot.fingerprint))
+}
+
+/// The dial-side half: register the client config a transport presents when it dials, and hand back
+/// the handle naming its slot.
+///
+/// The trust roots are the caller's, because which authorities a node will accept upstream is a
+/// deployment's statement and not this unit's. Nothing is read through the secret source here —
+/// a public root store is not a secret — so nothing is journaled either.
+pub fn provision_client(
+    sink: &dyn TlsConfigSink,
+    token: &TransportKeyToken,
+    slot: Slot,
+    cfg: Arc<rustls::ClientConfig>,
+) -> TransportKeyHandle {
+    sink.register_client_config(slot.index, cfg);
+    issue_handle(token, slot.index, slot.fingerprint)
 }
 
 #[cfg(test)]

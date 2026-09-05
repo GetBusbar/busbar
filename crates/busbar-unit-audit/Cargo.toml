@@ -27,6 +27,7 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-caps = { path = "../busbar-caps" }
+busbar-contract = { path = "../busbar-contract" }
 sha2 = { workspace = true }
 serde = { workspace = true }
 

@@ -113,6 +113,45 @@ impl Diagnostics for NoopDiagnostics {
     fn unrecognized_error_map_value(&self, _value: &str) {}
 }
 
+/// A [`Diagnostics`] adapter that forwards each distinct unrecognized value to an inner sink AT
+/// MOST ONCE per process lifetime, deduplicating repeat calls for the same value itself so the
+/// inner sink (e.g. a real `tracing::warn!`-backed one the composition root binds) never has to.
+/// This is PB-98's "warned once and ignored": the classification RESULT is unaffected either way
+/// (the mapping is still silently ignored) — only how many times the side-channel warning fires.
+pub struct WarnOnceDiagnostics<S: Diagnostics> {
+    seen: std::sync::Mutex<std::collections::HashSet<String>>,
+    inner: S,
+}
+
+impl<S: Diagnostics> WarnOnceDiagnostics<S> {
+    /// Wrap `inner`, deduplicating by the exact unrecognized string.
+    pub fn new(inner: S) -> Self {
+        Self {
+            seen: std::sync::Mutex::new(std::collections::HashSet::new()),
+            inner,
+        }
+    }
+}
+
+impl<S: Diagnostics> Diagnostics for WarnOnceDiagnostics<S> {
+    fn unrecognized_error_map_value(&self, value: &str) {
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        if seen.insert(value.to_string()) {
+            drop(seen);
+            self.inner.unrecognized_error_map_value(value);
+        }
+    }
+}
+
+/// A shared [`Diagnostics`] sink is still one: this is what lets a caller keep a handle on the
+/// concrete sink (e.g. to assert on it in a test, or to fan it out elsewhere) while also handing
+/// an owned value into [`crate::BreakerUnit::with_diagnostics`].
+impl<S: Diagnostics + ?Sized> Diagnostics for std::sync::Arc<S> {
+    fn unrecognized_error_map_value(&self, value: &str) {
+        (**self).unrecognized_error_map_value(value);
+    }
+}
+
 /// Classify a [`CanonicalSignal`] into a [`Disposition`]. Exhaustive over [`StatusClass`] — no
 /// wildcard arm, so a class added to the enum without a table row fails to compile.
 pub fn classify(sig: &CanonicalSignal) -> Disposition {
@@ -217,7 +256,14 @@ fn month_from_abbrev(m: &str) -> Option<u64> {
 
 /// Days-from-civil algorithm (Howard Hinnant's public-domain `civil_from_days` inverse), giving a
 /// UTC Unix timestamp for a UTC calendar date and time with no external date/time dependency.
-fn civil_to_epoch_secs(year: u64, month: u64, day: u64, hour: u64, minute: u64, second: u64) -> Option<u64> {
+fn civil_to_epoch_secs(
+    year: u64,
+    month: u64,
+    day: u64,
+    hour: u64,
+    minute: u64,
+    second: u64,
+) -> Option<u64> {
     let y = year as i64 - i64::from(month <= 2);
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400; // [0, 399]
@@ -258,7 +304,9 @@ pub fn normalize_raw_error(
         // The built-in canonical context-length code, recognized ONLY on the precise
         // oversized-request statuses (400 Bad Request / 413 Payload Too Large) — never a 5xx (an
         // upstream server failure) or any other status that happens to carry the code.
-        if code == PROVIDER_CODE_CONTEXT_LENGTH && (raw.http_status == 400 || raw.http_status == 413) {
+        if code == PROVIDER_CODE_CONTEXT_LENGTH
+            && (raw.http_status == 400 || raw.http_status == 413)
+        {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
                 provider_signal: Some(code.clone()),

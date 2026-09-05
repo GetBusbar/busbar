@@ -4,10 +4,12 @@
 //! count. The plane delimits units from frames; the kernel constructs them and is the sole writer
 //! of their identity. Everything below is read-only from a plugin's side.
 
-use crate::bounded::{ArenaBytes, BoundedVec, Facts, Ir, Labels, MAX_USAGE_LINES};
+use crate::bounded::{
+    ArenaBytes, BoundedVec, Facts, Ir, Labels, MAX_RESPONSE_PTRS, MAX_USAGE_LINES,
+};
 use crate::grammar::Location;
 use crate::ids::{
-    CorrelationRef, LaneId, MeterClassId, OpClassId, PrincipalId, SessionId, StreamId,
+    CorrelationRef, LaneId, MeterClassId, OpClassId, PrincipalId, SessionId, StreamId, UnitKey,
 };
 use crate::plugin::KernelSeal;
 use crate::wire::Direction;
@@ -185,7 +187,7 @@ pub enum AbortBy {
 /// code itself. The refusal names the fact — which step, which stream, which correlation — so the
 /// journal row and the wire bytes are derived from one value rather than written twice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct Refusal {
+pub struct Refusal<'u> {
     /// The step that refused.
     pub step: Step,
     /// Why.
@@ -195,7 +197,7 @@ pub struct Refusal {
     /// Which stream the refusal belongs to.
     pub stream: Option<StreamId>,
     /// Which request the refusal answers.
-    pub correlates: Option<CorrelationRef>,
+    pub correlates: Option<CorrelationRef<'u>>,
 }
 
 /// How a unit ended, as a plugin sees it.
@@ -203,11 +205,11 @@ pub struct Refusal {
 /// The capability crate carries what a settlement *is*; this is the shape a plane is handed so it
 /// can render an ending. A plane cannot construct one, because a plane does not decide endings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub enum UnitEnd {
+pub enum UnitEnd<'u> {
     /// The unit ran the whole loop.
     Completed,
     /// A step refused it.
-    Refused(Refusal),
+    Refused(Refusal<'u>),
     /// A step failed.
     Failed {
         /// Which step.
@@ -298,14 +300,42 @@ pub struct ScopeFacts {
 /// Three pointers and nothing more: where the lane name is in the request, where the client's
 /// response ceiling is, and which span of the body counts as input. The kernel resolves all three
 /// itself, so a plane that lies about them is caught by the lane cross-check rather than believed.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct AdmitFacts {
     /// Where the lane name is in the request.
     pub lane_locator: Option<Location>,
-    /// Where the client's own response ceiling is, clamped to the lane's declared maximum.
-    pub max_response_ptr: Option<Location>,
+    /// Where the client's own response ceiling may be, in declaration order.
+    ///
+    /// A list, not one place, because a dialect can accept the same ceiling under either of two
+    /// member names — an older spelling its existing clients send and a newer one its current
+    /// documentation gives. The kernel takes the first that RESOLVES, so a plane naming both reads
+    /// whichever the client actually sent, and a plane naming one behaves exactly as before.
+    ///
+    /// The ceiling is accounting rather than admission, so a pointer that misses never refuses a
+    /// unit; it sizes the hold off a key the client did not send, which the hold derivation and the
+    /// resident-memory bound both assume was read.
+    pub max_response_ptrs: BoundedVec<Location, MAX_RESPONSE_PTRS>,
     /// Which span of the body is the priced input.
     pub input_span: Option<crate::bounded::Span>,
+}
+
+impl AdmitFacts {
+    /// The first declared response-ceiling pointer that resolves in a body.
+    ///
+    /// Declaration order is precedence order: a plane that names an older spelling first and a
+    /// newer one second is saying which one wins when a request carries both.
+    #[must_use]
+    pub fn max_response_bytes<'u>(&self, body: &Ir<'u>) -> Option<&'u [u8]> {
+        self.max_response_ptrs.as_slice().iter().find_map(|loc| {
+            match loc {
+                Location::Arrival(crate::grammar::ArrivalLocation::FirstFrameJsonPointer(ptr))
+                | Location::UnitJsonPointer(ptr) => body.pointer(ptr),
+                // Every other form is resolved against the arrival record rather than the body,
+                // and a response ceiling is a body value in all six reference dialects.
+                _ => None,
+            }
+        })
+    }
 }
 
 /// The node's read-only clock.
@@ -469,7 +499,7 @@ pub struct LegResult<'u> {
 /// a unit it wrote itself would be a plane writing its own evidence.
 #[derive(Debug)]
 pub struct Unit<'u> {
-    key: u64,
+    key: UnitKey,
     origin: Origin,
     session: Option<SessionId>,
     stream: Option<StreamId>,
@@ -477,7 +507,8 @@ pub struct Unit<'u> {
     principal: Option<PrincipalId>,
     op: OpClassId,
     body: Ir<'u>,
-    correlates: Option<CorrelationRef>,
+    facts: Facts<'u>,
+    correlates: Option<CorrelationRef<'u>>,
     byte_counts: (u64, u64),
     frame_counts: (u32, u32),
     leg_results: BoundedVec<LegResult<'u>, { crate::bounded::MAX_LEG_REPLIES }>,
@@ -489,7 +520,7 @@ impl<'u> Unit<'u> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         _seal: &dyn KernelSeal,
-        key: u64,
+        key: UnitKey,
         origin: Origin,
         session: Option<SessionId>,
         stream: Option<StreamId>,
@@ -497,7 +528,8 @@ impl<'u> Unit<'u> {
         principal: Option<PrincipalId>,
         op: OpClassId,
         body: Ir<'u>,
-        correlates: Option<CorrelationRef>,
+        facts: Facts<'u>,
+        correlates: Option<CorrelationRef<'u>>,
     ) -> Self {
         Self {
             key,
@@ -508,6 +540,7 @@ impl<'u> Unit<'u> {
             principal,
             op,
             body,
+            facts,
             correlates,
             byte_counts: (0, 0),
             frame_counts: (0, 0),
@@ -517,7 +550,7 @@ impl<'u> Unit<'u> {
 
     /// The unit's node-local identity.
     #[must_use]
-    pub fn key(&self) -> u64 {
+    pub fn key(&self) -> UnitKey {
         self.key
     }
 
@@ -563,9 +596,20 @@ impl<'u> Unit<'u> {
         self.body
     }
 
+    /// The facts the draft carried, sealed by the kernel at construction.
+    ///
+    /// Decode is the step that reads the bytes, and what it determined there is evidence every
+    /// later step is entitled to. Without this a plane's only way to answer at `verify`, `approve`,
+    /// `audit` or `content_facts` a question decode already answered is to re-derive it from the
+    /// same bytes — or, where it cannot, to stash state of its own beside the loop.
+    #[must_use]
+    pub fn draft_facts(&self) -> &Facts<'u> {
+        &self.facts
+    }
+
     /// Which request this unit answers, where it answers one.
     #[must_use]
-    pub fn correlates(&self) -> Option<CorrelationRef> {
+    pub fn correlates(&self) -> Option<CorrelationRef<'u>> {
         self.correlates
     }
 

@@ -52,7 +52,7 @@ pub(crate) struct UsageSink {
 /// already only the LAST `cap` bytes of a strictly larger body, making this a genuine floor that
 /// cannot over-charge relative to the tokens actually generated. Its only job is to keep a
 /// truncated-beyond-recovery response from billing ZERO.
-pub(crate) const TRUNCATED_TAIL_BYTES_PER_TOKEN: u64 = 4;
+pub(crate) use busbar_llm_codec::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN;
 
 /// FLOOR token estimate for a same-protocol non-stream response whose body OVERFLOWED the usage-tap
 /// reassembly cap AND whose trailing `usage` object could not be recovered by the tail scan. Such a

@@ -40,6 +40,7 @@ mod hostlog;
 mod legacy_usage;
 pub mod registry;
 mod stage;
+pub mod store_adapter;
 pub mod tarball;
 
 pub use auth::DynAuth;

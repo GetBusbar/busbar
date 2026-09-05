@@ -36,6 +36,7 @@ fn run(units: &TestUnits, kernel: &Kernel, cell: &busbar_caps::HoldCell, canary:
         &ctx(1),
         Run {
             cell,
+            parent: None,
             leases: &mut leases,
             gauge: &gauge,
             canary,
@@ -53,6 +54,39 @@ fn every_step_runs_once_in_order() {
     let ended = run(&units, &kernel, &cell, &canary);
     assert_eq!(units.called(), ORDER.to_vec());
     assert!(matches!(ended, Ended::Settled { .. }));
+}
+
+/// A challenge round is a handshake unit: the authenticate step answers "one more round" rather
+/// than an identity, so verify, approve and admit are never asked and no reservation is opened.
+/// The design says the step's decision may yield a challenge; this is what the loop does with one.
+#[test]
+fn a_challenge_round_reaches_no_destination_and_opens_no_reservation() {
+    let kernel = Kernel::new();
+    let units = TestUnits {
+        challenge: true,
+        ..TestUnits::passing()
+    };
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    let ended = run(&units, &kernel, &cell, &canary);
+
+    assert_eq!(
+        units.called(),
+        vec![
+            StepName::Arrival,
+            StepName::Decode,
+            StepName::Authenticate,
+            StepName::Route,
+            StepName::Meter,
+            StepName::Audit,
+            StepName::Encode,
+        ],
+        "a challenge settles nothing about where the unit may go or whether it may be admitted"
+    );
+    assert!(
+        matches!(ended, Ended::Settled { .. }),
+        "the round still ends once, through the one exit"
+    );
 }
 
 #[test]
@@ -162,6 +196,7 @@ fn every_unit_end_leaves_through_the_one_exit() {
             &ctx(2),
             Run {
                 cell: &cell,
+                parent: None,
                 leases: &mut leases,
                 gauge: &gauge,
                 canary: &canary,
@@ -195,6 +230,7 @@ fn a_unit_is_settled_exactly_once() {
         &ctx(1),
         Run {
             cell: &cell,
+            parent: None,
             leases: &mut leases,
             gauge: &gauge,
             canary: &canary,
@@ -242,13 +278,46 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
         ..TestUnits::default()
     };
     let child_cell = cell(&kernel);
-    let ended = run(&child, &kernel, &child_cell, &canary);
+    let gauge = ConcurrencyGauge::new();
+    let mut leases = LeaseSet::new();
+    let meter = AccrualMeter::new();
+    let ended = run_unit(
+        &kernel,
+        &child,
+        &ctx(1),
+        Run {
+            cell: &child_cell,
+            parent: Some(&parent),
+            leases: &mut leases,
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+    );
+    // The child ends like every other unit: one sealed end carrying one posting. It reserved
+    // nothing, because the reservation behind it is the parent's, and its posting is clean —
+    // nothing about it is late, because the parent was still open when it ended.
     match ended {
-        Ended::AccruedIntoParent { amount, outcome } => {
-            assert_eq!(amount, 250);
-            assert_eq!(outcome, Outcome::Completed);
+        Ended::Settled { end, requests, fee } => {
+            assert_eq!(end.outcome(), Outcome::Completed);
+            let posted = end.posted().expect("the child posts like any other unit");
+            assert_eq!(posted.settled(), 250);
+            assert_eq!(
+                posted.reserved(),
+                0,
+                "the reservation behind it is the parent's"
+            );
+            assert_eq!(posted.overdraft(), 0);
+            assert!(!posted
+                .flags()
+                .contains(busbar_caps::PostingFlags::LATE_ACCRUAL));
+            assert_eq!(
+                (requests, fee),
+                (0, 0),
+                "a child draws no slot and posts no fee; the parent drew both"
+            );
         }
-        other => panic!("expected an accrual into the parent, got {other:?}"),
+        other => panic!("expected a settled child, got {other:?}"),
     }
     assert_eq!(parent.accruals(), 1);
     let counts = canary.counts();
@@ -322,7 +391,7 @@ fn running_past_the_reservation_posts_the_overdraft_rather_than_refusing() {
 fn the_leases_go_back_on_every_end_whatever_it_was() {
     let kernel = Kernel::new();
     let gauge = ConcurrencyGauge::new();
-    let bucket = busbar_kernel::slice::BucketId::all("team");
+    let bucket = busbar_kernel::slice::bucket_all("team");
     for outcome in [
         Outcome::Completed,
         Outcome::Failed(StepName::Route, ReasonCode::ClientGone),
@@ -331,7 +400,7 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
         gauge.acquire(&bucket, 4).expect("room in the gauge");
         assert_eq!(gauge.count(&bucket), 1);
         let mut leases = LeaseSet::new();
-        leases.take(bucket.clone());
+        leases.take(bucket);
         let units = TestUnits::passing();
         let cell = cell(&kernel);
         let canary = Canary::new();
@@ -342,6 +411,7 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
             &ctx(3),
             Run {
                 cell: &cell,
+                parent: None,
                 leases: &mut leases,
                 gauge: &gauge,
                 canary: &canary,

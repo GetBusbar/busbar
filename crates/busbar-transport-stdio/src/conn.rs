@@ -2,19 +2,19 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The per-connection side table: the reader, the single write lock, and the optional child
-//! process — everything a [`busbar_contract::wire::Conn`] cannot carry itself because it is a
+//! process — everything a [`busbar_contract_transport::wire::Conn`] cannot carry itself because it is a
 //! sealed, opaque handle. Keyed by `Conn::id()` from [`crate::transport::StdioTransport`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use busbar_contract::unit::ConfigView;
-use busbar_contract::wire::ConnHandle;
 use busbar_contract::TransportConfigView;
+use busbar_contract_transport::wire::ConnHandle;
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::Mutex as AsyncMutex;
 
-/// The opaque handle this transport hands the kernel through [`busbar_contract::wire::Conn::new`].
+/// The opaque handle this transport hands the kernel through [`busbar_contract_transport::wire::Conn::new`].
 /// It carries nothing but identity: the real state lives in [`ConnState`], looked up by `id`.
 pub(crate) struct StdioConnHandle {
     pub(crate) id: u64,

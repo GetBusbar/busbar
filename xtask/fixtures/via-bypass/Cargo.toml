@@ -1,0 +1,17 @@
+# A synthetic pure crate that reaches `libc` TWO ways: through a local "via" crate
+# (`xtask-fixture-via-mid`, same shape as the via-only fixture) AND directly. For
+# `cargo xtask denylist --selftest`: a `via`-narrowed `dep = "libc"` waiver naming this crate's
+# `mid` dependency must STAY RED here, because the direct dependency bypasses `via` — proving a
+# second path defeats the narrowing rather than being silently forgiven along with the first.
+[workspace]
+members = [".", "mid"]
+
+[package]
+name = "xtask-fixture-via-bypass"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+xtask-fixture-via-mid = { path = "mid" }
+libc = "0.2"

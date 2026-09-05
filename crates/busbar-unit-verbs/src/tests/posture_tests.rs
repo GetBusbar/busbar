@@ -29,7 +29,10 @@ fn every_new_verb_except_set_operator_key_and_export_keyset_is_refused_under_uns
             | KernelVerb::Approve
             | KernelVerb::Verify => {
                 // Not in the irreducible set: the operator gate never applies to these.
-                assert!(result.is_ok(), "{verb:?} is not irreducible and must not be gated here");
+                assert!(
+                    result.is_ok(),
+                    "{verb:?} is not irreducible and must not be gated here"
+                );
             }
             _ => {
                 let err = result.unwrap_err();
@@ -143,7 +146,11 @@ fn full_admission_checks_operator_before_dual_control() {
         operator: OperatorState::Unset,
         dual_control: DualControl::Single,
     };
-    let err = check_new_verb_admission(KernelVerb::CommitUpgrade, ctx, ApprovalState::NotYetApproved)
-        .unwrap_err();
+    let err = check_new_verb_admission(
+        KernelVerb::CommitUpgrade,
+        ctx,
+        ApprovalState::NotYetApproved,
+    )
+    .unwrap_err();
     assert_eq!(err.reason, ReasonCode::OperatorUnset);
 }

@@ -8,7 +8,7 @@
 //! older release's derivation at a pinned card against the sum of the stored nano-units.
 
 use busbar_caps::step::MeterClassId;
-use busbar_caps::{KernelSeal, Usage, UsageLine, UsageToken};
+use busbar_caps::{KernelSeal, QuantitySource, Usage, UsageLine, UsageToken};
 
 use crate::{LaneClass, RateCard, RateCardVersion};
 
@@ -29,47 +29,58 @@ pub(crate) const CACHE_WRITE: &str = "cache_write";
 /// only be built by the usage unit holding its own token, which is the property being relied on
 /// everywhere else in this crate. The seal is confined to the kernel in real code; these lines are
 /// test-only and are the same exception the capability crate's own tests take.
-pub(crate) fn usage(lines: &[(&str, u64)]) -> Usage {
+pub(crate) fn usage(lines: &[(&'static str, u64)]) -> Usage {
     let seal = KernelSeal::acquire_for_kernel();
     let token = UsageToken::mint(&seal);
     let lines = lines
         .iter()
         .map(|(class, quantity)| UsageLine {
-            class: MeterClassId::new(*class),
+            class: MeterClassId::new(class),
             quantity: *quantity,
+            source: QuantitySource::Count,
+            estimated: false,
         })
         .collect();
     Usage::report(&token, lines).expect("a test report stays within the line bound")
 }
 
 /// The same, marked as the kernel's own floor rather than a reported figure.
-pub(crate) fn estimated_usage(lines: &[(&str, u64)]) -> Usage {
+pub(crate) fn estimated_usage(lines: &[(&'static str, u64)]) -> Usage {
     let seal = KernelSeal::acquire_for_kernel();
     let token = UsageToken::mint(&seal);
     let lines = lines
         .iter()
         .map(|(class, quantity)| UsageLine {
-            class: MeterClassId::new(*class),
+            class: MeterClassId::new(class),
             quantity: *quantity,
+            source: QuantitySource::Count,
+            estimated: false,
         })
         .collect();
     Usage::estimate(&token, lines).expect("a test report stays within the line bound")
 }
 
 /// The plain line form the read-time derivation takes.
-pub(crate) fn lines(entries: &[(&str, u64)]) -> Vec<UsageLine> {
+pub(crate) fn lines(entries: &[(&'static str, u64)]) -> Vec<UsageLine> {
     entries
         .iter()
         .map(|(class, quantity)| UsageLine {
-            class: MeterClassId::new(*class),
+            class: MeterClassId::new(class),
             quantity: *quantity,
+            source: QuantitySource::Count,
+            estimated: false,
         })
         .collect()
 }
 
 /// A card over one lane, priced in micro-units per token for the two reserved classes the older
 /// release's tests used.
-pub(crate) fn card(lane: &str, input_micro: f64, output_micro: f64, fee_cents: i64) -> RateCard {
+pub(crate) fn card(
+    lane: &'static str,
+    input_micro: f64,
+    output_micro: f64,
+    fee_cents: i64,
+) -> RateCard {
     RateCard::from_micro_rates(
         RateCardVersion::new("v1"),
         [
@@ -81,7 +92,7 @@ pub(crate) fn card(lane: &str, input_micro: f64, output_micro: f64, fee_cents: i
 }
 
 /// A card over one lane pricing all four of the older release's classes.
-pub(crate) fn card4(lane: &str, rates: [f64; 4], fee_cents: i64) -> RateCard {
+pub(crate) fn card4(lane: &'static str, rates: [f64; 4], fee_cents: i64) -> RateCard {
     RateCard::from_micro_rates(
         RateCardVersion::new("v1"),
         [

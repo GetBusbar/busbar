@@ -36,11 +36,11 @@
 //! "every unit posts exactly once" has to be readable in the shape of the code, not just true.
 
 use busbar_caps::{
-    Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Canary, Decision, Decode,
-    DurabilityLost, Encode, ExitToken, Hold, HoldCell, KernelSeal, LedgerToken, Meter,
-    MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags, Principal, ReasonCode,
-    Refusal, Route, SessionId, StepName, UnitEnd, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
-    VerifiedDestination, Verify,
+    Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Authenticated, Canary,
+    Decision, Decode, DurabilityLost, Encode, ExitToken, Hold, HoldCell, KernelSeal, LedgerToken,
+    Meter, MeterClassId, Origin, OriginKind, Outcome, Posted, PostingFlags, PrincipalId,
+    QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName, TransportKeyToken, UnitEnd,
+    UnitKey, UnitToken, Usage, UsageLine, UsageToken, VerifiedDestination, Verify,
 };
 
 use crate::registry::Generation;
@@ -79,16 +79,29 @@ impl Kernel {
         SessionId::mint(&self.seal, id)
     }
 
-    /// The door's token.
+    /// The door's token, as the loop lends it.
     ///
-    /// The admission unit is handed one of these by the loop for the length of its call, and that
-    /// is how nearly every hold in the system is opened. This method exists for the two places
-    /// inside the kernel that need one outside a step call — the in-flight table, which mints a
-    /// unit's arrival hold as it enters, and the batteries, which drive the door directly to prove
-    /// what the cell does under a race. It is a named symbol precisely so the source scan can see
-    /// every use of it.
+    /// The admission unit is handed one of these for the length of its call, and that is how every
+    /// hold in the system is opened — including the arrival hold, which the in-flight table now
+    /// asks the door for rather than opening itself. This is the seam that hands the unit its
+    /// token, and it is a named symbol precisely so the source scan can see every use of it. The
+    /// batteries name it too, to drive the door directly and prove what the cell does under a race.
     pub fn admit_token(&self) -> AdmitToken<Admit> {
         AdmitToken::<Admit>::mint(&self.seal)
+    }
+
+    /// The transport-key unit's token, as the composition root lends it.
+    ///
+    /// The one token minted OUTSIDE the loop. Keys are resolved at listen, dial and upgrade, none
+    /// of which is a step of a unit, so there is no step whose token could stand in — and without
+    /// this the unit's `provision_server` and `provision_client` have a parameter no caller in the
+    /// tree can supply, which is why the only thing that ever registered a listener's TLS config
+    /// was the transport's own tests.
+    ///
+    /// Kept beside `admit_token` and named the same way, so the source scan that accounts for every
+    /// mint sees this one too.
+    pub fn transport_key_token(&self) -> TransportKeyToken {
+        TransportKeyToken::mint(&self.seal)
     }
 
     /// The seal itself, for the other two places in the kernel that mint tokens: the recovery
@@ -145,43 +158,13 @@ impl AccrualMeter {
     }
 }
 
-/// How a stream's status is reported, where the transport reports one at all.
-// contract: StatusAt
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusAt {
-    /// On the first response frame — a status line.
-    FirstFrame,
-    /// On the terminal frame — a status trailer.
-    Terminal,
-}
-
-/// The transport's own verdict on a response, as per-frame meta.
-// contract: StatusClass
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusClass {
-    /// It worked.
-    Success,
-    /// The caller got it wrong.
-    ClientError,
-    /// The upstream got it wrong.
-    ServerError,
-    /// Something else.
-    Other,
-}
-
-/// The plane's own verdict on how a unit finished.
-// contract: FinishClass
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FinishClass {
-    /// A whole answer.
-    Complete,
-    /// A whole turn of a conversation.
-    TurnComplete,
-    /// Some of an answer.
-    Partial,
-    /// An error, in the protocol's own terms.
-    Error,
-}
+/// Where a transport reports a status, what it reported, and what the plane made of the ending.
+///
+/// All three are the contract's own. They are plugin-visible: a transport declares where its status
+/// arrives, a plane declares how a unit finished, and the settlement table below reads both. A
+/// kernel-local restatement of any of them would be a second spelling of a value that crosses the
+/// plugin boundary in both directions.
+pub use busbar_contract::{FinishClass, StatusAt, StatusClass};
 
 /// Everything the settlement table reads.
 ///
@@ -389,7 +372,7 @@ pub trait Units {
         &self,
         token: &UnitToken<Verify>,
         ctx: &UnitCtx,
-        principal: &Principal,
+        principal: &PrincipalId,
     ) -> Decision<Verify>;
 
     /// Whether the caller may do this at all.
@@ -397,7 +380,7 @@ pub trait Units {
         &self,
         token: &UnitToken<Approve>,
         ctx: &UnitCtx,
-        principal: &Principal,
+        principal: &PrincipalId,
         destinations: &[VerifiedDestination],
     ) -> Decision<Approve>;
 
@@ -407,7 +390,7 @@ pub trait Units {
         token: &UnitToken<Admit>,
         admit: &AdmitToken<Admit>,
         ctx: &UnitCtx,
-        principal: &Principal,
+        principal: &PrincipalId,
         destinations: &[VerifiedDestination],
     ) -> Decision<Admit>;
 
@@ -456,6 +439,12 @@ pub trait Units {
 pub struct Run<'r> {
     /// The unit's hold cell, in the in-flight table.
     pub cell: &'r HoldCell,
+    /// The parent unit's cell, where this unit is a child spending against a parent's admission.
+    ///
+    /// The child never sees the parent's HOLD — that is the whole point of the accrual — but it
+    /// does need the cell, to ask at its own exit whether the parent is still open. A parent that
+    /// has exited is what turns the child's posting into a late one.
+    pub parent: Option<&'r HoldCell>,
     /// The concurrency leases the unit took at the door.
     pub leases: &'r mut LeaseSet,
     /// The node's gauge, which the leases go back to.
@@ -477,19 +466,6 @@ pub enum Ended {
         requests: u32,
         /// Whether the flat per-request fee posted.
         fee: u32,
-    },
-    /// The unit spent against its parent's hold instead of opening one, so there is no posting of
-    /// its own: the parent's posting includes it.
-    ///
-    // contract: the capability crate has no constructor for "a posting that landed inside a
-    // parent's". When it gains one, this variant carries it and the child seals a `UnitEnd` like
-    // any other unit. Until then the child's spend is counted on the canary here and folded into
-    // the parent's hold by the cell.
-    AccruedIntoParent {
-        /// How much went into the parent.
-        amount: u64,
-        /// How the child ended.
-        outcome: Outcome,
     },
     /// Somebody else — the node's sweep — took the hold first and has already settled it. Doing
     /// anything here would be the second settlement of one unit.
@@ -517,33 +493,43 @@ pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_
                 .authenticate(&UnitToken::<Authenticate>::mint(seal), ctx)
                 .into_result(seal)
         })
-        .and_then(|principal| {
-            units
+        // A challenge is not a decision about this unit: it is a request for one more round before
+        // one can be made. The kernel delivers it and asks again, and the round itself is a
+        // handshake unit — it reaches no destination, is scoped against nothing and opens no
+        // reservation, which is exactly the zero-hold admission. Only an established identity walks
+        // on to verify.
+        .and_then(|authenticated| match authenticated {
+            Authenticated::Challenge(_) => Ok(Admission::ZeroHold),
+            Authenticated::Principal(principal) => units
                 .verify(&UnitToken::<Verify>::mint(seal), ctx, &principal)
                 .into_result(seal)
                 .map(|destinations| (principal, destinations))
-        })
-        .and_then(|(principal, destinations)| {
-            units
-                .approve(
-                    &UnitToken::<Approve>::mint(seal),
-                    ctx,
-                    &principal,
-                    &destinations,
+                .and_then(
+                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
+                        units
+                            .approve(
+                                &UnitToken::<Approve>::mint(seal),
+                                ctx,
+                                &principal,
+                                &destinations,
+                            )
+                            .into_result(seal)
+                            .map(|_| (principal, destinations))
+                    },
                 )
-                .into_result(seal)
-                .map(|_| (principal, destinations))
-        })
-        .and_then(|(principal, destinations)| {
-            units
-                .admit(
-                    &UnitToken::<Admit>::mint(seal),
-                    &AdmitToken::<Admit>::mint(seal),
-                    ctx,
-                    &principal,
-                    &destinations,
-                )
-                .into_result(seal)
+                .and_then(
+                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
+                        units
+                            .admit(
+                                &UnitToken::<Admit>::mint(seal),
+                                &AdmitToken::<Admit>::mint(seal),
+                                ctx,
+                                &principal,
+                                &destinations,
+                            )
+                            .into_result(seal)
+                    },
+                ),
         });
 
     match opened {
@@ -575,17 +561,31 @@ pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_
                 // hold like every other unit, and that hold is in a cell the sweep also has a key
                 // to. Emptying the cell HERE is what makes the child's end final: leaving it full
                 // would leave the sweep free to settle a unit that already finished, and the
-                // parent's posting already contains this spend.
+                // parent's hold already carries this spend.
                 let taken = run.cell.take(&ExitToken::mint(seal));
                 run.leases.release_all(run.gauge);
                 match taken {
                     None => Ended::AlreadySettled,
                     Some(arrival) => {
                         drop_arrival(arrival);
+                        // The child ends like every other unit: one posting, one sealed end. Its
+                        // posting reserved nothing, because the reservation behind it is the
+                        // parent's, which already carries this spend. A parent that exited while
+                        // the child ran hands the accrual back and it posts late instead — always
+                        // posted, flagged as late, against a synchronous draw.
+                        let ledger = LedgerToken::mint(seal);
+                        let parent = run.parent.unwrap_or(run.cell);
+                        let posted = match Posted::into_parent(accrual, parent, &ledger) {
+                            Ok(posted) => posted,
+                            Err(missed) => Posted::settle_late(missed, &ledger),
+                        };
                         run.canary.settled();
-                        Ended::AccruedIntoParent {
-                            amount: accrual.amount(),
-                            outcome,
+                        Ended::Settled {
+                            end: UnitEnd::seal(&ExitToken::mint(seal), outcome, Ok(posted)),
+                            // A child draws no request slot and posts no flat fee: the unit that
+                            // drew both is the parent it is spending against.
+                            requests: 0,
+                            fee: 0,
                         }
                     }
                 }
@@ -704,11 +704,14 @@ pub fn exit<U: Units>(
             }
             let class = evidence
                 .class
-                .clone()
                 .unwrap_or_else(|| MeterClassId::new("nano_units"));
             let lines = vec![UsageLine {
                 class,
                 quantity: amount,
+                // The exit path settles what the accrual meter counted while the unit ran, which
+                // is the kernel's own figure, not one a destination reported.
+                source: QuantitySource::Count,
+                estimated: flags.contains(PostingFlags::ESTIMATED),
             }];
             let usage_token = UsageToken::mint(seal);
             let usage = if flags.contains(PostingFlags::ESTIMATED) {

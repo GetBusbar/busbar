@@ -119,7 +119,11 @@ SRC_DIR="$CORE"
 # The route-policy header machinery relocated in 1.6.0: the `x-busbar-route-*` NAME literals + their
 # `HDR_ROUTE_*` consts to the neutral `busbar-substrate::proxy`, and the ONE emission call
 # (`maybe_attach_route_policy`) into the LLM plane's `engine/wire.rs`. `server-timing` stayed in core.
-HDR_ROUTE_POLICY_FILE="crates/busbar-substrate/src/proxy/mod.rs"
+# The substrate split (the value families left the crate that carries the egress engine) moved the
+# `HDR_ROUTE_*` const definitions with the rest of the pure `proxy` vocabulary. Same consts, same
+# spellings, one directory over — the table names where they ACTUALLY are or its allow column stops
+# describing reality.
+HDR_ROUTE_POLICY_FILE="crates/busbar-substrate-values/src/proxy/mod.rs"
 HDR_ROUTE_WIRE_FILE="${LLM}/engine/wire.rs"
 HDR_SERVER_TIMING_FILE="${SRC_DIR}/router.rs"
 

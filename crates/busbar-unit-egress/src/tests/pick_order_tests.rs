@@ -12,28 +12,41 @@ use super::harness::Health;
 use super::{member, Node};
 use crate::ports::Unavailable;
 use crate::select::RequestCtx;
+use busbar_contract::DestinationId;
 
 fn three_lanes() -> (Node, Vec<crate::pool::Member>) {
     let node = Node::with_lanes(&["a", "b", "c"]);
-    let members = vec![member(0, "a"), member(1, "b"), member(2, "c")];
+    let members = vec![
+        member(DestinationId::new(0), "a"),
+        member(DestinationId::new(1), "b"),
+        member(DestinationId::new(2), "c"),
+    ];
     (node, members)
 }
 
 #[test]
 fn a_ranking_takes_its_first_healthy_choice() {
     let (mut node, members) = three_lanes();
-    node.preference = Some(vec![2, 0, 1]);
+    node.preference = Some(vec![
+        DestinationId::new(2),
+        DestinationId::new(0),
+        DestinationId::new(1),
+    ]);
     let mut ctx = node.request_ctx();
     let picked = node.pick("p", &members, &mut ctx).expect("a member");
-    assert_eq!(picked.destination, 2);
+    assert_eq!(picked.destination, DestinationId::new(2));
 }
 
 #[test]
 fn a_ranking_walks_past_a_suppressed_preferred_member() {
     let (mut node, members) = three_lanes();
-    node.preference = Some(vec![2, 0, 1]);
+    node.preference = Some(vec![
+        DestinationId::new(2),
+        DestinationId::new(0),
+        DestinationId::new(1),
+    ]);
     node.breaker.set(
-        2,
+        DestinationId::new(2),
         Health {
             cooldown: 30,
             ..Health::default()
@@ -41,26 +54,30 @@ fn a_ranking_walks_past_a_suppressed_preferred_member() {
     );
     let mut ctx = node.request_ctx();
     let picked = node.pick("p", &members, &mut ctx).expect("a member");
-    assert_eq!(picked.destination, 0);
+    assert_eq!(picked.destination, DestinationId::new(0));
 }
 
 #[test]
 fn a_ranking_walks_past_a_member_this_request_already_tried() {
     let (mut node, members) = three_lanes();
-    node.preference = Some(vec![2, 0, 1]);
+    node.preference = Some(vec![
+        DestinationId::new(2),
+        DestinationId::new(0),
+        DestinationId::new(1),
+    ]);
     let mut ctx = node.request_ctx();
-    ctx.exclude(2);
+    ctx.exclude(DestinationId::new(2));
     let picked = node.pick("p", &members, &mut ctx).expect("a member");
-    assert_eq!(picked.destination, 0);
+    assert_eq!(picked.destination, DestinationId::new(0));
 }
 
 #[test]
 fn a_ranking_that_covers_only_unhealthy_members_falls_through_to_the_floor() {
     let (mut node, members) = three_lanes();
     // The ranking names only the suppressed member; the other two are healthy and unranked.
-    node.preference = Some(vec![2]);
+    node.preference = Some(vec![DestinationId::new(2)]);
     node.breaker.set(
-        2,
+        DestinationId::new(2),
         Health {
             cooldown: 30,
             ..Health::default()
@@ -69,7 +86,7 @@ fn a_ranking_that_covers_only_unhealthy_members_falls_through_to_the_floor() {
     let mut ctx = node.request_ctx();
     let picked = node.pick("p", &members, &mut ctx).expect("a member");
     assert!(
-        picked.destination == 0 || picked.destination == 1,
+        picked.destination == DestinationId::new(0) || picked.destination == DestinationId::new(1),
         "an unranked member is lowest priority but never stranded"
     );
 }
@@ -86,11 +103,16 @@ fn an_empty_ranking_is_the_plain_floor() {
 fn a_ranking_never_selects_a_drained_member() {
     let (mut node, mut members) = three_lanes();
     members[2].weight = 0;
-    node.preference = Some(vec![2, 0, 1]);
+    node.preference = Some(vec![
+        DestinationId::new(2),
+        DestinationId::new(0),
+        DestinationId::new(1),
+    ]);
     let mut ctx = node.request_ctx();
     let picked = node.pick("p", &members, &mut ctx).expect("a member");
     assert_ne!(
-        picked.destination, 2,
+        picked.destination,
+        DestinationId::new(2),
         "weight zero is the operator's drain signal and no path may defeat it"
     );
 }
@@ -114,7 +136,8 @@ fn session_affinity_never_pins_to_a_drained_member() {
     let mut ctx = node.request_ctx();
     let picked = node.pick("p", &members, &mut ctx).expect("a member");
     assert_ne!(
-        picked.destination, 0,
+        picked.destination,
+        DestinationId::new(0),
         "a session whose hash lands on a drained member must not keep pinning to it"
     );
 }
@@ -125,16 +148,19 @@ fn session_affinity_is_offered_first() {
     node.affinity = Some(1);
     let mut ctx = node.request_ctx();
     let picked = node.pick("p", &members, &mut ctx).expect("a member");
-    assert_eq!(picked.destination, 1);
+    assert_eq!(picked.destination, DestinationId::new(1));
 }
 
 #[test]
 fn a_member_at_capacity_is_recorded_as_such() {
     let (node, members) = three_lanes();
     for destination in 0..3 {
-        node.capacity.set_ceiling(destination, 1);
+        node.capacity
+            .set_ceiling(DestinationId::new(destination), 1);
     }
-    let held: Vec<_> = (0..3).map(|d| node.capacity.saturate(d)).collect();
+    let held: Vec<_> = (0..3)
+        .map(|d| node.capacity.saturate(DestinationId::new(d as u64)))
+        .collect();
 
     let mut ctx = node.request_ctx();
     assert!(node.pick("p", &members, &mut ctx).is_none());
@@ -151,7 +177,7 @@ fn a_suppressed_member_is_recorded_with_its_own_reason() {
     let (node, members) = three_lanes();
     for destination in 0..3 {
         node.breaker.set(
-            destination,
+            DestinationId::new(destination),
             Health {
                 cooldown: 42,
                 ..Health::default()
@@ -173,28 +199,31 @@ fn only_a_member_at_capacity_spends_a_turn_of_the_rotation() {
     // spends one. The proof is that the healthy-but-busy member is the ONLY one the admission was
     // ever asked about.
     let node = Node::with_lanes(&["a", "b"]);
-    let members = vec![member(0, "a"), member(1, "b")];
+    let members = vec![
+        member(DestinationId::new(0), "a"),
+        member(DestinationId::new(1), "b"),
+    ];
     node.breaker.set(
-        0,
+        DestinationId::new(0),
         Health {
             cooldown: 30,
             ..Health::default()
         },
     );
-    node.capacity.set_ceiling(1, 1);
-    let held = node.capacity.saturate(1);
+    node.capacity.set_ceiling(DestinationId::new(1), 1);
+    let held = node.capacity.saturate(DestinationId::new(1));
 
     let mut ctx = node.request_ctx();
     assert!(node.pick("p", &members, &mut ctx).is_none());
     assert_eq!(
         node.breaker.pick_order(),
-        vec![1],
+        vec![DestinationId::new(1)],
         "the suppressed member was excluded before the rotation, never selected and refused"
     );
     assert_eq!(
         ctx.excluded_reasons(),
         &[(
-            1,
+            DestinationId::new(1),
             Unavailable::AtCapacity {
                 drain_hint_ms: None
             }

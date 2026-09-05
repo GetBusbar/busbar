@@ -35,7 +35,7 @@ pub trait PlaneMeta {
     /// The record schemas this plane keeps kernel-held durable records under.
     const RECORD_SCHEMAS: &'static [RecordSchemaId];
     /// The read-only introspection verbs this plane answers.
-    const ADMIN_VERBS: &'static [AdminVerbId];
+    const INTROSPECTION_VERBS: &'static [AdminVerbId];
     /// The fact key that means "this frame supersedes the open one", where the dialect has one.
     const INTERRUPT_FACT: Option<&'static str>;
     /// The fact key that paces the kernel's outbound write path, where the dialect has one.
@@ -94,9 +94,9 @@ pub struct UnitDraft<'u> {
     /// The decoded body and its resolved pointer spans.
     pub body_ir: Ir<'u>,
     /// Which earlier request this unit answers, where it answers one.
-    pub correlates: Option<CorrelationRef>,
+    pub correlates: Option<CorrelationRef<'u>>,
     /// The correlation an answer to this unit must carry.
-    pub correlation_out: Option<CorrelationRef>,
+    pub correlation_out: Option<CorrelationRef<'u>>,
     /// The facts the plane read off the bytes.
     pub facts: Facts<'u>,
 }
@@ -126,7 +126,7 @@ pub enum Ingress<'u> {
     /// A frame belonging to an already-open unit, to be relayed under its hold.
     Frame {
         /// Which unit it belongs to.
-        for_: Option<CorrelationRef>,
+        for_: Option<CorrelationRef<'u>>,
         /// The bytes to relay.
         relay: ArenaBytes<'u>,
         /// The facts the plane read off it.
@@ -135,7 +135,7 @@ pub enum Ingress<'u> {
     /// The end of an open unit.
     Close {
         /// Which unit ends.
-        for_: Option<CorrelationRef>,
+        for_: Option<CorrelationRef<'u>>,
         /// The facts the plane read off the ending.
         facts: Facts<'u>,
     },
@@ -158,14 +158,14 @@ pub enum Progress<'u> {
     /// One response frame of an open unit.
     Frame {
         /// Which request it answers.
-        for_: Option<CorrelationRef>,
+        for_: Option<CorrelationRef<'u>>,
         /// The decoded response.
         r: Response<'u>,
     },
     /// The last response frame.
     Terminal {
         /// Which request it answers.
-        for_: Option<CorrelationRef>,
+        for_: Option<CorrelationRef<'u>>,
         /// The decoded response.
         r: Response<'u>,
     },
@@ -280,9 +280,17 @@ pub trait Plane: Plugin + Send + Sync + 'static {
 
     /// Answer one of this plane's declared read-only introspection verbs. Errors when the verb
     /// is not one this plane declares.
+    ///
+    /// The subject is the one bounded argument a projection may take: which registration, which
+    /// agent, which server. A verb that projects over everything is asked with no subject; a verb
+    /// that projects over one named thing is asked with its name. Without it a plane that answers
+    /// per-name projections has no way to declare them — a key per registration is not open to it,
+    /// because the verb key set is closed at registration — so it declares only the list verb and
+    /// leaves the rest unanswerable.
     fn plane_facts<'u>(
         &self,
         verb: AdminVerbId,
+        subject: Option<&'u str>,
         ctx: &Ctx<'u>,
     ) -> Result<crate::kinds::PlaneFacts<'u>, Decode>;
 

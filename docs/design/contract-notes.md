@@ -85,9 +85,11 @@ needs explaining.
 
 A capability type is not sealed by visibility, it is sealed by a token: the only way to build one
 is to already hold the proof that you are the unit entitled to build it. That trick only works if
-the constructors and the tokens live in one crate that nothing below the kernel depends on. No
-dependencies is a property, not a convenience: this crate's trusted computing base is `std` and
-nothing more.
+the constructors and the tokens live in one crate that nothing below the kernel depends on. The
+dependency edge is a property, not a convenience: this crate's trusted computing base is `std` and
+`busbar-contract`, and nothing more. The contract edge is deliberate — a capability is keyed on the
+contract's own objects (the principal, the lane, the meter class, the unit key), and the alternative
+to naming them is a second spelling of each, which is how one name came to mean two things before.
 
 ### `hold.rs` — the hold, its cell, the accrual and the posting
 

@@ -3,11 +3,13 @@
 
 //! The sealed answer: the unit the loop calls at the verify step.
 
-use busbar_caps::{Decision, LaneId, ReasonCode, Refusal, TrustToken, UnitToken, Verify};
 use busbar_caps::VerifiedDestination;
+use busbar_caps::{Decision, Refusal, TrustToken, UnitToken, Verify};
 
-use crate::destination::{kind_permitted, kind_rule_passes, DestinationFacts, KindFacts, OriginKind};
-use crate::guard::{destination_guard, PoolView, RefusalKind};
+use crate::destination::{
+    kind_permitted, kind_rule_passes, DestinationFacts, KindFacts, OriginKind,
+};
+use crate::guard::{destination_guard, PoolView};
 
 /// Everything the unit is given about one verification.
 pub struct VerifyRequest<'a> {
@@ -45,21 +47,18 @@ impl Trust {
     ) -> Decision<Verify> {
         // The three guards, in their fixed order, all before anything is charged.
         if let Err(refusal) = destination_guard(pools, req.pool, req.unpriced_message) {
-            let reason = match refusal.kind {
-                // A caller who may not reach this destination is denied the scope, not the budget.
-                RefusalKind::Permission => ReasonCode::ScopeDenied,
-                // An unpriced arbitrary name is a bad request, not an exhausted one.
-                RefusalKind::InvalidRequest => ReasonCode::Unpriced,
-            };
-            return Decision::refuse(token, Refusal::new(reason));
+            return Decision::refuse(token, Refusal::new(refusal.kind.reason()));
         }
 
         let sealed: Vec<VerifiedDestination> = req
             .candidates
             .iter()
-            .filter(|d| kind_permitted(req.origin, &d.kind))
+            .filter(|d| kind_permitted(req.origin, d))
             .filter(|d| kind_rule_passes(d, facts))
-            .map(|d| VerifiedDestination::seal(trust, LaneId::new(d.lane.clone())))
+            // A destination whose kind carries no lane is not priced on one; the seal records
+            // that rather than inventing a name for it.
+            .filter_map(|d| d.lane())
+            .map(|lane| VerifiedDestination::seal(trust, lane))
             .collect();
 
         Decision::proceed(token, sealed)

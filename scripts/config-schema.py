@@ -487,7 +487,58 @@ def container_flags(csd: dict) -> dict:
     }
 
 
-def parse_struct(body: str, csd: dict) -> dict:
+# ── LIFTED CARRIERS ────────────────────────────────────────────────────────────────────────────────
+# A `#[serde(skip)]` field is normally NOT wire grammar: serde never reads it from a document, and
+# recording it would freeze an internal detail no operator can write. There is now one exception,
+# and it is the opposite case — a key that IS wire grammar precisely BECAUSE it is skipped.
+#
+# The 1.5.5 config grammar is frozen down to the `expected one of` list serde builds from each
+# `deny_unknown_fields` struct's field set. A 1.6.0-additive key declared as a plain field on one of
+# those structs would appear in that list, in a refusal a 1.5.5 operator never saw. So the additive
+# keys are lifted OFF the document by a hand-written pre-pass and their struct fields are skipped
+# CARRIERS the pre-pass fills in. The key still parses, still lands in that field, still has that
+# type — only the deserializer routing it changed.
+#
+# A generator that dropped those fields would report six field REMOVALS for a change that removed no
+# key from any config, and — worse the other way round — would stop covering their grammar entirely,
+# so retyping one afterwards would be a zero-delta change. So: a skipped field whose wire key is
+# named in the pre-pass's own lift list is recorded exactly as it was when it was a plain field.
+#
+# The list is read from the SOURCE, not hardcoded here, and the relationship is checked in BOTH
+# directions (see `check_lift_pairing`): a lifted key with no carrier field is an error, so the list
+# cannot be used to hide a removal.
+LIFT_LIST_RE = re.compile(
+    r"const\s+LIFTED_[A-Z0-9_]*KEYS\s*:\s*&\[&(?:'static\s+)?str\]\s*=\s*&\[(.*?)\]\s*;",
+    re.DOTALL,
+)
+
+
+def lifted_keys(sources: dict) -> set:
+    """The wire keys the config pre-pass lifts off a document, read from its own declarations."""
+    keys = set()
+    for src in sources.values():
+        for m in LIFT_LIST_RE.finditer(src):
+            keys.update(STR_LIT_RE.findall(m.group(1)))
+    return keys
+
+
+def check_lift_pairing(lifted: set, carried: set) -> None:
+    """Every lifted key must have a carrier field that was KEPT because of it.
+
+    Without this the lift list would be a way to keep a field in the fingerprint after deleting it
+    — or to smuggle an unrelated skipped field back in by naming it. The pairing is what makes the
+    exception narrow: the list may only name keys that a struct still carries."""
+    orphans = sorted(lifted - carried)
+    if orphans:
+        raise SystemExit(
+            f"config-schema: the config pre-pass lifts {orphans} but no struct in the tracked "
+            "source set declares a matching skipped carrier field. A lifted key with nowhere to "
+            "land is either a deleted field the list is still holding open, or a list entry that "
+            "was never grammar — both are coverage holes, not passes."
+        )
+
+
+def parse_struct(body: str, csd: dict, lifted: set = frozenset(), carried: set = None) -> dict:
     fields = {}
     rename_fn = rename_fn_for(csd, "field")
     # Pull leading attribute clusters attached to each field. We walk the body linearly, buffering
@@ -523,6 +574,15 @@ def parse_struct(body: str, csd: dict) -> dict:
         name, ty = fm.group(1), fm.group(2)
         rename, has_default, skip, flatten = field_serde(attrs)
         if skip:
+            # The pre-pass exception: a skipped field whose wire key the pre-pass lifts is still
+            # grammar (see the LIFTED CARRIERS note above). It is recorded OPTIONAL because a
+            # carrier is: `skip` requires `Default`, so an absent key leaves the default in place.
+            serde_name = rename or rename_fn(name)
+            if serde_name in lifted:
+                inner, _opt = norm_type(ty)
+                fields[serde_name] = {"type": inner, "optional": True}
+                if carried is not None:
+                    carried.add(serde_name)
             continue
         inner, opt = norm_type(ty)
         if flatten:
@@ -607,7 +667,7 @@ def manual_de_detail(src: str, impl_open_idx: int, decls: dict, name: str):
     }
 
 
-def declared_shape(src: str, m) -> dict:
+def declared_shape(src: str, m, lifted: set = frozenset(), carried: set = None) -> dict:
     """Parse a struct/enum declaration REGARDLESS of whether it derives Deserialize."""
     csd = container_serde(m.group("attrs") or "")
     if m.group("open") == ";":
@@ -617,7 +677,7 @@ def declared_shape(src: str, m) -> dict:
     body = src[open_idx + 1 : end - 1]
     if m.group("kw") == "enum":
         return parse_enum(body, csd)
-    return parse_struct(body, csd)
+    return parse_struct(body, csd, lifted, carried)
 
 
 def extract(paths) -> dict:
@@ -630,12 +690,18 @@ def extract(paths) -> dict:
     # `PinMechanism` occupy one key and the second one read silently REPLACES the first.
     origin = {}
     for path in files:
-        src = strip_cfg_test_mods(strip_comments(path.read_text(encoding="utf-8", errors="replace")))
-        sources[path] = src
+        sources[path] = strip_cfg_test_mods(
+            strip_comments(path.read_text(encoding="utf-8", errors="replace"))
+        )
+    # The pre-pass's lift list, before any declaration is parsed: it decides which skipped fields
+    # are still grammar, and a list declared in one file governs a carrier declared in another.
+    lifted = lifted_keys(sources)
+    carried = set()
+    for path, src in sources.items():
         # Every declaration in the tracked set, derive or not, so a hand-written `Deserialize` impl
         # in one file can be matched to its type's declaration in another.
         for m in ITEM_RE.finditer(src):
-            shape = declared_shape(src, m)
+            shape = declared_shape(src, m, lifted, carried)
             decls[m.group("name")] = {k: v for k, v in shape.items() if k != "kind"}
 
     def collide(name, path):
@@ -685,7 +751,7 @@ def extract(paths) -> dict:
             if m.group("kw") == "enum":
                 parsed = parse_enum(body, csd)
             else:
-                parsed = parse_struct(body, csd)
+                parsed = parse_struct(body, csd, lifted, carried)
             # last definition wins (config has no duplicate type names across the module)
             types[name] = parsed
 
@@ -726,6 +792,7 @@ def extract(paths) -> dict:
                 "kind": "alias",
                 "target": target,
             }
+    check_lift_pairing(lifted, carried)
     return {
         "_meta": {
             "description": "busbar config-surface structural fingerprint — FROZEN at 1.5.3, "

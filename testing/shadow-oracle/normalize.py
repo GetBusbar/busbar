@@ -37,11 +37,16 @@ What is normalized (each rule is a named entry in `applied`):
                       shadow of a value that was just normalized, e.g. a latency or an id)
   boot.pair-order     "(A vs B)" conflict pairs in validation messages come out in map order,
                       nondeterministic on the SAME binary (measured on 1.5.5: 3/6 each way) -> sorted
+  boot.exhaustion-order the boot banner's "pool exhaustion policy pool=<name> on_exhausted=<mode>"
+                      lines (one per pool with an `on_exhausted:`) come out in map order, which is
+                      nondeterministic on the SAME binary (measured on 1.5.5: two runs on the same
+                      oracle config gave different orderings) -> each run sorted in place
   ver.string          `"version": "X.Y.Z"` of the binary -> "<VERSION>" (the diff of interest is
                       everything else; the version itself is expected to differ)
   body.keep-lines     a cell whose contract is the ABSENCE of something (`body_lines` on the cell)
                       keeps only the body lines matching that regex; an empty result is the
                       contract, and any surviving line is a diff
+  keep.header-min     a cell's `keep.headers_min` pins a floor: the value becomes >=N when it clears N
   keep.header         a cell's `keep.headers` names a header that would otherwise be stripped/blanked
                       (Date, Retry-After, x-request-id, ...): its value is kept (still id-normalized)
                       instead, because for THIS cell the header's presence/value IS the contract
@@ -113,15 +118,31 @@ TIMING_KEYS = {"latency_ms", "latencyMs"}
 VERSION_RX = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$")
 POOL_LINE = re.compile(r"^\s+pool /\S+ = ")
 ERROR_BULLET = re.compile(r"^  - ")
+# The boot-time "pool exhaustion policy pool=<name> on_exhausted=<mode>" INFO line, one per pool that
+# sets `on_exhausted:` — emitted from a walk over `cfg.pools` (a `HashMap`), so its relative order is
+# per-process, not a contract (measured directly: two 1.5.5 runs on the same oracle config, same
+# binary, produced oracle-lb/oracle-q/oracle-fb and oracle-fb/oracle-lb/oracle-q respectively). Same
+# treatment as `POOL_LINE`/`ERROR_BULLET` above.
+EXHAUSTION_LINE = re.compile(r".*\bpool exhaustion policy pool=")
 PAIR = re.compile(r"\((\d+) vs (\d+)")
 EXPO_TIMING = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*(_seconds_sum|_seconds|_bucket)(\{|\s)|quantile=")
 
 
-def norm_headers(h: dict, applied: set, keep_headers: set | None = None) -> dict:
+def norm_headers(h: dict, applied: set, keep_headers: set | None = None, headers_min: dict | None = None) -> dict:
     keep_headers = keep_headers or set()
+    headers_min = headers_min or {}
     out = {}
     for k, v in h.items():
         lk = k.lower()
+        if lk in headers_min:
+            # this cell pins a FLOOR, not the value: a jittered figure (Retry-After off a jittered
+            # cooldown) is the harness's draw; whether it clears the floor is busbar's contract
+            applied.add("keep.header-min")
+            try:
+                out[lk] = f">={headers_min[lk]}" if int(str(v).strip()) >= int(headers_min[lk]) else str(v)
+            except ValueError:
+                out[lk] = str(v)
+            continue
         if lk in keep_headers:
             # this cell opted in: the value IS the contract -- keep it (still id-normalized, so a
             # wire id inside it does not become a spurious per-run diff), never stripped/blanked.
@@ -269,7 +290,10 @@ def sort_runs(lines: list, rx, rule: str, applied: set) -> list:
 
 
 def sort_pool_lines(lines: list, applied: set) -> list:
-    return sort_runs(sort_runs(lines, POOL_LINE, "boot.pool-order", applied), ERROR_BULLET, "boot.error-order", applied)
+    lines = sort_runs(lines, POOL_LINE, "boot.pool-order", applied)
+    lines = sort_runs(lines, ERROR_BULLET, "boot.error-order", applied)
+    lines = sort_runs(lines, EXHAUSTION_LINE, "boot.exhaustion-order", applied)
+    return lines
 
 
 VERSION_KV = re.compile(r'version="(\d+\.\d+\.\d+)(?:-[0-9A-Za-z.]+)?"')
@@ -340,6 +364,7 @@ def norm_body(body: str, applied: set, key_id: str | None, keep_json_keys: set |
 def normalize(cap: dict, key_id: str | None, keep_lines: str | None = None, keep: dict | None = None) -> dict:
     keep = keep or {}
     keep_headers = {h.lower() for h in keep.get("headers", [])}
+    headers_min = {h.lower(): n for h, n in (keep.get("headers_min") or {}).items()}
     keep_json_keys = set(keep.get("json_keys", []))
     keep_regex = re.compile(keep["text_regex"]) if keep.get("text_regex") else None
     applied: set = set()
@@ -353,7 +378,7 @@ def normalize(cap: dict, key_id: str | None, keep_lines: str | None = None, keep
         body = {"text": "\n".join(ln for ln in text.split("\n") if rx.search(ln))}
         body_rules.add("body.keep-lines")
     applied |= body_rules
-    headers = norm_headers(cap.get("headers", {}), applied, keep_headers)
+    headers = norm_headers(cap.get("headers", {}), applied, keep_headers, headers_min)
     if body_rules and "content-length" in headers:
         applied.add("hdr.length"); headers["content-length"] = "<LEN>"
     # `egress` is pulled out before the generic pass: norm_json's id/ts scrubbing rules must never

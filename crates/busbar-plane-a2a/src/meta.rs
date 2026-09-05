@@ -47,20 +47,22 @@ pub const CLASS_BYTES: MeterClassId = MeterClassId::new("bytes");
 /// The read-only verb that lists the agents this node fronts.
 pub const VERB_AGENTS: AdminVerbId = AdminVerbId::new("agents");
 
+/// The read-only verb that answers for the ONE agent the subject names.
+pub const VERB_AGENT: AdminVerbId = AdminVerbId::new("agent");
+
 /// The verbs this plane answers.
 ///
-/// ONE verb, and the reason there is only one is worth recording. The codec answers two read-only
-/// projections: one that lists every agent, and one that answers for an agent NAMED IN THE REQUEST.
-/// The contract's introspection verb takes no argument — a verb identifier and a context, and
-/// nothing to say WHICH agent — so the per-name projection cannot be expressed here at all. It is
-/// declared nowhere rather than declared and answered wrongly. That is a finding about the
-/// contract's introspection shape, and it is written down in the crate's notes.
+/// Two, and which two is the point. The codec answers a projection over every agent and a projection
+/// over the ONE agent a request names; the introspection verb now carries a subject, so both are
+/// expressible and both are declared. The per-name one used to be declared nowhere, because a verb
+/// identifier and a context said WHICH plane but never WHICH agent, and a key per agent is not
+/// available to a plane whose verb key set is closed at registration.
 ///
 /// The codec's two OTHER admin operations — the one that re-contacts an agent and re-pins it, and
 /// the one that records an operator's approval — CHANGE something, so they are not verbs of this
 /// plane either: a mutating plane admin operation is the kernel's own record-write verb, reached
 /// with the plane's record schemas, and the plane contributes the shape rather than the action.
-const ADMIN_VERBS: &[AdminVerbId] = &[VERB_AGENTS];
+const INTROSPECTION_VERBS: &[AdminVerbId] = &[VERB_AGENTS, VERB_AGENT];
 
 /// The schema of this plane's own configuration block.
 ///
@@ -102,7 +104,7 @@ impl PlaneMeta for A2aPlane {
     const SESSION_FACTS: &'static [&'static str] = facts::SESSION_FACTS;
     const CONTENT_FACTS: &'static [&'static str] = facts::CONTENT_FACTS;
     const RECORD_SCHEMAS: &'static [RecordSchemaId] = records::RECORD_SCHEMAS;
-    const ADMIN_VERBS: &'static [AdminVerbId] = ADMIN_VERBS;
+    const INTROSPECTION_VERBS: &'static [AdminVerbId] = INTROSPECTION_VERBS;
     // This protocol has no frame that supersedes an open one. Asking for a task to stop is its own
     // request, with its own identifier and its own answer, so it is a UNIT rather than an interrupt;
     // declaring an interrupt fact here would make the kernel look for a fact that never arrives.
@@ -115,7 +117,7 @@ impl PlaneMeta for A2aPlane {
 
 #[cfg(test)]
 mod tests {
-    use super::{ADMIN_VERBS, CONFIG_SCHEMA, METER_CLASSES};
+    use super::{CONFIG_SCHEMA, INTROSPECTION_VERBS, METER_CLASSES};
     use crate::A2aPlane;
     use busbar_contract::ids::MeterClassId;
     use busbar_contract::plane::PlaneMeta;
@@ -160,7 +162,7 @@ mod tests {
     fn the_verbs_are_read_only() {
         for mutating in ["connect", "approve", "suspend", "resume"] {
             assert!(
-                !ADMIN_VERBS.iter().any(|v| v.as_str() == mutating),
+                !INTROSPECTION_VERBS.iter().any(|v| v.as_str() == mutating),
                 "the plane declares the mutating verb {mutating}"
             );
         }

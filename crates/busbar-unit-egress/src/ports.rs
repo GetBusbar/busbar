@@ -17,15 +17,17 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use busbar_caps::{Route, UnitToken};
+
 /// Which member of the verified set a call is about.
 ///
 /// This is a position in the pool's member list, which is what the previous release's selection,
 /// exclusion and breaker calls all keyed on. Keeping the same key is what makes the pick order
 /// comparable hop for hop against the release that shipped.
 ///
-/// `// contract:` the breaker unit spells the same thing as a `u64`. The integrator narrows one
-/// into the other at the call site; nothing in either unit depends on the width.
-pub type DestinationId = usize;
+/// The contract crate defines it, and the breaker unit names the same one, so the two units that
+/// key on a pool member key on the same object at the same width. There is nothing left to narrow.
+pub use busbar_contract::DestinationId;
 
 /// The one boxed future this crate's ports return.
 ///
@@ -119,7 +121,7 @@ pub enum Outcome {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UpstreamStatus {
     /// The transport's own reading of the frame, where it carries one.
-    pub class: Option<busbar_contract::StatusClass>,
+    pub class: Option<busbar_contract_transport::wire::StatusClass>,
     /// The upstream's numeric status, where the transport reports one.
     pub code: Option<u16>,
     /// The wait the upstream asked for, in seconds.
@@ -199,7 +201,19 @@ pub trait Breaker: Send + Sync {
 
     /// Record what one attempt meant. Returns true only on a fresh logical trip — the one signal a
     /// trip counter should increment on, never a re-trip of an already-open cell.
-    fn observe(&self, pool: &str, destination: DestinationId, outcome: Outcome, now: u64) -> bool;
+    ///
+    /// `token` is the capability token that proves the loop is at the route step for this unit
+    /// right now (per `busbar-caps`'s `&UnitToken<Route>`, mirroring the breaker unit's own sealed
+    /// `Breaker::observe`, CG-29) — this unit's `route` entry point already receives one; every
+    /// call down through the walk to this port threads the same borrow.
+    fn observe(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        outcome: Outcome,
+        now: u64,
+        token: &UnitToken<Route>,
+    ) -> bool;
 
     /// Release a probe that was won but never dispatched. Owner-checked against the epoch that was
     /// captured at the win, so a late release cannot revert a newer probe.

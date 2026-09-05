@@ -165,7 +165,7 @@ pub const VERB_DIALECTS: AdminVerbId = AdminVerbId::new("dialects");
 /// Kept small and read-only, the same restraint `busbar-plane-llm` states for its own verb list: an
 /// admin verb answers a question about what the plane is, never a question about a live session's
 /// content.
-const ADMIN_VERBS: &[AdminVerbId] = &[VERB_DIALECTS];
+const INTROSPECTION_VERBS: &[AdminVerbId] = &[VERB_DIALECTS];
 
 /// The schema of this plane's own configuration block.
 const CONFIG_SCHEMA: &str = r#"{
@@ -190,7 +190,7 @@ impl PlaneMeta for VoicePlane {
     // `SessionResumptionUpdate`, OpenAI's session reconnect) would be the reason to declare one; it
     // is not built here, so none is declared rather than declaring one unused.
     const RECORD_SCHEMAS: &'static [RecordSchemaId] = &[];
-    const ADMIN_VERBS: &'static [AdminVerbId] = ADMIN_VERBS;
+    const INTROSPECTION_VERBS: &'static [AdminVerbId] = INTROSPECTION_VERBS;
     // See `FACT_INTERRUPT_AUDIO_PLAYED_MS` and `EGRESS_PACING_FACT_KEY` above for where each is
     // written. Unlike `busbar-plane-llm` (request-and-answer, no frame ever supersedes an open one,
     // no pacing), this plane's two duplex dialects have both: barge-in supersedes an open turn, and

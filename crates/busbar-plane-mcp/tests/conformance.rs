@@ -162,7 +162,7 @@ fn every_client_method_decodes() {
         assert_eq!(draft.op, row.op, "{} named the wrong class", row.method);
         assert_eq!(
             draft.correlation_out.expect("a request correlates").value,
-            1,
+            busbar_contract::ids::CorrelationValue::Num(1),
             "{} lost its identifier",
             row.method
         );
@@ -390,7 +390,10 @@ fn a_servers_own_request_opens_a_provider_unit() {
     {
         Progress::OneShot(draft) => {
             assert_eq!(draft.op, ops::OP_SAMPLING);
-            assert_eq!(draft.correlation_out.expect("it correlates").value, 42);
+            assert_eq!(
+                draft.correlation_out.expect("it correlates").value,
+                busbar_contract::ids::CorrelationValue::Num(42)
+            );
         }
         other => panic!("a server's own request decoded as {other:?}"),
     }
@@ -489,7 +492,7 @@ fn every_operation_routes_somewhere() {
     for op in McpPlane::OP_CLASSES {
         let unit = busbar_contract::unit::Unit::new(
             &seal,
-            1,
+            busbar_contract::UnitKey::new(1),
             busbar_contract::unit::Origin::Client,
             None,
             None,
@@ -497,6 +500,7 @@ fn every_operation_routes_somewhere() {
             Some(common::principal()),
             *op,
             busbar_contract::bounded::Ir::new(b"{}", &[]),
+            busbar_contract::bounded::Facts::new(),
             None,
         );
         let plan = plane.route(&unit, &ctx);
@@ -530,7 +534,7 @@ fn a_call_spends_its_grant_before_the_hop() {
     let seal = common::TestSeal;
     let unit = busbar_contract::unit::Unit::new(
         &seal,
-        1,
+        busbar_contract::UnitKey::new(1),
         busbar_contract::unit::Origin::Client,
         None,
         None,
@@ -538,6 +542,7 @@ fn a_call_spends_its_grant_before_the_hop() {
         Some(common::principal()),
         ops::OP_TOOL_CALL,
         busbar_contract::bounded::Ir::new(b"{}", &[]),
+        busbar_contract::bounded::Facts::new(),
         None,
     );
     let plan = plane.route(&unit, &ctx);
@@ -580,7 +585,7 @@ fn the_metering_step_reports_what_it_read() {
     for (op, lines) in [(ops::OP_TOOL_CALL, 2), (ops::OP_TOOLS_LIST, 1)] {
         let unit = busbar_contract::unit::Unit::new(
             &seal,
-            1,
+            busbar_contract::UnitKey::new(1),
             busbar_contract::unit::Origin::Client,
             None,
             None,
@@ -588,6 +593,7 @@ fn the_metering_step_reports_what_it_read() {
             Some(common::principal()),
             op,
             busbar_contract::bounded::Ir::new(b"{}", &[]),
+            busbar_contract::bounded::Facts::new(),
             None,
         );
         let locators = plane.meter(&unit, &r, &ctx);
@@ -611,15 +617,86 @@ fn the_introspection_verb_answers_only_what_is_declared() {
     let scaffold = Scaffold::new("http");
     let ctx = scaffold.ctx();
     let facts = plane
-        .plane_facts(busbar_plane_mcp::meta::VERB_TOOLS, &ctx)
+        .plane_facts(busbar_plane_mcp::meta::VERB_TOOLS, None, &ctx)
         .expect("the declared verb answers");
     assert_eq!(
         facts.facts.get("count"),
         Some(busbar_contract::bounded::FactValue::Int(0))
     );
     assert!(plane
-        .plane_facts(busbar_contract::ids::AdminVerbId::new("secrets"), &ctx)
+        .plane_facts(
+            busbar_contract::ids::AdminVerbId::new("secrets"),
+            None,
+            &ctx
+        )
         .is_err());
+}
+
+/// The per-name projection answers for the registration the subject names, and for no other.
+///
+/// This is the projection that could not be declared at all while the introspection verb carried no
+/// argument: one verb, one subject, one registration. A subject naming nothing is refused rather
+/// than answered empty, because "there is no such server" is not "that server has nothing to say".
+#[test]
+fn the_per_name_projection_answers_for_the_named_registration() {
+    static SERVERS: &[busbar_plane_mcp::Server] = &[
+        busbar_plane_mcp::Server {
+            id: "alpha",
+            lane: busbar_contract::ids::LaneId::new("mcp-a"),
+            host: "alpha.invalid:443",
+            transport: "http",
+        },
+        busbar_plane_mcp::Server {
+            id: "beta",
+            lane: busbar_contract::ids::LaneId::new("mcp-b"),
+            host: "",
+            transport: "stdio",
+        },
+    ];
+    let plane = McpPlane::new(SERVERS);
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let verb = busbar_plane_mcp::meta::VERB_SERVER;
+
+    let alpha = plane
+        .plane_facts(verb, Some("alpha"), &ctx)
+        .expect("a named registration answers");
+    assert_eq!(
+        alpha.facts.get("name"),
+        Some(busbar_contract::bounded::FactValue::Str("alpha"))
+    );
+    assert_eq!(
+        alpha.facts.get("lane"),
+        Some(busbar_contract::bounded::FactValue::Str("mcp-a"))
+    );
+    assert_eq!(
+        alpha.facts.get("transport"),
+        Some(busbar_contract::bounded::FactValue::Str("http"))
+    );
+    assert_eq!(
+        alpha.facts.get("local"),
+        Some(busbar_contract::bounded::FactValue::Bool(false))
+    );
+
+    // The other registration answers for itself, so the subject is what selects, not the order.
+    let beta = plane
+        .plane_facts(verb, Some("beta"), &ctx)
+        .expect("the other named registration answers");
+    assert_eq!(
+        beta.facts.get("lane"),
+        Some(busbar_contract::bounded::FactValue::Str("mcp-b"))
+    );
+    assert_eq!(
+        beta.facts.get("local"),
+        Some(busbar_contract::bounded::FactValue::Bool(true))
+    );
+
+    // A subject that names nothing, and no subject at all, are both refusals.
+    assert!(plane.plane_facts(verb, Some("gamma"), &ctx).is_err());
+    assert!(plane.plane_facts(verb, None, &ctx).is_err());
+
+    // And the per-name verb is declared, so the loop can reach it.
+    assert!(<McpPlane as PlaneMeta>::INTROSPECTION_VERBS.contains(&verb));
 }
 
 /// The session halves open, and each one starts fresh.
@@ -645,7 +722,7 @@ fn a_local_server_narrows_to_the_environment_alternative() {
     let seal = common::TestSeal;
     let unit = busbar_contract::unit::Unit::new(
         &seal,
-        1,
+        busbar_contract::UnitKey::new(1),
         busbar_contract::unit::Origin::Client,
         None,
         None,
@@ -653,6 +730,7 @@ fn a_local_server_narrows_to_the_environment_alternative() {
         Some(common::principal()),
         ops::OP_TOOL_CALL,
         busbar_contract::bounded::Ir::new(b"{}", &[]),
+        busbar_contract::bounded::Facts::new(),
         None,
     );
     for (transport, expected) in [("stdio", "environment"), ("http", "bearer")] {
@@ -673,7 +751,14 @@ fn a_local_server_narrows_to_the_environment_alternative() {
 /// authenticate step, and a plane that narrowed outside it would be refusing its own units.
 #[test]
 fn every_narrowing_is_declared() {
-    let declared = McpPlane::CLAIMS[0].scheme_alternatives;
+    // The alternatives of a claim that DECLARES a scheme. The open surface's claim declares none,
+    // which is the whole point of it: there is nothing there to narrow to, so it cannot be the
+    // claim this check is read against.
+    let declared = McpPlane::CLAIMS
+        .iter()
+        .find(|c| c.scheme.is_some())
+        .expect("some claim declares a scheme")
+        .scheme_alternatives;
     let plane = McpPlane::EMPTY;
     let seal = common::TestSeal;
     for op in McpPlane::OP_CLASSES {
@@ -682,7 +767,7 @@ fn every_narrowing_is_declared() {
             let ctx = scaffold.ctx();
             let unit = busbar_contract::unit::Unit::new(
                 &seal,
-                1,
+                busbar_contract::UnitKey::new(1),
                 busbar_contract::unit::Origin::Client,
                 None,
                 None,
@@ -690,6 +775,7 @@ fn every_narrowing_is_declared() {
                 Some(common::principal()),
                 *op,
                 busbar_contract::bounded::Ir::new(b"{}", &[]),
+                busbar_contract::bounded::Facts::new(),
                 None,
             );
             let narrowing = plane
@@ -711,7 +797,7 @@ fn sealed_destination() -> busbar_contract::dest::VerifiedDestination {
         &seal,
         busbar_contract::dest::DestinationFacts::Upstream {
             transport: "http",
-            host: "server.example",
+            address: busbar_contract::UpstreamAddress::socket("server.example"),
             lane: busbar_contract::ids::LaneId::new("standard"),
         },
         "http",

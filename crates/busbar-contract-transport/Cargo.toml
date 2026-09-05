@@ -1,0 +1,29 @@
+# busbar-contract-transport — the transport-facing half of the contract, under its own ceiling.
+#
+# WHY THIS CRATE EXISTS. The contract's ceiling is a budget for what a PLUGIN AUTHOR has to read.
+# Transports are in-tree and never dynamically loaded, so their author is not a plugin author, and
+# the vocabulary only they read — the listener, the connection, the detached stream, the closed
+# transport failures, the arrival record, the upstream address, the reserved fact keys, the kind's
+# ABI generation and the composition check — was being counted against a budget it does not belong
+# to. It is here instead, with its own.
+#
+# DEPENDENCIES. It sits BELOW the contract and names nothing of busbar's, which is what lets the
+# contract depend on it and re-export the handful of names a plane still touches. `serde` seals the
+# closed codes into the journal; `futures` supplies the one async I/O pair the detached stream is
+# defined over, because which runtime moves the bytes is the transport's business and not the seam's.
+[package]
+name = "busbar-contract-transport"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The transport-facing contract: connections, listeners, the closed transport codes, the upstream address, the reserved fact keys and the composition check."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_contract_transport"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+futures = { workspace = true }

@@ -50,7 +50,7 @@ fn meter(answer: &str) -> Vec<(String, Option<u64>)> {
         busbar_contract::plane::Ingress::OneShot(draft) => draft,
         other => panic!("expected one complete unit, got {other:?}"),
     };
-    let unit = harness::unit(draft.op, draft.body_ir);
+    let unit = harness::unit(draft.op, draft.body_ir, draft.facts);
 
     let frames = vec![harness::frame(answer.as_bytes())];
     let mut answers = FrameCursor::new(&frames);
@@ -127,7 +127,7 @@ fn every_line_is_a_locator_for_a_declared_class() {
         busbar_contract::plane::Ingress::OneShot(draft) => draft,
         other => panic!("expected one complete unit, got {other:?}"),
     };
-    let unit = harness::unit(draft.op, draft.body_ir);
+    let unit = harness::unit(draft.op, draft.body_ir, draft.facts);
 
     let answer = r#"{"id":"chatcmpl-3","object":"chat.completion","created":1752000000,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_tokens_details":{"cached_tokens":80}}}"#;
     let frames = vec![harness::frame(answer.as_bytes())];

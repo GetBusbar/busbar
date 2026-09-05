@@ -14,8 +14,14 @@ fn a_rejected_chain_admits_nothing_to_the_cache() {
     let cache = CredentialCache::new(test_digest);
     let c = AuthChain::new(
         vec![
-            entry("passer", Box::new(Canned::cacheable("p", AuthOutcome::Pass))),
-            entry("rejecter", Box::new(Canned::cacheable("r", AuthOutcome::Reject))),
+            entry(
+                "passer",
+                Box::new(Canned::cacheable("p", AuthOutcome::Pass)),
+            ),
+            entry(
+                "rejecter",
+                Box::new(Canned::cacheable("r", AuthOutcome::Reject)),
+            ),
         ],
         false,
     );
@@ -54,7 +60,10 @@ fn an_identified_chain_still_caches_the_leading_pass() {
     let cache = CredentialCache::new(test_digest);
     let c = AuthChain::new(
         vec![
-            entry("leader", Box::new(Canned::cacheable("a", AuthOutcome::Pass))),
+            entry(
+                "leader",
+                Box::new(Canned::cacheable("a", AuthOutcome::Pass)),
+            ),
             entry(
                 "identifier",
                 Box::new(Canned::cacheable(
@@ -176,6 +185,57 @@ fn flush_module_counts_only_its_own_rows() {
     assert!(cache.is_empty());
 }
 
+/// CG-45a: the pass-TTL jitter is `digest[0] % 3`, derived from whatever digest the cache was built
+/// over. This pins that the production `Sha256Digest` — 1.5.5's hex SHA-256 — produces the SAME
+/// jitter `busbar_api::sha256_hex` would for a fixed credential, so swapping in the real digest
+/// changes nothing about the cache's timing behaviour beyond the digest itself.
+#[cfg(feature = "sha256")]
+#[test]
+fn sha256_digest_jitter_matches_1_5_5s_hex_sha256() {
+    use crate::cache::{CredentialDigest, Sha256Digest};
+
+    let credential = b"a-fixed-credential-for-the-jitter-pin";
+    let ours = Sha256Digest.digest(credential);
+    let reference = busbar_api::sha256_hex(credential);
+    assert_eq!(
+        ours, reference,
+        "Sha256Digest must be byte-for-byte busbar_api::sha256_hex"
+    );
+
+    let jitter_from_ours = u64::from(ours.as_bytes().first().copied().unwrap_or(0) % 3);
+    let jitter_from_reference = u64::from(reference.as_bytes().first().copied().unwrap_or(0) % 3);
+    assert_eq!(
+        jitter_from_ours, jitter_from_reference,
+        "the pass-TTL jitter derived from the production digest must match 1.5.5's"
+    );
+
+    // And the cache actually observes that jitter end to end.
+    let cache = CredentialCache::new(Sha256Digest);
+    let g = cache.generation();
+    cache.put(
+        "m",
+        "a-fixed-credential-for-the-jitter-pin",
+        &AuthOutcome::Pass,
+        1000,
+        g,
+    );
+    let expected_ttl = 5 + jitter_from_reference;
+    assert!(cache
+        .get(
+            "m",
+            "a-fixed-credential-for-the-jitter-pin",
+            1000 + expected_ttl - 1
+        )
+        .is_some());
+    assert!(cache
+        .get(
+            "m",
+            "a-fixed-credential-for-the-jitter-pin",
+            1000 + expected_ttl
+        )
+        .is_none());
+}
+
 #[test]
 fn pass_churn_cannot_evict_an_identity() {
     let cache = CredentialCache::new(test_digest);
@@ -197,7 +257,10 @@ fn pass_churn_cannot_evict_an_identity() {
     // Now an unauthenticated prober drives thousands of distinct credentials through an all-pass
     // chain. None of them is committed, so none of them can evict the identity above.
     let passing = AuthChain::new(
-        vec![entry("idp", Box::new(Canned::cacheable("idp", AuthOutcome::Pass)))],
+        vec![entry(
+            "idp",
+            Box::new(Canned::cacheable("idp", AuthOutcome::Pass)),
+        )],
         false,
     );
     for i in 0..6000u32 {

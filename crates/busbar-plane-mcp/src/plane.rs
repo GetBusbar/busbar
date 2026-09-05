@@ -15,7 +15,7 @@
 //! about the contract's allocator, not a decision taken here, and it is written down in the crate's
 //! notes.
 
-use busbar_contract::bounded::{ArenaBytes, FactValue, Facts, Ir, Span};
+use busbar_contract::bounded::{ArenaBytes, BoundedVec, FactValue, Facts, Ir, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::{AdminVerbId, LaneId, SchemeAlt};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
@@ -64,6 +64,18 @@ const CONTENT_TYPE_JSON: &[u8] = b"application/json";
 /// The envelope member naming which revision the hop is made under.
 const FIELD_PROTOCOL_VERSION: &str = "mcp-protocol-version";
 
+/// The fact key the per-name projection reports the registration's own name under.
+const SUBJECT_FACT_NAME: &str = "name";
+
+/// The fact key the per-name projection reports the priced lane under.
+const SUBJECT_FACT_LANE: &str = "lane";
+
+/// The fact key the per-name projection reports the dialling transport under.
+const SUBJECT_FACT_TRANSPORT: &str = "transport";
+
+/// The fact key the per-name projection reports a locally launched registration under.
+const SUBJECT_FACT_LOCAL: &str = "local";
+
 /// The kind of resource a registered server is, in this plane's own vocabulary.
 const RESOURCE_KIND_SERVER: &str = "mcp_server";
 
@@ -94,12 +106,12 @@ impl McpPlane {
         match self.servers().first() {
             Some(server) => DestinationFacts::Upstream {
                 transport: server.transport,
-                host: server.host,
+                address: busbar_contract::UpstreamAddress::socket(server.host),
                 lane: server.lane,
             },
             None => DestinationFacts::Upstream {
                 transport: crate::claims::TRANSPORT_HTTP,
-                host: "",
+                address: busbar_contract::UpstreamAddress::socket(""),
                 lane: LaneId::new(""),
             },
         }
@@ -257,7 +269,7 @@ impl Plane for McpPlane {
         &self,
         frames: &mut FrameCursor<'u>,
         _st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
+        ctx: &Ctx<'u>,
     ) -> Result<Ingress<'u>, Decode> {
         let Some(frame) = frames.next_frame() else {
             return Ok(Ingress::NeedMore);
@@ -298,7 +310,9 @@ impl Plane for McpPlane {
             op: row.op,
             body_ir: Ir::new(body, &[]),
             correlates: None,
-            correlation_out: envelope.id_bytes(body).map(f::correlation_for),
+            correlation_out: envelope
+                .id_bytes(body)
+                .and_then(|raw| f::correlation_for(raw, ctx.arena())),
             facts,
         };
         if row.streaming {
@@ -377,7 +391,7 @@ impl Plane for McpPlane {
         frames: &mut FrameCursor<'u>,
         _dest: &VerifiedDestination,
         st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
+        ctx: &Ctx<'u>,
     ) -> Result<Progress<'u>, Decode> {
         let Some(frame) = frames.next_frame() else {
             return Ok(Progress::NeedMore);
@@ -411,12 +425,21 @@ impl Plane for McpPlane {
                     reason: DiscardCode::Unsupported,
                 });
             };
+            // The subject is read HERE, at the one step entitled to read the bytes, so the steps
+            // after this one read it off the draft rather than scanning the request a second time.
+            if let Some(pointer) = row.name_pointer {
+                if let Some(subject) = read_str(body, pointer) {
+                    let _ = facts.set(f::FACT_SUBJECT, FactValue::Str(subject));
+                }
+            }
             return Ok(Progress::OneShot(UnitDraft {
                 op: row.op,
                 body_ir: Ir::new(body, &[]),
                 // A server's own request answers nothing; it is answered.
                 correlates: None,
-                correlation_out: envelope.id_bytes(body).map(f::correlation_for),
+                correlation_out: envelope
+                    .id_bytes(body)
+                    .and_then(|raw| f::correlation_for(raw, ctx.arena())),
                 facts,
             }));
         }
@@ -466,7 +489,7 @@ impl Plane for McpPlane {
         // Every answer of this protocol is one document. There is no partial answer to relay: the
         // frame that carries a result carries all of it.
         Ok(Progress::Terminal {
-            for_: id.map(f::correlation_for),
+            for_: id.and_then(|raw| f::correlation_for(raw, ctx.arena())),
             r,
         })
     }
@@ -539,19 +562,16 @@ impl Plane for McpPlane {
         Ok(None)
     }
 
-    fn authenticate<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> CredentialLocator {
+    fn authenticate<'u>(&self, _u: &Unit<'u>, ctx: &Ctx<'u>) -> CredentialLocator {
         // A locally launched server has no request to carry a header on: its credential is handed to
         // it when it starts. Everything on the document transport presents a bearer credential.
         let over_stdio = ctx.transport().key() == crate::claims::TRANSPORT_STDIO;
-        // A notice carries no authority because it asks for nothing.
-        let anonymous = u.op() == ops::OP_NOTIFICATION;
-        let alt = if anonymous {
-            "anonymous"
-        } else if over_stdio {
-            "environment"
-        } else {
-            "bearer"
-        };
+        let alt = if over_stdio { "environment" } else { "bearer" };
+        // A notice asks for nothing, and it used to be narrowed to an invented "anonymous"
+        // alternative for that reason. A notice arrives on the SAME claim a request does, though,
+        // and that claim declares a scheme; the surface that genuinely carries no credential is the
+        // discovery document, and it says so on its own claim. So a notice narrows like everything
+        // else on the mount, and what its credential resolves to is the auth unit's answer.
         CredentialLocator {
             narrowing: Some(SchemeAlt::new(alt)),
             from_session: ctx
@@ -641,8 +661,9 @@ impl Plane for McpPlane {
             // The lane is not in the request. It is a property of the server the operator
             // configured, and the trust unit re-derives it against the allow-list.
             lane_locator: None,
-            // This protocol gives a caller no way to declare a ceiling on the answer.
-            max_response_ptr: None,
+            // This protocol gives a caller no way to declare a ceiling on the answer, so no
+            // place is named for one.
+            max_response_ptrs: BoundedVec::new(),
             // The priced input is the whole request document.
             input_span: Some(Span {
                 start: 0,
@@ -762,19 +783,45 @@ impl Plane for McpPlane {
         }
     }
 
-    fn plane_facts<'u>(&self, verb: AdminVerbId, ctx: &Ctx<'u>) -> Result<PlaneFacts<'u>, Decode> {
-        if verb != crate::meta::VERB_TOOLS {
-            return Err(Decode::UnsupportedOperation);
-        }
-        let mut facts = Facts::new();
-        let _ = facts.set("count", FactValue::Int(self.servers().len() as i64));
-        for server in self.servers() {
-            // The server's name is the key and the lane it is priced on is the value. Nothing here
-            // is a credential, a price or an address: an operator reading this learns which servers
-            // are registered and on which lane, which is what an introspection verb is for.
-            let _ = facts.set(server.id, FactValue::Str(server.lane.as_str()));
-        }
+    fn plane_facts<'u>(
+        &self,
+        verb: AdminVerbId,
+        subject: Option<&'u str>,
+        ctx: &Ctx<'u>,
+    ) -> Result<PlaneFacts<'u>, Decode> {
         let _ = ctx;
+        let mut facts = Facts::new();
+        match verb {
+            v if v == crate::meta::VERB_TOOLS => {
+                let _ = facts.set("count", FactValue::Int(self.servers().len() as i64));
+                for server in self.servers() {
+                    // The server's name is the key and the lane it is priced on is the value.
+                    // Nothing here is a credential, a price or an address: an operator reading this
+                    // learns which servers are registered and on which lane, which is what an
+                    // introspection verb is for.
+                    let _ = facts.set(server.id, FactValue::Str(server.lane.as_str()));
+                }
+            }
+            v if v == crate::meta::VERB_SERVER => {
+                // The projection over ONE registration. A subject that names no registration is an
+                // unsupported operation rather than an empty answer: "there is no such server" and
+                // "that server has nothing to report" are different facts.
+                let name = subject.ok_or(Decode::UnsupportedOperation)?;
+                let server = self
+                    .servers()
+                    .iter()
+                    .find(|s| s.id == name)
+                    .ok_or(Decode::UnsupportedOperation)?;
+                let _ = facts.set(SUBJECT_FACT_NAME, FactValue::Str(server.id));
+                let _ = facts.set(SUBJECT_FACT_LANE, FactValue::Str(server.lane.as_str()));
+                let _ = facts.set(SUBJECT_FACT_TRANSPORT, FactValue::Str(server.transport));
+                // Whether this node launches the server itself, which is the one structural thing
+                // about a registration an operator cannot read off the name. The host itself stays
+                // out: an address is not introspection, it is configuration.
+                let _ = facts.set(SUBJECT_FACT_LOCAL, FactValue::Bool(server.host.is_empty()));
+            }
+            _ => return Err(Decode::UnsupportedOperation),
+        }
         Ok(PlaneFacts { facts })
     }
 
@@ -800,13 +847,9 @@ impl Plane for McpPlane {
             }
         }
         // What the request was FOR travels with what came back, so the record joins them without a
-        // second read of the request.
-        if let Some(row) = Self::row_for_op(u.op()) {
-            if let Some(pointer) = row.name_pointer {
-                if let Some(subject) = read_str(u.body().body(), pointer) {
-                    let _ = facts.set(f::FACT_SUBJECT, FactValue::Str(subject));
-                }
-            }
+        // second read of the request: decode already found the subject and the unit carries it.
+        if let Some(FactValue::Str(subject)) = u.draft_facts().get(f::FACT_SUBJECT) {
+            let _ = facts.set(f::FACT_SUBJECT, FactValue::Str(subject));
         }
         if let Some(server) = self.servers().first() {
             let _ = facts.set(f::FACT_SERVER, FactValue::Str(server.id));

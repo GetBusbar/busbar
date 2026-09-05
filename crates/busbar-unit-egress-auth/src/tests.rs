@@ -27,7 +27,9 @@ fn bearer_scheme_declares_one_slot_and_substitutes_bearer_prefix() {
     let decoration = decorate(&t, &Scheme::Bearer, "sk-test-123", &empty_body());
     match &decoration {
         AuthDecoration::Decorate {
-            slots, fields, body_signature,
+            slots,
+            fields,
+            body_signature,
         } => {
             assert_eq!(slots.len(), 1);
             assert!(fields.is_empty());
@@ -38,7 +40,10 @@ fn bearer_scheme_declares_one_slot_and_substitutes_bearer_prefix() {
     let envelope = substitute(&decoration, "sk-test-123", Vec::new());
     assert_eq!(
         envelope,
-        vec![("authorization".to_string(), "Bearer sk-test-123".to_string())]
+        vec![(
+            "authorization".to_string(),
+            "Bearer sk-test-123".to_string()
+        )]
     );
 }
 
@@ -146,7 +151,11 @@ fn continue_handshake_is_zero_budget_placeholder() {
     let decoration = continue_handshake(&t, b"state", b"frame");
     assert_eq!(
         decoration,
-        AuthDecoration::handshake(&EgressAuthToken::mint(&KernelSeal::acquire_for_kernel()), 0, 0)
+        AuthDecoration::handshake(
+            &EgressAuthToken::mint(&KernelSeal::acquire_for_kernel()),
+            0,
+            0
+        )
     );
 }
 
@@ -174,12 +183,16 @@ fn substitute_applies_each_slot_exactly_once() {
 fn substitute_never_touches_anything_but_the_envelope_it_is_given() {
     let t = token();
     let decoration = decorate(&t, &Scheme::Bearer, "key-b", &empty_body());
-    let content_facts: Vec<(String, String)> = vec![("unrelated".to_string(), "untouched".to_string())];
+    let content_facts: Vec<(String, String)> =
+        vec![("unrelated".to_string(), "untouched".to_string())];
     let envelope = substitute(&decoration, "key-b", Vec::new());
     // The content-shaped vector was never passed to `substitute` and is unchanged by definition —
     // asserted here so the test fails loudly if a future edit widens `substitute`'s signature to
     // accept (and so risk touching) anything beyond the envelope.
-    assert_eq!(content_facts, vec![("unrelated".to_string(), "untouched".to_string())]);
+    assert_eq!(
+        content_facts,
+        vec![("unrelated".to_string(), "untouched".to_string())]
+    );
     assert!(!envelope.iter().any(|(k, _)| k == "unrelated"));
 }
 
@@ -192,12 +205,26 @@ fn lane_cross_check_catches_envelope_divergence_after_decoration() {
     let trust = TrustToken::mint(&seal);
     let verified = VerifiedDestination::seal(&trust, LaneId::new("bedrock-us-east-1"));
 
-    let matching = vec![("host".to_string(), "bedrock.us-east-1.amazonaws.com".to_string())];
-    assert!(lane_cross_check(&verified, "host", &matching, "bedrock.us-east-1.amazonaws.com").is_ok());
+    let matching = vec![(
+        "host".to_string(),
+        "bedrock.us-east-1.amazonaws.com".to_string(),
+    )];
+    assert!(lane_cross_check(
+        &verified,
+        "host",
+        &matching,
+        "bedrock.us-east-1.amazonaws.com"
+    )
+    .is_ok());
 
     let diverged = vec![("host".to_string(), "evil.example.com".to_string())];
     assert_eq!(
-        lane_cross_check(&verified, "host", &diverged, "bedrock.us-east-1.amazonaws.com"),
+        lane_cross_check(
+            &verified,
+            "host",
+            &diverged,
+            "bedrock.us-east-1.amazonaws.com"
+        ),
         Err(LaneMismatch::EnvelopeDivergedFromVerifiedDestination { field: "host" })
     );
 }
@@ -220,7 +247,10 @@ fn forwarded_client_headers_are_scoped_per_egress_dialect() {
     // The union used by the pre-dialect collector names exactly these three headers.
     let mut all = forwardable_client_header_names();
     all.sort_unstable();
-    assert_eq!(all, vec!["anthropic-beta", "anthropic-version", "openai-beta"]);
+    assert_eq!(
+        all,
+        vec!["anthropic-beta", "anthropic-version", "openai-beta"]
+    );
 }
 
 /// No-cross-dialect-leak guard, stated as the property directly: an `anthropic-beta` header never

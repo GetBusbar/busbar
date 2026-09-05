@@ -17,16 +17,21 @@
 //! `pool_idle_timeout` from [`ClientSettings`], and `upstream_http1_only` /
 //! `upstream_h2_prior_knowledge` selecting the connector's ALPN offer exactly as the engine did.
 //!
-//! ## The seam this delivery leaves named rather than guessed
+//! ## Bodies larger than one call
 //!
 //! [`Transport::dial`]/`listen`/`accept` return an opaque `Conn`; the actual HTTP exchange happens
-//! at `write`/`frames`, because the trait carries no request payload at dial time. This crate's
-//! `write` therefore expects ONE call carrying a complete raw HTTP/1.1 message (request line or
-//! status line, headers, the blank line, and the body) — exactly the shape
-//! `busbar_contract::EgressBody`/`TransportEnvelope` already produce — and reconstructs an
-//! `http::Request`/response from it. True multi-call body streaming (bytes arriving across several
-//! `write` calls before the message is complete) is not implemented in this delivery; see the
-//! crate's delivery notes for why and what a follow-up would need.
+//! at `write`/`frames`, because the trait carries no request payload at dial time. A body is not
+//! one call's worth of bytes, though: the large-body design is a HEAD frame followed by body-chunk
+//! frames, and a request body is accepted up to the configured maximum regardless of how many
+//! chunks it took.
+//!
+//! So `write` ACCUMULATES. Each call appends to the connection's pending message, and the exchange
+//! runs when the message is complete and not before — at the declared `Content-Length`, or at the
+//! terminal chunk of a chunked body, or immediately for a message that declares neither and
+//! therefore carries no body. The reader is the mirror of that: it reads a `Content-Length` body or
+//! decodes a chunked one across as many reads as it arrives in, emits one body frame per chunk the
+//! sender wrote, and hands the trailer section up as its own final frame rather than folding it
+//! into the body.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -39,10 +44,20 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use busbar_contract::{
-    ArenaBytes, ArrivalRecord, CloseReason, Conn, ConnHandle, Direction, Fut, Frame, FrameMeta,
-    Kind, Listener, ListenerHandle, Plugin, Refusal, SlabBytes, StatusClass, StreamId, Transport,
-    TransportConfigView, TransportError, TransportKeyHandle, TransportMeta,
+    ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
+    TransportConfigView, TransportKeyHandle, TransportMeta,
 };
+use busbar_contract_transport::registry::facts as tfacts;
+use busbar_contract_transport::wire::ArrivalRecord;
+use busbar_contract_transport::wire::CloseReason;
+use busbar_contract_transport::wire::Conn;
+use busbar_contract_transport::wire::ConnHandle;
+use busbar_contract_transport::wire::Direction;
+use busbar_contract_transport::wire::FrameMeta;
+use busbar_contract_transport::wire::Listener;
+use busbar_contract_transport::wire::ListenerHandle;
+use busbar_contract_transport::wire::StatusClass;
+use busbar_contract_transport::wire::TransportError;
 use bytes::Bytes;
 use futures::Stream;
 use http_body_util::{BodyExt, Full};
@@ -54,6 +69,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex as AsyncMutex;
+use tokio_util::compat::TokioAsyncReadCompatExt;
 
 mod raw;
 
@@ -107,13 +123,18 @@ enum Inner {
         write: AsyncMutex<OwnedWriteHalf>,
         leftover: AsyncMutex<Vec<u8>>,
     },
-    /// A dialled destination: the exchange happens inside `write`, which pushes the response's
-    /// frames into this channel for `frames` to drain.
+    /// A dialled destination: the exchange happens inside `write` once the message it is
+    /// accumulating is complete, and pushes the response's frames into this channel for `frames` to
+    /// drain.
     Egress {
         uri: http::Uri,
         client: Arc<EgressClient>,
         resp_tx: Mutex<Option<RespSender>>,
         resp_rx: AsyncMutex<RespReceiver>,
+        /// What `write` has been handed so far, and not yet sent. A body arrives across as many
+        /// calls as the plane chose to write it in, and the exchange runs when the message is
+        /// whole — never on a prefix of one.
+        pending: AsyncMutex<Vec<u8>>,
     },
 }
 
@@ -244,8 +265,8 @@ impl Plugin for HttpTransport {
     fn kind(&self) -> Kind {
         Kind::Transport
     }
-    fn abi(&self) -> busbar_contract::AbiVersion {
-        busbar_contract::AbiVersion(1)
+    fn abi(&self) -> busbar_contract_transport::AbiVersion {
+        busbar_contract_transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -263,16 +284,23 @@ impl TransportMeta for HttpTransport {
     ];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &["tcp", "tls"];
-    const HANDOFF: Option<busbar_contract::Handoff> = None;
+    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract_transport::wire::Framing =
+        busbar_contract_transport::wire::Framing::Stream;
     const SESSION: bool = false;
     const SESSION_BOUND: bool = false;
-    const UNIT0_TRIGGER: Option<busbar_contract::Unit0Trigger> = None;
+    const UNIT0_TRIGGER: Option<busbar_contract_transport::wire::Unit0Trigger> = None;
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract::HandshakeTrigger> = None;
-    const TRANSPORT_FACTS: &'static [&'static str] = &[];
+    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const TRANSPORT_FACTS: &'static [&'static str] = &[
+        tfacts::PATH,
+        tfacts::METHOD,
+        tfacts::AUTHORITY,
+        tfacts::PEER,
+    ];
     const DECODES_PAYLOAD: bool = false;
-    const STATUS_CLASS: Option<busbar_contract::StatusAt> =
-        Some(busbar_contract::StatusAt::FirstFrame);
+    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> =
+        Some(busbar_contract_transport::wire::StatusAt::FirstFrame);
 }
 
 impl Transport for HttpTransport {
@@ -319,7 +347,10 @@ impl Transport for HttpTransport {
                 .get(&addr)
                 .cloned()
                 .ok_or(TransportError::Closed)?;
-            let (stream, peer) = listener.accept().await.map_err(|_| TransportError::Closed)?;
+            let (stream, peer) = listener
+                .accept()
+                .await
+                .map_err(|_| TransportError::Closed)?;
             stream.set_nodelay(true).ok();
             let (read, write) = stream.into_split();
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -343,7 +374,9 @@ impl Transport for HttpTransport {
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
             let host = match dest.facts() {
-                busbar_contract::DestinationFacts::Upstream { host, .. } => host,
+                busbar_contract::DestinationFacts::Upstream { address, .. } => {
+                    address.authority().ok_or(TransportError::AddressRefused)?
+                }
                 _ => return Err(TransportError::AddressRefused),
             };
             let uri: http::Uri = host.parse().map_err(|_| TransportError::AddressRefused)?;
@@ -354,6 +387,7 @@ impl Transport for HttpTransport {
                 client: self.egress_client.clone(),
                 resp_tx: Mutex::new(Some(tx)),
                 resp_rx: AsyncMutex::new(rx),
+                pending: AsyncMutex::new(Vec::new()),
             });
             self.conns.lock().expect("poisoned").insert(id, inner);
             Ok(Conn::new(Arc::new(HttpConnHandle {
@@ -373,39 +407,42 @@ impl Transport for HttpTransport {
         // queue is what lets one read (ingress: HEAD + one body chunk; egress: nothing buffered,
         // the channel already serialises them) become more than one `Stream` item.
         let state = (inner, std::collections::VecDeque::new());
-        Box::pin(futures::stream::unfold(state, move |(inner, mut queue)| async move {
-            if let Some(item) = queue.pop_front() {
-                return Some((item, (inner, queue)));
-            }
-            let inner = inner?;
-            let is_egress = matches!(&*inner, Inner::Egress { .. });
-            match is_egress {
-                true => {
-                    let item = {
-                        let Inner::Egress { resp_rx, .. } = &*inner else {
-                            unreachable!("checked above")
-                        };
-                        let mut rx = resp_rx.lock().await;
-                        rx.recv().await
-                    };
-                    item.map(|item| (item, (Some(inner), queue)))
+        Box::pin(futures::stream::unfold(
+            state,
+            move |(inner, mut queue)| async move {
+                if let Some(item) = queue.pop_front() {
+                    return Some((item, (inner, queue)));
                 }
-                false => match read_ingress_message(&inner).await {
-                    Ok(Some(mut frames)) => {
-                        if frames.is_empty() {
-                            return None;
-                        }
-                        let first = frames.remove(0);
-                        queue.extend(frames.into_iter().map(Ok));
-                        // One request per connection in this delivery: the connection is not
-                        // reused for a second read.
-                        Some((Ok(first), (None, queue)))
+                let inner = inner?;
+                let is_egress = matches!(&*inner, Inner::Egress { .. });
+                match is_egress {
+                    true => {
+                        let item = {
+                            let Inner::Egress { resp_rx, .. } = &*inner else {
+                                unreachable!("checked above")
+                            };
+                            let mut rx = resp_rx.lock().await;
+                            rx.recv().await
+                        };
+                        item.map(|item| (item, (Some(inner), queue)))
                     }
-                    Ok(None) => None,
-                    Err(e) => Some((Err(e), (None, queue))),
-                },
-            }
-        }))
+                    false => match read_ingress_message(&inner).await {
+                        Ok(Some(mut frames)) => {
+                            if frames.is_empty() {
+                                return None;
+                            }
+                            let first = frames.remove(0);
+                            queue.extend(frames.into_iter().map(Ok));
+                            // One request per connection in this delivery: the connection is not
+                            // reused for a second read.
+                            Some((Ok(first), (None, queue)))
+                        }
+                        Ok(None) => None,
+                        Err(e) => Some((Err(e), (None, queue))),
+                    },
+                }
+            },
+        ))
     }
 
     fn write<'a>(
@@ -429,25 +466,48 @@ impl Transport for HttpTransport {
                     uri,
                     client,
                     resp_tx,
+                    pending,
                     ..
                 } => {
-                    let raw = raw::parse_message(bytes.as_slice())
-                        .ok_or(TransportError::Framing)?;
+                    let queued = bytes.len();
+                    let mut buffered = pending.lock().await;
+                    buffered.extend_from_slice(bytes.as_slice());
+                    let Some(raw) = complete_message(&buffered)? else {
+                        // A prefix of a message. Nothing goes on the wire until the declared length
+                        // or the terminal chunk says the message is whole.
+                        return Ok(queued);
+                    };
+                    buffered.clear();
+                    drop(buffered);
+
                     let mut builder = http::Request::builder()
                         .method(raw.start.method_or("GET"))
                         .uri(uri.clone());
                     for (k, v) in &raw.headers {
+                        // `Transfer-Encoding` and `Content-Length` describe a framing this
+                        // transport has already undone: the body below is the decoded one, and
+                        // the client sets the length it actually sends. Forwarding either would
+                        // describe a wire that is not the one going out.
+                        if k.eq_ignore_ascii_case("transfer-encoding")
+                            || k.eq_ignore_ascii_case("content-length")
+                        {
+                            continue;
+                        }
                         builder = builder.header(k, v);
                     }
                     let req = builder
-                        .body(Full::new(Bytes::copy_from_slice(&raw.body)))
+                        .body(Full::new(Bytes::from(raw.body)))
                         .map_err(|_| TransportError::Framing)?;
                     let resp = client
                         .request(req)
                         .await
                         .map_err(|_| TransportError::Refused)?;
                     let status = resp.status().as_u16();
-                    let mut head = format!("HTTP/1.1 {} {}\r\n", status, resp.status().canonical_reason().unwrap_or(""));
+                    let mut head = format!(
+                        "HTTP/1.1 {} {}\r\n",
+                        status,
+                        resp.status().canonical_reason().unwrap_or("")
+                    );
                     for (name, value) in resp.headers() {
                         head.push_str(name.as_str());
                         head.push_str(": ");
@@ -496,20 +556,86 @@ impl Transport for HttpTransport {
                             let _ = tx.send(Ok((StreamId(0), body_frame)));
                         }
                     }
-                    Ok(bytes.len())
+                    Ok(queued)
                 }
             }
         })
     }
 
-    fn upgrade<'a>(
+    /// An HTTP/1.1 message: the start line the envelope names, its headers, the blank line, and
+    /// the body. The `method` and `path` fields are the request line rather than headers, because
+    /// on this wire that is what they are — an envelope that wrote them as `method: POST` would
+    /// describe a request no server has ever answered.
+    fn encode_envelope<'a>(
+        &self,
+        fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::Arena,
+    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+        let field = |name: &str| {
+            fields
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                .map(|(_, v)| *v)
+        };
+        let method = field("method").unwrap_or(b"POST");
+        let path = field("path").unwrap_or(b"/");
+
+        let mut out = Vec::with_capacity(body.len() + 128);
+        out.extend_from_slice(method);
+        out.push(b' ');
+        out.extend_from_slice(path);
+        out.extend_from_slice(b" HTTP/1.1\r\n");
+        for (name, value) in fields {
+            if name.eq_ignore_ascii_case("method") || name.eq_ignore_ascii_case("path") {
+                continue;
+            }
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(b": ");
+            out.extend_from_slice(value);
+            out.extend_from_slice(b"\r\n");
+        }
+        // The length is this transport's to state: it is a fact about the bytes below, not
+        // something an envelope gets to disagree with.
+        out.extend_from_slice(format!("content-length: {}\r\n", body.len()).as_bytes());
+        out.extend_from_slice(b"\r\n");
+        out.extend_from_slice(body);
+        arena
+            .alloc_bytes(&out)
+            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+    }
+
+    fn adopt<'a>(
         &'a self,
+        _from: &'a dyn Transport,
         conn: Conn,
-        _to: &'a str,
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
+        // `http` is adopted BY `ws`, never onto: it takes no lower layer's stream, it hands its own
+        // up. The transports it composes over give it a socket at `listen`/`dial`, not a handoff.
         let _ = conn;
-        Box::pin(async move { Err(TransportError::Framing) })
+        Box::pin(async move { Err(TransportError::HandoffMismatch) })
+    }
+
+    /// Give up the accepted socket under a connection, for the layer upgrading over it.
+    ///
+    /// This is the `http` → `ws` seam: the upgrade REQUEST has not been read here, because the
+    /// layer adopting the stream is the one that speaks the upgrade and answers it. An egress
+    /// connection has no socket to give — it dials through a pooled client, and a pooled connection
+    /// is not one caller's to take.
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+        let inner = self.conns.lock().expect("poisoned").remove(&conn.id())?;
+        let peer = conn.peer();
+        let inner = Arc::try_unwrap(inner).ok()?;
+        let Inner::Ingress { read, write, .. } = inner else {
+            return None;
+        };
+        let stream = read.into_inner().reunite(write.into_inner()).ok()?;
+        Some(busbar_contract_transport::wire::RawStream::new(
+            Self::KEY,
+            peer,
+            Box::new(TokioAsyncReadCompatExt::compat(stream)),
+        ))
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {
@@ -519,6 +645,8 @@ impl Transport for HttpTransport {
     fn unit0_refusal<'a>(
         &'a self,
         conn: Conn,
+        // One request per connection here, so a refusal is always the whole of it.
+        _stream: Option<StreamId>,
         _refusal: &'a Refusal,
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()> {
@@ -537,11 +665,52 @@ impl Transport for HttpTransport {
     }
 }
 
-/// Read one HTTP/1.1 request off an ingress connection: the scanned header prefix (bounded by
-/// [`READ_CHUNK_BYTES`], mirroring the design's cursor cap) becomes the HEAD frame, and a declared
-/// `Content-Length` body becomes one further body-chunk frame. No chunked-transfer-encoding
-/// support in this delivery (see the crate doc's named simplifications).
-async fn read_ingress_message(inner: &Inner) -> Result<Option<Vec<(StreamId, Frame)>>, TransportError> {
+/// A message this transport has been handed enough of to send, or `None` for a prefix of one.
+///
+/// The three endings are the wire's own: a declared `Content-Length` reached, the terminal chunk of
+/// a chunked body seen, or a message that declares neither coding and therefore carries no body at
+/// all. A chunked message is decoded here, so what comes back always carries the body itself rather
+/// than a framing of it.
+fn complete_message(buffered: &[u8]) -> Result<Option<raw::RawMessage>, TransportError> {
+    let Some(header_end) = find_header_end(buffered) else {
+        return Ok(None);
+    };
+    let mut message = raw::parse_message(&buffered[..header_end]).ok_or(TransportError::Framing)?;
+    let rest = &buffered[header_end..];
+
+    if raw::is_chunked(&message.headers) {
+        let mut decoder = raw::ChunkedDecoder::default();
+        decoder.feed(rest).map_err(|_| TransportError::Framing)?;
+        if !decoder.is_done() {
+            return Ok(None);
+        }
+        let (chunks, trailers) = decoder.take();
+        message.body = chunks.concat();
+        // A trailer is a header that arrived late; it goes where every other header went, so
+        // nothing downstream has to know which side of the body it was written on.
+        message.headers.extend(trailers);
+        return Ok(Some(message));
+    }
+
+    let declared = raw::content_length(&message.headers).unwrap_or(0);
+    if rest.len() < declared {
+        return Ok(None);
+    }
+    message.body = rest[..declared].to_vec();
+    Ok(Some(message))
+}
+
+/// Read one HTTP/1.1 request off an ingress connection.
+///
+/// The scanned header prefix (bounded by [`READ_CHUNK_BYTES`], mirroring the design's cursor cap)
+/// becomes the HEAD frame. The body follows as body-chunk frames: one frame for a declared
+/// `Content-Length` body, and for a chunked one, one frame per chunk the sender wrote — the sender's
+/// own framing, kept rather than flattened, so a megabyte body arrives as the chunks it was sent as
+/// however the reads happened to fall. A trailer section becomes one final frame carrying it in
+/// wire form, which is where a reader that folded it into the body would have lost it.
+async fn read_ingress_message(
+    inner: &Inner,
+) -> Result<Option<Vec<(StreamId, Frame)>>, TransportError> {
     let Inner::Ingress { read, leftover, .. } = inner else {
         return Err(TransportError::Framing);
     };
@@ -566,57 +735,89 @@ async fn read_ingress_message(inner: &Inner) -> Result<Option<Vec<(StreamId, Fra
     };
 
     let header_bytes = buf[..header_end].to_vec();
-    let content_len = raw::parse_message(&header_bytes)
-        .and_then(|m| m.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.parse::<usize>().ok()))
-        .unwrap_or(0);
-
-    let mut body = buf[header_end..].to_vec();
+    let headers = raw::parse_message(&header_bytes)
+        .map(|m| m.headers)
+        .unwrap_or_default();
+    let mut rest = buf[header_end..].to_vec();
     buf.clear();
-    while body.len() < content_len {
-        let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
-        let n = r
-            .read(&mut chunk)
-            .await
-            .map_err(|e| HttpTransport::map_io_err(&e))?;
-        if n == 0 {
-            break;
-        }
-        body.extend_from_slice(&chunk[..n]);
-    }
-    body.truncate(content_len);
+    drop(buf);
 
-    let head_arc: Arc<[u8]> = Arc::from(header_bytes.into_boxed_slice());
-    let head_len = head_arc.len() as u64;
-    let mut frames = vec![(
+    let (bodies, trailers) = if raw::is_chunked(&headers) {
+        let mut decoder = raw::ChunkedDecoder::default();
+        decoder.feed(&rest).map_err(|_| TransportError::Framing)?;
+        while !decoder.is_done() {
+            let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
+            let n = r
+                .read(&mut chunk)
+                .await
+                .map_err(|e| HttpTransport::map_io_err(&e))?;
+            if n == 0 {
+                // The peer stopped before the terminal chunk: the declared framing did not happen,
+                // and guessing where the body ended is the one thing a transport must not do.
+                return Err(TransportError::Framing);
+            }
+            decoder
+                .feed(&chunk[..n])
+                .map_err(|_| TransportError::Framing)?;
+        }
+        decoder.take()
+    } else {
+        let declared = raw::content_length(&headers).unwrap_or(0);
+        while rest.len() < declared {
+            let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
+            let n = r
+                .read(&mut chunk)
+                .await
+                .map_err(|e| HttpTransport::map_io_err(&e))?;
+            if n == 0 {
+                break;
+            }
+            rest.extend_from_slice(&chunk[..n]);
+        }
+        rest.truncate(declared);
+        (
+            if rest.is_empty() {
+                Vec::new()
+            } else {
+                vec![rest]
+            },
+            Vec::new(),
+        )
+    };
+
+    let mut frames = vec![body_frame(header_bytes)];
+    frames.extend(bodies.into_iter().filter(|b| !b.is_empty()).map(body_frame));
+    if !trailers.is_empty() {
+        let mut rendered = String::new();
+        for (name, value) in &trailers {
+            rendered.push_str(name);
+            rendered.push_str(": ");
+            rendered.push_str(value);
+            rendered.push_str("\r\n");
+        }
+        frames.push(body_frame(rendered.into_bytes()));
+    }
+    Ok(Some(frames))
+}
+
+/// One inbound frame over bytes this connection read, with honest meta: the byte count is what
+/// actually moved, and there is no status leg on the ingress side.
+fn body_frame(bytes: Vec<u8>) -> (StreamId, Frame) {
+    let len = bytes.len() as u64;
+    let arc: Arc<[u8]> = Arc::from(bytes.into_boxed_slice());
+    (
         StreamId(0),
         Frame {
             direction: Direction::Inbound,
             stream: StreamId(0),
-            bytes: SlabBytes::new(head_arc),
+            bytes: SlabBytes::new(arc),
             meta: FrameMeta {
-                bytes: head_len,
+                bytes: len,
                 transport_units: None,
                 status: None,
             },
         },
-    )];
-    if !body.is_empty() {
-        let body_arc: Arc<[u8]> = Arc::from(body.clone().into_boxed_slice());
-        frames.push((
-            StreamId(0),
-            Frame {
-                direction: Direction::Inbound,
-                stream: StreamId(0),
-                bytes: SlabBytes::new(body_arc),
-                meta: FrameMeta {
-                    bytes: body.len() as u64,
-                    transport_units: None,
-                    status: None,
-                },
-            },
-        ));
-    }
-    Ok(Some(frames))
+    )
 }
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {

@@ -28,8 +28,8 @@
 //!   exposed the FSM through a much larger `LaneRuntime` trait (concurrency, SWRR, `/stats`, health
 //!   snapshots — all egress/observability concerns); this crate exposes only the breaker's own two
 //!   verbs, sealed so no plugin can implement it.
-//! - `// contract:` [`DestinationId`] is a placeholder `u64` for whatever locator type
-//!   `busbar-contract` settles on for a pool member; a caller narrows it at the call site.
+//! - [`DestinationId`] is the contract crate's pool-member locator, named here and by the egress
+//!   unit, so the two units that key on a member key on one object.
 
 pub mod budget;
 pub mod cell;
@@ -43,14 +43,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use budget::LifetimeBudget;
+use busbar_caps::{Route, UnitToken};
 use cell::{BreakerCell, BreakerState as CellState, BreakerVerdict, ProbeAdmit};
 use cfg::BreakerCfg;
+use classify::Diagnostics;
 use journal::{JournalSink, NoopJournal, ProbeEvent};
 
-/// `// contract:` a placeholder for the pool-member locator `busbar-contract` will define. Every
-/// method in this crate that names a destination takes this bare `u64`; a real caller narrows its
-/// own locator type down to one before crossing into this unit.
-pub type DestinationId = u64;
+/// The pool-member locator, as the contract crate defines it. The egress unit names the same one,
+/// which is what makes `(transport, destination)` and `(pool, destination)` the same key.
+pub use busbar_contract::DestinationId;
 
 /// The at-capacity Retry-After floor in whole seconds — the answer when no admissible pool member
 /// reports a genuine cooldown to wait out. Matches the 1.5.5 constant (`AT_CAPACITY_RETRY_AFTER_SECS
@@ -134,10 +135,10 @@ mod sealed {
 
 /// The breaker unit's sealed trait shape (`docs/design/ARCHITECTURE.md` §3.1: `Breaker::observe/
 /// state`). Sealed on a private supertrait so no plugin crate can implement it — only
-/// [`BreakerUnit`] does. `// contract:` a real deployment would additionally require a capability
-/// token (a `&UnitToken<Route>`-shaped value from `busbar-caps`) on each call, mirroring every
-/// other unit trait in §3.1; that token type is minted by the kernel wiring this crate does not yet
-/// have, so today the seal is Rust's private-supertrait trick alone.
+/// [`BreakerUnit`] does. Per CG-29 and the design's other seven token-taking unit traits, every call also
+/// takes a `&UnitToken<Route>` (`busbar-caps`'s capability token): the proof that the loop is at
+/// the route step for this unit right now. The token is minted fresh per step call and taken by
+/// reference, never stored, so this trait cannot be driven outside the step it was lent for.
 pub trait Breaker: sealed::Sealed {
     /// Record one classified [`Outcome`] against `(pool, destination)`, applying the state
     /// machine's trip/cooldown/recovery rules and (for a probe outcome) journaling it. Returns
@@ -145,12 +146,26 @@ pub trait Breaker: sealed::Sealed {
     /// `HardDown` fan-out counts only the DEFAULT cell's freshness, and a sub-threshold or
     /// already-Open failure all return `false`) — the one signal a trip-count metric should
     /// increment on.
-    fn observe(&self, pool: &str, destination: DestinationId, outcome: Outcome, cfg: &BreakerCfg, now: u64) -> bool;
+    fn observe(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        outcome: Outcome,
+        cfg: &BreakerCfg,
+        now: u64,
+        token: &UnitToken<Route>,
+    ) -> bool;
 
     /// Side-effect-free: this `(pool, destination)` cell's current [`LaneState`], folding in the
     /// destination's lifetime budget (`BudgetExhausted` takes precedence — an exhausted destination
     /// is excluded regardless of what its breaker cell reads).
-    fn state(&self, pool: &str, destination: DestinationId, now: u64) -> LaneState;
+    fn state(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &UnitToken<Route>,
+    ) -> LaneState;
 }
 
 /// One `(pool, destination)` cell key. The default cell (direct/ad-hoc routes) uses pool `""`,
@@ -160,7 +175,13 @@ type CellKey = (String, DestinationId);
 /// The breaker unit: every `(pool, destination)` breaker cell plus every destination's lifetime
 /// budget, behind one lock each. Cells are created lazily on first touch (a cell not yet created
 /// inherits Closed-and-unspent, matching 1.5.5's lazy per-pool cell creation).
-pub struct BreakerUnit<J: JournalSink = NoopJournal> {
+///
+/// Generic over its [`JournalSink`] (`J`) and its `error_map` [`Diagnostics`] sink (`D`, CG-43):
+/// both default to a noop so `BreakerUnit::new()` keeps 1.5.5's silent behavior, and a caller wires
+/// a real sink through [`Self::with_journal_and_diagnostics`] (or the single-axis
+/// [`Self::with_journal`] / [`Self::with_diagnostics`] shortcuts) without this unit taking a
+/// logging dependency of its own.
+pub struct BreakerUnit<J: JournalSink = NoopJournal, D: Diagnostics = classify::NoopDiagnostics> {
     cells: RwLock<HashMap<CellKey, Arc<BreakerCell>>>,
     /// Which pools exist for a given destination, so a hard-down fan-out can reach every one of
     /// them without scanning the whole cell map. Populated the first time a pool cell for that
@@ -174,24 +195,46 @@ pub struct BreakerUnit<J: JournalSink = NoopJournal> {
     hard_down_cooldown_secs: u64,
     max_honored_retry_after_secs: u64,
     journal: J,
+    /// The sink an unrecognized `error_map` value (CG-43) is reported to. `classify::classify`
+    /// itself never sees this — it is [`Self::classify`]'s own read of the declared `error_map`
+    /// that can produce the diagnostic, via [`port::classify_upstream`].
+    diagnostics: D,
 }
 
-impl BreakerUnit<NoopJournal> {
-    /// A breaker unit with the ADR-0002 defaults and no journal (events are discarded).
+impl BreakerUnit<NoopJournal, classify::NoopDiagnostics> {
+    /// A breaker unit with the ADR-0002 defaults, no journal and no diagnostics sink (both
+    /// discarded).
     pub fn new() -> Self {
-        Self::with_journal(NoopJournal)
+        Self::with_journal_and_diagnostics(NoopJournal, classify::NoopDiagnostics)
     }
 }
 
-impl Default for BreakerUnit<NoopJournal> {
+impl Default for BreakerUnit<NoopJournal, classify::NoopDiagnostics> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<J: JournalSink> BreakerUnit<J> {
-    /// A breaker unit with the ADR-0002 defaults, journaling probe lifecycle events to `journal`.
+impl<J: JournalSink> BreakerUnit<J, classify::NoopDiagnostics> {
+    /// A breaker unit with the ADR-0002 defaults, journaling probe lifecycle events to `journal`
+    /// and discarding the `error_map` diagnostic.
     pub fn with_journal(journal: J) -> Self {
+        Self::with_journal_and_diagnostics(journal, classify::NoopDiagnostics)
+    }
+}
+
+impl<D: Diagnostics> BreakerUnit<NoopJournal, D> {
+    /// A breaker unit with the ADR-0002 defaults, no journal, reporting an unrecognized
+    /// `error_map` value (CG-43) to `diagnostics`.
+    pub fn with_diagnostics(diagnostics: D) -> Self {
+        Self::with_journal_and_diagnostics(NoopJournal, diagnostics)
+    }
+}
+
+impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
+    /// A breaker unit with the ADR-0002 defaults, journaling probe lifecycle events to `journal`
+    /// and reporting an unrecognized `error_map` value (CG-43) to `diagnostics`.
+    pub fn with_journal_and_diagnostics(journal: J, diagnostics: D) -> Self {
         Self {
             cells: RwLock::new(HashMap::new()),
             pools_by_destination: RwLock::new(HashMap::new()),
@@ -200,12 +243,17 @@ impl<J: JournalSink> BreakerUnit<J> {
             hard_down_cooldown_secs: DEFAULT_HARD_DOWN_COOLDOWN_SECS,
             max_honored_retry_after_secs: DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
             journal,
+            diagnostics,
         }
     }
 
     /// Override the hard-down sticky cooldown and the absolute Retry-After honoring ceiling
     /// (1.5.5's `limits.hard_down_cooldown_secs` / `limits.max_honored_retry_after_secs`).
-    pub fn with_limits(mut self, hard_down_cooldown_secs: u64, max_honored_retry_after_secs: u64) -> Self {
+    pub fn with_limits(
+        mut self,
+        hard_down_cooldown_secs: u64,
+        max_honored_retry_after_secs: u64,
+    ) -> Self {
         self.hard_down_cooldown_secs = hard_down_cooldown_secs;
         self.max_honored_retry_after_secs = max_honored_retry_after_secs;
         self
@@ -244,7 +292,12 @@ impl<J: JournalSink> BreakerUnit<J> {
     /// unlimited/undeclared); `false` if it was already exhausted.
     #[must_use]
     pub fn spend_budget(&self, destination: DestinationId) -> bool {
-        match self.budgets.read().unwrap_or_else(|e| e.into_inner()).get(&destination) {
+        match self
+            .budgets
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&destination)
+        {
             Some(b) => b.spend(),
             None => true,
         }
@@ -252,7 +305,12 @@ impl<J: JournalSink> BreakerUnit<J> {
 
     /// Compensating refund of one unit previously spent (see [`budget::LifetimeBudget::refund`]).
     pub fn refund_budget(&self, destination: DestinationId) {
-        if let Some(b) = self.budgets.read().unwrap_or_else(|e| e.into_inner()).get(&destination) {
+        if let Some(b) = self
+            .budgets
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&destination)
+        {
             b.refund();
         }
     }
@@ -271,9 +329,15 @@ impl<J: JournalSink> BreakerUnit<J> {
     /// Turn one upstream answer into a [`port::Classified`] disposition/outcome/label, reading
     /// `destination`'s declared `error_map` (empty when none was ever declared). The stateful
     /// method [`port::classify_upstream`] is implemented over — this is the one the egress unit's
-    /// `Breaker::classify` port is bound to.
+    /// `Breaker::classify` port is bound to. An `error_map` value that does not name a recognized
+    /// [`classify::StatusClass`] is reported to this unit's own [`Diagnostics`] sink (CG-43),
+    /// wired in at construction (see [`Self::with_diagnostics`]).
     #[must_use]
-    pub fn classify(&self, destination: DestinationId, status: port::UpstreamStatus) -> port::Classified {
+    pub fn classify(
+        &self,
+        destination: DestinationId,
+        status: port::UpstreamStatus,
+    ) -> port::Classified {
         let error_map = self
             .error_maps
             .read()
@@ -281,16 +345,23 @@ impl<J: JournalSink> BreakerUnit<J> {
             .get(&destination)
             .cloned()
             .unwrap_or_default();
-        port::classify_upstream(&error_map, status)
+        port::classify_upstream(&error_map, status, &self.diagnostics)
     }
 
     fn cell(&self, pool: &str, destination: DestinationId) -> Arc<BreakerCell> {
         let key = (pool.to_string(), destination);
-        if let Some(c) = self.cells.read().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        if let Some(c) = self
+            .cells
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+        {
             return c.clone();
         }
         let mut cells = self.cells.write().unwrap_or_else(|e| e.into_inner());
-        let cell = cells.entry(key).or_insert_with(|| Arc::new(BreakerCell::new()));
+        let cell = cells
+            .entry(key)
+            .or_insert_with(|| Arc::new(BreakerCell::new()));
         let cell = cell.clone();
         drop(cells);
         let mut pools = self
@@ -334,7 +405,12 @@ impl<J: JournalSink> BreakerUnit<J> {
     /// lifetime budget first (an exhausted destination is excluded before the breaker is even
     /// consulted, matching 1.5.5's `classify` reading `dead`/budget separately from the breaker).
     /// On success, journals a won probe.
-    pub fn try_admit(&self, pool: &str, destination: DestinationId, now: u64) -> Result<Admit, LaneState> {
+    pub fn try_admit(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+    ) -> Result<Admit, LaneState> {
         if self.budget_exhausted(destination) {
             return Err(LaneState::BudgetExhausted);
         }
@@ -359,7 +435,13 @@ impl<J: JournalSink> BreakerUnit<J> {
     /// Release a probe won by [`Self::try_admit`] but never dispatched (owner-checked: a stale,
     /// late release cannot revert a newer probe a different caller has since won). Journals the
     /// release.
-    pub fn release_probe(&self, pool: &str, destination: DestinationId, owned_epoch: u64, now: u64) {
+    pub fn release_probe(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        owned_epoch: u64,
+        now: u64,
+    ) {
         let cell = self.cell(pool, destination);
         cell.release_probe_owned(owned_epoch);
         self.journal.record(ProbeEvent::Released {
@@ -390,10 +472,18 @@ impl<J: JournalSink> BreakerUnit<J> {
     }
 }
 
-impl<J: JournalSink> sealed::Sealed for BreakerUnit<J> {}
+impl<J: JournalSink, D: Diagnostics> sealed::Sealed for BreakerUnit<J, D> {}
 
-impl<J: JournalSink> Breaker for BreakerUnit<J> {
-    fn observe(&self, pool: &str, destination: DestinationId, outcome: Outcome, cfg: &BreakerCfg, now: u64) -> bool {
+impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
+    fn observe(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        outcome: Outcome,
+        cfg: &BreakerCfg,
+        now: u64,
+        _token: &UnitToken<Route>,
+    ) -> bool {
         match outcome {
             Outcome::RecordNothing => false,
             Outcome::HardDown => self.hard_down_all(destination, now),
@@ -432,7 +522,13 @@ impl<J: JournalSink> Breaker for BreakerUnit<J> {
         }
     }
 
-    fn state(&self, pool: &str, destination: DestinationId, now: u64) -> LaneState {
+    fn state(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        _token: &UnitToken<Route>,
+    ) -> LaneState {
         if self.budget_exhausted(destination) {
             return LaneState::BudgetExhausted;
         }

@@ -38,6 +38,11 @@ unset _pk
 plane_src_roots() {   # echo "crates/busbar-<k>/src …" for every plane key, canonical order.
   local k out=""
   for k in $PLANE_KEYS; do out="${out:+$out }crates/busbar-${k}/src"; done
+  # The LLM protocol is TWO crates now: the engine kept the `busbar-llm` name and the six dialect
+  # codecs moved to `busbar-llm-codec`. The gate scans sources, not manifests, so the moved files
+  # have to be named here or the bulk of the LLM plane would stop being scanned — which is the
+  # failure mode a split invites and the reason this line exists.
+  out="${out} crates/busbar-llm-codec/src"
   printf '%s' "$out"
 }
 

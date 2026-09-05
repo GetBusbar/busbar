@@ -38,7 +38,11 @@ fn selection_is_proportional_to_the_weights() {
             select_weighted(&mut swrr, "p", &c, &lanes, &lanes, 1000).expect("all healthy");
         counts[picked] += 1;
     }
-    assert_eq!(counts, [500, 300, 100, 100], "exactly proportional, no drift");
+    assert_eq!(
+        counts,
+        [500, 300, 100, 100],
+        "exactly proportional, no drift"
+    );
 }
 
 #[test]

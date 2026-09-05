@@ -46,10 +46,28 @@ fn crates_dir() -> PathBuf {
     dir
 }
 
-/// Every `.rs` file under `crates/*/src`, EXCLUDING files that live in a `tests` directory. A test
-/// file constructs config structs, it does not DECLARE them, so including them would only add
-/// false positives; excluding them cannot hide a declaration, because a config struct declared in a
-/// test directory is not part of the config surface `--validate` walks.
+/// Whether a directory named `name` is excluded from the source scan. Kept as its own named
+/// function (rather than inlined into the walk) so the exclusion rule is one place to read, and one
+/// place a unit test below can drive directly without standing up a whole directory tree.
+///
+/// - `target` is build output, not source.
+/// - `tests` holds integration-test files: a test CONSTRUCTS config structs, it does not DECLARE
+///   them, so scanning it would only add false positives; excluding it cannot hide a declaration,
+///   because a type declared under `tests/` is not part of the config surface `--validate` walks.
+/// - `bin` holds `[[bin]]` target sources — standalone executables that are not part of the crate's
+///   library surface `RootCfg` and its config-resolution walk can ever reach. Today the one `bin`
+///   target in the workspace, `busbar-voice/src/bin/voice-conform.rs`, is itself a conformance-test
+///   harness that declares its own mock `SecretResolve` stand-in (`OneSecretResolver`) to probe the
+///   plane's composition seams; that mock is exactly as test-only as a helper under `tests/`, and it
+///   must be excluded for the same reason: it is code that CONSTRUCTS a stand-in to exercise the
+///   config surface, not code that DECLARES a field the config surface itself has to resolve. See
+///   `exclusion_rule_matches_known_directories` and `exclusion_rule_does_not_hide_ordinary_source_dirs`
+///   below, which pin this rule against regressing silently.
+fn is_excluded_source_dir(name: &str) -> bool {
+    name == "target" || name == "tests" || name == "bin"
+}
+
+/// Every `.rs` file under `crates/*/src`, excluding [`is_excluded_source_dir`] directories.
 fn source_files() -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![crates_dir()];
@@ -61,8 +79,7 @@ fn source_files() -> Vec<PathBuf> {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
             if path.is_dir() {
-                // `target` is build output, `tests` is covered by the doc comment above.
-                if name != "target" && name != "tests" {
+                if !is_excluded_source_dir(&name) {
                     stack.push(path);
                 }
             } else if name.ends_with(".rs") {
@@ -71,6 +88,35 @@ fn source_files() -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// [`is_excluded_source_dir`] excludes exactly the directory names it documents, and nothing else —
+/// pinned so a future edit cannot silently widen (or narrow) the exclusion without this test naming
+/// the drift.
+#[test]
+fn exclusion_rule_matches_known_directories() {
+    for excluded in ["target", "tests", "bin"] {
+        assert!(
+            is_excluded_source_dir(excluded),
+            "`{excluded}` must be excluded from the secret-bearing-type scan"
+        );
+    }
+}
+
+/// The exclusion rule is narrow: it must not swallow an ordinary source directory (a plane module, a
+/// crate's `src` root, or a directory that merely CONTAINS "test"/"bin" as a substring rather than
+/// matching the whole component name) — a wide match here would hide a real declaration from the
+/// scan, which is the exact silent-hole failure mode this guard exists to close.
+#[test]
+fn exclusion_rule_does_not_hide_ordinary_source_dirs() {
+    for kept in [
+        "src", "config_validate", "oauth_as", "mcp", "a2a", "binary", "testing", "contest",
+    ] {
+        assert!(
+            !is_excluded_source_dir(kept),
+            "`{kept}` must NOT be excluded from the secret-bearing-type scan"
+        );
+    }
 }
 
 /// `TypeName -> the field names it declares with a `SecretRef`-mentioning type`, scanned out of the

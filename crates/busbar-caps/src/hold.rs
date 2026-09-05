@@ -12,18 +12,18 @@
 //! It cannot open a hold, because opening one needs the admission unit's own token:
 //!
 //! ```compile_fail,E0061
-//! use busbar_caps::{Hold, Principal};
-//! let hold = Hold::open(Principal::new("acct-1"), 1_000);
+//! use busbar_caps::{Hold, PrincipalId};
+//! let hold = Hold::open(PrincipalId::new("acct-1"), 1_000);
 //! ```
 //!
 //! With the token, the same call is ordinary — which is the point, and what keeps the fixture above
 //! honest about WHY it fails:
 //!
 //! ```
-//! use busbar_caps::{Admit, AdmitToken, Hold, KernelSeal, LedgerToken, Posted, Principal, Usage, UsageToken};
+//! use busbar_caps::{Admit, AdmitToken, Hold, KernelSeal, LedgerToken, Posted, PrincipalId, Usage, UsageToken};
 //! let seal = KernelSeal::acquire_for_kernel();          // the kernel, and only the kernel
 //! let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
-//! let hold = Hold::open(&admit, Principal::new("acct-1"), 1_000);
+//! let hold = Hold::open(&admit, PrincipalId::new("acct-1"), 1_000);
 //! assert_eq!(hold.remaining(), 1_000);
 //! let usage = Usage::report(&UsageToken::mint(&seal), Vec::new()).unwrap();
 //! let posted = Posted::settle(hold, &usage, &LedgerToken::mint(&seal));
@@ -81,7 +81,7 @@
 //! The deliberate escape is caught by a source scan, and the symbols it looks for are written down
 //! in the crate's `fixtures/lint_rules.rs` rather than left to a reviewer to remember.
 
-use crate::step::{Principal, Step};
+use crate::step::{PrincipalId, Step};
 use crate::token::{AdmitToken, ExitToken, LedgerToken, RecoveryToken};
 use crate::usage::Usage;
 use std::marker::PhantomData;
@@ -110,7 +110,7 @@ pub enum Admission {
 /// `#[must_use]`, no `Clone`, no `Copy`, no `Drop`, and not unwind-safe. One unit has at most one.
 #[must_use = "a hold must reach the exit path; dropping it here loses the unit's admission"]
 pub struct Hold {
-    principal: Principal,
+    principal: PrincipalId,
     reserved: u64,
     accrued: u64,
     topped_up: u64,
@@ -141,7 +141,7 @@ pub enum Accrual {
 
 impl Hold {
     /// Open the unit's hold at the door, sized at `reserved` nano-units.
-    pub fn open<S: Step>(_token: &AdmitToken<S>, principal: Principal, reserved: u64) -> Self {
+    pub fn open<S: Step>(_token: &AdmitToken<S>, principal: PrincipalId, reserved: u64) -> Self {
         Hold::raw(principal, reserved, 0, false)
     }
 
@@ -150,14 +150,14 @@ impl Hold {
     /// recovery token is confined to one module.
     pub fn materialize(
         _token: &RecoveryToken,
-        principal: Principal,
+        principal: PrincipalId,
         reserved: u64,
         checkpointed: u64,
     ) -> Self {
         Hold::raw(principal, reserved, checkpointed, true)
     }
 
-    fn raw(principal: Principal, reserved: u64, accrued: u64, recovered: bool) -> Self {
+    fn raw(principal: PrincipalId, reserved: u64, accrued: u64, recovered: bool) -> Self {
         Hold {
             principal,
             reserved,
@@ -170,7 +170,7 @@ impl Hold {
     }
 
     /// Whose admission this is.
-    pub fn principal(&self) -> &Principal {
+    pub fn principal(&self) -> &PrincipalId {
         &self.principal
     }
 
@@ -231,7 +231,7 @@ impl Hold {
 impl std::fmt::Debug for Hold {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Hold")
-            .field("principal", &self.principal.id())
+            .field("principal", &self.principal.as_str())
             .field("reserved", &self.reserved())
             .field("accrued", &self.accrued)
             .field("overdraft", &self.overdraft)
@@ -248,13 +248,13 @@ impl std::fmt::Debug for Hold {
 #[must_use = "an accrual must reach the parent's posting or be posted late on its own"]
 #[derive(Debug)]
 pub struct HoldAccrual {
-    principal: Principal,
+    principal: PrincipalId,
     amount: u64,
 }
 
 impl HoldAccrual {
     /// Whose admission is being spent.
-    pub fn principal(&self) -> &Principal {
+    pub fn principal(&self) -> &PrincipalId {
         &self.principal
     }
 
@@ -422,7 +422,7 @@ impl HoldCell {
     /// in for a type-level one, because a parent's hold is a value the child never sees.
     pub fn accrue_child(
         &self,
-        principal: &Principal,
+        principal: &PrincipalId,
         amount: u64,
         _token: &AdmitToken<crate::step::Admit>,
     ) -> Result<HoldAccrual, AccrualRefused> {
@@ -447,6 +447,18 @@ impl HoldCell {
     /// How many accruals this cell has taken — one of the numbers the canary balances.
     pub fn accruals(&self) -> u64 {
         self.accruals.load(Ordering::Relaxed)
+    }
+}
+
+impl HoldAccrual {
+    /// Convert an outstanding accrual into a child-owned hold, at the parent's exit.
+    ///
+    /// This is what makes the late-accrual exposure a mechanism rather than an assertion. When a
+    /// parent exits with a child still running, the child's accrual becomes a hold of its own,
+    /// sized at the child's maximum provider push and drawn synchronously — so the child cannot
+    /// afterwards post late with no reservation behind it, whatever it goes on to spend.
+    pub fn convert_at_parent_exit<S: Step>(self, sized: u64, token: &AdmitToken<S>) -> Hold {
+        Hold::open(token, self.principal, sized)
     }
 }
 
@@ -495,7 +507,7 @@ impl PostingFlags {
 /// posting, and there is exactly one per hold because settling consumes the hold by value.
 #[derive(Debug)]
 pub struct Posted {
-    principal: Principal,
+    principal: PrincipalId,
     reserved: u64,
     settled: u64,
     overdraft: u64,
@@ -525,6 +537,33 @@ impl Posted {
         }
     }
 
+    /// Post a child's spend that landed inside its parent's admission.
+    ///
+    /// The parent's hold already carries the amount — the accrual added it at the door — so what
+    /// this writes is the child's OWN posting: it reserved nothing, it settled what it spent, and
+    /// it has no overdraft, because the reservation behind it is the parent's. That is what lets a
+    /// child end like every other unit, with one posting and one sealed end, instead of ending in
+    /// a shape the record has no room for.
+    ///
+    /// A parent that exited between the door and here hands the accrual back, and the caller posts
+    /// it late against a synchronous draw.
+    pub fn into_parent(
+        accrual: HoldAccrual,
+        parent: &HoldCell,
+        _token: &LedgerToken,
+    ) -> Result<Self, HoldAccrual> {
+        if parent.state() != HoldCellState::Admitted {
+            return Err(accrual);
+        }
+        Ok(Posted {
+            principal: accrual.principal,
+            reserved: 0,
+            settled: accrual.amount,
+            overdraft: 0,
+            flags: PostingFlags::NONE,
+        })
+    }
+
     /// Post a child's spend that missed its parent — always posted, backed by a synchronous slice
     /// draw, flagged late.
     pub fn settle_late(accrual: HoldAccrual, _token: &LedgerToken) -> Self {
@@ -544,7 +583,7 @@ impl Posted {
     }
 
     /// Whose posting this is.
-    pub fn principal(&self) -> &Principal {
+    pub fn principal(&self) -> &PrincipalId {
         &self.principal
     }
 

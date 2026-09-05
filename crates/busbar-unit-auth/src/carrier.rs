@@ -69,10 +69,7 @@ pub fn extract_bearer_token(auth_header: &str) -> Option<String> {
 /// Read the client credential from whichever carrier presented it, in the fixed order: the bearer
 /// authorization header, then the Anthropic key header, then the Google key header.
 pub fn extract_client_token(headers: &dyn HeaderView) -> Option<String> {
-    if let Some(t) = headers
-        .header(AUTHORIZATION)
-        .and_then(extract_bearer_token)
-    {
+    if let Some(t) = headers.header(AUTHORIZATION).and_then(extract_bearer_token) {
         return Some(t);
     }
     if let Some(t) = headers.header(X_API_KEY).filter(|t| !t.is_empty()) {

@@ -12,7 +12,7 @@
 //! ## Composition seam
 //!
 //! A connection this transport accepted or dialled is tracked in an internal registry keyed by
-//! the connection's opaque id, because [`busbar_contract::ConnHandle`] only exposes `id()` and
+//! the connection's opaque id, because [`busbar_contract_transport::wire::ConnHandle`] only exposes `id()` and
 //! `peer()` to the kernel — the concrete socket lives here, never behind the trait object. This is
 //! also what makes an in-band upgrade possible: [`TcpTransport::take_stream`] hands the raw
 //! `TcpStream` to whichever upper layer is upgrading the connection (the `tls` transport calls it
@@ -30,15 +30,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::{
-    ArenaBytes, ArrivalRecord, CloseReason, Conn, ConnHandle, Direction, Fut, Frame, FrameMeta,
-    Kind, Listener, ListenerHandle, Plugin, Refusal, SlabBytes, StreamId, Transport,
-    TransportConfigView, TransportError, TransportMeta,
+    ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
+    TransportConfigView, TransportMeta,
 };
+use busbar_contract_transport::registry::facts as tfacts;
+use busbar_contract_transport::wire::ArrivalRecord;
+use busbar_contract_transport::wire::CloseReason;
+use busbar_contract_transport::wire::Conn;
+use busbar_contract_transport::wire::ConnHandle;
+use busbar_contract_transport::wire::Direction;
+use busbar_contract_transport::wire::FrameMeta;
+use busbar_contract_transport::wire::Listener;
+use busbar_contract_transport::wire::ListenerHandle;
+use busbar_contract_transport::wire::TransportError;
 use futures::Stream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex as AsyncMutex;
+use tokio_util::compat::TokioAsyncReadCompatExt;
 
 /// How many bytes one read syscall may fill a frame with.
 ///
@@ -57,7 +67,7 @@ struct Inner {
 }
 
 /// The opaque handle the kernel is actually given. Carries nothing but what
-/// [`busbar_contract::ConnHandle`] requires; the real state lives in the transport's registry.
+/// [`busbar_contract_transport::wire::ConnHandle`] requires; the real state lives in the transport's registry.
 struct TcpConnHandle {
     id: u64,
     peer: String,
@@ -125,7 +135,10 @@ impl TcpTransport {
             read: AsyncMutex::new(read),
             write: AsyncMutex::new(write),
         });
-        self.conns.lock().expect("conn registry poisoned").insert(id, inner);
+        self.conns
+            .lock()
+            .expect("conn registry poisoned")
+            .insert(id, inner);
         Ok(Conn::new(Arc::new(TcpConnHandle {
             id,
             peer: peer.to_string(),
@@ -133,7 +146,11 @@ impl TcpTransport {
     }
 
     fn inner(&self, id: u64) -> Option<Arc<Inner>> {
-        self.conns.lock().expect("conn registry poisoned").get(&id).cloned()
+        self.conns
+            .lock()
+            .expect("conn registry poisoned")
+            .get(&id)
+            .cloned()
     }
 
     /// Detach the underlying stream from a connection this transport produced, for an upper layer
@@ -180,8 +197,8 @@ impl Plugin for TcpTransport {
     fn kind(&self) -> Kind {
         Kind::Transport
     }
-    fn abi(&self) -> busbar_contract::AbiVersion {
-        busbar_contract::AbiVersion(1)
+    fn abi(&self) -> busbar_contract_transport::AbiVersion {
+        busbar_contract_transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -191,16 +208,18 @@ impl TransportMeta for TcpTransport {
         &[busbar_contract::SelectorForm::Port];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &[];
-    const HANDOFF: Option<busbar_contract::Handoff> = None;
+    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract_transport::wire::Framing =
+        busbar_contract_transport::wire::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = false;
-    const UNIT0_TRIGGER: Option<busbar_contract::Unit0Trigger> =
-        Some(busbar_contract::Unit0Trigger::FirstBytes);
+    const UNIT0_TRIGGER: Option<busbar_contract_transport::wire::Unit0Trigger> =
+        Some(busbar_contract_transport::wire::Unit0Trigger::FirstBytes);
     const UPGRADES_TO: &'static [&'static str] = &["tls"];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract::HandshakeTrigger> = None;
-    const TRANSPORT_FACTS: &'static [&'static str] = &[];
+    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;
-    const STATUS_CLASS: Option<busbar_contract::StatusAt> = None;
+    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
 }
 
 impl Transport for TcpTransport {
@@ -248,7 +267,10 @@ impl Transport for TcpTransport {
                 .get(&addr)
                 .cloned()
                 .ok_or(TransportError::Closed)?;
-            let (stream, peer) = listener.accept().await.map_err(|_| TransportError::Closed)?;
+            let (stream, peer) = listener
+                .accept()
+                .await
+                .map_err(|_| TransportError::Closed)?;
             self.register(stream, peer)
                 .map_err(|e| Self::map_connect_err(&e))
         })
@@ -260,11 +282,15 @@ impl Transport for TcpTransport {
         _keys: &'a busbar_contract::TransportKeyHandle,
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
-            let host = match dest.facts() {
-                busbar_contract::DestinationFacts::Upstream { host, .. } => host,
+            let authority = match dest.facts() {
+                busbar_contract::DestinationFacts::Upstream { address, .. } => {
+                    address.authority().ok_or(TransportError::AddressRefused)?
+                }
                 _ => return Err(TransportError::AddressRefused),
             };
-            let addr: SocketAddr = host.parse().map_err(|_| TransportError::AddressRefused)?;
+            let addr: SocketAddr = authority
+                .parse()
+                .map_err(|_| TransportError::AddressRefused)?;
             let stream = TcpStream::connect(addr)
                 .await
                 .map_err(|e| Self::map_connect_err(&e))?;
@@ -273,7 +299,10 @@ impl Transport for TcpTransport {
         })
     }
 
-    fn frames(&self, conn: Conn) -> Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>> {
+    fn frames(
+        &self,
+        conn: Conn,
+    ) -> Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>> {
         let inner = self.inner(conn.id());
         Box::pin(futures::stream::unfold(inner, move |inner| async move {
             let inner = inner?;
@@ -323,28 +352,55 @@ impl Transport for TcpTransport {
         })
     }
 
-    fn upgrade<'a>(
+    /// A byte stream carries no envelope of its own: the bytes are the body, and a field written
+    /// beside them would be bytes the peer never asked for. A transport that named one anyway would
+    /// be inventing a framing this wire does not have.
+    fn encode_envelope<'a>(
+        &self,
+        _fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::Arena,
+    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+        arena
+            .alloc_bytes(body)
+            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+    }
+
+    fn adopt<'a>(
         &'a self,
+        _from: &'a dyn Transport,
         conn: Conn,
-        _to: &'a str,
         _keys: &'a busbar_contract::TransportKeyHandle,
     ) -> Fut<'a, Conn> {
-        // `tcp` has no in-band upgrade of its own frame shape; an upper layer (`tls`) upgrades by
-        // calling `take_stream` on this transport directly rather than through the trait, because
-        // the resulting connection belongs to a different transport's registry.
+        // Nothing composes over `tcp` by being adopted onto it: `tcp` IS the bottom, so there is no
+        // lower layer whose stream it could take. It only ever hands one up, through `detach`.
         let _ = conn;
-        Box::pin(async move { Err(TransportError::Framing) })
+        Box::pin(async move { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+        let (stream, peer) = self.take_stream(conn)?;
+        Some(busbar_contract_transport::wire::RawStream::new(
+            Self::KEY,
+            peer.to_string(),
+            Box::new(TokioAsyncReadCompatExt::compat(stream)),
+        ))
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {
         // Dropping the halves closes the socket (sends FIN); nothing here is fallible in a way
         // the caller can act on, so this stays synchronous per the trait's own shape.
-        self.conns.lock().expect("conn registry poisoned").remove(&conn.id());
+        self.conns
+            .lock()
+            .expect("conn registry poisoned")
+            .remove(&conn.id());
     }
 
     fn unit0_refusal<'a>(
         &'a self,
         conn: Conn,
+        // `tcp` carries one stream, so there is nothing narrower than the connection to refuse on.
+        _stream: Option<StreamId>,
         _refusal: &'a Refusal,
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()> {
@@ -358,7 +414,10 @@ impl Transport for TcpTransport {
                     .map_err(|e| Self::map_connect_err(&e))?;
                 let _ = guard.flush().await;
             }
-            self.conns.lock().expect("conn registry poisoned").remove(&conn.id());
+            self.conns
+                .lock()
+                .expect("conn registry poisoned")
+                .remove(&conn.id());
             Ok(())
         })
     }

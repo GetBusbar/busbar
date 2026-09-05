@@ -182,6 +182,21 @@ pub enum ArrivalLocation {
     Header(&'static str),
     /// A named query parameter.
     Query(&'static str),
+    /// One variable segment of the matched path pattern, by index among the pattern's variables.
+    ///
+    /// The index counts the pattern's non-literal segments left to right from zero. A
+    /// [`PathSeg::Var`] is one variable and resolves to the one segment it matched; a
+    /// [`PathSeg::Tail`] is also one variable, and resolves to the FIRST segment it matched,
+    /// because a tail's later segments are not addressable by a fixed index. An index past the
+    /// pattern's variables resolves to nothing, which is a missing location and not an error.
+    ///
+    /// The claim grammar already makes the kernel the owner of `PathPattern` and of its
+    /// per-segment overlap rule, so the segment index exists before any plane is chosen and is
+    /// resolvable at arrival like every other form here. It is the form a protocol that names the
+    /// priced thing in the request target rather than in the body needs; without it such a protocol
+    /// can only be located by having the arrival path copy the value into the body first, which is
+    /// a kernel-side body rewrite the lean-core scan would have to allow.
+    PathSegment(u8),
     /// A pointer into the first frame's object notation.
     FirstFrameJsonPointer(&'static str),
     /// The presented client certificate.
@@ -205,9 +220,13 @@ impl ArrivalLocation {
     #[must_use]
     pub const fn mask(&self) -> MaskKind {
         match self {
-            Self::Header(_) | Self::Query(_) | Self::FirstFrameJsonPointer(_) => {
-                MaskKind::SameLengthFill
-            }
+            // A path segment is bytes in the read cursor exactly as a header or a query parameter
+            // is, so it is hidden the same way: same-length fill, which leaves every offset the
+            // pattern match and the span table already computed where it was.
+            Self::Header(_)
+            | Self::Query(_)
+            | Self::PathSegment(_)
+            | Self::FirstFrameJsonPointer(_) => MaskKind::SameLengthFill,
             Self::ClientCert => MaskKind::Nothing,
             Self::Signed { .. } => MaskKind::SignatureSpan,
             Self::HandshakeFrames { .. } => MaskKind::BoundedPrefix,
@@ -269,12 +288,58 @@ pub struct Claim {
     pub transport: &'static str,
     /// What the claim matches.
     pub selector: Selector,
-    /// The credential scheme the claim's units authenticate under.
-    pub scheme: &'static str,
+    /// The credential scheme the claim's units authenticate under, where they carry one.
+    ///
+    /// `None` says the claim's units carry NO credential: they admit the anonymous principal
+    /// without consulting a scheme at all. A deliberately open surface — a discovery document, a
+    /// callback anyone may post to — is a property of the claim, decided at registration and
+    /// checked at boot.
+    ///
+    /// It is deliberately NOT a scheme key the registry happens to know. The authenticate step may
+    /// only narrow within a claim's declared alternatives, and a scheme key meaning "none" would be
+    /// one alternative among others: a plane could then narrow an authenticated claim down to
+    /// anonymous and the check would pass, because the key IS declared. That is the check failing
+    /// to check the one thing it exists for. With the absence carried on the claim, a claim that
+    /// declares a scheme has alternatives to narrow within and the check runs unchanged, and a
+    /// claim that declares none has nothing to narrow to at all.
+    pub scheme: Option<&'static str>,
     /// The alternatives a plane may narrow the scheme to at the authenticate step.
+    ///
+    /// Empty when the claim declares no scheme: there is nothing to narrow.
     pub scheme_alternatives: &'static [&'static str],
     /// The claim's idempotency rule, if it declares one.
     pub idempotency: Option<Idempotency>,
+}
+
+/// Declare an ordered detection ladder and the claim list that goes with it, from one table.
+///
+/// A claim carries exactly one selector, and that rule is right: a boot that has to decide whether
+/// two claims could match the same bytes cannot do it through an unexplained disjunction. But a
+/// plane whose protocol detection is a fourteen-rung ladder then has two dozen claims, and a
+/// constant cannot loop over a constant, so both the ladder and the narrower `CLAIMS` list get
+/// transcribed by hand — twice, by index, with the rung number in a comment. That is a legibility
+/// cost rather than a correctness one, and this is the fix for it.
+///
+/// The row type is the caller's own, and it must have the three fields the invocation fills:
+/// `rung`, `dialect` and `claim`. The builder is the caller's own `const fn` from a selector to a
+/// claim, so the scheme, alternatives and idempotency stay where the plane declares them once.
+/// Ordinary comments between rows survive, because a macro invocation is still source.
+#[macro_export]
+macro_rules! claims_from_ladder {
+    (
+        $(#[$ladder_doc:meta])* $ladder:ident,
+        $(#[$claims_doc:meta])* $claims:ident,
+        $row:ident, $build:ident,
+        $($rung:literal => $dialect:literal, $selector:expr),+ $(,)?
+    ) => {
+        $(#[$ladder_doc])*
+        pub const $ladder: &[$row] = &[
+            $($row { rung: $rung, dialect: $dialect, claim: $build($selector) },)+
+        ];
+
+        $(#[$claims_doc])*
+        pub const $claims: &[$crate::grammar::Claim] = &[$($build($selector),)+];
+    };
 }
 
 impl Claim {
@@ -285,6 +350,12 @@ impl Claim {
     #[must_use]
     pub fn overlaps(&self, other: &Claim) -> bool {
         self.transport == other.transport && self.selector.overlaps(&other.selector)
+    }
+
+    /// Whether this claim's units carry no credential at all.
+    #[must_use]
+    pub const fn is_anonymous(&self) -> bool {
+        self.scheme.is_none()
     }
 }
 

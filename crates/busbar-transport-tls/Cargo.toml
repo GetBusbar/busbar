@@ -12,7 +12,13 @@ license = "Apache-2.0"
 # base byte stream it composes over (and the in-band-upgrade seam, `take_stream`), and rustls for
 # the handshake itself — the same crypto backend the rest of the workspace pins (`ring`).
 [dependencies]
+tokio-util = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
+busbar-contract-transport = { path = "../busbar-contract-transport" }
+# The unit that resolves this transport's key material. The edge points this way on purpose: the
+# unit reads secrets and this crate must not, so what crosses the seam is an already-built config
+# and a slot number, and the transport is the end that offers somewhere to put them.
+busbar-unit-transport-key = { path = "../busbar-unit-transport-key" }
 busbar-transport-tcp = { path = "../busbar-transport-tcp" }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "io-util", "time"] }
@@ -22,5 +28,6 @@ rustls-pki-types = { workspace = true }
 ring = { workspace = true }
 
 [dev-dependencies]
+busbar-caps = { path = "../busbar-caps" }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros"] }
 rcgen = { workspace = true }

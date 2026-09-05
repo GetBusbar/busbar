@@ -212,12 +212,15 @@ fn an_absent_block_resolves_to_no_authorization_server() {
 
     // And the same resolve WITH the block does produce one, so the assertion above is about the
     // block's absence rather than about `resolve` having quietly stopped reading the field at all.
-    let deploy: crate::config::DeployCfg = serde_json::from_value(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "oauth_as": { "issuer": ISSUER },
-    }))
-    .expect("a deploy config carrying `oauth_as:` parses");
+    // Through the document entry point: `oauth_as:` is a 1.6.0-additive key, LIFTED off the
+    // document before the frozen structs parse, so a bare `from_value` never sees it.
+    let deploy: crate::config::DeployCfg =
+        crate::config::deploy_from_deserializer(serde_json::json!({
+            "providers": {},
+            "models": {},
+            "oauth_as": { "issuer": ISSUER },
+        }))
+        .expect("a deploy config carrying `oauth_as:` parses");
     let resolved = crate::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("a config carrying a well-formed `oauth_as:` resolves");
     let identity = resolved

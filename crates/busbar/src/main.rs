@@ -135,7 +135,7 @@ fn handle_cli_flags() -> Option<i32> {
             if let Ok(raw) = std::fs::read_to_string(&config_path) {
                 match config::interpolate_env(&raw) {
                     Ok(interpolated) => {
-                        match serde_yaml::from_str::<config::DeployCfg>(&interpolated) {
+                        match config::deploy_from_yaml_str(&interpolated) {
                             Ok(deploy) => {
                                 if let Some(sec) = deploy.security {
                                     entries.extend(sec.blocked_metadata_hosts);
@@ -552,7 +552,7 @@ fn worker_threads_from_config() -> Option<usize> {
     let mut unset = Vec::new();
     let interpolated =
         config::interpolate_env_with(&raw, config::EnvSubst::Lenient, &mut unset).ok()?;
-    let deploy: config::DeployCfg = serde_yaml::from_str(&interpolated).ok()?;
+    let deploy: config::DeployCfg = config::deploy_from_yaml_str(&interpolated).ok()?;
     match validate_worker_threads_config(deploy.advanced.worker_threads) {
         Ok(v) => v,
         Err(msg) => {
@@ -1123,6 +1123,20 @@ async fn run(data_workers: usize) {
     // driven by `.block_on(run())` (this file, in `main()`), so it is polled on the MAIN thread, not
     // on a Tokio worker — there is no worker to park; (2) this precedes the `tokio::join!` over
     // `serve_listener` below, so neither listener has been bound, let alone is accepting.
+    // THE VOICE PLANE'S EGRESS CREDENTIAL, read off the deployment's ORDINARY provider catalog.
+    // The voice plane's `streams:` grammar carries no credential field, so its realtime provider is
+    // the one already serving the model that section targets: `streams.session.model` names a model,
+    // the model names its provider, and that provider entry carries the origin and the secret
+    // reference every other lane's key is declared as. Captured here — before `cfg` moves into the
+    // build — and handed to the plane below, once the resolver that turns a reference into a
+    // credential exists. A deployment with no `streams:` block pins no model and captures nothing, so
+    // nothing about it changes.
+    #[cfg(feature = "plane-voice")]
+    let voice_provider = busbar_voice::config::configured_session_model()
+        .and_then(|model| cfg.models.get(&model).map(|m| m.provider.clone()))
+        .and_then(|provider| cfg.providers.get(&provider))
+        .map(|p| (p.base_url.clone(), p.api_key.clone()));
+
     let (boot_app, _boot_gov_rotate) = build_app_from_config(
         cfg,
         plugins_cfg,
@@ -1134,6 +1148,39 @@ async fn run(data_workers: usize) {
     )
     .unwrap_or_else(|e| die(e));
     let app = Arc::new(boot_app);
+
+    // COMPOSE the voice plane's realtime provider: hand the plane the origin + the secret reference
+    // captured above and the deployment's own secret resolver, so the plane resolves its credential
+    // through the same seam every provider key is resolved through and its mint / SDP routes serve
+    // instead of answering "no provider composed". Silent on a deployment that captured nothing (no
+    // `streams:` block, no model pinned, or no such model/provider in the catalog) — the only line
+    // this can emit is a fail-closed warning when a reference the operator DID declare will not
+    // resolve, which is worth saying rather than leaving the routes mysteriously uncomposed.
+    #[cfg(feature = "plane-voice")]
+    if let Some((base_url, api_key)) = voice_provider {
+        if let Err(e) =
+            busbar_voice::mount::compose_provider(base_url.clone(), &api_key, &*app.secret_resolver)
+        {
+            tracing::warn!(
+                "voice: the realtime provider credential did not resolve, so the voice mint and SDP \
+                 routes stay uncomposed: {e}"
+            );
+        }
+        // K4: THE GEMINI LIVE ROUTE'S PROVIDER, composed under its OWN endpoint (a separate set-once
+        // slot, `x-goog-api-key` scheme) rather than reusing the OpenAI one's — a deployment cannot
+        // silently point one dialect's traffic at the other's credential. `streams:` still names ONE
+        // model, so today both endpoints are composed from the SAME resolved (origin, reference) pair;
+        // a deployment that fronts Gemini Live through a distinct provider entry needs a second
+        // `streams:` knob to name it, which is not this cycle's grammar change (see docs/voice.md).
+        if let Err(e) =
+            busbar_voice::mount::compose_gemini_provider(base_url, &api_key, &*app.secret_resolver)
+        {
+            tracing::warn!(
+                "voice: the Gemini Live provider credential did not resolve, so the Gemini route \
+                 stays uncomposed: {e}"
+            );
+        }
+    }
 
     // Record the BOOT snapshot as version 0 so the version history always has a rollback floor
     // (the pre-any-mutation state).
@@ -1311,6 +1358,7 @@ async fn run(data_workers: usize) {
             &admin_listen,
             recv_shutdown(shutdown_tx.subscribe()),
             None,
+            true,
         )
         .await;
         // The shutdown broadcast has fired (the admin serve returned), so every per-core data
@@ -1338,6 +1386,7 @@ async fn run(data_workers: usize) {
                 &listen,
                 recv_shutdown(shutdown_tx.subscribe()),
                 None,
+                true,
             ),
             serve_listener(
                 admin_listener,
@@ -1347,6 +1396,7 @@ async fn run(data_workers: usize) {
                 &admin_listen,
                 recv_shutdown(shutdown_tx.subscribe()),
                 None,
+                true,
             ),
         );
     }
@@ -1421,7 +1471,10 @@ fn serve_thread_per_core(
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let cores: Vec<Option<core_affinity::CoreId>> =
         (0..n).map(|i| core_ids.get(i).copied()).collect();
-    tracing::info!(
+    // DEBUG, not INFO: this is a per-worker implementation fact, not something a 1.5.5-shaped config
+    // ever printed — an operator of such a config must see the SAME lines at INFO as 1.5.5 did (the
+    // neutrality binding, docs/design/ARCHITECTURE.md Appendix B).
+    tracing::debug!(
         runtimes = cores.len(),
         pinned = core_ids.len().min(n),
         listen = %addr,
@@ -1493,6 +1546,10 @@ fn serve_thread_per_core(
                         &listen,
                         recv_shutdown(shutdown_rx),
                         balancer,
+                        // ONE "busbar listening" line per LISTENER, matching 1.5.5, not one per
+                        // worker: only worker 0 logs it at INFO; every other worker's identical fact
+                        // logs at DEBUG (the per-worker detail an operator can still opt into).
+                        i == 0,
                     )
                     .await;
                     // Connections are drained; give this worker's detached work its bounded
@@ -1546,6 +1603,9 @@ fn bind_reuseport_listener(addr: &str) -> std::io::Result<std::net::TcpListener>
 /// slow-loris-hardened hyper loop; `Some` ⇒ terminate TLS (mTLS when `client_ca_file` is set), with
 /// cert/key/CA loaded and validated up front so a bad path/parse `die`s at startup, not per request.
 /// `label` names the plane in log lines and error messages. Any serve error `die`s the process.
+#[allow(clippy::too_many_arguments)] // one more than the default threshold for `log_at_info`, the
+                                     // once-per-listener-not-once-per-worker fix (see its own doc); grouping the existing seven into a
+                                     // struct is a larger refactor this fix does not need.
 async fn serve_listener(
     listener: tokio::net::TcpListener,
     router: Router,
@@ -1556,10 +1616,20 @@ async fn serve_listener(
     // The data workers' connection-placement balancer (`None` for the admin listener and
     // non-unix builds — those accept exactly as before). See `tls::ConnBalancer`.
     balancer: Option<tls::ConnBalancer>,
+    // Whether THIS call logs "busbar listening" at INFO. `true` for the admin listener and for the
+    // single data listener on non-unix builds (both call this exactly once); on unix's
+    // thread-per-core data plane, `serve_thread_per_core` calls this once PER WORKER on the SAME
+    // listen address — only the first call logs at INFO (matching 1.5.5's once-per-listener line),
+    // the rest log the identical fact at DEBUG.
+    log_at_info: bool,
 ) {
     match tls_cfg {
         None => {
-            tracing::info!(listen = %label, "busbar listening");
+            if log_at_info {
+                tracing::info!(listen = %label, "busbar listening");
+            } else {
+                tracing::debug!(listen = %label, "busbar listening");
+            }
             if let Err(e) = tls::serve_plain(listener, router, shutdown, balancer).await {
                 die(format!("server error on '{label}': {e}"));
             }
@@ -1575,7 +1645,11 @@ async fn serve_listener(
             let server_config = tls::build_server_config(&tls, &secret_resolver)
                 .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
             let mtls = tls.client_ca.is_some();
-            tracing::info!(listen = %label, mtls, "busbar listening (TLS)");
+            if log_at_info {
+                tracing::info!(listen = %label, mtls, "busbar listening (TLS)");
+            } else {
+                tracing::debug!(listen = %label, mtls, "busbar listening (TLS)");
+            }
             if let Err(e) = tls::serve(listener, router, server_config, shutdown, balancer).await {
                 die(format!("server error on '{label}': {e}"));
             }
@@ -1969,6 +2043,12 @@ fn signing_key_command_output(hex: &str) -> (String, String) {
         .to_string();
     (secret_line, guidance)
 }
+
+// THE COMPOSITION ROOT. The kernel, the units, the planes and the transports composed in one
+// place — the only place in the tree entitled to name all four. Nothing in `main()` calls into it
+// yet: the root is built before any plane is switched onto it, so the shape can be checked against
+// the real traits while the serving path is untouched.
+mod root;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

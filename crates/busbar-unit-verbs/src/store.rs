@@ -46,5 +46,9 @@ pub trait Store {
     fn replay_new_verb(&self, key: &(String, String)) -> Result<Option<Vec<u8>>, StoreError>;
 
     /// `// contract:` commit a new-verb replay slot.
-    fn commit_new_verb_replay(&self, key: &(String, String), response: &[u8]) -> Result<(), StoreError>;
+    fn commit_new_verb_replay(
+        &self,
+        key: &(String, String),
+        response: &[u8],
+    ) -> Result<(), StoreError>;
 }

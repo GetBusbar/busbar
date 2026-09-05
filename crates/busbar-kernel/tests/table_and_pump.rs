@@ -20,7 +20,7 @@ use busbar_kernel::pump::{
 };
 use busbar_kernel::teller::{settle_amount, Evidence, Kernel};
 
-use common::principal;
+use common::{principal, TestDoor};
 
 fn enter(kernel: &Kernel, key: u64, origin: OriginKind) -> Enter {
     Enter {
@@ -30,7 +30,7 @@ fn enter(kernel: &Kernel, key: u64, origin: OriginKind) -> Enter {
         admin_listener: false,
         provider_of_open_session: false,
         zero_hold_tick: false,
-        arrival: arrival_hold(kernel, principal()),
+        arrival: arrival_hold(kernel, &TestDoor, principal()),
     }
 }
 
@@ -271,14 +271,14 @@ fn a_second_open_on_an_occupied_direction_is_refused_and_the_session_stays_up() 
         Some(&session),
         &table,
         StreamId(1),
-        Direction::Ingress,
+        Direction::Inbound,
         Shape::Open { interrupt: None },
     );
     assert_eq!(first, Dispatch::OpenUnit);
     session
         .claim_open(
             StreamId(1),
-            Direction::Ingress,
+            Direction::Inbound,
             busbar_caps::UnitKey::new(1),
         )
         .expect("the slot was free");
@@ -287,7 +287,7 @@ fn a_second_open_on_an_occupied_direction_is_refused_and_the_session_stays_up() 
         Some(&session),
         &table,
         StreamId(1),
-        Direction::Ingress,
+        Direction::Inbound,
         Shape::Open { interrupt: None },
     );
     assert_eq!(
@@ -318,7 +318,7 @@ fn a_superseding_open_reaches_the_compare_and_set_even_on_an_occupied_direction(
         .expect("under the cap");
     slot.step().advance_to(StepName::Route);
     session
-        .claim_open(StreamId(1), Direction::Ingress, target)
+        .claim_open(StreamId(1), Direction::Inbound, target)
         .expect("the slot was free");
 
     let scheduler = Scheduler::default();
@@ -326,14 +326,14 @@ fn a_superseding_open_reaches_the_compare_and_set_even_on_an_occupied_direction(
         Some(&session),
         &table,
         StreamId(1),
-        Direction::Ingress,
+        Direction::Inbound,
         Shape::Open {
             interrupt: Some(target),
         },
     );
     assert_eq!(verdict, Dispatch::Supersede { target, won: true });
     assert_eq!(
-        session.open_unit(StreamId(1), Direction::Ingress),
+        session.open_unit(StreamId(1), Direction::Inbound),
         None,
         "the direction is free for the unit taking over"
     );
@@ -350,7 +350,7 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
             None,
             &table,
             StreamId(0),
-            Direction::Ingress,
+            Direction::Inbound,
             Shape::OneShot
         ),
         Dispatch::OpenOneShot
@@ -360,7 +360,7 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
             None,
             &table,
             StreamId(0),
-            Direction::Ingress,
+            Direction::Inbound,
             Shape::OneShot
         ),
         Dispatch::OpenOneShot
@@ -370,7 +370,7 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
             None,
             &table,
             StreamId(0),
-            Direction::Ingress,
+            Direction::Inbound,
             Shape::OneShot
         ),
         Dispatch::Wait,
@@ -382,7 +382,7 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
             None,
             &table,
             StreamId(0),
-            Direction::Ingress,
+            Direction::Inbound,
             Shape::OneShot
         ),
         Dispatch::OpenOneShot
@@ -425,7 +425,7 @@ fn a_discarded_frame_changes_no_state() {
             Some(&session),
             &table,
             StreamId(4),
-            Direction::Ingress,
+            Direction::Inbound,
             Shape::Discard
         ),
         Dispatch::Drop
@@ -540,4 +540,83 @@ fn the_session_budget_bounds_the_table() {
 fn a_canary_over_the_table_is_still_balanced_when_nothing_ran() {
     let canary = Canary::new();
     assert_eq!(canary.balanced(), Ok(()));
+}
+
+/// A forged datagram is one datagram: it is discarded, it posts nothing, and the session stands.
+///
+/// The design carves this out explicitly — a decode failure hard-closes on a STREAM transport,
+/// where losing sync makes every later byte suspect, and never on a datagram one, where the next
+/// message is unaffected. The hard-close decision could not see the difference, so the stream arm
+/// fired for datagrams too: anyone able to send one forged packet could drop somebody's session.
+#[test]
+fn a_forged_datagram_is_discarded_and_the_session_stands() {
+    use busbar_contract::Framing;
+    use busbar_kernel::inflight::{hard_closes, HardClose};
+
+    // The same ending, read on each framing.
+    assert_eq!(
+        hard_closes(
+            OriginKind::Client,
+            StepName::Decode,
+            ReasonCode::DecodeFailed,
+            Framing::Stream
+        ),
+        Some(HardClose::DecodeFailedOnStream),
+        "a stream that has lost sync cannot be trusted to resynchronise"
+    );
+    assert_eq!(
+        hard_closes(
+            OriginKind::Client,
+            StepName::Decode,
+            ReasonCode::DecodeFailed,
+            Framing::Datagram
+        ),
+        None,
+        "one unreadable datagram says nothing about the next one"
+    );
+
+    // And the frame itself is dropped without touching the table or the session.
+    let kernel = Kernel::new();
+    let table = InFlight::new(4, 0);
+    let sessions = Sessions::new(4);
+    let session = sessions
+        .open(kernel.session_id(7), Binding::Unbound, 0)
+        .expect("under the budget");
+    let scheduler = Scheduler::default();
+    assert_eq!(
+        scheduler.dispatch(
+            Some(&session),
+            &table,
+            StreamId(1),
+            Direction::Inbound,
+            Shape::Discard
+        ),
+        Dispatch::Drop
+    );
+    assert!(!session.is_closed(), "the session is intact");
+    assert_eq!(table.len(), 0, "and nothing entered the table to be posted");
+}
+
+/// A handoff neither leg declared closes the session it happened on, on either framing.
+///
+/// The variant was declared and nothing produced it, which made it a comment. An upgrade the
+/// adopting layer never declared leaves the session standing on a stack nobody wrote down, and no
+/// later frame makes that true again — so it is a hard close and not a refusal that renders.
+#[test]
+fn a_handoff_mismatch_closes_the_session_on_either_framing() {
+    use busbar_contract::Framing;
+    use busbar_kernel::inflight::{hard_closes, HardClose};
+
+    for framing in [Framing::Stream, Framing::Datagram] {
+        assert_eq!(
+            hard_closes(
+                OriginKind::Client,
+                StepName::Verify,
+                ReasonCode::HandoffMismatch,
+                framing
+            ),
+            Some(HardClose::HandoffMismatch),
+            "the stack the session stands on is not a per-frame question"
+        );
+    }
 }

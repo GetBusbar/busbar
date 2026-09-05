@@ -24,6 +24,13 @@ BIN=crates/busbar/src
 # A third constant for the same reason CORE/BIN are two: the move is a one-variable flip, not N stale
 # paths, and the failure of forgetting is the SILENT one this file exists to make loud.
 SUBSTRATE=crates/busbar-substrate/src
+# The substrate is TWO crates: the value families (proto, ir, breaker, handlers, transport,
+# diagnostics, the pure half of proxy) split into `busbar-substrate-values` so a plane's dependency
+# closure resolves no hyper/reqwest/tokio edge, while the egress engine and the runtime hosts stayed
+# behind. A census row whose symbol moved gains this scope for exactly the reason the row above gains
+# `$SUBSTRATE` — so it FOLLOWS the symbol rather than reading zero, which every ban here treats as a
+# false green.
+SUBSTRATE_VALUES=crates/busbar-substrate-values/src
 # The extracted protocol crates (step 4 of 1.6.0; anthropic was the first, mcp the second, and six
 # more dialects land behind them). They are proto ARMS by definition, so the axis rows scope over
 # them WITH themselves in the allow list — the point of scanning them is that the scan follows the
@@ -1038,7 +1045,7 @@ ${CORE}/admin/v1/json/handlers.rs
 ${CORE}/config/mod.rs
 ${CORE}/config/migrate.rs
 crates/busbar-llm/src/engine/pipeline.rs
-${SUBSTRATE}/diagnostics/mod.rs
+${SUBSTRATE_VALUES}/diagnostics/mod.rs
 crates/busbar-a2a/src/a2a/receive.rs
 crates/busbar-mcp/src/mcp/method.rs
 ${CORE}/admin/v1/service.rs
@@ -1759,7 +1766,7 @@ if [ "$pl" -eq 0 ]; then note "ok (no unledgered cross-plane duplication)"; fi
 # which is the bar the transport row set for itself.
 AXIS_BRANCH=(
   'operation|OPERATION-BRANCH|'"$TREE"'|[Oo]peration(\(\))?[[:space:]]*==>>a comparison against an operation;[Oo]peration(\(\))?[[:space:]]*!=>>a comparison against an operation;match[[:space:]]+[A-Za-z0-9_.:]*[Oo]peration(\(\))?[[:space:]]*\{>>a match on the operation axis;match[[:space:]]+[A-Za-z0-9_.:]*shape\(\)[[:space:]]*\{>>a match on the operation axis'"'"'s shape;matches!\([^)]*OpShape::>>a matches! on an operation shape;if[[:space:]]+let[[:space:]]+[A-Za-z0-9_:]*OpShape::>>an if-let on an operation shape;matches!\([^)]*Operation::>>a matches! on an operation verb|crates/api/src/operation.rs,'"$CORE"'/proto/,'"$CORE"'/handlers/,'"$PROTO_ROOTS"'|put the decision on the OperationHandler vtable, or ask the SHAPE a named question on `OpShape` (as `OpDispatch::wants_stream` asks `may_stream`); never ask an operation its identity in the agnostic core|`Operation` is the vocabulary the plugin ABI carries across a dlopen boundary, so a core that can compare one has learned a protocol'"'"'s method names and the deletion test fails on line one'
-  'transport|TRANSPORT-BRANCH|'"$TREE"'|[Tt]ransport(\(\))?[[:space:]]*==>>a comparison against a transport;[Tt]ransport(\(\))?[[:space:]]*!=>>a comparison against a transport;match[[:space:]]+[A-Za-z0-9_.:]*[Tt]ransport(\(\))?[[:space:]]*\{>>a match on the transport axis;matches!\([^)]*Transport::>>a matches! on a transport variant;if[[:space:]]+let[[:space:]]+[A-Za-z0-9_:]*Transport::>>an if-let on a transport variant|'"$SUBSTRATE"'/transport.rs,'"$CORE"'/proto/,'"$CORE"'/handlers/,'"$PROTO_ROOTS"'|put the decision on the codec/writer vtable and let the framing answer it, or take the branch inside the proto arm that owns the wire; never ask the transport its identity in the agnostic core|the six LLM protocols are six dialects over one transport and A2A is one dialect over three, so a core that can see the transport forks three ways the moment the second one arms'
+  'transport|TRANSPORT-BRANCH|'"$TREE"'|[Tt]ransport(\(\))?[[:space:]]*==>>a comparison against a transport;[Tt]ransport(\(\))?[[:space:]]*!=>>a comparison against a transport;match[[:space:]]+[A-Za-z0-9_.:]*[Tt]ransport(\(\))?[[:space:]]*\{>>a match on the transport axis;matches!\([^)]*Transport::>>a matches! on a transport variant;if[[:space:]]+let[[:space:]]+[A-Za-z0-9_:]*Transport::>>an if-let on a transport variant|'"$SUBSTRATE_VALUES"'/transport.rs,'"$CORE"'/proto/,'"$CORE"'/handlers/,'"$PROTO_ROOTS"'|put the decision on the codec/writer vtable and let the framing answer it, or take the branch inside the proto arm that owns the wire; never ask the transport its identity in the agnostic core|the six LLM protocols are six dialects over one transport and A2A is one dialect over three, so a core that can see the transport forks three ways the moment the second one arms'
 )
 
 # THE EXCEPTION LEDGER. Same two rules as PLANE_LEDGER, for the same reason: a row that no longer

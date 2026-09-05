@@ -79,6 +79,48 @@ impl TurnMeter {
     }
 }
 
+/// Micro-units per nanodollar. The budget projection accounts in MICRO-units (1e-6 USD) while the
+/// metering lease is denominated in NANO-dollars (1e-9 USD), so a remaining budget widens by this
+/// factor on the way into a session's ceiling.
+const NANOS_PER_MICRO: u64 = 1_000;
+
+/// THE SESSION CEILING A PRINCIPAL'S REAL BUDGET IMPOSES — the tightest remaining amount across the
+/// key's whole budget chain (its own bucket plus every ancestor group bucket), widened to nanodollars.
+///
+/// `None` means "no bucket in the chain is capped", which is genuinely uncapped: an unbudgeted key has
+/// no ceiling to hard-close a session against, exactly as an unbudgeted model call has none. A chain
+/// whose tightest bucket is already spent yields `Some(0)` — a refuse-all ceiling the lease denies at
+/// the door, so such a caller never opens a session at all rather than opening one that can spend.
+///
+/// Kept as a free function over the neutral projection so it is testable on its own: the arithmetic
+/// that decides whether a session may open is the part worth pinning, and it needs no host to run.
+#[must_use]
+pub fn cap_nanos_from_buckets(buckets: &[busbar_api::BudgetBucketState]) -> Option<u64> {
+    let tightest = buckets.iter().filter_map(|b| b.remaining_micros).min()?;
+    if tightest <= 0 {
+        // Already spent (or overspent): a refuse-all ceiling, denied at reserve.
+        return Some(0);
+    }
+    // Widen micro-units to nanodollars. Saturating rather than wrapping: an implausibly large budget
+    // clamps to the u64 ceiling instead of rolling over into a tiny one.
+    Some((tightest as u64).saturating_mul(NANOS_PER_MICRO))
+}
+
+/// The live-host form of [`cap_nanos_from_buckets`]: read the presenting key's budget chain off the
+/// host and derive this session's ceiling from it. `None` (uncapped) when there is no presenting key,
+/// when governance is off (there is no grant to read), or when nothing in the chain is capped.
+#[must_use]
+pub fn principal_cap_nanos(
+    host: &Arc<dyn EngineHost>,
+    key: Option<&busbar_api::VirtualKey>,
+    now: u64,
+) -> Option<u64> {
+    let key = key?;
+    let gov = host.governance()?;
+    let cost = host.cost();
+    cap_nanos_from_buckets(&host.budget_state(&gov, &cost, key, now))
+}
+
 /// THE POST-SETTLE STATE the plane reads back to decide whether to hard-close — the mirror of the D2
 /// `CostSettleOut.exhausted` flag plus the `StatusClass::Refused`/`Fault` fail-closed cases folded in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

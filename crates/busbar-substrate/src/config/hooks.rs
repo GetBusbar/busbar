@@ -598,12 +598,18 @@ mod default_on_error_tests {
             on_error_terminal(ON_ERROR_NOTHING),
             on_error_terminal(ON_ERROR_WEIGHTED)
         );
-        assert_eq!(on_error_terminal(ON_ERROR_NOTHING), Some(PolicyOnError::Weighted));
+        assert_eq!(
+            on_error_terminal(ON_ERROR_NOTHING),
+            Some(PolicyOnError::Weighted)
+        );
     }
 
     /// The reserved terminals stay distinct from `nothing`: only `reject` refuses on error.
     #[test]
     fn reject_is_not_the_default_terminal() {
-        assert_ne!(on_error_terminal(ON_ERROR_REJECT), on_error_terminal(ON_ERROR_NOTHING));
+        assert_ne!(
+            on_error_terminal(ON_ERROR_REJECT),
+            on_error_terminal(ON_ERROR_NOTHING)
+        );
     }
 }

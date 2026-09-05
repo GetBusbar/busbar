@@ -5,9 +5,9 @@
 
 use busbar_caps::{KernelSeal, LaneId, ReasonCode, StepName, TrustToken, UnitToken, Verify};
 
-use super::destination_tests::{dest, AllYes};
+use super::destination_tests::AllYes;
 use super::Pools;
-use crate::destination::{DestinationFacts, DestinationKind, OriginKind};
+use crate::destination::{DestinationFacts, OriginKind};
 use crate::unit::{Trust, VerifyRequest};
 
 const UNPRICED: &str = "no configured rate for model 'arbitrary'";
@@ -31,7 +31,7 @@ fn request<'a>(candidates: &'a [DestinationFacts], pool: &'a str) -> VerifyReque
 #[test]
 fn a_permitted_candidate_is_sealed_on_its_lane() {
     let (seal, trust, token) = kernel();
-    let candidates = vec![dest(DestinationKind::Upstream)];
+    let candidates = vec![super::destination_tests::kinds::upstream()];
     let decision = Trust.verify(
         &request(&candidates, "p"),
         &Pools::default(),
@@ -49,7 +49,7 @@ fn a_kind_the_origin_may_not_reach_is_dropped_rather_than_refused() {
     let (seal, trust, token) = kernel();
     // A provider push proposing an administrative verb: the candidate is dropped and the step still
     // proceeds, because an empty set is a legitimate answer here.
-    let candidates = vec![dest(DestinationKind::KernelVerb)];
+    let candidates = vec![super::destination_tests::kinds::kernel_verb()];
     let req = VerifyRequest {
         origin: OriginKind::Provider,
         ..request(&candidates, "p")
@@ -65,8 +65,8 @@ fn a_kind_the_origin_may_not_reach_is_dropped_rather_than_refused() {
 fn a_candidate_failing_its_own_rule_is_dropped() {
     let (seal, trust, token) = kernel();
     let candidates = vec![
-        dest(DestinationKind::Upstream),
-        dest(DestinationKind::NestedPlane),
+        super::destination_tests::kinds::upstream(),
+        super::destination_tests::kinds::nested_plane(),
     ];
     let facts = AllYes {
         nested: false,
@@ -82,13 +82,17 @@ fn a_candidate_failing_its_own_rule_is_dropped() {
         )
         .into_result(&seal)
         .expect("the step proceeds");
-    assert_eq!(sealed.len(), 1, "only the candidate whose rule passed is sealed");
+    assert_eq!(
+        sealed.len(),
+        1,
+        "only the candidate whose rule passed is sealed"
+    );
 }
 
 #[test]
 fn an_all_excluded_pool_still_proceeds_with_an_empty_set() {
     let (seal, trust, token) = kernel();
-    let candidates = vec![dest(DestinationKind::Upstream)];
+    let candidates = vec![super::destination_tests::kinds::upstream()];
     let facts = AllYes {
         allow_listed: false,
         ..AllYes::default()
@@ -109,7 +113,7 @@ fn an_all_excluded_pool_still_proceeds_with_an_empty_set() {
 #[test]
 fn the_pool_allow_list_refuses_at_the_verify_step() {
     let (seal, trust, token) = kernel();
-    let candidates = vec![dest(DestinationKind::Upstream)];
+    let candidates = vec![super::destination_tests::kinds::upstream()];
     let refusal = Trust
         .verify(
             &request(&candidates, "cold"),
@@ -120,7 +124,9 @@ fn the_pool_allow_list_refuses_at_the_verify_step() {
         )
         .into_result(&seal)
         .expect_err("the key may not use this pool");
-    assert_eq!(refusal.reason(), ReasonCode::ScopeDenied);
+    // Its own reason, not a plain scope denial: the ladder answers this before it asks about
+    // pricing at all, and the two carry different statuses on the wire.
+    assert_eq!(refusal.reason(), ReasonCode::PoolNotPermitted);
     assert_eq!(refusal.step(), StepName::Verify);
     assert!(!refusal.under_hold(), "nothing is charged before the door");
 }
@@ -128,7 +134,7 @@ fn the_pool_allow_list_refuses_at_the_verify_step() {
 #[test]
 fn a_reachable_fallback_pool_refuses_the_same_way() {
     let (seal, trust, token) = kernel();
-    let candidates = vec![dest(DestinationKind::Upstream)];
+    let candidates = vec![super::destination_tests::kinds::upstream()];
     let pools = Pools {
         allowed: Some(vec!["a".to_string()]),
         ..Pools::default()
@@ -144,13 +150,13 @@ fn a_reachable_fallback_pool_refuses_the_same_way() {
         )
         .into_result(&seal)
         .expect_err("the fallback pool is not allowed");
-    assert_eq!(refusal.reason(), ReasonCode::ScopeDenied);
+    assert_eq!(refusal.reason(), ReasonCode::PoolNotPermitted);
 }
 
 #[test]
-fn an_unpriced_name_refuses_as_unpriced() {
+fn an_unpriced_name_refuses_for_having_no_rate() {
     let (seal, trust, token) = kernel();
-    let candidates = vec![dest(DestinationKind::Upstream)];
+    let candidates = vec![super::destination_tests::kinds::upstream()];
     let pools = Pools::with_card_missing(&["arbitrary"]);
     let refusal = Trust
         .verify(
@@ -162,5 +168,7 @@ fn an_unpriced_name_refuses_as_unpriced() {
         )
         .into_result(&seal)
         .expect_err("no configured rate");
-    assert_eq!(refusal.reason(), ReasonCode::Unpriced);
+    // Not `Unpriced`, which is a class the present card does not price: nothing is wrong with the
+    // caller's budget here, the name they supplied simply cannot be billed.
+    assert_eq!(refusal.reason(), ReasonCode::NoRate);
 }

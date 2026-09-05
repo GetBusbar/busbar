@@ -682,9 +682,15 @@ fn malformed_floor_reason_says_the_floor_is_malformed() {
 fn embedded_key_mirrors_the_build_env() {
     match option_env!("BUSBAR_RELEASE_PUBKEY") {
         Some(hex) if !hex.trim().is_empty() => {
-            assert!(embedded_release_pubkey().is_some(), "a build with the key set must embed it");
+            assert!(
+                embedded_release_pubkey().is_some(),
+                "a build with the key set must embed it"
+            );
         }
-        _ => assert!(embedded_release_pubkey().is_none(), "a keyless build must embed nothing"),
+        _ => assert!(
+            embedded_release_pubkey().is_none(),
+            "a keyless build must embed nothing"
+        ),
     }
 }
 

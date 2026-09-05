@@ -8,10 +8,15 @@
 //! `busbar-core`'s ten `AdminError` variants map to exactly these frozen `code` strings: `not_found`,
 //! `unauthorized`, `method_not_allowed`, `forbidden`, `invalid_request`, `version_conflict`,
 //! `conflict`, `rate_limited`, `internal`, `unavailable`. The contract crate's `RefusalReason` is a
-//! WIDER closed set (nineteen variants, general to every plane in the design, not admin-specific), so
+//! WIDER closed set (twenty variants, general to every plane in the design, not admin-specific), so
 //! this mapping is necessarily lossy in one direction: several `RefusalReason`s share one code. Each
 //! row below states the reasoning, because a silent many-to-one mapping is exactly the kind of
 //! decision a reviewer needs to be able to check without re-deriving it.
+//!
+//! **The table below is the ratified mapping.** It is not a proposal and not this crate's guess: a
+//! client-rendered reason is an opaque code by design, so the lossiness is inherent rather than a
+//! defect, and this table is where it is decided. A change to a row is a change to what an operator
+//! sees, so it is a change to be argued for here rather than made in passing.
 //!
 //! | `RefusalReason` | `code` | Why |
 //! |---|---|---|
@@ -39,6 +44,10 @@
 //! Where a `RefusalReason` has no crisp admin-error analog, the row above states the closest
 //! reasonable one rather than defaulting silently to `internal`; only `TierMismatch` (a genuine
 //! server-side misconfiguration) uses `internal`.
+//!
+//! Every reason has a row, and the meta-test below walks the closed set to say so: a reason added to
+//! the contract without a row here would otherwise reach an operator as whatever the fallback arm
+//! happened to be.
 
 use busbar_contract::unit::RefusalReason;
 
@@ -165,10 +174,59 @@ mod tests {
             RefusalReason::DurabilityUnavailable,
             RefusalReason::TierMismatch,
         ];
+        // The whole closed set, not a sample of it: `code_for` matches exhaustively, so a reason
+        // added to the contract fails to compile there and this count says the walk saw it too.
+        assert_eq!(
+            all.len(),
+            20,
+            "the contract's reason set changed and this walk did not"
+        );
         for reason in all {
             assert!(
                 FROZEN_CODES.contains(&code_for(reason)),
                 "{reason:?} mapped to a code outside the frozen ten"
+            );
+        }
+    }
+
+    /// Every row of the ratified table is in the module's own documentation.
+    ///
+    /// The mapping is lossy on purpose and the table is where that is decided, so a row that exists
+    /// in code and not in the table is a decision nobody agreed to. Read out of this file's own
+    /// source, because the property is "these two spellings agree".
+    #[test]
+    fn every_ratified_row_is_documented() {
+        let source = include_str!("refusal.rs");
+        let table = source
+            .split("//! | `RefusalReason` | `code` | Why |")
+            .nth(1)
+            .expect("the ratified table is still in the module header");
+        for (reason, code) in [
+            ("InFlightCap", "rate_limited"),
+            ("CursorBudget", "invalid_request"),
+            ("CredentialBudget", "invalid_request"),
+            ("SessionBudget", "unavailable"),
+            ("BodyTooLarge", "invalid_request"),
+            ("OpenSlotBusy", "conflict"),
+            ("SchemeNotDeclared", "unauthorized"),
+            ("CredentialRejected", "unauthorized"),
+            ("SessionUnbound", "unauthorized"),
+            ("Revoked", "forbidden"),
+            ("ScopeMissing", "forbidden"),
+            ("Vetoed", "forbidden"),
+            ("NoDestination", "not_found"),
+            ("OverBudget", "rate_limited"),
+            ("GroupFrozen", "forbidden"),
+            ("Unpriced", "invalid_request"),
+            ("OverdraftCeiling", "rate_limited"),
+            ("StaleSlice", "unavailable"),
+            ("DurabilityUnavailable", "unavailable"),
+            ("TierMismatch", "internal"),
+        ] {
+            let row = format!("| `{reason}` | `{code}` |");
+            assert!(
+                table.contains(&row),
+                "the ratified table has no row reading {row}"
             );
         }
     }

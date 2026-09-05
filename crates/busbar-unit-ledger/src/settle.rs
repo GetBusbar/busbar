@@ -68,6 +68,19 @@ impl Ledger {
         }
     }
 
+    /// Whether this ledger also writes onto the previous release's rows.
+    ///
+    /// Read-only, and here so the composition root can assert at boot that the dual write is on.
+    /// It is a release requirement rather than a deployment choice — the reconciliation identity
+    /// and rollback both depend on it — and the failure mode is silent: a ledger built with
+    /// [`Ledger::new`] where [`Ledger::dual_writing`] was meant keeps its own books correctly and
+    /// leaves the previous release unable to read anything this one wrote. Nothing observable goes
+    /// wrong until somebody tries to roll back.
+    #[must_use]
+    pub fn is_dual_writing(&self) -> bool {
+        self.legacy.is_some()
+    }
+
     /// The books.
     pub fn book(&self) -> &Book {
         &self.book
@@ -111,7 +124,7 @@ impl Ledger {
             // system of record, and failing a settlement because a legacy row would not write would
             // be a behavioural change in the direction nobody wants.
             let _ = rows.write(&LegacyPosting {
-                principal: posted.principal().id().to_string(),
+                principal: posted.principal().as_str().to_string(),
                 bucket: key.bucket.as_str().to_string(),
                 window_start: window,
                 reserved: posted.reserved(),
@@ -201,11 +214,10 @@ impl Ledger {
     /// beside it, so the value is counted once. When the recompute agrees, the caller moves it back
     /// with a negative amount.
     ///
-    /// contract: the architecture names "Σ unreconciled" as one of the sealed figures and as a term
-    /// of the identity, but does not say whether an unreconciled amount is also counted as settled.
-    /// Treating it as a MOVE keeps the identity closed with no special case; treating it as a
-    /// parallel tally would need the identity to subtract it somewhere. The integrator should
-    /// confirm which reading the reporting surfaces expect.
+    /// Decided rule (ARCHITECTURE.md §4.2): "an unreconciled amount is a MOVE out of settled, never
+    /// a parallel tally" — booking it is `unreconciled += A; settled -= A` on the same figure, so
+    /// the identity closes with no special case and nothing is reported as settled that the store
+    /// has not confirmed.
     pub fn record_unreconciled(&mut self, key: &TotalsKey, window: WindowStart, amount: i128) {
         let figures = self.book.entry(key.clone(), window);
         figures.unreconciled += amount;

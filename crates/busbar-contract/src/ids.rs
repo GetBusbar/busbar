@@ -51,6 +51,15 @@ declare_id!(
     "a plane admin verb"
 );
 declare_id!(
+    /// One claim a plane declares, named so policy can be written against it.
+    ///
+    /// The scope step's lookup key is the pair `(claim, operation class)`, so the claim needs a
+    /// name of its own: without one a plane's operations can be declared but never scoped, because
+    /// there is no way to say which of its claims a policy entry is about.
+    ClaimKey,
+    "a declared claim"
+);
+declare_id!(
     /// One class of metered quantity.
     ///
     /// A meter class is the unit of both pricing and capping: the cap-dimension shape below is
@@ -108,6 +117,34 @@ impl fmt::Display for StreamId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct SessionId(pub u64);
 
+/// A unit's node-local identity, minted by the kernel when it builds the unit.
+///
+/// This is the key the in-flight table, the journal and every capability type name a unit by. It
+/// lives here rather than in the capability crate because a unit is the contract's object: the
+/// capability types are keyed on it, they do not own it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+pub struct UnitKey(u64);
+
+impl UnitKey {
+    /// Name a unit.
+    #[must_use]
+    pub const fn new(key: u64) -> Self {
+        Self(key)
+    }
+
+    /// The key as the journal writes it.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for UnitKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unit {}", self.0)
+    }
+}
+
 /// An upstream's index within one session.
 ///
 /// Returned by the session plane when it opens an upstream. The crate-graph section bounds the
@@ -142,16 +179,34 @@ impl fmt::Display for PrincipalId {
     }
 }
 
+/// The value found under a correlation's declared fact key.
+///
+/// Two shapes, because two shapes is what arrives. A protocol whose request identifier is a whole
+/// number carries it as one; a protocol whose identifier is a string carries the string, allocated
+/// in the unit's arena so it lives as long as the unit that correlates on it.
+///
+/// The string arm exists because the alternative is a digest, and a digest of a string into sixty
+/// four bits is a collision waiting for two identifiers of one principal on one session — which is
+/// the pair a correlation is precisely meant to tell apart. Correlation decides which hold a
+/// provider frame accrues into, so a collision there moves money between two units.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum CorrelationValue<'u> {
+    /// A whole number identifier, used as itself.
+    Num(u64),
+    /// A string identifier, borrowed from the unit's arena.
+    Str(&'u str),
+}
+
 /// How a plane ties a response frame back to the request that asked for it.
 ///
 /// A correlation reference is a fact key plus the value found under it. The plane declares the key;
 /// the kernel never invents one and never parses for one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
-pub struct CorrelationRef {
+pub struct CorrelationRef<'u> {
     /// The declared fact key the correlation is carried under.
     pub fact_key: &'static str,
     /// The value found under that key.
-    pub value: u64,
+    pub value: CorrelationValue<'u>,
 }
 
 /// Which side of a meter class's bytes a quantity comes from.
@@ -220,7 +275,7 @@ pub enum BucketScope {
 }
 
 /// One bucket in a principal's chain.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct BucketRef {
     /// The bucket's identity as the refusal text prints it.
     pub id: &'static str,
@@ -261,4 +316,58 @@ pub struct ClassEstimate {
 pub struct Estimate {
     /// One line per class the unit may consume.
     pub per_class: crate::bounded::BoundedVec<ClassEstimate, { crate::bounded::MAX_USAGE_LINES }>,
+}
+
+/// The one place a configured string becomes a declared key.
+///
+/// Every identifier on this surface is a borrowed static string, because the declarations that
+/// carry them are associated constants and a constant cannot own a heap allocation. But lanes,
+/// hosts, dialects and models are CONFIGURED: they are read at boot, and a value read at boot is
+/// not static on its own. Something has to bridge those two facts, and until now nothing named
+/// what — so four planes coped with a const table the composition root was expected to seal
+/// somehow, and one transport leaked a fresh string on every dial, which is a leak per request.
+///
+/// This is that bridge, and it is the composition root's. The root builds one of these at boot,
+/// interns every config-derived open-vocabulary key through it, and hands the resulting static
+/// names to the registrations that declare them. The set is finite because configuration is finite;
+/// it is leaked ONCE because interning is idempotent; and its size is a fixed term of the node's
+/// resident memory rather than a term that grows with traffic. Nothing outside registration may
+/// intern: a key minted per unit would be exactly the leak this replaces.
+#[derive(Debug, Default)]
+pub struct Registration {
+    interned: std::collections::HashSet<&'static str>,
+}
+
+impl Registration {
+    /// A registration with nothing interned yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The static name for one configured key, interned if it is new and reused if it is not.
+    ///
+    /// Idempotent: interning the same value twice yields the same name and leaks once.
+    pub fn key(&mut self, value: &str) -> &'static str {
+        if let Some(existing) = self.interned.get(value) {
+            return existing;
+        }
+        let leaked: &'static str = Box::leak(value.to_owned().into_boxed_str());
+        self.interned.insert(leaked);
+        leaked
+    }
+
+    /// How many distinct keys this registration has interned.
+    ///
+    /// The fixed resident-memory term is counted from here, so it is readable rather than inferred.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.interned.len()
+    }
+
+    /// Whether nothing has been interned.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.interned.is_empty()
+    }
 }

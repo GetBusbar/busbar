@@ -22,7 +22,9 @@
 //! 6. the send;
 //! 7. the plane's response decode, per frame, relayed under the hold.
 
-use busbar_contract::{Conn, Ctx, EgressBody, Frame, Plane, StatusClass, Transport, Unit};
+use busbar_caps::{Route, UnitToken};
+use busbar_contract::{Ctx, EgressBody, Frame, Plane, Transport, Unit};
+use busbar_contract_transport::wire::{Conn, StatusClass};
 use futures::StreamExt;
 
 use crate::ports::{
@@ -42,6 +44,10 @@ use crate::wire::{Delivered, Shed};
 pub struct Hop<'a> {
     /// The breaker unit.
     pub breaker: &'a dyn Breaker,
+    /// The capability token proving the loop is at the route step for this unit right now, lent
+    /// down from [`crate::Egress::route`]'s own `&UnitToken<Route>` and threaded through to every
+    /// [`Breaker::observe`] call this hop makes.
+    pub token: &'a UnitToken<Route>,
     /// The pool's permit store. Held so a failure can drop the permit at the exact point the
     /// previous release dropped it.
     pub capacity: &'a dyn Capacity,
@@ -132,7 +138,7 @@ pub enum AttemptOutcome {
 /// The three ways a send can end, so the cap and the deadline compose without nesting error types.
 enum SendOutcome {
     /// An answer, or a transport failure.
-    Sent(Result<FirstFrame, busbar_contract::TransportError>),
+    Sent(Result<FirstFrame, busbar_contract_transport::wire::TransportError>),
     /// The per-attempt cap fired before any answer arrived.
     AttemptTimeout(u64),
     /// The walk's own deadline expired.
@@ -263,7 +269,7 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
         SendOutcome::Sent(Err(e)) => {
             hop.journal.abandoned(&record);
             drop(permit);
-            let label = if matches!(e, busbar_contract::TransportError::Timeout) {
+            let label = if matches!(e, busbar_contract_transport::wire::TransportError::Timeout) {
                 net::TIMEOUT
             } else {
                 net::CONNECT
@@ -324,24 +330,28 @@ fn assemble(hop: &Hop<'_>, unit: &Unit<'_>, ctx: &Ctx<'_>) -> Result<Wire, Shed>
         .decorate(&mut request)
         .map_err(|_| Shed::internal())?;
 
-    // `// contract:` the byte layout of an envelope belongs to the in-tree transport, which is why
-    // this is the neutral one: every field as `name: value`, a blank line, then the body. What
-    // matters to the design is not the layout but that the cross-check below and the write further
-    // down see the SAME bytes, which they do because there is one buffer.
-    let mut bytes = Vec::new();
-    for (name, value) in &request.fields {
-        bytes.extend_from_slice(name.as_bytes());
-        bytes.extend_from_slice(b": ");
-        bytes.extend_from_slice(value);
-        bytes.push(b'\n');
-    }
+    // The byte layout of an envelope belongs to the transport, and this asks the transport for it.
+    // This unit used to write a neutral one — every field as `name: value`, a blank line, the body
+    // — because it must run the lane cross-check over the same bytes it hands to `write` and had
+    // nothing else to run it over. That made the check honest about ONE buffer and wrong about
+    // which bytes were in it: no wire in the design has ever looked like that.
+    //
+    // The fields are the POST-DECORATION ones, so what the egress-auth unit added and what it
+    // substituted a secret into are in the bytes the cross-check reads.
+    let mut fields: Vec<(&str, &[u8])> = request
+        .fields
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_slice()))
+        .collect();
     if let Some(signature) = &request.body_signature {
-        bytes.extend_from_slice(b"signature: ");
-        bytes.extend_from_slice(signature);
-        bytes.push(b'\n');
+        fields.push(("signature", signature.as_slice()));
     }
-    bytes.push(b'\n');
-    bytes.extend_from_slice(request.body);
+    let bytes = hop
+        .transport
+        .encode_envelope(&fields, request.body, ctx.arena())
+        .map_err(|_| Shed::internal())?
+        .as_slice()
+        .to_vec();
 
     lane_cross_check(hop, &request)?;
     Ok(Wire { bytes })
@@ -412,7 +422,7 @@ async fn send(hop: &Hop<'_>, wire: &Wire, deadline_ms: u64, cap_ms: Option<u64>)
                 frames,
             })),
             Some(Err(e)) => SendOutcome::Sent(Err(e)),
-            None => SendOutcome::Sent(Err(busbar_contract::TransportError::Closed)),
+            None => SendOutcome::Sent(Err(busbar_contract_transport::wire::TransportError::Closed)),
         }
     };
     match race::with_deadline(work, hop.clock.sleep(deadline_ms)).await {
@@ -431,6 +441,7 @@ fn attempt_timeout(hop: &Hop<'_>, _ms: u64, now: u64) -> AttemptOutcome {
         hop.destination,
         Outcome::Transient { retry_after: None },
         now,
+        hop.token,
     );
     if tripped {
         hop.telemetry.breaker_trip(hop.metric_pool, hop.destination);
@@ -456,6 +467,7 @@ fn transport_failure(hop: &Hop<'_>, label: &'static str, now: u64) -> AttemptOut
         hop.destination,
         Outcome::Transient { retry_after: None },
         now,
+        hop.token,
     );
     if tripped {
         hop.telemetry.breaker_trip(hop.metric_pool, hop.destination);
@@ -482,7 +494,9 @@ fn classify_failure(
         outcome,
         label,
     } = hop.breaker.classify(hop.destination, status);
-    let tripped = hop.breaker.observe(hop.pool, hop.destination, outcome, now);
+    let tripped = hop
+        .breaker
+        .observe(hop.pool, hop.destination, outcome, now, hop.token);
     if tripped {
         hop.telemetry.breaker_trip(hop.metric_pool, hop.destination);
     }
@@ -532,8 +546,13 @@ async fn deliver(
     ctx: &Ctx<'_>,
     now: u64,
 ) -> AttemptOutcome {
-    hop.breaker
-        .observe(hop.pool, hop.destination, Outcome::Success, now);
+    hop.breaker.observe(
+        hop.pool,
+        hop.destination,
+        Outcome::Success,
+        now,
+        hop.token,
+    );
     // The request now owns the probe through the outcome it just recorded; from here the answer's
     // own frames are responsible for the cell, so the guard must not also release.
     if let Some(guard) = probe_guard.as_mut() {
@@ -605,7 +624,7 @@ async fn deliver(
     }
 
     hop.transport
-        .close(conn, busbar_contract::CloseReason::Normal);
+        .close(conn, busbar_contract_transport::wire::CloseReason::Normal);
     drop(permit);
 
     if clean {
@@ -620,6 +639,7 @@ async fn deliver(
             hop.destination,
             Outcome::Transient { retry_after: None },
             hop.clock.now_secs(),
+            hop.token,
         );
         if tripped {
             hop.telemetry.breaker_trip(hop.metric_pool, hop.destination);

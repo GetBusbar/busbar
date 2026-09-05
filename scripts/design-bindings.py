@@ -643,7 +643,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
 # A green test that asserts the OPPOSITE of a binding is not a proof; it is a design/code conflict.
 # These are carried on the entry as `note` and never counted as checks.
 NOTES: dict[str, str] = {
-    "PB-7": "CONTRADICTED by a green test: crates/busbar-core/src/tests/tests.rs test_inbound_over_capacity_queues_fifo_and_serves_when_freed asserts an over-cap arrival queues FIFO and is served 200, not the 503 + Retry-After: 1 the binding requires. Owner decision needed: binding or code.",
+    "PB-7": "Resolved 2026-09-05: the shed was restored (a5e337b2); proven by crates/busbar/tests/inbound_concurrency_shed.rs, the admission layer test and the concurrency|inbound-shed|n8 cell.",
     "PB-11": "CONTRADICTED in part by green tests: crates/plugin-loader/src/tests/registry_tests.rs store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4 and supported_abi_store_floor_admits_v2 pin a store window of v2..=v4, where the binding requires v2..=v2 and refuses ABI 3/4. The plugins.load cells prove the trust/skip half only.",
     "PB-84": "OWNER DECISION (1.6.0 rebuild, PR-0): the binding is AMENDED — an auth refusal on a hooked pool DOES fire the completion tap, with the synthetic outcome `rejected_by_auth` and the protocol-native status; hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth pins it and the oracle cell hooks|hooked-pool|unauth records 1.5.5 doing exactly that. Other pre-forward refusals (403/429/413/404) are unchanged.",
     "PB-75": "The mapped goldens pin served == committed today; openapi_doc_is_31_and_v1_prefixed asserts info.version tracks the crate version, which is the opposite of a 1.5.5-verbatim pin. Treat as partial.",
@@ -655,7 +655,6 @@ NOTES: dict[str, str] = {
     "PB-60": "oversized_request_413_is_reshaped_on_the_live_stack documents that the body cap fires before auth buffers the body on the admin leg; the binding says the cap is enforced inside the handler after auth. Worth an owner read; the http.crosscut 413 cells diff the real order against 1.5.5.",
     "PB-58": "OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.",
     "PB-61": "MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.",
-    "PB-71": "The suggested documented-vs-actual cell family requires individually re-verifying all 27 README (:1047-1073) and 29 CHANGELOG (:1087-1115) claims against current behaviour (56 checks), two of which ARCHITECTURE.md already names as CONTRADICTED (:1061, :1099) and pins as code-wins. That corpus does not exist as a cell family or test suite anywhere in the tree today, and authoring one honestly is exactly that 56-claim audit, not a small addition. Left unmapped rather than mapped to a partial or asserted-green stand-in.",
 }
 
 # ── Suggestions for unmapped bindings: what check would prove it ─────────────────────────────────
@@ -732,7 +731,6 @@ SUGGEST: dict[str, str] = {
     "PB-68": "network guard unit tests: denylist precedence, allow_overrides, CIDR rejection, alternate-IPv4 expansion, scheme rule literals",
     "PB-69": "server posture unit test: ALPN http/1.1 only, header_read_timeout 30 s, body read timeout 30 s, handshake timeout 10 s",
     "PB-70": "ops.scrape|metrics cell on a 1.5.5 config diffs the series set; add a unit test that no ledger series is registered without data_dir",
-    "PB-71": "documented-vs-actual cell family (27 README + 29 CHANGELOG claims) with the two contradicted rows pinned as code-wins",
     "PB-72": "lint: every PB row's inventory column resolves to an existing inventory file and anchor (a docs consistency lint, red on a dangling ref)",
     "PB-73": "middleware unit test: Server-Timing on every response when enabled; route headers only with route_policy and a non-default ordering hook",
     "PB-74": "unit test that the reserved-name sets equal their pinned 1.5.5 membership and that no top-level mcp:/a2a:/voice: key is parsed",

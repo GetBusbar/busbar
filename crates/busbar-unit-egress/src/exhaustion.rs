@@ -119,6 +119,7 @@ async fn dispatch_degraded<'a>(
     let outcome = attempt(AttemptInput {
         hop: Hop {
             breaker: request.breaker,
+            token: request.token,
             capacity: request.capacity,
             journal: request.journal,
             egress_auth: request.egress_auth,

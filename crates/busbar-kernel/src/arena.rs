@@ -18,7 +18,7 @@
 
 use busbar_caps::ReasonCode;
 
-use crate::grammar::{MaskKind, Span};
+use crate::grammar::{ArrivalLocation, MaskKind, Span};
 
 /// The per-unit arena, pinned by the design at 4 KiB.
 pub const ARENA_BYTES: usize = 4096;
@@ -231,24 +231,30 @@ impl CredentialSlab {
         })
     }
 
-    /// Mask a span the way the location's form says to.
+    /// Mask a span the way the location says to.
     ///
     /// Per form: a span form is filled to the same length; a client certificate is not in the bytes
     /// at all and nothing is masked; a signature has only its own span masked; a handshake prefix
-    /// is masked up to its bound and the rest of the frame is left alone.
+    /// is masked up to its bound and the rest of the frame is left alone. The location is taken
+    /// whole rather than as its mask kind alone, because the prefix bound is declared on the
+    /// location and reading the two apart is how they come to disagree.
     pub fn mask_as(
         &mut self,
         cursor: &mut [u8],
         span: Span,
-        kind: MaskKind,
+        location: &ArrivalLocation,
     ) -> Result<MaskedSpan, ReasonCode> {
-        match kind {
+        match location.mask() {
             MaskKind::Nothing => Ok(MaskedSpan {
                 offset: self.buf.len(),
                 len: 0,
             }),
-            MaskKind::SameLengthFill | MaskKind::SignatureSpanOnly => self.mask(cursor, span),
-            MaskKind::BoundedPrefix { max_bytes } => {
+            MaskKind::SameLengthFill | MaskKind::SignatureSpan => self.mask(cursor, span),
+            MaskKind::BoundedPrefix => {
+                let max_bytes = match location {
+                    ArrivalLocation::HandshakeFrames { max_bytes, .. } => *max_bytes as usize,
+                    _ => 0,
+                };
                 let bounded = Span::new(span.start, span.end.min(span.start + max_bytes));
                 self.mask(cursor, bounded)
             }

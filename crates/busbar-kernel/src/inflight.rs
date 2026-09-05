@@ -26,8 +26,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_caps::{
-    Hold, HoldCell, OriginKind, Principal, ReasonCode, SessionId, StepName, UnitKey,
+    step::Admit, AdmitToken, Hold, HoldCell, OriginKind, PrincipalId, ReasonCode, SessionId,
+    StepName, UnitKey,
 };
+
+use busbar_contract::Framing;
 
 use crate::pump::{Direction, StreamId};
 use crate::teller::Kernel;
@@ -304,15 +307,26 @@ pub struct CapRefused {
     pub hold: Hold,
 }
 
+/// The door, as the in-flight table asks it for a unit's arrival hold.
+///
+/// The kernel does not open the hold. It lends the door its token for the length of one call —
+/// exactly as the loop does at the admission step — and the door is what calls the constructor.
+/// That is what makes "a hold exists only because the admission unit opened it" true of the arrival
+/// hold as well as of the reservation the door later swaps in; while the table minted its own, that
+/// claim had one place it was not true.
+pub trait ArrivalDoor {
+    /// Open the unit's arrival hold. It reserves nothing, and the door is the only thing that can
+    /// open it.
+    fn arrival_hold(&self, principal: PrincipalId, token: &AdmitToken<Admit>) -> Hold;
+}
+
 /// The in-memory hold a unit carries into the table, before it has reached the door.
 ///
 /// It reserves nothing: a unit that is refused at the gate has spent nothing, and the point of the
 /// arrival hold is that even a refusal is an event with a cell of its own to settle. The door swaps
 /// it for the real reservation, once.
-// contract: the admission unit mints this with its own token at step 0 and hands it over; the
-// table calls through the kernel here while the two crates land side by side.
-pub fn arrival_hold(kernel: &Kernel, principal: Principal) -> Hold {
-    Hold::open(&kernel.admit_token(), principal, 0)
+pub fn arrival_hold(kernel: &Kernel, door: &dyn ArrivalDoor, principal: PrincipalId) -> Hold {
+    door.arrival_hold(principal, &kernel.admit_token())
 }
 
 /// Which step an in-flight-cap refusal is stamped at, by origin.
@@ -505,7 +519,7 @@ pub enum Binding {
 pub struct SessionSlot {
     id: SessionId,
     binding: Binding,
-    principal: Mutex<Option<Principal>>,
+    principal: Mutex<Option<PrincipalId>>,
     open: Mutex<HashMap<(StreamId, Direction), UnitKey>>,
     upstreams: AtomicUsize,
     last_non_tick: AtomicU64,
@@ -524,7 +538,7 @@ impl SessionSlot {
     }
 
     /// The cached principal, on a bound session.
-    pub fn principal(&self) -> Option<Principal> {
+    pub fn principal(&self) -> Option<PrincipalId> {
         self.principal
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -533,7 +547,7 @@ impl SessionSlot {
 
     /// Cache the principal. Only a bound session keeps one; on an unbound session this is a
     /// record of who the last unit was, which is who an accrual between turns is charged to.
-    pub fn remember(&self, principal: Principal) {
+    pub fn remember(&self, principal: PrincipalId) {
         *self.principal.lock().unwrap_or_else(|e| e.into_inner()) = Some(principal);
     }
 
@@ -741,7 +755,18 @@ pub enum HardClose {
 /// The provider case is the one with money in it: content an upstream will invoice arrives on a
 /// session whose budget is dry, so the floor line is posted AND the session is closed, and a dry
 /// bucket therefore sees at most one such push.
-pub fn hard_closes(origin: OriginKind, step: StepName, reason: ReasonCode) -> Option<HardClose> {
+///
+/// The framing is the transport's own declaration and it is load-bearing for exactly one arm. A
+/// stream that could not decode a frame has lost sync and every later byte on it is suspect, so
+/// the session closes; a datagram that could not be decoded is one datagram, and the next is
+/// unaffected — it is discarded and the session stands. Without the framing this function read a
+/// forged packet as a reason to drop a session, which is a denial of service anyone can post.
+pub fn hard_closes(
+    origin: OriginKind,
+    step: StepName,
+    reason: ReasonCode,
+    framing: Framing,
+) -> Option<HardClose> {
     let money_reason = matches!(
         reason,
         ReasonCode::OverBudget
@@ -761,7 +786,12 @@ pub fn hard_closes(origin: OriginKind, step: StepName, reason: ReasonCode) -> Op
         (_, _, ReasonCode::PlanePanic) => Some(HardClose::PlanePanic),
         (_, _, ReasonCode::SessionUnbound) => Some(HardClose::SessionUnbound),
         (_, _, ReasonCode::Revoked) => Some(HardClose::Revoked),
-        (_, StepName::Decode, ReasonCode::DecodeFailed) => Some(HardClose::DecodeFailedOnStream),
+        // The handoff arm. An upgrade neither leg declared leaves a session standing on a stack
+        // nobody wrote down, and there is no later point at which that becomes true again.
+        (_, _, ReasonCode::HandoffMismatch) => Some(HardClose::HandoffMismatch),
+        (_, StepName::Decode, ReasonCode::DecodeFailed) if framing == Framing::Stream => {
+            Some(HardClose::DecodeFailedOnStream)
+        }
         _ => None,
     }
 }

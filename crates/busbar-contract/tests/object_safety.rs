@@ -144,7 +144,7 @@ impl PlaneMeta for FixturePlane {
     const SESSION_FACTS: &'static [&'static str] = &[];
     const CONTENT_FACTS: &'static [&'static str] = &[];
     const RECORD_SCHEMAS: &'static [RecordSchemaId] = &[];
-    const ADMIN_VERBS: &'static [AdminVerbId] = &[];
+    const INTROSPECTION_VERBS: &'static [AdminVerbId] = &[];
     const INTERRUPT_FACT: Option<&'static str> = None;
     const EGRESS_PACING_FACT: Option<&'static str> = None;
     const CONFIG_SCHEMA: &'static str = "{}";
@@ -242,7 +242,7 @@ impl Plane for FixturePlane {
     fn verify<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> DestinationFacts {
         DestinationFacts::Upstream {
             transport: "fixture",
-            host: "example",
+            address: busbar_contract::UpstreamAddress::socket("example"),
             lane: LaneId::new("fixture-lane"),
         }
     }
@@ -273,6 +273,7 @@ impl Plane for FixturePlane {
     fn plane_facts<'u>(
         &self,
         _verb: AdminVerbId,
+        _subject: Option<&'u str>,
         _ctx: &Ctx<'u>,
     ) -> Result<PlaneFacts<'u>, Decode> {
         Ok(PlaneFacts::default())
@@ -321,6 +322,7 @@ impl TransportMeta for FixtureTransport {
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::grammar::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &[];
     const HANDOFF: Option<busbar_contract::wire::Handoff> = None;
+    const FRAMING: busbar_contract::Framing = busbar_contract::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = false;
     const UNIT0_TRIGGER: Option<Unit0Trigger> = Some(Unit0Trigger::FirstBytes);
@@ -377,13 +379,22 @@ impl Transport for FixtureTransport {
         Box::pin(async move { Ok(n) })
     }
 
-    fn upgrade<'a>(
+    fn encode_envelope<'a>(
+        &self,
+        _fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn Arena,
+    ) -> Result<ArenaBytes<'a>, Encode> {
+        arena.alloc_bytes(body).map_err(|_| Encode::ArenaExhausted)
+    }
+
+    fn adopt<'a>(
         &'a self,
+        _from: &'a dyn Transport,
         _conn: Conn,
-        _to: &'a str,
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
-        Box::pin(async { Err(TransportError::Framing) })
+        Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
     fn close(&self, _conn: Conn, _reason: CloseReason) {}
@@ -391,6 +402,7 @@ impl Transport for FixtureTransport {
     fn unit0_refusal<'a>(
         &'a self,
         _conn: Conn,
+        _stream: Option<StreamId>,
         _refusal: &'a Refusal,
         _bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()> {

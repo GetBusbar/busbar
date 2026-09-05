@@ -9,29 +9,23 @@
 //! no protocol meaning — no verbs, no ids, no JSON. That belongs to whichever plane rides this
 //! transport.
 //!
-//! ## The lower-layer boundary (a placeholder — see the crate's own report)
+//! ## The lower layer
 //!
 //! The architecture composes `ws` OVER `http` (itself over `tcp`/`tls`), and states the top
-//! transport in a stack owns claims while lower layers only yield frames. The `tcp`/`tls`/`http`
-//! transport crates are owned by a different agent and are out of reach here (`you may not depend
-//! on them yet`). So this crate defines its own lower-layer boundary as `rw::Rw` (any duplex,
-//! `Unpin + Send` byte stream) and, until the shared transports exist, satisfies it itself: `dial`
-//! resolves the host and opens a raw TCP (optionally TLS) socket directly, and `accept` binds and
-//! accepts raw TCP directly, running `tokio-tungstenite`'s HTTP-upgrade handshake over whichever
-//! socket it produced. Composing over the real `http`/`tls` transport crates, once they exist,
-//! should mean handing this crate their already-established connection instead — the seam is
-//! `rw::Rw` / [`WsTransport::handshake_over`], not a rewrite of the framing below it.
+//! transport in a stack owns claims while lower layers only yield frames. That is literally what
+//! happens here: this crate opens no socket, binds no address and resolves no name. It is built
+//! [`WsTransport::over`] a lower transport, and every byte reaches it as a stream that layer gives
+//! up — an inbound upgrade arrives on `http`, an outbound one is dialled through `tcp` or `tls`.
 //!
-//! Also placeholder: `dial` does its own DNS resolution rather than the resolve-then-pin discipline
-//! the SSRF guard applies elsewhere in the codebase (`busbar_substrate::net_guard`), because that
-//! guard lives in a crate this one may not depend on. A real deployment needs that guard placed in
-//! front of this crate's `dial`, not inside it.
+//! Two things follow from that, and both are the point. The composed chain an arrival reports is
+//! the one it actually stands on, because it is the layer below's chain plus this one. And the
+//! resolve-then-pin network guard sits in front of the dial, in the trust unit, once for the whole
+//! stack — not inside each transport, where a new carrier would have to remember to grow one.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
 mod conn;
-mod rw;
 mod transport;
 
 pub use conn::StaticConfig;

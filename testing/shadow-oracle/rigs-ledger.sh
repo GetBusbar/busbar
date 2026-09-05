@@ -51,7 +51,14 @@
 #   mcp.rig|<scenario>       one row per EXECUTED scenario (the scenario's checks.json), not per check
 #                            — the ship gate needs "did busbar pass this scenario", not a 190-row dump
 #                            of individual assertions. FAIL if any check in the scenario is FAILURE.
-#   a2a.battery|<id>         one row per battery test id (the a2aht `results[].id`).
+#                            ALSO one row per scripts/mcp-subject/h2-*.sh gating scenario (tracker row
+#                            H2's per-Teller-step cells for this plane: authenticate/verify/admit/
+#                            meter/audit/exit — see run_h2_mcp()), ids `mcp.rig|h2-<step>`, folded
+#                            into this SAME namespace rather than a second one.
+#   a2a.battery|<id>         one row per battery test id (the a2aht `results[].id`). ALSO one row per
+#                            scripts/a2a-subject/h2-*.sh gating scenario (tracker row H2's per-Teller-
+#                            step cells for this plane: verify/admit/route/meter/audit/exit — see
+#                            run_h2_a2a()), ids `a2a.battery|h2-<step>`.
 #   a2a.tck|<requirement>    one row per MUST-level requirement in the TCK's own per_requirement map.
 #                            A requirement the suite itself marks NOT TESTED or SKIPPED (both are the
 #                            suite's own limitation, never evidence about busbar), or a FAIL inside the
@@ -305,6 +312,36 @@ PY
   done <<<"$rows"
 }
 
+# ── MCP: H2 gating scenarios (tracker row H2 -- authenticate/verify/admit/meter/audit/exit) ────────
+#
+# THE GAP THIS CLOSES. qa/teller-steps.json's mcp row named six real gaps: no LEDGERED scenario
+# proved the Teller order at those six steps for this plane (the official suite's own scenarios
+# cover decode/route, and only those). scripts/mcp-subject/h2-*.sh are the closing scenarios, one
+# script per step, each booting its own throwaway busbar (mirroring testing/shadow-oracle/scripts/
+# teller-*.sh's isolation for the llm plane) and printing one `PASS\t<detail>` or `FAIL\t<detail>`
+# line. This function runs every h2-*.sh next to h2-lib.sh (h2-lib.sh and h2-mock-upstream.mjs are
+# helpers, not scenarios, and are excluded by name) and folds each into the SAME `mcp.rig|*` id
+# space the official-subject leg above uses, as `mcp.rig|h2-<step>` -- one ledger, one namespace, no
+# second row-id convention for this plane.
+run_h2_mcp() {
+  say ""
+  say "== rig: MCP H2 gating scenarios (tracker row H2; subject = busbar) =="
+  local dir="${repo}/scripts/mcp-subject" f name status detail
+  for f in "$dir"/h2-*.sh; do
+    [ "$(basename "$f")" = "h2-lib.sh" ] && continue
+    name="$(basename "$f" .sh)"
+    detail="$(MCP_SUBJECT_BUSBAR_BIN="$BIN" H2_WORK="${WORK}/mcp-h2-${name}" bash "$f" 2>"${WORK}/mcp-h2-${name}.log")"
+    status="$(printf '%s' "$detail" | cut -f1)"
+    detail="$(printf '%s' "$detail" | cut -f2-)"
+    case "$status" in
+      PASS|FAIL) ;;
+      *) status="FAIL"; detail="scenario produced no PASS/FAIL verdict line -- see ${WORK}/mcp-h2-${name}.log" ;;
+    esac
+    record "mcp.rig|${name}" "$status" "MCP H2 gating: ${name}" "$detail" >/dev/null
+    owed_ids="${owed_ids} mcp.rig|${name}"
+  done
+}
+
 # ── A2A: independent battery, subject leg ────────────────────────────────────────────────────────
 run_a2a_battery() {
   say ""
@@ -354,6 +391,30 @@ PY
         ;;
     esac
   done <<<"$rows"
+}
+
+# ── A2A: H2 gating scenarios (tracker row H2 -- verify/admit/route/meter/audit/exit) ───────────────
+#
+# Same shape as run_h2_mcp() above, for the sibling plane: scripts/a2a-subject/h2-*.sh (h2-lib.sh and
+# h2-mock-agent.mjs are helpers, excluded by name) fold into the SAME `a2a.battery|*` id space the
+# independent-battery leg above uses, as `a2a.battery|h2-<step>`.
+run_h2_a2a() {
+  say ""
+  say "== rig: A2A H2 gating scenarios (tracker row H2; subject = busbar) =="
+  local dir="${repo}/scripts/a2a-subject" f name status detail
+  for f in "$dir"/h2-*.sh; do
+    [ "$(basename "$f")" = "h2-lib.sh" ] && continue
+    name="$(basename "$f" .sh)"
+    detail="$(A2A_SUBJECT_BUSBAR_BIN="$BIN" H2_WORK="${WORK}/a2a-h2-${name}" bash "$f" 2>"${WORK}/a2a-h2-${name}.log")"
+    status="$(printf '%s' "$detail" | cut -f1)"
+    detail="$(printf '%s' "$detail" | cut -f2-)"
+    case "$status" in
+      PASS|FAIL) ;;
+      *) status="FAIL"; detail="scenario produced no PASS/FAIL verdict line -- see ${WORK}/a2a-h2-${name}.log" ;;
+    esac
+    record "a2a.battery|${name}" "$status" "A2A H2 gating: ${name}" "$detail" >/dev/null
+    owed_ids="${owed_ids} a2a.battery|${name}"
+  done
 }
 
 # ── A2A: official TCK, subject leg ───────────────────────────────────────────────────────────────
@@ -482,7 +543,9 @@ PY
 }
 
 run_mcp
+run_h2_mcp
 run_a2a_battery
+run_h2_a2a
 run_a2a_tck
 run_voice
 

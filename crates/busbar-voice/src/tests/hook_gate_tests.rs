@@ -156,7 +156,12 @@ async fn ws_accept_handshake(host: Arc<dyn EngineHost>) -> Result<(), ()> {
             host: s.host,
             slot: s.slot,
         };
-        crate::mount::ws_accept(arrival, Ingress::Telephony).await
+        crate::mount::ws_accept(
+            arrival,
+            Ingress::Telephony,
+            crate::ir::codec::OpenAiRealtimeCodec,
+        )
+        .await
     }
     let app = axum::Router::new()
         .route("/telephony/call-ws", axum::routing::get(route))

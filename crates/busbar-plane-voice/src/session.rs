@@ -4,8 +4,8 @@
 //! holds one half of per connection: one for the client, one more per upstream a session dials. This
 //! module is the concrete type this plane wraps in it.
 
-use busbar_contract::ids::CorrelationRef;
-use busbar_voice::ir::{DecodeState, IrClientEvent, IrServerEvent};
+use busbar_contract::ids::{CorrelationRef, CorrelationValue};
+use busbar_voice::ir::{DecodeState, IrClientEvent};
 
 use crate::claims::Dialect;
 
@@ -13,19 +13,20 @@ use crate::claims::Dialect;
 /// open.
 ///
 /// `decode_ingress`/`encode_ingress_frame` are two separate calls the kernel makes about the SAME
-/// inbound frame — the first says what it means, the second says what to send onward — and
-/// `decode_response`/`encode_response` are the same split on the way back. Both codecs' `read_up`/
-/// `read_down` methods are stateful (they advance the per-session frame sequence and, on the
-/// downlink, the barge-in playback-position counter), so calling them a second time to re-derive
-/// what the first call already decoded would double-count that state. Stashing the already-decoded
-/// event here and consuming it once is what keeps the codec state's counters correct across the
-/// split.
+/// inbound frame — the first says what it means, the second says what to send onward. The codecs'
+/// `read_up` method is stateful (it advances the per-session frame sequence), so calling it a second
+/// time to re-derive what the first call already decoded would double-count that state. Stashing the
+/// already-decoded event here and consuming it once is what keeps the codec state's counters correct
+/// across the split.
+///
+/// There is ONE arm, and there was only ever one reason for a second: the downlink split needed a
+/// stash because a later step could not see what decode had determined. It can now — a unit carries
+/// its draft's facts — and `encode_response` renders the bytes `decode_response` already produced,
+/// so the egress arm existed for a problem that is no longer the shape of the surface.
 #[derive(Debug, Clone)]
 pub enum Pending {
     /// A client→server event decoded at `decode_ingress`, consumed at `encode_ingress_frame`.
     Ingress(IrClientEvent),
-    /// A server→client event decoded at `decode_response`, consumed at `encode_response`.
-    Egress(IrServerEvent),
 }
 
 /// The plane's own bookkeeping for the current, still-open turn.
@@ -62,7 +63,7 @@ pub struct VoiceSessionState {
     /// Whether the current turn is open (a unit has been opened and not yet closed).
     pub turn_open: bool,
     /// The correlation the currently open turn answers frames under, once one has been minted.
-    pub turn_correlation: Option<CorrelationRef>,
+    pub turn_correlation: Option<CorrelationRef<'static>>,
     /// The next turn identity to mint. Monotonic per session; a duplex session opens and closes many
     /// turns in sequence, and each needs a correlation value distinct from the last so a stray late
     /// frame from a just-closed turn cannot be mistaken for one belonging to the next.
@@ -93,12 +94,12 @@ impl VoiceSessionState {
     pub const TURN_FACT_KEY: &'static str = "turn_id";
 
     /// Open a fresh turn, minting the correlation later frames must carry to relay onto it.
-    pub fn open_turn(&mut self) -> CorrelationRef {
+    pub fn open_turn(&mut self) -> CorrelationRef<'static> {
         let id = self.next_turn_id;
         self.next_turn_id += 1;
         let correlation = CorrelationRef {
             fact_key: Self::TURN_FACT_KEY,
-            value: id,
+            value: CorrelationValue::Num(id),
         };
         self.turn_open = true;
         self.turn_correlation = Some(correlation);

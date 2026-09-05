@@ -13,20 +13,28 @@ use tokio::io::AsyncWriteExt;
 
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::unit::Refusal;
-use busbar_contract::wire::{
-    ArrivalRecord, CloseReason, Conn, Direction, Frame, FrameMeta, Listener, ListenerHandle,
-    TransportError, Unit0Trigger,
-};
+use busbar_contract::wire::Frame;
 use busbar_contract::{
-    grammar::SelectorForm, AbiVersion, ArenaBytes, Fut, Kind, Plugin, SlabBytes, StreamId,
-    Transport, TransportConfigView, TransportKeyHandle, TransportMeta,
+    grammar::SelectorForm, ArenaBytes, Fut, Kind, Plugin, SlabBytes, StreamId, Transport,
+    TransportConfigView, TransportKeyHandle, TransportMeta,
 };
+use busbar_contract_transport::wire::ArrivalRecord;
+use busbar_contract_transport::wire::CloseReason;
+use busbar_contract_transport::wire::Conn;
+use busbar_contract_transport::wire::Direction;
+use busbar_contract_transport::wire::FrameMeta;
+use busbar_contract_transport::wire::Listener;
+use busbar_contract_transport::wire::ListenerHandle;
+use busbar_contract_transport::wire::TransportError;
+use busbar_contract_transport::wire::Unit0Trigger;
+use busbar_contract_transport::AbiVersion;
 
 use crate::conn::{ConnState, StdioConnHandle};
 
 /// stdio's own frame stream: bytes split one line at a time, exactly the "duplex framed" shape the
 /// architecture's stdio row names.
-type FrameStream = std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
+type FrameStream =
+    std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
 
 /// Poisons a connection unless disarmed — the "cancel mid-frame" fence. A write that never reaches
 /// its clean-completion disarm, for ANY reason (an I/O error via the early-return `?`, or this
@@ -114,16 +122,27 @@ impl StdioTransport {
         }))
     }
 
-    /// Spawn a child process and wrap its stdin/stdout as a live connection. No shell, an absolute
-    /// path only, and the child's environment is NOT inherited — see the module header on the gap
-    /// between this and a real argv-carrying destination.
-    async fn spawn_child(&self, program: &str) -> Result<Conn, TransportError> {
+    /// Spawn a child process and wrap its stdin/stdout as a live connection.
+    ///
+    /// No shell and an absolute path only. The environment is cleared first and then set from what
+    /// the destination declared, so a child never inherits the node's own credentials by accident:
+    /// an empty declaration is an empty environment, which is the posture to default to.
+    async fn spawn_child(
+        &self,
+        program: &str,
+        args: &[&str],
+        env: &[(&str, &str)],
+    ) -> Result<Conn, TransportError> {
         if !program.starts_with('/') {
             return Err(TransportError::AddressRefused);
         }
         let mut cmd = tokio::process::Command::new(program);
-        cmd.env_clear()
-            .stdin(Stdio::piped())
+        cmd.args(args);
+        cmd.env_clear();
+        for (name, value) in env {
+            cmd.env(name, value);
+        }
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
@@ -148,12 +167,7 @@ impl Plugin for StdioTransport {
         Kind::Transport
     }
     fn abi(&self) -> AbiVersion {
-        // No transport-kind ABI constant is declared anywhere in `busbar-contract` today (only
-        // `STORE_ABI` exists for the store kind). `1` is this crate's own first generation,
-        // recorded here rather than invented per-call; a real ABI constant belongs on
-        // `busbar_contract::transport` if the design wants one, which is an open question this
-        // report flags rather than silently answers.
-        AbiVersion(1)
+        busbar_contract_transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -164,18 +178,20 @@ impl TransportMeta for StdioTransport {
     const SELECTOR_FORMS: &'static [SelectorForm] = &[];
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &[];
-    const HANDOFF: Option<busbar_contract::wire::Handoff> = None;
+    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract_transport::wire::Framing =
+        busbar_contract_transport::wire::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = true;
     const UNIT0_TRIGGER: Option<Unit0Trigger> = Some(Unit0Trigger::FirstMessage);
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract::wire::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
     // No transport-level fact this carrier writes beyond the arrival record itself.
     const TRANSPORT_FACTS: &'static [&'static str] = &[];
     const DECODES_PAYLOAD: bool = false;
     // The transports table names no status leg for stdio; the plane's own `finish` class is the fee's sole
     // source here.
-    const STATUS_CLASS: Option<busbar_contract::wire::StatusAt> = None;
+    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
 }
 
 impl Transport for StdioTransport {
@@ -229,10 +245,12 @@ impl Transport for StdioTransport {
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
-            let DestinationFacts::Upstream { host, .. } = dest.facts() else {
+            let DestinationFacts::Upstream { address, .. } = dest.facts() else {
                 return Err(TransportError::AddressRefused);
             };
-            self.spawn_child(host).await
+            let program = address.program().ok_or(TransportError::AddressRefused)?;
+            self.spawn_child(program, address.args(), address.env())
+                .await
         })
     }
 
@@ -327,7 +345,9 @@ impl Transport for StdioTransport {
             w.write_all(&payload)
                 .await
                 .map_err(|_| TransportError::Reset)?;
-            w.write_all(b"\n").await.map_err(|_| TransportError::Reset)?;
+            w.write_all(b"\n")
+                .await
+                .map_err(|_| TransportError::Reset)?;
             w.flush().await.map_err(|_| TransportError::Reset)?;
             drop(w);
             guard.armed = false;
@@ -335,16 +355,28 @@ impl Transport for StdioTransport {
         })
     }
 
-    fn upgrade<'a>(
+    /// One framed line. stdio has no header surface at all, so an envelope has nothing to write
+    /// here: the frame IS the body, and `write` is what appends the delimiter.
+    fn encode_envelope<'a>(
+        &self,
+        _fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::Arena,
+    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+        arena
+            .alloc_bytes(body)
+            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+    }
+
+    fn adopt<'a>(
         &'a self,
+        _from: &'a dyn Transport,
         _conn: Conn,
-        _to: &'a str,
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
-        // `UPGRADES_TO` is empty: stdio never upgrades in-band. Any call here is a caller bug, and
-        // the closed `TransportError` set has no dedicated "not applicable" code, so this reports
-        // the one that best matches "no such framing exists on this transport".
-        Box::pin(async move { Err(TransportError::Framing) })
+        // stdio composes over nothing, so there is no layer whose stream it could take: a handoff
+        // offered to it is one neither leg declared, which is what the mismatch says.
+        Box::pin(async move { Err(TransportError::HandoffMismatch) })
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {
@@ -361,6 +393,8 @@ impl Transport for StdioTransport {
     fn unit0_refusal<'a>(
         &'a self,
         conn: Conn,
+        // stdio is one channel; the connection is the whole of what can be refused.
+        _stream: Option<StreamId>,
         _refusal: &'a Refusal,
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()> {

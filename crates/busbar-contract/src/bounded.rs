@@ -43,6 +43,13 @@ pub const MAX_LEGS: usize = 8;
 /// The most leg replies one unit may collect.
 pub const MAX_LEG_REPLIES: usize = 2;
 
+/// The most places a plane may say the client's response ceiling could be.
+///
+/// Two, because the case this exists for is one dialect accepting the same ceiling under an older
+/// member name and a newer one. A plane that wanted a third would be describing a dialect nobody
+/// can write a client for.
+pub const MAX_RESPONSE_PTRS: usize = 2;
+
 /// The per-unit arena size in bytes.
 ///
 /// The arena is reset per frame on the relay path of an open unit and at unit end otherwise.
@@ -116,6 +123,12 @@ impl<T, const N: usize> BoundedVec<T, N> {
     /// The items, in insertion order, mutably.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         &mut self.items
+    }
+}
+
+impl<T: serde::Serialize, const N: usize> serde::Serialize for BoundedVec<T, N> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.items.serialize(serializer)
     }
 }
 
@@ -425,27 +438,11 @@ impl<'u> Labels<'u> {
 }
 
 /// A half-open byte range inside a scanned prefix.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
-pub struct Span {
-    /// First byte of the range.
-    pub start: usize,
-    /// One past the last byte of the range.
-    pub end: usize,
-}
-
-impl Span {
-    /// How many bytes the span covers.
-    #[must_use]
-    pub const fn len(&self) -> usize {
-        self.end.saturating_sub(self.start)
-    }
-
-    /// Whether the span covers nothing.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.end <= self.start
-    }
-}
+///
+/// The span grammar's own type, named here rather than declared a second time: a span the plane
+/// resolved and a span the kernel resolved have to be the same value, and two structurally
+/// identical types with one field order between them is exactly how that stops being true.
+pub use busbar_grammar::Span;
 
 /// The kernel's view of a unit's body: the bytes plus the resolved pointer spans.
 ///

@@ -195,8 +195,8 @@ fn voice_egress_auth_headers(
 /// (key, config section, audit kind, wire formats), is INSTALLED at boot behind the `plane-voice`
 /// feature with `build_runtime` wired to the real runtime constructor, and — behind the `runtime`
 /// feature (which `plane-voice` turns on) — MOUNTS its data plane: `build` erases the dispatch slot from
-/// `public_url`, `claims`/`admission` bind the plane's RFC 8707 audience, and `routes` mounts the four
-/// ingress doors (see [`mount`]), and the BOOT hooks `hydrate` / `start` rehydrate the durable session
+/// `public_url`, `claims`/`admission` bind the plane's RFC 8707 audience, and `routes` mounts the five
+/// ingress doors across both dialects (see [`mount`]), and the BOOT hooks `hydrate` / `start` rehydrate the durable session
 /// working-set before the listener and confirm readiness after. What stays `None` is the `ProtocolDecl`
 /// `handler`: a long-lived duplex SESSION is not a one-shot `RequestHandler` (whose `OperationHandler`
 /// cells are request→response codecs), so the session driver lives in the plane's own runtime
@@ -222,9 +222,10 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         audit_kind: "voice_session",
         // TWO dialects ⇒ superset IR, DERIVED from this list's length (see VOICE_WIRE_FORMATS).
         wire_format_names: || VOICE_WIRE_FORMATS,
-        // MOUNTED (behind `runtime`): the plane builds its dispatch slot from `public_url`, claims its
-        // one audience-checked base (`/v1/realtime`), binds that audience, and mounts the four ingress
-        // routes whose handlers open governed sessions through `run_gauntlet_session` (see `crate::mount`).
+        // MOUNTED (behind `runtime`): the plane builds its dispatch slot from `public_url`, claims TWO
+        // audience-checked bases — `/v1/realtime` (OpenAI) and `/v1/realtime/gemini` (Gemini Live) —
+        // under the SAME bound audience, and mounts the five ingress routes across both dialects, whose
+        // handlers open governed sessions through `run_gauntlet_session` (see `crate::mount`).
         // Off-feature these stay empty/`None` (the byte-unchanged default decl). A plane installed at
         // boot is installed under `plane-voice` (⇒ `busbar-voice/runtime`), so it always both mounts and
         // admits — the ratchet's "mounted ⇒ admitted" holds by construction.

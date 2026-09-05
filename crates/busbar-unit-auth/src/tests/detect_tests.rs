@@ -6,7 +6,7 @@
 //! still passed, which is the point of stating them separately.
 
 use super::Headers;
-use crate::detect::{protocol_id, protocol, LADDER};
+use crate::detect::{protocol, protocol_id, LADDER};
 
 /// One row: what arrived, and which dialect the ladder must claim.
 struct Row {

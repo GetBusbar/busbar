@@ -23,21 +23,25 @@
 //! truncated there. A torn tail is normal. A torn record in the MIDDLE is not, and says so.
 
 use busbar_caps::{
-    Canary, Hold, LedgerToken, MeterClassId, Outcome, Posted, Principal, ReasonCode, RecoveryToken,
-    StepName, UnitKey, Usage, UsageLine, UsageToken,
+    Canary, Hold, LedgerToken, MeterClassId, Outcome, Posted, PrincipalId, QuantitySource,
+    ReasonCode, RecoveryToken, StepName, UnitKey, Usage, UsageLine, UsageToken,
 };
 
 use crate::slice::Epoch;
 use crate::teller::{settle_amount, Evidence, Kernel};
 
 /// A hold as the journal wrote it.
-// contract: HoldRecord — the journal entry the write-ahead-log unit appends at the door
+///
+/// This one is the kernel's own and stays here. The journal entry the write-ahead-log unit appends
+/// at the door is that unit's record, not a plugin-visible type, so there is nothing in the
+/// contract crate to name: the shape below is what recovery needs to read back, and the unit that
+/// writes the journal binds to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HoldRecord {
     /// Which unit.
     pub unit: UnitKey,
     /// Whose it was.
-    pub principal: Principal,
+    pub principal: PrincipalId,
     /// What the door reserved.
     pub reserved: u64,
     /// What the last checkpoint recorded as spent.
@@ -81,6 +85,11 @@ pub fn settle(kernel: &Kernel, record: &HoldRecord, canary: &Canary) -> Posted {
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
             quantity: amount,
+            // The sweep never saw a destination report anything: this figure is the accrual the
+            // journal recorded, which is the kernel's own count, and the whole report is an
+            // estimate for the same reason.
+            source: QuantitySource::Count,
+            estimated: true,
         }],
     )
     .expect("one usage line is always within the record's bound");

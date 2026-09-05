@@ -136,6 +136,16 @@ pub const FACT_SOURCE_DIALECT: &str = "source_dialect";
 /// event of a streamed one.
 pub const FACT_FRAME_KIND: &str = "frame_kind";
 
+/// The TRANSPORT fact key carrying how long the upstream took, in milliseconds.
+///
+/// One dialect stamps an elapsed figure into the answer's metrics, and the reference path has one
+/// to stamp because the thing that made the call measured it. A plane cannot measure it: it holds
+/// no connection and reads no clock but the one the context hands it, and a clock reading at encode
+/// time is not an elapsed time. So the figure arrives the way every other thing a plane cannot
+/// observe arrives — as a fact the transport published. With the fact absent the plane stamps
+/// nothing, which is what it did before this key existed.
+pub const TRANSPORT_FACT_ELAPSED_MS: &str = "elapsed_ms";
+
 /// The fact key under which the response side reports the reason the upstream stopped.
 pub const FACT_FINISH_REASON: &str = "finish_reason";
 
@@ -180,7 +190,7 @@ pub const VERB_DIALECTS: AdminVerbId = AdminVerbId::new("dialects");
 pub const VERB_LADDER: AdminVerbId = AdminVerbId::new("ladder");
 
 /// The verbs this plane answers.
-const ADMIN_VERBS: &[AdminVerbId] = &[VERB_DIALECTS, VERB_LADDER];
+const INTROSPECTION_VERBS: &[AdminVerbId] = &[VERB_DIALECTS, VERB_LADDER];
 
 /// The schema of this plane's own configuration block.
 ///
@@ -206,7 +216,7 @@ impl PlaneMeta for LlmPlane {
     // This plane keeps no kernel-held durable records: everything it knows about a unit is on the
     // unit, and the answer to "what happened" is the journal's, not a second store of this plane's.
     const RECORD_SCHEMAS: &'static [RecordSchemaId] = &[];
-    const ADMIN_VERBS: &'static [AdminVerbId] = ADMIN_VERBS;
+    const INTROSPECTION_VERBS: &'static [AdminVerbId] = INTROSPECTION_VERBS;
     // No dialect here has a frame that supersedes the open one, and none paces the write path: a
     // request-and-answer dialect has neither, and declaring one would make the kernel look for a
     // fact that never arrives.

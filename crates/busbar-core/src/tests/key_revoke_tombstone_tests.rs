@@ -44,7 +44,9 @@ async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
     let created: serde_json::Value = create_resp.json().await.unwrap();
     let id = created["id"]
         .as_str()
-        .unwrap_or_else(|| panic!("create key must return an id (status {create_status}): {created}"))
+        .unwrap_or_else(|| {
+            panic!("create key must return an id (status {create_status}): {created}")
+        })
         .to_string();
 
     // DELETE it: the row is tombstoned (still readable by id), not erased.

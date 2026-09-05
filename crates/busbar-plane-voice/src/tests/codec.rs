@@ -335,10 +335,11 @@ fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
     };
     assert_eq!(r.finish, busbar_contract::unit::FinishClass::TurnComplete);
 
-    let body = Facts::new();
-    let _ = body;
-    let unit =
-        crate::tests::harness::unit(busbar_contract::ids::OpClassId::new("duplex_turn"), r.ir);
+    let unit = crate::tests::harness::unit(
+        busbar_contract::ids::OpClassId::new("duplex_turn"),
+        r.ir,
+        Facts::new(),
+    );
     let locators = plane.meter(&unit, &r, &c);
     let classes: Vec<&str> = locators
         .lines

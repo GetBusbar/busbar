@@ -47,7 +47,7 @@ note() { printf '  %s\n' "$*"; }
 hdr()  { printf '\n== %s ==\n' "$*"; }
 
 # The neutral crates (the ABI side) — single edit here if a neutral crate appears/disappears.
-NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/api/src"
+NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/busbar-substrate-values/src crates/api/src"
 
 # The banned voice-transport/media nouns (Plane-4, docs/design/plane4-duplex-session.md §7.2). The
 # lowercase forms drive the WORD rule; the Capitalized forms drive the CamelCase-token rule. Every one

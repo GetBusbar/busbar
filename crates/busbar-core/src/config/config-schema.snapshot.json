@@ -2039,6 +2039,11 @@
       "kind": "struct",
       "transparent": false
     },
+    "SplitDocument": {
+      "deserialize": "manual",
+      "fields": {},
+      "kind": "struct"
+    },
     "StoreCfg": {
       "deny_unknown_fields": true,
       "fields": {
@@ -2316,6 +2321,11 @@
         "module",
         "settings"
       ]
+    },
+    "manual-de SplitDocument": {
+      "fields": {},
+      "kind": "manual",
+      "wire_keys": []
     },
     "manual-de ToolsCfg": {
       "fields": {},

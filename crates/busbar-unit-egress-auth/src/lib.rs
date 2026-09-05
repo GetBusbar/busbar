@@ -149,7 +149,10 @@ pub fn decorate(
                 &amzdate,
                 &datestamp,
             );
-            let credential_scope = format!("{datestamp}/{region}/{service}/{}", sigv4::SIGV4_TERMINATION);
+            let credential_scope = format!(
+                "{datestamp}/{region}/{service}/{}",
+                sigv4::SIGV4_TERMINATION
+            );
             let authorization = format!(
                 "{} Credential={access_key_id}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}",
                 sigv4::SIGV4_ALGORITHM
@@ -177,11 +180,7 @@ pub fn decorate(
 /// `frame`, and returns either another `AuthDecoration::Handshake` (more rounds needed, within the
 /// bounds it already declared) or the terminal `AuthDecoration::Decorate`. The bound stays whatever
 /// the FIRST decoration for this scheme declared — `continue_handshake` never widens it.
-pub fn continue_handshake(
-    token: &EgressAuthToken,
-    _state: &[u8],
-    _frame: &[u8],
-) -> AuthDecoration {
+pub fn continue_handshake(token: &EgressAuthToken, _state: &[u8], _frame: &[u8]) -> AuthDecoration {
     // No shipped scheme reaches this path; refuse to guess at a shape with no real scheme to
     // validate it against, and hand back a zero-budget handshake so a caller that DOES reach here
     // fails closed rather than silently proceeding unauthenticated.
@@ -289,7 +288,10 @@ pub const FORWARDED_CLIENT_HEADERS: &[(&str, &[&str])] = &[
 /// The union of every forwardable client-header name, for a collector that runs before the egress
 /// dialect is known (routing/failover may still pick a different dialect's lane after collection).
 pub fn forwardable_client_header_names() -> Vec<&'static str> {
-    FORWARDED_CLIENT_HEADERS.iter().map(|(name, _)| *name).collect()
+    FORWARDED_CLIENT_HEADERS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect()
 }
 
 /// The client-header names allow-listed for `egress_dialect` — the no-cross-dialect-leak guard

@@ -211,7 +211,10 @@ impl BreakerCell {
     /// Side-effect-free readiness: would this cell admit a request right now, without stealing the
     /// single-flight recovery probe? `Ready` or `ProbeWinnable`; never `Open`/`HalfOpen`.
     pub fn ready(&self, now: u64) -> bool {
-        matches!(self.verdict(now), BreakerVerdict::Ready | BreakerVerdict::ProbeWinnable)
+        matches!(
+            self.verdict(now),
+            BreakerVerdict::Ready | BreakerVerdict::ProbeWinnable
+        )
     }
 
     /// The cell's current [`BreakerState`], for observability.
@@ -549,8 +552,10 @@ impl BreakerCell {
     pub fn hard_down(&self, now_time: u64, hard_down_cooldown_secs: u64) -> bool {
         let _tx = lock_recover(&self.transition_lock);
         let was_closed = self.breaker_state.load(Ordering::Acquire) == ST_CLOSED;
-        self.cooldown_until
-            .store(now_time.saturating_add(hard_down_cooldown_secs), Ordering::Release);
+        self.cooldown_until.store(
+            now_time.saturating_add(hard_down_cooldown_secs),
+            Ordering::Release,
+        );
         self.breaker_state.store(ST_OPEN, Ordering::Release);
         self.probe_in_flight.store(false, Ordering::Release);
         was_closed

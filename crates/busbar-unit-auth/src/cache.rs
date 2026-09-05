@@ -46,11 +46,50 @@ const MAX_ENTRIES: usize = 4096;
 
 /// How a credential is digested for the cache key.
 ///
-/// A function pointer rather than a hash dependency, because this crate deliberately carries none.
-/// The kernel supplies the same digest it uses everywhere else, and the digest's first byte is what
-/// the pass jitter is derived from, so a different digest changes the jitter and nothing else.
+/// A named trait rather than a hash dependency in the default build, because this crate deliberately
+/// carries none: `busbar-unit-auth`'s own `Cargo.toml` states the rule ("WHY IT DEPENDS ON NOTHING
+/// BUT THE CAPABILITY CRATE") and a mandatory `sha2` pull would break it for every caller, including
+/// the ones that never touch this cache. The kernel supplies the same digest it uses everywhere else
+/// — 1.5.5's hex SHA-256, `busbar_api::sha256_hex` — and the digest's first byte is what the pass
+/// jitter is derived from, so a different digest changes the jitter and nothing else.
+///
+/// A production implementation ships in this crate too, but only behind the `sha256` feature (see
+/// [`Sha256Digest`]), which is how the crate stays dependency-free BY DEFAULT while still letting an
+/// integrator who is fine with the extra dependency avoid writing the five lines themselves. This is
+/// the same shape `busbar-unit-audit` uses for its chain digest, minus the default-on part: that
+/// crate's digest is load-bearing for every caller, so it takes `sha2` unconditionally; this one is
+/// not, so the dependency is opt-in.
 // contract: the kernel passes its own hex SHA-256.
-pub type DigestFn = fn(&[u8]) -> String;
+pub trait CredentialDigest: Send + Sync {
+    /// Digest one credential's raw bytes into the cache-key string.
+    fn digest(&self, credential: &[u8]) -> String;
+}
+
+/// A bare `fn(&[u8]) -> String` — a function item, a function pointer, or a capture-free closure —
+/// digests too, so a call site that used to hand `CredentialCache::new` a raw function keeps
+/// compiling unchanged; this is what the crate's own tests use so the fixture needs no boxing.
+impl<F> CredentialDigest for F
+where
+    F: Fn(&[u8]) -> String + Send + Sync,
+{
+    fn digest(&self, credential: &[u8]) -> String {
+        self(credential)
+    }
+}
+
+/// The production digest: 1.5.5's hex SHA-256, `busbar_api::sha256_hex`'s exact algorithm
+/// (lower-case hex of the raw SHA-256 digest bytes). Behind the `sha256` feature only — see
+/// [`CredentialDigest`]'s doc for why the crate does not take this dependency by default.
+#[cfg(feature = "sha256")]
+pub struct Sha256Digest;
+
+#[cfg(feature = "sha256")]
+impl CredentialDigest for Sha256Digest {
+    fn digest(&self, credential: &[u8]) -> String {
+        use sha2::Digest as _;
+        hex::encode(sha2::Sha256::digest(credential))
+    }
+}
 
 /// A verdict the rules allow to be cached. A rejection has no arm here, which is the rule stated as
 /// a type rather than as a comment.
@@ -89,19 +128,19 @@ struct CacheState {
 /// The cache itself.
 pub struct CredentialCache {
     state: Mutex<CacheState>,
-    digest: DigestFn,
+    digest: Box<dyn CredentialDigest>,
 }
 
 impl CredentialCache {
     /// A new, empty cache over the supplied credential digest.
-    pub fn new(digest: DigestFn) -> Self {
+    pub fn new(digest: impl CredentialDigest + 'static) -> Self {
         CredentialCache {
             state: Mutex::new(CacheState {
                 entries: HashMap::new(),
                 seq: 0,
                 flush_gen: 0,
             }),
-            digest,
+            digest: Box::new(digest),
         }
     }
 
@@ -120,7 +159,10 @@ impl CredentialCache {
 
     /// Look up a verdict. An expired row is a miss and is removed on the way past.
     pub fn get(&self, module: &str, credential: &str, now: u64) -> Option<AuthOutcome> {
-        let key = (module.to_string(), (self.digest)(credential.as_bytes()));
+        let key = (
+            module.to_string(),
+            self.digest.digest(credential.as_bytes()),
+        );
         let mut guard = self.lock();
         match guard.entries.get(&key) {
             Some(e) if e.expires_at > now => Some(match &e.verdict {
@@ -144,7 +186,7 @@ impl CredentialCache {
         now: u64,
         generation: CacheGeneration,
     ) {
-        let hash = (self.digest)(credential.as_bytes());
+        let hash = self.digest.digest(credential.as_bytes());
         let (verdict, ttl) = match outcome {
             AuthOutcome::Identify(p) => (
                 CachedVerdict::Identify(p.clone()),

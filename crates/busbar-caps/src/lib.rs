@@ -79,16 +79,16 @@ pub use hold::{
     HoldAccrual, HoldCell, HoldCellState, Posted, PostingFlags,
 };
 pub use step::{
-    Admit, Approve, Arrival, ArrivalFacts, Audit, AuditFacts, Authenticate, Decode, DecodeFacts,
-    Encode, EncodeFacts, LaneId, Meter, MeterClassId, Principal, Route, RouteFacts, ScopeFacts,
-    Step, StepName, UnitKey, Verify,
+    Admit, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Authenticated,
+    Challenge, Decode, Encode, Frame, LaneId, Meter, MeterClassId, OpClassId, PrincipalId, Route,
+    RoutePlan, ScopeFacts, Step, StepName, UnitKey, Verify,
 };
 pub use token::{
     AdminToken, AdmitToken, DurabilityToken, EgressAuthToken, ExitToken, KernelSeal, LedgerToken,
     RecoveryToken, TransportKeyToken, TrustToken, UnitToken, UsageToken,
 };
 pub use unit_end::{Abort, IdempotencyKey, Origin, OriginKind, Outcome, SessionId, UnitEnd};
-pub use usage::{Usage, UsageError, UsageLine, MAX_USAGE_LINES};
+pub use usage::{LocatorPtr, QuantitySource, Usage, UsageError, UsageLine, MAX_USAGE_LINES};
 
 #[cfg(test)]
 #[path = "tests.rs"]

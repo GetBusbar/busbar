@@ -7,19 +7,21 @@
 //! (`SESSION_BOUND = true`): once a TLS handshake completes, the session's principal is cached
 //! rather than re-derived per unit. Key material never lives in this crate's own state as bytes a
 //! caller can read: [`busbar_contract::TransportKeyHandle`] is opaque, so this crate keeps a
-//! slot-keyed registry of already-built `rustls` configs and looks one up by the handle's slot —
-//! the seam a real transport-key unit would populate at `listen`/`dial`/`upgrade`, journaling the
-//! `Access` entry the design requires. Tests populate it directly, which is the ambiguity named in
-//! this crate's own delivery notes: nothing here resolves a `SecretRef` itself.
+//! slot-keyed registry of already-built `rustls` configs and looks one up by the handle's slot. The
+//! transport-key unit is what fills that registry, through
+//! [`busbar_unit_transport_key::TlsConfigSink`], at the moment it resolves the material and writes
+//! the `Access` entry the design requires — so a production listener has a key for the same reason
+//! a test one does, and nothing in this crate ever resolves a `SecretRef` or sees a byte of one.
 //!
 //! ## Composition
 //!
 //! `listen`/`accept`/`dial` bind and connect their own TCP sockets directly (self-contained)
 //! rather than routing every byte through a `TcpTransport` instance, because a session transport
-//! owns its own accept loop. The one place this crate visibly composes over `busbar-transport-tcp`
-//! is the in-band upgrade path: [`upgrade_from_tcp`] takes a `Conn` a `TcpTransport` produced (via its
-//! `take_stream` seam) and turns it into a `tls`-framed one, for the STARTTLS-shaped case the
-//! design's transport table names.
+//! owns its own accept loop. The place this crate composes over `busbar-transport-tcp` is the
+//! in-band upgrade path, and it is a trait method rather than a free function: `tls` ADOPTS a
+//! connection `tcp` gives up, because the connection that comes out belongs to this transport's
+//! registry and only this transport can put it there. The composed chain travels with the handoff,
+//! so an adopted connection reports the stack it actually stands on rather than a guess.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -32,16 +34,27 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::{
-    ArenaBytes, ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Direction, Fut, Frame,
-    FrameMeta, Kind, Listener, ListenerHandle, Plugin, Refusal, SlabBytes, StreamId, Transport,
-    TransportConfigView, TransportError, TransportKeyHandle, TransportMeta,
+    ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
+    TransportConfigView, TransportKeyHandle, TransportMeta,
 };
+use busbar_contract_transport::registry::facts as tfacts;
+use busbar_contract_transport::wire::ArrivalRecord;
+use busbar_contract_transport::wire::CertFacts;
+use busbar_contract_transport::wire::CloseReason;
+use busbar_contract_transport::wire::Conn;
+use busbar_contract_transport::wire::ConnHandle;
+use busbar_contract_transport::wire::Direction;
+use busbar_contract_transport::wire::FrameMeta;
+use busbar_contract_transport::wire::Listener;
+use busbar_contract_transport::wire::ListenerHandle;
+use busbar_contract_transport::wire::TransportError;
 use futures::Stream;
 use rustls_pki_types::ServerName;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
+use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 /// Re-exported so a caller building [`rustls::ServerConfig`]/[`rustls::ClientConfig`] values to
 /// hand to [`TlsTransport::register_server_config`]/`register_client_config` names one crate for
@@ -51,13 +64,24 @@ pub use rustls;
 /// How many bytes one read syscall may fill a frame with.
 pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 
-type ServerStream = tokio_rustls::server::TlsStream<TcpStream>;
-type ClientStream = tokio_rustls::client::TlsStream<TcpStream>;
+/// Any duplex byte stream this transport can run a handshake over: the socket it opened itself, or
+/// the one a lower layer handed up. Boxing it is what lets one connection type cover both, so an
+/// adopted connection is not a second shape with a second set of methods.
+trait Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> Io for T {}
+
+type BoxedIo = Box<dyn Io>;
+type ServerStream = tokio_rustls::server::TlsStream<BoxedIo>;
+type ClientStream = tokio_rustls::client::TlsStream<BoxedIo>;
 
 struct Inner {
     sni: Option<String>,
     alpn: Option<String>,
     peer_cert: Option<CertFacts>,
+    /// The composed stack this connection actually stands on, bottom layer first. A connection this
+    /// transport opened itself stands on its own socket; an adopted one stands on whatever the
+    /// layer below it was already standing on, which is why this is carried rather than assumed.
+    chain: Vec<&'static str>,
     read: AsyncMutex<InnerRead>,
     write: AsyncMutex<InnerWrite>,
 }
@@ -100,7 +124,9 @@ impl ListenerHandle for TlsListenerHandle {
 pub struct TlsTransport {
     next_id: AtomicU64,
     conns: Mutex<HashMap<u64, Arc<Inner>>>,
-    listeners: Mutex<HashMap<String, Arc<TcpListener>>>,
+    /// Keyed by the bound address; the value carries the slot the listener was provisioned with,
+    /// so `accept` uses the same config `listen` validated rather than a fixed slot of its own.
+    listeners: Mutex<HashMap<String, (Arc<TcpListener>, u64)>>,
     server_configs: Mutex<HashMap<u64, Arc<rustls::ServerConfig>>>,
     client_configs: Mutex<HashMap<u64, Arc<rustls::ClientConfig>>>,
 }
@@ -130,22 +156,36 @@ impl TlsTransport {
         }
     }
 
-    /// Register the server-side rustls config a [`TransportKeyHandle`]'s slot resolves to. The
-    /// seam a real transport-key unit populates at `listen`/`upgrade`; tests populate it directly.
+    /// Register the server-side rustls config a [`TransportKeyHandle`]'s slot resolves to.
+    ///
+    /// The transport-key unit is what calls this, through [`busbar_unit_transport_key::TlsConfigSink`],
+    /// at the moment it resolves the material and journals the access. Nothing here reads a secret;
+    /// this end of the seam only ever sees an already-built config and a slot number.
     pub fn register_server_config(&self, slot: u64, cfg: Arc<rustls::ServerConfig>) {
-        self.server_configs.lock().expect("poisoned").insert(slot, cfg);
+        self.server_configs
+            .lock()
+            .expect("poisoned")
+            .insert(slot, cfg);
     }
 
     /// Register the client-side rustls config a [`TransportKeyHandle`]'s slot resolves to.
     pub fn register_client_config(&self, slot: u64, cfg: Arc<rustls::ClientConfig>) {
-        self.client_configs.lock().expect("poisoned").insert(slot, cfg);
+        self.client_configs
+            .lock()
+            .expect("poisoned")
+            .insert(slot, cfg);
     }
 
     fn inner(&self, id: u64) -> Option<Arc<Inner>> {
         self.conns.lock().expect("poisoned").get(&id).cloned()
     }
 
-    fn insert_server(&self, stream: ServerStream, peer: SocketAddr) -> Conn {
+    fn insert_server(
+        &self,
+        stream: ServerStream,
+        peer: SocketAddr,
+        chain: Vec<&'static str>,
+    ) -> Conn {
         let (_, server_conn) = stream.get_ref();
         let alpn = server_conn
             .alpn_protocol()
@@ -164,6 +204,7 @@ impl TlsTransport {
             sni,
             alpn,
             peer_cert,
+            chain,
             read: AsyncMutex::new(InnerRead::Server(read)),
             write: AsyncMutex::new(InnerWrite::Server(write)),
         });
@@ -174,17 +215,33 @@ impl TlsTransport {
         }))
     }
 
-    fn insert_client(&self, stream: ClientStream, peer: SocketAddr) -> Conn {
+    fn insert_client(
+        &self,
+        stream: ClientStream,
+        peer: SocketAddr,
+        chain: Vec<&'static str>,
+    ) -> Conn {
         let (_, client_conn) = stream.get_ref();
         let alpn = client_conn
             .alpn_protocol()
             .map(|p| String::from_utf8_lossy(p).into_owned());
+        // From the dialling side, "peer" certificates are the server's own chain — this is how a
+        // test (or a caller) can confirm which cert a listener actually served, independent of
+        // which slot it was supposed to serve.
+        let peer_cert = client_conn.peer_certificates().and_then(|certs| {
+            certs.first().map(|c| CertFacts {
+                subject: "peer".to_string(),
+                issuer: "peer".to_string(),
+                fingerprint: format!("{:x?}", ring_fingerprint(c.as_ref())),
+            })
+        });
         let (read, write) = tokio::io::split(stream);
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let inner = Arc::new(Inner {
             sni: None,
             alpn,
-            peer_cert: None,
+            peer_cert,
+            chain,
             read: AsyncMutex::new(InnerRead::Client(read)),
             write: AsyncMutex::new(InnerWrite::Client(write)),
         });
@@ -214,6 +271,16 @@ impl TlsTransport {
 /// A stand-in fingerprint: the SHA-256 of the DER bytes, formatted for [`CertFacts`]. Not a trust
 /// decision — the trust decision already happened inside the rustls handshake; this is evidence
 /// carried alongside it.
+impl busbar_unit_transport_key::TlsConfigSink for TlsTransport {
+    fn register_server_config(&self, slot: u64, cfg: Arc<rustls::ServerConfig>) {
+        TlsTransport::register_server_config(self, slot, cfg);
+    }
+
+    fn register_client_config(&self, slot: u64, cfg: Arc<rustls::ClientConfig>) {
+        TlsTransport::register_client_config(self, slot, cfg);
+    }
+}
+
 fn ring_fingerprint(der: &[u8]) -> Vec<u8> {
     use ring::digest;
     digest::digest(&digest::SHA256, der).as_ref().to_vec()
@@ -226,8 +293,8 @@ impl Plugin for TlsTransport {
     fn kind(&self) -> Kind {
         Kind::Transport
     }
-    fn abi(&self) -> busbar_contract::AbiVersion {
-        busbar_contract::AbiVersion(1)
+    fn abi(&self) -> busbar_contract_transport::AbiVersion {
+        busbar_contract_transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -240,16 +307,18 @@ impl TransportMeta for TlsTransport {
     ];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &["tcp"];
-    const HANDOFF: Option<busbar_contract::Handoff> = None;
+    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract_transport::wire::Framing =
+        busbar_contract_transport::wire::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = true;
-    const UNIT0_TRIGGER: Option<busbar_contract::Unit0Trigger> =
-        Some(busbar_contract::Unit0Trigger::FirstBytes);
+    const UNIT0_TRIGGER: Option<busbar_contract_transport::wire::Unit0Trigger> =
+        Some(busbar_contract_transport::wire::Unit0Trigger::FirstBytes);
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract::HandshakeTrigger> = None;
-    const TRANSPORT_FACTS: &'static [&'static str] = &["tls_sni", "tls_alpn", "tls_peer_cert"];
+    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::SNI, tfacts::ALPN, tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;
-    const STATUS_CLASS: Option<busbar_contract::StatusAt> = None;
+    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
 }
 
 impl Transport for TlsTransport {
@@ -261,7 +330,9 @@ impl Transport for TlsTransport {
             alpn: inner.as_ref().and_then(|i| i.alpn.clone()),
             sni: inner.as_ref().and_then(|i| i.sni.clone()),
             peer_cert: inner.as_ref().and_then(|i| i.peer_cert.clone()),
-            transport_chain: vec!["tcp", "tls"],
+            transport_chain: inner
+                .as_ref()
+                .map_or_else(|| vec!["tcp", "tls"], |i| i.chain.clone()),
         }
     }
 
@@ -289,8 +360,8 @@ impl Transport for TlsTransport {
             self.listeners
                 .lock()
                 .expect("poisoned")
-                .insert(addr.clone(), Arc::new(listener));
-            let _ = server_cfg; // resolved once here; consumed again per-accept from the same slot
+                .insert(addr.clone(), (Arc::new(listener), keys.slot()));
+            let _ = server_cfg; // resolved once here to fail fast; re-resolved per-accept by slot
             Ok(Listener::new(Arc::new(TlsListenerHandle { addr })))
         })
     }
@@ -298,32 +369,36 @@ impl Transport for TlsTransport {
     fn accept<'a>(&'a self, l: &'a Listener) -> Fut<'a, Conn> {
         Box::pin(async move {
             let addr = l.local_addr();
-            let listener = self
+            let (listener, slot) = self
                 .listeners
                 .lock()
                 .expect("poisoned")
                 .get(&addr)
                 .cloned()
                 .ok_or(TransportError::Closed)?;
-            let (stream, peer) = listener.accept().await.map_err(|_| TransportError::Closed)?;
+            let (stream, peer) = listener
+                .accept()
+                .await
+                .map_err(|_| TransportError::Closed)?;
             stream.set_nodelay(true).ok();
-            // Every accepted connection on this listener uses the config registered for slot 0 —
-            // the listener has no per-connection SNI to route on before the handshake completes,
-            // so `listen`'s own slot is the one config an accept loop can use. A deployment that
-            // needs SNI-routed certs resolves that at the transport-key unit, not here.
+            // Every accepted connection on this listener uses the config registered for the slot
+            // this listener was provisioned with in `listen` — not a fixed slot of accept's own —
+            // because the listener has no per-connection SNI to route on before the handshake
+            // completes. A deployment that needs SNI-routed certs resolves that at the
+            // transport-key unit, not here.
             let cfg = self
                 .server_configs
                 .lock()
                 .expect("poisoned")
-                .get(&0)
+                .get(&slot)
                 .cloned()
                 .ok_or(TransportError::KeyUnavailable)?;
             let acceptor = TlsAcceptor::from(cfg);
             let tls_stream = acceptor
-                .accept(stream)
+                .accept(Box::new(stream) as BoxedIo)
                 .await
                 .map_err(|_| TransportError::HandshakeFailed)?;
-            Ok(self.insert_server(tls_stream, peer))
+            Ok(self.insert_server(tls_stream, peer, vec!["tcp", "tls"]))
         })
     }
 
@@ -333,11 +408,11 @@ impl Transport for TlsTransport {
         keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
-            let host = match dest.facts() {
-                busbar_contract::DestinationFacts::Upstream { host, .. } => host,
+            let address = match dest.facts() {
+                busbar_contract::DestinationFacts::Upstream { address, .. } => address,
                 _ => return Err(TransportError::AddressRefused),
             };
-            let (name, addr) = split_host(host)?;
+            let (name, addr) = split_address(&address)?;
             let cfg = self
                 .client_configs
                 .lock()
@@ -354,10 +429,10 @@ impl Transport for TlsTransport {
                 .map_err(|_| TransportError::AddressRefused)?
                 .to_owned();
             let tls_stream = connector
-                .connect(server_name, stream)
+                .connect(server_name, Box::new(stream) as BoxedIo)
                 .await
                 .map_err(|_| TransportError::HandshakeFailed)?;
-            Ok(self.insert_client(tls_stream, addr))
+            Ok(self.insert_client(tls_stream, addr, vec!["tcp", "tls"]))
         })
     }
 
@@ -411,11 +486,15 @@ impl Transport for TlsTransport {
             let mut guard = inner.write.lock().await;
             match &mut *guard {
                 InnerWrite::Server(w) => {
-                    w.write_all(bytes.as_slice()).await.map_err(|e| Self::map_io_err(&e))?;
+                    w.write_all(bytes.as_slice())
+                        .await
+                        .map_err(|e| Self::map_io_err(&e))?;
                     w.flush().await.map_err(|e| Self::map_io_err(&e))?;
                 }
                 InnerWrite::Client(w) => {
-                    w.write_all(bytes.as_slice()).await.map_err(|e| Self::map_io_err(&e))?;
+                    w.write_all(bytes.as_slice())
+                        .await
+                        .map_err(|e| Self::map_io_err(&e))?;
                     w.flush().await.map_err(|e| Self::map_io_err(&e))?;
                 }
             }
@@ -423,18 +502,76 @@ impl Transport for TlsTransport {
         })
     }
 
-    fn upgrade<'a>(
+    /// A byte stream carries no envelope of its own: the bytes are the body, and a field written
+    /// beside them would be bytes the peer never asked for. A transport that named one anyway would
+    /// be inventing a framing this wire does not have.
+    fn encode_envelope<'a>(
+        &self,
+        _fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::Arena,
+    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+        arena
+            .alloc_bytes(body)
+            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+    }
+
+    /// The in-band upgrade, from this side: the STARTTLS-shaped handoff the transports table names.
+    ///
+    /// `tcp` gives up its stream and `tls` takes it, and the connection that comes out is one this
+    /// transport's own registry holds — which is precisely what the source could never have
+    /// returned. The facts of the new layer are derived from the completed handshake and nothing
+    /// is carried over from the layer below: after this returns, the source knows nothing about the
+    /// connection and this transport knows everything.
+    fn adopt<'a>(
         &'a self,
+        from: &'a dyn Transport,
         conn: Conn,
-        _to: &'a str,
-        _keys: &'a TransportKeyHandle,
+        keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
-        // `tls` upgrades to nothing (`UPGRADES_TO` is empty): the in-band STARTTLS case is served
-        // by `upgrade_from_tcp` below, which is not a trait method because it crosses transport
-        // crates in the other direction (it consumes a `tcp`-owned `Conn`, which this trait
-        // method's shape has no way to express — see this crate's delivery notes).
-        let _ = conn;
-        Box::pin(async move { Err(TransportError::Framing) })
+        Box::pin(async move {
+            if !Self::COMPOSES_OVER.contains(&from.key()) {
+                return Err(TransportError::HandoffMismatch);
+            }
+            let mut chain = from.arrival(&conn).transport_chain;
+            let raw = from.detach(&conn).ok_or(TransportError::HandoffMismatch)?;
+            chain.push(Self::KEY);
+            let peer: SocketAddr = raw
+                .peer()
+                .parse()
+                .map_err(|_| TransportError::HandoffMismatch)?;
+            let stream: BoxedIo = Box::new(FuturesAsyncReadCompatExt::compat(raw.into_io()));
+            let cfg = self
+                .server_configs
+                .lock()
+                .expect("poisoned")
+                .get(&keys.slot())
+                .cloned()
+                .ok_or(TransportError::KeyUnavailable)?;
+            let tls_stream = TlsAcceptor::from(cfg)
+                .accept(stream)
+                .await
+                .map_err(|_| TransportError::HandshakeFailed)?;
+            Ok(self.insert_server(tls_stream, peer, chain))
+        })
+    }
+
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+        let inner = self.conns.lock().expect("poisoned").remove(&conn.id())?;
+        let peer = conn.peer();
+        let inner = Arc::try_unwrap(inner).ok()?;
+        let stream: BoxedIo = match (inner.read.into_inner(), inner.write.into_inner()) {
+            (InnerRead::Server(r), InnerWrite::Server(w)) => Box::new(r.unsplit(w)),
+            (InnerRead::Client(r), InnerWrite::Client(w)) => Box::new(r.unsplit(w)),
+            // The halves of one connection are always the same side; a mismatch would mean the
+            // registry had been torn, and there is no stream to hand up in that case.
+            _ => return None,
+        };
+        Some(busbar_contract_transport::wire::RawStream::new(
+            Self::KEY,
+            peer,
+            Box::new(TokioAsyncReadCompatExt::compat(stream)),
+        ))
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {
@@ -444,6 +581,8 @@ impl Transport for TlsTransport {
     fn unit0_refusal<'a>(
         &'a self,
         conn: Conn,
+        // `tls` inherits `tcp`'s single stream; the connection is the whole of what can be refused.
+        _stream: Option<StreamId>,
         _refusal: &'a Refusal,
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()> {
@@ -463,44 +602,35 @@ impl Transport for TlsTransport {
     }
 }
 
-fn split_host(host: &str) -> Result<(&'static str, SocketAddr), TransportError> {
-    let addr: SocketAddr = host.parse().map_err(|_| TransportError::AddressRefused)?;
-    // No separate hostname is carried by `DestinationFacts::Upstream` beyond `host` (an already
-    // "host:port" string), so the connect address's own IP is offered as the SNI name — accurate
-    // for an IP-addressed upstream, and named here as the ambiguity this crate cannot resolve on
-    // its own: a real deployment names a DNS hostname in its lane config, resolves it upstream of
-    // this transport (the resolve-then-pin guard the rest of the tree already uses), and would
-    // need `DestinationFacts` to carry that hostname alongside the pinned address for SNI to be
-    // the name a certificate was actually issued for rather than the address it resolved to.
-    let name: &'static str = Box::leak(addr.ip().to_string().into_boxed_str());
-    Ok((name, addr))
-}
-
-/// Turn a raw stream a lower transport handed off (a `tcp`-produced [`Conn`], detached via
-/// [`busbar_transport_tcp::TcpTransport::take_stream`]) into a `tls`-framed one — the in-band
-/// upgrade path (STARTTLS-shaped). Not a trait method: [`Transport::upgrade`]'s signature takes a
-/// same-transport `Conn` it can look up in its own registry, and a cross-crate handoff needs the
-/// caller to have already detached the raw stream, which only the source transport can do.
-pub async fn upgrade_from_tcp(
-    tls: &TlsTransport,
-    tcp: &busbar_transport_tcp::TcpTransport,
-    conn: Conn,
-    keys: &TransportKeyHandle,
-) -> Result<Conn, TransportError> {
-    let (stream, peer) = tcp.take_stream(&conn).ok_or(TransportError::Closed)?;
-    let cfg = tls
-        .server_configs
-        .lock()
-        .expect("poisoned")
-        .get(&keys.slot())
-        .cloned()
-        .ok_or(TransportError::KeyUnavailable)?;
-    let acceptor = TlsAcceptor::from(cfg);
-    let tls_stream = acceptor
-        .accept(stream)
-        .await
-        .map_err(|_| TransportError::HandshakeFailed)?;
-    Ok(tls.insert_server(tls_stream, peer))
+/// The pinned socket to connect to, and the name to offer as SNI.
+///
+/// The destination carries both: the address the trust unit pinned, and — separately — the name a
+/// deployment says a certificate was issued for. Where a name is declared, that is what is offered,
+/// so a certificate issued for a DNS name matches. Where none is declared the address itself stands
+/// in, which is only ever right for an IP-addressed upstream, and there is nothing else honest to
+/// offer. Nothing is leaked per dial: both halves are already `'static`, which is what the closed
+/// address shape bought.
+fn split_address(
+    address: &busbar_contract_transport::dest::UpstreamAddress,
+) -> Result<(&'static str, SocketAddr), TransportError> {
+    let authority = address.authority().ok_or(TransportError::AddressRefused)?;
+    let addr: SocketAddr = authority
+        .parse()
+        .map_err(|_| TransportError::AddressRefused)?;
+    match address.sni() {
+        Some(name) => Ok((name, addr)),
+        None if addr.is_ipv4() || addr.is_ipv6() => {
+            // No name declared: the literal the authority already spells, without its port, is the
+            // only name this transport can offer without inventing one.
+            let host_part = authority
+                .rsplit_once(':')
+                .map_or(authority, |(h, _)| h)
+                .trim_start_matches('[')
+                .trim_end_matches(']');
+            Ok((host_part, addr))
+        }
+        None => Err(TransportError::AddressRefused),
+    }
 }
 
 #[cfg(test)]

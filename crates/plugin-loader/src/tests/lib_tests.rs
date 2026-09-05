@@ -1838,6 +1838,12 @@ fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
 /// chooses the exact `(status, body)` an old plugin would have returned. Mirrors
 /// [`dyn_store_with_fake_call`], which is pinned to the sibling sqlite fixture.
 fn dyn_example_store_with_fake_call() -> Option<DynStore> {
+    dyn_example_store_with_fake_call_at_abi(busbar_plugin::cold::ABI_VERSION)
+}
+
+/// [`dyn_example_store_with_fake_call`] bound to a chosen payload schema, so a test can hold the
+/// PUBLISHED one (v2) rather than the schema this binary was built against.
+fn dyn_example_store_with_fake_call_at_abi(abi_version: u32) -> Option<DynStore> {
     let path = store_example_plugin_path()?;
     let bytes = std::fs::read(&path).expect("read the in-tree store example plugin cdylib");
     let (lib, staged) = stage::load_library_from_bytes(&bytes, "fake-call-example")
@@ -1853,7 +1859,7 @@ fn dyn_example_store_with_fake_call() -> Option<DynStore> {
     .expect("wire up raw");
     raw.call = fake_call;
     raw.free = fake_free;
-    Some(DynStore::new(raw, busbar_plugin::cold::ABI_VERSION))
+    Some(DynStore::new(raw, abi_version))
 }
 
 /// Run `op` against a store whose seam returns `(status, body)`, once per shape.
@@ -2102,3 +2108,5 @@ mod abi2_store_ops_tests;
 mod legacy_default_tests;
 #[path = "legacy_usage_tests.rs"]
 mod legacy_usage_tests;
+#[path = "store_adapter_tests.rs"]
+mod store_adapter_tests;

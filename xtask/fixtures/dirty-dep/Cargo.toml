@@ -1,0 +1,12 @@
+# A synthetic pure crate that depends directly on `libc` — one of ARCHITECTURE.md section 1.2's
+# named banned crates — for `cargo xtask denylist --selftest` to prove RED against.
+[workspace]
+
+[package]
+name = "xtask-fixture-dirty-dep"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+libc = "0.2"

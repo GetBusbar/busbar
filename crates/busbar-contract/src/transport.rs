@@ -29,6 +29,16 @@ pub type Fut<'a, T> = Pin<Box<dyn Future<Output = Result<T, TransportError>> + S
 pub type FrameStream =
     Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
 
+/// The transport kind's ABI generation, the fact keys the kernel reserves, and the boot check over
+/// a composed stack.
+///
+/// All three moved into the transport contract, where a transport author reads them and a plane
+/// author does not; they are named here so that `busbar_contract::transport` still means what it
+/// meant to the composition root that wires the registry.
+pub use busbar_contract_transport::registry::{
+    check_composition, facts, CompositionError, Registered, TRANSPORT_ABI,
+};
+
 /// Everything a transport declares about itself.
 pub trait TransportMeta {
     /// The transport's registry key.
@@ -41,6 +51,11 @@ pub trait TransportMeta {
     const COMPOSES_OVER: &'static [&'static str];
     /// The signalling-to-session binding this transport declares, where it has one.
     const HANDOFF: Option<Handoff>;
+    /// How this transport delimits what arrives.
+    ///
+    /// The kernel reads it to decide what a decode failure means: a stream that has lost sync
+    /// closes, a datagram that could not be read is discarded and the session stands.
+    const FRAMING: crate::wire::Framing;
     /// Whether this transport carries sessions.
     const SESSION: bool;
     /// Whether a session on this transport caches its principal.
@@ -108,13 +123,71 @@ pub trait Transport: Plugin + Send + Sync + 'static {
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, usize>;
 
-    /// Upgrade a connection in-band to another transport.
-    fn upgrade<'a>(
+    /// Render an outbound envelope and body as this transport's own wire bytes.
+    ///
+    /// The byte layout of an envelope belongs to the transport, and only to the transport: an
+    /// `http` request line and folded headers, a gRPC length-prefixed message, a WebSocket payload
+    /// are three different objects that no neutral layout describes. The egress unit used to write
+    /// one anyway — `name: value`, a blank line, the body — because it must run the lane
+    /// cross-check over the same bytes it hands to `write`, and had nothing else to run it over.
+    /// That made the check honest about ONE buffer and wrong about which bytes were in it.
+    ///
+    /// The fields arrive POST-DECORATION: what the egress-auth unit added, and what it substituted
+    /// a secret into, are already here. The bytes that come back are the bytes the cross-check
+    /// reads and the bytes `write` is given, which is what the design means by the envelope still
+    /// equalling the verified destination after decoration.
+    ///
+    /// Into the arena, because the hot path allocates nowhere else.
+    ///
+    /// # Errors
+    ///
+    /// The arena had no room, or the envelope names something this transport cannot express.
+    fn encode_envelope<'a>(
+        &self,
+        fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn crate::bounded::Arena,
+    ) -> Result<crate::bounded::ArenaBytes<'a>, crate::wire::Encode>;
+
+    /// Adopt a connection a lower layer is handing up, becoming the new top of the stack.
+    ///
+    /// The upgrade belongs to the TARGET, not the source. The connection that comes out belongs to
+    /// this transport's registry, and only this transport can put it there — which is why the
+    /// source could never express the upgrade as a method of its own: it would have had to return a
+    /// handle it has no way to build. Here the target asks the source for its stream through
+    /// [`Transport::detach`], and what it gets back is a stream the source has already given up.
+    ///
+    /// A source this transport does not compose over is refused with
+    /// [`TransportError::HandoffMismatch`], and so is a stream that is not the shape this layer can
+    /// adopt: an upgrade neither leg declared is not one the session may continue on.
+    fn adopt<'a>(
         &'a self,
+        from: &'a dyn Transport,
         conn: Conn,
-        to: &'a str,
         keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn>;
+
+    /// Give up the byte stream under a connection, for the layer adopting it.
+    ///
+    /// Removes the connection from this transport's own registry, so it is never read from or
+    /// written to here again. `None` when the connection is unknown, when a reader still holds it
+    /// (an upgrade never races an in-flight read, by the at-most-one-upgrade-in-flight rule; a
+    /// caller that violates that ordering sees `None` rather than a torn stream), or when this
+    /// transport has no raw stream to give — the default, because most layers are the bottom one or
+    /// hand nothing up.
+    fn detach(&self, conn: &Conn) -> Option<crate::wire::RawStream> {
+        let _ = conn;
+        None
+    }
+
+    /// The layer this instance was actually built over, where it was built over one.
+    ///
+    /// What the registry's boot check compares against `COMPOSES_OVER`. A transport that opens its
+    /// own socket answers `None` and is checked only on what it declares; a composed one names the
+    /// layer under it, and a name that is not in its declaration refuses the boot.
+    fn composed_over(&self) -> Option<&'static str> {
+        None
+    }
 
     /// Close a connection.
     fn close(&self, conn: Conn, reason: CloseReason);
@@ -123,9 +196,15 @@ pub trait Transport: Plugin + Send + Sync + 'static {
     ///
     /// This is the pre-decode path: no plane is known yet, so the kernel renders the refusal
     /// through the transport's own generic envelope rather than through a dialect.
+    ///
+    /// `stream` names how much of the connection the refusal is about. On a transport whose first
+    /// unit opens per stream, a refusal is one stream's — the other streams on that connection
+    /// belong to other units, which have done nothing wrong and must go on to complete. `None` is
+    /// the whole connection, which is the only honest reading on a transport that carries one.
     fn unit0_refusal<'a>(
         &'a self,
         conn: Conn,
+        stream: Option<StreamId>,
         refusal: &'a Refusal,
         bytes: ArenaBytes<'a>,
     ) -> Fut<'a, ()>;

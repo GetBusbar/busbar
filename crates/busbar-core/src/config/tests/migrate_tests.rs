@@ -293,7 +293,8 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
     // ROUND-TRIP: the migrated document deserializes into the 1.5.0 DeployCfg (boot-parses) and
     // trips NO legacy marker.
     assert!(detect_legacy_markers(&doc).is_empty());
-    let deploy: Result<crate::config::DeployCfg, _> = serde_yaml::from_str(&out.yaml);
+    let deploy: Result<crate::config::DeployCfg, _> =
+        crate::config::deploy_from_yaml_str(&out.yaml);
     assert!(
         deploy.is_ok(),
         "migrated config must boot-parse: {:?}",
@@ -396,9 +397,9 @@ pools:
     );
     // THE round-trip: the migrated config boot-parses (the user's failure is gone).
     assert!(
-        serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).is_ok(),
+        crate::config::deploy_from_yaml_str(&out.yaml).is_ok(),
         "on_exhausted-bearing config must boot-parse: {:?}",
-        serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).err()
+        crate::config::deploy_from_yaml_str(&out.yaml).err()
     );
 }
 
@@ -488,9 +489,9 @@ pools: {}
     );
     // boot-parses.
     assert!(
-        serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).is_ok(),
+        crate::config::deploy_from_yaml_str(&out.yaml).is_ok(),
         "real top-level 1.4.x auth surfaces must migrate to a bootable config: {:?}",
-        serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).err()
+        crate::config::deploy_from_yaml_str(&out.yaml).err()
     );
 }
 
@@ -531,9 +532,9 @@ global_hooks: [audit-tap]
         "the registry name became a named hook definition"
     );
     assert!(
-        serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).is_ok(),
+        crate::config::deploy_from_yaml_str(&out.yaml).is_ok(),
         "global_hooks must migrate to a bootable config: {:?}",
-        serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).err()
+        crate::config::deploy_from_yaml_str(&out.yaml).err()
     );
 }
 
@@ -637,7 +638,7 @@ pools:
     assert_eq!(hooks[0].as_str(), Some("cheapest"));
     // The migrated document boot-parses (no leftover `policy:` unknown-field).
     assert!(
-        serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).is_ok(),
+        crate::config::deploy_from_yaml_str(&out.yaml).is_ok(),
         "policy-only pool must migrate to a bootable config"
     );
 }
@@ -966,7 +967,8 @@ observability:
     );
 
     // The migrated document must boot-parse cleanly (deny_unknown_fields would catch a stray key).
-    let deploy: Result<crate::config::DeployCfg, _> = serde_yaml::from_str(&out.yaml);
+    let deploy: Result<crate::config::DeployCfg, _> =
+        crate::config::deploy_from_yaml_str(&out.yaml);
     assert!(
         deploy.is_ok(),
         "migrated config must boot-parse: {:?}",
@@ -1046,7 +1048,8 @@ global_hooks:
     );
 
     // Boot-parse proves the rename closed the loud-fail (old `at:` strings would 400 as variants).
-    let deploy: Result<crate::config::DeployCfg, _> = serde_yaml::from_str(&out.yaml);
+    let deploy: Result<crate::config::DeployCfg, _> =
+        crate::config::deploy_from_yaml_str(&out.yaml);
     assert!(
         deploy.is_ok(),
         "migrated config must boot-parse: {:?}",
@@ -1203,8 +1206,8 @@ pools: {}
     // The migrated document BOOT-PARSES as a 1.5.3 config, and resolves to the typed export block —
     // a golden that would catch a rewrite that produces a shape the parser rejects.
     let migrated_yaml = serde_yaml::to_string(&doc).unwrap();
-    let deploy: crate::config::DeployCfg =
-        serde_yaml::from_str(&migrated_yaml).expect("the migrated config must boot-parse");
+    let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(&migrated_yaml)
+        .expect("the migrated config must boot-parse");
     let mut errs = Vec::new();
     let export = crate::config::resolve_export(&deploy.export, &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
@@ -1252,7 +1255,7 @@ global_hooks:
         "no residual 1.x marker"
     );
     let deploy: crate::config::DeployCfg =
-        serde_yaml::from_str(&out1.yaml).expect("migrated config boot-parses");
+        crate::config::deploy_from_yaml_str(&out1.yaml).expect("migrated config boot-parses");
 
     // The named-definition map holds both lifted hooks; the pool keeps its strategy + a BARE ref; the
     // global instance became the reserved all-pools attach.
@@ -1328,8 +1331,8 @@ fn assert_loud_fail_with_breadcrumb(raw: &str, needle: &str) {
 fn migrate_golden(raw: &str) -> (crate::config::migrate::MigrateOutput, serde_yaml::Value) {
     let (out, doc) = migrate_to_value(raw);
     let yaml = serde_yaml::to_string(&doc).expect("serializable");
-    let _: crate::config::DeployCfg =
-        serde_yaml::from_str(&yaml).expect("the migrated config must boot-parse as 1.5.3");
+    let _: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(&yaml)
+        .expect("the migrated config must boot-parse as 1.5.3");
     let (_out2, doc2) = migrate_to_value(&yaml);
     assert_eq!(
         doc, doc2,
@@ -1486,7 +1489,8 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
 
     // And the migrated document really resolves to two independent webhook sinks.
     let deploy: crate::config::DeployCfg =
-        serde_yaml::from_str(&serde_yaml::to_string(&doc).unwrap()).expect("boot-parses");
+        crate::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
+            .expect("boot-parses");
     let mut errs = Vec::new();
     let export = crate::config::resolve_export(&deploy.export, &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
@@ -1606,7 +1610,8 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
     // And the migrated config RESOLVES: both chains point at the SAME definition, so their entries
     // are identical by construction — the drift the retired grammar allowed is now impossible.
     let deploy: crate::config::DeployCfg =
-        serde_yaml::from_str(&serde_yaml::to_string(&doc).unwrap()).expect("boot-parses");
+        crate::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
+            .expect("boot-parses");
     let mut errs = Vec::new();
     let auth = crate::config::resolve_auth(
         deploy.auth.as_ref().expect("auth"),
@@ -2525,7 +2530,7 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
         "the retired `at:` key is gone"
     );
     assert!(
-        serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).is_ok(),
+        crate::config::deploy_from_yaml_str(&out.yaml).is_ok(),
         "the rewritten config boot-parses on 1.6.0"
     );
 }
@@ -2607,12 +2612,13 @@ agent_pools:
 
     // (a) It parses into the 1.6.0 DeployCfg (deny_unknown_fields is the real gate: a surviving
     // `plugin:`/`at:`/tool_pools would fail HERE; the rich pool members are valid 1.6.0 grammar).
-    let deploy: crate::config::DeployCfg = serde_yaml::from_str(&out.yaml).unwrap_or_else(|e| {
-        panic!(
-            "migrated config must boot-parse on 1.6.0: {e}\n{}",
-            out.yaml
-        )
-    });
+    let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(&out.yaml)
+        .unwrap_or_else(|e| {
+            panic!(
+                "migrated config must boot-parse on 1.6.0: {e}\n{}",
+                out.yaml
+            )
+        });
 
     // (b) It resolves and validates clean on 1.6.0.
     let defs: std::collections::HashMap<String, crate::config::ProviderDef> =

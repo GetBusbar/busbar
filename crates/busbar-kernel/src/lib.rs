@@ -26,13 +26,18 @@
 //! - [`tick`] — the session tick, the node tick and its sweep, drain, and the fleet rule.
 //! - [`arena`] — the per-unit 4 KiB scratch space and the per-connection credential slab.
 //!
-//! ## What is a placeholder here
+//! ## What this crate names, and what it owns
 //!
-//! This crate depends on the capability types and on nothing else in the workspace. Every type it
-//! needs that belongs to the plugin-visible contract crate is declared here as a minimal stand-in
-//! marked `// contract:` — a frame, a stream id, a direction, a selector, a location, a journal
-//! record, a cap dimension. Each one is a shape, not an implementation; the integrator swaps them
-//! for the contract's own and deletes the stand-in.
+//! It depends on the capability types and on the contract crate, and on nothing else in the
+//! workspace. Every type that belongs to the plugin-visible contract — the frame, the stream id,
+//! the direction, the selector, the location, the plugin kinds, the claim, the cap dimension, the
+//! bucket, the status and finish classes — is the contract's own and is named here rather than
+//! restated. Each of those values arrives from outside the kernel or leaves for outside it, so a
+//! kernel-local copy would be the loop deciding about something other than what it was handed.
+//!
+//! What is genuinely the kernel's own stays here and says so: how specific one selector is against
+//! another, which axis the boot-time overlap check groups a form onto, the pump's reduction of the
+//! plane's richer answer, and the record recovery reads a hold back from.
 //!
 //! Every door onto the outside world — the units behind their sealed traits, the store behind the
 //! slice trait, the clock — is a trait this crate declares and someone else implements. That is

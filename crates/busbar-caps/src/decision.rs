@@ -99,6 +99,16 @@ reasons! {
     Revoked => "revoked",
     /// The principal lacks the scope the operation requires.
     ScopeDenied => "scope_denied",
+    /// The principal is not permitted to reach the pool it named. Distinct from a plain scope
+    /// denial: the ladder answers this one before it asks about pricing at all, and the two carry
+    /// different statuses on the wire, so collapsing them would make two refusals indistinguishable
+    /// to anything reading the record.
+    PoolNotPermitted => "pool_not_permitted",
+    /// The name the caller supplied has no configured rate. A bad request rather than an exhausted
+    /// one: nothing is wrong with the caller's budget, the name simply cannot be billed. Modelled
+    /// as its own reason rather than as the absence of a gate, so the record can say which of the
+    /// two a refusal was.
+    NoRate => "no_rate",
     /// A hook vetoed the unit.
     HookVeto => "hook_veto",
     /// No destination survived verification.
@@ -129,6 +139,10 @@ reasons! {
     DestinationUnreachable => "destination_unreachable",
     /// Two evidence sources for the same unit disagree.
     MeterDisputed => "meter_disputed",
+    /// A layer offered a handoff the layer adopting it does not compose over, or handed up a stream
+    /// it cannot adopt. Its own reason rather than a framing failure: nothing was wrong with the
+    /// bytes, the two legs simply did not agree on what they were doing.
+    HandoffMismatch => "handoff_mismatch",
     /// A plane call panicked.
     PlanePanic => "plane_panic",
     /// The task running the unit disappeared without an end.

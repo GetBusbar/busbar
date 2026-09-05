@@ -52,22 +52,7 @@ pub(crate) fn record_resp_usage(
 /// keys (M1b — `TierTokens` is dissolved). Readers normalize `input_tokens` to UNCACHED and keep the
 /// cache fields ADDITIVE, so the mapping is direct: cache-creation is the `cache_write` unit. Zero
 /// tiers are omitted so the map stays sparse (no-zero-entry).
-pub(crate) fn tier_usage(
-    u: &busbar_substrate::billing::TokenUsage,
-) -> busbar_substrate::billing::Usage {
-    let mut usage_units = std::collections::BTreeMap::new();
-    for (k, v) in [
-        (busbar_api::UNIT_INPUT, u.input),
-        (busbar_api::UNIT_OUTPUT, u.output),
-        (busbar_api::UNIT_CACHE_READ, u.cache_read.unwrap_or(0)),
-        (busbar_api::UNIT_CACHE_WRITE, u.cache_creation.unwrap_or(0)),
-    ] {
-        if v != 0 {
-            usage_units.insert(k.to_string(), v);
-        }
-    }
-    busbar_substrate::billing::Usage { usage_units }
-}
+pub(crate) use busbar_llm_codec::wire_shim::tier_usage;
 
 /// THE ONE PLACE a delivered response is attributed to a model — for the budget LEDGER and for the
 /// METERING series both. Every accrual site in the proxy funnels through here so the two can never

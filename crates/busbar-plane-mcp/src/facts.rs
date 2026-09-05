@@ -4,7 +4,8 @@
 //! here is something the plane READ off the bytes, reported under a key it declared up front so the
 //! kernel's fact maps can be sized before the first frame arrives.
 
-use busbar_contract::ids::CorrelationRef;
+use busbar_contract::bounded::Arena;
+use busbar_contract::ids::{CorrelationRef, CorrelationValue};
 
 /// The method name the request carried, exactly as it was spelled.
 pub const FACT_METHOD: &str = "method";
@@ -69,128 +70,174 @@ pub const META_PROGRESS_TOKEN: &str = "progressToken";
 
 /// The correlation reference for one request identifier.
 ///
-/// ## The mismatch this function exists to bridge, stated plainly
+/// The identifier travels as ITSELF. This protocol's request identifier is a JSON scalar the shared
+/// reader accepts as either a string or a number and refuses in every other shape, and the
+/// contract's correlation value has an arm for each: a bare run of decimal digits is the number it
+/// is, and anything else is the string it is, copied into the unit's own arena so it lives exactly
+/// as long as the unit correlating on it.
 ///
-/// The contract's correlation reference carries a whole number. This protocol's request identifier
-/// is a JSON scalar, which the shared reader accepts as EITHER a string OR a number and refuses in
-/// every other shape. A string identifier therefore has no whole number to be.
+/// It used to be a sixty-four-bit digest, because the correlation value used to be a whole number
+/// and a string had no whole number to be. Two identifiers of one principal on one session could
+/// digest to one value, and the kernel's correlation key is precisely (session, principal, fact
+/// key, value), so that collision decided which hold a provider frame accrued into. That is money
+/// moving between two units, so the digest is gone rather than documented.
 ///
-/// So the reference carries a whole number DERIVED from the identifier's raw bytes, and the raw
-/// bytes travel beside it as a fact under the same key. The kernel correlates on the number; the
-/// encoder echoes the bytes. Nothing reconstructs an identifier from the number, because nothing
-/// can.
-///
-/// A number that fits is used as itself, so the overwhelmingly common case — a small counter, which
-/// is what every fixture in the conformance battery sends — is exact and readable in a journal row.
-/// Anything else is digested.
-///
-/// ## The exposure, stated rather than hidden
-///
-/// Two different identifiers can digest to one number. The kernel's correlation key is the session,
-/// the principal, the fact key and the value together, so the exposure is bounded to two in-flight
-/// requests of ONE principal on ONE session colliding on a sixty-four-bit digest. That is a finding
-/// about the contract's correlation type, not a property of this protocol, and it is written down in
-/// the crate's notes.
+/// Answers nothing when the arena is full or the identifier is not text: a correlation that cannot
+/// be carried honestly is better absent than approximated.
 #[must_use]
-pub fn correlation_for(raw_id: &[u8]) -> CorrelationRef {
-    CorrelationRef {
+pub fn correlation_for<'u>(raw_id: &[u8], arena: &'u dyn Arena) -> Option<CorrelationRef<'u>> {
+    Some(CorrelationRef {
         fact_key: FACT_RPC_ID,
-        value: id_value(raw_id),
-    }
+        value: correlation_value(raw_id, arena)?,
+    })
 }
 
-/// The whole number that stands for one request identifier's raw bytes.
-///
-/// Deterministic over the bytes and over nothing else: no clock, no address, no seed. The
-/// determinism test depends on that.
-#[must_use]
-pub fn id_value(raw_id: &[u8]) -> u64 {
-    // A bare run of decimal digits IS a whole number, and using it as itself keeps the common case
-    // exact. Anything with a sign, a point, an exponent, quotes or more digits than fit is digested.
+/// The value one raw request identifier stands for.
+fn correlation_value<'u>(raw_id: &[u8], arena: &'u dyn Arena) -> Option<CorrelationValue<'u>> {
     if !raw_id.is_empty() && raw_id.len() <= 19 && raw_id.iter().all(u8::is_ascii_digit) {
         let mut n: u64 = 0;
         for byte in raw_id {
             n = n * 10 + u64::from(byte - b'0');
         }
-        return n;
+        return Some(CorrelationValue::Num(n));
     }
-    digest(raw_id)
-}
-
-/// A sixty-four-bit digest of some bytes.
-///
-/// The multiply-and-mix construction is written out rather than taken from a dependency, because a
-/// plane's dependency list is a surface and a hash is four lines. It is not a cryptographic hash and
-/// nothing here treats it as one: it stands in for an identifier the contract's correlation type
-/// cannot hold, and the identifier itself travels beside it.
-#[must_use]
-pub fn digest(bytes: &[u8]) -> u64 {
-    // The offset and the prime are the published constants of the standard sixty-four-bit variant.
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    // A digested identifier must never collide with a small counter used as itself, or a request
-    // numbered seven and a request named something that digests to seven would be one request. The
-    // top bit is set to move every digest above the range a bare decimal run can reach.
-    hash | (1 << 63)
+    // A quoted identifier is the text between the quotes; anything else is the bytes as they are.
+    let inner = match (raw_id.first(), raw_id.last(), raw_id.len()) {
+        (Some(b'"'), Some(b'"'), n) if n >= 2 => &raw_id[1..n - 1],
+        _ => raw_id,
+    };
+    let text = core::str::from_utf8(inner).ok()?;
+    arena.alloc_str(text).ok().map(CorrelationValue::Str)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{correlation_for, digest, id_value, FACT_RPC_ID};
+    use super::{correlation_for, correlation_value, FACT_RPC_ID};
+    use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes};
+    use busbar_contract::ids::CorrelationValue;
 
-    /// A small counter is used as itself, so a journal row reads as the caller wrote it.
+    /// An arena that hands out leaked bytes, which is what a test arena is.
+    struct TestArena;
+
+    impl Arena for TestArena {
+        fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
+            Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
+        }
+
+        fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
+            Ok(Box::leak(src.to_string().into_boxed_str()))
+        }
+
+        fn remaining(&self) -> usize {
+            usize::MAX
+        }
+    }
+
+    /// A bare counter is the number it is, so a journal row reads as the caller wrote it.
     ///
     /// Every request the conformance battery sends is numbered, so this is the case that matters
     /// most: the battery's own identifiers arrive in a journal as the battery wrote them.
     #[test]
     fn a_bare_number_is_itself() {
+        let arena = TestArena;
         for n in 0u64..64 {
-            assert_eq!(id_value(n.to_string().as_bytes()), n);
+            assert_eq!(
+                correlation_value(n.to_string().as_bytes(), &arena),
+                Some(CorrelationValue::Num(n))
+            );
         }
     }
 
-    /// A quoted identifier is digested, and the digest is above every bare counter.
+    /// A quoted identifier is the text it is, not a number standing in for it.
     #[test]
-    fn a_named_identifier_cannot_collide_with_a_numbered_one() {
-        let named = id_value(br#""req-1""#);
-        assert!(named >= 1 << 63);
-        for n in 0u64..1000 {
-            assert_ne!(named, n);
+    fn a_named_identifier_is_carried_as_itself() {
+        let arena = TestArena;
+        assert_eq!(
+            correlation_value(br#""req-1""#, &arena),
+            Some(CorrelationValue::Str("req-1"))
+        );
+    }
+
+    /// Two string identifiers of ONE principal on ONE session never answer to each other.
+    ///
+    /// This is the collision the digest could not rule out, and the reason the digest is gone: the
+    /// kernel correlates on (session, principal, fact key, value), so two values that compare equal
+    /// are one hold. Checked over every pair of a set chosen to include the near misses.
+    #[test]
+    fn two_string_identifiers_of_one_principal_never_collide() {
+        let arena = TestArena;
+        let raw: [&[u8]; 8] = [
+            br#""req-1""#,
+            br#""req-2""#,
+            br#""a""#,
+            br#""b""#,
+            br#""0""#,
+            br#""7""#,
+            br#""req-1 ""#,
+            br#""REQ-1""#,
+        ];
+        let values: Vec<_> = raw
+            .iter()
+            .map(|r| correlation_value(r, &arena).expect("it is carried"))
+            .collect();
+        for (i, left) in values.iter().enumerate() {
+            for (j, right) in values.iter().enumerate() {
+                if i != j {
+                    assert_ne!(left, right, "{:?} and {:?} collided", raw[i], raw[j]);
+                }
+            }
         }
     }
 
-    /// Anything that is not a bare run of digits is digested, including the near misses.
+    /// A string that reads like a counter is still a string, and never equals the counter.
     #[test]
-    fn the_near_misses_are_digested() {
+    fn a_quoted_seven_is_not_the_number_seven() {
+        let arena = TestArena;
+        assert_ne!(
+            correlation_value(br#""7""#, &arena),
+            correlation_value(b"7", &arena)
+        );
+    }
+
+    /// Anything that is not a bare run of digits is carried as text, including the near misses.
+    #[test]
+    fn the_near_misses_are_carried_as_text() {
+        let arena = TestArena;
         for raw in [
             &b"-1"[..],
             &b"1.0"[..],
             &b"1e3"[..],
-            &b""[..],
             &b"01234567890123456789"[..],
         ] {
-            assert!(id_value(raw) >= 1 << 63, "{raw:?} was not digested");
+            assert!(
+                matches!(
+                    correlation_value(raw, &arena),
+                    Some(CorrelationValue::Str(_))
+                ),
+                "{raw:?} was not carried as text"
+            );
         }
     }
 
     /// The same bytes always give the same value.
     #[test]
     fn the_value_is_deterministic() {
+        let arena = TestArena;
         for raw in [&b"42"[..], &br#""abc""#[..], &b"null"[..]] {
-            assert_eq!(id_value(raw), id_value(raw));
-            assert_eq!(digest(raw), digest(raw));
+            assert_eq!(
+                correlation_value(raw, &arena),
+                correlation_value(raw, &arena)
+            );
         }
     }
 
     /// The correlation carries the declared key and the identifier's value.
     #[test]
     fn the_correlation_carries_the_declared_key() {
-        let c = correlation_for(b"7");
+        let arena = TestArena;
+        let c = correlation_for(b"7", &arena).expect("it is carried");
         assert_eq!(c.fact_key, FACT_RPC_ID);
-        assert_eq!(c.value, 7);
+        assert_eq!(c.value, CorrelationValue::Num(7));
     }
 
     /// The metadata keys are spelled the way the codec spells them.

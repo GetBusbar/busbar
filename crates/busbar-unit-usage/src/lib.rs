@@ -43,13 +43,13 @@ pub use evidence::{
     DEFAULT_LOCATOR_FLOOR_RATIO, DEFAULT_VARIANCE_TOLERANCE_BP,
 };
 pub use lane::{cross_check_lane, LaneCheck, LaneLegs, LegDeclaration};
-pub use meter::{meter, Dispute, DisputeReason, Metered, UsageMeter};
+pub use meter::{meter, Dispute, DisputeReason, Metered};
 pub use series::MeterCounts;
 pub use settlement::{
-    fee_count, requests_settled, settle, Evidence, FeeInputs, Finish, SettleFlag, Settlement,
-    StatusClass, UnitEndKind,
+    fee_count, posting_flags, requests_settled, settle, Evidence, FeeInputs, Finish, SettleFlag,
+    Settlement, StatusClass, UnitEndKind,
 };
-pub use source::{Direction, LocatorPtr, QuantitySource};
+pub use source::{quantity_from_raw, Direction, LocatorPtr, QuantitySource};
 
 /// Basis points in a whole: the scale every ratio in this crate is expressed on, so no comparison
 /// needs a decimal.

@@ -15,7 +15,7 @@
 //! about the contract's allocator, not a decision taken here, and it is written down in the crate's
 //! notes.
 
-use busbar_contract::bounded::{ArenaBytes, FactValue, Facts, Ir, Span};
+use busbar_contract::bounded::{ArenaBytes, BoundedVec, FactValue, Facts, Ir, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::{AdminVerbId, LaneId, SchemeAlt};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
@@ -45,6 +45,15 @@ pub struct Codec {
     /// How many event frames of a streamed answer this half has read.
     pub events_read: u32,
 }
+
+/// The fact key the per-name projection reports the agent's own name under.
+const SUBJECT_FACT_NAME: &str = "name";
+
+/// The fact key the per-name projection reports the priced lane under.
+const SUBJECT_FACT_LANE: &str = "lane";
+
+/// The fact key the per-name projection reports the dialling transport under.
+const SUBJECT_FACT_TRANSPORT: &str = "transport";
 
 /// The credential scheme the outbound hop is decorated under.
 ///
@@ -88,12 +97,12 @@ impl A2aPlane {
         match self.agents().first() {
             Some(agent) => DestinationFacts::Upstream {
                 transport: agent.transport,
-                host: agent.host,
+                address: busbar_contract::UpstreamAddress::socket(agent.host),
                 lane: agent.lane,
             },
             None => DestinationFacts::Upstream {
                 transport: crate::claims::TRANSPORT_HTTP,
-                host: "",
+                address: busbar_contract::UpstreamAddress::socket(""),
                 lane: LaneId::new(""),
             },
         }
@@ -203,7 +212,7 @@ impl Plane for A2aPlane {
         &self,
         frames: &mut FrameCursor<'u>,
         _st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
+        ctx: &Ctx<'u>,
     ) -> Result<Ingress<'u>, Decode> {
         let Some(frame) = frames.next_frame() else {
             return Ok(Ingress::NeedMore);
@@ -218,7 +227,9 @@ impl Plane for A2aPlane {
         let method = envelope.method_str(body).ok_or(Decode::Malformed)?;
         let row = ops::row_for(method).ok_or(Decode::UnsupportedOperation)?;
         let facts = request_facts(body, &envelope);
-        let correlation_out = envelope.id_bytes(body).map(f::correlation_for);
+        let correlation_out = envelope
+            .id_bytes(body)
+            .and_then(|raw| f::correlation_for(raw, ctx.arena()));
         let draft = UnitDraft {
             op: row.op,
             body_ir: Ir::new(body, &[]),
@@ -310,7 +321,7 @@ impl Plane for A2aPlane {
         frames: &mut FrameCursor<'u>,
         _dest: &VerifiedDestination,
         st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
+        ctx: &Ctx<'u>,
     ) -> Result<Progress<'u>, Decode> {
         let Some(frame) = frames.next_frame() else {
             return Ok(Progress::NeedMore);
@@ -359,7 +370,7 @@ impl Plane for A2aPlane {
                 let _ = facts.set(f::FACT_ERROR_CODE, FactValue::Str(text));
             }
         }
-        let for_ = id.map(f::correlation_for);
+        let for_ = id.and_then(|raw| f::correlation_for(raw, ctx.arena()));
         // An answer that says it is the last one is the last one. An answer carrying an error is
         // also the last one, whatever it says about itself: an agent does not keep streaming after
         // it has reported that it failed.
@@ -449,15 +460,18 @@ impl Plane for A2aPlane {
 
     fn authenticate<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> CredentialLocator {
         // Three of this protocol's surfaces carry no credential by design: the two discovery
-        // documents anyone may read, and the callback an agent this node dialled posts back to. The
-        // rest present a bearer credential.
-        let anonymous = matches!(u.op(), ops::OP_PUSH_EVENT);
+        // documents anyone may read, and the callback an agent this node dialled posts back to.
+        // Their claims declare no scheme, so there is nothing to narrow WITHIN and this step names
+        // nothing — which is a stronger statement than the invented "anonymous" alternative it
+        // replaces, because that one was a value a plane could narrow an authenticated claim down
+        // to. The rest present a bearer credential.
+        let open_surface = matches!(u.op(), ops::OP_PUSH_EVENT);
         CredentialLocator {
-            narrowing: Some(SchemeAlt::new(if anonymous {
-                "anonymous"
+            narrowing: if open_surface {
+                None
             } else {
-                "bearer"
-            })),
+                Some(SchemeAlt::new("bearer"))
+            },
             // A bound session's principal is the cached one; an unbound session re-authenticates
             // every unit, and a unit the agent pushed is the kernel's own pairing rather than
             // anything on these bytes.
@@ -515,8 +529,9 @@ impl Plane for A2aPlane {
             // The lane is not in the request. It is a property of the agent the operator
             // configured, and the trust unit re-derives it against the allow-list.
             lane_locator: None,
-            // This protocol gives a caller no way to declare a ceiling on the answer.
-            max_response_ptr: None,
+            // This protocol gives a caller no way to declare a ceiling on the answer, so no
+            // place is named for one.
+            max_response_ptrs: BoundedVec::new(),
             // The priced input is the whole request document.
             input_span: Some(Span {
                 start: 0,
@@ -607,19 +622,41 @@ impl Plane for A2aPlane {
         }
     }
 
-    fn plane_facts<'u>(&self, verb: AdminVerbId, ctx: &Ctx<'u>) -> Result<PlaneFacts<'u>, Decode> {
-        if verb != crate::meta::VERB_AGENTS {
-            return Err(Decode::UnsupportedOperation);
-        }
-        let mut facts = Facts::new();
-        let _ = facts.set("count", FactValue::Int(self.agents().len() as i64));
-        for agent in self.agents() {
-            // The agent's name is the key and the lane it is priced on is the value. Nothing here
-            // is a credential, a price or an address: an operator reading this learns which agents
-            // are configured and on which lane, which is what an introspection verb is for.
-            let _ = facts.set(agent.id, FactValue::Str(agent.lane.as_str()));
-        }
+    fn plane_facts<'u>(
+        &self,
+        verb: AdminVerbId,
+        subject: Option<&'u str>,
+        ctx: &Ctx<'u>,
+    ) -> Result<PlaneFacts<'u>, Decode> {
         let _ = ctx;
+        let mut facts = Facts::new();
+        match verb {
+            v if v == crate::meta::VERB_AGENTS => {
+                let _ = facts.set("count", FactValue::Int(self.agents().len() as i64));
+                for agent in self.agents() {
+                    // The agent's name is the key and the lane it is priced on is the value.
+                    // Nothing here is a credential, a price or an address: an operator reading this
+                    // learns which agents are configured and on which lane, which is what an
+                    // introspection verb is for.
+                    let _ = facts.set(agent.id, FactValue::Str(agent.lane.as_str()));
+                }
+            }
+            v if v == crate::meta::VERB_AGENT => {
+                // The projection over ONE agent. A subject that names no agent is an unsupported
+                // operation rather than an empty answer: "there is no such agent" and "that agent
+                // has nothing to report" are different facts.
+                let name = subject.ok_or(Decode::UnsupportedOperation)?;
+                let agent = self
+                    .agents()
+                    .iter()
+                    .find(|a| a.id == name)
+                    .ok_or(Decode::UnsupportedOperation)?;
+                let _ = facts.set(SUBJECT_FACT_NAME, FactValue::Str(agent.id));
+                let _ = facts.set(SUBJECT_FACT_LANE, FactValue::Str(agent.lane.as_str()));
+                let _ = facts.set(SUBJECT_FACT_TRANSPORT, FactValue::Str(agent.transport));
+            }
+            _ => return Err(Decode::UnsupportedOperation),
+        }
         Ok(PlaneFacts { facts })
     }
 

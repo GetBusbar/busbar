@@ -98,7 +98,7 @@ DIALECTS="openai gemini anthropic bedrock cohere responses"
 # A plane added to plane-keys.sh flows into every needle set here with no edit below.
 # shellcheck source=scripts/plane-keys.sh
 . "$(dirname "$0")/plane-keys.sh"
-NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/api/src"
+NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/busbar-substrate-values/src crates/api/src"
 NEUTRAL_NEEDLES="$DIALECTS $PLANE_KEYS_PROTOCOL"
 MCP_ROOT="crates/busbar-mcp/src"
 MCP_NEEDLES="$DIALECTS $(plane_keys_other mcp)"

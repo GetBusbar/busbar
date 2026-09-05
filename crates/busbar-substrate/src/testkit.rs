@@ -23,9 +23,11 @@ use crate::plane_host::{EngineHost, PlaneSlots};
 use std::any::Any;
 use std::sync::Arc;
 
-/// The neutral warn-capture tracing layer a plane's tests assert diagnostics through (see the module
-/// docs) — the fixture that used to be reachable only as `busbar_core::test_support::warn_capture`.
-pub mod warn_capture;
+/// The neutral warn-capture tracing layer a plane's tests assert diagnostics through — the fixture
+/// that used to be reachable only as `busbar_core::test_support::warn_capture`. It is a pure
+/// `tracing_subscriber::Layer`, so it moved into the values crate with the diagnostics it asserts on
+/// and is re-exported here: `busbar_substrate::testkit::warn_capture::WarnCapture` resolves as before.
+pub use busbar_substrate_values::testkit::warn_capture;
 
 /// The in-memory [`EngineHost`] a plane's tests drive when no engine `App` is in their closure at all
 /// (see the module docs): scripted hook gates/rewrites, breaker cells and a per-key ledger behind the

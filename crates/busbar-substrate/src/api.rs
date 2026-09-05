@@ -15,7 +15,12 @@ use serde::Serialize;
 /// The frozen Admin API v1 path prefix — `API_ROOT` + version + area. Every admin endpoint hangs
 /// off this; the router nest, the scope matrix, and the OpenAPI doc all derive from it (one source
 /// of truth, drift-proof by construction — see `admin::transport::mount`).
-pub const ADMIN_PREFIX: &str = "/api/v1/admin";
+///
+/// The literal itself lives in `busbar-contract`, and this is a re-export of it. It has to: the
+/// admin plane must claim this prefix, a plugin may name `busbar-contract` and nothing else in the
+/// workspace, and the plane's only alternative was transcribing the string by hand — which it did,
+/// with an assertion over its own copy that could not check this one.
+pub use busbar_contract::surface::ADMIN_PREFIX;
 
 /// Absolute admin path from a RELATIVE one — [`ADMIN_PREFIX`] + `rel`. The OpenAPI doc keys
 /// (which document the WIRE, so they must be absolute) are all built through this, so no absolute

@@ -58,6 +58,39 @@ pub enum SettleFlag {
     Unposted,
 }
 
+impl SettleFlag {
+    /// The posting flag this settlement mark becomes.
+    ///
+    /// The table's flags and the posting's flags are one vocabulary read twice: this unit decides
+    /// which marks a settlement carries, and the capability crate carries them onto the posting.
+    /// A mark with no posting flag behind it would be a settlement nobody downstream could see.
+    #[must_use]
+    pub fn posting_flag(self) -> busbar_caps::PostingFlags {
+        use busbar_caps::PostingFlags as P;
+        match self {
+            SettleFlag::Estimated => P::ESTIMATED,
+            SettleFlag::MeterDisputed => P::METER_DISPUTED,
+            SettleFlag::Recovered => P::RECOVERED,
+            SettleFlag::Voided => P::VOIDED,
+            SettleFlag::LateAccrual => P::LATE_ACCRUAL,
+            SettleFlag::Overdraft => P::OVERDRAFT,
+            SettleFlag::Unposted => P::UNPOSTED,
+        }
+    }
+}
+
+/// Every mark a settlement carries, as one set of posting flags.
+#[must_use]
+pub fn posting_flags<'a>(
+    flags: impl IntoIterator<Item = &'a SettleFlag>,
+) -> busbar_caps::PostingFlags {
+    flags
+        .into_iter()
+        .fold(busbar_caps::PostingFlags::NONE, |acc, f| {
+            acc.with(f.posting_flag())
+        })
+}
+
 /// The evidence available at settlement.
 // contract: the hold's dispatch and checkpoint records, as the journal holds them
 #[derive(Debug, Clone, Default)]
