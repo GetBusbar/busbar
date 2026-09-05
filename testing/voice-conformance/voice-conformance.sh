@@ -40,6 +40,11 @@
 #   replay             captured-transcript replay: a recorded session must re-derive identically.
 #   cross-parity       the 4 ORDERED OpenAI<->Gemini pairs (oo, og, go, gg) must agree where the
 #                      cross-dialect mapping says they must.
+#   provider-credential the realtime provider credential the mint / SDP passes dial under, composed
+#                      from the deployment's own provider catalog + secret resolver.
+#   metering-lease     a session's money hop is the HOST's reserve-then-settle lease, capped by the
+#                      presenting principal's own remaining budget.
+#   session-scope      the plane's declared `session` scope kind, enforced at session open.
 #   governance         the 5 vision checkpoints (incl. D2 hard-close-on-exhaustion). GOVERNANCE IS
 #                      NOT A CONFORMANCE RESULT — it can never move the conformance verdict, exactly
 #                      as `testing/a2a-governance/` can never contribute to the A2A verdict.
@@ -60,6 +65,14 @@
 # HOW A LEG GETS FILLED (the drop-in): edit `legs/<name>.sh` — flip `LEG_STATUS=ready` and implement
 # `leg_execute <slice>` so it prints one `RESULT <slice> <PASS|FAIL> <detail>` line per assertion.
 # Nothing in this runner, in the verdict emitter, or in the workflow changes.
+#
+#   VOICE_RESULT_LOG   optional: a file path. When set, every RESULT line (and every vacuous
+#                       "NO RESULT" slice) is ALSO appended there as one machine-readable TSV row
+#                       (`<leg>\t<slice>\t<verdict-or-NORESULT>\t<detail>`), in addition to — never
+#                       instead of — the human `say` lines above. Written for
+#                       testing/shadow-oracle/rigs-ledger.sh, which folds this battery's per-leg
+#                       verdicts into the shadow oracle's own ledger; nothing else reads it, and the
+#                       default (unset) run is byte-for-byte what it always was.
 
 set -euo pipefail
 
@@ -142,7 +155,19 @@ _process_leg() {
     results="$(printf '%s\n' "$out" | grep -E '^RESULT ' || true)"
     if [ -z "$results" ]; then
       say "      · $s : NO RESULT — a READY leg that executed nothing is RED"
+      # Additive, machine-readable mirror for testing/shadow-oracle/rigs-ledger.sh: it needs a
+      # per-leg/per-slice record it can turn into a ledger row without re-parsing the human log
+      # above. Written ONLY when VOICE_RESULT_LOG is set, so nothing about the existing stdout/log
+      # shape changes for anyone not asking for it.
+      if [ -n "${VOICE_RESULT_LOG:-}" ]; then
+        printf '%s\t%s\tNORESULT\tREADY leg executed nothing\n' "$name" "$s" >>"$VOICE_RESULT_LOG"
+      fi
       rc=2; continue
+    fi
+    if [ -n "${VOICE_RESULT_LOG:-}" ]; then
+      printf '%s\n' "$results" | while IFS=' ' read -r _ slice verdict detail; do
+        printf '%s\t%s\t%s\t%s\n' "$name" "$slice" "$verdict" "${detail:-}" >>"$VOICE_RESULT_LOG"
+      done
     fi
     printf '%s\n' "$results" | while IFS=' ' read -r _ slice verdict detail; do
       say "      · $slice : $verdict ${detail:-}"
