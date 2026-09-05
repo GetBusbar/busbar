@@ -57,25 +57,48 @@ def j(obj) -> bytes:
     return json.dumps(obj, separators=(",", ":"), sort_keys=True).encode()
 
 
+# Every member below that the published spec marks `required` but Anthropic defines as nullable is
+# set to a fixed `None` (never omitted) so the body is both spec-complete and byte-stable; only the
+# two token counts carry a real, deterministic value.
+def anthropic_usage():
+    return {"input_tokens": IN_TOK, "output_tokens": OUT_TOK, "cache_creation": None,
+            "cache_creation_input_tokens": None, "cache_read_input_tokens": None,
+            "inference_geo": None, "output_tokens_details": None, "server_tool_use": None,
+            "service_tier": None}
+
+
+def anthropic_delta_usage():
+    return {"output_tokens": OUT_TOK, "input_tokens": IN_TOK, "cache_creation_input_tokens": None,
+            "cache_read_input_tokens": None, "output_tokens_details": None, "server_tool_use": None}
+
+
 def anthropic(model, marker):
     return j({"id": "msg_oracle", "type": "message", "role": "assistant", "model": model,
-              "content": [{"type": "text", "text": marker}], "stop_reason": "end_turn",
-              "stop_sequence": None, "usage": {"input_tokens": IN_TOK, "output_tokens": OUT_TOK}})
+              "content": [{"type": "text", "text": marker, "citations": None}], "stop_reason": "end_turn",
+              "stop_sequence": None, "stop_details": None, "container": None,
+              "usage": anthropic_usage()})
 
 
 def openai_chat(model, marker):
     return j({"id": "chatcmpl-oracle", "object": "chat.completion", "created": 0, "model": model,
-              "choices": [{"index": 0, "message": {"role": "assistant", "content": marker},
-                           "finish_reason": "stop"}],
+              "choices": [{"index": 0, "message": {"role": "assistant", "content": marker, "refusal": None},
+                           "finish_reason": "stop", "logprobs": None}],
               "usage": {"prompt_tokens": IN_TOK, "completion_tokens": OUT_TOK,
                         "total_tokens": IN_TOK + OUT_TOK}})
 
 
 def openai_responses(model, marker):
+    # Every member the published `Response` schema marks `required` (across its allOf merge) is
+    # present here: the nullable ones fixed to `None`, the rest a fixed, deterministic value.
     return j({"id": "resp_oracle", "object": "response", "status": "completed", "model": model,
+              "created_at": 0, "error": None, "incomplete_details": None, "instructions": None,
+              "metadata": None, "parallel_tool_calls": True, "temperature": None, "top_p": None,
+              "tool_choice": "auto", "tools": [],
               "output": [{"type": "message", "id": "msg_oracle", "role": "assistant", "status": "completed",
-                          "content": [{"type": "output_text", "text": marker, "annotations": []}]}],
-              "usage": {"input_tokens": IN_TOK, "output_tokens": OUT_TOK, "total_tokens": IN_TOK + OUT_TOK}})
+                          "content": [{"type": "output_text", "text": marker, "annotations": [], "logprobs": []}]}],
+              "usage": {"input_tokens": IN_TOK, "output_tokens": OUT_TOK, "total_tokens": IN_TOK + OUT_TOK,
+                        "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+                        "output_tokens_details": {"reasoning_tokens": 0}}})
 
 
 def gemini(model, marker):
@@ -87,9 +110,12 @@ def gemini(model, marker):
 
 
 def bedrock(model, marker):
+    # `metrics.latencyMs` is a required member of ConverseResponse; fixed 0 keeps the body
+    # deterministic (there is no real clock in this mock).
     return j({"output": {"message": {"role": "assistant", "content": [{"text": marker}]}},
               "stopReason": "end_turn",
-              "usage": {"inputTokens": IN_TOK, "outputTokens": OUT_TOK, "totalTokens": IN_TOK + OUT_TOK}})
+              "usage": {"inputTokens": IN_TOK, "outputTokens": OUT_TOK, "totalTokens": IN_TOK + OUT_TOK},
+              "metrics": {"latencyMs": 0}})
 
 
 def cohere(model, marker):
@@ -117,14 +143,18 @@ def anthropic_stream(model, marker):
     def ev(t, body):
         return f"event: {t}\ndata: {json.dumps(body, separators=(',', ':'), sort_keys=True)}\n\n".encode()
     return b"".join([
-        ev("message_start", {"type": "message_start", "message": {"id": "msg_oracle", "type": "message", "role": "assistant",
-                                                                     "model": model, "content": [], "stop_reason": None,
-                                                                     "usage": {"input_tokens": IN_TOK, "output_tokens": 0}}}),
-        ev("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        ev("message_start", {"type": "message_start", "message": {
+            "id": "msg_oracle", "type": "message", "role": "assistant", "model": model, "content": [],
+            "stop_reason": None, "stop_sequence": None, "stop_details": None, "container": None,
+            "usage": {**anthropic_usage(), "output_tokens": 0}}}),
+        ev("content_block_start", {"type": "content_block_start", "index": 0,
+                                    "content_block": {"type": "text", "text": "", "citations": None}}),
         ev("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": marker}}),
         ev("content_block_stop", {"type": "content_block_stop", "index": 0}),
-        ev("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-                             "usage": {"output_tokens": OUT_TOK}}),
+        ev("message_delta", {"type": "message_delta",
+                             "delta": {"stop_reason": "end_turn", "stop_sequence": None,
+                                       "stop_details": None, "container": None},
+                             "usage": anthropic_delta_usage()}),
         ev("message_stop", {"type": "message_stop"}),
     ])
 
@@ -142,11 +172,49 @@ def cohere_stream(model, marker):
     ])
 
 
+# ── AWS event-stream (application/vnd.amazon.eventstream) framing for Bedrock ConverseStream ──────
+# Mirrors crates/busbar-substrate/src/eventstream.rs `encode_frame` byte-for-byte: a real CRC32 (a
+# native AWS SDK decoder validates both checksums), so the frames this mock emits are indistinguishable
+# on the wire from a genuine Bedrock ConverseStream response.
+import struct
+import zlib
+
+
+def _eventstream_header(name, value):
+    v = value.encode("utf-8")
+    return bytes([len(name)]) + name.encode("ascii") + b"\x07" + struct.pack(">H", len(v)) + v
+
+
+def _eventstream_frame(event_type, payload):
+    headers = (_eventstream_header(":event-type", event_type)
+               + _eventstream_header(":content-type", "application/json")
+               + _eventstream_header(":message-type", "event"))
+    headers_len = len(headers)
+    total_len = 12 + headers_len + len(payload) + 4
+    prelude = struct.pack(">II", total_len, headers_len)
+    prelude_crc = zlib.crc32(prelude) & 0xFFFFFFFF
+    frame = prelude + struct.pack(">I", prelude_crc) + headers + payload
+    message_crc = zlib.crc32(frame) & 0xFFFFFFFF
+    return frame + struct.pack(">I", message_crc)
+
+
 def bedrock_stream(model, marker):
-    # Bedrock ConverseStream is an AWS event-stream binary framing; the oracle records whatever the
-    # codec emits for it, but this mock does not synthesize the binary framing. Cells that need it
-    # are recorded as MOCK-UNSUPPORTED (a named gap, never a silent pass).
-    return None
+    # The event sequence and payload shapes mirror crates/busbar-llm/src/bedrock/writer.rs
+    # `write_response_event` exactly: no `contentBlockStart` for a plain text block (a real Bedrock
+    # ConverseStream never sends one — the text block is implied by the first `contentBlockDelta`),
+    # `messageStop` carries only `stopReason`, and token usage plus the required `metrics.latencyMs`
+    # (`ConverseStreamMetadataEvent` — fixed 0, there is no real clock in this mock) trail in the
+    # separate `metadata` frame.
+    events = [
+        ("messageStart", {"role": "assistant"}),
+        ("contentBlockDelta", {"contentBlockIndex": 0, "delta": {"text": marker}}),
+        ("contentBlockStop", {"contentBlockIndex": 0}),
+        ("messageStop", {"stopReason": "end_turn"}),
+        ("metadata", {"usage": {"inputTokens": IN_TOK, "outputTokens": OUT_TOK,
+                                 "totalTokens": IN_TOK + OUT_TOK},
+                      "metrics": {"latencyMs": 0}}),
+    ]
+    return b"".join(_eventstream_frame(et, j(body)) for et, body in events)
 
 
 class H(BaseHTTPRequestHandler):
@@ -278,8 +346,7 @@ class H(BaseHTTPRequestHandler):
         if p.startswith("/v1beta/models/") and ":generateContent" in p:
             return self._send(200, gemini(model, marker))
         if p.startswith("/model/") and p.endswith("/converse-stream"):
-            b = bedrock_stream(model, marker)
-            return self._send(501, j({"error": "oracle mock: bedrock converse-stream framing unsupported (named gap)"}))
+            return self._send(200, bedrock_stream(model, marker), "application/vnd.amazon.eventstream")
         if p.startswith("/model/") and p.endswith("/converse"):
             return self._send(200, bedrock(model, marker))
         if p == "/v2/chat":
