@@ -579,35 +579,34 @@ pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (Lane
 // `on_exhausted`/`OnExhausted` lowering already uses.
 pub use busbar_substrate::store::{BreakerCfg, TripConfig, TripMode};
 
-impl crate::config::BreakerCfg {
-    /// Resolve the parsed `breaker:` config into the runtime [`BreakerCfg`] the FSM evaluates.
-    /// `honor_retry_after` has no config knob (always honored), and an absent `trip` block falls
-    /// back to the ADR-0002 defaults. Was `From<&config::BreakerCfg> for store::BreakerCfg`; an
-    /// inherent method now that the runtime type is foreign (substrate-owned).
-    pub fn to_runtime(&self) -> BreakerCfg {
-        let trip = self
-            .trip
-            .as_ref()
-            .map(|t| TripConfig {
-                mode: match t.mode {
-                    crate::config::BreakerTripMode::ErrorRate => TripMode::ErrorRate,
-                    crate::config::BreakerTripMode::Consecutive => TripMode::Consecutive,
-                },
-                window_s: t.window_secs,
-                threshold: t.threshold,
-                min_requests: t.min_requests,
-                consecutive_n: t.consecutive_n,
-            })
-            .unwrap_or_default();
-        BreakerCfg {
-            base_cooldown_secs: self.base_cooldown_secs,
-            max_cooldown_secs: self.max_cooldown_secs,
-            honor_retry_after: true,
-            trip,
-            // `pools.<pool>.breaker:` is the LLM plane's only breaker surface, and that plane walks
-            // its members. The plane cells do not parse config (see `PlaneBreakers::new`).
-            bench_below_trip_threshold: true,
-        }
+/// Resolve the parsed `breaker:` config into the runtime [`BreakerCfg`] the FSM evaluates.
+/// `honor_retry_after` has no config knob (always honored), and an absent `trip` block falls
+/// back to the ADR-0002 defaults. Was an inherent `config::BreakerCfg::to_runtime` method; now a
+/// free function because BOTH the config type and the runtime type are foreign to this crate
+/// (substrate-owned), which the orphan rule forbids an inherent impl over.
+pub(crate) fn breaker_cfg_to_runtime(cfg: &crate::config::BreakerCfg) -> BreakerCfg {
+    let trip = cfg
+        .trip
+        .as_ref()
+        .map(|t| TripConfig {
+            mode: match t.mode {
+                crate::config::BreakerTripMode::ErrorRate => TripMode::ErrorRate,
+                crate::config::BreakerTripMode::Consecutive => TripMode::Consecutive,
+            },
+            window_s: t.window_secs,
+            threshold: t.threshold,
+            min_requests: t.min_requests,
+            consecutive_n: t.consecutive_n,
+        })
+        .unwrap_or_default();
+    BreakerCfg {
+        base_cooldown_secs: cfg.base_cooldown_secs,
+        max_cooldown_secs: cfg.max_cooldown_secs,
+        honor_retry_after: true,
+        trip,
+        // `pools.<pool>.breaker:` is the LLM plane's only breaker surface, and that plane walks
+        // its members. The plane cells do not parse config (see `PlaneBreakers::new`).
+        bench_below_trip_threshold: true,
     }
 }
 

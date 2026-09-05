@@ -4161,8 +4161,8 @@ fn test_terminal_completed_unchanged_for_end_turn() {
     assert_eq!(etype, "response.completed"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(body["type"].as_str(), Some("response.completed")); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(body["response"]["status"].as_str(), Some("completed")); // golden wire-contract literal (kept bare on purpose)
-    // `incomplete_details` is a spec-REQUIRED nullable member: present and null on a completed
-    // response (an object only on an incomplete one).
+                                                                        // `incomplete_details` is a spec-REQUIRED nullable member: present and null on a completed
+                                                                        // response (an object only on an incomplete one).
     assert_eq!(
         body["response"].get("incomplete_details"),
         Some(&serde_json::Value::Null)
@@ -6776,8 +6776,7 @@ fn responses_stream_logprobs_ride_text_done_and_finalized_part() {
     assert_eq!(part[0]["bytes"], serde_json::json!([72, 105]));
     assert_eq!(part[0]["top_logprobs"][0]["token"], "Hello");
     assert_eq!(
-        closed[2].1["item"]["content"][0]["logprobs"],
-        *part,
+        closed[2].1["item"]["content"][0]["logprobs"], *part,
         "the finalized item part carries the same logprobs as content_part.done"
     );
 }

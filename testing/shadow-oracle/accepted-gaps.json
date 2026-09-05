@@ -1,0 +1,13 @@
+{
+  "_comment": [
+    "Ids from owed-baseline.txt that the CURRENT golden no longer owes (moved to SKIP/FAIL, or",
+    "dropped from cells.json) — named here with an owner and a rationale so the loss is a decision,",
+    "not silence. replay.sh reads this file; an id it does not cover is RED. `cells` is a regex over",
+    "the cell id (same convention as accepted-differences.json's `cells` field).",
+    "Coverage GROWING (a new id owed that was not in the baseline) needs no entry here — it is",
+    "always allowed and just printed; only a SHRINK needs to be named.",
+    "Empty today: nothing has been knowingly dropped from the 1.5.5 golden since owed-baseline.txt",
+    "was generated from golden/1.5.5/ledger.tsv's PASS rows."
+  ],
+  "accepted": []
+}

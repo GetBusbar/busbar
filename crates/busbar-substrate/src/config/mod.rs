@@ -14,6 +14,14 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod auth;
+pub mod groups;
+pub mod hooks;
+pub mod limits;
+pub mod pools;
+pub mod providers;
+pub mod sections;
+
 /// A resolved on_error/on_empty TERMINAL. `Weighted` (default) is the non-negotiable safety
 /// stance: a broken/slow policy is indistinguishable from no policy and NEVER blocks or fails a
 /// request. `Reject` is fail-closed (503). `First` uses the configured member order (a

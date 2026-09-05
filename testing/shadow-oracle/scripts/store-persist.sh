@@ -16,7 +16,7 @@ repo="$(cd "${here}/../.." && pwd)"
 source "${repo}/testing/fleet-fixtures/lib.sh"
 PLUGIN="${1:?plugin name}"; SETTINGS="${2:-}"
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
-LP="${STORE_LISTEN_PORT:-48831}" AP="${STORE_ADMIN_PORT:-48832}" MP="${STORE_MOCK_PORT:-48791}"
+LP="${STORE_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48831}}" AP="${STORE_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48832}}" MP="${STORE_MOCK_PORT:-${SCRIPT_MOCK_PORT:-48791}}"
 W="$RAW/store-work"; mkdir -p "$W/plugins"
 tarball="$(bash "${here}/fetch-plugin.sh" "$PLUGIN")" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
 cp "$tarball" "$W/plugins/"

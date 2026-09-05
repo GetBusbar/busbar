@@ -10,10 +10,7 @@
   "Rate classes: Config-class mutations (/config/*, /admin-auth, /overlay/*, /plugins/reload, /plugins/rollback, /restart, /identity-providers/*, /export/*) share ONE 10-per-minute window per principal, including the If-Match/bad_body probes; the recorder must pace them or it will record 429 rate_limited with Retry-After: 60.",
   "Volatile response fields to normalise before diffing: audit seq/ts/hash, config version numbers/ETag, usage as_of/window, minted key ids/tokens, info build fields, openapi info.version."
  ],
- "needs_fixture": [
-  "PostHooks",
-  "PostPluginsRollback"
- ],
+ "needs_fixture": [],
  "ops": {
   "DeleteExportName": {
    "bad_body": null,
@@ -1655,11 +1652,27 @@
    "method": "POST",
    "mutating": true,
    "not_found": null,
-   "notes": "ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (CFG-220); the compiled-in `weighted`/`first` words are POOL strategies, not hook modules, so no plugin-free body can be registered. needs plugin fixture. `config` is required \u21d2 bad_body 400. Base-defined / grant-change \u21d2 409; a hook whose plugin never acks \u21d2 Cond::HookNoAck. Stale If-Match 409.",
-   "ok": null,
+   "notes": "Registers the NEW tap hook `oracle-webreq` backed by the published busbar-webrequest plugin (kind: hook in its manifest; declares no settings schema, so `open()` succeeds with no `settings` key at all -- verified against the live 1.5.5 binary: 201 Created). `config` is required \u21d2 bad_body 400. Re-registering the base-defined `busbar-headroom` name (defined in config.yaml as kind: gate) would be a grant/kind change \u21d2 409, but the ok body avoids that by using a fresh name. Stale If-Match 409; malformed If-Match 400. | oracle: variant=hooks (published headroom + webrequest loaded)",
+   "ok": {
+    "body": {
+     "config": {
+      "kind": "tap",
+      "module": "busbar-webrequest"
+     },
+     "name": "oracle-webreq"
+    },
+    "expect": [
+     200,
+     201
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
    "path": "/api/v1/admin/hooks",
    "restart": false,
-   "scope": "full"
+   "scope": "full",
+   "variant": "hooks"
   },
   "PostKeys": {
    "bad_body": {
@@ -1856,11 +1869,22 @@
    "method": "POST",
    "mutating": true,
    "not_found": null,
-   "notes": "ok: null \u2014 needs published plugin fixture. `file` required \u21d2 bad_body 400. Unknown file is 404 (no path param, so not_found is null); not loadable 409; stale If-Match 409; ephemeral 400.",
-   "ok": null,
+   "notes": "Rolls the published busbar-headroom plugin back to the SAME version already active (the only artifact present in the plugins dir under the hooks variant) -- a no-op-equivalent self-rollback, same pattern as PutAdminAuth's own-chain PUT: verified against the live 1.5.5 binary as 200 PluginRollbackView, config_version incremented (normalise). `file` required \u21d2 bad_body 400 (the existing bad_body sends `version` instead, which is not a field of PluginRollbackReq). Unknown file is 404 (no path param, so not_found stays null -- the distinguishing input is in the body, which this driver cannot express as a separate not_found probe). Stale If-Match 409; ephemeral 400. | oracle: variant=hooks (published headroom + webrequest loaded)",
+   "ok": {
+    "body": {
+     "file": "busbar-headroom-2.0.7-{TRIPLE}.tar.gz"
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
    "path": "/api/v1/admin/plugins/rollback",
    "restart": false,
-   "scope": "full"
+   "scope": "full",
+   "variant": "hooks"
   },
   "PostRestart": {
    "bad_body": {

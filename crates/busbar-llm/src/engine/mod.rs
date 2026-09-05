@@ -4,8 +4,8 @@
 //! THE LLM MONEY-PATH ENGINE, relocated from busbar-core (1.6.0 money-path Phase 3-4 C — THE PIVOT).
 //!
 //! The pool/lane/failover/egress routing tables ([`tables`]), the egress pipeline
-//! ([`pipeline`]/[`walk`]/[`select`]/[`wire`]/[`egress`]/[`response_body`]/[`lazy_body`]/[`usage`]/
-//! [`hooks`]), the active-probe health loop ([`health`]) and the native fallback plane now live in the
+//! ([`pipeline`]/[`attempt`]/[`exhaustion`]/[`select`]/[`wire`]/[`egress`]/[`response_body`]/
+//! [`lazy_body`]/[`usage`]/[`hooks`]), the active-probe health loop ([`health`]) and the native fallback plane now live in the
 //! plane crate. Core is a plane-agnostic router: it reaches these only through the neutral
 //! `busbar_substrate::plane_host::EngineTablesView` seam and the fallback plane decl's `build_runtime`
 //! / `viewer` fn-pointers. This engine calls DOWN into core only through the neutral ABI (the substrate's
@@ -57,13 +57,20 @@ pub(crate) mod pipeline;
 pub(crate) mod response_body;
 pub(crate) mod select;
 pub(crate) mod usage;
-pub(crate) mod walk;
 pub(crate) mod wire;
+
+// THE ONE ATTEMPT and the on_exhausted dispositions that call it — the successor to the deleted
+// `walk.rs` twin. `attempt/` is the only place an upstream send happens; `exhaustion/` is what the
+// plane does after the selection loop finds nowhere to send.
+pub(crate) mod attempt;
+pub(crate) mod exhaustion;
 
 // The flattened engine namespace — the successor to core `proxy/mod.rs`'s `pub(crate) use <mod>::*`
 // unification, so intra-engine `crate::engine::<symbol>` paths resolve regardless of which submodule
 // defines the symbol.
+pub(crate) use attempt::*;
 pub(crate) use egress::*;
+pub(crate) use exhaustion::*;
 pub(crate) use hooks::*;
 pub(crate) use lazy_body::*;
 pub(crate) use pipeline::*;
@@ -71,7 +78,6 @@ pub(crate) use response_body::*;
 pub(crate) use select::*;
 pub(crate) use tables::*;
 pub(crate) use usage::*;
-pub(crate) use walk::*;
 pub(crate) use wire::*;
 
 // NEUTRAL route-policy vocabulary that STAYS in core: the `x-busbar-route-*` response-header names,
@@ -155,6 +161,9 @@ mod forward_once_pool_cell_tests;
 #[path = "tests/forward_pool_integration_tests.rs"]
 mod forward_pool_integration_tests;
 #[cfg(test)]
+#[path = "tests/gate_policy_503_literals_tests.rs"]
+mod gate_policy_503_literals_tests;
+#[cfg(test)]
 #[path = "tests/hook_non_chat_projection_tests.rs"]
 mod hook_non_chat_projection_tests;
 #[cfg(test)]
@@ -163,6 +172,9 @@ mod hook_opt_in_projection_tests;
 #[cfg(test)]
 #[path = "tests/hook_seam_tests.rs"]
 mod hook_seam_tests;
+#[cfg(test)]
+#[path = "tests/hook_seat_order_tests.rs"]
+mod hook_seat_order_tests;
 #[cfg(test)]
 #[path = "tests/ingress_indistinguishability_tests.rs"]
 mod ingress_indistinguishability_tests;
@@ -206,6 +218,12 @@ mod request_short_circuit_tests;
 #[path = "tests/reroute_pool_tests.rs"]
 mod reroute_pool_tests;
 #[cfg(test)]
+#[path = "tests/responses_ingress_stream_tests.rs"]
+mod responses_ingress_stream_tests;
+#[cfg(test)]
+#[path = "tests/route_deadline_tests.rs"]
+mod route_deadline_tests;
+#[cfg(test)]
 #[path = "tests/runtime_carry_tests.rs"]
 mod runtime_carry_tests;
 #[cfg(test)]
@@ -217,6 +235,9 @@ mod signal_catalog_tests;
 #[cfg(test)]
 #[path = "tests/stop_sequence_cap_degrade_tests.rs"]
 mod stop_sequence_cap_degrade_tests;
+#[cfg(test)]
+#[path = "tests/stream_no_usage_bills_zero_tests.rs"]
+mod stream_no_usage_bills_zero_tests;
 #[cfg(test)]
 #[path = "tests/translate_offload_tests.rs"]
 mod translate_offload_tests;

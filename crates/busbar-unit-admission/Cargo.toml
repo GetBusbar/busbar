@@ -1,0 +1,27 @@
+# busbar-unit-admission — the door.
+#
+# WHY A SEPARATE CRATE. This is the money decision, and it is the ONE piece of 1.6.0 that is not
+# allowed to be a redesign: the function that says yes or no to a request is 1.5.5's function,
+# moved, not rewritten. Keeping it in a crate of its own — one that depends on the capability types
+# and NOTHING else in the workspace — is what makes that claim checkable. There is no store here,
+# no config parser, no HTTP, no async runtime: nothing that could quietly change a comparison.
+#
+# The store I/O the decision needs (the per-bucket ledger cells) enters through one small trait the
+# integrator implements against the lane store. The cells themselves are node-local, hydrated once
+# at boot and never re-read on the request path, exactly as at the tag.
+[package]
+name = "busbar-unit-admission"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The admission unit: 1.5.5's check-then-charge chain decision, behind the sealed step-4 trait shape."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_unit_admission"
+path = "src/lib.rs"
+
+[dependencies]
+# The capability types and the tokens that seal them. The only workspace dependency, deliberately.
+busbar-caps = { path = "../busbar-caps" }

@@ -3346,8 +3346,15 @@ fn omitted_phase_is_exactly_the_four_core_stages() {
 /// The pre-fix file contains the contradicting sentence this test rejects.
 #[test]
 fn the_phase_field_doc_agrees_with_the_frozen_omitted_phase_answer() {
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/config/mod.rs"))
-        .expect("this crate's config/mod.rs is readable");
+    // `HookCfg` (and its `phase:` field doc this test pins) moved to
+    // `busbar_substrate::config::hooks` — busbar-core re-exports it at the historical
+    // `config::HookCfg` path, but the doc comment this test greps for now lives in the substrate
+    // source file, not here.
+    let src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../busbar-substrate/src/config/hooks.rs"
+    ))
+    .expect("busbar-substrate's config/hooks.rs is readable");
     assert!(
         !src.contains("falls back to `at` (or `request` when that is also"),
         "the `phase:` field doc still claims an omitted phase+at fires at `request` ONLY; \

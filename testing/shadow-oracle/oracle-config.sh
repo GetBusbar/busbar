@@ -41,7 +41,22 @@ oracle_protocol() {  # <dialect>
 }
 
 oracle_write_config() {  # <work> <listen_port> <admin_port> <mock_port>
+  # A fresh config means a fresh overlay: the runtime overlay file the previous variant's admin
+  # writes left beside config.yaml (a hook registered under the hooks variant, say) must not leak
+  # into the next boot, where the plugin dir it names is no longer configured.
+  rm -f "${1}/busbar-overlay.json"
   local work="$1" listen="$2" admin="$3" mock="$4"
+  # concurrency/queue/cooldown-family knobs. `queue_max_ms` is generous enough (well under the
+  # default failover budget) for the "admit 1, queue N-1, serve them off the freed permit" cell;
+  # the `queue-timeout` variant shrinks it so the SAME pool shape proves the bounded-wait-expires
+  # arm instead (paired with the mock's `slow` control on that lane so the permit never frees in
+  # time). `inbound_concurrent` stays empty (key omitted -> the real 8192 default) unless the
+  # `inbound-concurrency-2` variant asks for the tiny cap the inbound-shed cell needs.
+  local queue_max_ms=4000 inbound_concurrent=""
+  case "${ORACLE_VARIANT:-}" in
+    queue-timeout) queue_max_ms=50 ;;
+    inbound-concurrency-2) inbound_concurrent=2 ;;
+  esac
   : >"${work}/providers.yaml"
   local d
   for d in "${ORACLE_DIALECTS[@]}"; do
@@ -69,6 +84,14 @@ auth:
   admin_auth: [admin-tokens]
 export:
   metrics: { module: prometheus, settings: { buffer_seconds: 60 } }
+EOF
+    if [ -n "$inbound_concurrent" ]; then
+      cat <<EOF
+limits:
+  max_inbound_concurrent: ${inbound_concurrent}
+EOF
+    fi
+    cat <<EOF
 groups:
   oracle:
     limits:
@@ -88,6 +111,21 @@ EOF
       echo "  m-${d}:"
       echo "    provider: ${d}"
     done
+    # Dedicated lanes for the concurrency/queue/cooldown families, isolated from the six dialect
+    # lanes above so saturating one of these can never perturb an unrelated cell sharing a boot:
+    #   m-lane-c1    max_concurrent: 1  -> oracle-lc1 (per-lane AtCapacity / on_exhausted 503 shape)
+    #   m-queue-lane max_concurrent: 1  -> oracle-q   (on_exhausted: queue)
+    #   m-cd-lane    unbounded          -> oracle-cd  (base_cooldown_secs 1: trip/settle/serve)
+    cat <<'EOF'
+  m-lane-c1:
+    provider: openai-chat
+    max_concurrent: 1
+  m-queue-lane:
+    provider: openai-chat
+    max_concurrent: 1
+  m-cd-lane:
+    provider: openai-chat
+EOF
     # A PRICED card so spend is real: input 0.1 / output 0.2 units per token -> the mock's fixed
     # 11 in / 7 out costs 2.5 units per call, so cents-truncation, fee and refund arithmetic are all
     # exercised on every cell (spend_cents 2, not 2.5; PB-16/22).
@@ -95,12 +133,22 @@ EOF
     for d in "${ORACLE_DIALECTS[@]}"; do
       echo "  m-${d}: { input_utok: 100000, output_utok: 200000 }"
     done
+    cat <<'EOF'
+  m-lane-c1: { input_utok: 100000, output_utok: 200000 }
+  m-queue-lane: { input_utok: 100000, output_utok: 200000 }
+  m-cd-lane: { input_utok: 100000, output_utok: 200000 }
+EOF
     # Pools:
     #   oracle-unused  no cell targets it: the NOSCOPE key is allowed ONLY this pool -> 403 at Approve
     #   oracle-fo      two members with a consecutive-1 breaker: a down member trips on the first 5xx
     #                  and the walk fails over (max_hops 3, deadline 120) — the route.failover family
     #   oracle-fb      one member, on_exhausted -> fallback_pool oracle-fo (the cross-pool hop, PB-4/47)
     #   oracle-lb      least_bad terminal
+    #   oracle-lc1     one member, models.<m>.max_concurrent: 1 -> the concurrency family's
+    #                  per-lane AtCapacity / on_exhausted 503 shape
+    #   oracle-q       one member, models.<m>.max_concurrent: 1, on_exhausted: queue { max_ms } ->
+    #                  the queue family (admit 1, queue+serve the rest, or time out the wait)
+    #   oracle-cd      one member, base_cooldown_secs 1 -> the cooldown family (trip, settle, serve)
     if [ "${ORACLE_VARIANT:-}" = hooks ]; then
       # The PUBLISHED 1.5.5-era hook plugins (by digest) loaded through the binary under test, and
       # one gate instance of headroom attached to its own pool — the hooks / plugin admin surfaces.
@@ -156,6 +204,17 @@ EOF
       - { model: m-gemini }
     breaker: { trip: { mode: consecutive, consecutive_n: 1 } }
     on_exhausted: least_bad
+  oracle-lc1:
+    members:
+      - { model: m-lane-c1 }
+  oracle-q:
+    members:
+      - { model: m-queue-lane }
+    on_exhausted: { queue: { max_ms: ${queue_max_ms} } }
+  oracle-cd:
+    members:
+      - { model: m-cd-lane }
+    breaker: { base_cooldown_secs: 1, max_cooldown_secs: 5, trip: { mode: consecutive, consecutive_n: 1 } }
 EOF
   } >"${work}/config.yaml"
 }

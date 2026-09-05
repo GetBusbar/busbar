@@ -20,10 +20,27 @@ exactly where the inventory row says):
   {"providers_delete": "p.k"}
   {"env": {"VAR": "value"}}             environment for the process
   {"args": ["--flag", ...]}             extra CLI arguments
+  {"plugin_dir": ["<repo-name>", ...]}  stage a REAL, digest-pinned, published plugin tarball (see
+                                        fetch-plugin.sh / plugin-digests.tsv) per named repo into a
+                                        fresh <out>/plugins/ directory and point `plugins.dir` at it
+                                        (merged into any `plugins:` map a prior `set` op already
+                                        wrote — dir is the only key this op touches). Lets a boot
+                                        mutation put a REAL signed artifact of a KNOWN kind (hook /
+                                        auth / store / secret) in front of a config reference that
+                                        expects a different kind, without needing a purpose-built
+                                        broken plugin.
+  {"plugin_dir_corrupt": {"name": "<repo-name>", "truncate_bytes": N}}
+                                        same staging as `plugin_dir`, but truncates the copied
+                                        tarball to N bytes first — a real signed artifact whose
+                                        archive/manifest is now unreadable (BOOT-135's `plugin
+                                        validation failed` family), as opposed to a wrong-KIND but
+                                        otherwise-intact one.
 """
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 
 try:
@@ -33,6 +50,31 @@ except ImportError:  # pragma: no cover
     sys.exit(2)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _fetch_plugin(repo: str) -> str:
+    """Resolve the cached, digest-verified tarball path for a plugin-digests.tsv repo name, fetching
+    it (network) on a cache miss — the exact same path oracle-config.sh / record.sh already use, so a
+    mutation's plugin is provably the same artifact the golden's other plugin cells were proven against."""
+    out = subprocess.run(["bash", os.path.join(HERE, "fetch-plugin.sh"), repo],
+                          capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+def _stage_plugin_dir(out_dir: str, repos: list, corrupt: dict | None = None) -> str:
+    """Copy each named published plugin's tarball into <out_dir>/plugins/ (optionally truncating one
+    of them per `corrupt`), returning the absolute plugins dir path."""
+    plugins_dir = os.path.join(out_dir, "plugins")
+    os.makedirs(plugins_dir, exist_ok=True)
+    for repo in repos:
+        src = _fetch_plugin(repo)
+        dst = os.path.join(plugins_dir, os.path.basename(src))
+        shutil.copyfile(src, dst)
+        if corrupt and corrupt.get("name") == repo:
+            n = int(corrupt["truncate_bytes"])
+            with open(dst, "r+b") as f:
+                f.truncate(n)
+    return plugins_dir
 
 
 def walk_set(doc, path: str, value):
@@ -113,6 +155,15 @@ def main() -> int:
             env_lines += [f"{k}={v}" for k, v in op["env"].items()]
         elif "args" in op:
             args += list(op["args"])
+        elif "plugin_dir" in op:
+            os.makedirs(a.out, exist_ok=True)
+            plugins_dir = _stage_plugin_dir(a.out, op["plugin_dir"])
+            cfg.setdefault("plugins", {})["dir"] = plugins_dir
+        elif "plugin_dir_corrupt" in op:
+            os.makedirs(a.out, exist_ok=True)
+            spec = op["plugin_dir_corrupt"]
+            plugins_dir = _stage_plugin_dir(a.out, [spec["name"]], corrupt=spec)
+            cfg.setdefault("plugins", {})["dir"] = plugins_dir
         else:
             print(f"apply-mutation: unknown op {op}", file=sys.stderr); return 2
 

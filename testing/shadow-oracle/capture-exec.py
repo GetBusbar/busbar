@@ -21,7 +21,17 @@ import sys
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 VERSION = re.compile(r"\bbusbar (\d+\.\d+\.\d+)(?:-[0-9A-Za-z.]+)?\b")
-DURATION = re.compile(r"\b\d+(?:\.\d+)?\s?(?:ms|µs|us|ns|s)\b")
+# A bare duration token (`120000 ms`) is ambiguous: it is exactly as likely to be a CONFIG VALUE
+# quoted back in a warning ("on_exhausted.queue.max_ms (120001 ms) exceeds ...") as it is to be a
+# measured elapsed time. Only scrub it when it follows a word that actually reports elapsed time —
+# "took"/"after"/"elapsed"/"in " — so a changed default (e.g. a mutated attempt_timeout_ms) that shows
+# up quoted in a message stays visible instead of being silently normalized away.
+DURATION = re.compile(
+    r"(?<=\btook )\d+(?:\.\d+)?\s?(?:ms|µs|us|ns|s)\b"
+    r"|(?<=\bafter )\d+(?:\.\d+)?\s?(?:ms|µs|us|ns|s)\b"
+    r"|(?<=\belapsed )\d+(?:\.\d+)?\s?(?:ms|µs|us|ns|s)\b"
+    r"|(?<=\bin )\d+(?:\.\d+)?\s?(?:ms|µs|us|ns|s)\b"
+)
 TIMESTAMP = re.compile(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\b")
 TMPDIR = re.compile(r"/(?:private/)?(?:tmp|var/folders)/[^\s'\"`:]+")
 

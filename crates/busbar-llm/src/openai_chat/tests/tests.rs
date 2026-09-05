@@ -5405,17 +5405,13 @@ fn plain_ir_response(logprobs: Vec<crate::ir::IrTokenLogprob>) -> crate::ir::IrR
 #[test]
 fn write_response_emits_required_null_logprobs_and_refusal_when_backend_carried_none() {
     let out = OpenAiWriter.write_response(&plain_ir_response(Vec::new()));
-    let choice = out["choices"][0]
-        .as_object()
-        .expect("choice is an object");
+    let choice = out["choices"][0].as_object().expect("choice is an object");
     assert_eq!(
         choice.get("logprobs"),
         Some(&serde_json::Value::Null),
         "choices[].logprobs is required by the spec: JSON null when none were produced: {out}"
     );
-    let message = choice["message"]
-        .as_object()
-        .expect("message is an object");
+    let message = choice["message"].as_object().expect("message is an object");
     assert_eq!(
         message.get("refusal"),
         Some(&serde_json::Value::Null),

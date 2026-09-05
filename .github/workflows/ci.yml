@@ -1352,7 +1352,10 @@ jobs:
         run: |
           set -euo pipefail
           digest=$(awk -F'\t' '$1=="1.5.5" && $2=="busbar-x86_64-unknown-linux-gnu.tar.gz"{print $3}' testing/shadow-oracle/golden-digests.tsv)
-          rev=$(cat testing/shadow-oracle/cells.json testing/shadow-oracle/normalize.py testing/shadow-oracle/capture.py testing/shadow-oracle/capture-exec.py testing/shadow-oracle/oracle-config.sh testing/shadow-oracle/mock-upstream.py testing/shadow-oracle/build-request.py testing/shadow-oracle/record.sh testing/shadow-oracle/scripts/*.sh testing/shadow-oracle/fixtures/*.json | sha256sum | cut -c1-16)
+          # Same file list, same hash, as record.sh/diff-cells.py's harness_rev provenance field —
+          # computed by the one shared function so the cache key and the recorded provenance can
+          # never quietly disagree about what "the harness changed" means.
+          rev=$(bash testing/shadow-oracle/harness-rev.sh | awk '{print $2}' | cut -c1-16)
           echo "key=oracle-golden-${digest:0:12}-${rev}" >> "$GITHUB_OUTPUT"
       - name: Cache the golden recording and the 1.5.5 artifacts
         uses: actions/cache@v4

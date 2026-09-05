@@ -1,0 +1,27 @@
+# busbar-unit-egress-auth — the ROUTE step's egress-auth unit.
+#
+# WHY A SEPARATE CRATE. Between the egress unit encoding the wire request and the send, ONE thing
+# decorates it with credentials: never the plane (a plane never sees a secret), never the transport
+# (it only carries bytes). That unit's whole job — decorate the request, substitute every
+# `SecretSlot` itself, and re-check the lane after decoration — is a pure function over data plus
+# one HMAC computation, so it stands alone with `busbar-caps` as its only in-tree dependency. `hmac`
+# / `sha2` / `hex` are the plain building blocks SigV4 is defined in terms of, already pinned in the
+# workspace table; nothing here reaches into a transport, a plane, or an HTTP framework.
+[package]
+name = "busbar-unit-egress-auth"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The egress-auth unit: decorate(cfg, &EgressBody, signer) -> AuthDecoration over bearer / api-key / SigV4, SecretSlot substitution, and the post-decoration lane cross-check."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_unit_egress_auth"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-caps = { path = "../busbar-caps" }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }

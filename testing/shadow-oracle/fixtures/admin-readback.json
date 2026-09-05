@@ -1,0 +1,64 @@
+{
+  "_comment": [
+    "Read-back for every mutating admin.ops operation (fixtures/admin-bodies.json, op.mutating == true).",
+    "A write cell that only checked its own response could pass a 1.6.0 that answers 200 and writes",
+    "nothing. This file says, for each operationId, what GET a real write must show up in — the",
+    "natural read of the resource the write just touched. enumerate-cells.py turns each entry into a",
+    "`request.post` follow-up GET on that op's `ok` cell (and its idempotent-replay copy, if any); the",
+    "recorder runs it AFTER the after-effects snapshot and stores the normalized result as",
+    "`effects.readback`. An operation with no readable resource is listed with kind `none` and a",
+    "one-line reason instead of a GET.",
+    "",
+    "kind vocabulary:",
+    "  same     GET the exact path the write used (PUT/PATCH/DELETE on a named resource)",
+    "  parent   GET the write's path with its last /segment removed (a sub-resource verb like",
+    "           .../revoke, .../rotate, or .../settings acts ON a resource one level up)",
+    "  fixed    GET a fixed path unrelated to the write's own path (a collection/list/effective view)",
+    "  resource GET a path built from the write's OWN response body via a {RESP:/pointer} placeholder",
+    "           (a POST that mints a new name/id: the driver fills the placeholder from the response",
+    "           JSON it just captured, e.g. {RESP:/id} -> the minted key id)",
+    "  none     no GET reflects this write; `reason` says why"
+  ],
+  "readback": {
+    "PutConfigSettings": {"kind": "same"},
+    "PostConfigApply": {"kind": "fixed", "path": "/api/v1/admin/config/settings"},
+    "PostConfigReload": {"kind": "fixed", "path": "/api/v1/admin/config"},
+    "PostConfigRollback": {"kind": "fixed", "path": "/api/v1/admin/config/settings"},
+    "DeleteOverlaySection": {"kind": "fixed", "path": "/api/v1/admin/config/settings"},
+
+    "PostGroups": {"kind": "resource", "path": "/api/v1/admin/groups/{RESP:/name}"},
+    "PutGroupsName": {"kind": "same"},
+    "PatchGroupsName": {"kind": "same"},
+    "DeleteGroupsName": {"kind": "same"},
+
+    "PutExportName": {"kind": "same"},
+    "PatchExportNameSettings": {"kind": "parent"},
+    "DeleteExportName": {"kind": "same"},
+
+    "PutHooksName": {"kind": "same"},
+    "PostHooks": {"kind": "resource", "path": "/api/v1/admin/hooks/{RESP:/name}"},
+    "PatchHooksNameSettings": {"kind": "parent"},
+    "DeleteHooksName": {"kind": "same"},
+
+    "PutIdentityProvidersName": {"kind": "same"},
+    "PatchIdentityProvidersNameSettings": {"kind": "parent"},
+    "DeleteIdentityProvidersName": {"kind": "same"},
+
+    "PostKeys": {"kind": "resource", "path": "/api/v1/admin/keys/{RESP:/id}"},
+    "PatchKeysId": {"kind": "same"},
+    "DeleteKeysId": {"kind": "same"},
+    "PostKeysIdRevoke": {"kind": "parent"},
+    "PostKeysIdRotate": {"kind": "parent"},
+
+    "PutAdminAuth": {"kind": "same"},
+
+    "PostPlugins": {"kind": "fixed", "path": "/api/v1/admin/plugins"},
+    "DeletePluginsFile": {"kind": "fixed", "path": "/api/v1/admin/plugins"},
+    "PostPluginsReload": {"kind": "fixed", "path": "/api/v1/admin/plugins"},
+    "PostPluginsRollback": {"kind": "fixed", "path": "/api/v1/admin/plugins"},
+
+    "PostAuthCacheFlush": {"kind": "none", "reason": "flushes an in-process auth cache; no GET exposes cache contents or a flush counter"},
+    "PostSigningKeyRotate": {"kind": "none", "reason": "1.5.5 rotates nothing (reports the current kid only, per its own notes); the kid itself has no GET and is never a secret to read back"},
+    "PostRestart": {"kind": "none", "reason": "drains both listeners and exits the process; there is no later request to make against the same instance"}
+  }
+}

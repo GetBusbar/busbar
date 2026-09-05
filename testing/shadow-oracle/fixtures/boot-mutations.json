@@ -1659,27 +1659,39 @@
       "family": "boot.refusal",
       "mode": "boot",
       "target": "config",
-      "op": null,
+      "op": [
+        { "set": "plugins.enabled", "value": true },
+        { "plugin_dir_corrupt": { "name": "webrequest-hook", "truncate_bytes": 200 } }
+      ],
       "expect": { "exit": 1, "stderr_contains": "plugin validation failed:", "stdout_contains": null },
-      "notes": "§3.3 BOOT-135 (main.rs:1911). needs a plugin-tarball fixture with an invalid manifest in plugins.dir."
+      "notes": "§3.3 BOOT-135 (main.rs:1911). The published busbar-webrequest tarball, truncated to 200 bytes in plugins.dir: a real signed artifact whose manifest member can no longer be read (scan_and_validate runs over every tarball regardless of whether any hook/store/auth/identity-providers reference names it). Verified against the live 1.5.5 binary: `plugin validation failed:\\n  - invalid plugin '…': cannot read manifest member: unexpected end of file`."
     },
     {
       "id": "BOOT-136",
       "family": "boot.refusal",
       "mode": "boot",
       "target": "config",
-      "op": null,
+      "op": [
+        { "set": "plugins.enabled", "value": true },
+        { "plugin_dir": [ "webrequest-hook" ] },
+        { "set": "store", "value": { "module": "busbar-webrequest", "settings": {} } }
+      ],
       "expect": { "exit": 1, "stderr_contains": "resolves to plugin", "stdout_contains": null },
-      "notes": "§3.3 BOOT-136 (main.rs:1954-1957). needs a signed non-store plugin fixture whose name/alias store.module can reference."
+      "notes": "§3.3 BOOT-136 (main.rs:1954-1957). store.module names the published busbar-webrequest plugin (kind: hook, the only PUBLISHED non-store plugin readily at hand) instead of a store plugin. Verified against the live 1.5.5 binary: `store.module: 'busbar-webrequest' resolves to plugin 'busbar-webrequest' of kind 'hook', not a store plugin`."
     },
     {
       "id": "BOOT-137a",
       "family": "boot.refusal",
       "mode": "boot",
       "target": "config",
-      "op": null,
+      "op": [
+        { "set": "plugins.enabled", "value": true },
+        { "plugin_dir": [ "webrequest-hook" ] },
+        { "set": "identity-providers.oracle-webreq-idp", "value": { "module": "busbar-webrequest" } },
+        { "set": "auth.chain", "value": [ "keys", "oracle-webreq-idp" ] }
+      ],
       "expect": { "exit": 1, "stderr_contains": "not an `auth` plugin", "stdout_contains": null },
-      "notes": "§3.3 BOOT-137a (main.rs:1994-1997). needs a signed non-auth plugin fixture referenced from auth.chain."
+      "notes": "§3.3 BOOT-137a (main.rs:1994-1997). auth.chain names an identity-providers ENTRY (chain entries are names, not bare module strings — config_validate refuses a bare unregistered name before this check ever runs) whose own `module:` resolves to the published busbar-webrequest plugin (kind: hook). Verified against the live 1.5.5 binary: `auth.chain module 'busbar-webrequest' resolves to plugin 'busbar-webrequest' of kind 'hook', not an `auth` plugin`."
     },
     {
       "id": "BOOT-137b",
@@ -1708,9 +1720,13 @@
       "family": "boot.refusal",
       "mode": "boot",
       "target": "config",
-      "op": null,
+      "op": [
+        { "set": "plugins.enabled", "value": true },
+        { "plugin_dir": [ "auth-oidc" ] },
+        { "set": "hooks.oracle-oidc-hook", "value": { "module": "busbar-auth-oidc-plugin", "kind": "tap" } }
+      ],
       "expect": { "exit": 1, "stderr_contains": "not a `hook` plugin", "stdout_contains": null },
-      "notes": "§3.3 BOOT-138a (main.rs:2033-2036). needs a signed non-hook plugin fixture referenced from hooks.<h>.module."
+      "notes": "§3.3 BOOT-138a (main.rs:2033-2036). hooks.<h>.module names the published busbar-auth-oidc-plugin (kind: auth) instead of a hook plugin. Verified against the live 1.5.5 binary: `a hook references plugin 'busbar-auth-oidc-plugin', which resolves to plugin 'busbar-auth-oidc-plugin' of kind 'auth', not a `hook` plugin`."
     },
     {
       "id": "BOOT-138b",
@@ -1738,9 +1754,13 @@
       "family": "boot.refusal",
       "mode": "boot",
       "target": "config",
-      "op": null,
+      "op": [
+        { "set": "plugins.enabled", "value": true },
+        { "plugin_dir": [ "webrequest-hook" ] },
+        { "set": "identity-providers.oracle-webreq-idp2", "value": { "module": "busbar-webrequest" } }
+      ],
       "expect": { "exit": 1, "stderr_contains": "not an `auth` plugin. A provider's `module:` must be a built-in or a `kind: auth` plugin", "stdout_contains": null },
-      "notes": "§3.3 BOOT-139a (main.rs:2073-2079). needs a signed non-auth plugin fixture named from identity-providers.<n>.module."
+      "notes": "§3.3 BOOT-139a (main.rs:2073-2079). identity-providers.<n>.module names the published busbar-webrequest plugin (kind: hook); this entry is NOT referenced from auth.chain (that would trip BOOT-137a's earlier, distinct check first) — 1.5.5 resolves EVERY identity-providers definition's module unconditionally at boot, referenced or not. Verified against the live 1.5.5 binary: `identity-providers.oracle-webreq-idp2.module: 'busbar-webrequest' resolves to plugin 'busbar-webrequest' of kind 'hook', not an `auth` plugin. A provider's `module:` must be a built-in or a `kind: auth` plugin; the modules available right now are: keys | admin-tokens.`."
     },
     {
       "id": "BOOT-139b",
@@ -1774,9 +1794,13 @@
       "family": "boot.refusal",
       "mode": "both",
       "target": "config",
-      "op": null,
+      "op": [
+        { "set": "plugins.enabled", "value": true },
+        { "plugin_dir": [ "webrequest-hook" ] },
+        { "set": "providers.anthropic.api_key", "value": { "module": "busbar-webrequest", "settings": {} } }
+      ],
       "expect": { "exit": 1, "stderr_contains": "only a `kind: secret` plugin can back a secret reference", "stdout_contains": null },
-      "notes": "§3.3 BOOT-150 (main.rs:2452-2456). needs a signed non-secret plugin fixture whose name a SecretRef `module:` can reference."
+      "notes": "§3.3 BOOT-150 (main.rs:2452-2456). providers.anthropic.api_key is a structured SecretRef naming the published busbar-webrequest plugin (kind: hook) as its module. Verified against the live 1.5.5 binary at both --validate and boot: `providers.anthropic.api_key references secret module 'busbar-webrequest', but plugin 'busbar-webrequest' has kind 'hook', not 'secret'; only a `kind: secret` plugin can back a secret reference`."
     },
     {
       "id": "BOOT-151",
@@ -1846,9 +1870,13 @@
       "family": "boot.refusal",
       "mode": "boot",
       "target": "config",
-      "op": null,
+      "op": [
+        { "set": "plugins.enabled", "value": true },
+        { "plugin_dir": [ "store-sqlite" ] },
+        { "set": "store", "value": { "module": "busbar-store-sqlite-plugin", "settings": { "db_path": "/nonexistent-dir-xyz/db.sqlite" } } }
+      ],
       "expect": { "exit": 1, "stderr_contains": "plugin load failed:", "stdout_contains": null },
-      "notes": "§3.3 BOOT-171 (main.rs:3453). needs a store plugin fixture that fails to open (e.g. sqlite db_path in an unwritable dir)."
+      "notes": "§3.3 BOOT-171 (main.rs:3453). The published busbar-store-sqlite-plugin with db_path in a directory that does not exist, so its own open() fails. Verified against the live 1.5.5 binary: `store 'busbar-store-sqlite-plugin' plugin load failed: plugin 'busbar-store-sqlite-plugin' open failed: unable to open database file: /nonexistent-dir-xyz/db.sqlite`."
     },
     {
       "id": "BOOT-172",

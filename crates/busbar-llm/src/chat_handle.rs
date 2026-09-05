@@ -380,8 +380,18 @@ impl IrHandle for ChatRespHandle {
         ingress_protocol: &str,
         elapsed_ms: Option<u64>,
     ) -> Option<Vec<u8>> {
+        // A client that asked to stream must get its dialect's stream even when the upstream answered
+        // with one buffered JSON body. The writer gets first say (Bedrock synthesizes its own binary
+        // eventstream frames); every SSE-framed dialect falls through to the shared synthesizer, which
+        // drives the buffered response through the same translator the live stream path uses.
         super::proto_codec::protocol_for(ingress_protocol)
             .and_then(|p| p.writer().wrap_buffered_as_stream(&self.0, elapsed_ms))
+            .or_else(|| {
+                super::proto_stream::StreamTranslate::synthesize_from_response(
+                    ingress_protocol,
+                    &self.0,
+                )
+            })
     }
     fn write_ingress_response(
         &self,
