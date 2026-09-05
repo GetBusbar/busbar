@@ -151,6 +151,17 @@ plane-a2a = ["dep:busbar-a2a", "busbar-core/plane-a2a"]
 # rule it strips `busbar-voice?/openapi-schema`, leaving voice byte-for-byte removable. Compiling the
 # runtime here gives the `build_runtime` body; the skeleton build leaves `build_runtime: None`.
 plane-voice = ["dep:busbar-voice", "busbar-voice?/runtime", "busbar-core/plane-voice"]
+# THE VOICE PLANE, SERVED THROUGH THE COMPOSITION ROOT rather than through the previous release's
+# path. OFF by default and deliberately so: the root is BUILT before any plane is SWITCHED onto it,
+# and this is the switch. Off, the binary is byte-for-byte what it was — the module still compiles
+# and its cells still run, because the root is proved against the real traits whether or not
+# anything routes through it. On, `main()` mounts the voice plane's units.
+#
+# It carries no config key, no environment variable and no boot line. A deployment cannot turn it on
+# by editing a config file and cannot tell from the logs which way it was built, which is what keeps
+# the neutrality cells answering the same on both legs. It forwards to `plane-voice` because the
+# thing it mounts needs the plane's own crate edge to exist.
+root-voice = ["plane-voice"]
 auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]
 openapi-schema = ["busbar-core/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]

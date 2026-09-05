@@ -733,6 +733,38 @@ fn register_ws_arrivals() {
     }
 }
 
+/// SEAL THE COMPOSITION ROOT AND MOUNT THE VOICE PLANE ONTO IT — the switch-over, behind
+/// `root-voice`, which is off by default.
+///
+/// The root is built before any plane is switched onto it, and this is where one is. Sealing is the
+/// whole mount: seven transports composed bottom-up, five planes registered over them, every claim
+/// checked against every other claim and against the transports that exist, and the walk order
+/// answered once. A composition that does not seal is a node that must not bind a listener, so the
+/// answer is a refusal on the standard error stream and a non-zero exit — not a warning, and not a
+/// log line, because a node that refused to boot has no boot to log.
+///
+/// Nothing is emitted on the success path. That is the point: a deployment cannot tell from its logs
+/// which way this binary was built, so the boot-line set, the series list and the route list are the
+/// same either way, and the neutrality cells compare like with like.
+#[cfg(feature = "root-voice")]
+fn mount_root_voice() {
+    match root::registry::seal(busbar_transport_http::ClientSettings::default()) {
+        Ok(sealed) => {
+            debug_assert!(
+                sealed
+                    .registry
+                    .resolve(busbar_kernel::registry::PluginKind::Plane, "voice")
+                    .is_some(),
+                "the voice plane is registered or the seal is not the composition it claims to be"
+            );
+        }
+        Err(refusal) => {
+            eprintln!("busbar: the composition root did not seal: {refusal}");
+            std::process::exit(2);
+        }
+    }
+}
+
 fn main() {
     // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
     // set. This is the composition root's whole knowledge of the protocol crates: one line per
@@ -756,6 +788,12 @@ fn main() {
     // installs nothing and the router mounts no WS-accept route. Gated to `plane-voice` (voice is the
     // only duplex plane today), so a shipped build drops it entirely — strong-form deletable.
     register_ws_arrivals();
+    // THE COMPOSITION ROOT'S OWN SEAL, in the same slot and for the same reason as the axes above:
+    // it reads the plane and transport lists, so every axis must be installed before it runs and it
+    // must run before any reader. Behind `root-voice`, which is off by default — with it off this
+    // line is not compiled and the binary is what it was.
+    #[cfg(feature = "root-voice")]
+    mount_root_voice();
     // THE HOSTLESS-EGRESS DRIVER, installed once here beside the plane axis: the neutral
     // `busbar_substrate::egress::seam::HostlessEgress` a plane drives its governed outbound hop
     // through, backed by core's `CoreHostlessEgress` (the `plane_host` FFI egress vtable). An
