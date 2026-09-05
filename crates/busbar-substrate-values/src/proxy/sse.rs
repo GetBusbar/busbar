@@ -32,7 +32,8 @@ impl SseReader {
                 // malformed backend. Dropping it (rather than lossily corrupting the payload) is
                 // correct, but doing so SILENTLY hid the malformed stream — surface it so the drop
                 // is diagnosable rather than a mystery missing event.
-                Err(e) => tracing::warn!(
+                Err(e) => crate::diag_warn!(
+                    crate::diagnostics::PLANE_SSE_FRAME_NOT_UTF8,
                     bytes = e.as_bytes().len(),
                     "dropping a non-UTF-8 SSE frame (the event-stream format requires UTF-8)"
                 ),
@@ -109,3 +110,7 @@ pub fn sse_data(frame: &str) -> Option<String> {
     }
     any.then_some(data)
 }
+
+#[cfg(test)]
+#[path = "../tests/sse_tests.rs"]
+mod tests;

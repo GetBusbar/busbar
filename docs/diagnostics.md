@@ -1712,6 +1712,17 @@ The submit-time retention sweep found an ACTIVE task idle past the abandonment c
 
 **What to do:** Investigate the durable task-store outage. Abandoned tasks settle (and then age out of the working set) once the store accepts writes again.
 
+<a id="plane-sse-frame-not-utf8"></a>
+### BUSBAR-7100 — A relayed SSE frame was not valid UTF-8 and was dropped
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-sse-frame-not-utf8`
+
+The shared SSE frame reader (the JSON-RPC plane relays) assembled a complete event whose bytes are not valid UTF-8. The event-stream format is UTF-8 BY DEFINITION, so this is a malformed backend; the frame is DROPPED rather than lossily transcoded, which would hand the client a corrupted payload. The stream itself continues, so a client sees a missing event, not a failure. The `bytes` field carries the size of the frame that was dropped.
+
+**What to do:** Investigate the named backend agent: its event stream is emitting non-UTF-8 bytes, which no conforming event-stream consumer can read. Until it is fixed the affected events are lost; busbar relays every well-formed event around them.
+
 ## 8xxx — Governance & cost
 
 <a id="revocation-resync-outstanding"></a>
