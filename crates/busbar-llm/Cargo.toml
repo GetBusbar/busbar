@@ -37,6 +37,14 @@ path = "src/lib.rs"
 # and friends): this plane has NO production dependency on busbar-core, so there is nothing of core's
 # to forward. The G6 A4b leaf-op read/write free fns are `#[cfg(any(test, feature = "test-support"))]`.
 test-support = ["busbar-substrate/test-support", "busbar-llm-codec/test-support"]
+# THE TELLER WAIST, written dark. DEFAULT OFF, and it stays off until the whole step set is wired and
+# the owed golden is clean on both legs. With it off `src/unit/` compiles to nothing (the module root
+# carries an inner `cfg`), so the default dependency graph, the default build and every default-feature
+# test are byte-for-byte what they were; with it on the per-step files and their identity tests come in
+# beside the live `native_ingress` path rather than in place of it. Both paths always compile and are
+# always unit-tested — the flag only ever chooses which fn-pointer tables a composition root installs,
+# never a config key, an env var or a boot line.
+teller-waist = []
 # Passthrough to `busbar-timing`'s debug-only per-method micro-timing (DEFAULT OFF), mirroring
 # `busbar-core`'s `timing` feature: the relocated engine's `#[cfg(feature = "timing")]` profiling
 # guards (in `engine/pipeline.rs`) resolve against this, so the flag exists in lock-step with the
