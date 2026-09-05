@@ -50,6 +50,8 @@ use busbar_kernel::teller::UnitCtx;
 use busbar_plane_admin::verbs::ResolvedVerb;
 use busbar_unit_auth::unit::AuthRequest;
 use busbar_unit_scope::Scope;
+
+use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
 use busbar_unit_verbs::rate::{MutationClass, CONFIG_CLASS_RULES};
 use busbar_unit_verbs::{
     KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS,
@@ -279,6 +281,26 @@ pub trait LedgerView: Send + Sync {
 
     /// The marker the first boot after the upgrade sealed, if this deployment has migrated.
     fn migration_marker(&self) -> Option<busbar_unit_ledger::migration::MigrationMarker>;
+
+    /// BOTH sides of the identity, as of one moment.
+    ///
+    /// The reconciliation view needs the two snapshots to be of the same instant, and reading them
+    /// through the two methods above cannot promise that: a settlement landing between the two calls
+    /// would leave the previous release's side holding a posting the ledger's side was read before,
+    /// and the view would report a discrepancy that never existed. On a busy node that is not a rare
+    /// race — it is every request.
+    ///
+    /// The default is the pair of reads, which is exactly right for a view whose answers do not move.
+    /// A view over live figures overrides it to take both under one hold of whatever lock it keeps
+    /// them behind, which is the only place that guarantee can be made.
+    fn identity_snapshot(
+        &self,
+    ) -> (
+        crate::root::ledger_identity::LedgerSnapshot,
+        crate::root::ledger_identity::LegacySnapshot,
+    ) {
+        (self.ledger_rows(), self.legacy_rows())
+    }
 }
 
 /// The view a node has before a ledger is bound behind it.
@@ -381,21 +403,18 @@ impl NodeLedger {
     fn lock(&self) -> std::sync::MutexGuard<'_, crate::root::durability::Durability> {
         self.durability.lock().unwrap_or_else(|p| p.into_inner())
     }
-}
 
-/// The lane and the provider a live node's books do not retain. See [`NodeLedger`].
-const WIDTH_THE_NODE_KEEPS: &str = "";
-
-impl LedgerView for NodeLedger {
-    fn ledger_rows(&self) -> crate::root::ledger_identity::LedgerSnapshot {
+    /// The ledger's side, off a lock somebody already holds.
+    fn rows_of(durability: &crate::root::durability::Durability) -> LedgerSnapshot {
         use crate::root::ledger_identity::{LedgerRow, RowKey};
 
-        let durability = self.lock();
-        let mut rows = crate::root::ledger_identity::LedgerSnapshot::new();
+        let mut rows = LedgerSnapshot::new();
         for ((key, window), totals) in durability.ledger.book().iter() {
             // A cell nothing has settled against is not a row. The books carry a cell as soon as a
             // hold opens on it, and serving those as rows of zero would put a line in front of an
-            // operator for every key that was ever admitted and never billed.
+            // operator for every key that was ever admitted and never billed. A cell whose settled
+            // figure has been adjusted below zero is not a row that was posted either, which is why
+            // this is a skip rather than a saturating cast that would report it as zero.
             if totals.settled <= 0 {
                 continue;
             }
@@ -405,10 +424,9 @@ impl LedgerView for NodeLedger {
                 WIDTH_THE_NODE_KEEPS,
                 WIDTH_THE_NODE_KEEPS,
             );
+            // Accumulated rather than inserted: one bucket-day can hold several cells — a dimension
+            // and a scope apiece — and at the width this view reads they are one row.
             let entry: &mut LedgerRow = rows.entry(row).or_default();
-            // The books hold a signed figure because an adjustment can move one down; the identity's
-            // side of it is unsigned. A negative settled total is not a row that was posted, so it is
-            // the branch above rather than a saturating cast that would report it as zero.
             entry.priced_nanos = entry
                 .priced_nanos
                 .saturating_add(totals.settled.unsigned_abs());
@@ -416,7 +434,12 @@ impl LedgerView for NodeLedger {
         rows
     }
 
-    fn legacy_rows(&self) -> crate::root::ledger_identity::LegacySnapshot {
+    /// The previous release's side, off the same hold.
+    ///
+    /// The dual write happens inside the ledger's one book-moving function, which the node calls
+    /// under this same lock — so a reader holding it sees a settlement's two halves together or
+    /// neither, and never the ledger's half alone.
+    fn legacy_rows_under_lock(&self) -> LegacySnapshot {
         use crate::root::ledger_identity::{LegacyRow, RowKey};
 
         // Nano-units accumulate per row and the projection to micro-units happens ONCE over the sum,
@@ -445,6 +468,29 @@ impl LedgerView for NodeLedger {
                 )
             })
             .collect()
+    }
+}
+
+/// The lane and the provider a live node's books do not retain. See [`NodeLedger`].
+const WIDTH_THE_NODE_KEEPS: &str = "";
+
+impl LedgerView for NodeLedger {
+    fn ledger_rows(&self) -> LedgerSnapshot {
+        NodeLedger::rows_of(&self.lock())
+    }
+
+    fn legacy_rows(&self) -> LegacySnapshot {
+        let _durability = self.lock();
+        self.legacy_rows_under_lock()
+    }
+
+    /// Both sides under ONE hold, which is what makes the served residual a fact rather than a race.
+    fn identity_snapshot(&self) -> (LedgerSnapshot, LegacySnapshot) {
+        let durability = self.lock();
+        (
+            NodeLedger::rows_of(&durability),
+            self.legacy_rows_under_lock(),
+        )
     }
 
     fn checkpoints(&self) -> Vec<busbar_unit_ledger::checkpoint::Checkpoint> {
@@ -622,7 +668,8 @@ fn render_ledger_view(verb: KernelVerb, view: &dyn LedgerView) -> Option<Vec<u8>
         KernelVerb::GetLedgerTotals => render_totals(&view.ledger_rows()).into_bytes(),
         KernelVerb::GetLedgerCheckpoints => render_checkpoints(&view.checkpoints()).into_bytes(),
         KernelVerb::GetLedgerReconciliation => {
-            render_reconciliation(&view.ledger_rows(), &view.legacy_rows()).into_bytes()
+            let (ledger, legacy) = view.identity_snapshot();
+            render_reconciliation(&ledger, &legacy).into_bytes()
         }
         KernelVerb::GetLedgerMigration => {
             render_migration(view.migration_marker().as_ref()).into_bytes()
