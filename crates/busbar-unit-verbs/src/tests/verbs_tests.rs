@@ -50,9 +50,7 @@ impl ReplayEncoder<MintedKeyOutcome> for FakeReplayEncoder {
     }
 }
 
-fn make_verbs<G: Governance>(
-    gov: G,
-) -> Verbs<G, FakeStore, CountingNonceSource, FakeReplayEncoder> {
+fn make_verbs<G: Governance>(gov: G) -> Verbs<G, FakeStore, CountingNonceSource, FakeReplayEncoder> {
     Verbs::new(
         gov,
         FakeStore,
@@ -100,23 +98,14 @@ impl Governance for FakeGovernance {
     fn actual_parent(&self, name: &str) -> Option<String> {
         self.groups.lock().unwrap().get(name).cloned().flatten()
     }
-    fn provision_group(
-        &self,
-        _admin: &AdminToken,
-        group: &str,
-        parent: &str,
-    ) -> Result<(), GovernanceError> {
+    fn provision_group(&self, _admin: &AdminToken, group: &str, parent: &str) -> Result<(), GovernanceError> {
         self.groups
             .lock()
             .unwrap()
             .insert(group.to_string(), Some(parent.to_string()));
         Ok(())
     }
-    fn mint_key(
-        &self,
-        _admin: &AdminToken,
-        _group: Option<&str>,
-    ) -> Result<MintedKey, GovernanceError> {
+    fn mint_key(&self, _admin: &AdminToken, _group: Option<&str>) -> Result<MintedKey, GovernanceError> {
         let id = format!("key-{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         self.keys.lock().unwrap().insert(id.clone(), false);
         Ok(MintedKey {
@@ -170,11 +159,7 @@ impl Store for FakeStore {
     fn replay_new_verb(&self, _key: &(String, String)) -> Result<Option<Vec<u8>>, StoreError> {
         Ok(None)
     }
-    fn commit_new_verb_replay(
-        &self,
-        _key: &(String, String),
-        _response: &[u8],
-    ) -> Result<(), StoreError> {
+    fn commit_new_verb_replay(&self, _key: &(String, String), _response: &[u8]) -> Result<(), StoreError> {
         Ok(())
     }
 }
@@ -238,9 +223,7 @@ fn mint_under_an_existing_unrelated_parent_succeeds_existence_only() {
             Some("some-existing-team"),
         )
         .unwrap();
-    let outcome = out
-        .minted_outcome()
-        .expect("first call must mint, not replay");
+    let outcome = out.minted_outcome().expect("first call must mint, not replay");
     assert!(outcome.id.starts_with("key-"));
 }
 
@@ -292,28 +275,10 @@ fn without_an_idempotency_key_every_call_mints_a_new_key() {
     let verbs = make_verbs(gov);
     let admin = admin();
     let first = verbs
-        .create_key(
-            &admin,
-            "alice",
-            VerbScope::Full,
-            1_000,
-            UnitKey::new(1),
-            None,
-            None,
-            None,
-        )
+        .create_key(&admin, "alice", VerbScope::Full, 1_000, UnitKey::new(1), None, None, None)
         .unwrap();
     let second = verbs
-        .create_key(
-            &admin,
-            "alice",
-            VerbScope::Full,
-            1_001,
-            UnitKey::new(1),
-            None,
-            None,
-            None,
-        )
+        .create_key(&admin, "alice", VerbScope::Full, 1_001, UnitKey::new(1), None, None, None)
         .unwrap();
     assert!(!first.is_replay());
     assert!(!second.is_replay());
@@ -398,40 +363,15 @@ fn two_mints_with_a_real_nonce_source_produce_different_nonces() {
     // Two calls with DISTINCT idempotency keys (or none), each therefore minting fresh, and each
     // therefore calling the nonce source exactly once.
     verbs
-        .create_key(
-            &admin,
-            "alice",
-            VerbScope::Full,
-            1_000,
-            UnitKey::new(1),
-            None,
-            None,
-            None,
-        )
+        .create_key(&admin, "alice", VerbScope::Full, 1_000, UnitKey::new(1), None, None, None)
         .unwrap();
     std::thread::sleep(std::time::Duration::from_micros(1));
     verbs
-        .create_key(
-            &admin,
-            "alice",
-            VerbScope::Full,
-            1_001,
-            UnitKey::new(1),
-            None,
-            None,
-            None,
-        )
+        .create_key(&admin, "alice", VerbScope::Full, 1_001, UnitKey::new(1), None, None, None)
         .unwrap();
     let seen = seen.lock().unwrap();
-    assert_eq!(
-        seen.len(),
-        2,
-        "each fresh mint calls the nonce source exactly once"
-    );
-    assert_ne!(
-        seen[0], seen[1],
-        "two mints with a real source must not share a nonce"
-    );
+    assert_eq!(seen.len(), 2, "each fresh mint calls the nonce source exactly once");
+    assert_ne!(seen[0], seen[1], "two mints with a real source must not share a nonce");
 }
 
 #[test]
@@ -439,15 +379,7 @@ fn rotate_unknown_id_is_not_found() {
     let verbs = make_verbs(FakeGovernance::new());
     let admin = admin();
     let err = verbs
-        .rotate_key(
-            &admin,
-            "alice",
-            VerbScope::Full,
-            0,
-            UnitKey::new(1),
-            None,
-            "no-such-key",
-        )
+        .rotate_key(&admin, "alice", VerbScope::Full, 0, UnitKey::new(1), None, "no-such-key")
         .unwrap_err();
     assert_eq!(err.reason, crate::refusal::ReasonCode::NotFound);
 }
@@ -458,15 +390,7 @@ fn rotate_tombstoned_key_is_refused_as_conflict() {
     let verbs = make_verbs(gov);
     let admin = admin();
     let err = verbs
-        .rotate_key(
-            &admin,
-            "alice",
-            VerbScope::Full,
-            0,
-            UnitKey::new(1),
-            None,
-            "dead-key",
-        )
+        .rotate_key(&admin, "alice", VerbScope::Full, 0, UnitKey::new(1), None, "dead-key")
         .unwrap_err();
     assert_eq!(err.reason, crate::refusal::ReasonCode::Conflict);
 }
@@ -499,10 +423,7 @@ fn rotate_scoped_idempotency_key_replays_and_does_not_collide_with_create() {
         )
         .unwrap();
     assert!(!first.is_replay());
-    assert!(
-        second.is_replay(),
-        "the second call inside the window must replay"
-    );
+    assert!(second.is_replay(), "the second call inside the window must replay");
     assert_eq!(second.body(), first.body());
 }
 

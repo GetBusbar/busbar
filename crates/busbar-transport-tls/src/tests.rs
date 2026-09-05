@@ -544,11 +544,7 @@ async fn every_reserved_key_this_transport_publishes_is_declared() {
 
 /// A self-signed cert/key pair plus its own DER-encoded leaf, so a test can compute the exact
 /// fingerprint it expects a handshake to serve — not just check that a handshake happened.
-fn self_signed_with_der() -> (
-    Arc<rustls::ServerConfig>,
-    Arc<rustls::ClientConfig>,
-    Vec<u8>,
-) {
+fn self_signed_with_der() -> (Arc<rustls::ServerConfig>, Arc<rustls::ClientConfig>, Vec<u8>) {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
@@ -587,10 +583,7 @@ fn self_signed_with_der() -> (
 async fn accept_serves_the_slot_the_listener_was_provisioned_with() {
     let (server_cfg_0, _client_cfg_0, cert_0_der) = self_signed_with_der();
     let (server_cfg_7, client_cfg_7, cert_7_der) = self_signed_with_der();
-    assert_ne!(
-        cert_0_der, cert_7_der,
-        "the two slots must hold genuinely different certs"
-    );
+    assert_ne!(cert_0_der, cert_7_der, "the two slots must hold genuinely different certs");
 
     let server = StdArc::new(TlsTransport::new());
     server.register_server_config(0, server_cfg_0);
@@ -629,14 +622,8 @@ async fn accept_serves_the_slot_the_listener_was_provisioned_with() {
 
     let fp_0 = format!("{:x?}", ring_fingerprint(&cert_0_der));
     let fp_7 = format!("{:x?}", ring_fingerprint(&cert_7_der));
-    assert_eq!(
-        served_fp, fp_7,
-        "accept served the slot-7 certificate, byte for byte"
-    );
-    assert_ne!(
-        served_fp, fp_0,
-        "slot 0's certificate must not be what accept served"
-    );
+    assert_eq!(served_fp, fp_7, "accept served the slot-7 certificate, byte for byte");
+    assert_ne!(served_fp, fp_0, "slot 0's certificate must not be what accept served");
 }
 
 /// CG-49: multi-certificate SNI on one listener.
@@ -910,10 +897,7 @@ mod cg_49_sni {
     async fn a_client_offering_no_sni_gets_the_default() {
         let fx = provisioned_listener().await;
         let served = served_fingerprint(&fx, None, accept_any_client_config()).await;
-        assert_eq!(
-            served, fx.fp_default,
-            "no SNI offered: the default is served"
-        );
+        assert_eq!(served, fx.fp_default, "no SNI offered: the default is served");
     }
 
     /// 1.5.5 (`v1.5.5:crates/busbar/src/tls.rs`) never read `ClientHello::server_name` at all — it
@@ -931,9 +915,6 @@ mod cg_49_sni {
             accept_any_client_config(),
         )
         .await;
-        assert_eq!(
-            served, fx.fp_default,
-            "unknown name: the default is served, not a refusal"
-        );
+        assert_eq!(served, fx.fp_default, "unknown name: the default is served, not a refusal");
     }
 }

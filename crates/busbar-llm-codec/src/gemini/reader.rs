@@ -429,9 +429,8 @@ impl ProtocolReader for GeminiReader {
                                 .cloned()
                                 .unwrap_or(serde_json::Value::Null);
                             // Convert response to string representation for content
-                            let response_text =
-                                busbar_substrate_values::json::to_string(&response_val)
-                                    .unwrap_or_else(|_| "unknown".to_string());
+                            let response_text = busbar_substrate_values::json::to_string(&response_val)
+                                .unwrap_or_else(|_| "unknown".to_string());
                             // ACCEPTED GEMINI-PROTOCOL LIMITATION: a Gemini `functionResponse`
                             // carries only a `name` (no call id). We set `tool_use_id` to the
                             // function name — the only correlation handle Gemini provides on the
@@ -786,9 +785,7 @@ impl ProtocolReader for GeminiReader {
     ) -> Vec<IrStreamEvent> {
         let mut out: Vec<IrStreamEvent> = Vec::new();
 
-        if data.as_str() == Some(busbar_substrate_values::proto::SSE_DONE_SENTINEL)
-            || !data.is_object()
-        {
+        if data.as_str() == Some(busbar_substrate_values::proto::SSE_DONE_SENTINEL) || !data.is_object() {
             return out;
         }
 
@@ -815,13 +812,11 @@ impl ProtocolReader for GeminiReader {
                 .and_then(|m| m.as_str())
                 .map(String::from)
                 .or_else(|| status_str.map(String::from));
-            out.push(IrStreamEvent::Error(
-                busbar_substrate_values::proto::IrError {
-                    class,
-                    provider_signal: message,
-                    retry_after: None,
-                },
-            ));
+            out.push(IrStreamEvent::Error(busbar_substrate_values::proto::IrError {
+                class,
+                provider_signal: message,
+                retry_after: None,
+            }));
             return out;
         }
 

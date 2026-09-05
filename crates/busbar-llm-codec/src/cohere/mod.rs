@@ -4,11 +4,11 @@
 //! Cohere v2 protocol reader/writer implementation.
 
 use crate::ir::IrStreamEvent;
+use http::StatusCode;
 #[cfg(test)]
 use busbar_substrate_values::breaker::CanonicalSignal;
 use busbar_substrate_values::breaker::StatusClass;
 use busbar_substrate_values::proto::*;
-use http::StatusCode;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).

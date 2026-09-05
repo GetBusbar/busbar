@@ -364,11 +364,9 @@ impl StreamTranslate {
                 if let Some((exc_name, message)) =
                     self.ingress.writer().write_response_exception(err)
                 {
-                    out.extend_from_slice(
-                        &busbar_substrate_values::eventstream::encode_exception_frame(
-                            &exc_name, &message,
-                        ),
-                    );
+                    out.extend_from_slice(&busbar_substrate_values::eventstream::encode_exception_frame(
+                        &exc_name, &message,
+                    ));
                     return;
                 }
             }
@@ -1038,12 +1036,10 @@ impl StreamTranslate {
                 // `InternalServerException`); this agnostic translator names none. `Some` here is the
                 // eventstream-ingress abort signal (equivalent to the prior `ingress_eventstream` gate,
                 // which only Bedrock sets).
-                out.extend_from_slice(
-                    &busbar_substrate_values::eventstream::encode_exception_frame(
-                        exc_type,
-                        ABORT_DETAIL,
-                    ),
-                );
+                out.extend_from_slice(&busbar_substrate_values::eventstream::encode_exception_frame(
+                    exc_type,
+                    ABORT_DETAIL,
+                ));
                 return out;
             }
             // SSE-INGRESS abort path (openai/anthropic/gemini/cohere/responses): the reassembly buffer

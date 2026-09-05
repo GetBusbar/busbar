@@ -151,9 +151,7 @@ pub struct Verbs<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<Minte
     limiter: MutationLimiter,
 }
 
-impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>>
-    Verbs<G, S, N, E>
-{
+impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>> Verbs<G, S, N, E> {
     /// Build a fresh executor over the four bound seams. `config_class_rules` is the composition
     /// root's sealed CG-38 table (see [`crate::rate::CONFIG_CLASS_RULES`] for the 1.5.5-parity
     /// default); `nonce_source` and `replay_encoder` are mandatory — there is no `Default` for

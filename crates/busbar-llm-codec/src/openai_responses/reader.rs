@@ -174,9 +174,7 @@ impl ProtocolReader for ResponsesReader {
             if !input_val.is_null() && !input_val.is_string() && !input_val.is_array() {
                 return Err(IrError {
                     class: StatusClass::ClientError,
-                    provider_signal: Some(
-                        busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
-                    ),
+                    provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                     retry_after: None,
                 });
             }
@@ -334,8 +332,7 @@ impl ProtocolReader for ResponsesReader {
                                     return Err(IrError {
                                         class: StatusClass::ClientError,
                                         provider_signal: Some(
-                                            busbar_substrate_values::proto::SIGNAL_IR_PARSE
-                                                .to_string(),
+                                            busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                                         ),
                                         retry_after: None,
                                     });

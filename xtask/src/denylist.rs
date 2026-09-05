@@ -363,8 +363,9 @@ fn edge_is_active(meta: &Metadata, from_id: &str, dep_ident: &str) -> bool {
         // case this name means something else and never appears bare in a definition list anyway).
         feat == &hyphenated
             || defs.get(feat).is_some_and(|reqs| {
-                reqs.iter()
-                    .any(|r| r == &dep_marker || r == &hyphenated || r.starts_with(&strong_forward))
+                reqs.iter().any(|r| {
+                    r == &dep_marker || r == &hyphenated || r.starts_with(&strong_forward)
+                })
             })
     })
 }

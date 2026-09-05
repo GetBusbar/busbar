@@ -57,10 +57,7 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// tighter than the shared path suffixes), then the `:{action}` path verbs (rung 5), then the
 /// `/v1{,beta}/models/` wildcard surface (rung 6). Strength values are the ladder POSITION (lower
 /// binds tighter); they are the single ladder shared with the sibling dialects' predicates.
-fn claims(
-    h: &http::HeaderMap,
-    path: &str,
-) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+fn claims(h: &http::HeaderMap, path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
     use busbar_substrate_values::proto::ClaimStrength;
     if h.contains_key("x-goog-api-key") {
         return Some(ClaimStrength(3));
@@ -1740,8 +1737,7 @@ impl GeminiJsonArrayFramer {
                     let Some((_event_type, data_str)) = parse_sse_frame(frame) else {
                         continue; // no data: line — keepalive/comment frame
                     };
-                    if data_str.is_empty()
-                        || data_str == busbar_substrate_values::proto::SSE_DONE_SENTINEL
+                    if data_str.is_empty() || data_str == busbar_substrate_values::proto::SSE_DONE_SENTINEL
                     {
                         continue; // egress terminator/keepalive — the array close is finish()'s job
                     }

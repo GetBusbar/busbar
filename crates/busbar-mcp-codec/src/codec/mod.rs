@@ -115,71 +115,70 @@ pub const METHOD_NOTIFY_RESOURCES_UPDATED: &str = "notifications/resources/updat
 /// Handed to `install_protocols` by the composition root (the `busbar` binary); in `busbar-core`'s
 /// test/`test-support` builds it is instead the cfg-gated built-in row, so the fixture registry the
 /// tests see matches the registry a shipped binary has.
-pub const DECL: busbar_substrate_values::proto::ProtocolDecl =
-    busbar_substrate_values::proto::ProtocolDecl {
-        name: crate::PLANE_KEY,
-        codec: None,
-        handler: Some(&handler::McpRequestHandler),
-        verbs: &[
-            busbar_api::operation::Operation::INVOKE,
-            busbar_api::operation::Operation::SUBSCRIBE,
-        ],
-        head_keys: &[],
-        streaming_content_type: None,
-        array_stream_shim_key: None,
-        native_tool_id_prefix: None,
-        ingress_auth: busbar_substrate_values::proto::IngressAuth::Bearer,
-        // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve`: MCP presents no
-        // dialect-specific egress credential shaping of its own, so it declares no builder — unlike
-        // Anthropic, whose api-key/Bearer disambiguation retired its arm in core.
-        egress_auth_headers: None,
-        egress_auth_lane_constant: false,
-        // NO PATH INGRESS (model in the BODY): `has_model_in_url` is false below, so this dialect
-        // registers no arrival and the catch-all resolves its operation through the `RequestHandler`
-        // on the universal ingress. The arrival is no longer a decl field (Batch C-6).
-        stream_usage_requires_opt_in: false,
-        // ── Promoted writer facts (G6 step A1): MCP declares NO codec and has no writer, so every
-        //    promoted fact is the `ProtocolWriter` trait DEFAULT — the same value core read for a
-        //    protocol with no override. These are inert for MCP (its facts are never consulted through a
-        //    writer that does not exist) but the declaration must state them.
-        requires_max_tokens: false,
-        stop_sequence_cap: None,
-        cache_markers_model_gated: false,
-        fills_thought_signature: false,
-        frame_after_message_start: None,
-        reshapes_body_at_path_base: false,
-        max_cache_control_breakpoints: None,
-        quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
-        ingress_is_eventstream: false,
-        emits_sse_done_terminator: false,
-        max_citations_per_delta: None,
-        egress_user_agent: busbar_substrate_values::proxy::EGRESS_UA_DEFAULT,
-        has_model_in_url: false,
-        auth_failure_status_and_kind: (
-            http::StatusCode::UNAUTHORIZED,
-            busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION,
-        ),
-        ingress_relays_amzn_headers: false,
-        ingress_relayed_response_header_names: &[],
-        auth_failure_message: "authentication failed",
-        uses_array_stream_shim: false,
-        has_native_path_not_found: false,
-        // MCP ships no cross-dialect codec, so this is never consulted for a translated egress; it
-        // carries the neutral SSE default the by-name `egress_accept` fallback would have returned.
-        egress_stream_accept: busbar_substrate_values::proxy::TEXT_EVENT_STREAM,
-        // MCP is not an LLM chat dialect and serves no `/v1/models` discovery surface.
-        models_list_envelope: None,
-        // MCP is identified by its EXPLICIT mount (`/mcp`), never by a wire fingerprint — so it claims
-        // no router or residual rung, and core's detection fold never resolves to it from a path/header
-        // sniff. It contributes no untranslatable vendor response metadata and is not the residual
-        // default.
-        claims: None,
-        residual_claims: None,
-        residual_default: false,
-        vendor_response_metadata: None,
-        // MCP serves no model-discovery surface, so it declares no list-models fingerprint header.
-        list_models_fingerprint_headers: &[],
-    };
+pub const DECL: busbar_substrate_values::proto::ProtocolDecl = busbar_substrate_values::proto::ProtocolDecl {
+    name: crate::PLANE_KEY,
+    codec: None,
+    handler: Some(&handler::McpRequestHandler),
+    verbs: &[
+        busbar_api::operation::Operation::INVOKE,
+        busbar_api::operation::Operation::SUBSCRIBE,
+    ],
+    head_keys: &[],
+    streaming_content_type: None,
+    array_stream_shim_key: None,
+    native_tool_id_prefix: None,
+    ingress_auth: busbar_substrate_values::proto::IngressAuth::Bearer,
+    // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve`: MCP presents no
+    // dialect-specific egress credential shaping of its own, so it declares no builder — unlike
+    // Anthropic, whose api-key/Bearer disambiguation retired its arm in core.
+    egress_auth_headers: None,
+    egress_auth_lane_constant: false,
+    // NO PATH INGRESS (model in the BODY): `has_model_in_url` is false below, so this dialect
+    // registers no arrival and the catch-all resolves its operation through the `RequestHandler`
+    // on the universal ingress. The arrival is no longer a decl field (Batch C-6).
+    stream_usage_requires_opt_in: false,
+    // ── Promoted writer facts (G6 step A1): MCP declares NO codec and has no writer, so every
+    //    promoted fact is the `ProtocolWriter` trait DEFAULT — the same value core read for a
+    //    protocol with no override. These are inert for MCP (its facts are never consulted through a
+    //    writer that does not exist) but the declaration must state them.
+    requires_max_tokens: false,
+    stop_sequence_cap: None,
+    cache_markers_model_gated: false,
+    fills_thought_signature: false,
+    frame_after_message_start: None,
+    reshapes_body_at_path_base: false,
+    max_cache_control_breakpoints: None,
+    quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
+    ingress_is_eventstream: false,
+    emits_sse_done_terminator: false,
+    max_citations_per_delta: None,
+    egress_user_agent: busbar_substrate_values::proxy::EGRESS_UA_DEFAULT,
+    has_model_in_url: false,
+    auth_failure_status_and_kind: (
+        http::StatusCode::UNAUTHORIZED,
+        busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION,
+    ),
+    ingress_relays_amzn_headers: false,
+    ingress_relayed_response_header_names: &[],
+    auth_failure_message: "authentication failed",
+    uses_array_stream_shim: false,
+    has_native_path_not_found: false,
+    // MCP ships no cross-dialect codec, so this is never consulted for a translated egress; it
+    // carries the neutral SSE default the by-name `egress_accept` fallback would have returned.
+    egress_stream_accept: busbar_substrate_values::proxy::TEXT_EVENT_STREAM,
+    // MCP is not an LLM chat dialect and serves no `/v1/models` discovery surface.
+    models_list_envelope: None,
+    // MCP is identified by its EXPLICIT mount (`/mcp`), never by a wire fingerprint — so it claims
+    // no router or residual rung, and core's detection fold never resolves to it from a path/header
+    // sniff. It contributes no untranslatable vendor response metadata and is not the residual
+    // default.
+    claims: None,
+    residual_claims: None,
+    residual_default: false,
+    vendor_response_metadata: None,
+    // MCP serves no model-discovery surface, so it declares no list-models fingerprint header.
+    list_models_fingerprint_headers: &[],
+};
 
 // ══ THE NOTIFICATION HALF ════════════════════════════════════════════════════════════════════════
 
@@ -241,7 +240,8 @@ impl McpNotification {
                 // The SDK's parameter type is the acceptance test here too: a notification that
                 // names no resource says a resource changed without saying which, and acting on it
                 // would mean guessing.
-                let p: ResourceUpdatedParam = serde_json::from_value(params?.clone()).ok()?;
+                let p: ResourceUpdatedParam =
+                    serde_json::from_value(params?.clone()).ok()?;
                 (!p.uri.is_empty()).then_some(McpNotification::ResourceUpdated { uri: p.uri })
             }
             _ => None,
@@ -258,8 +258,9 @@ impl McpNotification {
         if let McpNotification::ResourceUpdated { uri } = self {
             // `params` is emitted only where the message has any, so the notification that carries
             // none stays byte-identical to what the specification describes.
-            envelope["params"] = serde_json::to_value(ResourceUpdatedParam::new(uri.clone()))
-                .unwrap_or_else(|_| serde_json::json!({ "uri": uri }));
+            envelope["params"] =
+                serde_json::to_value(ResourceUpdatedParam::new(uri.clone()))
+                    .unwrap_or_else(|_| serde_json::json!({ "uri": uri }));
         }
         Bytes::from(serde_json::to_vec(&envelope).unwrap_or_default())
     }

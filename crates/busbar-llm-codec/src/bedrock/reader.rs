@@ -1187,13 +1187,11 @@ impl ProtocolReader for BedrockReader {
                         StatusClass::ServerError
                     }
                 };
-                out.push(IrStreamEvent::Error(
-                    busbar_substrate_values::proto::IrError {
-                        class,
-                        provider_signal: message.or_else(|| Some(exc.to_string())),
-                        retry_after: None,
-                    },
-                ));
+                out.push(IrStreamEvent::Error(busbar_substrate_values::proto::IrError {
+                    class,
+                    provider_signal: message.or_else(|| Some(exc.to_string())),
+                    retry_after: None,
+                }));
             }
 
             // Any other (or absent) event type is a no-op. This is NOT a disposition/breaker match:

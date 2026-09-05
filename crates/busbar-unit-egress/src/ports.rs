@@ -185,13 +185,8 @@ pub trait Breaker: Send + Sync {
     /// `token` is threaded through for the same reason `observe`'s is (see its own doc): this
     /// peek is answered from the breaker unit's own sealed `state(.., token)`, and outside a test
     /// module nothing but the loop's own route step can mint one.
-    fn ready(
-        &self,
-        pool: &str,
-        destination: DestinationId,
-        now: u64,
-        token: &UnitToken<Route>,
-    ) -> bool;
+    fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &UnitToken<Route>)
+        -> bool;
 
     /// Side-effect-free: is this destination usable at all — not administratively down, and with
     /// lifetime budget left? This is a property of the destination, not of one pool's cell, which

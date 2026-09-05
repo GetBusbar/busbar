@@ -7,9 +7,7 @@ use crate::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
 use busbar_api::operation::Operation;
-use busbar_substrate_values::handlers::{
-    CodecError, IngressReject, OperationHandler, RequestHandler,
-};
+use busbar_substrate_values::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
 use busbar_substrate_values::ir::handle::IrHandle;
 use busbar_substrate_values::wire::{EgressCtx, WireBody};
 use bytes::Bytes;

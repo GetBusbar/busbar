@@ -546,8 +546,13 @@ async fn deliver(
     ctx: &Ctx<'_>,
     now: u64,
 ) -> AttemptOutcome {
-    hop.breaker
-        .observe(hop.pool, hop.destination, Outcome::Success, now, hop.token);
+    hop.breaker.observe(
+        hop.pool,
+        hop.destination,
+        Outcome::Success,
+        now,
+        hop.token,
+    );
     // The request now owns the probe through the outcome it just recorded; from here the answer's
     // own frames are responsible for the cell, so the guard must not also release.
     if let Some(guard) = probe_guard.as_mut() {

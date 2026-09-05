@@ -51,8 +51,7 @@ fn synth_response_id() -> String {
 fn test_bedrock_sigv4_sign_request_structure() {
     // SigV4 header assembly + scope/region derivation. (The signing crypto itself is
     // verified against AWS's published vector in sigv4::tests.)
-    let canonical =
-        busbar_substrate_values::sigv4::uri_encode_path("/model/anthropic.claude:0/converse");
+    let canonical = busbar_substrate_values::sigv4::uri_encode_path("/model/anthropic.claude:0/converse");
     let ctx = busbar_substrate_values::proto::SigningContext {
         host: "bedrock-runtime.us-east-1.amazonaws.com",
         canonical_uri: &canonical,

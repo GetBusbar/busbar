@@ -433,10 +433,7 @@ mod tests {
             crate::journal::NoopJournal,
             WarnOnceDiagnostics<Arc<RecordingDiagnostics>>,
         > = BreakerUnit::with_diagnostics(WarnOnceDiagnostics::new(sink.clone()));
-        unit.set_error_map(
-            DestinationId::new(1),
-            err_map(&[("1113", "not_a_real_class")]),
-        );
+        unit.set_error_map(DestinationId::new(1), err_map(&[("1113", "not_a_real_class")]));
 
         let _ = unit.classify(
             DestinationId::new(1),

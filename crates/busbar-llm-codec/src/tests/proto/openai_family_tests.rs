@@ -3,8 +3,8 @@
 
 //! Tests for `crates/busbar-core/src/proto/openai_family.rs`.
 
-use busbar_substrate_values::breaker::StatusClass;
 use http::StatusCode;
+use busbar_substrate_values::breaker::StatusClass;
 
 #[test]
 fn test_openai_classify() {

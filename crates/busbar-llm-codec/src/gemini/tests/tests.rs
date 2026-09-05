@@ -3729,10 +3729,8 @@ fn test_stream_open_tools_under_cap_records_all() {
 /// A well-formed credential yields exactly one `x-goog-api-key` header carrying the verbatim key.
 #[test]
 fn test_auth_headers_valid_key_emits_x_goog_api_key() {
-    let headers = busbar_substrate_values::egress_auth::api_key_headers(
-        "x-goog-api-key",
-        "AIzaSyValidKey123",
-    );
+    let headers =
+        busbar_substrate_values::egress_auth::api_key_headers("x-goog-api-key", "AIzaSyValidKey123");
     assert_eq!(headers.len(), 1, "one auth header for a valid key");
     assert_eq!(headers[0].0.as_str(), "x-goog-api-key");
     assert_eq!(headers[0].1.to_str().ok(), Some("AIzaSyValidKey123"));
@@ -3745,8 +3743,7 @@ fn test_auth_headers_valid_key_emits_x_goog_api_key() {
 /// empty-header behavior lacked.
 #[test]
 fn test_auth_headers_invalid_key_omits_header_no_empty_value() {
-    let headers =
-        busbar_substrate_values::egress_auth::api_key_headers("x-goog-api-key", "bad\nkey");
+    let headers = busbar_substrate_values::egress_auth::api_key_headers("x-goog-api-key", "bad\nkey");
     assert!(
         headers.is_empty(),
         "an invalid-byte credential must omit the auth header, not emit an empty value: \

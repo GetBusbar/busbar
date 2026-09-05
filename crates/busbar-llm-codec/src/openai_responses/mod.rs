@@ -437,21 +437,14 @@ fn fill_required_response_members(
     obj: &mut serde_json::Map<String, serde_json::Value>,
     echo: Option<&serde_json::Value>,
 ) {
-    let echoed = |key: &str| {
-        echo.and_then(|e| e.get(key))
-            .filter(|v| !v.is_null())
-            .cloned()
-    };
+    let echoed = |key: &str| echo.and_then(|e| e.get(key)).filter(|v| !v.is_null()).cloned();
     let defaults: [(&str, serde_json::Value); 8] = [
         ("incomplete_details", serde_json::Value::Null),
         (
             "instructions",
             echoed("instructions").unwrap_or(serde_json::Value::Null),
         ),
-        (
-            "tools",
-            echoed("tools").unwrap_or_else(|| serde_json::json!([])),
-        ),
+        ("tools", echoed("tools").unwrap_or_else(|| serde_json::json!([]))),
         (
             "tool_choice",
             echoed("tool_choice").unwrap_or_else(|| serde_json::json!("auto")),
@@ -468,10 +461,7 @@ fn fill_required_response_members(
             "temperature",
             echoed("temperature").unwrap_or_else(|| serde_json::json!(1.0)),
         ),
-        (
-            "top_p",
-            echoed("top_p").unwrap_or_else(|| serde_json::json!(1.0)),
-        ),
+        ("top_p", echoed("top_p").unwrap_or_else(|| serde_json::json!(1.0))),
     ];
     for (key, value) in defaults {
         obj.entry(key.to_string()).or_insert(value);
@@ -654,8 +644,9 @@ fn class_for_response_failed(signal: &str) -> StatusClass {
     match signal {
         CODE_INVALID_API_KEY | ERR_TYPE_AUTHENTICATION => StatusClass::Auth,
         ERR_CODE_RATE_LIMIT | ERR_TYPE_INSUFFICIENT_QUOTA => StatusClass::RateLimit,
-        busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH
-        | ERR_CODE_STRING_ABOVE_MAX => StatusClass::ContextLength,
+        busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH | ERR_CODE_STRING_ABOVE_MAX => {
+            StatusClass::ContextLength
+        }
         ERR_TYPE_SERVER_ERROR | ERR_TYPE_OVERLOADED => StatusClass::ServerError,
         other => {
             // Unrecognized provider signal: default to the transient ServerError bucket so the lane

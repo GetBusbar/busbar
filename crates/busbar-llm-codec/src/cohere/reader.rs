@@ -457,8 +457,7 @@ impl ProtocolReader for CohereReader {
                         } else if let Some(s) = content_val.as_str() {
                             s.to_string()
                         } else {
-                            busbar_substrate_values::json::to_string(content_val)
-                                .unwrap_or_default()
+                            busbar_substrate_values::json::to_string(content_val).unwrap_or_default()
                         }
                     } else {
                         String::new()
@@ -680,9 +679,7 @@ impl ProtocolReader for CohereReader {
         state: &mut crate::ir::StreamDecodeState,
     ) -> Vec<IrStreamEvent> {
         let mut out: Vec<IrStreamEvent> = Vec::new();
-        if data.as_str() == Some(busbar_substrate_values::proto::SSE_DONE_SENTINEL)
-            || !data.is_object()
-        {
+        if data.as_str() == Some(busbar_substrate_values::proto::SSE_DONE_SENTINEL) || !data.is_object() {
             return out;
         }
 

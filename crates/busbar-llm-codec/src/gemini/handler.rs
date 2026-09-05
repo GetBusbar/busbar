@@ -8,9 +8,7 @@ use crate::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
 use busbar_api::operation::Operation;
-use busbar_substrate_values::handlers::{
-    CodecError, IngressReject, OperationHandler, RequestHandler,
-};
+use busbar_substrate_values::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
 use busbar_substrate_values::ir::handle::IrHandle;
 use busbar_substrate_values::media::{base64_encode, MediaBlob, MediaPayload};
 use busbar_substrate_values::wire::{EgressCtx, WireBody};
@@ -646,19 +644,17 @@ pub fn read_transcription_response(
         if let Some(seconds) = u.get("audioDurationSeconds").and_then(Value::as_f64) {
             busbar_substrate_values::billing::Billing::Duration { seconds }
         } else {
-            busbar_substrate_values::billing::Billing::Tokens(
-                busbar_substrate_values::billing::TokenUsage {
-                    input: u
-                        .get("promptTokenCount")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
-                    output: u
-                        .get("candidatesTokenCount")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
-                    ..Default::default()
-                },
-            )
+            busbar_substrate_values::billing::Billing::Tokens(busbar_substrate_values::billing::TokenUsage {
+                input: u
+                    .get("promptTokenCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                output: u
+                    .get("candidatesTokenCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                ..Default::default()
+            })
         }
     });
     Ok(TranscriptionResp {

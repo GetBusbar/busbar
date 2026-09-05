@@ -1,7 +1,7 @@
 use super::*;
+use http::StatusCode;
 use busbar_substrate_values::breaker::{classify, Disposition};
 use busbar_substrate_values::proto::PROVIDER_SIGNAL_CONTEXT_LENGTH;
-use http::StatusCode;
 
 #[test]
 fn test_classify_context_length_both_protocols() {
