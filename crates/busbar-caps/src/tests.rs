@@ -288,6 +288,11 @@ fn an_accrual_is_sealed_to_an_admitted_parent_with_the_same_principal() {
     let posted = Posted::settle_late(accrual, &k.ledger_token());
     assert!(posted.flags().contains(PostingFlags::LATE_ACCRUAL));
     assert_eq!(posted.settled(), 10);
+    // All four posting fields, as on the converted-accrual branch: a late accrual has no
+    // reservation behind it, so the whole of it posts as overdraft.
+    assert_eq!(posted.reserved(), 0);
+    assert_eq!(posted.overdraft(), 10);
+    assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
     let _ = Posted::settle(parent, &usage_of(&k, 10), &k.ledger_token());
 }
 
@@ -632,6 +637,13 @@ fn a_child_whose_parent_exited_gets_its_accrual_back_and_posts_late() {
     let late = Posted::settle_late(handed_back, &k.ledger_token());
     assert!(late.flags().contains(PostingFlags::LATE_ACCRUAL));
     assert_eq!(late.settled(), 250);
+    // The whole amount is overdraft, and the posting says so: the parent's reservation was
+    // released at its exit, so nothing was held back for this. The figure is reconciliation input,
+    // so it is pinned here rather than left to whatever the constructor happens to write.
+    assert_eq!(late.reserved(), 0);
+    assert_eq!(late.overdraft(), 250);
+    assert!(late.flags().contains(PostingFlags::OVERDRAFT));
+    assert_eq!(late.released(), 0, "a late accrual releases nothing");
 }
 
 #[test]

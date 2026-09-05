@@ -614,8 +614,15 @@ impl Posted {
         })
     }
 
-    /// Post a child's spend that missed its parent — always posted, backed by a synchronous slice
-    /// draw, flagged late.
+    /// Post a child's spend that missed its parent: always posted, wholly overdrawn, flagged late.
+    ///
+    /// The parent's reservation went back to the slice at the parent's exit, so by the time the
+    /// child's spend arrives there is nothing held back for it. That is why the whole amount books
+    /// as overdraft and `reserved` is zero — the posting is saying, in the two figures the
+    /// reconciliation reads, that value moved with no reservation behind it. Recovering it from
+    /// the slice is a draw the caller makes against the principal's bucket; this constructor holds
+    /// no slice and makes none, which is exactly what the `LATE_ACCRUAL` and `OVERDRAFT` flags
+    /// together are for.
     pub fn settle_late(accrual: HoldAccrual, _token: &LedgerToken) -> Self {
         Posted {
             principal: accrual.principal,
