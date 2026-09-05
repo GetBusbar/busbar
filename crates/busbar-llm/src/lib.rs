@@ -173,22 +173,11 @@ pub mod test_support {
 #[cfg(any(test, feature = "test-support"))]
 pub mod testkit;
 
-/// PUBLISH THIS PLUGIN'S DIALECT DECLARATIONS into the SHARED substrate test registry, ONCE — the
-/// lazy, self-installing counterpart of the composition root's `install_protocols`, for the test
-/// surface where no `main` runs a composition root.
-///
-/// It exists because the deleted `#[path]` witness re-includes used to make `busbar-core`'s
-/// `test`/`test-support` builds carry these dialects as built-ins AUTOMATICALLY. With the witnesses
-/// gone, `busbar-core`'s built-in table is empty and the process registry is populated only by
-/// registration — so a codec that resolves a protocol fact through `busbar_substrate::proto::decl_for`
-/// (the `Protocol` reader/writer resolution, `protocol_for`, the tool-id remap's
-/// `native_tool_id_prefix`) must first ensure this plugin's declarations are registered. Calling this
-/// at those few entry points makes every codec-exercising test in THIS crate's binary
-/// order-independent without a per-test install. `Once`-guarded, so it is a single atomic load after
-/// the first call — off any allocation-gated path. In a build with a real composition root (or
-/// `busbar-core`'s own `cfg(test)` publish) the set is already present and the fold dedupes by name.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) use busbar_llm_codec::ensure_test_protocols_registered;
+// THE SELF-INSTALLING TEST REGISTRATION (`ensure_test_protocols_registered`) moved with the
+// declarations it publishes: it lives in `busbar-llm-codec`, is called from the codec entry points
+// that resolve a protocol fact through the registry, and is turned on for this crate's own test
+// binary by the codec crate's `test-support` dev edge in the manifest. Nothing in this crate names
+// it directly, so there is no re-export here.
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///

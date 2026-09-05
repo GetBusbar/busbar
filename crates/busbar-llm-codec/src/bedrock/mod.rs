@@ -1739,6 +1739,12 @@ pub struct BedrockConverseBodyTranslator {
     usage: Option<busbar_substrate::billing::TokenUsage>,
 }
 
+impl Default for BedrockConverseBodyTranslator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BedrockConverseBodyTranslator {
     pub fn new() -> Self {
         Self::with_cap(crate::wire_shim::max_translated_body_bytes())

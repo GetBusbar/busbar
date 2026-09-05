@@ -1689,6 +1689,12 @@ pub struct GeminiJsonArrayFramer {
     aborted: bool,
 }
 
+impl Default for GeminiJsonArrayFramer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GeminiJsonArrayFramer {
     // `pub(crate)` so the framer's tests in `mod.rs` (which exercise the buffer-overflow abort path)
     // can size a payload off the cap; it stays an internal cap, not part of the wire surface.
