@@ -1,0 +1,28 @@
+# busbar-unit-cost — the rate card and the money arithmetic, as pure functions over integers.
+#
+# WHY A SEPARATE CRATE. The five numbered clauses of the numeric contract (rates, storage,
+# projections, immutability, tier) are the one part of the system where a single changed rounding
+# step silently changes every invoice. Keeping them in a crate whose only dependency is the
+# capability types means the arithmetic can be read, reviewed and re-derived by hand without a
+# config parser, a store, a runtime or a plane anywhere in the way.
+#
+# NO WORKSPACE DEPENDENCIES BEYOND THE CAPABILITY CRATE. The usage report this crate prices is the
+# one the usage unit built with its own token; nothing else may reach in. That is why the only
+# dependency here is `busbar-caps`, and why there is no serializer, no async runtime and no error
+# library: none of them can affect an integer multiply.
+[package]
+name = "busbar-unit-cost"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: one pinned number, set to what CI verifies (same as busbar-caps).
+rust-version = "1.97"
+description = "The rate card and the pricing law: integer nano-unit rates, the stored posting, the cent/micro projections, the pinned card and the tier multiplier."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_unit_cost"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-caps = { path = "../busbar-caps" }

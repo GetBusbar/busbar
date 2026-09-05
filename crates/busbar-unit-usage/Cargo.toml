@@ -1,0 +1,26 @@
+# busbar-unit-usage — the usage unit: what a unit actually used, and what that settles to.
+#
+# WHY A SEPARATE CRATE. The usage report is the one figure that moves money, and the only thing
+# entitled to build it is the usage unit holding its own token. Keeping the fold in its own crate
+# means the rules that decide a quantity — the closed set of sources evidence may come from, the
+# variance rule between two of them, the floor that is a tripwire and never a charge, and the
+# settlement table — are readable end to end without a runtime, a store or a plane in the way.
+#
+# NO WORKSPACE DEPENDENCIES BEYOND THE CAPABILITY CRATE, and none on the pricing crate either: a
+# quantity is decided before, and independently of, what it costs. The two meet at the ledger.
+[package]
+name = "busbar-unit-usage"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: one pinned number, set to what CI verifies (same as busbar-caps).
+rust-version = "1.97"
+description = "The usage unit: the closed quantity sources, the variance rule, the locator floor, the three-way lane cross-check and the settlement table."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_unit_usage"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-caps = { path = "../busbar-caps" }
