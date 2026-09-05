@@ -241,6 +241,9 @@ pub mod router;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "tests/alarm_silence_tests.rs"]
+mod alarm_silence_tests;
 
 pub use appbuild::{
     build_app_from_config, inert_durable_keys_banner, load_config_from_disk, open_relay_banner,

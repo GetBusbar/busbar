@@ -1256,3 +1256,7 @@ mod limits_tests;
 #[cfg(test)]
 #[path = "tests/budget_cell_tests.rs"]
 mod budget_cell_tests;
+
+#[cfg(test)]
+#[path = "../tests/key_expires_at_tests.rs"]
+mod key_expires_at_tests;
