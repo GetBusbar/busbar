@@ -142,6 +142,12 @@ corpus_providers_for() {  # <repo-relative corpus config path>
 record_exec_cell() {  # <id> <cell-json> <raw-dir> <safe>
   local id="$1" cell="$2" raw="$3" safe="$4" mode cfg cfgfile envkv rc corpus_prov
   mode="$(jq -r '.exec.mode' <<<"$cell")"; cfg="$(jq -r '.exec.config // "baseline"' <<<"$cell")"
+  # An exec cell's contract can ALSO be "what is NOT there" (`body_lines`) or "keep this one value
+  # raw" (`keep`) — the same two opt-ins the http path already honors — so a boot-log cell can pin
+  # only the INFO-and-above lines instead of every DEBUG line a level bump might add.
+  local xkeep_lines xkeep_spec
+  xkeep_lines="$(jq -r '.body_lines // empty' <<<"$cell")"
+  xkeep_spec="$(jq -c '.keep // empty' <<<"$cell")"
   local -a args=() envs=()
   while IFS= read -r a; do args+=("$a"); done < <(jq -r '.exec.args[]' <<<"$cell")
   while IFS= read -r envkv; do [ -n "$envkv" ] && envs+=("$envkv"); done < <(jq -r '.exec.env // {} | to_entries[] | "\(.key)=\(.value)"' <<<"$cell")
@@ -220,7 +226,7 @@ PY
   printf '%s\n' "$rc" >"$raw/status"
   python3 "${here}/capture-exec.py" "$rc" "$raw/stdout" "$raw/stderr" --strip-path "$WORK" --strip-path "$xwork" --strip-path "$repo" --strip-path "$BIN" >"$raw/captured.json" 2>"$raw/capture.err" \
     || { record "$id" FAIL "capture-exec.py failed" "$(tail -c 300 "$raw/capture.err")"; return; }
-  python3 "${here}/normalize.py" "$raw/captured.json" >"$OUT/cells/$safe.json" 2>"$raw/normalize.err" \
+  python3 "${here}/normalize.py" "$raw/captured.json" ${xkeep_lines:+--keep-body-lines "$xkeep_lines"} ${xkeep_spec:+--keep "$xkeep_spec"} >"$OUT/cells/$safe.json" 2>"$raw/normalize.err" \
     || { record "$id" FAIL "normalize.py failed" "$(tail -c 300 "$raw/normalize.err")"; return; }
   record "$id" PASS "exit ${rc}; $(head -c 60 "$raw/stdout" | tr '\n' ' ')" ""
   n=$((n + 1))
@@ -392,9 +398,11 @@ while IFS= read -r cell; do
     sname="$(jq -r .script.name <<<"$cell")"
     local_args=(); while IFS= read -r a; do [ -n "$a" ] && local_args+=("$a"); done < <(jq -r '.script.args[]? // empty' <<<"$cell")
     stop_busbar   # a script cell never needs the recording busbar; free its ports and CPU
-    # the script reuses this recording's own (now free) ports so two recordings never collide
+    # the script reuses this recording's own (now free) listen/admin ports so two recordings never
+    # collide; the recording's mock upstream is still up on MOCK_PORT, so the script's mock takes
+    # the port after the admin one (inside this recording's own block)
     BUSBAR_BIN="$BIN" RAW="$raw" WORK="$WORK" ORACLE_ADMIN_TOKEN="$ORACLE_ADMIN_TOKEN" \
-      SCRIPT_LISTEN_PORT="$LISTEN_PORT" SCRIPT_ADMIN_PORT="$ADMIN_PORT" SCRIPT_MOCK_PORT="$MOCK_PORT" \
+      SCRIPT_LISTEN_PORT="$LISTEN_PORT" SCRIPT_ADMIN_PORT="$ADMIN_PORT" SCRIPT_MOCK_PORT="$((ADMIN_PORT+1))" \
       bash "${here}/scripts/${sname}" "${local_args[@]}" >"$raw/script.log" 2>&1
     [ -s "$raw/captured.json" ] || { record "$id" FAIL "script ${sname} produced no captured.json" "$(tail -c 300 "$raw/script.log")"; continue; }
     python3 "${here}/normalize.py" "$raw/captured.json" >"$OUT/cells/$safe.json" 2>"$raw/normalize.err" \
