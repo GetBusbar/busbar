@@ -43,10 +43,10 @@
     }
   ],
   "counts": {
-    "total": 2250,
+    "total": 2278,
     "by_plane": {
       "a2a": 468,
-      "core": 736,
+      "core": 764,
       "llm": 134,
       "mcp": 912
     },
@@ -62,6 +62,7 @@
       "config.migrate": 138,
       "cooldown": 1,
       "crosscut.traps": 5,
+      "documented": 28,
       "hooks": 10,
       "http.crosscut": 20,
       "llm.wire": 127,
@@ -16877,6 +16878,453 @@
           "x-request-id"
         ]
       }
+    },
+    {
+      "id": "documented|changelog|admin-restart",
+      "plane": "core",
+      "family": "documented",
+      "driver": "script",
+      "script": {
+        "name": "documented-admin-restart.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "CHANGELOG:309-310 (1.5.0) 'POST /api/v1/admin/restart applies the settings that need a restart \u2026 without shell access' \u2014 a PUT advanced.response_headers.server_timing stages in the overlay (the response itself says so), POST /restart drains and exits the process, and a fresh launch against the same config+overlay serves /healthz WITH the Server-Timing header the pre-restart PUT staged (admin/restart.rs:4-18; admin/v1/json/handlers.rs:2386-2439)"
+    },
+    {
+      "id": "documented|changelog|contradicted-providers-env-wins",
+      "plane": "core",
+      "family": "documented",
+      "driver": "script",
+      "script": {
+        "name": "documented-providers-env-wins.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "PARTIALLY CONTRADICTED: CHANGELOG:134-137 (1.5.3) says of the deprecated env vars '\u2026 and the config key wins if you set both.' For BUSBAR_PROVIDERS specifically the doc is wrong \u2014 the ENV VAR wins over `providers_file:` (main.rs:1645-1647 in the 1.5.5 tag). Two providers catalogs, config.yaml declares `providers_file:` for one, BUSBAR_PROVIDERS names the other; `--validate`'s own success line echoes back which path it actually resolved (ops-observability \u00a72.3) \u2014 the golden names the env-set file, pinning the code's actual precedence as the parity target."
+    },
+    {
+      "id": "documented|changelog|docker-boots-and-mutation-refused",
+      "plane": "core",
+      "family": "documented",
+      "driver": "script",
+      "script": {
+        "name": "documented-overlay-refused.sh",
+        "args": [
+          "overlay-unwritable"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "CHANGELOG:36-38 (1.5.4) 'The Docker image starts again' (previously exited 1 before binding a port on an unwritable overlay) + CHANGELOG:40-46 'Busbar boots, serves traffic, warns clearly \u2026 and refuses admin-API config changes outright' \u2014 both confirmed by the same boot+mutation-attempt facts as the README:272 CONTRADICTED cell above (main.rs:856-865)"
+    },
+    {
+      "id": "documented|changelog|headers-off-default",
+      "plane": "core",
+      "family": "documented",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/healthz",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "data"
+      },
+      "why": "CHANGELOG:107-109 (1.5.3) 'Response headers are off by default \u2026 `observability.emit_server_timing` no longer exists.' \u2014 the oracle's baseline config never sets advanced.response_headers, so no Server-Timing header rides an ordinary response (main.rs:798-807, :3885-3897)"
+    },
+    {
+      "id": "documented|changelog|lane-available-metric",
+      "plane": "core",
+      "family": "documented",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/metrics",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "CHANGELOG:229 (1.5.1) '`busbar_lane_at_capacity` is replaced by `busbar_lane_available`.' \u2014 the golden shows `busbar_lane_available` series lines and NO `busbar_lane_at_capacity` line at all (metrics.rs:260; negative assertion metrics.rs:1446-1447)",
+      "body_lines": "^busbar_lane_(available|at_capacity)"
+    },
+    {
+      "id": "documented|changelog|legacy-config-refused",
+      "plane": "core",
+      "family": "documented",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:BOOT-P41",
+        "env": {}
+      },
+      "why": "CHANGELOG:247-250 (1.5.0) 'The config file changed shape and a 1.x config refuses to start. Run `busbar --migrate-config <old.yaml> > config.yaml` \u2026 then run `busbar --validate`.' \u2014 same legacy-marker fail-closed fixture as the README:282 migrate-config-freeze cell (main.rs:1619-1631)"
+    },
+    {
+      "id": "documented|changelog|no-keygen-at-boot",
+      "plane": "core",
+      "family": "documented",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [],
+        "mode": "boot",
+        "config": "mutation:BOOT-075",
+        "env": {}
+      },
+      "why": "CHANGELOG:210-214 (1.5.1) 'Busbar no longer generates a signing key at boot. \u2026 1.5.0 wrote this file itself beside your config, which boot-looped on a read-only mount.' \u2014 a missing `auth.signing_key` now REFUSES to start (fail-closed) rather than silently writing one (main.rs:2255-2258)"
+    },
+    {
+      "id": "documented|changelog|no-per-key-gauge",
+      "plane": "core",
+      "family": "documented",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/metrics",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "CHANGELOG:258-259 (1.5.0) 'The per-key `busbar_key_budget_remaining_cents` gauge is gone with them, so use the bucket gauges.' \u2014 the golden is an empty body; any such series on a later binary is a diff (metrics.rs:1179 negative assertion)",
+      "body_lines": "^busbar_key_budget_remaining_cents"
+    },
+    {
+      "id": "documented|changelog|retry-after-floor",
+      "plane": "core",
+      "family": "documented",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"oracle-fo\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "CHANGELOG:235 (1.5.1) '`Retry-After` on an exhaustion 503 always said one second under saturation, rather than the real cooldown.' \u2014 every member of pool oracle-fo driven down; the on_exhausted 503's Retry-After is pinned (>= 2s, the breaker's own 15s base_cooldown_secs jittered), never the old 1-second floor (endpoints.rs:477-481)",
+      "keep": {
+        "headers_min": {
+          "retry-after": 2
+        }
+      },
+      "mock_control": {
+        "m-openai-chat": "down",
+        "m-anthropic": "down"
+      }
+    },
+    {
+      "id": "documented|changelog|spend-metrics-labelled",
+      "plane": "core",
+      "family": "documented",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/metrics",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"m-openai-chat\"}"
+          }
+        ]
+      },
+      "why": "CHANGELOG:315-316 (1.5.0) 'Spend, budget-remaining and token metrics are labelled by group and window, and key labels set at mint time echo onto per-key series.' \u2014 after one served spend, the label set on these series carries group=/window= (metrics.rs:233-243, :767-800)",
+      "body_lines": "^busbar_(spend_cents|budget_remaining_cents|tokens)_"
+    },
+    {
+      "id": "documented|changelog|stats-reasons",
+      "plane": "core",
+      "family": "documented",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/stats",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "CHANGELOG:218-219 (1.5.1) '/stats and /metrics report why a lane cannot take a request \u2026 and how many requests are parked.' (endpoints.rs:89-135)"
+    },
+    {
+      "id": "documented|changelog|validate-checks",
+      "plane": "core",
+      "family": "documented",
+      "driver": "script",
+      "script": {
+        "name": "documented-validate-checks.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "four independent CHANGELOG claims, each its own `busbar --validate` check: CHANGELOG:81-87 (1.5.3) unresolvable env:/file: secret ref exits 1; CHANGELOG:110-112 (1.5.3) `admin_insecure` retired for `admin_require_mtls` (inverted meaning); CHANGELOG:196-197 (1.5.2) `auth.chain: [keys]` with no way to ever mint an admin token now refuses to start; CHANGELOG:185-186 (1.5.3) a config file named with no directory component boots clean in a writable directory"
+    },
+    {
+      "id": "documented|changelog|validate-list-plugins",
+      "plane": "core",
+      "family": "documented",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--list-plugins"
+        ],
+        "mode": "cli",
+        "config": "baseline",
+        "env": {}
+      },
+      "why": "CHANGELOG:313-314 (1.5.0) '`busbar --validate` covers the whole new surface with paste-ready fixes, and `busbar --list-plugins` prints the plugin inventory without loading plugin code.' (main.rs:264-364, :366-452)"
+    },
+    {
+      "id": "documented|changelog|worker-threads-zero",
+      "plane": "core",
+      "family": "documented",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:BOOT-W34",
+        "env": {}
+      },
+      "why": "CHANGELOG:190 (1.5.3) '`advanced.worker_threads: 0` was silently ignored instead of reported.' \u2014 now a boot WARN names the ignored value (main.rs:612-621)"
+    },
+    {
+      "id": "documented|readme|config-locked",
+      "plane": "core",
+      "family": "documented",
+      "driver": "script",
+      "script": {
+        "name": "documented-overlay-refused.sh",
+        "args": [
+          "locked"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "README:217 `config: { locked: true }` for GitOps/read-only root (config/overlay.rs:34,:48-49) \u2014 boots clean and refuses a live PUT /api/v1/admin/config/settings with the fixed no-writable-overlay message"
+    },
+    {
+      "id": "documented|readme|contradicted-overlay-boots",
+      "plane": "core",
+      "family": "documented",
+      "driver": "script",
+      "script": {
+        "name": "documented-overlay-refused.sh",
+        "args": [
+          "overlay-unwritable"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "CONTRADICTED: README:272 says '`config: { locked: true }` is what lets the root filesystem be read-only \u2026 Busbar refuses to boot without one [a writable overlay path]'. The doc is wrong \u2014 1.5.4 code boots, serves traffic normally, WARNs 'config is READ-ONLY (the overlay backend is not writable)', and refuses only admin-API config MUTATIONS, never the boot itself (main.rs:856-865; config/overlay.rs:44-53; CHANGELOG.md:40-46). This cell pins the code's actual behaviour as the parity target."
+    },
+    {
+      "id": "documented|readme|docker-defaults",
+      "plane": "core",
+      "family": "documented",
+      "driver": "script",
+      "script": {
+        "name": "documented-docker-defaults.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "README:188-192 `docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/busbar` \u2014 the EXACT shipped docker/config.yaml (listen port rewritten off 8080 only) boots and answers /healthz + /v1/models with only those two env vars set (Dockerfile:33, docker/config.yaml:22,30)"
+    },
+    {
+      "id": "documented|readme|env-launch",
+      "plane": "core",
+      "family": "documented",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [],
+        "mode": "cli",
+        "config": "baseline",
+        "env": {}
+      },
+      "why": "README:182 `BUSBAR_CONFIG=./config.yaml ./busbar &` \u2014 plain `--version` under the same BUSBAR_CONFIG-driven launch path (main.rs:120, :224) exits 0"
+    },
+    {
+      "id": "documented|readme|export-standards",
+      "plane": "core",
+      "family": "documented",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "baseline",
+        "env": {}
+      },
+      "why": "README:280 'observability over open standards: Prometheus, OTLP and a per-request audit webhook' \u2014 the oracle's own baseline config runs a prometheus export sink clean through --validate; OTLP/webhook module existence is separately pinned by PB-74's EXPORT_MODULES freeze"
+    },
+    {
+      "id": "documented|readme|healthz-probes",
+      "plane": "core",
+      "family": "documented",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/healthz",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "data"
+      },
+      "why": "README:247-248 readinessProbe and livenessProbe both httpGet {path: /healthz, port: http} \u2014 one path serves both (main.rs, endpoints.rs:269-283, plugin_routes.rs:21,53)"
+    },
+    {
+      "id": "documented|readme|migrate-config-freeze",
+      "plane": "core",
+      "family": "documented",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:BOOT-P41",
+        "env": {}
+      },
+      "why": "README:282 'config.yaml \u2026 changes always ship with `busbar --migrate-config` and a loud fail-closed boot' \u2014 a 1.x-shaped config (legacy `providers.<name>.api_key_env`) fails closed naming the migrator (config/migrate.rs:277-289)"
+    },
+    {
+      "id": "documented|readme|six-protocols|anthropic",
+      "plane": "core",
+      "family": "documented",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/messages",
+        "headers": {
+          "anthropic-version": "2023-06-01"
+        },
+        "body": "{\"max_tokens\":64,\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"m-anthropic\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "README:22 six protocols + README:97-99 pool name in the base URL (http://localhost:8080/fast) \u2014 the Anthropic route actually serves (main.rs:234)"
+    },
+    {
+      "id": "documented|readme|six-protocols|cohere",
+      "plane": "core",
+      "family": "documented",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v2/chat",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"m-cohere\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "README:22 six protocols + README:113-115 Cohere v2 client.chat(model=\"fast\") \u2014 the Cohere route actually serves (main.rs:237)"
+    },
+    {
+      "id": "documented|readme|six-protocols|gemini",
+      "plane": "core",
+      "family": "documented",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1beta/models/m-gemini:generateContent",
+        "headers": {},
+        "body": "{\"contents\":[{\"parts\":[{\"text\":\"ping\"}],\"role\":\"user\"}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "README:22 six protocols + README:108-110 base_url=http://localhost:8080 \u2014 the Gemini route actually serves (main.rs:239-240)"
+    },
+    {
+      "id": "documented|readme|six-protocols|openai-chat",
+      "plane": "core",
+      "family": "documented",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"m-openai-chat\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "README:22 'Six wire protocols, first class on both sides' + README:85-88 base_url=http://localhost:8080/v1, model = pool name \u2014 the OpenAI-chat route actually serves (main.rs:233-244, :236)"
+    },
+    {
+      "id": "documented|readme|six-protocols|openai-responses",
+      "plane": "core",
+      "family": "documented",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/responses",
+        "headers": {},
+        "body": "{\"input\":\"ping\",\"model\":\"m-openai-responses\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "README:22 six protocols + README:103 client.responses.create(model=\"fast\") \u2014 the Responses route actually serves (main.rs:238)"
+    },
+    {
+      "id": "documented|readme|tls-mtls",
+      "plane": "core",
+      "family": "documented",
+      "driver": "script",
+      "script": {
+        "name": "documented-tls.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "README:280 'native TLS and mTLS with no reverse proxy in front' (config/mod.rs:472; tls::serve mTLS arm main.rs:1111-1125) \u2014 a self-signed cert + `tls: {cert, key}` boots and serves /healthz over HTTPS directly, and the same port refuses plain HTTP once TLS is configured"
+    },
+    {
+      "id": "documented|readme|validate-ci",
+      "plane": "core",
+      "family": "documented",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "baseline",
+        "env": {}
+      },
+      "why": "README:194 '`busbar --validate` parses your config and every provider reference and exits non-zero on anything wrong, with no server, no network and no state' (main.rs:193, :205-208, :258-263)"
     },
     {
       "id": "hooks|admin-list",

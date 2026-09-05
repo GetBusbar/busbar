@@ -431,8 +431,10 @@ change; [config at a glance](docs/config-at-a-glance.md) shows the finished shap
 - Operational settings that were environment variables are now config keys under `config:` and
   `advanced:` (`config.overlay.file`, `advanced.worker_threads`, `advanced.upstream_http1_only`,
   `advanced.upstream_h2_prior_knowledge`), and the provider catalog moves to `providers_file:` / the
-  `--providers` flag. The old env vars are deprecated and still honored, with the config key winning
-  when both are set. `BUSBAR_CONFIG` is unchanged.
+  `--providers` flag. The old env vars are deprecated and still honored: for `BUSBAR_PROVIDERS`,
+  `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` the
+  env var wins when both are set; only `BUSBAR_CONFIG_OVERLAY` is honored the other way, only when
+  `config.overlay` is left unset. `BUSBAR_CONFIG` is unchanged.
 - The `persist` field on admin config calls is ignored; durability is a property of the deployment.
 - The admin hooks API calls the field `module` rather than `plugin`, matching the config file.
   `plugin` is still accepted.

@@ -319,7 +319,7 @@ spec:
   ports: [ { name: http, port: 80, targetPort: http } ]
 ```
 
-`config: { locked: true }` is what lets the root filesystem be read-only: a mutable config needs a writable overlay path and Busbar refuses to boot without one. This Service is cluster-internal and the data plane has no auth chain, so turn on virtual keys before you expose it ([Governance](https://getbusbar.com/docs/guides/governance/)).
+`config: { locked: true }` is what lets the root filesystem be read-only: a mutable config needs a writable overlay path, and if that path isn't writable Busbar still boots and serves traffic — it warns loudly and refuses admin-API config mutations rather than refusing to start. This Service is cluster-internal and the data plane has no auth chain, so turn on virtual keys before you expose it ([Governance](https://getbusbar.com/docs/guides/governance/)).
 
 </details>
 

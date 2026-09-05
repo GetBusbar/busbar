@@ -829,6 +829,203 @@ def neutrality_cells() -> list[dict]:
     return cells
 
 
+def documented_cells() -> list[dict]:
+    """`documented`: PB-71's documented-vs-actual family. One cell per TESTABLE claim in
+    docs/design/inventory/1.5.5-ops-observability.md §8 (27 README rows :1047-1073, 29 CHANGELOG
+    rows :1087-1115); the claim text (and its doc citation) is in the cell's `why`. The two rows
+    ARCHITECTURE.md names CONTRADICTED (README:272, CHANGELOG:134-137) get a cell that pins the
+    CODE's actual behaviour — `why` says the doc is wrong and cites the doc line, per PB-71's
+    "code-wins" rule. Claims that are pure prose (external benchmarks, Kubernetes/Docker manifest
+    literals busbar itself never observes, CI-pipeline-only behaviour, or a bare pointer to another
+    §'s own detailed cross-check) are NOT cells here — they are named gaps in
+    qa/documented-claims.json with `status: "prose"` and a one-line reason, never silently dropped.
+    """
+    F = "documented"
+    chat = lambda model: json.dumps({"model": model, "messages": [{"role": "user", "content": "ping"}]},
+                                     separators=(",", ":"), sort_keys=True)
+    cells = []
+
+    # ── README §8.3 (27 rows; 15 testable rows -> 6 cells here, 1 CONTRADICTED, 12 prose) ────────
+    cells.append(http("documented|readme|six-protocols|openai-chat", F, "POST", "/v1/chat/completions",
+                       body=chat("m-openai-chat"),
+                       why="README:22 'Six wire protocols, first class on both sides' + README:85-88 "
+                           "base_url=http://localhost:8080/v1, model = pool name — the OpenAI-chat "
+                           "route actually serves (main.rs:233-244, :236)"))
+    cells.append(http("documented|readme|six-protocols|openai-responses", F, "POST", "/v1/responses",
+                       body=json.dumps({"model": "m-openai-responses", "input": "ping"}, separators=(",", ":"), sort_keys=True),
+                       why="README:22 six protocols + README:103 client.responses.create(model=\"fast\") "
+                           "— the Responses route actually serves (main.rs:238)"))
+    cells.append(http("documented|readme|six-protocols|anthropic", F, "POST", "/v1/messages",
+                       headers={"anthropic-version": "2023-06-01"},
+                       body=json.dumps({"model": "m-anthropic", "max_tokens": 64, "messages": [{"role": "user", "content": "ping"}]}, separators=(",", ":"), sort_keys=True),
+                       why="README:22 six protocols + README:97-99 pool name in the base URL "
+                           "(http://localhost:8080/fast) — the Anthropic route actually serves (main.rs:234)"))
+    cells.append(http("documented|readme|six-protocols|gemini", F, "POST", "/v1beta/models/m-gemini:generateContent",
+                       body=json.dumps({"contents": [{"role": "user", "parts": [{"text": "ping"}]}]}, separators=(",", ":"), sort_keys=True),
+                       why="README:22 six protocols + README:108-110 base_url=http://localhost:8080 "
+                           "— the Gemini route actually serves (main.rs:239-240)"))
+    cells.append(http("documented|readme|six-protocols|cohere", F, "POST", "/v2/chat",
+                       body=chat("m-cohere"),
+                       why="README:22 six protocols + README:113-115 Cohere v2 client.chat(model=\"fast\") "
+                           "— the Cohere route actually serves (main.rs:237)"))
+    # bedrock (README:117-121, :22) is deliberately NOT a cell here: its ingress is SigV4-signed,
+    # which the plain http driver cannot express (no sigv4 signer in this family's reuse set); the
+    # route itself is already exhaustively pinned by the llm.wire family's own `llm|bedrock|*` cells
+    # (which DO carry a sigv4 signer) — see qa/documented-claims.json.
+    cells.append(exec_("documented|readme|env-launch", F, args=[], mode="cli",
+                        env={}, why="README:182 `BUSBAR_CONFIG=./config.yaml ./busbar &` — plain "
+                                    "`--version` under the same BUSBAR_CONFIG-driven launch path "
+                                    "(main.rs:120, :224) exits 0"))
+    cells.append(exec_("documented|readme|validate-ci", F, args=["--validate"], mode="validate",
+                        why="README:194 '`busbar --validate` parses your config and every provider "
+                            "reference and exits non-zero on anything wrong, with no server, no "
+                            "network and no state' (main.rs:193, :205-208, :258-263)"))
+    cells.append(http("documented|readme|healthz-probes", F, "GET", "/healthz", auth="none",
+                       why="README:247-248 readinessProbe and livenessProbe both httpGet "
+                           "{path: /healthz, port: http} — one path serves both (main.rs, "
+                           "endpoints.rs:269-283, plugin_routes.rs:21,53)"))
+    cells.append(exec_("documented|readme|export-standards", F, args=["--validate"], mode="validate",
+                        why="README:280 'observability over open standards: Prometheus, OTLP and a "
+                            "per-request audit webhook' — the oracle's own baseline config runs a "
+                            "prometheus export sink clean through --validate; OTLP/webhook module "
+                            "existence is separately pinned by PB-74's EXPORT_MODULES freeze"))
+    cells.append(exec_("documented|readme|migrate-config-freeze", F, args=["--validate"], mode="validate",
+                        config="mutation:BOOT-P41",
+                        why="README:282 'config.yaml … changes always ship with `busbar "
+                            "--migrate-config` and a loud fail-closed boot' — a 1.x-shaped config "
+                            "(legacy `providers.<name>.api_key_env`) fails closed naming the migrator "
+                            "(config/migrate.rs:277-289)"))
+    cells.append({"id": "documented|readme|config-locked", "plane": "core", "family": F, "driver": "script",
+                  "script": {"name": "documented-overlay-refused.sh", "args": ["locked"]}, "outcome": "ok", "weight": 10,
+                  "why": "README:217 `config: { locked: true }` for GitOps/read-only root "
+                         "(config/overlay.rs:34,:48-49) — boots clean and refuses a live "
+                         "PUT /api/v1/admin/config/settings with the fixed no-writable-overlay message"})
+    cells.append({"id": "documented|readme|tls-mtls", "plane": "core", "family": F, "driver": "script",
+                  "script": {"name": "documented-tls.sh"}, "outcome": "ok", "weight": 10,
+                  "why": "README:280 'native TLS and mTLS with no reverse proxy in front' "
+                         "(config/mod.rs:472; tls::serve mTLS arm main.rs:1111-1125) — a self-signed "
+                         "cert + `tls: {cert, key}` boots and serves /healthz over HTTPS directly, "
+                         "and the same port refuses plain HTTP once TLS is configured"})
+    cells.append({"id": "documented|readme|docker-defaults", "plane": "core", "family": F, "driver": "script",
+                  "script": {"name": "documented-docker-defaults.sh"}, "outcome": "ok", "weight": 10,
+                  "why": "README:188-192 `docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e "
+                         "BUSBAR_ADMIN_TOKEN getbusbar/busbar` — the EXACT shipped docker/config.yaml "
+                         "(listen port rewritten off 8080 only) boots and answers /healthz + "
+                         "/v1/models with only those two env vars set (Dockerfile:33, "
+                         "docker/config.yaml:22,30)"})
+    # CONTRADICTED (README:272, code-wins per PB-71): pins the ACTUAL behaviour.
+    cells.append({"id": "documented|readme|contradicted-overlay-boots", "plane": "core", "family": F, "driver": "script",
+                  "script": {"name": "documented-overlay-refused.sh", "args": ["overlay-unwritable"]}, "outcome": "ok", "weight": 10,
+                  "why": "CONTRADICTED: README:272 says '`config: { locked: true }` is what lets the "
+                         "root filesystem be read-only … Busbar refuses to boot without one "
+                         "[a writable overlay path]'. The doc is wrong — 1.5.4 code boots, serves "
+                         "traffic normally, WARNs 'config is READ-ONLY (the overlay backend is not "
+                         "writable)', and refuses only admin-API config MUTATIONS, never the boot "
+                         "itself (main.rs:856-865; config/overlay.rs:44-53; CHANGELOG.md:40-46). "
+                         "This cell pins the code's actual behaviour as the parity target."})
+
+    # ── CHANGELOG §8.4 (29 rows; 19 testable rows -> 6 cells (one script covers 3 rows) + 2 more "
+    # scripts + simple http/exec cells, 1 CONTRADICTED, 10 prose) ─────────────────────────────────
+    cells.append({"id": "documented|changelog|docker-boots-and-mutation-refused", "plane": "core", "family": F, "driver": "script",
+                  "script": {"name": "documented-overlay-refused.sh", "args": ["overlay-unwritable"]}, "outcome": "ok", "weight": 10,
+                  "why": "CHANGELOG:36-38 (1.5.4) 'The Docker image starts again' (previously exited 1 "
+                         "before binding a port on an unwritable overlay) + CHANGELOG:40-46 'Busbar "
+                         "boots, serves traffic, warns clearly … and refuses admin-API config changes "
+                         "outright' — both confirmed by the same boot+mutation-attempt facts as the "
+                         "README:272 CONTRADICTED cell above (main.rs:856-865)"})
+    cells.append({"id": "documented|changelog|validate-checks", "plane": "core", "family": F, "driver": "script",
+                  "script": {"name": "documented-validate-checks.sh"}, "outcome": "ok", "weight": 10,
+                  "why": "four independent CHANGELOG claims, each its own `busbar --validate` check: "
+                         "CHANGELOG:81-87 (1.5.3) unresolvable env:/file: secret ref exits 1; "
+                         "CHANGELOG:110-112 (1.5.3) `admin_insecure` retired for `admin_require_mtls` "
+                         "(inverted meaning); CHANGELOG:196-197 (1.5.2) `auth.chain: [keys]` with no "
+                         "way to ever mint an admin token now refuses to start; CHANGELOG:185-186 "
+                         "(1.5.3) a config file named with no directory component boots clean in a "
+                         "writable directory"})
+    cells.append({"id": "documented|changelog|admin-restart", "plane": "core", "family": F, "driver": "script",
+                  "script": {"name": "documented-admin-restart.sh"}, "outcome": "ok", "weight": 10,
+                  "why": "CHANGELOG:309-310 (1.5.0) 'POST /api/v1/admin/restart applies the settings "
+                         "that need a restart … without shell access' — a PUT "
+                         "advanced.response_headers.server_timing stages in the overlay (the response "
+                         "itself says so), POST /restart drains and exits the process, and a fresh "
+                         "launch against the same config+overlay serves /healthz WITH the "
+                         "Server-Timing header the pre-restart PUT staged (admin/restart.rs:4-18; "
+                         "admin/v1/json/handlers.rs:2386-2439)"})
+    cells.append(http("documented|changelog|headers-off-default", F, "GET", "/healthz", auth="none",
+                       why="CHANGELOG:107-109 (1.5.3) 'Response headers are off by default … "
+                           "`observability.emit_server_timing` no longer exists.' — the oracle's "
+                           "baseline config never sets advanced.response_headers, so no Server-Timing "
+                           "header rides an ordinary response (main.rs:798-807, :3885-3897)"))
+    cells.append(http("documented|changelog|stats-reasons", F, "GET", "/stats",
+                       why="CHANGELOG:218-219 (1.5.1) '/stats and /metrics report why a lane cannot "
+                           "take a request … and how many requests are parked.' (endpoints.rs:89-135)"))
+    cells.append(http("documented|changelog|lane-available-metric", F, "GET", "/metrics",
+                       body_lines=r"^busbar_lane_(available|at_capacity)",
+                       why="CHANGELOG:229 (1.5.1) '`busbar_lane_at_capacity` is replaced by "
+                           "`busbar_lane_available`.' — the golden shows `busbar_lane_available` "
+                           "series lines and NO `busbar_lane_at_capacity` line at all (metrics.rs:260; "
+                           "negative assertion metrics.rs:1446-1447)"))
+    retry_trap = http("documented|changelog|retry-after-floor", F, "POST", "/v1/chat/completions",
+                       body=chat("oracle-fo"), keep={"headers_min": {"retry-after": 2}},
+                       why="CHANGELOG:235 (1.5.1) '`Retry-After` on an exhaustion 503 always said one "
+                           "second under saturation, rather than the real cooldown.' — every member of "
+                           "pool oracle-fo driven down; the on_exhausted 503's Retry-After is pinned "
+                           "(>= 2s, the breaker's own 15s base_cooldown_secs jittered), never the old "
+                           "1-second floor (endpoints.rs:477-481)")
+    retry_trap["mock_control"] = {"m-openai-chat": "down", "m-anthropic": "down"}
+    cells.append(retry_trap)
+    cells.append(exec_("documented|changelog|worker-threads-zero", F, args=["--validate"], mode="validate",
+                        config="mutation:BOOT-W34",
+                        why="CHANGELOG:190 (1.5.3) '`advanced.worker_threads: 0` was silently ignored "
+                            "instead of reported.' — now a boot WARN names the ignored value "
+                            "(main.rs:612-621)"))
+    cells.append(exec_("documented|changelog|no-keygen-at-boot", F, args=[], mode="boot",
+                        config="mutation:BOOT-075",
+                        why="CHANGELOG:210-214 (1.5.1) 'Busbar no longer generates a signing key at "
+                            "boot. … 1.5.0 wrote this file itself beside your config, which boot-looped "
+                            "on a read-only mount.' — a missing `auth.signing_key` now REFUSES to "
+                            "start (fail-closed) rather than silently writing one (main.rs:2255-2258)"))
+    cells.append(exec_("documented|changelog|legacy-config-refused", F, args=["--validate"], mode="validate",
+                        config="mutation:BOOT-P41",
+                        why="CHANGELOG:247-250 (1.5.0) 'The config file changed shape and a 1.x config "
+                            "refuses to start. Run `busbar --migrate-config <old.yaml> > config.yaml` … "
+                            "then run `busbar --validate`.' — same legacy-marker fail-closed fixture as "
+                            "the README:282 migrate-config-freeze cell (main.rs:1619-1631)"))
+    cells.append(http("documented|changelog|no-per-key-gauge", F, "GET", "/metrics",
+                       body_lines=r"^busbar_key_budget_remaining_cents",
+                       why="CHANGELOG:258-259 (1.5.0) 'The per-key `busbar_key_budget_remaining_cents` "
+                           "gauge is gone with them, so use the bucket gauges.' — the golden is an "
+                           "empty body; any such series on a later binary is a diff (metrics.rs:1179 "
+                           "negative assertion)"))
+    cells.append(exec_("documented|changelog|validate-list-plugins", F, args=["--list-plugins"], mode="cli",
+                        why="CHANGELOG:313-314 (1.5.0) '`busbar --validate` covers the whole new "
+                            "surface with paste-ready fixes, and `busbar --list-plugins` prints the "
+                            "plugin inventory without loading plugin code.' (main.rs:264-364, :366-452)"))
+    spend_cell = http("documented|changelog|spend-metrics-labelled", F, "GET", "/metrics",
+                       body_lines=r"^busbar_(spend_cents|budget_remaining_cents|tokens)_",
+                       why="CHANGELOG:315-316 (1.5.0) 'Spend, budget-remaining and token metrics are "
+                           "labelled by group and window, and key labels set at mint time echo onto "
+                           "per-key series.' — after one served spend, the label set on these series "
+                           "carries group=/window= (metrics.rs:233-243, :767-800)")
+    spend_cell["request"]["pre"] = [
+        {"method": "POST", "path": "/v1/chat/completions", "listener": "data", "auth": "ok",
+         "headers": {"Content-Type": "application/json"}, "body": chat("m-openai-chat")}
+    ]
+    cells.append(spend_cell)
+    # CONTRADICTED (CHANGELOG:134-137, code-wins per PB-71): pins the ACTUAL precedence.
+    cells.append({"id": "documented|changelog|contradicted-providers-env-wins", "plane": "core", "family": F, "driver": "script",
+                  "script": {"name": "documented-providers-env-wins.sh"}, "outcome": "ok", "weight": 10,
+                  "why": "PARTIALLY CONTRADICTED: CHANGELOG:134-137 (1.5.3) says of the deprecated "
+                         "env vars '… and the config key wins if you set both.' For BUSBAR_PROVIDERS "
+                         "specifically the doc is wrong — the ENV VAR wins over `providers_file:` "
+                         "(main.rs:1645-1647 in the 1.5.5 tag). Two providers catalogs, config.yaml "
+                         "declares `providers_file:` for one, BUSBAR_PROVIDERS names the other; "
+                         "`--validate`'s own success line echoes back which path it actually resolved "
+                         "(ops-observability §2.3) — the golden names the env-set file, pinning the "
+                         "code's actual precedence as the parity target."})
+    return cells
+
+
 def main() -> int:
     minv = json.loads(METHOD_INV.read_text())
     finv = json.loads(FIELD_INV.read_text())
@@ -836,7 +1033,8 @@ def main() -> int:
                    + scrape_cells() + crosscut_cells() + admin_cells() + boot_cells() + failover_cells()
                    + plugin_cells() + billing_cells() + hooks_cells()
                    + concurrency_cells() + queue_cells() + cooldown_cells()
-                   + crosscut_traps_cells() + auth_lifecycle_cells() + teller_cells() + neutrality_cells(),
+                   + crosscut_traps_cells() + auth_lifecycle_cells() + teller_cells() + neutrality_cells()
+                   + documented_cells(),
                    key=lambda c: c["id"])
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "cell ids must be unique"

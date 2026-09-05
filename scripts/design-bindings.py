@@ -655,7 +655,6 @@ NOTES: dict[str, str] = {
     "PB-60": "oversized_request_413_is_reshaped_on_the_live_stack documents that the body cap fires before auth buffers the body on the admin leg; the binding says the cap is enforced inside the handler after auth. Worth an owner read; the http.crosscut 413 cells diff the real order against 1.5.5.",
     "PB-58": "OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.",
     "PB-61": "MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.",
-    "PB-71": "The suggested documented-vs-actual cell family requires individually re-verifying all 27 README (:1047-1073) and 29 CHANGELOG (:1087-1115) claims against current behaviour (56 checks), two of which ARCHITECTURE.md already names as CONTRADICTED (:1061, :1099) and pins as code-wins. That corpus does not exist as a cell family or test suite anywhere in the tree today, and authoring one honestly is exactly that 56-claim audit, not a small addition. Left unmapped rather than mapped to a partial or asserted-green stand-in.",
 }
 
 # ── Suggestions for unmapped bindings: what check would prove it ─────────────────────────────────
@@ -732,7 +731,6 @@ SUGGEST: dict[str, str] = {
     "PB-68": "network guard unit tests: denylist precedence, allow_overrides, CIDR rejection, alternate-IPv4 expansion, scheme rule literals",
     "PB-69": "server posture unit test: ALPN http/1.1 only, header_read_timeout 30 s, body read timeout 30 s, handshake timeout 10 s",
     "PB-70": "ops.scrape|metrics cell on a 1.5.5 config diffs the series set; add a unit test that no ledger series is registered without data_dir",
-    "PB-71": "documented-vs-actual cell family (27 README + 29 CHANGELOG claims) with the two contradicted rows pinned as code-wins",
     "PB-72": "lint: every PB row's inventory column resolves to an existing inventory file and anchor (a docs consistency lint, red on a dangling ref)",
     "PB-73": "middleware unit test: Server-Timing on every response when enabled; route headers only with route_policy and a non-default ordering hook",
     "PB-74": "unit test that the reserved-name sets equal their pinned 1.5.5 membership and that no top-level mcp:/a2a:/voice: key is parsed",
