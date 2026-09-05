@@ -505,3 +505,237 @@ fn rate_limit_is_enforced_across_execute_calls() {
         .unwrap_err();
     assert_eq!(err.reason, crate::refusal::ReasonCode::RateLimited);
 }
+
+// ── the five 1.6.0 ledger views ─────────────────────────────────────────────────────────────────
+
+/// Which of the governance seam's three execution methods each verb reached.
+///
+/// Shared with the test rather than owned by the seam, because `Verbs` takes its governance by
+/// value: the log has to outlive the executor for the test to read it. Which method a verb reaches
+/// is the whole of what this crate decides about a ledger view, so it is what these tests measure.
+type SeamLog = std::sync::Arc<Mutex<Vec<(KernelVerb, &'static str)>>>;
+
+struct RoutingGovernance(SeamLog);
+
+impl Governance for RoutingGovernance {
+    fn group_exists(&self, _name: &str) -> bool {
+        true
+    }
+    fn actual_parent(&self, _name: &str) -> Option<String> {
+        None
+    }
+    fn provision_group(
+        &self,
+        _admin: &AdminToken,
+        _group: &str,
+        _parent: &str,
+    ) -> Result<(), GovernanceError> {
+        Ok(())
+    }
+    fn mint_key(
+        &self,
+        _admin: &AdminToken,
+        _group: Option<&str>,
+    ) -> Result<MintedKey, GovernanceError> {
+        Err(GovernanceError::Validation)
+    }
+    fn rotate_key(&self, _admin: &AdminToken, _id: &str) -> Result<RotateOutcome, GovernanceError> {
+        Err(GovernanceError::Validation)
+    }
+    fn execute_legacy(
+        &self,
+        verb: KernelVerb,
+        _admin: &AdminToken,
+        _request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError> {
+        self.0.lock().unwrap().push((verb, "legacy"));
+        Ok(b"legacy".to_vec())
+    }
+    fn execute_new_verb(
+        &self,
+        verb: KernelVerb,
+        _admin: &AdminToken,
+        _request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError> {
+        self.0.lock().unwrap().push((verb, "new"));
+        Ok(b"new".to_vec())
+    }
+    fn execute_ledger_read(
+        &self,
+        verb: KernelVerb,
+        _admin: &AdminToken,
+        _request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError> {
+        self.0.lock().unwrap().push((verb, "ledger"));
+        Ok(b"ledger".to_vec())
+    }
+}
+
+/// A ledger view reaches the read seam, and reaches it under the posture that refuses every
+/// mutation.
+///
+/// The posture is the part that matters. `operator: unset` with `dual_control: required` is the
+/// state a fleet is in before its ceremony has run, and under it the 17 money-governance verbs are
+/// refused outright. A read answers anyway — there is nothing about looking at a figure for a
+/// maker-checker step to interpose on — and the control below is one of those 17 being refused on
+/// the same executor, so the green is the views being exempt rather than the posture check being
+/// unwired.
+#[test]
+fn a_ledger_view_reaches_the_read_seam_under_a_posture_that_refuses_every_mutation() {
+    let admin = admin();
+    let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
+    let posture = Some(PostureCtx {
+        operator: OperatorState::Unset,
+        dual_control: DualControl::Required,
+    });
+
+    for verb in crate::verb::LEDGER_VERBS {
+        let body = verbs
+            .execute(
+                *verb,
+                &admin,
+                "alice",
+                VerbScope::ReadOnly,
+                0,
+                posture,
+                ApprovalState::NotYetApproved,
+                b"",
+            )
+            .unwrap_or_else(|e| panic!("{verb:?} was refused: {e:?}"));
+        assert_eq!(body, b"ledger", "{verb:?} did not reach the read seam");
+    }
+
+    let refused = verbs
+        .execute(
+            KernelVerb::Adjust,
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            posture,
+            ApprovalState::NotYetApproved,
+            b"",
+        )
+        .unwrap_err();
+    assert_eq!(refused.reason, crate::refusal::ReasonCode::OperatorUnset);
+
+    let reached = log.lock().unwrap().clone();
+    assert!(
+        reached.iter().all(|(_, seam)| *seam == "ledger"),
+        "a ledger view reached a seam that is not the read one: {reached:?}"
+    );
+    assert_eq!(reached.len(), crate::verb::LEDGER_VERBS.len());
+}
+
+/// A view asks for exactly what the legacy `/usage` read asks for, and no more.
+#[test]
+fn a_ledger_view_requires_what_the_legacy_usage_read_requires() {
+    for verb in crate::verb::LEDGER_VERBS {
+        assert_eq!(
+            crate::verbs::required_scope(*verb),
+            crate::verbs::required_scope(KernelVerb::GetUsage),
+            "{verb:?} does not require what /usage requires"
+        );
+        assert_eq!(crate::verbs::required_scope(*verb), VerbScope::ReadOnly);
+    }
+}
+
+/// A view never spends a mutation slot.
+///
+/// The failure this pins is quiet and expensive: a view whose class fell through to `Crud` would
+/// consume one of the mutations a minute an operator is allowed, so a dashboard polling four
+/// balances would exhaust the budget the operator needed to change a config with — and the refusal
+/// would name the config change, not the polling.
+#[test]
+fn a_ledger_view_never_spends_a_mutation_slot() {
+    for verb in crate::verb::LEDGER_VERBS {
+        assert_eq!(
+            crate::rate::MutationClass::for_verb(*verb, CONFIG_CLASS_RULES),
+            crate::rate::MutationClass::Forbidden,
+            "{verb:?} is classified as a mutation"
+        );
+    }
+    // The control: a verb that IS a mutation still classifies as one, so the green above is the
+    // views being excluded rather than the classifier answering `Forbidden` to everything.
+    assert_ne!(
+        crate::rate::MutationClass::for_verb(KernelVerb::Adjust, CONFIG_CLASS_RULES),
+        crate::rate::MutationClass::Forbidden
+    );
+}
+
+/// An integrator who has bound no ledger serves nothing, and says so.
+///
+/// The default is what makes this addition additive: a `Governance` implementation written before
+/// the views existed compiles unchanged and answers `NotFound` — which is true, because it has no
+/// ledger behind it — rather than inventing zeros that would read as a deployment whose books
+/// balance.
+#[test]
+fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
+    struct NoLedger;
+    impl Governance for NoLedger {
+        fn group_exists(&self, _name: &str) -> bool {
+            true
+        }
+        fn actual_parent(&self, _name: &str) -> Option<String> {
+            None
+        }
+        fn provision_group(
+            &self,
+            _admin: &AdminToken,
+            _group: &str,
+            _parent: &str,
+        ) -> Result<(), GovernanceError> {
+            Ok(())
+        }
+        fn mint_key(
+            &self,
+            _admin: &AdminToken,
+            _group: Option<&str>,
+        ) -> Result<MintedKey, GovernanceError> {
+            Err(GovernanceError::Validation)
+        }
+        fn rotate_key(
+            &self,
+            _admin: &AdminToken,
+            _id: &str,
+        ) -> Result<RotateOutcome, GovernanceError> {
+            Err(GovernanceError::Validation)
+        }
+        fn execute_legacy(
+            &self,
+            _verb: KernelVerb,
+            _admin: &AdminToken,
+            _request: &[u8],
+        ) -> Result<Vec<u8>, GovernanceError> {
+            Ok(Vec::new())
+        }
+        fn execute_new_verb(
+            &self,
+            _verb: KernelVerb,
+            _admin: &AdminToken,
+            _request: &[u8],
+        ) -> Result<Vec<u8>, GovernanceError> {
+            Ok(Vec::new())
+        }
+        // `execute_ledger_read` is DELIBERATELY not written here. That absence is the test.
+    }
+
+    let admin = admin();
+    let verbs = make_verbs(NoLedger);
+    for verb in crate::verb::LEDGER_VERBS {
+        let err = verbs
+            .execute(
+                *verb,
+                &admin,
+                "alice",
+                VerbScope::ReadOnly,
+                0,
+                None,
+                ApprovalState::NotYetApproved,
+                b"",
+            )
+            .unwrap_err();
+        assert_eq!(err.reason, crate::refusal::ReasonCode::NotFound);
+    }
+}
