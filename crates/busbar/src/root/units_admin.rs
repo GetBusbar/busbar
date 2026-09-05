@@ -2767,7 +2767,12 @@ mod tests {
         assert_eq!(document["info"]["version"], "1.6.0");
     }
 
-    /// A node with no ledger behind it says so, rather than reporting a balance it never read.
+    /// A node whose ledger has nothing in it says so, rather than reporting a balance it never read.
+    ///
+    /// The views here are bound to the node's own durability, and that durability is genuinely
+    /// empty: nothing settled, nothing sealed, nothing migrated. Each emptiness is a fact about this
+    /// node rather than a placeholder — which is exactly what the two tests below establish by
+    /// settling on the same composition and watching the same endpoints change.
     #[cfg(feature = "root-admin")]
     #[test]
     fn an_unopened_ledger_answers_empty_rather_than_absent() {
@@ -3048,6 +3053,94 @@ mod tests {
             out[0]["residual"]["amount"],
             (LOST.1 / 1_000).to_string(),
             "the residual is not the settlement that went missing"
+        );
+    }
+
+    /// The other two views are this node's too: the seal it made and the marker it sealed.
+    ///
+    /// Both are on the same composition that answered empty above, so the change is the node's own
+    /// act rather than a fixture swapped in behind the seam. The checkpoint is asserted through its
+    /// sealed balances, which is the half the journal deliberately does not carry — a view rebuilt
+    /// from the chain could not answer it at all.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
+        use busbar_unit_ledger::migration::MigrationRecords as _;
+        use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
+
+        let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let token = busbar_caps::DurabilityToken::mint(&seal);
+        let marker = busbar_unit_ledger::migration::MigrationMarker {
+            checkpoint_seq: 0,
+            node: 0,
+            sealed_at: 1_699_999_000,
+            body_hash: [9u8; 32],
+            balances: 2,
+            cells_read: 5,
+            rate_card_version: 4,
+        };
+
+        {
+            let mut durability = units.durability.lock().expect("durability lock");
+            let mut totals = std::collections::BTreeMap::new();
+            totals.insert(
+                (
+                    TotalsKey::new(
+                        BucketId::new(KEPT.0),
+                        CapDimension::NanoUnits,
+                        BucketScope::All,
+                    ),
+                    A_DAY,
+                ),
+                busbar_unit_ledger::totals::Totals {
+                    settled: 8_000,
+                    ..busbar_unit_ledger::totals::Totals::zero()
+                },
+            );
+            let checkpoint = busbar_unit_ledger::checkpoint::Checkpoint::seal(
+                7,
+                0,
+                1_700_000_100,
+                Vec::new(),
+                totals,
+                0,
+                0,
+                None,
+            )
+            .expect("an unsigned seal cannot fail");
+            durability
+                .journal_checkpoint(&checkpoint, &token, busbar_caps::StepName::Meter)
+                .expect("the memory-buffered journal takes it");
+            durability
+                .migration_records(&token, busbar_caps::StepName::Meter)
+                .write_marker(&marker)
+                .expect("the marker goes on the chain");
+        }
+
+        let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+        let body = |path: &str| -> serde_json::Value {
+            serde_json::from_slice(&node.answer(a_ledger_request(path)).body).expect("valid JSON")
+        };
+
+        let sealed = body("/api/v1/admin/ledger/checkpoints");
+        let sealed = sealed["checkpoints"].as_array().expect("checkpoints");
+        assert_eq!(sealed.len(), 1, "the seal this node made is not served");
+        assert_eq!(sealed[0]["checkpoint_seq"], 7);
+        assert_eq!(sealed[0]["body_hash_verifies"], true);
+        assert_eq!(
+            sealed[0]["totals"][0]["settled"], "8000",
+            "the sealed balances the journal does not carry"
+        );
+
+        let served = body("/api/v1/admin/ledger/migration");
+        assert_eq!(served["migrated"], true);
+        assert_eq!(served["marker"]["sealed_at"], marker.sealed_at);
+        assert_eq!(served["marker"]["balances"], marker.balances);
+        assert_eq!(served["marker"]["cells_read"], marker.cells_read);
+        assert_eq!(
+            served["marker"]["rate_card_version"],
+            marker.rate_card_version
         );
     }
 
