@@ -1063,8 +1063,7 @@ def main() -> int:
                    + plugin_cells() + billing_cells() + hooks_cells()
                    + concurrency_cells() + queue_cells() + cooldown_cells()
                    + crosscut_traps_cells() + auth_lifecycle_cells() + teller_cells() + neutrality_cells()
-                   + documented_cells(),
-                   + hazard_cells(),
+                   + documented_cells() + hazard_cells(),
                    key=lambda c: c["id"])
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "cell ids must be unique"

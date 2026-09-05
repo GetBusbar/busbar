@@ -43,17 +43,10 @@
     }
   ],
   "counts": {
-<<<<<<< HEAD
-    "total": 2278,
+    "total": 2280,
     "by_plane": {
       "a2a": 468,
-      "core": 764,
-=======
-    "total": 2252,
-    "by_plane": {
-      "a2a": 468,
-      "core": 738,
->>>>>>> cd498c40 (1.6.0 G8: hazard cells — a config with no data dir and no peers leaves nothing behind)
+      "core": 766,
       "llm": 134,
       "mcp": 912
     },
@@ -69,11 +62,8 @@
       "config.migrate": 138,
       "cooldown": 1,
       "crosscut.traps": 5,
-<<<<<<< HEAD
       "documented": 28,
-=======
       "hazard": 2,
->>>>>>> cd498c40 (1.6.0 G8: hazard cells — a config with no data dir and no peers leaves nothing behind)
       "hooks": 10,
       "http.crosscut": 20,
       "llm.wire": 127,
@@ -16891,7 +16881,6 @@
       }
     },
     {
-<<<<<<< HEAD
       "id": "documented|changelog|admin-restart",
       "plane": "core",
       "family": "documented",
@@ -16924,21 +16913,10 @@
         "name": "documented-overlay-refused.sh",
         "args": [
           "overlay-unwritable"
-=======
-      "id": "hazard|no-data-dir|files",
-      "plane": "core",
-      "family": "hazard",
-      "driver": "script",
-      "script": {
-        "name": "hazard-no-data-dir.sh",
-        "args": [
-          "files"
->>>>>>> cd498c40 (1.6.0 G8: hazard cells — a config with no data dir and no peers leaves nothing behind)
         ]
       },
       "outcome": "ok",
       "weight": 10,
-<<<<<<< HEAD
       "why": "CHANGELOG:36-38 (1.5.4) 'The Docker image starts again' (previously exited 1 before binding a port on an unwritable overlay) + CHANGELOG:40-46 'Busbar boots, serves traffic, warns clearly \u2026 and refuses admin-API config changes outright' \u2014 both confirmed by the same boot+mutation-attempt facts as the README:272 CONTRADICTED cell above (main.rs:856-865)"
     },
     {
@@ -17144,24 +17122,10 @@
         "name": "documented-overlay-refused.sh",
         "args": [
           "locked"
-=======
-      "why": "boot on a config with no data directory and no peers, serve one chat request, shut down: the process's working directory and the config's OWN directory must hold exactly the files 1.5.5 leaves \u2014 no WAL, no keyset, no journal, no probe file"
-    },
-    {
-      "id": "hazard|no-data-dir|logs",
-      "plane": "core",
-      "family": "hazard",
-      "driver": "script",
-      "script": {
-        "name": "hazard-no-data-dir.sh",
-        "args": [
-          "logs"
->>>>>>> cd498c40 (1.6.0 G8: hazard cells — a config with no data dir and no peers leaves nothing behind)
         ]
       },
       "outcome": "ok",
       "weight": 10,
-<<<<<<< HEAD
       "why": "README:217 `config: { locked: true }` for GitOps/read-only root (config/overlay.rs:34,:48-49) \u2014 boots clean and refuses a live PUT /api/v1/admin/config/settings with the fixed no-writable-overlay message"
     },
     {
@@ -17364,9 +17328,36 @@
         "env": {}
       },
       "why": "README:194 '`busbar --validate` parses your config and every provider reference and exits non-zero on anything wrong, with no server, no network and no state' (main.rs:193, :205-208, :258-263)"
-=======
+    },
+    {
+      "id": "hazard|no-data-dir|files",
+      "plane": "core",
+      "family": "hazard",
+      "driver": "script",
+      "script": {
+        "name": "hazard-no-data-dir.sh",
+        "args": [
+          "files"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "boot on a config with no data directory and no peers, serve one chat request, shut down: the process's working directory and the config's OWN directory must hold exactly the files 1.5.5 leaves \u2014 no WAL, no keyset, no journal, no probe file"
+    },
+    {
+      "id": "hazard|no-data-dir|logs",
+      "plane": "core",
+      "family": "hazard",
+      "driver": "script",
+      "script": {
+        "name": "hazard-no-data-dir.sh",
+        "args": [
+          "logs"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
       "why": "the same boot's whole log carries NO line naming a data directory, a WAL, peers or a fleet: the golden is an empty line set, so any such line on a later binary is a diff rather than a judgement call about whether the wording is alarming"
->>>>>>> cd498c40 (1.6.0 G8: hazard cells — a config with no data dir and no peers leaves nothing behind)
     },
     {
       "id": "hooks|admin-list",
