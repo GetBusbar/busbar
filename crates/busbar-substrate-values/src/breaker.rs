@@ -84,7 +84,8 @@ fn warn_unrecognized_error_map_value(value: &str) {
     // Poisoning is harmless here (the set only dedupes warnings); recover the guard either way.
     let mut guard = seen.lock().unwrap_or_else(|e| e.into_inner());
     if guard.insert(value.to_string()) {
-        tracing::warn!(
+        crate::diag_warn!(
+            crate::diagnostics::CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED,
             error_map_value = value,
             "error_map maps an error to an unrecognized status class; the mapping is IGNORED and \
              classification falls through to HTTP status. Valid classes: rate_limit, overloaded, \
