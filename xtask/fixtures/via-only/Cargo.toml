@@ -1,0 +1,16 @@
+# A synthetic pure crate whose ONLY path to `libc` runs through a local "via" crate
+# (`xtask-fixture-via-mid`), for `cargo xtask denylist --selftest` to prove that a `via`-narrowed
+# `dep = "libc"` waiver goes fully GREEN here (no path bypasses `via`), and that the SAME crate is
+# RED on `libc` without the waiver. `[workspace] members` pulls in the local `mid` crate by path so
+# this stays its own standalone workspace, untouched by the real repo's Cargo.lock.
+[workspace]
+members = [".", "mid"]
+
+[package]
+name = "xtask-fixture-via-only"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+xtask-fixture-via-mid = { path = "mid" }

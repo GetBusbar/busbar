@@ -452,10 +452,28 @@ fn own_src_hits(scan_root: &Path, pc: &PureCrate, banned: &BannedLists, fragment
     hits
 }
 
+/// One `[[allow]]` entry: which crate, which offender (a `dep` crate name or an own-src `path`
+/// substring), and — for a `dep` entry only — an optional `via` narrowing.
+///
+/// A bare `dep` entry (no `via`) waives the offender for the crate unconditionally, exactly as
+/// before `via` existed: ANY transitive path from the crate to that dependency is forgiven.
+///
+/// A `dep` entry WITH `via` is precise instead: it waives the offender only when EVERY normal
+/// dependency path from the crate to the offender passes through the named `via` crate somewhere
+/// along it. If even one path reaches the offender without going through `via`, the waiver does
+/// not apply at all — the hit (including the one that *does* route through `via`) stays red, and
+/// the bypassing path is exactly the kind of hit row the report already prints, so it shows up
+/// there naming itself.
+pub(crate) struct AllowEntry {
+    crate_name: String,
+    offender: String,
+    via: Option<String>,
+}
+
 /// The load-bearing allow-list check: `qa/denylist-allow.toml` is EMPTY at hour 0 (section 1.2),
 /// so this normally does nothing but confirm the file parses. Any future `[[allow]]` entry missing
 /// `reason` or `owner` refuses the ENTIRE run rather than silently accepting a half-filled waiver.
-fn load_allowlist(root: &Path) -> Vec<(String, String)> {
+fn load_allowlist(root: &Path) -> Vec<AllowEntry> {
     let path = root.join("qa/denylist-allow.toml");
     if !path.exists() {
         return Vec::new();
@@ -464,6 +482,7 @@ fn load_allowlist(root: &Path) -> Vec<(String, String)> {
     let mut allowed = Vec::new();
     for entry in doc.array_table("allow") {
         let crate_name = entry.get_one("crate").unwrap_or_default().to_string();
+        let is_dep_entry = entry.get_one("dep").is_some();
         let offender = entry
             .get_one("dep")
             .or_else(|| entry.get_one("path"))
@@ -478,9 +497,104 @@ fn load_allowlist(root: &Path) -> Vec<(String, String)> {
                  not a waiver. Fix the entry or remove it."
             );
         }
-        allowed.push((crate_name, offender));
+        let via = entry.get_one("via").map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+        if let Some(v) = &via {
+            if !is_dep_entry {
+                panic!(
+                    "qa/denylist-allow.toml: entry for crate={crate_name:?} carries `via = {v:?}` \
+                     on a `path` (own-src) waiver — `via` only narrows a `dep` (dependency-graph) \
+                     waiver, since it is computed over the resolved dependency graph. Remove `via` \
+                     or change this to a `dep` entry."
+                );
+            }
+            if offender.contains("::") || offender.contains("(feature:") {
+                panic!(
+                    "qa/denylist-allow.toml: entry for crate={crate_name:?} dep={offender:?} \
+                     carries `via = {v:?}`, but {offender:?} is not a plain dependency-graph crate \
+                     name — `via` is only meaningful for a `dep` entry that bans a crate name \
+                     (e.g. `libc`), not a std-path or a `tokio (feature: ...)` offender."
+                );
+            }
+        }
+        allowed.push(AllowEntry { crate_name, offender, via });
     }
     allowed
+}
+
+/// Is there a normal-dependency path from `root_id` to a node named `target_name` that never
+/// passes through any node named `via_name`? Returns the path (root name first) if so — that path
+/// is the "bypass" that keeps a `via`-narrowed waiver from applying — or `None` if `target_name`
+/// is unreachable without going through `via_name` (in which case the waiver fully covers it).
+fn find_bypass_path(
+    meta: &Metadata,
+    root_id: &str,
+    root_name: &str,
+    via_name: &str,
+    target_name: &str,
+) -> Option<String> {
+    // `cargo metadata`'s resolve-node edge `name` is the Rust extern-crate identifier (dashes
+    // become underscores), while `via`/`dep` in `qa/denylist-allow.toml` and
+    // `qa/construction.toml` are written as published crate (package) names (dashes as-is) — the
+    // same distinction `crate_manifest_name` and `pattern_to_crate_name` exist to bridge
+    // elsewhere. Normalize both sides so a hyphenated crate name matches its edge.
+    let via_name = via_name.replace('-', "_");
+    let target_name = target_name.replace('-', "_");
+    let mut visited = BTreeSet::new();
+    visited.insert(root_id.to_string());
+    let mut queue: VecDeque<(String, Vec<String>)> = VecDeque::new();
+    queue.push_back((root_id.to_string(), vec![root_name.to_string()]));
+
+    while let Some((id, path)) = queue.pop_front() {
+        let Some((deps, _features)) = meta.nodes.get(&id) else { continue };
+        for (dep_name, dep_pkg, is_normal) in deps {
+            if !is_normal || dep_pkg.is_empty() || dep_name == &via_name {
+                // `via_name` nodes are never entered and never traversed past — a path is only a
+                // bypass if it reaches the target WITHOUT going through `via` at all.
+                continue;
+            }
+            let mut next_path = path.clone();
+            next_path.push(dep_name.clone());
+            if dep_name == &target_name {
+                return Some(next_path.join(" -> "));
+            }
+            if visited.insert(dep_pkg.clone()) {
+                queue.push_back((dep_pkg.clone(), next_path));
+            }
+        }
+    }
+    None
+}
+
+/// Which `(crate, offender)` pairs are FULLY waived by `allowed`: a bare `dep`/`path` entry always
+/// qualifies; a `via`-narrowed `dep` entry qualifies only when [`find_bypass_path`] finds no path
+/// around `via`. Crates that were not found in `cargo metadata` (already warned about by the
+/// caller) cannot be via-checked and are treated as NOT covered — a missing root must never read
+/// as a satisfied waiver.
+fn fully_waived_pairs(
+    meta: &Metadata,
+    crates: &[PureCrate],
+    allowed: &[AllowEntry],
+) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    for entry in allowed {
+        match &entry.via {
+            None => {
+                out.insert((entry.crate_name.clone(), entry.offender.clone()));
+            }
+            Some(via_name) => {
+                let Some(pc) = crates.iter().find(|c| c.report_name == entry.crate_name) else {
+                    continue;
+                };
+                let Some(root_id) = find_package_id(meta, &pc.dir, &pc.name) else { continue };
+                if find_bypass_path(meta, &root_id, &pc.report_name, via_name, &entry.offender).is_none() {
+                    out.insert((entry.crate_name.clone(), entry.offender.clone()));
+                }
+                // else: a bypass exists — the hit(s) stay red, and the bypassing path is already
+                // one of the (unfiltered) rows `closure_hits` produced for this crate/offender.
+            }
+        }
+    }
+    out
 }
 
 pub fn run(root: &Path) -> Report {
@@ -505,9 +619,49 @@ pub fn run(root: &Path) -> Report {
         hits.extend(own_src_hits(root, pc, &banned, &fragments));
     }
 
-    hits.retain(|h| !allowed.iter().any(|(c, o)| c == &h.crate_name && o == &h.offender));
+    let waived = fully_waived_pairs(&meta, &crates, &allowed);
+    hits.retain(|h| !waived.contains(&(h.crate_name.clone(), h.offender.clone())));
 
     Report { hits, crates_scanned: crates.len() }
+}
+
+/// Test-only entry point: like [`run_on`], but also applies a synthetic allow-list (never read
+/// from `qa/denylist-allow.toml`) so the `via` narrowing can be proven against fixtures
+/// independent of the real repo's allow-list contents.
+pub fn run_on_with_allow(
+    manifest_path: &Path,
+    crates: Vec<PureCrate>,
+    banned: &BannedLists,
+    fragments: &[String],
+    allow: Vec<(&str, &str, Option<&str>)>,
+) -> Vec<Hit> {
+    let meta_json = run_cargo_metadata(manifest_path);
+    let meta = parse_metadata(&meta_json);
+    let allowed: Vec<AllowEntry> = allow
+        .into_iter()
+        .map(|(crate_name, offender, via)| AllowEntry {
+            crate_name: crate_name.to_string(),
+            offender: offender.to_string(),
+            via: via.map(str::to_string),
+        })
+        .collect();
+    let waived = fully_waived_pairs(&meta, &crates, &allowed);
+
+    let root = manifest_path.parent().unwrap();
+    let mut hits = Vec::new();
+    for pc in &crates {
+        if let Some(id) = find_package_id(&meta, &pc.dir, &pc.name) {
+            hits.extend(closure_hits(&meta, &id, &pc.report_name, banned));
+        } else {
+            eprintln!(
+                "xtask denylist: warning: {} not found in `cargo metadata` output; skipped",
+                pc.name
+            );
+        }
+        hits.extend(own_src_hits(root, pc, banned, fragments));
+    }
+    hits.retain(|h| !waived.contains(&(h.crate_name.clone(), h.offender.clone())));
+    hits
 }
 
 pub fn run_on(

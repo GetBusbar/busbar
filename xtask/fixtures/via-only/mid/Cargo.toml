@@ -1,0 +1,10 @@
+# The "via" crate for the via-only fixture: it depends directly on `libc`, so the parent crate's
+# only path to `libc` runs through this crate's name.
+[package]
+name = "xtask-fixture-via-mid"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+libc = "0.2"

@@ -17,3 +17,78 @@
 # dep = "some-banned-crate"
 # reason = "why this specific transitive edge is safe, reviewed"
 # owner = "the person who reviewed it"
+#
+# A `dep` entry may ALSO carry `via = "<crate>"`, narrowing the waiver so it only applies when
+# EVERY normal-dependency path from `crate` to `dep` passes through `via` somewhere along it
+# (`xtask/src/denylist.rs::find_bypass_path` computes this over the same `cargo metadata` resolve
+# graph the closure scan already walks). If any path reaches `dep` without going through `via`,
+# the waiver does not apply at all: the hit stays red, and the bypassing path is one of the report's
+# own rows, so it names itself. `via` is only meaningful for a `dep` entry naming a plain
+# dependency-graph crate name — not a `path` (own-src) waiver, and not a `tokio (feature: ...)`
+# offender — and using it on either is a refusal (`load_allowlist` panics), same posture as a
+# missing `reason`/`owner`. Without `via`, a `dep` entry waives every path to that dependency
+# unconditionally, exactly as before `via` existed.
+#
+# [[allow]]
+# crate = "busbar-plane-example"
+# dep = "libc"
+# via = "cpufeatures"
+# reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O \
+#           primitive is reachable through this edge; re-review if any other path to libc appears"
+# owner = "the person who reviewed it"
+
+[[allow]]
+crate = "auth-admin-tokens"
+dep = "libc"
+via = "cpufeatures"
+reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
+owner = "orchestrator, 2026-09-05"
+
+[[allow]]
+crate = "auth-static-plugin"
+dep = "libc"
+via = "cpufeatures"
+reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
+owner = "orchestrator, 2026-09-05"
+
+[[allow]]
+crate = "busbar-plane-a2a"
+dep = "libc"
+via = "cpufeatures"
+reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
+owner = "orchestrator, 2026-09-05"
+
+[[allow]]
+crate = "busbar-plane-llm"
+dep = "libc"
+via = "cpufeatures"
+reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
+owner = "orchestrator, 2026-09-05"
+
+[[allow]]
+crate = "busbar-plane-mcp"
+dep = "libc"
+via = "cpufeatures"
+reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
+owner = "orchestrator, 2026-09-05"
+
+[[allow]]
+crate = "busbar-plane-voice"
+dep = "libc"
+via = "cpufeatures"
+reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
+owner = "orchestrator, 2026-09-05"
+
+[[allow]]
+crate = "hook-test-plugin"
+dep = "libc"
+via = "cpufeatures"
+reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
+owner = "orchestrator, 2026-09-05"
+
+[[allow]]
+crate = "hooks-ranking"
+dep = "libc"
+via = "cpufeatures"
+reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
+owner = "orchestrator, 2026-09-05"
