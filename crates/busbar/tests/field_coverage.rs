@@ -216,14 +216,17 @@ fn every_carried_claim_names_a_real_test() {
     }
     // Scan the engine's sources once; a test function is `fn <name>(`. BOTH seam roots since the
     // core split (step 3.7) — the instruments live in busbar-core, and a scanner that read only
-    // the thin bin would call every claim a ghost — PLUS the extracted protocol crates (step 4;
-    // the whole `busbar-llm` tree, every dialect module of it): a dialect's instruments move out
-    // with its codec, and a claim carried by a moved test is still carried.
+    // the thin bin would call every claim a ghost — PLUS the extracted protocol crates: a
+    // dialect's instruments move out with its codec, and a claim carried by a moved test is still
+    // carried. The LLM protocol is TWO crates now — the engine kept `busbar-llm` and the six
+    // dialect codecs (with the great majority of these instruments) moved to `busbar-llm-codec` —
+    // so both roots are read.
     let mut haystack = String::new();
     let mut stack = vec![
         repo_root().join("crates/busbar-core/src"),
         repo_root().join("crates/busbar/src"),
         repo_root().join("crates/busbar-llm/src"),
+        repo_root().join("crates/busbar-llm-codec/src"),
     ];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
