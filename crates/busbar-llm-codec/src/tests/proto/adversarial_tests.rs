@@ -358,7 +358,7 @@ fn bedrock_huge_content_block_index_is_clamped() {
 // ── 5. OVER-DEEP NESTED BODY ─────────────────────────────────────────────────
 
 /// The MAX_JSON_DEPTH floor rejects a pathologically-nested body at the PARSE boundary
-/// (`busbar_substrate::json::parse`) — the single seam every ingress body crosses before a
+/// (`busbar_substrate_values::json::parse`) — the single seam every ingress body crosses before a
 /// `serde_json::Value` (and therefore any reader recursion, re-serialize, or recursive drop) can be
 /// built. A ~10k-deep body (well under the body cap) would otherwise overflow the worker stack and
 /// abort the process; here it returns a clean parse `Err` and no `Value` is ever constructed, so no
@@ -376,7 +376,7 @@ fn overdeep_nested_body_rejected_at_parse_before_any_reader() {
         s.push(']');
     }
     s.push('}');
-    let parsed = busbar_substrate::json::parse::<serde_json::Value>(s.as_bytes());
+    let parsed = busbar_substrate_values::json::parse::<serde_json::Value>(s.as_bytes());
     assert!(
         parsed.is_err(),
         "a body nested past MAX_JSON_DEPTH must be rejected at the parse boundary, before any Value/reader"
@@ -386,7 +386,7 @@ fn overdeep_nested_body_rejected_at_parse_before_any_reader() {
     let ok_body =
         br#"{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}"#;
     let value =
-        busbar_substrate::json::parse::<serde_json::Value>(ok_body).expect("shallow body parses");
+        busbar_substrate_values::json::parse::<serde_json::Value>(ok_body).expect("shallow body parses");
     for name in DIALECTS {
         // Read must not panic; Ok or a typed reject are both acceptable per-dialect (shape differs),
         // but never a panic.

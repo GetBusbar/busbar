@@ -7,14 +7,14 @@ use crate::ir::IrStreamEvent;
 use http::StatusCode;
 // `bearer_error_code` and `CODE_INVALID_API_KEY` now live in the neutral substrate; read them there
 // so this plugin names no `busbar-core` implementation path for them.
-use busbar_substrate::proto::{bearer_error_code, CODE_INVALID_API_KEY};
+use busbar_substrate_values::proto::{bearer_error_code, CODE_INVALID_API_KEY};
 // The neutral canonical error-type vocabulary lives in the substrate; read it there, not via core's
 // re-export, so this plugin names no `busbar-core` implementation path for it.
 #[cfg(test)]
-use busbar_substrate::breaker::CanonicalSignal;
-use busbar_substrate::breaker::StatusClass;
-use busbar_substrate::proto::*;
-use busbar_substrate::proto::{
+use busbar_substrate_values::breaker::CanonicalSignal;
+use busbar_substrate_values::breaker::StatusClass;
+use busbar_substrate_values::proto::*;
+use busbar_substrate_values::proto::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
     ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
     ERR_TYPE_SERVER_ERROR,
@@ -23,10 +23,10 @@ use busbar_substrate::proto::{
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with busbar_substrate::proto::* when netted into core
+// used standalone; redundant with busbar_substrate_values::proto::* when netted into core
 use super::proto_codec::*;
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
-// THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate::proto::*` re-export.
+// THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate_values::proto::*` re-export.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -47,18 +47,18 @@ pub fn protocol() -> Protocol {
 fn claims(
     _h: &http::HeaderMap,
     path: &str,
-) -> Option<busbar_substrate::proto::ClaimStrength> {
+) -> Option<busbar_substrate_values::proto::ClaimStrength> {
     if path.ends_with("/v1/responses") {
-        return Some(busbar_substrate::proto::ClaimStrength(10));
+        return Some(busbar_substrate_values::proto::ClaimStrength(10));
     }
     None
 }
 
 /// THE RESPONSES RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder:
 /// an exact `/v1/responses` (rung 60).
-fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
     if path == "/v1/responses" {
-        return Some(busbar_substrate::proto::ClaimStrength(60));
+        return Some(busbar_substrate_values::proto::ClaimStrength(60));
     }
     None
 }
@@ -71,7 +71,7 @@ fn egress_auth_headers(
     key: &str,
     _ctx: &SigningContext,
 ) -> Vec<(http::HeaderName, http::HeaderValue)> {
-    busbar_substrate::proto::bearer_auth_headers("responses", key)
+    busbar_substrate_values::proto::bearer_auth_headers("responses", key)
 }
 
 /// THE `/v1/responses` DECLARATION. Shares OpenAI's `call_…` tool-id shape (it is the same vendor's
@@ -87,7 +87,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     handler: Some(&handler::ResponsesRequestHandler),
     verbs: &[busbar_api::operation::Operation::CHAT],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_substrate::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_substrate_values::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     native_tool_id_prefix: Some("call_"),
     ingress_auth: IngressAuth::Bearer,
@@ -115,14 +115,14 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     has_model_in_url: false,
     auth_failure_status_and_kind: (
         http::StatusCode::UNAUTHORIZED,
-        busbar_substrate::proto::ERR_TYPE_AUTHENTICATION,
+        busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[],
     auth_failure_message: AUTH_FAILURE_MSG,
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_substrate::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_substrate_values::proxy::TEXT_EVENT_STREAM,
     // The Responses surface carries no list-models fingerprint of its own; a `/v1/models` GET
     // resolves to the OpenAI Chat envelope.
     models_list_envelope: None,
@@ -171,9 +171,9 @@ const MAX_OPEN_TOOLS: usize = super::openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS;
 const TEXT_INDEX_KEY_OFFSET: usize = 1_000;
 
 /// Base62 alphabet the native Responses ids draw their opaque suffix from — the shared
-/// single-source-of-truth atom (see `busbar_substrate::proto::BASE62_ALPHABET`), aliased locally. Used by
+/// single-source-of-truth atom (see `busbar_substrate_values::proto::BASE62_ALPHABET`), aliased locally. Used by
 /// [`synthesize_item_id`] and [`synthesize_response_id`].
-const BASE62: &[u8; 62] = busbar_substrate::proto::BASE62_ALPHABET;
+const BASE62: &[u8; 62] = busbar_substrate_values::proto::BASE62_ALPHABET;
 
 /// Width of the opaque base62 suffix on a synthesized item id (`msg_…`/`fc_…`). Native Responses
 /// item ids carry a long opaque random token with no positional structure; 48 base62 chars matches
@@ -297,7 +297,7 @@ fn synth_token<const N: usize>() -> String {
     // Largest multiple of 62 that fits in a u8 (62 * 4). A byte in `0..REJECT_THRESHOLD` maps to a
     // base62 digit with NO modular bias; a byte >= this threshold (248..=255) is rejected so every
     // base62 character stays equiprobable. See the docstring for the bias rationale.
-    const REJECT_THRESHOLD: u8 = busbar_substrate::proto::BASE62_REJECT_THRESHOLD;
+    const REJECT_THRESHOLD: u8 = busbar_substrate_values::proto::BASE62_REJECT_THRESHOLD;
 
     let mut token = [b'0'; N];
     for slot in token.iter_mut() {
@@ -644,7 +644,7 @@ fn class_for_response_failed(signal: &str) -> StatusClass {
     match signal {
         CODE_INVALID_API_KEY | ERR_TYPE_AUTHENTICATION => StatusClass::Auth,
         ERR_CODE_RATE_LIMIT | ERR_TYPE_INSUFFICIENT_QUOTA => StatusClass::RateLimit,
-        busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH | ERR_CODE_STRING_ABOVE_MAX => {
+        busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH | ERR_CODE_STRING_ABOVE_MAX => {
             StatusClass::ContextLength
         }
         ERR_TYPE_SERVER_ERROR | ERR_TYPE_OVERLOADED => StatusClass::ServerError,
@@ -678,7 +678,7 @@ fn is_code_like_signal(signal: &str) -> bool {
 /// — the code is DERIVED from the error class so the wire ALWAYS carries a valid enum an SDK can
 /// switch on, never a free-form string. Exhaustive over `StatusClass` (no `_`) per the no-catch-all
 /// rule.
-fn responses_error_code(err: &busbar_substrate::proto::IrError) -> String {
+fn responses_error_code(err: &busbar_substrate_values::proto::IrError) -> String {
     if let Some(s) = err.provider_signal.as_deref() {
         if is_code_like_signal(s) {
             return s.to_string();
@@ -735,7 +735,7 @@ pub struct ResponsesReader;
 fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 
@@ -767,7 +767,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
             // emitting an empty Image block. Shared with the request-input reader.
             responses_input_image_block(block_val).ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })
         }

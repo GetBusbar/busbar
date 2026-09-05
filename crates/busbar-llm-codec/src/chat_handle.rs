@@ -11,13 +11,13 @@
 
 use crate::ir::{IrRequest, IrResponse};
 use busbar_api::operation::Operation;
-use busbar_substrate::billing::{Billing, TokenUsage};
-use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler};
-use busbar_substrate::ir::egress_prep::EgressPrep;
-use busbar_substrate::ir::facts::IrFacts;
-use busbar_substrate::ir::handle::sealed::Sealed;
-use busbar_substrate::ir::handle::IrHandle;
-use busbar_substrate::wire::{EgressWire, TranslatedResponse};
+use busbar_substrate_values::billing::{Billing, TokenUsage};
+use busbar_substrate_values::handlers::{CodecError, IngressReject, OperationHandler};
+use busbar_substrate_values::ir::egress_prep::EgressPrep;
+use busbar_substrate_values::ir::facts::IrFacts;
+use busbar_substrate_values::ir::handle::sealed::Sealed;
+use busbar_substrate_values::ir::handle::IrHandle;
+use busbar_substrate_values::wire::{EgressWire, TranslatedResponse};
 use bytes::Bytes;
 use serde_json::Value;
 
@@ -44,7 +44,7 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
     // SAME-protocol passthrough never reaches here (the body is forwarded verbatim), so
     // `n>1` still works end-to-end where the response is not funneled through the IR.
     if ir.n.is_some_and(|n| n > 1) {
-        ::tracing::debug!(diag = %busbar_substrate::diagnostics::IR_CLAMP_N_TO_1.banner(),
+        ::tracing::debug!(diag = %busbar_substrate_values::diagnostics::IR_CLAMP_N_TO_1.banner(),
             ingress = %prep.ingress_protocol,
             "clamping n>1 to 1 on the cross-protocol seam: the neutral response IR carries \
              a single candidate, so extra choices would be generated, billed, and then \
@@ -59,7 +59,7 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
         if prep.reasoning_allowed {
             ir.reasoning_budgets = Some(prep.reasoning_budgets);
         } else {
-            ::tracing::debug!(diag = %busbar_substrate::diagnostics::IR_DROP_REASONING.banner(),
+            ::tracing::debug!(diag = %busbar_substrate_values::diagnostics::IR_DROP_REASONING.banner(),
                 ingress = %prep.ingress_protocol,
                 "dropping cross-protocol reasoning/thinking ask: the target lane does \
                  not declare the capability; set `reasoning: true` on the model (or \
@@ -98,7 +98,7 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
             cleared |= t.cache_control.take().is_some();
         }
         if cleared {
-            ::tracing::debug!(diag = %busbar_substrate::diagnostics::IR_DROP_PROMPT_CACHE.banner(),
+            ::tracing::debug!(diag = %busbar_substrate_values::diagnostics::IR_DROP_PROMPT_CACHE.banner(),
                 ingress = %prep.ingress_protocol,
                 "dropping cross-protocol prompt-cache breakpoints: the target lane's \
                  dialect gates its cache marker per model and the lane does not \
@@ -153,7 +153,7 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
             }
         }
         if dropped > 0 {
-            ::tracing::debug!(diag = %busbar_substrate::diagnostics::IR_DROP_CACHE_CONTROL_OVER_CAP.banner(),
+            ::tracing::debug!(diag = %busbar_substrate_values::diagnostics::IR_DROP_CACHE_CONTROL_OVER_CAP.banner(),
                 ingress = %prep.ingress_protocol,
                 cap,
                 dropped,
@@ -175,7 +175,7 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
     let hosted_dropped = ir.tools.iter().filter(|t| t.hosted.is_some()).count();
     if hosted_dropped > 0 {
         ir.tools.retain(|t| t.hosted.is_none());
-        ::tracing::debug!(diag = %busbar_substrate::diagnostics::IR_DROP_HOSTED_TOOLS.banner(),
+        ::tracing::debug!(diag = %busbar_substrate_values::diagnostics::IR_DROP_HOSTED_TOOLS.banner(),
             ingress = %prep.ingress_protocol,
             dropped = hosted_dropped,
             "dropping cross-protocol hosted (built-in) tool(s): a Responses hosted tool \
@@ -237,11 +237,11 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
     // this whole section exists to remove.
     if let Some(n) = ir
         .extra
-        .get(busbar_substrate::proto::MESSAGE_NAMES_SENTINEL)
+        .get(busbar_substrate_values::proto::MESSAGE_NAMES_SENTINEL)
         .and_then(|v| v.as_object())
         .map(serde_json::Map::len)
     {
-        ::tracing::debug!(diag = %busbar_substrate::diagnostics::IR_DROP_MESSAGE_NAME.banner(),
+        ::tracing::debug!(diag = %busbar_substrate_values::diagnostics::IR_DROP_MESSAGE_NAME.banner(),
             ingress = %prep.ingress_protocol,
             messages = n,
             "dropping OpenAI `messages[].name` on the cross-protocol seam: no target \
@@ -251,7 +251,7 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
         );
     }
     if ir.extra.contains_key("cachedContent") {
-        ::tracing::debug!(diag = %busbar_substrate::diagnostics::IR_DROP_CACHED_CONTENT.banner(),
+        ::tracing::debug!(diag = %busbar_substrate_values::diagnostics::IR_DROP_CACHED_CONTENT.banner(),
             ingress = %prep.ingress_protocol,
             key = "cachedContent",
             "dropping Gemini `cachedContent` on the cross-protocol seam: the referenced \
@@ -284,7 +284,7 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
     if !ir.extra.is_empty() {
         let mut cleared: Vec<&str> = ir.extra.keys().map(String::as_str).collect();
         cleared.sort_unstable();
-        ::tracing::debug!(diag = %busbar_substrate::diagnostics::IR_DROP_UNMODELED_KEYS.banner(),
+        ::tracing::debug!(diag = %busbar_substrate_values::diagnostics::IR_DROP_UNMODELED_KEYS.banner(),
             ingress = %prep.ingress_protocol,
             keys = %cleared.join(","),
             count = cleared.len(),
@@ -419,7 +419,7 @@ impl IrHandle for ChatRespHandle {
 // ─────────────────────────── the chat OperationHandler ───────────────────────────
 
 /// A protocol's chat operation — RELOCATED from `busbar-core/src/handlers/chat.rs` at the G6 A4b
-/// dissolve. The field names the protocol whose `busbar_substrate::proto::` reader/writer are this
+/// dissolve. The field names the protocol whose `busbar_substrate_values::proto::` reader/writer are this
 /// instance's codec; `read_request`/`read_response` now yield `Box<dyn IrHandle>` (a
 /// `ChatReqHandle`/`ChatRespHandle`), and the WRITE half inverted onto those handles (they write
 /// themselves by egress-protocol string). One TYPE, six per-protocol instances registered by each
@@ -437,7 +437,7 @@ impl OperationHandler for ChatOperation {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate::breaker::RawUpstreamError {
+    ) -> busbar_substrate_values::breaker::RawUpstreamError {
         super::proto_codec::protocol_error(self.0, status, body)
     }
 
@@ -461,20 +461,20 @@ impl OperationHandler for ChatOperation {
         &self,
         ingress_protocol: &str,
         body: &[u8],
-    ) -> Option<busbar_substrate::billing::TokenUsage> {
+    ) -> Option<busbar_substrate_values::billing::TokenUsage> {
         // Same-protocol usage tap (verbatim from the former `ChatOperation`; `crate::` re-pathed).
         let Some(p) = super::proto_codec::protocol_for(ingress_protocol) else {
-            if busbar_substrate::handlers::usage_tap_decode_fail_should_warn(
+            if busbar_substrate_values::handlers::usage_tap_decode_fail_should_warn(
                 ingress_protocol,
                 "unknown_protocol",
             ) {
-                ::tracing::warn!(diag = %busbar_substrate::diagnostics::USAGE_TAP_UNKNOWN_PROTOCOL.banner(),
+                ::tracing::warn!(diag = %busbar_substrate_values::diagnostics::USAGE_TAP_UNKNOWN_PROTOCOL.banner(),
                     protocol = ingress_protocol,
                     "usage tap: unknown ingress protocol for a same-protocol 2xx body; \
                      billing 0 tokens for this request"
                 );
             } else {
-                ::tracing::debug!(diag = %busbar_substrate::diagnostics::USAGE_TAP_UNKNOWN_PROTOCOL.banner(),
+                ::tracing::debug!(diag = %busbar_substrate_values::diagnostics::USAGE_TAP_UNKNOWN_PROTOCOL.banner(),
                     protocol = ingress_protocol,
                     "usage tap: unknown ingress protocol for a same-protocol 2xx body; \
                      billing 0 tokens for this request"
@@ -482,23 +482,23 @@ impl OperationHandler for ChatOperation {
             }
             return None;
         };
-        let v = match busbar_substrate::json::parse::<Value>(body) {
+        let v = match busbar_substrate_values::json::parse::<Value>(body) {
             Ok(v) => v,
             Err(_e) => {
-                if busbar_substrate::handlers::usage_tap_decode_fail_should_warn(
+                if busbar_substrate_values::handlers::usage_tap_decode_fail_should_warn(
                     ingress_protocol,
                     "bad_json",
                 ) {
-                    ::tracing::warn!(diag = %busbar_substrate::diagnostics::USAGE_TAP_BAD_JSON.banner(),
+                    ::tracing::warn!(diag = %busbar_substrate_values::diagnostics::USAGE_TAP_BAD_JSON.banner(),
                         protocol = ingress_protocol,
-                        error = %busbar_substrate::json::parse_err_log(body.len()),
+                        error = %busbar_substrate_values::json::parse_err_log(body.len()),
                         "usage tap: failed to parse a same-protocol 2xx body as JSON; \
                          billing 0 tokens for this request"
                     );
                 } else {
-                    ::tracing::debug!(diag = %busbar_substrate::diagnostics::USAGE_TAP_BAD_JSON.banner(),
+                    ::tracing::debug!(diag = %busbar_substrate_values::diagnostics::USAGE_TAP_BAD_JSON.banner(),
                         protocol = ingress_protocol,
-                        error = %busbar_substrate::json::parse_err_log(body.len()),
+                        error = %busbar_substrate_values::json::parse_err_log(body.len()),
                         "usage tap: failed to parse a same-protocol 2xx body as JSON; \
                          billing 0 tokens for this request"
                     );
@@ -509,18 +509,18 @@ impl OperationHandler for ChatOperation {
         match p.reader().read_response(&v) {
             Ok(ir) => Some(ir.usage.to_token_usage()),
             Err(e) => {
-                if busbar_substrate::handlers::usage_tap_decode_fail_should_warn(
+                if busbar_substrate_values::handlers::usage_tap_decode_fail_should_warn(
                     ingress_protocol,
                     "decode",
                 ) {
-                    ::tracing::warn!(diag = %busbar_substrate::diagnostics::USAGE_TAP_DECODE_FAILED.banner(),
+                    ::tracing::warn!(diag = %busbar_substrate_values::diagnostics::USAGE_TAP_DECODE_FAILED.banner(),
                         protocol = ingress_protocol,
                         error = ?e,
                         "usage tap: read_response failed to decode a same-protocol 2xx body; \
                          billing 0 tokens for this request"
                     );
                 } else {
-                    ::tracing::debug!(diag = %busbar_substrate::diagnostics::USAGE_TAP_DECODE_FAILED.banner(),
+                    ::tracing::debug!(diag = %busbar_substrate_values::diagnostics::USAGE_TAP_DECODE_FAILED.banner(),
                         protocol = ingress_protocol,
                         error = ?e,
                         "usage tap: read_response still failing to decode a same-protocol 2xx body; \

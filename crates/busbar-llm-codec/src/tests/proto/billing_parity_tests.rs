@@ -9,7 +9,7 @@
 //! not, and lives beside the types it exercises. Every assertion is BYTE-IDENTICAL to the
 //! pre-relocation suite; only the paths were repointed (`crate::proto::{StreamTranslate,
 //! protocol_for,SSE_DONE_FRAME}` → the `super::*` prelude, `crate::eventstream`/`crate::json` →
-//! their `busbar_substrate::` home).
+//! their `busbar_substrate_values::` home).
 
 use super::*;
 
@@ -40,7 +40,7 @@ fn cross_proto_usage(ingress: &str, egress: &str, frames: &[&[u8]]) -> (u64, u64
 /// the body is relayed verbatim, billing reads `ir.usage`) and return the billed (input, output).
 fn nonstream_usage(proto: &str, body: &[u8]) -> (u64, u64) {
     let p = protocol_for(proto).expect("known proto");
-    let v: serde_json::Value = busbar_substrate::json::parse(body).expect("json body");
+    let v: serde_json::Value = busbar_substrate_values::json::parse(body).expect("json body");
     let ir = p.reader().read_response(&v).expect("read_response");
     (ir.usage.input_tokens, ir.usage.output_tokens)
 }
@@ -116,7 +116,7 @@ fn stream_same_proto_cohere() {
 fn stream_same_proto_bedrock_binary_eventstream() {
     // Bedrock binary eventstream same-proto: the A-tap reads the IR decoded from the binary frames.
     // Prior byte-scanner numbers: (31, 12).
-    use busbar_substrate::eventstream::encode_frame;
+    use busbar_substrate_values::eventstream::encode_frame;
     let mut start = Vec::new();
     start.extend(encode_frame("messageStart", br#"{"role":"assistant"}"#));
     let mut stop = Vec::new();

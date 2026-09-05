@@ -30,17 +30,17 @@ mod writer;
 use crate::ir::{IrBlockMeta, IrDelta, IrStreamEvent, IrUsage};
 use http::{header::HeaderValue, HeaderName, StatusCode};
 #[cfg(test)]
-use busbar_substrate::breaker::CanonicalSignal;
-use busbar_substrate::breaker::StatusClass;
-use busbar_substrate::proto::*;
+use busbar_substrate_values::breaker::CanonicalSignal;
+use busbar_substrate_values::breaker::StatusClass;
+use busbar_substrate_values::proto::*;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with busbar_substrate::proto::* when netted into core
+// used standalone; redundant with busbar_substrate_values::proto::* when netted into core
 use super::proto_codec::*;
 // The wire-codec surface, named EXPLICITLY so it resolves to THIS crate's own `proto_codec` and not to
-// the `busbar_substrate::proto::*` glob above — which, in a `test-support` build of busbar-core (this
+// the `busbar_substrate_values::proto::*` glob above — which, in a `test-support` build of busbar-core (this
 // crate's dev-dependency), re-exports a SECOND copy of these same source items through core's `#[path]`
 // dual-compile, and a bare use of either name would then be ambiguous. An explicit import outranks both
 // globs; when this file is netted INTO core the two paths are one item, so the explicit is harmless.
@@ -100,8 +100,8 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// `anthropic-version`/`anthropic-beta` headers (rung 2), the `x-api-key` credential header that is
 /// Anthropic's alone among the six (rung 4, catching curl users who omit the version header), then
 /// the `/v1/messages` path (rung 11). Lower strength binds tighter — the shared ladder positions.
-fn claims(h: &http::HeaderMap, path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
-    use busbar_substrate::proto::ClaimStrength;
+fn claims(h: &http::HeaderMap, path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+    use busbar_substrate_values::proto::ClaimStrength;
     if h.contains_key("anthropic-version") || h.contains_key("anthropic-beta") {
         return Some(ClaimStrength(2));
     }
@@ -116,9 +116,9 @@ fn claims(h: &http::HeaderMap, path: &str) -> Option<busbar_substrate::proto::Cl
 
 /// ANTHROPIC'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: a
 /// `/v1/messages` path (exact or model-prefixed) names Anthropic (rung 40).
-fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
     if path == "/v1/messages" || path.ends_with("/v1/messages") {
-        return Some(busbar_substrate::proto::ClaimStrength(40));
+        return Some(busbar_substrate_values::proto::ClaimStrength(40));
     }
     None
 }
@@ -134,7 +134,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     handler: Some(&handler::AnthropicRequestHandler),
     verbs: &[busbar_api::operation::Operation::CHAT],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_substrate::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_substrate_values::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // `toolu_…` is Anthropic's documented native tool-call id shape.
     native_tool_id_prefix: Some("toolu_"),
@@ -165,14 +165,14 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     has_model_in_url: false,
     auth_failure_status_and_kind: (
         http::StatusCode::UNAUTHORIZED,
-        busbar_substrate::proto::ERR_TYPE_AUTHENTICATION,
+        busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[HDR_REQUEST_ID],
     auth_failure_message: "invalid x-api-key",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_substrate::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_substrate_values::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
     claims: Some(claims),
     residual_claims: Some(residual_claims),
@@ -191,7 +191,7 @@ const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 /// a native Anthropic id token. A native `msg_`/`req_` id is `01` followed by a fixed-length mixed-case
 /// alphanumeric token — NOT lowercase hex — so encoding the synthesized suffix in this alphabet (rather
 /// than bare `{:x}`) removes the alphabet/length/version-prefix distinguishability tell. DISTINCT from
-/// the shared `busbar_substrate::proto::BASE62_ALPHABET` (lowercase-first): named `ANTHROPIC_NATIVE_ALPHABET` so
+/// the shared `busbar_substrate_values::proto::BASE62_ALPHABET` (lowercase-first): named `ANTHROPIC_NATIVE_ALPHABET` so
 /// the two can never be confused — `synth_id_with_prefix` (body ids) needs THIS uppercase-first
 /// ordering, while `synth_anthropic_request_id` (response-header id) deliberately uses the shared one.
 const ANTHROPIC_NATIVE_ALPHABET: &[u8; 62] =
@@ -330,15 +330,15 @@ fn find_stashed_block(
 /// shared with the forward/OpenAI-family vocabulary alias their canonical home in
 /// `openai_family.rs`; only `timeout_error` is an Anthropic-specific spelling (the forward layer's
 /// agnostic kind is the bare `timeout`).
-const ERR_TYPE_OVERLOADED: &str = busbar_substrate::proto::ERR_TYPE_OVERLOADED;
-const ERR_TYPE_INVALID_REQUEST: &str = busbar_substrate::proto::ERR_TYPE_INVALID_REQUEST;
-const ERR_TYPE_AUTHENTICATION: &str = busbar_substrate::proto::ERR_TYPE_AUTHENTICATION;
-const ERR_TYPE_RATE_LIMIT: &str = busbar_substrate::proto::ERR_TYPE_RATE_LIMIT;
-const ERR_TYPE_API_ERROR: &str = busbar_substrate::proto::ERR_TYPE_API_ERROR;
+const ERR_TYPE_OVERLOADED: &str = busbar_substrate_values::proto::ERR_TYPE_OVERLOADED;
+const ERR_TYPE_INVALID_REQUEST: &str = busbar_substrate_values::proto::ERR_TYPE_INVALID_REQUEST;
+const ERR_TYPE_AUTHENTICATION: &str = busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION;
+const ERR_TYPE_RATE_LIMIT: &str = busbar_substrate_values::proto::ERR_TYPE_RATE_LIMIT;
+const ERR_TYPE_API_ERROR: &str = busbar_substrate_values::proto::ERR_TYPE_API_ERROR;
 const ERR_TYPE_TIMEOUT: &str = "timeout_error";
-const ERR_TYPE_NOT_FOUND: &str = busbar_substrate::proto::ERR_TYPE_NOT_FOUND;
-const ERR_TYPE_PERMISSION: &str = busbar_substrate::proto::ERR_TYPE_PERMISSION;
-const ERR_TYPE_REQUEST_TOO_LARGE: &str = busbar_substrate::proto::ERR_TYPE_REQUEST_TOO_LARGE;
+const ERR_TYPE_NOT_FOUND: &str = busbar_substrate_values::proto::ERR_TYPE_NOT_FOUND;
+const ERR_TYPE_PERMISSION: &str = busbar_substrate_values::proto::ERR_TYPE_PERMISSION;
+const ERR_TYPE_REQUEST_TOO_LARGE: &str = busbar_substrate_values::proto::ERR_TYPE_REQUEST_TOO_LARGE;
 
 /// Anthropic citation `type` tag values (the `type` field on each citation object).
 const CITATION_TYPE_CHAR: &str = "char_location";
@@ -396,7 +396,7 @@ fn synth_request_id() -> String {
 /// still get a well-formed id, at the entropy it actually supplied.
 #[must_use]
 pub fn request_id_from_entropy(entropy: &[u8]) -> String {
-    const BASE62_REJECT_FLOOR: u8 = busbar_substrate::proto::BASE62_REJECT_THRESHOLD;
+    const BASE62_REJECT_FLOOR: u8 = busbar_substrate_values::proto::BASE62_REJECT_THRESHOLD;
     let alphabet = ANTHROPIC_NATIVE_ALPHABET;
     let mut token = [b'0'; SYNTH_ID_TOKEN_LEN];
     if !entropy.is_empty() {
@@ -449,7 +449,7 @@ pub fn request_id_from_entropy(entropy: &[u8]) -> String {
 /// on an entropy failure — callers decide what to do with the partially-filled buffer; `out` is
 /// left with whatever prefix was already written plus its initial contents for the rest.
 fn fill_base62(out: &mut [u8], alphabet: &[u8; 62]) -> bool {
-    const BASE62_REJECT_FLOOR: u8 = busbar_substrate::proto::BASE62_REJECT_THRESHOLD;
+    const BASE62_REJECT_FLOOR: u8 = busbar_substrate_values::proto::BASE62_REJECT_THRESHOLD;
     // Fixed stack buffer, no heap allocation on this hot path — both callers' tokens (24 chars)
     // fit comfortably; a batch this size draws `len` fresh bytes per retry round, same as before.
     debug_assert!(
@@ -509,7 +509,7 @@ fn synth_id_with_prefix(prefix: &str) -> String {
 /// total, matching `synth_id_with_prefix("req_")` (used for the body `request_id`) so the
 /// response-header length is not a fingerprint tell (a 22-char value would be 8 chars short of
 /// native). Returns `None` (caller OMITS the header) only if entropy is unavailable — on the request
-/// path, must never panic. Uses the SHARED `busbar_substrate::proto::BASE62_ALPHABET` (lowercase-first ordering)
+/// path, must never panic. Uses the SHARED `busbar_substrate_values::proto::BASE62_ALPHABET` (lowercase-first ordering)
 /// deliberately — NOT this module's local uppercase-first `ANTHROPIC_NATIVE_ALPHABET`. The alphabet
 /// ORDERING differs from the sibling synth, but a uniform draw over a permuted alphabet is uniform
 /// over the same character set, so that difference is irrelevant to the distribution.
@@ -518,7 +518,7 @@ pub fn synth_anthropic_request_id() -> Option<String> {
     // `Option` contract (omit the header on entropy failure) differs from that sibling's
     // '0'-fill-on-failure contract, so this stays a separate call rather than delegating to it.
     let mut token = [0u8; 24];
-    if !fill_base62(&mut token, busbar_substrate::proto::BASE62_ALPHABET) {
+    if !fill_base62(&mut token, busbar_substrate_values::proto::BASE62_ALPHABET) {
         return None;
     }
     // token is ASCII base62, always valid UTF-8.
@@ -826,7 +826,7 @@ fn write_response_block(block: &crate::ir::IrBlock) -> serde_json::Value {
 fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 
@@ -880,7 +880,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 .filter(|s| !s.is_empty())
                 .ok_or(IrError {
                     class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                    provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                     retry_after: None,
                 })?
                 .to_string();
@@ -931,7 +931,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
         "image" => {
             let source = obj.get("source").ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             // `cache_control` sits on the OUTER image block object (a sibling of `source`), not on
@@ -974,7 +974,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
             } else {
                 Err(IrError {
                     class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                    provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                     retry_after: None,
                 })
             }
@@ -1197,7 +1197,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
 fn read_message(msg_val: &serde_json::Value) -> Result<crate::ir::IrMessage, IrError> {
     let obj = msg_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 
@@ -1209,7 +1209,7 @@ fn read_message(msg_val: &serde_json::Value) -> Result<crate::ir::IrMessage, IrE
         _ => {
             return Err(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })
         }
@@ -1223,7 +1223,7 @@ fn read_message(msg_val: &serde_json::Value) -> Result<crate::ir::IrMessage, IrE
     if !content_val.is_null() && !content_val.is_string() && !content_val.is_array() {
         return Err(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         });
     }
@@ -1243,7 +1243,7 @@ fn read_message(msg_val: &serde_json::Value) -> Result<crate::ir::IrMessage, IrE
 fn read_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, IrError> {
     let obj = tool_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 
@@ -1292,7 +1292,7 @@ fn read_cache_control(
         None => Ok(None),
         Some(_) => Err(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         }),
     }
@@ -2036,7 +2036,7 @@ pub fn anthropic_auth_headers(
     let x_api_key_trimmed = || safe(HDR_X_API_KEY, key.trim_start().to_string());
     let authorization = || {
         safe(
-            busbar_substrate::proto::HDR_AUTHORIZATION,
+            busbar_substrate_values::proto::HDR_AUTHORIZATION,
             format!("Bearer {key}"),
         )
     };

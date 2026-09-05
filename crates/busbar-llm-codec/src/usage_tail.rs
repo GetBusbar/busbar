@@ -82,5 +82,5 @@ fn balanced_object_after(buf: &[u8], mut i: usize) -> Option<&[u8]> {
 pub fn isolate_tail_usage_object(tail: &[u8], key: &[u8]) -> Option<serde_json::Value> {
     let key_pos = find_last(tail, key)?;
     let obj = balanced_object_after(tail, key_pos + key.len())?;
-    busbar_substrate::json::parse(obj).ok()
+    busbar_substrate_values::json::parse(obj).ok()
 }

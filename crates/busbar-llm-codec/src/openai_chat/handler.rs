@@ -6,9 +6,9 @@
 
 use crate::ir::moderation::{ModerationInput, ModerationReq, ModerationResp, ModerationResult};
 use busbar_api::operation::Operation;
-use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
-use busbar_substrate::ir::handle::IrHandle;
-use busbar_substrate::wire::{EgressCtx, WireBody};
+use busbar_substrate_values::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_substrate_values::ir::handle::IrHandle;
+use busbar_substrate_values::wire::{EgressCtx, WireBody};
 use bytes::Bytes;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -40,7 +40,7 @@ static SPEECH: OpenAiSpeech = OpenAiSpeech;
 /// this table is the standard no-handler 404, which is what the enumerated `None` arm used to say:
 /// OpenAI ships no rerank surface, and the protocol-surface verbs are MCP's and A2A's, so the pair
 /// is unrepresentable rather than refused at runtime.
-static CELLS: &[busbar_substrate::handlers::Cell] = &[
+static CELLS: &[busbar_substrate_values::handlers::Cell] = &[
     (Operation::CHAT, &CHAT),
     (Operation::MODERATION, &MODERATION),
     (Operation::EMBEDDINGS, &EMBEDDINGS),
@@ -65,12 +65,12 @@ impl RequestHandler for OpenAiRequestHandler {
         "openai"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        busbar_substrate::handlers::cell_of(CELLS, op)
+        busbar_substrate_values::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         // The fallback is unreachable in practice: a verb with no cell above never reaches egress
         // here. It keeps the pre-1.6.0 answer verbatim rather than inventing a new one.
-        busbar_substrate::handlers::path_of(PATHS, ctx.operation)
+        busbar_substrate_values::handlers::path_of(PATHS, ctx.operation)
             .unwrap_or(PATH_RERANK)
             .into()
     }
@@ -99,8 +99,8 @@ impl RequestHandler for OpenAiRequestHandler {
 // -------------------------------------------------- audio cells (real codecs, cross-protocol)
 
 use crate::ir::audio::{SpeechReq, SpeechResp, TranscriptionReq, TranscriptionResp};
-use busbar_substrate::billing::Billing;
-use busbar_substrate::media::{base64_decode, MediaBlob, MediaPayload};
+use busbar_substrate_values::billing::Billing;
+use busbar_substrate_values::media::{base64_decode, MediaBlob, MediaPayload};
 
 /// One decoded part of a `multipart/form-data` body (its value borrowed from the request bytes).
 struct MultipartField<'a> {
@@ -249,7 +249,7 @@ impl OperationHandler for OpenAiTranscription {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate::breaker::RawUpstreamError {
+    ) -> busbar_substrate_values::breaker::RawUpstreamError {
         super::super::proto_codec::protocol_error("openai", status, body)
     }
     fn egress_request_content_type(&self) -> &'static str {
@@ -408,7 +408,7 @@ fn parse_transcription_usage(u: &Value) -> Option<Billing> {
             .and_then(Value::as_f64)
             .map(|seconds| Billing::Duration { seconds }),
         _ => u.get("input_tokens").and_then(Value::as_u64).map(|input| {
-            Billing::Tokens(busbar_substrate::billing::TokenUsage {
+            Billing::Tokens(busbar_substrate_values::billing::TokenUsage {
                 input,
                 output: u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
                 ..Default::default()
@@ -427,7 +427,7 @@ impl OperationHandler for OpenAiSpeech {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate::breaker::RawUpstreamError {
+    ) -> busbar_substrate_values::breaker::RawUpstreamError {
         super::super::proto_codec::protocol_error("openai", status, body)
     }
     fn read_request(
@@ -493,7 +493,7 @@ impl OperationHandler for OpenAiEmbeddings {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate::breaker::RawUpstreamError {
+    ) -> busbar_substrate_values::breaker::RawUpstreamError {
         super::super::proto_codec::protocol_error("openai", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
@@ -588,7 +588,7 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
 // ---------------------------------------------------------------- image OperationHandler (real, cross-protocol)
 
 use crate::ir::image::{ImageOp, ImageReq, ImageResp, ImageSize};
-use busbar_substrate::media::ImageOutput;
+use busbar_substrate_values::media::ImageOutput;
 
 struct OpenAiImage;
 
@@ -599,7 +599,7 @@ impl OperationHandler for OpenAiImage {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate::breaker::RawUpstreamError {
+    ) -> busbar_substrate_values::breaker::RawUpstreamError {
         super::super::proto_codec::protocol_error("openai", status, body)
     }
     // Token-metered for gpt-image-1: buffer the same-protocol non-stream 2xx body so the default
@@ -724,7 +724,7 @@ impl OperationHandler for OpenAiModeration {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate::breaker::RawUpstreamError {
+    ) -> busbar_substrate_values::breaker::RawUpstreamError {
         super::super::proto_codec::protocol_error("openai", status, body)
     }
     fn read_request(
@@ -1190,7 +1190,7 @@ pub fn read_embeddings_response(
         .unwrap_or_default();
     let usage = v
         .get("usage")
-        .map(|u| busbar_substrate::billing::TokenUsage {
+        .map(|u| busbar_substrate_values::billing::TokenUsage {
             input: u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
             ..Default::default()
         });
@@ -1319,7 +1319,7 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, C
     // are unset. Parse the token object when present so `billing()` yields `Billing::Tokens`.
     let usage = v
         .get("usage")
-        .map(|u| busbar_substrate::billing::TokenUsage {
+        .map(|u| busbar_substrate_values::billing::TokenUsage {
             input: u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
             output: u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
             ..Default::default()

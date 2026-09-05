@@ -46,8 +46,8 @@
 
 use super::*;
 use crate::ir::IrRequest;
-use busbar_substrate::ir::facts::IrFacts;
-use busbar_substrate::proto::known_protocols;
+use busbar_substrate_values::ir::facts::IrFacts;
+use busbar_substrate_values::proto::known_protocols;
 use serde_json::Value;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -611,7 +611,7 @@ fn every_opaque_shape_projects_the_marker_and_never_the_bytes() {
         let v = ir_view(&f).expect("the reader accepts this body");
         assert_eq!(
             v.turns[0].1,
-            busbar_substrate::ir::facts::OPAQUE_CONTENT_MARKER,
+            busbar_substrate_values::ir::facts::OPAQUE_CONTENT_MARKER,
             "{name}: an opaque shape must read as the marker, never as an empty turn"
         );
         assert!(

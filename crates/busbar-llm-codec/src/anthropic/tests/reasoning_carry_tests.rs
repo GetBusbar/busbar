@@ -4,7 +4,7 @@
 use super::super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter};
 use super::{AnthropicReader, AnthropicWriter};
 use crate::ir::{IrReasoningAsk, IrReasoningEffort};
-use busbar_substrate::ir::egress_prep::EgressPrep;
+use busbar_substrate_values::ir::egress_prep::EgressPrep;
 
 fn openai_effort_body(effort: &str) -> serde_json::Value {
     serde_json::json!({

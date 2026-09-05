@@ -7,9 +7,9 @@ use crate::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
 use busbar_api::operation::Operation;
-use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
-use busbar_substrate::ir::handle::IrHandle;
-use busbar_substrate::wire::{EgressCtx, WireBody};
+use busbar_substrate_values::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_substrate_values::ir::handle::IrHandle;
+use busbar_substrate_values::wire::{EgressCtx, WireBody};
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -24,7 +24,7 @@ static RERANK: BedrockRerank = BedrockRerank;
 
 /// BEDROCK'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent
 /// from it is a genuine gap → the standard no-handler 404.
-static CELLS: &[busbar_substrate::handlers::Cell] = &[
+static CELLS: &[busbar_substrate_values::handlers::Cell] = &[
     (Operation::CHAT, &CHAT),
     (Operation::EMBEDDINGS, &EMB),
     (Operation::IMAGE, &IMG),
@@ -49,7 +49,7 @@ static CELLS: &[busbar_substrate::handlers::Cell] = &[
 pub fn same_protocol_usage(
     body: &[u8],
     parsed: Option<&Value>,
-) -> Option<busbar_substrate::billing::TokenUsage> {
+) -> Option<busbar_substrate_values::billing::TokenUsage> {
     let has = |k: &str| parsed.is_some_and(|v| v.get(k).is_some());
     if has("output") || has("stopReason") {
         CHAT.extract_usage("bedrock", body)
@@ -77,7 +77,7 @@ impl RequestHandler for BedrockRequestHandler {
         "bedrock"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        busbar_substrate::handlers::cell_of(CELLS, op)
+        busbar_substrate_values::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         // Chat uses the Converse API (stream-aware); everything else rides InvokeModel. The
@@ -140,7 +140,7 @@ impl OperationHandler for BedrockImage {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate::breaker::RawUpstreamError {
+    ) -> busbar_substrate_values::breaker::RawUpstreamError {
         super::super::proto_codec::protocol_error("bedrock", status, body)
     }
     // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` runs the op's own
@@ -223,7 +223,7 @@ impl OperationHandler for BedrockEmbeddings {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate::breaker::RawUpstreamError {
+    ) -> busbar_substrate_values::breaker::RawUpstreamError {
         super::super::proto_codec::protocol_error("bedrock", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
@@ -322,7 +322,7 @@ impl OperationHandler for BedrockRerank {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate::breaker::RawUpstreamError {
+    ) -> busbar_substrate_values::breaker::RawUpstreamError {
         super::super::proto_codec::protocol_error("bedrock", status, body)
     }
     fn read_request(
@@ -452,13 +452,13 @@ pub fn read_image_request(
 pub fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, CodecError> {
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-    let images: Vec<busbar_substrate::media::ImageOutput> = v
+    let images: Vec<busbar_substrate_values::media::ImageOutput> = v
         .get("images")
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
                 .filter_map(|b| b.as_str())
-                .map(|b| busbar_substrate::media::ImageOutput {
+                .map(|b| busbar_substrate_values::media::ImageOutput {
                     b64: Some(b.to_string()),
                     ..Default::default()
                 })
@@ -529,7 +529,7 @@ pub fn read_embeddings_response(
     let usage = v
         .get("inputTextTokenCount")
         .and_then(Value::as_u64)
-        .map(|n| busbar_substrate::billing::TokenUsage {
+        .map(|n| busbar_substrate_values::billing::TokenUsage {
             input: n,
             ..Default::default()
         });

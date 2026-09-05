@@ -130,7 +130,7 @@ fn assert_divergences(proto: &str, dir: &str, want: &Value, got: &Value, allowed
         unexpected.is_empty(),
         "{proto} {dir}: NEW round-trip divergence(s) this protocol did not have before.\n  \
          {unexpected:#?}\nRound-tripped body:\n{}",
-        busbar_substrate::json::to_string(got).unwrap_or_default()
+        busbar_substrate_values::json::to_string(got).unwrap_or_default()
     );
     assert!(
         fixed.is_empty(),

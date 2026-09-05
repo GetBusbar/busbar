@@ -1,12 +1,12 @@
 use super::*;
 
 /// AWS SigV4 signing for a Bedrock Converse request — the egress credential for `bedrock` lanes
-/// (dispatched via `busbar_substrate::egress_auth`, and called by the Bedrock auth tests). Lane key encodes
+/// (dispatched via `busbar_substrate_values::egress_auth`, and called by the Bedrock auth tests). Lane key encodes
 /// `ACCESS:SECRET[:SESSION]`; region parsed from the host; service=`bedrock`. A misconfigured key or
 /// un-encodable byte yields an empty header set (AWS 403, surfaced as auth) rather than panicking.
 pub fn sigv4_sign_headers(
     key: &str,
-    ctx: &busbar_substrate::proto::SigningContext,
+    ctx: &busbar_substrate_values::proto::SigningContext,
 ) -> Vec<(HeaderName, HeaderValue)> {
     let mut parts = key.splitn(3, ':');
     let (access, secret, token) = match (parts.next(), parts.next(), parts.next()) {
@@ -21,8 +21,8 @@ pub fn sigv4_sign_headers(
         }
     };
     let service = "bedrock";
-    let (amzdate, datestamp) = busbar_substrate::sigv4::format_amz_time(ctx.timestamp_epoch);
-    let payload_hash = busbar_substrate::sigv4::sha256_hex(ctx.body);
+    let (amzdate, datestamp) = busbar_substrate_values::sigv4::format_amz_time(ctx.timestamp_epoch);
+    let payload_hash = busbar_substrate_values::sigv4::sha256_hex(ctx.body);
     let token_header = match token {
         Some(t) => match HeaderValue::from_str(t) {
             Ok(v) => Some(v),
@@ -36,25 +36,25 @@ pub fn sigv4_sign_headers(
     let mut signed = vec![
         (
             "content-type".to_string(),
-            busbar_substrate::proxy::APPLICATION_JSON.to_string(),
+            busbar_substrate_values::proxy::APPLICATION_JSON.to_string(),
         ),
         ("host".to_string(), ctx.host.to_string()),
         (
-            busbar_substrate::sigv4::X_AMZ_CONTENT_SHA256.to_string(),
+            busbar_substrate_values::sigv4::X_AMZ_CONTENT_SHA256.to_string(),
             payload_hash.clone(),
         ),
         (
-            busbar_substrate::sigv4::X_AMZ_DATE.to_string(),
+            busbar_substrate_values::sigv4::X_AMZ_DATE.to_string(),
             amzdate.clone(),
         ),
     ];
     if let Some(t) = token {
         signed.push((
-            busbar_substrate::sigv4::X_AMZ_SECURITY_TOKEN.to_string(),
+            busbar_substrate_values::sigv4::X_AMZ_SECURITY_TOKEN.to_string(),
             t.to_string(),
         ));
     }
-    let (signature, signed_headers) = busbar_substrate::sigv4::sign_v4(
+    let (signature, signed_headers) = busbar_substrate_values::sigv4::sign_v4(
         secret,
         region,
         service,
@@ -67,7 +67,7 @@ pub fn sigv4_sign_headers(
         &datestamp,
     );
     let authorization = {
-        use busbar_substrate::sigv4::{SIGV4_ALGORITHM, SIGV4_TERMINATION};
+        use busbar_substrate_values::sigv4::{SIGV4_ALGORITHM, SIGV4_TERMINATION};
         format!(
             "{SIGV4_ALGORITHM} Credential={access}/{datestamp}/{region}/{service}/{SIGV4_TERMINATION}, SignedHeaders={signed_headers}, Signature={signature}"
         )
@@ -81,21 +81,21 @@ pub fn sigv4_sign_headers(
     };
     let mut out = vec![
         (
-            HeaderName::from_static(busbar_substrate::proto::HDR_AUTHORIZATION),
+            HeaderName::from_static(busbar_substrate_values::proto::HDR_AUTHORIZATION),
             authorization_val,
         ),
         (
-            HeaderName::from_static(busbar_substrate::sigv4::X_AMZ_DATE),
+            HeaderName::from_static(busbar_substrate_values::sigv4::X_AMZ_DATE),
             amzdate_val,
         ),
         (
-            HeaderName::from_static(busbar_substrate::sigv4::X_AMZ_CONTENT_SHA256),
+            HeaderName::from_static(busbar_substrate_values::sigv4::X_AMZ_CONTENT_SHA256),
             payload_hash_val,
         ),
     ];
     if let Some(v) = token_header {
         out.push((
-            HeaderName::from_static(busbar_substrate::sigv4::X_AMZ_SECURITY_TOKEN),
+            HeaderName::from_static(busbar_substrate_values::sigv4::X_AMZ_SECURITY_TOKEN),
             v,
         ));
     }
@@ -149,7 +149,7 @@ impl ProtocolWriter for BedrockWriter {
         if !obj.get("messages").is_some_and(serde_json::Value::is_array) {
             return false;
         }
-        let Some(pairs) = busbar_substrate::proto::rewrite_text_pairs(messages) else {
+        let Some(pairs) = busbar_substrate_values::proto::rewrite_text_pairs(messages) else {
             return false;
         };
         let framed: Vec<serde_json::Value> = pairs
@@ -1009,7 +1009,7 @@ impl ProtocolWriter for BedrockWriter {
     /// `write_response_event` Error arm so both stay consistent.
     fn write_response_exception(
         &self,
-        err: &busbar_substrate::proto::IrError,
+        err: &busbar_substrate_values::proto::IrError,
     ) -> Option<(String, String)> {
         let (exception_name, message) = bedrock_stream_exception_for(err);
         Some((exception_name.to_string(), message))
@@ -1017,7 +1017,7 @@ impl ProtocolWriter for BedrockWriter {
 
     fn write_error_frame(
         &self,
-        err: &busbar_substrate::proto::IrError,
+        err: &busbar_substrate_values::proto::IrError,
     ) -> Option<(String, serde_json::Value)> {
         // The streaming-error seam. A Bedrock-INGRESS stream never reaches here — its mid-stream
         // error is a modeled-exception event-stream frame emitted via `write_response_exception`
@@ -1235,7 +1235,7 @@ impl ProtocolWriter for BedrockWriter {
 
     fn same_protocol_buffered_response_translator(
         &self,
-    ) -> Option<Box<dyn busbar_substrate::proto::StreamTranslator>> {
+    ) -> Option<Box<dyn busbar_substrate_values::proto::StreamTranslator>> {
         // A Bedrock -> Bedrock non-stream response used to relay verbatim, so a Converse body whose
         // upstream omitted `metrics` reached the client without its required member (the only
         // Converse response busbar served that way; every cross-protocol lane injects it above).

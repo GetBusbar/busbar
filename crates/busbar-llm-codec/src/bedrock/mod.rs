@@ -6,10 +6,10 @@
 use crate::ir::IrStreamEvent;
 use http::{HeaderName, HeaderValue, StatusCode};
 #[cfg(test)]
-use busbar_substrate::breaker::CanonicalSignal;
-use busbar_substrate::breaker::StatusClass;
-use busbar_substrate::proto::*;
-use busbar_substrate::proto::{
+use busbar_substrate_values::breaker::CanonicalSignal;
+use busbar_substrate_values::breaker::StatusClass;
+use busbar_substrate_values::proto::*;
+use busbar_substrate_values::proto::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
     ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
 };
@@ -17,10 +17,10 @@ use busbar_substrate::proto::{
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with busbar_substrate::proto::* when netted into core
+// used standalone; redundant with busbar_substrate_values::proto::* when netted into core
 use super::proto_codec::*;
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
-// THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate::proto::*` re-export.
+// THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate_values::proto::*` re-export.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 
@@ -38,8 +38,8 @@ pub fn protocol() -> Protocol {
 /// `Authorization: AWS4-HMAC-SHA256…` signature is the TIGHTEST claim of any dialect (rung 1,
 /// unambiguous regardless of path), then the `/converse` path (rung 12) and the `/model/{id}/invoke`
 /// path (rung 13). Lower strength binds tighter — the shared ladder positions.
-fn claims(h: &http::HeaderMap, path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
-    use busbar_substrate::proto::ClaimStrength;
+fn claims(h: &http::HeaderMap, path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+    use busbar_substrate_values::proto::ClaimStrength;
     if h.get("authorization")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|a| a.starts_with("AWS4-HMAC-SHA256"))
@@ -58,11 +58,11 @@ fn claims(h: &http::HeaderMap, path: &str) -> Option<busbar_substrate::proto::Cl
 /// BEDROCK'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: a
 /// `/model/{id}/converse[-stream]` path names Bedrock (rung 30). The `/converse`-suffix requirement
 /// is load-bearing: a non-Converse `/model/…` path must NOT wear a Bedrock envelope.
-fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
     if path.starts_with("/model/")
         && (path.ends_with("/converse") || path.ends_with("/converse-stream"))
     {
-        return Some(busbar_substrate::proto::ClaimStrength(30));
+        return Some(busbar_substrate_values::proto::ClaimStrength(30));
     }
     None
 }
@@ -176,11 +176,11 @@ const APPLICATION_VND_AMAZON_EVENTSTREAM: &str = "application/vnd.amazon.eventst
 
 /// The Bedrock-side spelling of the "overloaded" error type that AWS's own error responses carry
 /// in their `__type` field (`ServiceUnavailableException` maps back to this on a round-trip).
-/// Distinguished from `busbar_substrate::proxy::KIND_OVERLOADED` ("overloaded"), which is busbar's own
+/// Distinguished from `busbar_substrate_values::proxy::KIND_OVERLOADED` ("overloaded"), which is busbar's own
 /// internal kind vocabulary. Both map to `ServiceUnavailableException` via
 /// `error_kind_to_bedrock_type`; named here so the match arm is a const pattern rather than a
 /// bare literal.
-const ERR_TYPE_OVERLOADED: &str = busbar_substrate::proto::ERR_TYPE_OVERLOADED;
+const ERR_TYPE_OVERLOADED: &str = busbar_substrate_values::proto::ERR_TYPE_OVERLOADED;
 
 /// Map busbar's generic error `kind` vocabulary to the AWS Bedrock Converse exception name carried
 /// in `__type`. AWS's Converse error model is a fixed, closed set of exception shapes
@@ -201,17 +201,17 @@ pub fn error_kind_to_bedrock_type(kind: &str) -> &'static str {
             "AccessDeniedException"
         }
         "not_found" | ERR_TYPE_NOT_FOUND | "model_not_found" => "ResourceNotFoundException",
-        busbar_substrate::proxy::KIND_TIMEOUT | "model_timeout" => "ModelTimeoutException",
-        busbar_substrate::proxy::KIND_OVERLOADED
+        busbar_substrate_values::proxy::KIND_TIMEOUT | "model_timeout" => "ModelTimeoutException",
+        busbar_substrate_values::proxy::KIND_OVERLOADED
         | ERR_TYPE_OVERLOADED
         | "service_unavailable"
         | "unavailable" => EXC_SERVICE_UNAVAILABLE,
         "quota_exceeded" | "service_quota_exceeded" | ERR_TYPE_INSUFFICIENT_QUOTA => {
             "ServiceQuotaExceededException"
         }
-        busbar_substrate::proxy::KIND_API_ERROR
+        busbar_substrate_values::proxy::KIND_API_ERROR
         | "internal_error"
-        | busbar_substrate::proxy::KIND_SERVER_ERROR => EXC_INTERNAL_SERVER,
+        | busbar_substrate_values::proxy::KIND_SERVER_ERROR => EXC_INTERNAL_SERVER,
         // No native Bedrock counterpart: fall back to the generic client-error exception so the
         // wire `__type` is still a real AWS exception name a native SDK can decode.
         _ => EXC_VALIDATION,
@@ -296,7 +296,7 @@ fn attach_bedrock_error_headers(headers: &mut http::HeaderMap, kind: &str) {
 /// Shared by `write_response_exception` (the StreamTranslate exception-frame path) and the fallback
 /// `write_response_event` Error arm (also a stream-output context) so both stay consistent. The
 /// message prefers the upstream's `provider_signal`, falling back to the exception name.
-fn bedrock_stream_exception_for(err: &busbar_substrate::proto::IrError) -> (&'static str, String) {
+fn bedrock_stream_exception_for(err: &busbar_substrate_values::proto::IrError) -> (&'static str, String) {
     let exception_name = match err.class {
         StatusClass::RateLimit => EXC_THROTTLING,
         StatusClass::Overloaded => EXC_SERVICE_UNAVAILABLE,
@@ -1464,8 +1464,8 @@ pub fn bedrock_response_to_eventstream(
             if event_type == ET_METADATA {
                 ensure_metrics(&mut payload, elapsed_ms);
             }
-            if let Ok(bytes) = busbar_substrate::json::to_vec(&payload) {
-                out.extend_from_slice(&busbar_substrate::eventstream::encode_frame(
+            if let Ok(bytes) = busbar_substrate_values::json::to_vec(&payload) {
+                out.extend_from_slice(&busbar_substrate_values::eventstream::encode_frame(
                     &event_type,
                     &bytes,
                 ));
@@ -1695,7 +1695,7 @@ pub fn complete_converse_body(
         // Present but unusable: replace it. Splicing would leave two `metrics` keys.
         let mut fixed = parsed.clone();
         ensure_metrics(&mut fixed, Some(latency_ms));
-        return busbar_substrate::json::to_vec(&fixed).ok();
+        return busbar_substrate_values::json::to_vec(&fixed).ok();
     }
     // The last significant byte must be the object's closing brace (the parse above guarantees a
     // top-level object, so this only guards against trailing garbage a lenient parser accepted).
@@ -1736,7 +1736,7 @@ pub struct BedrockConverseBodyTranslator {
     /// Set once the body outgrew `cap`: everything is relayed as it arrives and `buf` holds only
     /// the most recent `cap` bytes.
     passthrough: bool,
-    usage: Option<busbar_substrate::billing::TokenUsage>,
+    usage: Option<busbar_substrate_values::billing::TokenUsage>,
 }
 
 impl Default for BedrockConverseBodyTranslator {
@@ -1773,7 +1773,7 @@ impl BedrockConverseBodyTranslator {
     }
 }
 
-impl busbar_substrate::proto::StreamTranslator for BedrockConverseBodyTranslator {
+impl busbar_substrate_values::proto::StreamTranslator for BedrockConverseBodyTranslator {
     fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
         self.buf.extend_from_slice(chunk);
         if self.passthrough {
@@ -1803,14 +1803,14 @@ impl busbar_substrate::proto::StreamTranslator for BedrockConverseBodyTranslator
                 .reader()
                 .recover_truncated_usage(&body)
                 .or_else(|| {
-                    Some(busbar_substrate::billing::TokenUsage {
+                    Some(busbar_substrate_values::billing::TokenUsage {
                         output: (tail_len / crate::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN).max(1),
                         ..Default::default()
                     })
                 });
             return Vec::new();
         }
-        let parsed = busbar_substrate::json::parse::<serde_json::Value>(&body).ok();
+        let parsed = busbar_substrate_values::json::parse::<serde_json::Value>(&body).ok();
         self.usage = handler::same_protocol_usage(&body, parsed.as_ref());
         match parsed {
             Some(v) if handler::is_converse_response(&v) => {
@@ -1820,7 +1820,7 @@ impl busbar_substrate::proto::StreamTranslator for BedrockConverseBodyTranslator
         }
     }
 
-    fn usage(&self) -> Option<busbar_substrate::billing::TokenUsage> {
+    fn usage(&self) -> Option<busbar_substrate_values::billing::TokenUsage> {
         self.usage.clone()
     }
 

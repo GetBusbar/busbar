@@ -57,7 +57,7 @@ impl ProtocolWriter for ResponsesWriter {
         if obj.get("input").is_none() {
             return false;
         }
-        let Some(pairs) = busbar_substrate::proto::rewrite_text_pairs(messages) else {
+        let Some(pairs) = busbar_substrate_values::proto::rewrite_text_pairs(messages) else {
             return false;
         };
         let framed: Vec<serde_json::Value> = pairs
@@ -259,7 +259,7 @@ impl ProtocolWriter for ResponsesWriter {
                                 // Emit a raw `Value::String` (unparseable/streaming-partial args) verbatim
                                 // rather than JSON-encoding it a second time — same as the Chat writer.
                                 let args_str =
-                                    busbar_substrate::proto::tool_arguments_to_string(input);
+                                    busbar_substrate_values::proto::tool_arguments_to_string(input);
                                 tool_items.push(serde_json::json!({
                                     "type": ITEM_TYPE_FUNCTION_CALL,
                                     "call_id": id,
@@ -1409,7 +1409,7 @@ impl ProtocolWriter for ResponsesWriter {
                     id, name, input, ..
                 } => {
                     // Verbatim for a raw `Value::String` (avoid double-encoding), same as the Chat writer.
-                    let args_str = busbar_substrate::proto::tool_arguments_to_string(input);
+                    let args_str = busbar_substrate_values::proto::tool_arguments_to_string(input);
                     output_arr.push(serde_json::json!({
                         "type": ITEM_TYPE_FUNCTION_CALL,
                         // Native function_call items carry an item-level opaque `id` (`fc_…`) DISTINCT
@@ -1565,7 +1565,7 @@ impl ProtocolWriter for ResponsesWriter {
             // exhaustion/timeout, a non-native type and a deterministic cross-protocol tell. Map the
             // overloaded/unavailable family onto the native `server_error`. Same class as the OpenAI
             // writer's 5xx bucket.
-            busbar_substrate::proxy::KIND_OVERLOADED
+            busbar_substrate_values::proxy::KIND_OVERLOADED
             | ERR_TYPE_OVERLOADED
             | "service_unavailable"
             | "unavailable" => ERR_TYPE_SERVER_ERROR,
@@ -1577,16 +1577,16 @@ impl ProtocolWriter for ResponsesWriter {
             // non-native `type` such as `{"error":{"type":"timeout"}}` or `{"error":{"type":"5xx"}}`
             // to a Responses-API client: a deterministic cross-protocol tell that breaks SDK
             // consumers switching on `error.type`. Mirrors openai_chat.rs's `server_error` bucket.
-            busbar_substrate::proxy::KIND_TIMEOUT
+            busbar_substrate_values::proxy::KIND_TIMEOUT
             | "network"
             | "connect"
             | "5xx"
             | "transient"
-            | busbar_substrate::proxy::KIND_API_ERROR => ERR_TYPE_SERVER_ERROR,
+            | busbar_substrate_values::proxy::KIND_API_ERROR => ERR_TYPE_SERVER_ERROR,
             // A context-length overflow is surfaced by proxy engine as `context_length_exceeded`; the
             // Responses vocabulary has no dedicated type for it (as openai_chat.rs also maps it), so it
             // folds into `invalid_request_error`. `bad_request` is the same client-error class.
-            busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH | "bad_request" => {
+            busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH | "bad_request" => {
                 ERR_TYPE_INVALID_REQUEST
             }
             "billing" | ERR_TYPE_INSUFFICIENT_QUOTA => ERR_TYPE_INSUFFICIENT_QUOTA,

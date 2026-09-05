@@ -14,12 +14,12 @@
 //! only.
 
 use http::StatusCode;
-// The protocol registry runtime relocated DOWN to `busbar_substrate::proto` (the reverse-edge rule):
+// The protocol registry runtime relocated DOWN to `busbar_substrate_values::proto` (the reverse-edge rule):
 // this crate resolves `decl_for` / `ProtocolDecl` through the neutral ABI, not back into `busbar-core`.
-use busbar_substrate::proto as registry;
-use busbar_substrate::proto::{ArrayStreamFramer, DialectCodec, IrError};
+use busbar_substrate_values::proto as registry;
+use busbar_substrate_values::proto::{ArrayStreamFramer, DialectCodec, IrError};
 
-// The six dialect NAMES, plane-local (no longer `busbar_substrate::proto::PROTO_*` — that was a backwards
+// The six dialect NAMES, plane-local (no longer `busbar_substrate_values::proto::PROTO_*` — that was a backwards
 // reach into core). File-local `const`s so a bare `PROTO_ANTHROPIC` resolves identically in BOTH
 // compile shapes (this plugin standalone, and `#[path]`-netted into `core::proto`), and reads as a
 // const pattern in the `protocol_for` match below. The values are the interned dialect names.
@@ -32,14 +32,14 @@ pub const PROTO_RESPONSES: &str = "responses";
 
 use crate::ir::IrStreamEvent;
 #[cfg(any(test, feature = "test-support"))]
-use busbar_substrate::breaker::CanonicalSignal;
+use busbar_substrate_values::breaker::CanonicalSignal;
 
 /// THE TOP-LEVEL body keys the six LLM chat dialects point-read on the pre-materialized path: `model`
 /// (ingress model resolution + the pristine model-rewrite check), `stream` (chat's `wants_stream`),
 /// `stream_options` (the OpenAI streaming-usage opt-in, read without forcing a DOM) and `system`
 /// (chat's body affinity key). Declared ONCE here and referenced by all six `ProtocolDecl`s rather
 /// than spelled six times: they are one shared fact about the chat body shape. RELOCATED out of
-/// `busbar_substrate::proto::LLM_HEAD_KEYS` — this is LLM vocabulary and belongs to the LLM plugin; core
+/// `busbar_substrate_values::proto::LLM_HEAD_KEYS` — this is LLM vocabulary and belongs to the LLM plugin; core
 /// unions whatever `head_keys` each registered decl declares and names none. Reached by the dialects
 /// as a bare name through their `use super::proto_codec::*` (which resolves in both compile shapes).
 pub const LLM_CHAT_HEAD_KEYS: &[&str] = &["model", "stream", "stream_options", "system"];
@@ -66,7 +66,7 @@ pub trait ProtocolReader: Send + Sync {
         &self,
         status: StatusCode,
         body: &[u8],
-    ) -> busbar_substrate::breaker::RawUpstreamError;
+    ) -> busbar_substrate_values::breaker::RawUpstreamError;
 
     /// Classify a response into a canonical signal in one call (convenience over
     /// `extract_error` + `normalize_raw_error`). The release path runs those two stages explicitly
@@ -81,7 +81,7 @@ pub trait ProtocolReader: Send + Sync {
     /// unified on.
     #[cfg(any(test, feature = "test-support"))]
     fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal {
-        busbar_substrate::breaker::normalize_raw_error(
+        busbar_substrate_values::breaker::normalize_raw_error(
             &self.extract_error(status, body),
             &std::collections::HashMap::new(),
         )
@@ -94,13 +94,13 @@ pub trait ProtocolReader: Send + Sync {
     /// slice is NOT a well-formed document (its opening structure — or a string it cut through — is
     /// gone), so the normal full-document parse reliably fails on it; instead isolate the
     /// self-contained trailing `usage` object and map THIS dialect's fields onto the neutral
-    /// [`busbar_substrate::billing::TokenUsage`]. Returns `None` for a dialect/tail without a recognizable usage
+    /// [`busbar_substrate_values::billing::TokenUsage`]. Returns `None` for a dialect/tail without a recognizable usage
     /// object (the caller treats that as "bill zero, counted+warned"). Defaulted to `None` so a
     /// non-LLM dialect need not implement it.
     fn recover_truncated_usage(
         &self,
         _tail: &[u8],
-    ) -> Option<busbar_substrate::billing::TokenUsage> {
+    ) -> Option<busbar_substrate_values::billing::TokenUsage> {
         None
     }
 
@@ -166,7 +166,7 @@ pub trait ProtocolWriter: Send + Sync {
     }
 
     // Outbound auth moved OFF the protocol writer (protocol is post-auth): a lane's credential is
-    // resolved by `busbar_substrate::egress_auth` and called via `lane.credential.headers_for`. Per-scheme logic
+    // resolved by `busbar_substrate_values::egress_auth` and called via `lane.credential.headers_for`. Per-scheme logic
     // lives in `pub(crate)` free fns (`bearer_auth_headers`, `anthropic::anthropic_auth_headers`,
     // `bedrock::sigv4_sign_headers`).
 
@@ -310,7 +310,7 @@ pub trait ProtocolWriter: Send + Sync {
     /// `response` object the SDK's stream decoder locates via `event.response`, NOT the top-level
     /// `{"error":...}` HTTP body), so a native SDK on a stream must receive THIS shape.
     ///
-    /// This is the NEUTRAL seam for [`busbar_substrate::proxy::wire`]'s mid-stream error framer: core frames the
+    /// This is the NEUTRAL seam for [`busbar_substrate_values::proxy::wire`]'s mid-stream error framer: core frames the
     /// returned pair without naming any concrete stream-event type, so the concrete `IrStreamEvent`
     /// need not exist in core at all. Every SSE-framed writer overrides this to reproduce, byte for
     /// byte, what its `write_response_event` produces for an error event.
@@ -418,7 +418,7 @@ pub trait ProtocolWriter: Send + Sync {
     /// whenever one is installed.
     fn same_protocol_buffered_response_translator(
         &self,
-    ) -> Option<Box<dyn busbar_substrate::proto::StreamTranslator>> {
+    ) -> Option<Box<dyn busbar_substrate_values::proto::StreamTranslator>> {
         None
     }
 
@@ -455,7 +455,7 @@ pub trait ProtocolWriter: Send + Sync {
     fn probe_body(&self, model: &str) -> Vec<u8> {
         let mut body = self.probe_request();
         let _ = self.rewrite_model_if_needed(&mut body, model);
-        busbar_substrate::json::to_vec(&body).unwrap_or_default()
+        busbar_substrate_values::json::to_vec(&body).unwrap_or_default()
     }
 
     /// Build the per-stream framing state for THIS protocol as an INGRESS (client-facing) writer.
@@ -897,13 +897,13 @@ pub fn protocol_error(
     name: &str,
     status: u16,
     body: &[u8],
-) -> busbar_substrate::breaker::RawUpstreamError {
+) -> busbar_substrate_values::breaker::RawUpstreamError {
     match protocol_for(name) {
         Some(p) => p.reader().extract_error(
             StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             body,
         ),
-        None => busbar_substrate::breaker::RawUpstreamError::from_status(status),
+        None => busbar_substrate_values::breaker::RawUpstreamError::from_status(status),
     }
 }
 
@@ -940,7 +940,7 @@ impl DialectCodec for DialectRef {
     fn recover_truncated_usage(
         &self,
         tail: &[u8],
-    ) -> Option<busbar_substrate::billing::TokenUsage> {
+    ) -> Option<busbar_substrate_values::billing::TokenUsage> {
         protocol_for(self.0).and_then(|p| p.reader().recover_truncated_usage(tail))
     }
     fn ingress_response_request_id(
@@ -989,13 +989,13 @@ impl DialectCodec for DialectRef {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate::breaker::RawUpstreamError {
+    ) -> busbar_substrate_values::breaker::RawUpstreamError {
         match protocol_for(self.0) {
             Some(p) => p.reader().extract_error(
                 StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 body,
             ),
-            None => busbar_substrate::breaker::RawUpstreamError::from_status(status),
+            None => busbar_substrate_values::breaker::RawUpstreamError::from_status(status),
         }
     }
     fn make_array_stream_framer(&self) -> Option<Box<dyn ArrayStreamFramer>> {

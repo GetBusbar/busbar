@@ -19,7 +19,7 @@
 
 use super::*;
 use crate::proto_codec::protocol_for;
-use busbar_substrate::breaker::{CanonicalSignal, StatusClass};
+use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};
 
 fn a_mid_stream_error() -> CanonicalSignal {
     // The exact shape `proxy::wire::mid_stream_error_bytes` constructs: a server-class transport

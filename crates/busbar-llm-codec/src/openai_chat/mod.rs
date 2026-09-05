@@ -7,14 +7,14 @@ use crate::ir::{IrStreamEvent, IrUsage};
 use http::{header::HeaderValue, HeaderName, StatusCode};
 // The openai-family error helpers (`bearer_error_code`/`openai_context_length_prose_scan`) now live
 // in the neutral substrate; name them there so this plugin reaches no `busbar-core` path for them.
-use busbar_substrate::proto::{bearer_error_code, openai_context_length_prose_scan};
+use busbar_substrate_values::proto::{bearer_error_code, openai_context_length_prose_scan};
 // The neutral canonical error-type vocabulary lives in the substrate; read it there, not via core's
 // re-export, so this plugin names no `busbar-core` implementation path for it.
 #[cfg(test)]
-use busbar_substrate::breaker::CanonicalSignal;
-use busbar_substrate::breaker::StatusClass;
-use busbar_substrate::proto::*;
-use busbar_substrate::proto::{
+use busbar_substrate_values::breaker::CanonicalSignal;
+use busbar_substrate_values::breaker::StatusClass;
+use busbar_substrate_values::proto::*;
+use busbar_substrate_values::proto::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
     ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
     ERR_TYPE_SERVER_ERROR,
@@ -23,10 +23,10 @@ use busbar_substrate::proto::{
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with busbar_substrate::proto::* when netted into core
+// used standalone; redundant with busbar_substrate_values::proto::* when netted into core
 use super::proto_codec::*;
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
-// THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate::proto::*` re-export.
+// THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate_values::proto::*` re-export.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 
@@ -46,7 +46,7 @@ pub fn protocol() -> Protocol {
 /// wrinkle) and no signing context needed. Retires the `_ => StaticBearer{"openai"}` arm that used
 /// to be `egress_auth::resolve`'s catch-all default.
 fn egress_auth_headers(key: &str, _ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-    busbar_substrate::proto::bearer_auth_headers("openai", key)
+    busbar_substrate_values::proto::bearer_auth_headers("openai", key)
 }
 
 /// The [`ProtocolDecl::models_list_envelope`] builder: OpenAI's `GET /v1/models` shape. Each name
@@ -67,8 +67,8 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 fn claims(
     _h: &http::HeaderMap,
     path: &str,
-) -> Option<busbar_substrate::proto::ClaimStrength> {
-    use busbar_substrate::proto::ClaimStrength;
+) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+    use busbar_substrate_values::proto::ClaimStrength;
     if path.ends_with("/v1/chat/completions") {
         return Some(ClaimStrength(7));
     }
@@ -87,8 +87,8 @@ fn claims(
 /// (rung 25, LOOSER than Gemini's `/v1/models/{id}:{action}` at rung 20, so a genuine Gemini action
 /// wins and only a colon-less or non-action id falls here) and an exact `/v1/chat/completions` (rung
 /// 55). The broad `/v1/models/` catch is what makes a colon-bearing OpenAI fine-tune id stay OpenAI.
-fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
-    use busbar_substrate::proto::ClaimStrength;
+fn residual_claims(path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+    use busbar_substrate_values::proto::ClaimStrength;
     if path.starts_with("/v1/models/") {
         return Some(ClaimStrength(25));
     }
@@ -117,7 +117,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
         busbar_api::operation::Operation::SPEECH,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_substrate::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_substrate_values::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // `call_…` is the documented native tool-call id shape for both OpenAI surfaces.
     native_tool_id_prefix: Some("call_"),
@@ -145,14 +145,14 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     has_model_in_url: false,
     auth_failure_status_and_kind: (
         http::StatusCode::UNAUTHORIZED,
-        busbar_substrate::proto::ERR_TYPE_AUTHENTICATION,
+        busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[],
     auth_failure_message: AUTH_FAILURE_MSG,
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_substrate::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_substrate_values::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
     claims: Some(claims),
     residual_claims: Some(residual_claims),
@@ -221,9 +221,9 @@ const MAX_COMPLETION_TOKENS_SENTINEL: &str = "__busbar_max_completion_tokens";
 const MESSAGE_EXTRAS_SENTINEL: &str = "__busbar_openai_message_extras";
 
 // `MESSAGE_NAMES_SENTINEL` — the `extra` key parking OpenAI's per-message `messages[].name` — lives
-// in the neutral `busbar_substrate::proto` leaf (core's `ir/variant.rs` names it there in the generic
+// in the neutral `busbar_substrate_values::proto` leaf (core's `ir/variant.rs` names it there in the generic
 // cross-protocol dropped-keys warn); read it there so this plugin names no `busbar-core` path.
-use busbar_substrate::proto::MESSAGE_NAMES_SENTINEL;
+use busbar_substrate_values::proto::MESSAGE_NAMES_SENTINEL;
 
 // ── OpenAI wire-format named constants ──────────────────────────────────────
 //
@@ -394,9 +394,9 @@ fn write_openai_response_format(rf: &crate::ir::IrResponseFormat) -> serde_json:
 const COMPLETION_ID_TOKEN_LEN: usize = 24;
 
 /// Base62 alphabet native OpenAI completion ids draw their suffix from — the shared
-/// single-source-of-truth atom (see `busbar_substrate::proto::BASE62_ALPHABET`), aliased locally. Used by
+/// single-source-of-truth atom (see `busbar_substrate_values::proto::BASE62_ALPHABET`), aliased locally. Used by
 /// [`synth_completion_id`].
-const BASE62: &[u8; 62] = busbar_substrate::proto::BASE62_ALPHABET;
+const BASE62: &[u8; 62] = busbar_substrate_values::proto::BASE62_ALPHABET;
 
 /// OpenAI's `logprobs` object (`{content: [{token, logprob, bytes, top_logprobs[]}]}`) → the
 /// neutral IR entries. `bytes` is preserved verbatim when present (a token can be a partial UTF-8
@@ -506,7 +506,7 @@ pub fn write_openai_logprobs(lps: &[crate::ir::IrTokenLogprob]) -> serde_json::V
 /// stops and the remaining slots keep their '0' fill, preserving the panic-free contract.
 fn synth_completion_id() -> String {
     // Largest multiple of 62 that fits in a u8; bytes >= this are rejected to keep the draw uniform.
-    const BASE62_REJECT_FLOOR: u8 = busbar_substrate::proto::BASE62_REJECT_THRESHOLD; // 4 * 62
+    const BASE62_REJECT_FLOOR: u8 = busbar_substrate_values::proto::BASE62_REJECT_THRESHOLD; // 4 * 62
     let mut token = [b'0'; COMPLETION_ID_TOKEN_LEN];
     let mut filled = 0usize;
     // Pull entropy in batches and consume only the in-range bytes. If a batch yields too few usable
@@ -693,7 +693,7 @@ fn openai_audio_input_format(media_type: &str) -> Option<&'static str> {
 fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 
@@ -712,7 +712,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
         "image_url" => {
             let image_obj = obj.get("image_url").ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             let url = image_obj.get("url").and_then(|v| v.as_str()).unwrap_or("");
@@ -754,7 +754,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
         "input_audio" => {
             let audio_obj = obj.get("input_audio").ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             let data = audio_obj
@@ -786,7 +786,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
         "file" => {
             let file_obj = obj.get("file").ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             let name = file_obj
@@ -863,7 +863,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
 fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, IrError> {
     let obj = tool_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 

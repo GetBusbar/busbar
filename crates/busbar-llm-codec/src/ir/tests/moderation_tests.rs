@@ -43,7 +43,7 @@ fn request_holds_mixed_text_and_image_inputs() {
 // ── IrFacts projection (close-non-chat-gate-blindness) ───────────────────────────────────────────
 
 use busbar_api::operation::Operation;
-use busbar_substrate::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
+use busbar_substrate_values::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
 
 #[test]
 fn moderation_projects_text_and_marks_image_url_opaque() {

@@ -124,7 +124,7 @@ fn transcription_read_response_captures_input_and_output_token_counts() {
         .expect("valid response");
     let r = ir;
     assert_eq!(r.text, "hello");
-    let Some(busbar_substrate::billing::Billing::Tokens(usage)) = r.usage else {
+    let Some(busbar_substrate_values::billing::Billing::Tokens(usage)) = r.usage else {
         panic!("expected token usage");
     };
     assert_eq!(usage.input, 11);
@@ -320,7 +320,7 @@ fn image_response_with_usage_metadata_bills_tokens() {
     .unwrap();
     let resp = super::read_image_response(&wire).unwrap();
     match resp.billing() {
-        Some(busbar_substrate::billing::Billing::Tokens(t)) => {
+        Some(busbar_substrate_values::billing::Billing::Tokens(t)) => {
             assert_eq!(t.input, 20);
             assert_eq!(t.output, 10);
         }
@@ -341,7 +341,7 @@ fn image_response_without_usage_bills_per_image() {
     .unwrap();
     let resp = super::read_image_response(&wire).unwrap();
     match resp.billing() {
-        Some(busbar_substrate::billing::Billing::Images { count, .. }) => assert_eq!(count, 2),
+        Some(busbar_substrate_values::billing::Billing::Images { count, .. }) => assert_eq!(count, 2),
         other => panic!("per-image Imagen response must bill Images, got {other:?}"),
     }
 }
@@ -439,7 +439,7 @@ fn embeddings_write_response_emits_the_float_vector() {
 
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
-    use busbar_substrate::testkit::warn_capture::WarnCapture;
+    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let ir = crate::ir::embeddings::EmbeddingsReq {
@@ -566,7 +566,7 @@ fn openai_whisper_duration_carries_through_gemini_transcription_write() {
     // `usage.type == "duration"`; feed it to the gemini response writer and assert it is not dropped.
     let ir = TranscriptionResp {
         text: "hi".into(),
-        usage: Some(busbar_substrate::billing::Billing::Duration { seconds: 12.5 }),
+        usage: Some(busbar_substrate_values::billing::Billing::Duration { seconds: 12.5 }),
         ..Default::default()
     };
     let out = super::write_transcription_response(&ir).bytes;
@@ -589,8 +589,8 @@ fn gemini_transcription_forwards_caller_prompt_and_temperature() {
         model: "gemini-2.0-flash".into(),
         prompt: Some("Spell Busbar correctly.".into()),
         temperature: Some(0.5),
-        audio: Some(busbar_substrate::media::MediaBlob {
-            payload: busbar_substrate::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
+        audio: Some(busbar_substrate_values::media::MediaBlob {
+            payload: busbar_substrate_values::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
             mime_type: "audio/mpeg".into(),
             pcm: None,
         }),
@@ -764,7 +764,7 @@ fn transcription_transcribe_round_trips_as_transcribe() {
 fn transcription_response_round_trips_audio_duration() {
     let resp = crate::ir::audio::TranscriptionResp {
         text: "hello".into(),
-        usage: Some(busbar_substrate::billing::Billing::Duration { seconds: 12.5 }),
+        usage: Some(busbar_substrate_values::billing::Billing::Duration { seconds: 12.5 }),
         ..Default::default()
     };
     let wb = write_transcription_response(&resp);
@@ -777,7 +777,7 @@ fn transcription_response_round_trips_audio_duration() {
     let back = read_transcription_response(&wb.bytes).expect("re-read");
     assert_eq!(
         back.usage,
-        Some(busbar_substrate::billing::Billing::Duration { seconds: 12.5 }),
+        Some(busbar_substrate_values::billing::Billing::Duration { seconds: 12.5 }),
         "duration must round-trip as Duration, not collapse to Tokens{{0,0}}"
     );
 }
@@ -792,8 +792,8 @@ fn transcription_response_reads_token_usage() {
     let back = read_transcription_response(&serde_json::to_vec(&wire).unwrap()).expect("read");
     assert_eq!(
         back.usage,
-        Some(busbar_substrate::billing::Billing::Tokens(
-            busbar_substrate::billing::TokenUsage {
+        Some(busbar_substrate_values::billing::Billing::Tokens(
+            busbar_substrate_values::billing::TokenUsage {
                 input: 7,
                 output: 3,
                 ..Default::default()
@@ -808,11 +808,11 @@ fn transcription_response_reads_token_usage() {
 #[test]
 fn image_response_writer_round_trips_usage() {
     let resp = crate::ir::image::ImageResp {
-        images: vec![busbar_substrate::media::ImageOutput {
+        images: vec![busbar_substrate_values::media::ImageOutput {
             b64: Some("aGVsbG8=".into()),
             ..Default::default()
         }],
-        usage: Some(busbar_substrate::billing::TokenUsage {
+        usage: Some(busbar_substrate_values::billing::TokenUsage {
             input: 10,
             output: 5,
             ..Default::default()
@@ -834,7 +834,7 @@ fn image_response_writer_round_trips_usage() {
     let back = read_image_response(&wb.bytes).expect("re-read");
     assert_eq!(
         back.usage,
-        Some(busbar_substrate::billing::TokenUsage {
+        Some(busbar_substrate_values::billing::TokenUsage {
             input: 10,
             output: 5,
             ..Default::default()
@@ -847,7 +847,7 @@ fn image_response_writer_round_trips_usage() {
 #[test]
 fn image_response_writer_omits_usage_when_absent() {
     let resp = crate::ir::image::ImageResp {
-        images: vec![busbar_substrate::media::ImageOutput {
+        images: vec![busbar_substrate_values::media::ImageOutput {
             b64: Some("aGVsbG8=".into()),
             ..Default::default()
         }],

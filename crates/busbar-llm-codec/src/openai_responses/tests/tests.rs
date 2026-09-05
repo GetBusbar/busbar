@@ -6,7 +6,7 @@ use super::*;
 /// disappeared block. It must now degrade to an empty placeholder AND warn, naming the type.
 #[test]
 fn responses_input_file_degrades_with_warn_not_silent_drop() {
-    use busbar_substrate::testkit::warn_capture::WarnCapture;
+    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({
@@ -471,7 +471,7 @@ fn test_temperature_fidelity() {
 
 #[test]
 fn test_auth_headers() {
-    let headers = busbar_substrate::proto::bearer_auth_headers("responses", "sk-test");
+    let headers = busbar_substrate_values::proto::bearer_auth_headers("responses", "sk-test");
 
     assert_eq!(headers.len(), 1);
     assert_eq!(headers[0].0.as_str(), "authorization");
@@ -483,7 +483,7 @@ fn test_auth_headers() {
 /// `authorization` value (a syntactically invalid header AND a fingerprinting tell). No panic.
 #[test]
 fn auth_headers_invalid_key_omits_header_no_panic() {
-    let headers = busbar_substrate::proto::bearer_auth_headers("responses", "sk-bad\nkey");
+    let headers = busbar_substrate_values::proto::bearer_auth_headers("responses", "sk-bad\nkey");
     assert!(
         headers.is_empty(),
         "an invalid key must omit the auth header, not emit an empty value"
@@ -1869,7 +1869,7 @@ fn test_stream_failed_invalid_api_key_classifies_as_auth() {
         StatusClass::RateLimit
     );
     assert_eq!(
-        class_for_response_failed(busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH),
+        class_for_response_failed(busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH),
         StatusClass::ContextLength
     );
     assert_eq!(
@@ -1903,7 +1903,7 @@ fn test_read_response_failed_body_classifies_by_signal() {
             .read_response(&serde_json::json!({
                 "status": STATUS_FAILED,
                 "output": [],
-                "error": {"code": busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH, "type": ERR_TYPE_INVALID_REQUEST}
+                "error": {"code": busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH, "type": ERR_TYPE_INVALID_REQUEST}
             }))
             .expect_err("failed body must surface an IrError");
     assert_eq!(
@@ -3371,7 +3371,7 @@ fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
     let (_, payload) = writer
         .write_response_event(&IrStreamEvent::Error(IrError {
             class: StatusClass::ServerError,
-            provider_signal: Some(busbar_substrate::proto::STREAM_ABORT_DETAIL.to_string()),
+            provider_signal: Some(busbar_substrate_values::proto::STREAM_ABORT_DETAIL.to_string()),
             retry_after: None,
         }))
         .expect("emit");
@@ -3387,7 +3387,7 @@ fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
     );
     assert_eq!(
         error.get("message").and_then(|m| m.as_str()),
-        Some(busbar_substrate::proto::STREAM_ABORT_DETAIL),
+        Some(busbar_substrate_values::proto::STREAM_ABORT_DETAIL),
         "the human text stays in `message`"
     );
 
@@ -4570,7 +4570,7 @@ fn test_write_error_maps_forward_transient_kinds() {
         assert!(v["error"]["code"].is_null(), "server_error code is null");
     }
     for kind in [
-        busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH,
+        busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH,
         "bad_request",
     ] {
         let v = writer.write_error(400, kind, "bad request");
@@ -6426,7 +6426,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
     let mut req = ir;
     super::super::chat_handle::chat_prepare_for_egress(
         &mut req,
-        &busbar_substrate::ir::egress_prep::EgressPrep {
+        &busbar_substrate_values::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: "openai-responses",
             egress_requires_max_tokens: false,
@@ -7132,7 +7132,7 @@ fn cross_protocol_egress_into_responses_emits_content_part_bracket() {
 /// semantics. The BEFORE-any-turn case must NOT warn (that is the ordinary, non-surprising shape).
 #[test]
 fn mid_conversation_developer_item_is_flagged() {
-    use busbar_substrate::testkit::warn_capture::WarnCapture;
+    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({
@@ -7171,7 +7171,7 @@ fn mid_conversation_developer_item_is_flagged() {
 /// the ordinary shape and must NOT warn.
 #[test]
 fn leading_developer_item_does_not_warn() {
-    use busbar_substrate::testkit::warn_capture::WarnCapture;
+    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({

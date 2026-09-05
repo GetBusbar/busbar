@@ -84,11 +84,11 @@ fn check_golden(name: &str, actual: &[u8]) {
 fn translate_request(ingress: &'static str, egress: &str, body: &str) -> Vec<u8> {
     let ingress_p = crate::proto_codec::protocol_for(ingress).expect("ingress protocol");
     let egress_p = crate::proto_codec::protocol_for(egress).expect("egress protocol");
-    let v: Value = busbar_substrate::json::parse(body.as_bytes()).expect("valid corpus JSON");
+    let v: Value = busbar_substrate_values::json::parse(body.as_bytes()).expect("valid corpus JSON");
     let mut req = ingress_p.reader().read_request(&v).expect("reads");
     crate::chat_handle::chat_prepare_for_egress(
         &mut req,
-        &busbar_substrate::ir::egress_prep::EgressPrep {
+        &busbar_substrate_values::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: ingress,
             egress_requires_max_tokens: egress_p.decl().is_some_and(|d| d.requires_max_tokens),
@@ -105,7 +105,7 @@ fn translate_request(ingress: &'static str, egress: &str, body: &str) -> Vec<u8>
     egress_p
         .writer()
         .rewrite_model_if_needed(&mut out, LANE_MODEL);
-    busbar_substrate::json::to_vec(&out).expect("serializes")
+    busbar_substrate_values::json::to_vec(&out).expect("serializes")
 }
 
 /// Shape-assert an ingress-synthesized id at `obj[key]` (`<prefix><base62 tail>`) and normalize it to
@@ -215,7 +215,7 @@ fn normalize_ingress_ids(ingress: &str, out: &mut Value) {
 fn translate_response(egress: &str, ingress: &'static str, body: &str) -> Vec<u8> {
     let egress_p = crate::proto_codec::protocol_for(egress).expect("egress protocol");
     let ingress_p = crate::proto_codec::protocol_for(ingress).expect("ingress protocol");
-    let v: Value = busbar_substrate::json::parse(body.as_bytes()).expect("valid corpus JSON");
+    let v: Value = busbar_substrate_values::json::parse(body.as_bytes()).expect("valid corpus JSON");
     let mut resp = egress_p.reader().read_response(&v).expect("reads");
     crate::chat_handle::chat_prepare_for_ingress(&mut resp, ingress, FIXED_NOW);
     let mut out = ingress_p.writer().write_response(&resp);
@@ -223,7 +223,7 @@ fn translate_response(egress: &str, ingress: &'static str, body: &str) -> Vec<u8
         .writer()
         .inject_response_metrics(&mut out, Some(123));
     normalize_ingress_ids(ingress, &mut out);
-    busbar_substrate::json::to_vec(&out).expect("serializes")
+    busbar_substrate_values::json::to_vec(&out).expect("serializes")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

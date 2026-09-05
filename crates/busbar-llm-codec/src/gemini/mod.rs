@@ -6,10 +6,10 @@
 use crate::ir::IrStreamEvent;
 use http::StatusCode;
 #[cfg(test)]
-use busbar_substrate::breaker::CanonicalSignal;
-use busbar_substrate::breaker::StatusClass;
-use busbar_substrate::proto::*;
-use busbar_substrate::proto::{
+use busbar_substrate_values::breaker::CanonicalSignal;
+use busbar_substrate_values::breaker::StatusClass;
+use busbar_substrate_values::proto::*;
+use busbar_substrate_values::proto::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION,
     ERR_TYPE_RATE_LIMIT,
 };
@@ -17,10 +17,10 @@ use busbar_substrate::proto::{
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with busbar_substrate::proto::* when netted into core
+// used standalone; redundant with busbar_substrate_values::proto::* when netted into core
 use super::proto_codec::*;
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
-// THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate::proto::*` re-export.
+// THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate_values::proto::*` re-export.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 
@@ -57,8 +57,8 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// tighter than the shared path suffixes), then the `:{action}` path verbs (rung 5), then the
 /// `/v1{,beta}/models/` wildcard surface (rung 6). Strength values are the ladder POSITION (lower
 /// binds tighter); they are the single ladder shared with the sibling dialects' predicates.
-fn claims(h: &http::HeaderMap, path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
-    use busbar_substrate::proto::ClaimStrength;
+fn claims(h: &http::HeaderMap, path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+    use busbar_substrate_values::proto::ClaimStrength;
     if h.contains_key("x-goog-api-key") {
         return Some(ClaimStrength(3));
     }
@@ -94,8 +94,8 @@ const GEMINI_RESIDUAL_ACTIONS: [&str; 7] = [
 /// whole `/v1beta/models…` surface is Gemini-only (rung 10), and a `/v1/models/{id}` whose last
 /// segment carries a genuine Gemini action suffix is Gemini (rung 20, tighter than the OpenAI
 /// `/v1/models/` catch at rung 25).
-fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
-    use busbar_substrate::proto::ClaimStrength;
+fn residual_claims(path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+    use busbar_substrate_values::proto::ClaimStrength;
     if path.starts_with("/v1beta/models") {
         return Some(ClaimStrength(10));
     }
@@ -119,7 +119,7 @@ fn egress_auth_headers(
     key: &str,
     _ctx: &SigningContext,
 ) -> Vec<(http::HeaderName, http::HeaderValue)> {
-    busbar_substrate::proto::api_key_auth_headers("x-goog-api-key", key)
+    busbar_substrate_values::proto::api_key_auth_headers("x-goog-api-key", key)
 }
 
 /// GEMINI'S DECLARATION. The only protocol declaring an array-stream shim key, and the reason that
@@ -142,7 +142,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
         busbar_api::operation::Operation::SPEECH,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_substrate::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_substrate_values::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: Some(GEMINI_JSON_ARRAY_SHIM_KEY),
     // Gemini carries NO tool id on the wire (it correlates `functionCall`s by name), so there is
     // nothing to reshape and no risk of a foreign id leaking to a Gemini client.
@@ -184,7 +184,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: GEMINI_BAD_KEY_MESSAGE,
     uses_array_stream_shim: true,
     has_native_path_not_found: true,
-    egress_stream_accept: busbar_substrate::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_substrate_values::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
     claims: Some(claims),
     residual_claims: Some(residual_claims),
@@ -306,7 +306,7 @@ const GRPC_NOT_FOUND: &str = "NOT_FOUND";
 /// google.rpc.Code name for an unimplemented / not-supported operation.
 const GRPC_UNIMPLEMENTED: &str = "UNIMPLEMENTED";
 /// Busbar/Anthropic internal error kind for an overloaded upstream (maps to GRPC_UNAVAILABLE).
-const ERR_TYPE_OVERLOADED: &str = busbar_substrate::proto::ERR_TYPE_OVERLOADED;
+const ERR_TYPE_OVERLOADED: &str = busbar_substrate_values::proto::ERR_TYPE_OVERLOADED;
 
 // ── ErrorInfo tokens ──────────────────────────────────────────────────────────
 /// The machine-readable `reason` value carried in `google.rpc.ErrorInfo` for an invalid API key.
@@ -364,8 +364,8 @@ pub struct GeminiReader;
 /// Gemini `responseId` draws from (e.g. `PXmFaPzVMI…`). Carries no `-`/`_`, so no separator or
 /// hyphen leaks the synthetic boundary the old `{:x}-{:x}` form exposed.
 /// Base62 alphabet for the synthesized `responseId` — the shared single-source-of-truth atom (see
-/// `busbar_substrate::proto::BASE62_ALPHABET`), aliased locally so the generator below reads naturally.
-const RESPONSE_ID_ALPHABET: &[u8; 62] = busbar_substrate::proto::BASE62_ALPHABET;
+/// `busbar_substrate_values::proto::BASE62_ALPHABET`), aliased locally so the generator below reads naturally.
+const RESPONSE_ID_ALPHABET: &[u8; 62] = busbar_substrate_values::proto::BASE62_ALPHABET;
 
 /// Width of a synthesized Gemini `responseId`. Native Gemini bodies/streams carry a short opaque
 /// base64url-style token (~11–16 chars) with NO positional structure; 16 base62 chars stays in that
@@ -377,7 +377,7 @@ const RESPONSE_ID_TOKEN_LEN: usize = 16;
 /// of 62 that fits in a `u8` is `4 * 62 = 248`. Any random byte `>= 248` is in the partial final
 /// block (`248..=255` → residues `0..=7`) that would otherwise be over-represented by a bare
 /// `byte % 62`, so we reject and resample those to keep the symbol distribution uniform.
-const RESPONSE_ID_REJECT_THRESHOLD: u8 = busbar_substrate::proto::BASE62_REJECT_THRESHOLD;
+const RESPONSE_ID_REJECT_THRESHOLD: u8 = busbar_substrate_values::proto::BASE62_REJECT_THRESHOLD;
 
 /// Mint a Gemini-shaped `responseId` for the cross-protocol path where the backend supplied none.
 ///
@@ -632,7 +632,7 @@ fn coerce_tool_args(input: &serde_json::Value) -> serde_json::Value {
     // Resolve the candidate value: a string is a serialized payload — parse it, falling back to the
     // string itself (a scalar) when it does not parse as JSON. Any non-string value is used as-is.
     let candidate: serde_json::Value = match input.as_str() {
-        Some(s) => busbar_substrate::json::parse_str(s).unwrap_or_else(|_| input.clone()),
+        Some(s) => busbar_substrate_values::json::parse_str(s).unwrap_or_else(|_| input.clone()),
         None => input.clone(),
     };
     if candidate.is_object() {
@@ -1698,7 +1698,7 @@ impl Default for GeminiJsonArrayFramer {
 impl GeminiJsonArrayFramer {
     // `pub(crate)` so the framer's tests in `mod.rs` (which exercise the buffer-overflow abort path)
     // can size a payload off the cap; it stays an internal cap, not part of the wire surface.
-    pub const MAX_BUF: usize = busbar_substrate::eventstream::MAX_FRAME_BYTES;
+    pub const MAX_BUF: usize = busbar_substrate_values::eventstream::MAX_FRAME_BYTES;
 
     pub fn new() -> Self {
         Self {
@@ -1740,14 +1740,14 @@ impl GeminiJsonArrayFramer {
                     let Some((_event_type, data_str)) = parse_sse_frame(frame) else {
                         continue; // no data: line — keepalive/comment frame
                     };
-                    if data_str.is_empty() || data_str == busbar_substrate::proto::SSE_DONE_SENTINEL
+                    if data_str.is_empty() || data_str == busbar_substrate_values::proto::SSE_DONE_SENTINEL
                     {
                         continue; // egress terminator/keepalive — the array close is finish()'s job
                     }
                     // Validate the payload is JSON before forwarding so a malformed frame cannot
                     // corrupt the array; re-serialize from the parsed Value to normalize whitespace.
                     let Ok(data) =
-                        busbar_substrate::json::parse_str::<serde_json::Value>(&data_str)
+                        busbar_substrate_values::json::parse_str::<serde_json::Value>(&data_str)
                     else {
                         continue;
                     };
@@ -1871,7 +1871,7 @@ impl GeminiJsonArrayFramer {
     }
 }
 
-impl busbar_substrate::proto::ArrayStreamFramer for GeminiJsonArrayFramer {
+impl busbar_substrate_values::proto::ArrayStreamFramer for GeminiJsonArrayFramer {
     fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
         GeminiJsonArrayFramer::feed(self, chunk)
     }

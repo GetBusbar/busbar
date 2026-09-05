@@ -35,7 +35,7 @@ fn buffered_response_wraps_into_converse_stream_frames() {
     assert!(!bytes.is_empty(), "must emit eventstream frames");
 
     // Decode the frames using the same decoder the wire uses.
-    let frames = busbar_substrate::eventstream::drain_frames(&mut bytes);
+    let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
     let names: Vec<&str> = frames.iter().map(|(t, _)| t.as_str()).collect();
     assert_eq!(names.first(), Some(&"messageStart"));
     // A TEXT block emits NO `contentBlockStart` (the ConverseStream `ContentBlockStart$start` union
@@ -102,7 +102,7 @@ fn buffered_tool_use_wraps_into_converse_stream_tool_frames() {
             request_echo: None,
         };
     let mut bytes = bedrock_response_to_eventstream(&ir, Some(7));
-    let frames = busbar_substrate::eventstream::drain_frames(&mut bytes);
+    let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
 
     // contentBlockStart must carry the tool identity nested under start.toolUse.
     let start = frames
@@ -185,7 +185,7 @@ fn buffered_multi_block_assigns_distinct_monotonic_content_block_indices() {
             request_echo: None,
         };
     let mut bytes = bedrock_response_to_eventstream(&ir, Some(99));
-    let frames = busbar_substrate::eventstream::drain_frames(&mut bytes);
+    let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
     let names: Vec<&str> = frames.iter().map(|(t, _)| t.as_str()).collect();
 
     // (a) Frame ordering: messageStart, then per-block frames, then messageStop, then metadata —
@@ -293,7 +293,7 @@ fn buffered_tool_use_with_absent_stop_reason_defaults_to_tool_use() {
             request_echo: None,
         };
     let mut bytes = bedrock_response_to_eventstream(&ir, Some(3));
-    let frames = busbar_substrate::eventstream::drain_frames(&mut bytes);
+    let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
     let stop = frames
         .iter()
         .find(|(t, _)| t == "messageStop")
@@ -335,7 +335,7 @@ fn buffered_text_only_with_absent_stop_reason_defaults_to_end_turn() {
             request_echo: None,
         };
     let mut bytes = bedrock_response_to_eventstream(&ir, Some(3));
-    let frames = busbar_substrate::eventstream::drain_frames(&mut bytes);
+    let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
     let stop = frames
         .iter()
         .find(|(t, _)| t == "messageStop")
@@ -378,7 +378,7 @@ fn buffered_explicit_stop_reason_overrides_content_default() {
             request_echo: None,
         };
     let mut bytes = bedrock_response_to_eventstream(&ir, Some(3));
-    let frames = busbar_substrate::eventstream::drain_frames(&mut bytes);
+    let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
     let stop = frames
         .iter()
         .find(|(t, _)| t == "messageStop")

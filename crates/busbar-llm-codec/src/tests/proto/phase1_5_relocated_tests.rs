@@ -11,7 +11,7 @@
 use super::*;
 // `IrRequest::shape()` is a method of the `IrFacts` trait — bring it into scope for the
 // exhaustiveness guard (the core suite imported it as `crate::ir::facts::IrFacts`).
-use busbar_substrate::ir::facts::IrFacts;
+use busbar_substrate_values::ir::facts::IrFacts;
 
 /// UUID-v4 shape checker — a private copy of the core auth suite's helper (which stays in core for
 /// its other callers), so the relocated `synth_amzn_request_id` shape test carries its own oracle.

@@ -122,7 +122,7 @@ fn responses_sse_round_trip_byte_exact() {
 fn bedrock_binary_eventstream_round_trip_byte_exact() {
     // Binary application/vnd.amazon.eventstream — re-emit the ORIGINAL frame
     // bytes, NEVER re-encode (any CRC32 / length-prefix divergence is an undecodable frame).
-    use busbar_substrate::eventstream::encode_frame;
+    use busbar_substrate_values::eventstream::encode_frame;
     let mut input = Vec::new();
     input.extend(encode_frame("messageStart", br#"{"role":"assistant"}"#));
     input.extend(encode_frame(
@@ -171,7 +171,7 @@ fn same_proto_cross_chunk_split_is_verbatim() {
 #[test]
 #[ignore]
 fn bench_same_proto_short_circuit() {
-    use busbar_substrate::eventstream::encode_frame;
+    use busbar_substrate_values::eventstream::encode_frame;
 
     // Build one realistic OpenAI SSE stream and one bedrock binary eventstream, each as a Vec of
     // per-feed chunks (one frame per chunk — the per-feed latency unit).

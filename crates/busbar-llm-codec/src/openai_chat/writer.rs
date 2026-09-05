@@ -184,7 +184,7 @@ impl ProtocolWriter for OpenAiWriter {
                     } = block
                     {
                         // Serialize input to JSON string
-                        let args_str = busbar_substrate::proto::tool_arguments_to_string(input);
+                        let args_str = busbar_substrate_values::proto::tool_arguments_to_string(input);
                         // Preserve the original tool_call id verbatim — it must round-trip so the
                         // assistant tool_call correlates with the tool-result `tool_call_id`.
                         tool_calls_arr.push(serde_json::json!({
@@ -530,7 +530,7 @@ impl ProtocolWriter for OpenAiWriter {
                 // first chunk that supplies them. When the backend supplied none (cross-protocol),
                 // SYNTHESIZE a protocol-correct id/created so a native SDK accepts the stream.
                 let chunk_id = id.clone().unwrap_or_else(synth_completion_id);
-                let chunk_created = created.unwrap_or_else(busbar_substrate::store::now);
+                let chunk_created = created.unwrap_or_else(busbar_substrate_values::store::now);
                 // `model` is REQUIRED and non-nullable in the OpenAI chunk schema. A cross-protocol
                 // backend (e.g. Bedrock) whose IR carries `model: None` must not yield a model-less
                 // first chunk — that fails strict SDK (Pydantic) deserialisation and is a proxy tell —
@@ -805,8 +805,8 @@ impl ProtocolWriter for OpenAiWriter {
                 // detectable proxy tell. The match is exhaustive over StatusClass (no `_ =>`), so a
                 // new class forces an explicit decision; `server_error` is the safe fallback bucket.
                 let error_type = match err.class {
-                    busbar_substrate::breaker::StatusClass::RateLimit => ERR_TYPE_RATE_LIMIT,
-                    busbar_substrate::breaker::StatusClass::Auth => ERR_TYPE_AUTHENTICATION,
+                    busbar_substrate_values::breaker::StatusClass::RateLimit => ERR_TYPE_RATE_LIMIT,
+                    busbar_substrate_values::breaker::StatusClass::Auth => ERR_TYPE_AUTHENTICATION,
                     // Billing exhaustion is OpenAI's `insufficient_quota` (HTTP 429), NOT
                     // `permission_error`. Real OpenAI reserves `permission_error` for access-control
                     // denials (feature/org restrictions); an over-quota error carries
@@ -816,15 +816,15 @@ impl ProtocolWriter for OpenAiWriter {
                     // protocol tell. `bearer_error_code` pairs the matching `code` below. This mirrors
                     // the non-stream `write_error` path, which already maps the `"insufficient_quota"`
                     // kind to this type + code.
-                    busbar_substrate::breaker::StatusClass::Billing => ERR_TYPE_INSUFFICIENT_QUOTA,
-                    busbar_substrate::breaker::StatusClass::ContextLength
-                    | busbar_substrate::breaker::StatusClass::ClientError => {
+                    busbar_substrate_values::breaker::StatusClass::Billing => ERR_TYPE_INSUFFICIENT_QUOTA,
+                    busbar_substrate_values::breaker::StatusClass::ContextLength
+                    | busbar_substrate_values::breaker::StatusClass::ClientError => {
                         ERR_TYPE_INVALID_REQUEST
                     }
-                    busbar_substrate::breaker::StatusClass::Overloaded
-                    | busbar_substrate::breaker::StatusClass::ServerError
-                    | busbar_substrate::breaker::StatusClass::Timeout
-                    | busbar_substrate::breaker::StatusClass::Network => ERR_TYPE_SERVER_ERROR,
+                    busbar_substrate_values::breaker::StatusClass::Overloaded
+                    | busbar_substrate_values::breaker::StatusClass::ServerError
+                    | busbar_substrate_values::breaker::StatusClass::Timeout
+                    | busbar_substrate_values::breaker::StatusClass::Network => ERR_TYPE_SERVER_ERROR,
                 };
                 // Include `code` and `param` as JSON null, matching BOTH the native OpenAI error
                 // shape and this writer's own non-stream `write_error` envelope. Omitting them made
@@ -879,7 +879,7 @@ impl ProtocolWriter for OpenAiWriter {
             ERR_TYPE_SERVER_ERROR | "internal_error" | "internal_server_error" => {
                 ERR_TYPE_SERVER_ERROR
             }
-            busbar_substrate::proxy::KIND_API_ERROR => busbar_substrate::proxy::KIND_API_ERROR,
+            busbar_substrate_values::proxy::KIND_API_ERROR => busbar_substrate_values::proxy::KIND_API_ERROR,
             // Quota exhaustion is a first-class native OpenAI type (HTTP 429); preserve it so the
             // over-budget governance path keeps the real `insufficient_quota` type AND its matching
             // `code` (set in `bearer_error_code`).
@@ -890,7 +890,7 @@ impl ProtocolWriter for OpenAiWriter {
             // `server_error` — so emitting `type:"overloaded"` is both a conformance break (the
             // official SDK's typed-exception mapping fails on an unknown type) and a cross-protocol
             // vocabulary leak. Map every transient/unavailable spelling onto OpenAI's native 5xx type.
-            busbar_substrate::proxy::KIND_OVERLOADED
+            busbar_substrate_values::proxy::KIND_OVERLOADED
             | ERR_TYPE_OVERLOADED
             | "service_unavailable"
             | "unavailable"
@@ -898,7 +898,7 @@ impl ProtocolWriter for OpenAiWriter {
             | "timeout"
             | "network"
             | "5xx" => ERR_TYPE_SERVER_ERROR,
-            busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH => ERR_TYPE_INVALID_REQUEST,
+            busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH => ERR_TYPE_INVALID_REQUEST,
             // Empty kind: derive a valid OpenAI type from the HTTP status bucket rather than emitting
             // an empty `type`, so the SDK still sees a real error type.
             "" => {
@@ -955,7 +955,7 @@ impl ProtocolWriter for OpenAiWriter {
             } = block
             {
                 // Serialize input to JSON string
-                let args_str = busbar_substrate::proto::tool_arguments_to_string(input);
+                let args_str = busbar_substrate_values::proto::tool_arguments_to_string(input);
                 tool_calls_arr.push(serde_json::json!({
                     "type": TOOL_TYPE_FUNCTION,
                     "id": id,
@@ -1077,7 +1077,7 @@ impl ProtocolWriter for OpenAiWriter {
         let id = resp.id.clone().unwrap_or_else(synth_completion_id);
         obj.insert("id".to_string(), serde_json::json!(id));
         obj.insert("object".to_string(), serde_json::json!(OBJ_COMPLETION));
-        let created = resp.created.unwrap_or_else(busbar_substrate::store::now);
+        let created = resp.created.unwrap_or_else(busbar_substrate_values::store::now);
         obj.insert("created".to_string(), serde_json::json!(created));
         // model that served the response. `model` is a REQUIRED non-nullable string in the OpenAI
         // chat.completion schema; a cross-protocol backend whose `read_response` yields `model: None`

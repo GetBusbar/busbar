@@ -34,20 +34,31 @@ path = "src/lib.rs"
 [features]
 # Pass-through so a dependent (busbar-llm, and busbar-core's own test binary) can ask for the test
 # surface — the same shape `busbar-llm` exposed. Forwards ONLY to the substrate's test seams.
-test-support = ["busbar-substrate/test-support"]
+test-support = ["busbar-substrate-values/test-support"]
 # Mirrors `busbar-llm`'s `timing` feature: the per-dialect reader/writer translate entry points carry
 # `busbar_timing::timeit!` guards, so the flag exists in lock-step with the `busbar-timing/timing` it
 # forwards. Off ⇒ those guards are zero-sized no-ops.
 timing = ["busbar-timing/timing"]
-# The CI-only OpenAPI schema derive, forwarded so the field-site `#[cfg]`s in substrate's declaration
-# structs resolve in lock-step with the struct definitions.
-openapi-schema = ["busbar-substrate/openapi-schema"]
+# The CI-only OpenAPI schema derive. DECLARED but EMPTY: this crate carries no `schemars` derive and
+# no `#[cfg(feature = "openapi-schema")]` site of its own — it only ever forwarded the flag on to
+# `busbar-substrate`, and it can no longer name that crate at all without dragging the egress engine
+# back into the plane's closure. Nothing is lost: `busbar-llm`'s own `openapi-schema` already forwards
+# to `busbar-substrate/openapi-schema` directly and in the same breath as this one, so the gated
+# declaration fields still arm in lock-step. The feature stays declared because `busbar-llm` names it.
+openapi-schema = []
 
 [dependencies]
 # The NEUTRAL ABI. Every value family a codec speaks — the protocol declaration and registry, the IR
 # facts, the billing usage carrier, the wire body types, the operation enum — is named at its
-# canonical `busbar_substrate::` / `busbar_api::` home.
-busbar-substrate = { path = "../busbar-substrate", default-features = false }
+# canonical `busbar_substrate_values::` / `busbar_api::` home.
+#
+# THIS IS THE PURE HALF, NAMED DIRECTLY, and the whole reason the split exists. `busbar-substrate`
+# also carries the egress engine (hyper, hyper-util, hyper-rustls, reqwest, a socket-capable tokio),
+# and a plane is a PURE kind whose ENTIRE transitive closure is scanned — with one whole-workspace
+# metadata resolve unifying features, so no gate could have kept the engine out of this crate's
+# closure while the values lived beside it. Naming the values crate instead drops the engine from
+# `busbar-plane-llm`'s closure outright. Nothing here may take a `busbar-substrate` edge back.
+busbar-substrate-values = { path = "../busbar-substrate-values", default-features = false }
 busbar-api = { path = "../api" }
 # Debug-only per-method micro-timing (DEFAULT OFF, zero cost) on the heavy translate cells.
 busbar-timing = { path = "../busbar-timing" }
@@ -69,7 +80,7 @@ hex = { workspace = true }
 getrandom = { workspace = true }
 
 [dev-dependencies]
-busbar-substrate = { path = "../busbar-substrate", features = ["test-support"] }
+busbar-substrate-values = { path = "../busbar-substrate-values", features = ["test-support"] }
 # ONE relocated suite reads core's neutral detection fold and its built-in declaration table through
 # core's public surface; a DEV edge only, so no shipped target links core.
 busbar-core = { path = "../busbar-core", features = ["test-support"] }

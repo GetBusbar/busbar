@@ -6,17 +6,17 @@
 use crate::ir::IrStreamEvent;
 use http::StatusCode;
 #[cfg(test)]
-use busbar_substrate::breaker::CanonicalSignal;
-use busbar_substrate::breaker::StatusClass;
-use busbar_substrate::proto::*;
+use busbar_substrate_values::breaker::CanonicalSignal;
+use busbar_substrate_values::breaker::StatusClass;
+use busbar_substrate_values::proto::*;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with busbar_substrate::proto::* when netted into core
+// used standalone; redundant with busbar_substrate_values::proto::* when netted into core
 use super::proto_codec::*;
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
-// THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate::proto::*` re-export.
+// THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate_values::proto::*` re-export.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 use std::sync::OnceLock;
@@ -38,8 +38,8 @@ pub fn protocol() -> Protocol {
 fn claims(
     _h: &http::HeaderMap,
     path: &str,
-) -> Option<busbar_substrate::proto::ClaimStrength> {
-    use busbar_substrate::proto::ClaimStrength;
+) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+    use busbar_substrate_values::proto::ClaimStrength;
     if path.ends_with("/v2/chat") || path.ends_with("/v1/chat") {
         return Some(ClaimStrength(8));
     }
@@ -51,9 +51,9 @@ fn claims(
 
 /// COHERE'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: an
 /// exact `/v2/chat` names Cohere (rung 50).
-fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
     if path == "/v2/chat" {
-        return Some(busbar_substrate::proto::ClaimStrength(50));
+        return Some(busbar_substrate_values::proto::ClaimStrength(50));
     }
     None
 }
@@ -65,7 +65,7 @@ fn egress_auth_headers(
     key: &str,
     _ctx: &SigningContext,
 ) -> Vec<(http::HeaderName, http::HeaderValue)> {
-    busbar_substrate::proto::bearer_auth_headers("cohere", key)
+    busbar_substrate_values::proto::bearer_auth_headers("cohere", key)
 }
 
 /// COHERE'S DECLARATION.
@@ -84,7 +84,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
         busbar_api::operation::Operation::RERANK,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_substrate::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_substrate_values::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // Cohere tool ids are free-form with NO canonical prefix. An empty prefix would make the
     // reversibility marker itself the only distinguishing signal, which collides with a legitimate
@@ -120,14 +120,14 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     has_model_in_url: false,
     auth_failure_status_and_kind: (
         http::StatusCode::UNAUTHORIZED,
-        busbar_substrate::proto::ERR_TYPE_AUTHENTICATION,
+        busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[],
     auth_failure_message: "invalid api token",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_substrate::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_substrate_values::proxy::TEXT_EVENT_STREAM,
     // No model-discovery surface: Cohere's `/v1/models` fingerprint resolves to the OpenAI envelope
     // (documented), so this dialect declares none of its own.
     models_list_envelope: None,

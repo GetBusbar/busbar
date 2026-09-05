@@ -46,7 +46,7 @@ pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
         // smuggles a key in its own controlled body). Iterating the cached registry set keeps this
         // strip from naming any shim-key literal (and from re-sweeping `protocol_for` per request).
         // `remove` returns the previous value iff the key was present → a real mutation (#1).
-        for &key in busbar_substrate::proto::array_stream_shim_keys() {
+        for &key in busbar_substrate_values::proto::array_stream_shim_keys() {
             if obj.remove(key).is_some() {
                 changed = true;
             }
@@ -55,7 +55,7 @@ pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
         // model both ride the URL there; `has_model_in_url()` covers both). For body-model egress
         // `stream` is the writer-authored field the backend needs to start streaming, so it must be
         // PRESERVED. Gate on egress, never ingress.
-        if busbar_substrate::proto::decl_for(egress_protocol)
+        if busbar_substrate_values::proto::decl_for(egress_protocol)
             .map(|d| d.has_model_in_url)
             .unwrap_or(false)
             && obj.remove("stream").is_some()
@@ -76,7 +76,7 @@ pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
 /// site; the substrate falls back to the historical 32 MiB default when the limits aren't installed.
 #[must_use]
 pub fn max_translated_body_bytes() -> usize {
-    busbar_substrate::proxy::max_translate_body_bytes()
+    busbar_substrate_values::proxy::max_translate_body_bytes()
 }
 
 /// Bytes-per-token divisor for the truncated-tail billing FLOOR. Deliberately conservative
@@ -87,15 +87,15 @@ pub fn max_translated_body_bytes() -> usize {
 /// truncated-beyond-recovery response from billing ZERO.
 pub const TRUNCATED_TAIL_BYTES_PER_TOKEN: u64 = 4;
 
-/// Project the IR's normalized usage into the neutral name-keyed [`busbar_substrate::billing::Usage`]
+/// Project the IR's normalized usage into the neutral name-keyed [`busbar_substrate_values::billing::Usage`]
 /// carrier: the four reserved units (`input`/`output`/`cache_read`/`cache_write`) as canonical map
 /// keys. Readers normalize `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so the
 /// mapping is direct: cache-creation is the `cache_write` unit. Zero tiers are omitted so the map
 /// stays sparse (no-zero-entry).
 #[must_use]
 pub fn tier_usage(
-    u: &busbar_substrate::billing::TokenUsage,
-) -> busbar_substrate::billing::Usage {
+    u: &busbar_substrate_values::billing::TokenUsage,
+) -> busbar_substrate_values::billing::Usage {
     let mut usage_units = std::collections::BTreeMap::new();
     for (k, v) in [
         (busbar_api::UNIT_INPUT, u.input),
@@ -107,5 +107,5 @@ pub fn tier_usage(
             usage_units.insert(k.to_string(), v);
         }
     }
-    busbar_substrate::billing::Usage { usage_units }
+    busbar_substrate_values::billing::Usage { usage_units }
 }

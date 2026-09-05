@@ -195,12 +195,12 @@ tokio-rustls = { workspace = true }
 # `dispatch`/`relay` are empty (they gate `#[cfg]`/`#[cfg_attr(...allow(dead_code))]` sites only) and
 # must stay DECLARED or `unexpected_cfgs` fires under `-D warnings`.
 [features]
-# `dispatch` gates `#[cfg]` sites in BOTH halves of the split (the wire-selection axis in `transport`
-# moved with the values), so it FORWARDS to the values crate's same-named feature — the gated surface
-# arms in lock-step, exactly as when the two were one crate. `relay` gates no moved site, so it stays
-# empty.
+# Both capability features gate `#[cfg]` sites in BOTH halves of the split now (the wire-selection
+# axis in `transport` and the millisecond clock in `store` moved with the values), so each FORWARDS to
+# the values crate's same-named feature — the gated surface arms in lock-step, exactly as when the two
+# were one crate.
 dispatch = ["busbar-substrate-values/dispatch"]
-relay = []
+relay = ["busbar-substrate-values/relay"]
 # THE FULL-DUPLEX WEBSOCKET TRANSPORT capability — the neutral `ingress`/`egress` duplex-ws acceptor
 # and guarded dialer, plus the `Transport::WebSocket` → `UpstreamWireKind::Duplex` selection they arm.
 # OFF by default: a shipped build carries no WS edge, exactly as the plane crates gate their own

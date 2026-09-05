@@ -43,9 +43,9 @@ impl ProtocolWriter for AnthropicWriter {
             "not_found" => ERR_TYPE_NOT_FOUND,
             ERR_TYPE_REQUEST_TOO_LARGE | "payload_too_large" => ERR_TYPE_REQUEST_TOO_LARGE,
             "rate_limit" | "too_many_requests" => ERR_TYPE_RATE_LIMIT,
-            busbar_substrate::proxy::KIND_OVERLOADED => ERR_TYPE_OVERLOADED,
-            busbar_substrate::proxy::KIND_TIMEOUT => ERR_TYPE_TIMEOUT,
-            ERR_TYPE_API_ERROR | busbar_substrate::proxy::KIND_SERVER_ERROR | "internal" => {
+            busbar_substrate_values::proxy::KIND_OVERLOADED => ERR_TYPE_OVERLOADED,
+            busbar_substrate_values::proxy::KIND_TIMEOUT => ERR_TYPE_TIMEOUT,
+            ERR_TYPE_API_ERROR | busbar_substrate_values::proxy::KIND_SERVER_ERROR | "internal" => {
                 ERR_TYPE_API_ERROR
             }
             // Already an Anthropic-native type (e.g. "invalid_request_error") or an unmapped value:

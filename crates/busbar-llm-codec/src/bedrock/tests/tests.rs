@@ -51,8 +51,8 @@ fn synth_response_id() -> String {
 fn test_bedrock_sigv4_sign_request_structure() {
     // SigV4 header assembly + scope/region derivation. (The signing crypto itself is
     // verified against AWS's published vector in sigv4::tests.)
-    let canonical = busbar_substrate::sigv4::uri_encode_path("/model/anthropic.claude:0/converse");
-    let ctx = busbar_substrate::proto::SigningContext {
+    let canonical = busbar_substrate_values::sigv4::uri_encode_path("/model/anthropic.claude:0/converse");
+    let ctx = busbar_substrate_values::proto::SigningContext {
         host: "bedrock-runtime.us-east-1.amazonaws.com",
         canonical_uri: &canonical,
         body: br#"{"messages":[]}"#,
@@ -86,7 +86,7 @@ fn test_bedrock_sigv4_sign_request_structure() {
 
 #[test]
 fn test_bedrock_sigv4_session_token() {
-    let ctx = busbar_substrate::proto::SigningContext {
+    let ctx = busbar_substrate_values::proto::SigningContext {
         host: "bedrock-runtime.eu-west-1.amazonaws.com",
         canonical_uri: "/model/m/converse",
         body: b"{}",
@@ -112,7 +112,7 @@ fn test_bedrock_sigv4_session_token() {
 #[test]
 fn test_bedrock_sigv4_misconfigured_key_no_signature() {
     // A key without ACCESS:SECRET shape yields no headers (AWS will 403 → surfaced as auth).
-    let ctx = busbar_substrate::proto::SigningContext {
+    let ctx = busbar_substrate_values::proto::SigningContext {
         host: "bedrock-runtime.us-east-1.amazonaws.com",
         canonical_uri: "/model/m/converse",
         body: b"{}",
@@ -683,7 +683,7 @@ fn test_write_response_event() {
 /// request goes out unsigned and AWS surfaces a 403 auth error instead of aborting the task.
 #[test]
 fn test_bedrock_sigv4_control_char_in_access_key_no_panic() {
-    let ctx = busbar_substrate::proto::SigningContext {
+    let ctx = busbar_substrate_values::proto::SigningContext {
         host: "bedrock-runtime.us-east-1.amazonaws.com",
         canonical_uri: "/model/m/converse",
         body: b"{}",
@@ -901,7 +901,7 @@ fn test_error_kind_to_bedrock_type_mapping() {
     // would pair an HTTP 503 with a 400-class `__type` AWS never produces, making an AWS SDK
     // raise a non-retryable client fault instead of a retryable ServiceUnavailableException.
     assert_eq!(
-        error_kind_to_bedrock_type(busbar_substrate::proxy::KIND_OVERLOADED),
+        error_kind_to_bedrock_type(busbar_substrate_values::proxy::KIND_OVERLOADED),
         "ServiceUnavailableException"
     );
     assert_eq!(
@@ -1404,7 +1404,7 @@ fn test_write_request_tool_result_preserves_non_text_content() {
 fn test_write_response_event_error_names_real_exception() {
     let writer = BedrockWriter;
 
-    let throttle = IrStreamEvent::Error(busbar_substrate::proto::IrError {
+    let throttle = IrStreamEvent::Error(busbar_substrate_values::proto::IrError {
         class: StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
@@ -1423,7 +1423,7 @@ fn test_write_response_event_error_names_real_exception() {
 
     // A server-class error maps to InternalServerException and falls back to the exception name
     // when no provider_signal is present.
-    let server = IrStreamEvent::Error(busbar_substrate::proto::IrError {
+    let server = IrStreamEvent::Error(busbar_substrate_values::proto::IrError {
         class: StatusClass::ServerError,
         provider_signal: None,
         retry_after: None,
@@ -1818,7 +1818,7 @@ fn test_stream_unrecognized_start_does_not_open_text() {
 /// empty-header path (unsigned request → AWS 403 as auth) — no panic, no divergence.
 #[test]
 fn test_bedrock_sigv4_unencodable_session_token_bails_gracefully() {
-    let ctx = busbar_substrate::proto::SigningContext {
+    let ctx = busbar_substrate_values::proto::SigningContext {
         host: "bedrock-runtime.us-east-1.amazonaws.com",
         canonical_uri: "/model/m/converse",
         body: b"{}",
@@ -2066,7 +2066,7 @@ fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
             request_echo: None,
         };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
-    let frames = busbar_substrate::eventstream::drain_frames(&mut bytes);
+    let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
     // A text block emits NO `contentBlockStart` (the ConverseStream union has no text member); it
     // opens implicitly with its first `contentBlockDelta`. So the contiguity check keys off that
     // delta: the Text block is the only one that emits frames, so its delta must land at index 0,
@@ -2157,7 +2157,7 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
             request_echo: None,
         };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
-    let frames = busbar_substrate::eventstream::drain_frames(&mut bytes);
+    let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
 
     let mut starts: Vec<u64> = Vec::new();
     let mut stops: Vec<u64> = Vec::new();
@@ -2740,7 +2740,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
     ];
 
     for (class, expected) in cases {
-        let err = busbar_substrate::proto::IrError {
+        let err = busbar_substrate_values::proto::IrError {
             class,
             provider_signal: Some("upstream detail".to_string()),
             retry_after: None,
@@ -2760,7 +2760,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
         assert_eq!(msg, "upstream detail", "message prefers provider_signal");
 
         // Fallback event-arm path uses the SAME stream union.
-        let ev = IrStreamEvent::Error(busbar_substrate::proto::IrError {
+        let ev = IrStreamEvent::Error(busbar_substrate_values::proto::IrError {
             class,
             provider_signal: None,
             retry_after: None,
@@ -2789,7 +2789,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
         StatusClass::Auth,
         StatusClass::Billing,
     ] {
-        let err = busbar_substrate::proto::IrError {
+        let err = busbar_substrate_values::proto::IrError {
             class,
             provider_signal: None,
             retry_after: None,
@@ -3104,7 +3104,7 @@ fn test_derive_sigv4_region_shapes() {
 /// here we assert the derived scope region in the Authorization header.
 #[test]
 fn test_bedrock_sigv4_fips_host_derives_correct_region() {
-    let ctx = busbar_substrate::proto::SigningContext {
+    let ctx = busbar_substrate_values::proto::SigningContext {
         host: "bedrock-runtime-fips.eu-west-1.amazonaws.com",
         canonical_uri: "/model/m/converse",
         body: b"{}",
@@ -3132,7 +3132,7 @@ fn test_bedrock_sigv4_fips_host_derives_correct_region() {
 /// operator-visible signal, asserted indirectly via the resulting scope.
 #[test]
 fn test_bedrock_sigv4_undecodable_host_falls_back_to_us_east_1() {
-    let ctx = busbar_substrate::proto::SigningContext {
+    let ctx = busbar_substrate_values::proto::SigningContext {
         host: "my-cname-front.example.com",
         canonical_uri: "/model/m/converse",
         body: b"{}",
@@ -5231,7 +5231,7 @@ fn test_bedrock_tool_choice_specific_tool() {
 /// least diagnosable.
 #[test]
 fn bedrock_specific_tool_choice_warns_it_is_claude_only() {
-    use busbar_substrate::testkit::warn_capture::WarnCapture;
+    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let req = tool_choice_req(Some(crate::ir::IrToolChoice::Tool {
@@ -6055,7 +6055,7 @@ fn bedrock_input_tier_excludes_cache_at_billing_boundary() {
 /// reaches a Bedrock client as a typed, decodable exception.
 #[test]
 fn write_response_exception_folds_to_stream_union_members() {
-    let mk = |class| busbar_substrate::proto::IrError {
+    let mk = |class| busbar_substrate_values::proto::IrError {
         class,
         provider_signal: None,
         retry_after: None,
@@ -6079,7 +6079,7 @@ fn write_response_exception_folds_to_stream_union_members() {
         assert_eq!(name, expect, "class {class:?} must fold to {expect}");
     }
     // The message prefers the upstream provider_signal when present.
-    let err = busbar_substrate::proto::IrError {
+    let err = busbar_substrate_values::proto::IrError {
         class: StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
@@ -6341,7 +6341,7 @@ fn complete_converse_body_handles_an_empty_object_and_missing_timing() {
 
 #[test]
 fn same_proto_translator_completes_a_converse_body_and_reports_its_usage() {
-    use busbar_substrate::proto::StreamTranslator as _;
+    use busbar_substrate_values::proto::StreamTranslator as _;
     let mut t = same_proto_translator(1 << 20);
     // Chunked arrival: nothing is released until the whole body is held.
     let (a, b) = CONVERSE_BODY_NO_METRICS.as_bytes().split_at(40);
@@ -6368,7 +6368,7 @@ fn same_proto_translator_completes_a_converse_body_and_reports_its_usage() {
 
 #[test]
 fn same_proto_translator_keeps_an_upstream_metrics_byte_for_byte() {
-    use busbar_substrate::proto::StreamTranslator as _;
+    use busbar_substrate_values::proto::StreamTranslator as _;
     let body = br#"{"output":{"message":{"role":"assistant","content":[{"text":"x"}]}},"stopReason":"end_turn","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"metrics":{"latencyMs":777}}"#;
     let mut t = same_proto_translator(1 << 20);
     assert!(t.feed(body).is_empty());
@@ -6377,7 +6377,7 @@ fn same_proto_translator_keeps_an_upstream_metrics_byte_for_byte() {
 
 #[test]
 fn same_proto_translator_leaves_a_non_converse_body_alone_but_still_bills_it() {
-    use busbar_substrate::proto::StreamTranslator as _;
+    use busbar_substrate_values::proto::StreamTranslator as _;
     // A Titan embeddings body (InvokeModel): no `metrics` member exists on that shape.
     let body = br#"{"embedding":[0.1,0.2],"inputTextTokenCount":6}"#;
     let mut t = same_proto_translator(1 << 20);
@@ -6397,7 +6397,7 @@ fn same_proto_translator_leaves_a_non_converse_body_alone_but_still_bills_it() {
 
 #[test]
 fn same_proto_translator_relays_past_the_cap_and_recovers_usage_from_the_tail() {
-    use busbar_substrate::proto::StreamTranslator as _;
+    use busbar_substrate_values::proto::StreamTranslator as _;
     let body = CONVERSE_BODY_NO_METRICS.as_bytes();
     let mut t = same_proto_translator(64);
     let (a, b) = body.split_at(60);
@@ -6417,7 +6417,7 @@ fn same_proto_translator_relays_past_the_cap_and_recovers_usage_from_the_tail() 
 
 #[test]
 fn same_proto_translator_over_cap_without_a_usage_object_bills_a_floor_not_zero() {
-    use busbar_substrate::proto::StreamTranslator as _;
+    use busbar_substrate_values::proto::StreamTranslator as _;
     let mut t = same_proto_translator(16);
     let out = t.feed(&[b'x'; 100]);
     assert_eq!(out.len(), 100);
@@ -6489,7 +6489,7 @@ fn buffered_to_eventstream_metadata_carries_metrics_even_without_timing() {
             request_echo: None,
         };
     let mut bytes = bedrock_response_to_eventstream(&ir, None);
-    let frames = busbar_substrate::eventstream::drain_frames(&mut bytes);
+    let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
     let (_, payload) = frames
         .iter()
         .find(|(et, _)| et == ET_METADATA)

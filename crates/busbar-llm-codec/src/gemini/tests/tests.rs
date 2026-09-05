@@ -796,7 +796,7 @@ fn test_writer_tool_call_reassembles_split_json_args() {
 
 /// Regression: a tool call's `arguments` accumulated JSON string must not grow WITHOUT BOUND
 /// across the life of a stream. Feed enough `InputJsonDelta` fragments to exceed
-/// `busbar_substrate::proxy::max_translate_body_bytes()` (the cap this accumulator now enforces — the same
+/// `busbar_substrate_values::proxy::max_translate_body_bytes()` (the cap this accumulator now enforces — the same
 /// operator-tunable limit that already bounds a buffered cross-protocol non-stream completion body
 /// elsewhere) and assert the established overflow behavior fires: fragments past the cap stop being
 /// appended (the buffer stops growing, it is not aborted and no in-band error frame is emitted), so
@@ -806,7 +806,7 @@ fn test_writer_tool_call_reassembles_split_json_args() {
 /// the unbounded-buffer defect).
 #[test]
 fn test_writer_tool_call_args_capped_at_max_len() {
-    let cap = busbar_substrate::proxy::max_translate_body_bytes();
+    let cap = busbar_substrate_values::proxy::max_translate_body_bytes();
     let writer = GeminiWriter;
     writer.write_response_event(&IrStreamEvent::BlockStart {
         index: 1,
@@ -881,7 +881,7 @@ fn test_writer_tool_call_args_capped_at_max_len() {
 }
 
 /// Happy-path regression: a NORMAL-sized tool call's arguments (well under
-/// `busbar_substrate::proxy::max_translate_body_bytes()`) must still round-trip correctly — the cap must not
+/// `busbar_substrate_values::proxy::max_translate_body_bytes()`) must still round-trip correctly — the cap must not
 /// false-positive on legitimate multi-fragment argument streams.
 #[test]
 fn test_writer_tool_call_args_under_cap_round_trips() {
@@ -1202,7 +1202,7 @@ fn test_extract_error_bad_api_key_classifies_as_auth_harddown() {
     );
     // Normalize against an EMPTY error_map → must still land on Auth → HardDown.
     let empty_map = std::collections::HashMap::new();
-    let sig = busbar_substrate::breaker::normalize_raw_error(&raw, &empty_map);
+    let sig = busbar_substrate_values::breaker::normalize_raw_error(&raw, &empty_map);
     assert!(
         matches!(sig.class, StatusClass::Auth),
         "bad Gemini key must classify as Auth, got {:?}",
@@ -1210,8 +1210,8 @@ fn test_extract_error_bad_api_key_classifies_as_auth_harddown() {
     );
     assert!(
         matches!(
-            busbar_substrate::breaker::classify(&sig),
-            busbar_substrate::breaker::Disposition::HardDown
+            busbar_substrate_values::breaker::classify(&sig),
+            busbar_substrate_values::breaker::Disposition::HardDown
         ),
         "a dead credential must HardDown the lane so it parks and fails over"
     );
@@ -1227,7 +1227,7 @@ fn test_extract_error_bad_api_key_permission_denied_is_auth() {
     assert_eq!(raw.http_status, 401);
     assert_eq!(raw.provider_code.as_deref(), Some("auth"));
     let empty_map = std::collections::HashMap::new();
-    let sig = busbar_substrate::breaker::normalize_raw_error(&raw, &empty_map);
+    let sig = busbar_substrate_values::breaker::normalize_raw_error(&raw, &empty_map);
     assert!(matches!(sig.class, StatusClass::Auth));
 }
 
@@ -1251,7 +1251,7 @@ fn test_extract_error_generic_invalid_argument_stays_client_fault() {
         "a generic INVALID_ARGUMENT must keep its bare status code, not become auth"
     );
     let empty_map = std::collections::HashMap::new();
-    let sig = busbar_substrate::breaker::normalize_raw_error(&raw, &empty_map);
+    let sig = busbar_substrate_values::breaker::normalize_raw_error(&raw, &empty_map);
     assert!(
         matches!(sig.class, StatusClass::ClientError),
         "a generic validation 400 must stay ClientError, got {:?}",
@@ -1259,8 +1259,8 @@ fn test_extract_error_generic_invalid_argument_stays_client_fault() {
     );
     assert!(
         matches!(
-            busbar_substrate::breaker::classify(&sig),
-            busbar_substrate::breaker::Disposition::ClientFault
+            busbar_substrate_values::breaker::classify(&sig),
+            busbar_substrate_values::breaker::Disposition::ClientFault
         ),
         "a generic validation 400 must stay a no-penalty ClientFault"
     );
@@ -1721,7 +1721,7 @@ fn test_extract_error_invalid_word_near_api_key_stays_client_fault() {
         "the bare status code must be preserved, not synthesized to auth"
     );
     let empty_map = std::collections::HashMap::new();
-    let sig = busbar_substrate::breaker::normalize_raw_error(&raw, &empty_map);
+    let sig = busbar_substrate_values::breaker::normalize_raw_error(&raw, &empty_map);
     assert!(
         matches!(sig.class, StatusClass::ClientError),
         "must stay ClientError, got {:?}",
@@ -1729,8 +1729,8 @@ fn test_extract_error_invalid_word_near_api_key_stays_client_fault() {
     );
     assert!(
         matches!(
-            busbar_substrate::breaker::classify(&sig),
-            busbar_substrate::breaker::Disposition::ClientFault
+            busbar_substrate_values::breaker::classify(&sig),
+            busbar_substrate_values::breaker::Disposition::ClientFault
         ),
         "must stay a no-penalty ClientFault"
     );
@@ -2212,7 +2212,7 @@ fn test_response_identity_cross_protocol_synthesizes_id_when_created_set() {
 #[test]
 fn test_stream_error_emits_full_google_rpc_status() {
     let writer = GeminiWriter;
-    let err = busbar_substrate::proto::IrError {
+    let err = busbar_substrate_values::proto::IrError {
         class: StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
@@ -2241,7 +2241,7 @@ fn test_stream_error_emits_full_google_rpc_status() {
 #[test]
 fn test_stream_error_server_error_maps_internal() {
     let writer = GeminiWriter;
-    let err = busbar_substrate::proto::IrError {
+    let err = busbar_substrate_values::proto::IrError {
         class: StatusClass::ServerError,
         provider_signal: None,
         retry_after: None,
@@ -3730,7 +3730,7 @@ fn test_stream_open_tools_under_cap_records_all() {
 #[test]
 fn test_auth_headers_valid_key_emits_x_goog_api_key() {
     let headers =
-        busbar_substrate::egress_auth::api_key_headers("x-goog-api-key", "AIzaSyValidKey123");
+        busbar_substrate_values::egress_auth::api_key_headers("x-goog-api-key", "AIzaSyValidKey123");
     assert_eq!(headers.len(), 1, "one auth header for a valid key");
     assert_eq!(headers[0].0.as_str(), "x-goog-api-key");
     assert_eq!(headers[0].1.to_str().ok(), Some("AIzaSyValidKey123"));
@@ -3743,7 +3743,7 @@ fn test_auth_headers_valid_key_emits_x_goog_api_key() {
 /// empty-header behavior lacked.
 #[test]
 fn test_auth_headers_invalid_key_omits_header_no_empty_value() {
-    let headers = busbar_substrate::egress_auth::api_key_headers("x-goog-api-key", "bad\nkey");
+    let headers = busbar_substrate_values::egress_auth::api_key_headers("x-goog-api-key", "bad\nkey");
     assert!(
         headers.is_empty(),
         "an invalid-byte credential must omit the auth header, not emit an empty value: \
@@ -3756,7 +3756,7 @@ fn test_auth_headers_invalid_key_omits_header_no_empty_value() {
 #[test]
 fn test_auth_headers_control_byte_key_omits_header() {
     let headers =
-        busbar_substrate::egress_auth::api_key_headers("x-goog-api-key", "key\u{0000}bad");
+        busbar_substrate_values::egress_auth::api_key_headers("x-goog-api-key", "key\u{0000}bad");
     assert!(
         headers.is_empty(),
         "a control-byte credential must omit the auth header: {headers:?}"
@@ -6249,7 +6249,7 @@ fn test_outage_cross_protocol_tool_use_gets_sentinel_thought_signature() {
     };
     super::super::chat_handle::chat_prepare_for_egress(
         &mut ir_req,
-        &busbar_substrate::ir::egress_prep::EgressPrep {
+        &busbar_substrate_values::ir::egress_prep::EgressPrep {
             thought_signature_fill: true,
             ingress_protocol: "openai",
             egress_requires_max_tokens: false,
@@ -6325,7 +6325,7 @@ fn test_prepare_for_egress_does_not_overwrite_real_thought_signature() {
     };
     super::super::chat_handle::chat_prepare_for_egress(
         &mut ir_req,
-        &busbar_substrate::ir::egress_prep::EgressPrep {
+        &busbar_substrate_values::ir::egress_prep::EgressPrep {
             thought_signature_fill: true,
             ingress_protocol: "gemini",
             egress_requires_max_tokens: false,
@@ -6392,7 +6392,7 @@ fn test_vertex_lane_gets_no_sentinel_thought_signature() {
     };
     super::super::chat_handle::chat_prepare_for_egress(
         &mut ir_req,
-        &busbar_substrate::ir::egress_prep::EgressPrep {
+        &busbar_substrate_values::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: "openai",
             egress_requires_max_tokens: false,
@@ -6466,7 +6466,7 @@ fn test_prepare_for_egress_fills_only_missing_signatures_in_parallel_calls() {
     };
     super::super::chat_handle::chat_prepare_for_egress(
         &mut ir_req,
-        &busbar_substrate::ir::egress_prep::EgressPrep {
+        &busbar_substrate_values::ir::egress_prep::EgressPrep {
             thought_signature_fill: true,
             ingress_protocol: "gemini",
             egress_requires_max_tokens: false,

@@ -27,7 +27,7 @@ fn rerank_resp_billing_flat_regardless_of_search_units() {
 // ── IrFacts projection (close-non-chat-gate-blindness) ───────────────────────────────────────────
 
 use busbar_api::operation::Operation;
-use busbar_substrate::ir::facts::{ContentItem, IrFacts};
+use busbar_substrate_values::ir::facts::{ContentItem, IrFacts};
 
 #[test]
 fn rerank_projects_query_and_every_document() {

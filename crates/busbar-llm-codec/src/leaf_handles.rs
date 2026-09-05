@@ -15,11 +15,11 @@ use crate::ir::image::{ImageReq, ImageResp};
 use crate::ir::moderation::{ModerationReq, ModerationResp};
 use crate::ir::rerank::{RerankReq, RerankResp};
 use busbar_api::operation::Operation;
-use busbar_substrate::billing::Billing;
-use busbar_substrate::ir::facts::IrFacts;
-use busbar_substrate::ir::handle::sealed::Sealed;
-use busbar_substrate::ir::handle::IrHandle;
-use busbar_substrate::wire::{EgressWire, TranslatedResponse};
+use busbar_substrate_values::billing::Billing;
+use busbar_substrate_values::ir::facts::IrFacts;
+use busbar_substrate_values::ir::handle::sealed::Sealed;
+use busbar_substrate_values::ir::handle::IrHandle;
+use busbar_substrate_values::wire::{EgressWire, TranslatedResponse};
 use bytes::Bytes;
 use serde_json::Value;
 

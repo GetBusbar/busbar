@@ -14,7 +14,7 @@
 use http::{HeaderMap, HeaderValue};
 use busbar_api::operation::Operation;
 use busbar_core::proto::{detect_protocol, residual_dialect_for_path};
-use busbar_substrate::handlers::request_handler;
+use busbar_substrate_values::handlers::request_handler;
 
 fn hm(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
     let mut h = HeaderMap::new();

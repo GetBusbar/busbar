@@ -53,6 +53,10 @@ hex = { workspace = true }
 # The codec-cell counters the handler matrix emits: `metrics::counter!` writes over bounded labels.
 # Pure data path — the recorder lives elsewhere.
 metrics = { workspace = true }
+# The shared wall clock (`store::now`) is instrumented with `busbar_timing::timeit!`. Timing is
+# default-OFF and zero-dependency in that configuration (the macro expands to `()`), so this edge
+# adds nothing to a shipped build.
+busbar-timing = { path = "../busbar-timing" }
 # The neutral `testkit::warn_capture::WarnCapture` tracing layer the plane crates' tests assert
 # diagnostics through; test-surface only, so optional under `test-support`.
 tracing-subscriber = { workspace = true, optional = true }
@@ -68,6 +72,7 @@ tracing-subscriber = { workspace = true }
 # `unexpected_cfgs` fires under `-D warnings`. `busbar-substrate` forwards its own same-named
 # features to these so the gated surface arms in lock-step, exactly as before the split.
 dispatch = []
+relay = []
 runtime = []
 # Reveals the test-only protocol-registry seeding (`proto::register_test_protocol`) and the
 # `testkit::warn_capture` layer to a DEPENDENT crate's test binary, mirroring the parent crate's own

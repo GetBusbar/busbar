@@ -4,7 +4,7 @@ impl ProtocolReader for ResponsesReader {
     fn recover_truncated_usage(
         &self,
         tail: &[u8],
-    ) -> Option<busbar_substrate::billing::TokenUsage> {
+    ) -> Option<busbar_substrate_values::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
         let cached = v
@@ -29,12 +29,12 @@ impl ProtocolReader for ResponsesReader {
         &self,
         status: StatusCode,
         body: &[u8],
-    ) -> busbar_substrate::breaker::RawUpstreamError {
+    ) -> busbar_substrate_values::breaker::RawUpstreamError {
         // Parse the error body ONCE and pull both fields from the single JSON tree, rather than
         // re-parsing the same bytes per field (matches the anthropic.rs pattern; error paths are
         // already degraded — avoid the extra parse+alloc on every non-2xx response).
         let (provider_code, structured_type) =
-            match busbar_substrate::json::parse::<serde_json::Value>(body) {
+            match busbar_substrate_values::json::parse::<serde_json::Value>(body) {
                 Ok(json) => {
                     let error = json.get("error").and_then(|e| e.as_object());
                     let provider_code = error
@@ -72,14 +72,14 @@ impl ProtocolReader for ResponsesReader {
                 return None;
             }
             let lower = String::from_utf8_lossy(body).to_lowercase();
-            if busbar_substrate::proto::openai_context_length_prose_scan(&lower) {
-                Some(busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+            if busbar_substrate_values::proto::openai_context_length_prose_scan(&lower) {
+                Some(busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
             } else {
                 None
             }
         });
 
-        busbar_substrate::breaker::RawUpstreamError {
+        busbar_substrate_values::breaker::RawUpstreamError {
             http_status: status.as_u16(),
             provider_code,
             structured_type,
@@ -90,21 +90,21 @@ impl ProtocolReader for ResponsesReader {
     #[cfg(test)]
     fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal {
         // Identical to OpenAiReader::classify — both emit the same OpenAI error envelope, so the
-        // mapping is single-sourced in `busbar_substrate::proto::openai_classify`.
-        busbar_substrate::proto::openai_classify(status, body)
+        // mapping is single-sourced in `busbar_substrate_values::proto::openai_classify`.
+        busbar_substrate_values::proto::openai_classify(status, body)
     }
 
     fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
         if obj.is_empty() {
             return Err(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             });
         }
@@ -130,7 +130,7 @@ impl ProtocolReader for ResponsesReader {
         {
             return Err(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             });
         }
@@ -140,7 +140,7 @@ impl ProtocolReader for ResponsesReader {
         {
             return Err(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             });
         }
@@ -174,7 +174,7 @@ impl ProtocolReader for ResponsesReader {
             if !input_val.is_null() && !input_val.is_string() && !input_val.is_array() {
                 return Err(IrError {
                     class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                    provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                     retry_after: None,
                 });
             }
@@ -256,7 +256,7 @@ impl ProtocolReader for ResponsesReader {
                                 .ok_or(IrError {
                                     class: StatusClass::ClientError,
                                     provider_signal: Some(
-                                        busbar_substrate::proto::SIGNAL_IR_PARSE.to_string(),
+                                        busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                                     ),
                                     retry_after: None,
                                 })?
@@ -332,7 +332,7 @@ impl ProtocolReader for ResponsesReader {
                                     return Err(IrError {
                                         class: StatusClass::ClientError,
                                         provider_signal: Some(
-                                            busbar_substrate::proto::SIGNAL_IR_PARSE.to_string(),
+                                            busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                                         ),
                                         retry_after: None,
                                     });
@@ -453,7 +453,7 @@ impl ProtocolReader for ResponsesReader {
                                 return Err(IrError {
                                     class: StatusClass::ClientError,
                                     provider_signal: Some(
-                                        busbar_substrate::proto::SIGNAL_IR_PARSE.to_string(),
+                                        busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                                     ),
                                     retry_after: None,
                                 });
@@ -501,7 +501,7 @@ impl ProtocolReader for ResponsesReader {
         } else if !obj.contains_key("instructions") {
             return Err(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             });
         }
@@ -513,7 +513,7 @@ impl ProtocolReader for ResponsesReader {
             // request upstream at HTTP 200 and silently strip the caller's tools.
             let tools_arr = tools_val.as_array().ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             for tool_val in tools_arr {
@@ -1311,7 +1311,7 @@ impl ProtocolReader for ResponsesReader {
     fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -1515,7 +1515,7 @@ impl ProtocolReader for ResponsesReader {
             // `output` here is a genuine parse failure (malformed body).
             return Err(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             });
         }
@@ -1686,7 +1686,7 @@ fn synth_response_tool_call_id(ordinal: usize, name: &str) -> String {
 /// backend that emits object-form arguments does not silently lose them. Absent yields `{}`.
 fn tool_input_from_arguments(v: Option<&serde_json::Value>) -> serde_json::Value {
     match v {
-        Some(serde_json::Value::String(s)) => busbar_substrate::json::parse_str(s)
+        Some(serde_json::Value::String(s)) => busbar_substrate_values::json::parse_str(s)
             .unwrap_or_else(|_| serde_json::Value::String(s.clone())),
         Some(other) => other.clone(),
         None => serde_json::json!({}),

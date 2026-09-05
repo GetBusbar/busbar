@@ -4,7 +4,7 @@ impl ProtocolReader for AnthropicReader {
     fn recover_truncated_usage(
         &self,
         tail: &[u8],
-    ) -> Option<busbar_substrate::billing::TokenUsage> {
+    ) -> Option<busbar_substrate_values::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
         Some(
@@ -23,12 +23,12 @@ impl ProtocolReader for AnthropicReader {
         &self,
         status: StatusCode,
         body: &[u8],
-    ) -> busbar_substrate::breaker::RawUpstreamError {
+    ) -> busbar_substrate_values::breaker::RawUpstreamError {
         // Parse the error body once and pull both fields from the single JSON tree, rather than
         // re-parsing the same bytes per field (error paths are already degraded; avoid the extra
         // parse+alloc on every non-2xx response).
         let (provider_code, structured_type) =
-            match busbar_substrate::json::parse::<serde_json::Value>(body) {
+            match busbar_substrate_values::json::parse::<serde_json::Value>(body) {
                 Ok(json) => {
                     let error = json.get("error");
                     let provider_code = error
@@ -67,13 +67,13 @@ impl ProtocolReader for AnthropicReader {
                 || (lower.contains("exceeds the maximum")
                     && (lower.contains("token") || lower.contains("context")))
             {
-                Some(busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+                Some(busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
             } else {
                 None
             }
         });
 
-        busbar_substrate::breaker::RawUpstreamError {
+        busbar_substrate_values::breaker::RawUpstreamError {
             http_status: status.as_u16(),
             provider_code,
             structured_type,
@@ -105,7 +105,7 @@ impl ProtocolReader for AnthropicReader {
         // message-substring billing/auth checks must fire even when the structured `code` field is
         // absent (some Anthropic error shapes carry a 200/non-401-403 body with only a message), so
         // they live OUTSIDE the `if let Some(code_val)` guard rather than nested inside it.
-        if let Ok(json) = busbar_substrate::json::parse::<serde_json::Value>(body) {
+        if let Ok(json) = busbar_substrate_values::json::parse::<serde_json::Value>(body) {
             let error = json.get("error");
 
             if let Some(code_val) = error.and_then(|e| e.get("code")) {
@@ -195,7 +195,7 @@ impl ProtocolReader for AnthropicReader {
     fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -244,7 +244,7 @@ impl ProtocolReader for AnthropicReader {
             // the strict openai_chat/cohere readers). An ABSENT `messages` stays lenient above.
             let messages_arr = messages_val.as_array().ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             for msg_val in messages_arr {
@@ -273,7 +273,7 @@ impl ProtocolReader for AnthropicReader {
             // tool-less request upstream at HTTP 200 and silently strip the caller's tools.
             let tools_arr = tools_val.as_array().ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             for tool_val in tools_arr {
@@ -652,7 +652,7 @@ impl ProtocolReader for AnthropicReader {
     fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.into()),
+            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
             retry_after: None,
         })?;
 
@@ -663,7 +663,7 @@ impl ProtocolReader for AnthropicReader {
             _ => {
                 return Err(IrError {
                     class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.into()),
+                    provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
                     retry_after: None,
                 })
             }
@@ -672,7 +672,7 @@ impl ProtocolReader for AnthropicReader {
         // Parse content blocks
         let content_val = obj.get("content").ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.into()),
+            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
             retry_after: None,
         })?;
         let mut content: Vec<crate::ir::IrBlock> = Vec::new();

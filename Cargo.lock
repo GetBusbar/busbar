@@ -608,7 +608,7 @@ dependencies = [
  "busbar-api",
  "busbar-core",
  "busbar-mcp",
- "busbar-substrate",
+ "busbar-substrate-values",
  "busbar-timing",
  "bytes",
  "getrandom 0.3.4",
@@ -872,6 +872,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-api",
  "busbar-plugin",
+ "busbar-timing",
  "bytes",
  "crc32fast",
  "futures",

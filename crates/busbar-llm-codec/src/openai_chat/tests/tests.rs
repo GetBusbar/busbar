@@ -873,7 +873,7 @@ fn write_error_maps_kind_vocabulary() {
         ("forbidden", ERR_TYPE_PERMISSION),
         ("invalid_request", ERR_TYPE_INVALID_REQUEST),
         (
-            busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH,
+            busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH,
             ERR_TYPE_INVALID_REQUEST,
         ),
     ] {
@@ -1376,7 +1376,7 @@ fn read_request_preserves_sampling_params_in_extra() {
 /// is stripped from BOTH the typed field AND `extra` — total loss, even OpenAI->OpenAI same-lane.
 #[test]
 fn unknown_reasoning_effort_survives_in_extra() {
-    use busbar_substrate::testkit::warn_capture::WarnCapture;
+    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({
@@ -1512,44 +1512,44 @@ fn image_url_round_trips_through_writer() {
 fn stream_error_uses_enumerated_openai_type() {
     let cases = [
         (
-            busbar_substrate::breaker::StatusClass::RateLimit,
+            busbar_substrate_values::breaker::StatusClass::RateLimit,
             ERR_TYPE_RATE_LIMIT,
         ),
         (
-            busbar_substrate::breaker::StatusClass::Auth,
+            busbar_substrate_values::breaker::StatusClass::Auth,
             ERR_TYPE_AUTHENTICATION,
         ),
         (
-            busbar_substrate::breaker::StatusClass::Billing,
+            busbar_substrate_values::breaker::StatusClass::Billing,
             ERR_TYPE_INSUFFICIENT_QUOTA,
         ),
         (
-            busbar_substrate::breaker::StatusClass::ClientError,
+            busbar_substrate_values::breaker::StatusClass::ClientError,
             ERR_TYPE_INVALID_REQUEST,
         ),
         (
-            busbar_substrate::breaker::StatusClass::ContextLength,
+            busbar_substrate_values::breaker::StatusClass::ContextLength,
             ERR_TYPE_INVALID_REQUEST,
         ),
         (
-            busbar_substrate::breaker::StatusClass::ServerError,
+            busbar_substrate_values::breaker::StatusClass::ServerError,
             ERR_TYPE_SERVER_ERROR,
         ),
         (
-            busbar_substrate::breaker::StatusClass::Overloaded,
+            busbar_substrate_values::breaker::StatusClass::Overloaded,
             ERR_TYPE_SERVER_ERROR,
         ),
         (
-            busbar_substrate::breaker::StatusClass::Timeout,
+            busbar_substrate_values::breaker::StatusClass::Timeout,
             ERR_TYPE_SERVER_ERROR,
         ),
         (
-            busbar_substrate::breaker::StatusClass::Network,
+            busbar_substrate_values::breaker::StatusClass::Network,
             ERR_TYPE_SERVER_ERROR,
         ),
     ];
     for (class, want) in cases {
-        let ev = IrStreamEvent::Error(busbar_substrate::breaker::CanonicalSignal {
+        let ev = IrStreamEvent::Error(busbar_substrate_values::breaker::CanonicalSignal {
             class,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
@@ -2126,8 +2126,8 @@ fn stream_usage_on_finish_chunk_still_captured() {
 fn stream_error_envelope_includes_null_code_and_param() {
     // The in-stream error body must match the native OpenAI shape (and this writer's non-stream
     // `write_error`): error.{message,type,code,param} with code/param JSON null.
-    let ev = IrStreamEvent::Error(busbar_substrate::breaker::CanonicalSignal {
-        class: busbar_substrate::breaker::StatusClass::RateLimit,
+    let ev = IrStreamEvent::Error(busbar_substrate_values::breaker::CanonicalSignal {
+        class: busbar_substrate_values::breaker::StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
     });
@@ -2152,8 +2152,8 @@ fn stream_error_envelope_includes_null_code_and_param() {
 fn stream_error_shape_matches_write_error_shape() {
     // The set of keys in the in-stream error object must equal the non-stream `write_error`
     // envelope's key set — a divergence is itself a detectable proxy tell.
-    let ev = IrStreamEvent::Error(busbar_substrate::breaker::CanonicalSignal {
-        class: busbar_substrate::breaker::StatusClass::Auth,
+    let ev = IrStreamEvent::Error(busbar_substrate_values::breaker::CanonicalSignal {
+        class: busbar_substrate_values::breaker::StatusClass::Auth,
         provider_signal: Some("nope".to_string()),
         retry_after: None,
     });
@@ -2915,7 +2915,7 @@ fn write_error_keeps_null_code_for_non_auth_errors() {
 fn stream_error_auth_event_carries_invalid_api_key_code() {
     let w = OpenAiWriter;
     let ev = IrStreamEvent::Error(IrError {
-        class: busbar_substrate::breaker::StatusClass::Auth,
+        class: busbar_substrate_values::breaker::StatusClass::Auth,
         provider_signal: Some("bad key".to_string()),
         retry_after: None,
     });
@@ -2935,7 +2935,7 @@ fn stream_error_auth_event_carries_invalid_api_key_code() {
 fn stream_error_billing_event_maps_to_insufficient_quota() {
     let w = OpenAiWriter;
     let ev = IrStreamEvent::Error(IrError {
-        class: busbar_substrate::breaker::StatusClass::Billing,
+        class: busbar_substrate_values::breaker::StatusClass::Billing,
         provider_signal: Some("over quota".to_string()),
         retry_after: None,
     });
@@ -3313,7 +3313,7 @@ fn singular_read_response_event_delegates_to_fanout() {
 // singular adapter — confirming the delegation is faithful at the empty boundary.
 #[test]
 fn singular_read_response_event_empty_chunk_yields_none() {
-    let done = serde_json::Value::String(busbar_substrate::proto::SSE_DONE_SENTINEL.to_string());
+    let done = serde_json::Value::String(busbar_substrate_values::proto::SSE_DONE_SENTINEL.to_string());
     assert!(OpenAiReader.read_response_event("", &done).is_none());
 }
 
@@ -3713,7 +3713,7 @@ fn header_value(headers: &[(HeaderName, HeaderValue)], name: &str) -> Option<Str
 
 #[test]
 fn auth_headers_valid_key_emits_bearer_authorization() {
-    let headers = busbar_substrate::proto::bearer_auth_headers("openai", "sk-openai-good-key");
+    let headers = busbar_substrate_values::proto::bearer_auth_headers("openai", "sk-openai-good-key");
     assert_eq!(
         header_value(&headers, "authorization").as_deref(),
         Some("Bearer sk-openai-good-key")
@@ -3728,7 +3728,7 @@ fn auth_headers_invalid_key_omits_header_no_panic() {
     // header entirely (empty Vec) rather than emitting an empty `authorization` value — the empty
     // value was both a syntactically invalid header and a fingerprinting tell. A warn line (not
     // asserted here) tells the operator the lane credential bytes are invalid.
-    let headers = busbar_substrate::proto::bearer_auth_headers("openai", "sk-openai-bad\nkey");
+    let headers = busbar_substrate_values::proto::bearer_auth_headers("openai", "sk-openai-bad\nkey");
     assert!(
         header_value(&headers, "authorization").is_none(),
         "invalid key must OMIT the authorization header, not emit an empty value"
@@ -4008,7 +4008,7 @@ fn test_remap_tool_call_index_is_0_based_per_call() {
 /// end-to-end there (the response is not funneled through the IR).
 #[test]
 fn test_n_gt_1_clamped_to_one_on_cross_protocol_egress() {
-    use busbar_substrate::ir::egress_prep::EgressPrep;
+    use busbar_substrate_values::ir::egress_prep::EgressPrep;
 
     fn prep() -> EgressPrep<'static> {
         EgressPrep {
@@ -5011,7 +5011,7 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
 /// is the default and must NOT warn (it is not information loss).
 #[test]
 fn image_detail_warns_on_drop_except_auto() {
-    use busbar_substrate::testkit::warn_capture::WarnCapture;
+    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body_high = serde_json::json!({
@@ -5271,7 +5271,7 @@ fn response_blank_tool_call_id_is_synthesized() {
 // response has no thinking output field. That drop must be OBSERVABLE (a `warn!`), not silent.
 #[test]
 fn openai_write_drops_thinking_observably() {
-    use busbar_substrate::testkit::warn_capture::WarnCapture;
+    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let resp = crate::ir::IrResponse {
@@ -5353,7 +5353,7 @@ fn response_object_tool_arguments_preserved() {
 // dropped — but OBSERVABLY (a `warn!`), not silently.
 #[test]
 fn response_array_content_image_drop_warns() {
-    use busbar_substrate::testkit::warn_capture::WarnCapture;
+    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({

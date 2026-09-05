@@ -5,8 +5,8 @@
 //! operations stay `None` = no-handler 404. Chat dispatches through the same registry as every op.
 
 use busbar_api::operation::Operation;
-use busbar_substrate::handlers::{OperationHandler, RequestHandler};
-use busbar_substrate::wire::EgressCtx;
+use busbar_substrate_values::handlers::{OperationHandler, RequestHandler};
+use busbar_substrate_values::wire::EgressCtx;
 
 /// Endpoint paths — each appears on BOTH the egress side (`upstream_path`) and the ingress match
 /// (`resolve_operation`); single-sourced so the two sides cannot drift.
@@ -20,14 +20,14 @@ static CHAT: super::super::chat_handle::ChatOperation =
 
 /// THE RESPONSES API'S ROW OF THE SUPPORT MATRIX — one verb; every other verb is the standard
 /// no-handler 404.
-static CELLS: &[busbar_substrate::handlers::Cell] = &[(Operation::CHAT, &CHAT)];
+static CELLS: &[busbar_substrate_values::handlers::Cell] = &[(Operation::CHAT, &CHAT)];
 
 impl RequestHandler for ResponsesRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "responses"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        busbar_substrate::handlers::cell_of(CELLS, op)
+        busbar_substrate_values::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, _ctx: &EgressCtx) -> String {
         PATH_RESPONSES.into()

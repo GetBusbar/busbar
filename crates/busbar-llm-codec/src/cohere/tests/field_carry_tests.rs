@@ -20,7 +20,7 @@
 //!   drop-with-warn.
 
 use super::*;
-use busbar_substrate::testkit::warn_capture::WarnCapture;
+use busbar_substrate_values::testkit::warn_capture::WarnCapture;
 use serde_json::json;
 use tracing_subscriber::layer::SubscriberExt as _;
 

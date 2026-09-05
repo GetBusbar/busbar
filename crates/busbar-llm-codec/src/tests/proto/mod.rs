@@ -15,7 +15,7 @@
 //! same names it saw when they were `mod`ules of `busbar-core`'s `proto`. Fully-qualified paths in
 //! the suites were repointed mechanically: `crate::proto::{dialect}` → `crate::{dialect}`,
 //! `crate::proto::{proto_codec,proto_stream}` → `crate::{proto_codec,proto_stream}`, and every
-//! neutral `crate::proto::…` / substrate re-export to its `busbar_core::` / `busbar_substrate::` home.
+//! neutral `crate::proto::…` / substrate re-export to its `busbar_core::` / `busbar_substrate_values::` home.
 
 #![allow(unused_imports)]
 
@@ -41,10 +41,10 @@ pub use crate::openai_chat::{OpenAiReader, OpenAiWriter};
 pub use crate::openai_responses::{ResponsesReader, ResponsesWriter};
 
 // The NEUTRAL proto atoms the suites reach bare via `super::*` — named at their canonical
-// `busbar_substrate::proto` home (core merely re-exports each by identity), NOT a second witnessed
-// copy (a glob of `busbar_substrate::proto::*` would collide with `crate::proto_codec::*` on
+// `busbar_substrate_values::proto` home (core merely re-exports each by identity), NOT a second witnessed
+// copy (a glob of `busbar_substrate_values::proto::*` would collide with `crate::proto_codec::*` on
 // `Protocol` &c.).
-pub use busbar_substrate::proto::{
+pub use busbar_substrate_values::proto::{
     array_stream_shim_key_for, array_stream_shim_keys, bearer_auth_headers, bearer_error_code,
     find_frame_terminator, known_protocols, lane_protocol_name, openai_context_length_prose_scan,
     parse_sse_frame, sse_event_type, streaming_content_types, strip_top_level_usage_member,
@@ -62,8 +62,8 @@ pub use busbar_core::proto::{
 pub use busbar_core::proto::{openai_family, registry};
 
 // Substrate atoms the suites name bare (breaker signal + the neutral framing seam types).
-pub use busbar_substrate::breaker::{CanonicalSignal, StatusClass};
-pub use busbar_substrate::proto::{ArrayStreamFramer, DialectCodec};
+pub use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};
+pub use busbar_substrate_values::proto::{ArrayStreamFramer, DialectCodec};
 
 #[path = "adversarial_tests.rs"]
 mod adversarial_tests;

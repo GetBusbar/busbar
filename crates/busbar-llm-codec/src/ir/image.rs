@@ -11,9 +11,9 @@
 //! `controlMode`, SDXL `sampler`/`clip_guidance_preset`, per-prompt weights…) ride source-scoped
 //! `extra`. Billing: `Tokens` for gpt-image-1/Gemini, else `Billing::Images` (per-image, no usage body).
 
-use busbar_substrate::billing::{Billing, TokenUsage};
-use busbar_substrate::lossless::SourceScopedExtra;
-use busbar_substrate::media::ImageOutput;
+use busbar_substrate_values::billing::{Billing, TokenUsage};
+use busbar_substrate_values::lossless::SourceScopedExtra;
+use busbar_substrate_values::media::ImageOutput;
 
 /// Which image operation. Support is non-uniform per model → unsupported `(op, model)` = 404.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -76,16 +76,16 @@ pub struct ImageReq {
     pub extra: SourceScopedExtra,
 }
 
-/// THE IMAGE FAMILY'S WALK — this IR's answer to [`busbar_substrate::ir::facts::IrFacts`]. Unlike an enum, a
+/// THE IMAGE FAMILY'S WALK — this IR's answer to [`busbar_substrate_values::ir::facts::IrFacts`]. Unlike an enum, a
 /// struct has no exhaustiveness check on its fields, so EVERY caller-text field is enumerated here by
 /// hand (MAJOR-6) and the `image_projection_covers_every_text_field` forcing-function test fails
 /// loudly if a new `String` field is added without a projection decision. Screenable text →
-/// [`busbar_substrate::ir::facts::ContentItem::Text`]: `prompt`, `negative_prompt`, `mask_prompt`, and each
+/// [`busbar_substrate_values::ir::facts::ContentItem::Text`]: `prompt`, `negative_prompt`, `mask_prompt`, and each
 /// `weighted_prompts` string (SDXL, which override `prompt`). Binary edit inputs →
-/// [`busbar_substrate::ir::facts::ContentItem::Opaque`] (present-but-unscreenable, mirroring chat's image
+/// [`busbar_substrate_values::ir::facts::ContentItem::Opaque`] (present-but-unscreenable, mirroring chat's image
 /// opacity): each `input_images` entry and the `mask`. The geometry / quality / sampling / provenance
 /// knobs are enum/numeric roles, not caller free-text, and stay out.
-impl busbar_substrate::ir::facts::IrFacts for ImageReq {
+impl busbar_substrate_values::ir::facts::IrFacts for ImageReq {
     fn verb(&self) -> busbar_api::operation::Operation {
         busbar_api::operation::Operation::IMAGE
     }
@@ -98,10 +98,10 @@ impl busbar_substrate::ir::facts::IrFacts for ImageReq {
         self.user.as_deref()
     }
 
-    fn shape(&self) -> busbar_substrate::ir::facts::Shape {
-        let items = busbar_substrate::ir::facts::IrFacts::content(self);
-        let (text_chars, system_chars) = busbar_substrate::ir::facts::Shape::counts_over(&items);
-        busbar_substrate::ir::facts::Shape {
+    fn shape(&self) -> busbar_substrate_values::ir::facts::Shape {
+        let items = busbar_substrate_values::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = busbar_substrate_values::ir::facts::Shape::counts_over(&items);
+        busbar_substrate_values::ir::facts::Shape {
             turn_count: 1,
             has_tools: false,
             tool_count: 0,
@@ -111,8 +111,8 @@ impl busbar_substrate::ir::facts::IrFacts for ImageReq {
         }
     }
 
-    fn content(&self) -> Vec<busbar_substrate::ir::facts::ContentItem<'_>> {
-        use busbar_substrate::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
+    fn content(&self) -> Vec<busbar_substrate_values::ir::facts::ContentItem<'_>> {
+        use busbar_substrate_values::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
         use std::borrow::Cow;
         let mut out = Vec::new();
         if let Some(p) = &self.prompt {

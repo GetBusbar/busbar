@@ -82,6 +82,35 @@ pub mod wire;
 // that crate's `proxy` re-exports everything here beside them.
 pub mod proxy;
 
+/// THE WALL CLOCK the shared store reads. The CUT: the rest of `store` names `tokio::sync` (the
+/// lane-availability taxonomy's semaphore-permit arm, the `lane_semaphore` accessor), while these two
+/// are a pure `SystemTime` read a dialect writer calls on the response path for an omitted `created`
+/// timestamp. So the clock crossed and the semaphore-shaped remainder stayed in `busbar-substrate`,
+/// which re-exports both names from its own `store`.
+pub mod store {
+    /// Get current time in seconds since epoch. The shared wall clock both core and the plane crates
+    /// read (the plane via the `clock_now` host seam long-term; this is the single implementation).
+    pub fn now() -> u64 {
+        let _t = busbar_timing::timeit!("store_now");
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    /// The same wall clock in MILLISECONDS — for the two sub-second callers (an operator TTL and the
+    /// A2A task poll). `u64`, matching [`now`]: a duration since the epoch, never negative.
+    #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
+    pub fn now_ms() -> u64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+}
+
 /// The PURE half of `egress_auth`: the static API-key header builder, which is a total function of
 /// its two arguments. The CUT: every other credential mechanism in that module mints over the
 /// network (the RFC 7523 / RFC 6749 §4.4 token-endpoint POSTs) or reads a service-account key off

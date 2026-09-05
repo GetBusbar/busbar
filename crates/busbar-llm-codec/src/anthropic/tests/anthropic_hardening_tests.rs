@@ -61,7 +61,7 @@ fn auth_headers_api_key_trims_leading_whitespace() {
     // Wire path (sign_request, Token mode) and the mode-blind primitive both route a canonical
     // `sk-ant-api…` key through the ApiKey arm — assert both emit the CLEAN header.
     let raw = "   sk-ant-api03-secret-key";
-    let ctx = busbar_substrate::proto::SigningContext {
+    let ctx = busbar_substrate_values::proto::SigningContext {
         host: "api.anthropic.com",
         canonical_uri: PATH_UPSTREAM,
         body: b"{}",
@@ -108,7 +108,7 @@ fn auth_headers_oauth_and_passthrough_preserve_leading_whitespace() {
 
     // Ambiguous passthrough Bearer (wire path) likewise round-trips verbatim.
     let amb = "  opaque-caller-token";
-    let ctx = busbar_substrate::proto::SigningContext {
+    let ctx = busbar_substrate_values::proto::SigningContext {
         host: "api.anthropic.com",
         canonical_uri: PATH_UPSTREAM,
         body: b"{}",
@@ -152,7 +152,7 @@ fn auth_headers_unrecognized_credential_emits_both_headers() {
 #[test]
 fn sign_request_resolves_ambiguous_credential_to_single_header_by_mode() {
     let body = b"{}";
-    let ctx = |creds| busbar_substrate::proto::SigningContext {
+    let ctx = |creds| busbar_substrate_values::proto::SigningContext {
         host: "api.anthropic.com",
         canonical_uri: PATH_UPSTREAM,
         body,
@@ -437,7 +437,7 @@ fn extract_error_429_with_token_body_not_reclassified_to_context_length() {
     );
     // End-to-end: the breaker normalizes it to RateLimit, not ContextLength.
     let empty_map = std::collections::HashMap::new();
-    let signal = busbar_substrate::breaker::normalize_raw_error(&raw, &empty_map);
+    let signal = busbar_substrate_values::breaker::normalize_raw_error(&raw, &empty_map);
     assert_eq!(
         signal.class,
         StatusClass::RateLimit,
@@ -459,7 +459,7 @@ fn extract_error_400_context_length_still_synthesized_under_gate() {
         "a genuine 400 oversized-prompt body must still synthesize the context-length code"
     );
     let empty_map = std::collections::HashMap::new();
-    let signal = busbar_substrate::breaker::normalize_raw_error(&raw, &empty_map);
+    let signal = busbar_substrate_values::breaker::normalize_raw_error(&raw, &empty_map);
     assert_eq!(signal.class, StatusClass::ContextLength);
 }
 
@@ -905,8 +905,8 @@ fn stream_error_overloaded_is_transient_not_client_fault() {
         retry_after: None,
     };
     assert_eq!(
-        busbar_substrate::breaker::classify(&sig),
-        busbar_substrate::breaker::Disposition::TransientUpstream,
+        busbar_substrate_values::breaker::classify(&sig),
+        busbar_substrate_values::breaker::Disposition::TransientUpstream,
         "a mid-stream overloaded_error is a transient upstream fault, not a client fault"
     );
 }
@@ -923,8 +923,8 @@ fn stream_error_rate_limit_is_rate_limit_class() {
         retry_after: None,
     };
     assert_eq!(
-        busbar_substrate::breaker::classify(&sig),
-        busbar_substrate::breaker::Disposition::TransientUpstream
+        busbar_substrate_values::breaker::classify(&sig),
+        busbar_substrate_values::breaker::Disposition::TransientUpstream
     );
 }
 
@@ -940,8 +940,8 @@ fn stream_error_api_error_is_server_error_class() {
         retry_after: None,
     };
     assert_eq!(
-        busbar_substrate::breaker::classify(&sig),
-        busbar_substrate::breaker::Disposition::TransientUpstream
+        busbar_substrate_values::breaker::classify(&sig),
+        busbar_substrate_values::breaker::Disposition::TransientUpstream
     );
 }
 
@@ -965,8 +965,8 @@ fn stream_error_authentication_is_auth_hard_down() {
         retry_after: None,
     };
     assert_eq!(
-        busbar_substrate::breaker::classify(&sig),
-        busbar_substrate::breaker::Disposition::HardDown,
+        busbar_substrate_values::breaker::classify(&sig),
+        busbar_substrate_values::breaker::Disposition::HardDown,
         "a mid-stream authentication_error must hard-down the lane, not record nothing"
     );
 }
@@ -991,8 +991,8 @@ fn stream_error_billing_is_billing_hard_down() {
         retry_after: None,
     };
     assert_eq!(
-        busbar_substrate::breaker::classify(&sig),
-        busbar_substrate::breaker::Disposition::HardDown
+        busbar_substrate_values::breaker::classify(&sig),
+        busbar_substrate_values::breaker::Disposition::HardDown
     );
 }
 
@@ -1008,8 +1008,8 @@ fn stream_error_invalid_request_stays_client_error() {
         retry_after: None,
     };
     assert_eq!(
-        busbar_substrate::breaker::classify(&sig),
-        busbar_substrate::breaker::Disposition::ClientFault,
+        busbar_substrate_values::breaker::classify(&sig),
+        busbar_substrate_values::breaker::Disposition::ClientFault,
         "a genuine client-fault error type must still classify as ClientFault"
     );
 }
@@ -2968,7 +2968,7 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_end_turn() {
 // ---- Fidelity items (Anthropic egress): sampling-param OMIT, response_format-drop
 // warn, and native thinking-block round-trip with signature. ----
 
-use busbar_substrate::testkit::warn_capture::WarnCapture;
+use busbar_substrate_values::testkit::warn_capture::WarnCapture;
 
 /// SAMPLING: Anthropic's Messages API does NOT support `frequency_penalty`,
 /// `presence_penalty`, `seed`, or `n`. A cross-protocol IR carrying every one of them (e.g. read

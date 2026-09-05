@@ -25,7 +25,7 @@ fn per_model_then_global_then_4096() {
                        // The defaulting lives on the IR (`IrReq::prepare_for_egress`) — the engine passes the
                        // lane's resolved primitives. Drive it exactly as the translate seam does.
     let prep = |proto: &'static str, lane_default: Option<u32>, global: u32| {
-        busbar_substrate::ir::egress_prep::EgressPrep {
+        busbar_substrate_values::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: "openai",
             egress_requires_max_tokens: decl_for(proto).is_some_and(|d| d.requires_max_tokens),
@@ -90,7 +90,7 @@ fn per_model_then_global_then_4096() {
 #[test]
 fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
     use crate::ir::{CacheControl, CacheKind, IrBlock, IrMessage, IrRole};
-    use busbar_substrate::testkit::warn_capture::WarnCapture;
+    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let bp = || {
@@ -154,7 +154,7 @@ fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
     };
     assert_eq!(count_breakpoints(&ir), 6, "fixture carries 6 breakpoints");
 
-    let prep = busbar_substrate::ir::egress_prep::EgressPrep {
+    let prep = busbar_substrate_values::ir::egress_prep::EgressPrep {
         thought_signature_fill: false,
         ingress_protocol: "bedrock",
         egress_requires_max_tokens: true,

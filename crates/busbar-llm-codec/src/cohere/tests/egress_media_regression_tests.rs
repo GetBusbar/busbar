@@ -7,7 +7,7 @@
 //! attachment (e.g. an Anthropic→Cohere hop) has no slot and is deliberately, observably dropped.
 
 use super::*;
-use busbar_substrate::testkit::warn_capture::WarnCapture;
+use busbar_substrate_values::testkit::warn_capture::WarnCapture;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 #[test]

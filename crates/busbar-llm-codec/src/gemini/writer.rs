@@ -91,7 +91,7 @@ impl ProtocolWriter for GeminiWriter {
         if !obj.get("contents").is_some_and(serde_json::Value::is_array) {
             return false;
         }
-        let Some(pairs) = busbar_substrate::proto::rewrite_text_pairs(messages) else {
+        let Some(pairs) = busbar_substrate_values::proto::rewrite_text_pairs(messages) else {
             return false;
         };
         let framed: Vec<serde_json::Value> = pairs
@@ -273,7 +273,7 @@ impl ProtocolWriter for GeminiWriter {
                         // `null` becomes `{}` (an empty-but-valid response), and any other non-object
                         // scalar/array is wrapped under `{"output": <value>}` so its content survives.
                         let parsed: serde_json::Value =
-                            busbar_substrate::json::parse_str(&response_text)
+                            busbar_substrate_values::json::parse_str(&response_text)
                                 .unwrap_or_else(|_| serde_json::json!({ "output": response_text }));
                         let response_val: serde_json::Value = if parsed.is_object() {
                             parsed
@@ -684,15 +684,15 @@ impl ProtocolWriter for GeminiWriter {
                 ERR_TYPE_RATE_LIMIT | "resource_exhausted" | "rate_limit" => {
                     Some(GRPC_RESOURCE_EXHAUSTED)
                 }
-                ERR_TYPE_OVERLOADED | busbar_substrate::proxy::KIND_OVERLOADED | "unavailable" => {
+                ERR_TYPE_OVERLOADED | busbar_substrate_values::proxy::KIND_OVERLOADED | "unavailable" => {
                     Some(GRPC_UNAVAILABLE)
                 }
-                "deadline_exceeded" | busbar_substrate::proxy::KIND_TIMEOUT => {
+                "deadline_exceeded" | busbar_substrate_values::proxy::KIND_TIMEOUT => {
                     Some(GRPC_DEADLINE_EXCEEDED)
                 }
-                busbar_substrate::proxy::KIND_API_ERROR
+                busbar_substrate_values::proxy::KIND_API_ERROR
                 | "internal"
-                | busbar_substrate::proxy::KIND_SERVER_ERROR => Some(GRPC_INTERNAL),
+                | busbar_substrate_values::proxy::KIND_SERVER_ERROR => Some(GRPC_INTERNAL),
                 "unimplemented" | "not_implemented" => Some(GRPC_UNIMPLEMENTED),
                 _ => None,
             }
@@ -883,7 +883,7 @@ impl ProtocolWriter for GeminiWriter {
                 // per-connection memory-amplification DoS distinct from `MAX_GEMINI_TOOL_FRAMES`, which
                 // only bounds the COUNT of distinct open blocks, not one block's accumulated size).
                 //
-                // The cap is `busbar_substrate::proxy::max_translate_body_bytes()` — the neutral twin of
+                // The cap is `busbar_substrate_values::proxy::max_translate_body_bytes()` — the neutral twin of
                 // core's `limits::translate_body_max_bytes()`, the SAME operator-tunable,
                 // live-reconfigurable limit (default 32 MiB, coupled to `limits.request_body_max_bytes`)
                 // that already bounds a buffered cross-protocol NON-STREAM completion body elsewhere
@@ -908,7 +908,7 @@ impl ProtocolWriter for GeminiWriter {
                         if let Some((_, _, args)) =
                             guard.iter_mut().find(|(idx, _, _)| idx == index)
                         {
-                            let cap = busbar_substrate::proxy::max_translate_body_bytes();
+                            let cap = busbar_substrate_values::proxy::max_translate_body_bytes();
                             if args.len().saturating_add(json_str.len()) <= cap {
                                 args.push_str(json_str);
                             }
@@ -1035,7 +1035,7 @@ impl ProtocolWriter for GeminiWriter {
                     let args: serde_json::Value = if args_str.is_empty() {
                         serde_json::json!({})
                     } else {
-                        busbar_substrate::json::parse_str(&args_str)
+                        busbar_substrate_values::json::parse_str(&args_str)
                             .unwrap_or_else(|_| serde_json::json!({}))
                     };
                     let mut fc_obj = serde_json::Map::new();
@@ -1397,7 +1397,7 @@ impl ProtocolWriter for GeminiWriter {
 
     fn make_array_stream_framer(
         &self,
-    ) -> Option<Box<dyn busbar_substrate::proto::ArrayStreamFramer>> {
+    ) -> Option<Box<dyn busbar_substrate_values::proto::ArrayStreamFramer>> {
         // Gemini `:streamGenerateContent` WITHOUT `?alt=sse` expects a JSON-array streamed body; this
         // builds the framer that reframes the (gemini-shape) SSE bytes into that array. The forward
         // path engages it only when `uses_array_stream_shim()` AND `wants_array_stream(body)` hold.

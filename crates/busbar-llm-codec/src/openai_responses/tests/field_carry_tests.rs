@@ -10,7 +10,7 @@
 //! documented drop+warn+test (per the owner ruling: ZERO waivers), never silently and never waived.
 
 use super::*;
-use busbar_substrate::testkit::warn_capture::WarnCapture;
+use busbar_substrate_values::testkit::warn_capture::WarnCapture;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 // ─────────────────────────────────────── helpers ───────────────────────────────────────
@@ -1062,8 +1062,8 @@ fn responses_stream_failed_event_emitted() {
     let w = ResponsesWriter;
     let names = event_names(
         &w,
-        crate::ir::IrStreamEvent::Error(busbar_substrate::proto::IrError {
-            class: busbar_substrate::breaker::StatusClass::ServerError,
+        crate::ir::IrStreamEvent::Error(busbar_substrate_values::proto::IrError {
+            class: busbar_substrate_values::breaker::StatusClass::ServerError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
         }),

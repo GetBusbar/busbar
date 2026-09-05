@@ -167,7 +167,7 @@ fn req_with_tool_choice_no_tools() -> crate::ir::IrRequest {
 /// shape; Bedrock is a REGRESSION PROOF (it already guarded before this fix).
 #[test]
 fn tool_choice_without_tools_is_omitted_on_every_writer() {
-    use busbar_substrate::testkit::warn_capture::WarnCapture;
+    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let req = req_with_tool_choice_no_tools();
@@ -271,7 +271,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
 
     let openai_writer = OpenAiWriter;
     assert_eq!(
-        busbar_substrate::proto::decl_for("openai").and_then(|d| d.stop_sequence_cap),
+        busbar_substrate_values::proto::decl_for("openai").and_then(|d| d.stop_sequence_cap),
         Some((4, "OpenAI")),
         "openai must publish its documented stop-sequence cap of 4"
     );
@@ -285,7 +285,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
 
     let gemini_writer = GeminiWriter;
     assert_eq!(
-        busbar_substrate::proto::decl_for("gemini").and_then(|d| d.stop_sequence_cap),
+        busbar_substrate_values::proto::decl_for("gemini").and_then(|d| d.stop_sequence_cap),
         Some((5, "Gemini")),
         "gemini must publish its documented stop-sequence cap of 5"
     );
@@ -300,7 +300,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
     );
 
     assert_eq!(
-        busbar_substrate::proto::decl_for("cohere").and_then(|d| d.stop_sequence_cap),
+        busbar_substrate_values::proto::decl_for("cohere").and_then(|d| d.stop_sequence_cap),
         Some((5, "Cohere")),
         "cohere must publish its documented stop-sequence cap of 5"
     );
@@ -324,7 +324,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
 /// NOT warn (the negative half is a regression proof for the false-positive risk).
 #[test]
 fn parallel_tool_calls_discarded_on_gemini_cohere_bedrock_warns() {
-    use busbar_substrate::testkit::warn_capture::WarnCapture;
+    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let req = |parallel: Option<bool>| crate::ir::IrRequest {

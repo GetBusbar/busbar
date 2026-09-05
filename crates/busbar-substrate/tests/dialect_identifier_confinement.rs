@@ -24,9 +24,18 @@ const DIALECT_PREFIXES: &[&str] = &["openai_", "bedrock_", "gemini_", "cohere_",
 /// NEW leak and reds the gate.
 const TRACKED_RESIDUE: &[&str] = &["openai_context_length_prose_scan", "openai_classify"];
 
-fn substrate_src() -> PathBuf {
+/// BOTH HALVES OF THE NEUTRAL ABI CRATE. The substrate was split in two — `busbar-substrate-values`
+/// carries the pure value families (including `proto`, where the tracked residue lives) and
+/// `busbar-substrate` keeps the egress engine — but they are ONE neutral surface as far as this gate
+/// is concerned, and a residue that merely changed crates has not been relocated into `busbar-llm`.
+/// Scanning only one root would let the allowlist go stale on one side while a leak grew on the other.
+fn substrate_srcs() -> Vec<PathBuf> {
     // CARGO_MANIFEST_DIR is crates/busbar-substrate.
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    vec![
+        here.join("src"),
+        here.join("../busbar-substrate-values/src"),
+    ]
 }
 
 /// Collect every production `.rs` file under `dir` (test files excluded — a plane's own tests may name
@@ -90,10 +99,12 @@ fn dialect_identifiers(line: &str) -> Vec<String> {
 #[test]
 fn busbar_substrate_names_no_new_llm_dialect_identifier() {
     let mut files = Vec::new();
-    production_rs_files(&substrate_src(), &mut files);
+    for root in substrate_srcs() {
+        production_rs_files(&root, &mut files);
+    }
     assert!(
         !files.is_empty(),
-        "the source scan found no .rs files under busbar-substrate/src — wrong tree"
+        "the source scan found no .rs files under the substrate src roots — wrong tree"
     );
 
     let mut offenders: Vec<String> = Vec::new();

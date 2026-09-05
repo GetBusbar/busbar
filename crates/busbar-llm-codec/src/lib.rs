@@ -20,7 +20,7 @@
 //! `RequestHandler` and operation cells (`handler.rs`), its own wire constant bank, and its tests.
 //! A seventh dialect is a seventh module here — not a seventh crate and not a seventh feature flag.
 //!
-//! WHAT IS DELIBERATELY *NOT* HERE, SECOND SENSE. `busbar_substrate::proto::openai_family` — the
+//! WHAT IS DELIBERATELY *NOT* HERE, SECOND SENSE. `busbar_substrate_values::proto::openai_family` — the
 //! `ERR_TYPE_*` bank, `bearer_error_code`, `tool_arguments_to_string`, `MESSAGE_NAMES_SENTINEL` —
 //! reads like it should have travelled with the OpenAI dialects, and it must not: `busbar-core`
 //! itself consumes it in PRODUCTION. It stays in the substrate and every dialect reaches it there.
@@ -84,7 +84,7 @@ pub mod leaf_codec;
 pub mod proto_codec;
 
 /// The concrete streaming byte-translator (`StreamTranslate`) behind the neutral
-/// `busbar_substrate::proto::StreamTranslator`.
+/// `busbar_substrate_values::proto::StreamTranslator`.
 pub mod proto_stream;
 
 /// The two body-shaping helpers a caller needs on either side of a translate, kept here because
@@ -133,7 +133,7 @@ const ANTHROPIC_REQUEST_ID_MEMBER: &str = "request_id";
 /// lazy, self-installing counterpart of the composition root's `install_protocols`, for the test
 /// surface where no `main` runs a composition root.
 ///
-/// A codec that resolves a protocol fact through `busbar_substrate::proto::decl_for` (the
+/// A codec that resolves a protocol fact through `busbar_substrate_values::proto::decl_for` (the
 /// `Protocol` reader/writer resolution, `protocol_for`, the tool-id remap's
 /// `native_tool_id_prefix`) must first ensure this plugin's declarations are registered. Calling it
 /// at those few entry points makes every codec-exercising test order-independent without a per-test
@@ -143,7 +143,7 @@ const ANTHROPIC_REQUEST_ID_MEMBER: &str = "request_id";
 #[cfg(any(test, feature = "test-support"))]
 pub fn ensure_test_protocols_registered() {
     static REGISTER: std::sync::Once = std::sync::Once::new();
-    REGISTER.call_once(|| busbar_substrate::proto::register_test_protocols(DECLS));
+    REGISTER.call_once(|| busbar_substrate_values::proto::register_test_protocols(DECLS));
 }
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
@@ -156,7 +156,7 @@ pub fn ensure_test_protocols_registered() {
 /// exactly, the operator-visible list from before the dialects were plugins:
 /// `anthropic, gemini, openai, bedrock, responses, cohere`. A dialect appended here rather than
 /// inserted keeps every existing family's index; inserting one silently renumbers all of them.
-pub static DECLS: &[&busbar_substrate::proto::ProtocolDecl] = &[
+pub static DECLS: &[&busbar_substrate_values::proto::ProtocolDecl] = &[
     &anthropic::DECL,
     &gemini::DECL,
     &openai_chat::DECL,

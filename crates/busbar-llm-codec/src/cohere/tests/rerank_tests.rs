@@ -126,7 +126,7 @@ fn embeddings_write_request_preserves_multiple_encoding_types_in_order() {
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
     use crate::ir::embeddings::EmbeddingsReq;
-    use busbar_substrate::testkit::warn_capture::WarnCapture;
+    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let ir = EmbeddingsReq {
@@ -357,7 +357,7 @@ fn oversized_top_n_drops_to_none_not_wrapped() {
 #[test]
 fn no_rerank_handler_on_the_other_four() {
     for proto in ["openai", "anthropic", "gemini", "responses"] {
-        let rh = busbar_substrate::handlers::request_handler(proto).expect(proto);
+        let rh = busbar_substrate_values::handlers::request_handler(proto).expect(proto);
         assert!(
             rh.operation_handler(Operation::RERANK).is_none(),
             "{proto} must have no rerank handler"
