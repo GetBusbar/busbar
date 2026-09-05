@@ -475,3 +475,13 @@ known_missing_deny = [
   "busbar-transport-tls", "busbar-transport-ws", "plugin-loader",
   "store-memory", "store-example-plugin", "export-example-plugin",
 ]
+
+# ── 22. secret-carrier-debug (ARCHITECTURE.md section 3.7) ───────────────────────────────────────────────────
+[rules.secret-carrier-debug]
+why = """A value that carries secret bytes must hand-roll its `Debug` so the bytes cannot be printed \
+— never derive one. On the plugin ABI this is not a matter of caller discipline: every auth scheme \
+in the tree and out of it is handed a `Credential`, and the code that might format it is code this \
+repository cannot read. The carriers below are the named ones; adding a type that holds a resolved \
+secret, a client credential or key material means adding it here and writing the impl."""
+carriers = ["Credential", "SecretValue", "CredentialSecret", "KeyMaterial"]
+max_derived = 0

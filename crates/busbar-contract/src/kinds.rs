@@ -94,7 +94,10 @@ pub enum AuthOutcome {
 }
 
 /// Key material an auth scheme refreshes on the node's clock.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// Its `Debug` prints how much material there is and when it was fetched — the two facts a stalled
+/// refresh is diagnosed from — and never the material.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct KeyMaterial {
     /// The material, in whatever encoding the scheme uses.
     pub bytes: Vec<u8>,
@@ -102,16 +105,37 @@ pub struct KeyMaterial {
     pub fetched_at: u64,
 }
 
+impl fmt::Debug for KeyMaterial {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KeyMaterial")
+            .field("len", &self.bytes.len())
+            .field("fetched_at", &self.fetched_at)
+            .finish()
+    }
+}
+
 /// A credential as the kernel hands it to a scheme.
 ///
 /// The kernel has already copied the span out of the read cursor and masked what remains, so the
 /// bytes here are the credential and the wire no longer holds it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Its `Debug` says where the credential arrived and how long it was, never what it was — the same
+/// shape [`SecretValue`] uses, for the same reason. Every scheme across the ABI is handed one of
+/// these, so the code that might format it is code this tree cannot read.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Credential {
     /// Where it was found.
     pub location: ArrivalLocation,
     /// The bytes.
     pub bytes: Vec<u8>,
+}
+
+impl fmt::Debug for Credential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Credential")
+            .field("location", &self.location)
+            .field("len", &self.bytes.len())
+            .finish()
+    }
 }
 
 /// Turns an arriving credential into facts about a principal.

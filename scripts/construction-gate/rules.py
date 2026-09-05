@@ -1400,6 +1400,48 @@ def rule_forbid_unsafe(tree, cfg):
     return rows
 
 
+def rule_secret_carrier_debug(tree, cfg):
+    """A type that carries secret bytes hand-rolls its `Debug`; it never derives one.
+
+    A derived `Debug` on a secret carrier is a leak waiting for its first `{:?}`, and on the plugin
+    ABI the code that formats it is code this tree cannot read. Each named carrier is looked up by
+    its declaration and the derive attributes attached to it are read: `Debug` among them is the
+    finding."""
+    c = cfg["rules"]["secret-carrier-debug"]
+    offenders = []
+    checked = 0
+    for name in c["carriers"]:
+        decl_rx = re.compile(r"(?:^|[^A-Za-z0-9_])(?:struct|enum)\s+" + re.escape(name)
+                             + r"(?![A-Za-z0-9_])")
+        for rel, l in tree.grep(decl_rx.pattern):
+            checked += 1
+            lines = tree.files[rel]
+            # Walk back over the attribute block sitting directly on the declaration, joining it so
+            # a derive list spread over several lines reads the same as one on a single line. A
+            # blank line (which is also what a doc comment strips to) or the end of the item above
+            # stops the walk, so no other item's derives are read as this one's.
+            attrs = []
+            i = l.no - 2
+            while i >= 0:
+                above = lines[i].code.strip()
+                if not above or re.search(r"[};]|(?:^|[^A-Za-z0-9_])(?:struct|enum|fn)"
+                                          r"(?![A-Za-z0-9_])", above):
+                    break
+                attrs.append(above)
+                i -= 1
+            if re.search(r"derive\s*\([^)]*\bDebug\b", " ".join(reversed(attrs))):
+                offenders.append(f"`{name}` derives Debug at {rel}:{l.no}")
+    current = len(offenders)
+    if checked == 0:
+        detail = VACUOUS + "no named secret carrier is declared in the scanned tree"
+    else:
+        detail = (f"{current} secret carrier(s) with a derived Debug (ceiling {c['max_derived']}): "
+                  + ("; ".join(offenders) if offenders else "none"))
+    return [row("secret-carrier-debug", current <= c["max_derived"],
+                "a type carrying secret bytes hand-rolls its Debug",
+                detail, current, c["max_derived"], c["why"], offenders)]
+
+
 def evaluate(tree, cfg, hits_path):
     rows = []
     rows += rule_one_attempt_seam(tree, cfg)
@@ -1423,6 +1465,7 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_sealed_unit_traits(tree, cfg)
     rows += rule_hold_discipline(tree, cfg)
     rows += rule_forbid_unsafe(tree, cfg)
+    rows += rule_secret_carrier_debug(tree, cfg)
     return rows
 
 
