@@ -68,7 +68,7 @@ busbar-api = { path = "../api" }
 # root owns and holds in `ProductionUnits`.
 busbar-unit-admission = { path = "../busbar-unit-admission" }
 busbar-unit-audit = { path = "../busbar-unit-audit" }
-busbar-unit-auth = { path = "../busbar-unit-auth" }
+busbar-unit-auth = { path = "../busbar-unit-auth", features = ["sha256"] }
 busbar-unit-breaker = { path = "../busbar-unit-breaker" }
 busbar-unit-cost = { path = "../busbar-unit-cost" }
 busbar-unit-egress = { path = "../busbar-unit-egress" }

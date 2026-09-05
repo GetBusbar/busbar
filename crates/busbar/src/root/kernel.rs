@@ -51,13 +51,11 @@
 
 // The authenticate step's three seams, declared from here for the length of one window.
 //
-// The declaration belongs beside its siblings in the root's own module list, and the source file is
-// already exactly where that list will name it — the `#[path]` is what lets the file sit in its
-// final place while the list is being written by another hand. When the list gains
-// `pub mod auth_bindings;`, these two lines become `pub use super::auth_bindings;` and every call
+// The authenticate step's three seams live beside the other root modules; reached here by the
+// name every call site uses.
+pub use super::auth_bindings;` and every call
 // site is unchanged, because the name they reach it by is the same one either way.
-#[path = "auth_bindings.rs"]
-pub mod auth_bindings;
+pub use super::auth_bindings;
 
 use std::sync::{Arc, Mutex};
 

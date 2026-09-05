@@ -55,6 +55,7 @@
 #![allow(dead_code)]
 
 pub mod adapters;
+pub mod auth_bindings;
 pub mod durability;
 pub mod kernel;
 pub mod ledger_identity;
