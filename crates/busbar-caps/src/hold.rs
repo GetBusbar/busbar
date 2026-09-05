@@ -578,11 +578,15 @@ impl Posted {
         if usage.is_estimated() {
             flags = flags.with(PostingFlags::ESTIMATED);
         }
+        // Read the two figures out before the principal moves: the hold is owned here, has no
+        // Drop, and its two sibling constructors both move theirs.
+        let reserved = hold.reserved();
+        let overdraft = hold.overdraft();
         Posted {
-            principal: hold.principal.clone(),
-            reserved: hold.reserved(),
+            principal: hold.principal,
+            reserved,
             settled: usage.total(),
-            overdraft: hold.overdraft(),
+            overdraft,
             flags,
         }
     }
