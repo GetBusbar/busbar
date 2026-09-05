@@ -113,6 +113,45 @@ impl Diagnostics for NoopDiagnostics {
     fn unrecognized_error_map_value(&self, _value: &str) {}
 }
 
+/// A [`Diagnostics`] adapter that forwards each distinct unrecognized value to an inner sink AT
+/// MOST ONCE per process lifetime, deduplicating repeat calls for the same value itself so the
+/// inner sink (e.g. a real `tracing::warn!`-backed one the composition root binds) never has to.
+/// This is PB-98's "warned once and ignored": the classification RESULT is unaffected either way
+/// (the mapping is still silently ignored) — only how many times the side-channel warning fires.
+pub struct WarnOnceDiagnostics<S: Diagnostics> {
+    seen: std::sync::Mutex<std::collections::HashSet<String>>,
+    inner: S,
+}
+
+impl<S: Diagnostics> WarnOnceDiagnostics<S> {
+    /// Wrap `inner`, deduplicating by the exact unrecognized string.
+    pub fn new(inner: S) -> Self {
+        Self {
+            seen: std::sync::Mutex::new(std::collections::HashSet::new()),
+            inner,
+        }
+    }
+}
+
+impl<S: Diagnostics> Diagnostics for WarnOnceDiagnostics<S> {
+    fn unrecognized_error_map_value(&self, value: &str) {
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        if seen.insert(value.to_string()) {
+            drop(seen);
+            self.inner.unrecognized_error_map_value(value);
+        }
+    }
+}
+
+/// A shared [`Diagnostics`] sink is still one: this is what lets a caller keep a handle on the
+/// concrete sink (e.g. to assert on it in a test, or to fan it out elsewhere) while also handing
+/// an owned value into [`crate::BreakerUnit::with_diagnostics`].
+impl<S: Diagnostics + ?Sized> Diagnostics for std::sync::Arc<S> {
+    fn unrecognized_error_map_value(&self, value: &str) {
+        (**self).unrecognized_error_map_value(value);
+    }
+}
+
 /// Classify a [`CanonicalSignal`] into a [`Disposition`]. Exhaustive over [`StatusClass`] — no
 /// wildcard arm, so a class added to the enum without a table row fails to compile.
 pub fn classify(sig: &CanonicalSignal) -> Disposition {

@@ -101,10 +101,16 @@ pub fn outcome_and_label(
 /// through to the [`Outcome`] and label a caller acts on. The pure function
 /// [`crate::BreakerUnit::classify`] is implemented over: no lock, no destination, no clock — a
 /// caller with its own error-map storage can call this directly.
+///
+/// `diagnostics` is the sink an unrecognized `error_map` value is reported to (CG-43): this
+/// function no longer hardcodes [`classify::NoopDiagnostics`] internally, so a real sink bound by
+/// the composition root actually reaches the classifier. Pass `&classify::NoopDiagnostics` for
+/// today's silently-ignored behavior.
 #[must_use]
 pub fn classify_upstream(
     error_map: &std::collections::HashMap<String, String>,
     status: UpstreamStatus,
+    diagnostics: &dyn classify::Diagnostics,
 ) -> Classified {
     let raw = classify::RawUpstreamError {
         http_status: status.code.unwrap_or(0),
@@ -112,7 +118,7 @@ pub fn classify_upstream(
         structured_type: None,
         retry_after_secs: status.retry_after,
     };
-    let sig = classify::normalize_raw_error(&raw, error_map, &classify::NoopDiagnostics);
+    let sig = classify::normalize_raw_error(&raw, error_map, diagnostics);
     let disposition = classify::classify(&sig);
     let (outcome, label) = outcome_and_label(disposition, sig.retry_after);
     Classified {
@@ -126,14 +132,36 @@ pub fn classify_upstream(
 mod tests {
     use super::*;
     use crate::cfg::BreakerCfg;
+    use crate::classify::{Diagnostics, NoopDiagnostics, WarnOnceDiagnostics};
     use crate::{Breaker, BreakerUnit, DestinationId, Outcome};
+    use busbar_caps::{KernelSeal, Route, UnitToken};
     use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
     fn err_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    /// A fresh `UnitToken<Route>` for one `observe`/`state` call — test-only, minted through the
+    /// kernel seal exactly as CG-29 says a real deployment would.
+    fn route_token() -> UnitToken<Route> {
+        UnitToken::mint(&KernelSeal::acquire_for_kernel())
+    }
+
+    /// A [`Diagnostics`] sink that records every call it receives, unconditionally (no dedup of
+    /// its own) — used underneath [`WarnOnceDiagnostics`] to prove the wrapper is what dedups.
+    #[derive(Default)]
+    struct RecordingDiagnostics {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl Diagnostics for RecordingDiagnostics {
+        fn unrecognized_error_map_value(&self, value: &str) {
+            self.calls.lock().unwrap().push(value.to_string());
+        }
     }
 
     // ── outcome_and_label: the four-way fold, ported from `classify_error`'s match arms ─────────
@@ -192,6 +220,7 @@ mod tests {
                 code: Some(1113),
                 retry_after: None,
             },
+            &NoopDiagnostics,
         );
         assert_eq!(out.disposition, Disposition::HardDown);
         assert_eq!(out.outcome, Outcome::HardDown);
@@ -206,6 +235,7 @@ mod tests {
                 code: Some(500),
                 retry_after: None,
             },
+            &NoopDiagnostics,
         );
         assert_eq!(out.disposition, Disposition::TransientUpstream);
         assert_eq!(out.outcome, Outcome::Transient { retry_after: None });
@@ -219,6 +249,7 @@ mod tests {
                 code: Some(429),
                 retry_after: Some(7),
             },
+            &NoopDiagnostics,
         );
         assert_eq!(out.disposition, Disposition::TransientUpstream);
         assert_eq!(
@@ -238,6 +269,7 @@ mod tests {
                 code: Some(401),
                 retry_after: None,
             },
+            &NoopDiagnostics,
         );
         assert_eq!(out.disposition, Disposition::HardDown);
         assert_eq!(out.outcome, Outcome::HardDown);
@@ -251,6 +283,7 @@ mod tests {
                 code: Some(422),
                 retry_after: None,
             },
+            &NoopDiagnostics,
         );
         assert_eq!(out.disposition, Disposition::ClientFault);
         assert_eq!(out.outcome, Outcome::RecordNothing);
@@ -267,6 +300,7 @@ mod tests {
                 code: None,
                 retry_after: None,
             },
+            &NoopDiagnostics,
         );
         assert_eq!(out.disposition, Disposition::ClientFault);
         assert_eq!(out.outcome, Outcome::RecordNothing);
@@ -321,6 +355,7 @@ mod tests {
             out.outcome,
             &BreakerCfg::default(),
             0,
+            &route_token(),
         );
         assert!(
             tripped,
@@ -328,12 +363,97 @@ mod tests {
         );
 
         assert_eq!(
-            unit.state("pool-a", DestinationId::new(7), 100),
+            unit.state("pool-a", DestinationId::new(7), 100, &route_token()),
             crate::LaneState::Suppressed { until: 1800 }
         );
         assert_eq!(
-            unit.state("pool-b", DestinationId::new(7), 100),
+            unit.state("pool-b", DestinationId::new(7), 100, &route_token()),
             crate::LaneState::Suppressed { until: 1800 }
+        );
+    }
+
+    // ── CG-43: the diagnostics sink reaches `classify` ──────────────────────────────────────────
+
+    #[test]
+    fn an_unrecognized_error_map_value_warns_the_sink_exactly_once() {
+        let sink = Arc::new(RecordingDiagnostics::default());
+        let warn_once = WarnOnceDiagnostics::new(sink.clone());
+        let map = err_map(&[("1113", "not_a_real_class")]);
+
+        // Two calls with the same unrecognized mapped value: the sink is told once.
+        let _ = classify_upstream(
+            &map,
+            UpstreamStatus {
+                code: Some(1113),
+                retry_after: None,
+            },
+            &warn_once,
+        );
+        let _ = classify_upstream(
+            &map,
+            UpstreamStatus {
+                code: Some(1113),
+                retry_after: None,
+            },
+            &warn_once,
+        );
+
+        assert_eq!(
+            *sink.calls.lock().unwrap(),
+            vec!["not_a_real_class".to_string()],
+            "the second occurrence of the same unrecognized value must not warn again"
+        );
+    }
+
+    #[test]
+    fn noop_diagnostics_stays_silent_on_an_unrecognized_error_map_value() {
+        // The default sink: an unrecognized mapping still falls through to HTTP-status
+        // classification (the RESULT is unaffected), and NoopDiagnostics records nothing to check
+        // against — its only contract is that it never panics and never calls out anywhere.
+        let map = err_map(&[("1113", "not_a_real_class")]);
+        let out = classify_upstream(
+            &map,
+            UpstreamStatus {
+                code: Some(1113),
+                retry_after: None,
+            },
+            &NoopDiagnostics,
+        );
+        // Falls through to HTTP-status classification: no numeric status recognized as an error
+        // (code stood in for the status here), so it lands on the client-fault fallback.
+        assert_eq!(out.disposition, Disposition::ClientFault);
+    }
+
+    #[test]
+    fn breaker_unit_classify_reaches_its_own_diagnostics_sink() {
+        // CG-43's binding: `BreakerUnit::classify` must route to the caller-supplied sink, not the
+        // hardcoded `NoopDiagnostics` `classify_upstream` used to close over internally.
+        let sink = Arc::new(RecordingDiagnostics::default());
+        let unit: BreakerUnit<
+            crate::journal::NoopJournal,
+            WarnOnceDiagnostics<Arc<RecordingDiagnostics>>,
+        > = BreakerUnit::with_diagnostics(WarnOnceDiagnostics::new(sink.clone()));
+        unit.set_error_map(DestinationId::new(1), err_map(&[("1113", "not_a_real_class")]));
+
+        let _ = unit.classify(
+            DestinationId::new(1),
+            UpstreamStatus {
+                code: Some(1113),
+                retry_after: None,
+            },
+        );
+        let _ = unit.classify(
+            DestinationId::new(1),
+            UpstreamStatus {
+                code: Some(1113),
+                retry_after: None,
+            },
+        );
+
+        assert_eq!(
+            *sink.calls.lock().unwrap(),
+            vec!["not_a_real_class".to_string()],
+            "the sink must be reached exactly once, through BreakerUnit::classify"
         );
     }
 }

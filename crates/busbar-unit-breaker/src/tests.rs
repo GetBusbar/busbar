@@ -23,6 +23,7 @@ use crate::classify::{
     Disposition, NoopDiagnostics, RawUpstreamError, StatusClass, PROVIDER_CODE_CONTEXT_LENGTH,
 };
 use crate::{Admit, Breaker, BreakerUnit, DestinationId, LaneState, Outcome};
+use busbar_caps::{KernelSeal, Route, UnitToken};
 use std::collections::HashMap;
 
 fn err_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -30,6 +31,13 @@ fn err_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect()
+}
+
+/// A fresh `UnitToken<Route>` for one `observe`/`state` call — test-only, minted through the
+/// kernel seal exactly as CG-29 says a real deployment would (`KernelSeal::acquire_for_kernel` is
+/// `// contract:` kernel-only outside test modules).
+fn route_token() -> UnitToken<Route> {
+    UnitToken::mint(&KernelSeal::acquire_for_kernel())
 }
 
 // ── Ported: classification pipeline ─────────────────────────────────────────────────────────────
@@ -290,9 +298,12 @@ fn trip_then_cooldown_then_half_open_then_success_closes() {
         Outcome::Transient { retry_after: None },
         &cfg,
         now,
+        &route_token(),
     );
     assert!(tripped, "a single failure must trip a consecutive_n=1 cell");
-    let LaneState::Suppressed { until } = unit.state("pool", DestinationId::new(1), now) else {
+    let LaneState::Suppressed { until } =
+        unit.state("pool", DestinationId::new(1), now, &route_token())
+    else {
         panic!("expected Suppressed immediately after a trip");
     };
     assert!(until > now, "cooldown must extend into the future");
@@ -315,15 +326,22 @@ fn trip_then_cooldown_then_half_open_then_success_closes() {
         }
     ));
     assert_eq!(
-        unit.state("pool", DestinationId::new(1), past),
+        unit.state("pool", DestinationId::new(1), past, &route_token()),
         LaneState::ProbeInFlight
     );
 
     // The probe succeeds: the cell recovers to Closed/Ready.
-    let re_tripped = unit.observe("pool", DestinationId::new(1), Outcome::Success, &cfg, past);
+    let re_tripped = unit.observe(
+        "pool",
+        DestinationId::new(1),
+        Outcome::Success,
+        &cfg,
+        past,
+        &route_token(),
+    );
     assert!(!re_tripped, "a success is never reported as a trip");
     assert_eq!(
-        unit.state("pool", DestinationId::new(1), past),
+        unit.state("pool", DestinationId::new(1), past, &route_token()),
         LaneState::Ready
     );
 }
@@ -340,9 +358,10 @@ fn a_failed_probe_re_trips_with_the_shifted_cooldown() {
         Outcome::Transient { retry_after: None },
         &cfg,
         now,
+        &route_token(),
     );
     let LaneState::Suppressed { until: first_until } =
-        unit.state("pool", DestinationId::new(1), now)
+        unit.state("pool", DestinationId::new(1), now, &route_token())
     else {
         panic!("expected Suppressed after the first trip");
     };
@@ -367,10 +386,11 @@ fn a_failed_probe_re_trips_with_the_shifted_cooldown() {
         Outcome::Transient { retry_after: None },
         &cfg,
         first_until,
+        &route_token(),
     );
     let LaneState::Suppressed {
         until: second_until,
-    } = unit.state("pool", DestinationId::new(1), first_until)
+    } = unit.state("pool", DestinationId::new(1), first_until, &route_token())
     else {
         panic!("expected Suppressed after the re-trip");
     };
@@ -450,7 +470,7 @@ fn an_exhausted_destination_budget_is_excluded_not_ordered_last() {
     // "budget exhausted" verdict must come from the budget check EXCLUDING the destination before
     // the breaker is even consulted, not from ranking it behind healthy destinations.
     assert_eq!(
-        unit.state("pool", DestinationId::new(1), now),
+        unit.state("pool", DestinationId::new(1), now, &route_token()),
         LaneState::BudgetExhausted
     );
     assert_eq!(
@@ -460,16 +480,23 @@ fn an_exhausted_destination_budget_is_excluded_not_ordered_last() {
 
     // Confirm it really is budget, not the breaker: observing outcomes never touches budget state,
     // and the destination's own cell reads Ready underneath the budget exclusion.
-    unit.observe("pool", DestinationId::new(1), Outcome::Success, &cfg, now);
+    unit.observe(
+        "pool",
+        DestinationId::new(1),
+        Outcome::Success,
+        &cfg,
+        now,
+        &route_token(),
+    );
     assert_eq!(
-        unit.state("pool", DestinationId::new(1), now),
+        unit.state("pool", DestinationId::new(1), now, &route_token()),
         LaneState::BudgetExhausted
     );
 
     // PB-4's soonest-cooldown Retry-After walk must never see this destination as a candidate with
     // a cooldown of 0 (which would wrongly win the "soonest" comparison) — it contributes nothing.
     let retry_after = BreakerUnit::<crate::journal::NoopJournal>::on_exhausted_retry_after(
-        [unit.state("pool", DestinationId::new(1), now)],
+        [unit.state("pool", DestinationId::new(1), now, &route_token())],
         now,
     );
     assert_eq!(retry_after, crate::AT_CAPACITY_RETRY_AFTER_SECS);
@@ -483,13 +510,16 @@ fn hard_down_trips_every_pool_cell_for_the_destination() {
 
     // Touch three cells for the same destination (the default "" cell, and two named pools) so
     // each exists before the hard-down fan-out.
-    assert_eq!(unit.state("", DestinationId::new(1), now), LaneState::Ready);
     assert_eq!(
-        unit.state("pool-a", DestinationId::new(1), now),
+        unit.state("", DestinationId::new(1), now, &route_token()),
         LaneState::Ready
     );
     assert_eq!(
-        unit.state("pool-b", DestinationId::new(1), now),
+        unit.state("pool-a", DestinationId::new(1), now, &route_token()),
+        LaneState::Ready
+    );
+    assert_eq!(
+        unit.state("pool-b", DestinationId::new(1), now, &route_token()),
         LaneState::Ready
     );
 
@@ -499,11 +529,12 @@ fn hard_down_trips_every_pool_cell_for_the_destination() {
         Outcome::HardDown,
         &cfg,
         now,
+        &route_token(),
     );
     assert!(fresh, "the first hard-down trip must be reported fresh");
 
     for pool in ["", "pool-a", "pool-b"] {
-        match unit.state(pool, DestinationId::new(1), now) {
+        match unit.state(pool, DestinationId::new(1), now, &route_token()) {
             LaneState::Suppressed { until } => {
                 assert!(until > now, "pool {pool:?} must carry a sticky cooldown")
             }
@@ -518,6 +549,7 @@ fn hard_down_trips_every_pool_cell_for_the_destination() {
         Outcome::HardDown,
         &cfg,
         now,
+        &route_token(),
     );
     assert!(!fresh_again);
 }
