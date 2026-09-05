@@ -66,7 +66,11 @@ fn the_unit_names_only_the_contract_and_the_capability_crate() {
     // The transport-facing contract counts as the contract: it is the half a transport author
     // reads, split out under its own ceiling, and this unit is one of the three that deal in
     // transports. Naming it is naming a piece of the contract, not reaching into another unit.
-    let allowed = ["busbar-caps", "busbar-contract", "busbar-contract-transport"];
+    let allowed = [
+        "busbar-caps",
+        "busbar-contract",
+        "busbar-contract-transport",
+    ];
     for line in deps.lines() {
         let line = line.trim();
         if line.starts_with('[') {
