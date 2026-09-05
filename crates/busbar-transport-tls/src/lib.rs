@@ -197,6 +197,8 @@ impl TlsTransport {
         let sni = server_conn.server_name().map(str::to_string);
         let peer_cert = server_conn.peer_certificates().and_then(|certs| {
             certs.first().map(|c| CertFacts {
+                // Not parsed: see the SELECTOR_FORMS note. The fingerprint below is the fact this
+                // transport really does read off the presented certificate.
                 subject: "peer".to_string(),
                 issuer: "peer".to_string(),
                 fingerprint: format!("{:x?}", ring_fingerprint(c.as_ref())),
@@ -235,6 +237,8 @@ impl TlsTransport {
         // which slot it was supposed to serve.
         let peer_cert = client_conn.peer_certificates().and_then(|certs| {
             certs.first().map(|c| CertFacts {
+                // Not parsed: see the SELECTOR_FORMS note. The fingerprint below is the fact this
+                // transport really does read off the presented certificate.
                 subject: "peer".to_string(),
                 issuer: "peer".to_string(),
                 fingerprint: format!("{:x?}", ring_fingerprint(c.as_ref())),
@@ -306,9 +310,14 @@ impl Plugin for TlsTransport {
 
 impl TransportMeta for TlsTransport {
     const KEY: &'static str = "tls";
+    // `ClientCertSubject` is deliberately absent. The form reads a distinguished name off the
+    // presented certificate, and this transport does not parse one: what it records is the
+    // certificate's fingerprint, a real fact the handshake already established. Advertising the
+    // form on a constant subject would mean every client certificate compares equal, so a
+    // cert-subject distinction would collapse silently rather than fail — the form goes back on
+    // this row the day the DN is parsed, and not before.
     const SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[
         busbar_contract::SelectorForm::Sni,
-        busbar_contract::SelectorForm::ClientCertSubject,
         busbar_contract::SelectorForm::Alpn,
     ];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];

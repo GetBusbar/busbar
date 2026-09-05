@@ -1048,3 +1048,51 @@ async fn a_unit0_refusal_reaches_a_healthy_peer() {
     let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), b"refused");
 }
+
+/// A transport may not advertise a selector form it cannot serve.
+///
+/// `ClientCertSubject` reads a distinguished name off the presented certificate. This transport
+/// does not parse one: it records the certificate's fingerprint, which is a real fact, and leaves
+/// subject and issuer as placeholders. Advertising the form anyway means that the day a resolver
+/// reads it, every client certificate compares equal and a cert-subject distinction collapses
+/// silently instead of failing. The declaration is held to what the transport actually fills.
+#[tokio::test]
+async fn no_selector_form_is_advertised_that_the_certificate_facts_cannot_serve() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let _server_conn = accept_fut.await.unwrap();
+
+    let cert = client
+        .arrival(&client_conn)
+        .peer_cert
+        .expect("the handshake presented a certificate");
+    assert!(
+        !cert.fingerprint.is_empty(),
+        "the fingerprint is the fact this transport really does read"
+    );
+    let subject_is_a_placeholder = cert.subject == "peer" && cert.issuer == "peer";
+
+    let forms = <TlsTransport as TransportMeta>::SELECTOR_FORMS;
+    assert!(
+        forms.contains(&busbar_contract::SelectorForm::Sni),
+        "the forms this transport does serve stay declared"
+    );
+    assert!(
+        forms.contains(&busbar_contract::SelectorForm::Alpn),
+        "the forms this transport does serve stay declared"
+    );
+    if subject_is_a_placeholder {
+        assert!(
+            !forms.contains(&busbar_contract::SelectorForm::ClientCertSubject),
+            "a distinguished name this transport never parses must not be advertised as a form it selects on"
+        );
+    }
+}
