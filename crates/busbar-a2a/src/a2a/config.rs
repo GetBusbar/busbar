@@ -444,7 +444,7 @@ impl busbar_substrate::plane::config::PlaneCfg for AgentsCfg {
 /// Split out as a free function on purpose: `serde` types check SHAPE, and every rule below is
 /// about a VALUE that is well-typed and still wrong. Boot calls it from the `Deserialize` above and
 /// the admin write path calls it from
-/// [`busbar_core::config::named_map::NamedMapSection::parse_def`], so the two paths cannot drift into
+/// the host's named-map section parser (`NamedMapSection::parse_def`), so the two paths cannot drift into
 /// different grammars — which is the exact defect that let the API persist a definition the file
 /// would have refused, and then drop it at the next rebuild with a log line.
 pub fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String> {

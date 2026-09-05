@@ -272,7 +272,7 @@ fn join_pieces(mut pieces: Vec<std::borrow::Cow<'_, str>>) -> Option<std::borrow
 // The DEFAULT/effective content-ceiling knob (`DEFAULT_HOOK_CONTENT_MAX_BYTES`, the process-wide
 // `HOOK_CONTENT_MAX_BYTES` cell, `set_hook_content_max_bytes`/`hook_content_max_bytes`) is NEUTRAL
 // vocabulary that STAYS in core (`busbar_substrate::proxy::proxy_vocab`); the enforcer below reads the
-// installed ceiling across the crate boundary via `busbar_core::proxy::hook_content_max_bytes()`.
+// installed ceiling straight off the substrate, `busbar_substrate::proxy::hook_content_max_bytes()`.
 
 /// Enforce the content ceiling on a built projection, on SERIALIZED BYTES and BEFORE the call.
 ///
@@ -505,7 +505,7 @@ pub(crate) async fn decide_policy_order(
 ) -> PolicyOutcome {
     // The hook CONTRACT projection types are api-owned; the resolved-policy carrier is neutral
     // substrate. Named at their canonical homes (the reverse-edge rule) rather than through the
-    // `busbar_core::hooks` re-export.
+    // core `hooks` re-export.
     use busbar_api::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
     use busbar_substrate::hooks::ResolvedPolicy;
 
@@ -1044,5 +1044,5 @@ pub(crate) fn capture_stage_shape<'a>(
 // `fire_stage_taps`, the bounded-tap spawn guard (`spawn_bounded_tap`), the `GateRejected` marker, and
 // the `gate_rejected` tagger are NEUTRAL vocabulary; the `StageShape`/`GateRejected`/`gate_rejected`
 // trio is named straight off `busbar_substrate::proxy::proxy_vocab` (imported above), while
-// `fire_stage_taps`/`spawn_bounded_tap` are named off `busbar_core::proxy` until wedge 3 (see the
-// import note above for why each stays). The engine names all of them at their historical short paths.
+// `fire_stage_taps`/`spawn_bounded_tap` are named off the same substrate module since wedge 3 (see
+// the import note above). The engine names all of them at their historical short paths.

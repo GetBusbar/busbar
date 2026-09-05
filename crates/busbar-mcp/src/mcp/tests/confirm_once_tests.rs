@@ -36,8 +36,8 @@
 use crate::mcp::connect::connect_support::{
     approved_hash, call, gov_with_scopes, mcp_cfg, server_cfg, wire_tool, Peer,
 };
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
 const TOOL: &str = "transfer";
@@ -66,20 +66,19 @@ fn swapped_arguments() -> serde_json::Value {
 /// A signing key is not optional scaffolding here: with none, the plane refuses to ask at all
 /// rather than issue state it could not later verify, so a fixture without one would exercise the
 /// refusal instead of the gate.
-fn signing_governance() -> Arc<busbar_core::governance::GovState> {
-    Arc::new(
-        busbar_core::governance::GovState::new_with_signer(
-            Arc::new(busbar_core::governance::MemoryStore::new()),
+fn signing_governance() -> Arc<dyn GovKit> {
+    engine()
+        .governance(
+            Arc::new(busbar_store_memory::MemoryStore::new()),
             None,
             Some(
-                busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+                busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
                     &[9u8; 32],
-                    busbar_core::governance::signing::DEFAULT_KID,
+                    busbar_substrate::governance::signing::DEFAULT_KID,
                 ),
             ),
         )
-        .expect("a governance state with a signer"),
-    )
+        .expect("a governance state with a signer")
 }
 
 /// One registration whose only tool requires ONE round of operator-configured confirmation before
@@ -111,14 +110,10 @@ fn confirming_server(peer: &Peer) -> crate::mcp::config::McpServerDefCfg {
 }
 
 /// The deployment under test, plus the peer that is the witness.
-async fn deployment() -> (
-    Peer,
-    Arc<busbar_core::state::App>,
-    busbar_api::PlaneRequestCtx,
-) {
-    busbar_core::metrics::init();
+async fn deployment() -> (Peer, Arc<dyn EngineApp>, busbar_api::PlaneRequestCtx) {
+    metrics_init();
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("bank", confirming_server(&peer))
         .governance(signing_governance())
@@ -129,7 +124,7 @@ async fn deployment() -> (
 
 /// Ask the operator's question, and hand back the continuation state the caller was issued.
 async fn obtain_approval(
-    app: &Arc<busbar_core::state::App>,
+    app: &Arc<dyn EngineApp>,
     gov: &busbar_api::PlaneRequestCtx,
     arguments: &serde_json::Value,
 ) -> (String, serde_json::Value) {

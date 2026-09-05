@@ -5,7 +5,7 @@
 //!
 //! `busbar-core`'s `appbuild` populates the neutral [`PlaneBuildInput`] carrier from the resolved config
 //! and hands it across the `PlaneDecl::build_runtime` fn-pointer as `&dyn Any` (single-compiled-safe —
-//! the carrier holds NO `busbar_core::` type). Here, IN-PLANE, we downcast it and rebuild the concrete
+//! the carrier holds NO core type). Here, IN-PLANE, we downcast it and rebuild the concrete
 //! [`Lane`]/[`WeightedLane`]/[`MemberMeta`]/[`PoolRuntime`]/[`NativeRuntime`] routing tables, re-running
 //! the egress-target/credential/upstream-client/probe-schedule resolution against the widened core
 //! down-primitives (`busbar_substrate::egress_auth`, `busbar_substrate::topology::UpstreamClients`, this plane's own
@@ -219,7 +219,7 @@ pub(crate) fn build_runtime(
 
     // Per-pool on_exhausted policy table. The plane RUNTIME stores the neutral
     // `OnExhaustedInput` carried on `PlaneBuildInput` DIRECTLY — its variants are the byte-identical
-    // mirror of the retired `busbar_core::config::OnExhausted` round-trip, so the lowering is a
+    // mirror of the retired core `config::OnExhausted` round-trip, so the lowering is a
     // clone rather than a re-map (ABI-purity P5: the PlaneBuildInput -> core-config -> runtime
     // round-trip collapses to PlaneBuildInput -> runtime).
     let mut on_exhausted_cfgs: HashMap<String, OnExhaustedInput> =

@@ -84,16 +84,43 @@ pub(crate) struct OverlayResolution {
 ///   outcome than serving with the admin-API config mutations disabled. This degrades: it warns
 ///   loudly, sets `read_only_backend`, and returns `path: None`.
 ///
-/// Precedence for a mutable config's backend path: an explicit `config.overlay` wins; else the default
-/// `busbar-overlay.json` next to the resolved config.yaml. (The `BUSBAR_CONFIG_OVERLAY` env var was
-/// deprecated in 1.5.3 and removed in 1.6.0.) `probe_fs` gates the filesystem writability check —
-/// `true` at boot/reload (so a read-only config dir refuses to boot), `false` for `--validate` (which
-/// must have zero side effects and may run away from the target filesystem).
+/// Precedence for a mutable config's backend path: an explicit `config.overlay` wins; else the
+/// deprecated `BUSBAR_CONFIG_OVERLAY` env var (`env_override`, with a deprecation warn); else the
+/// default `busbar-overlay.json` next to the resolved config.yaml. `probe_fs` gates the filesystem
+/// writability check — `true` at boot/reload (so a read-only config dir degrades to no overlay,
+/// above), `false` for `--validate` (which must have zero side effects and may run away from the
+/// target filesystem).
+///
+/// [`resolve_backend`] is the same resolution with no env override — the form the overlay tests
+/// exercise the precedence through (the disk loader is the only production caller, and it always
+/// threads the env value in).
+#[cfg(test)]
 pub(crate) fn resolve_backend(
     cfg: &ConfigMgmtCfg,
     config_path: &Path,
     probe_fs: bool,
 ) -> Result<OverlayResolution, String> {
+    resolve_backend_with_env(cfg, config_path, None, probe_fs)
+}
+
+/// [`resolve_backend`] with the deprecated `BUSBAR_CONFIG_OVERLAY` value (`env_override`) threaded
+/// in. The disk loader reads that env var and calls this; it wins over the default path only when
+/// `config.overlay` is unset, and its presence is deprecation-warned here so the warning sits next
+/// to the precedence that honors it.
+pub(crate) fn resolve_backend_with_env(
+    cfg: &ConfigMgmtCfg,
+    config_path: &Path,
+    env_override: Option<&Path>,
+    probe_fs: bool,
+) -> Result<OverlayResolution, String> {
+    if env_override.is_some() {
+        crate::diagnostics::diag_warn!(
+            crate::diagnostics::DEPRECATED_ENV_VAR_HONORED,
+            "BUSBAR_CONFIG_OVERLAY is DEPRECATED and will be removed in a future release; set \
+             `config.overlay.file` in config.yaml instead. It is honored for now only when \
+             `config.overlay` is not set."
+        );
+    }
     if cfg.locked {
         // Immutable/GitOps: the overlay is irrelevant and ignored; runtime mutations are refused.
         return Ok(OverlayResolution {
@@ -103,7 +130,7 @@ pub(crate) fn resolve_backend(
         });
     }
     let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
-    // MUTABLE: resolve the backend path (config wins > default next to config.yaml).
+    // MUTABLE: resolve the backend path (config wins > deprecated env > default next to config.yaml).
     let path: Option<PathBuf> = match &cfg.overlay {
         Some(OverlayCfg::Disabled(false)) => None, // `overlay: false` — explicitly no backend.
         Some(OverlayCfg::Disabled(true)) => {
@@ -114,7 +141,11 @@ pub(crate) fn resolve_backend(
             );
         }
         Some(OverlayCfg::Backend(b)) => b.file.as_ref().map(|f| resolve_rel(f, config_dir)),
-        None => Some(config_dir.join(DEFAULT_OVERLAY_FILENAME)),
+        None => Some(
+            env_override
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| config_dir.join(DEFAULT_OVERLAY_FILENAME)),
+        ),
     };
     let Some(p) = path else {
         return Err("config is mutable (config.locked: false) but has no writable overlay backend — \

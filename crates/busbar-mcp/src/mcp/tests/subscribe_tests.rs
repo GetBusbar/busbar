@@ -21,9 +21,9 @@
 //! mutation path ever reaches it, which is the failure mode a notification surface has by default.
 
 use crate::mcp::envelope::PROTOCOL_VERSION;
+use crate::mcp::test_engine::*;
 use crate::mcp::McpCfg;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 use futures::StreamExt as _;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
@@ -89,11 +89,11 @@ prompts_allow:
 /// this test its first run.
 fn governed_app_with(
     yaml: &str,
-    gov: &std::sync::Arc<busbar_core::governance::GovState>,
-) -> std::sync::Arc<busbar_core::state::App> {
+    gov: &std::sync::Arc<dyn GovKit>,
+) -> std::sync::Arc<dyn EngineApp> {
     let def: crate::mcp::config::McpServerDefCfg = serde_yaml::from_str(yaml)
         .unwrap_or_else(|e| panic!("the `tools:` registration was refused by the grammar: {e}"));
-    TestApp::new()
+    test_app()
         .mcp(&McpCfg {
             canonical_uri: CANONICAL.to_string(),
             authorization_servers: vec!["https://login.example.com".to_string()],
@@ -105,10 +105,10 @@ fn governed_app_with(
         .build()
 }
 
-fn app_with(yaml: &str) -> std::sync::Arc<busbar_core::state::App> {
+fn app_with(yaml: &str) -> std::sync::Arc<dyn EngineApp> {
     let def: crate::mcp::config::McpServerDefCfg = serde_yaml::from_str(yaml)
         .unwrap_or_else(|e| panic!("the `tools:` registration was refused by the grammar: {e}"));
-    TestApp::new()
+    test_app()
         .mcp(&McpCfg {
             canonical_uri: CANONICAL.to_string(),
             authorization_servers: vec!["https://login.example.com".to_string()],
@@ -121,14 +121,9 @@ fn app_with(yaml: &str) -> std::sync::Arc<busbar_core::state::App> {
 
 /// Boot a deployment and hand back its URL AND the live handle, so a case that needs the catalogue
 /// to change can swap a second `App` onto it mid-stream.
-async fn serve(yaml: &str) -> (String, std::sync::Arc<busbar_core::state::AppHandle>) {
-    busbar_core::metrics::init();
-    let (router, handle) = busbar_core::build_router_with_limits(
-        app_with(yaml),
-        busbar_core::limits::translate_body_max_bytes(),
-        busbar_core::config::DEFAULT_MAX_INBOUND_CONCURRENT,
-        busbar_core::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
-    );
+async fn serve(yaml: &str) -> (String, std::sync::Arc<dyn EngineHandle>) {
+    metrics_init();
+    let (router, handle) = app_with(yaml).router_with_handle();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -511,16 +506,16 @@ async fn the_relay_filters_unasked_uris_and_refuses_another_servers_announcement
 /// mid-stream shape, a grant that was wide at open and narrow at the poll.
 #[test]
 fn a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it() {
-    let gov = std::sync::Arc::new(
-        busbar_core::governance::GovState::new(
-            std::sync::Arc::new(busbar_core::governance::MemoryStore::new()),
+    let gov = engine()
+        .governance(
+            std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
+            None,
             None,
         )
-        .expect("a memory-backed registry constructs"),
-    );
+        .expect("a memory-backed registry constructs");
     let (wide, _s1) = gov
         .create_key(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "k-wide".to_string(),
                 allowed_pools: None, // the store's wildcard: every scope kind
                 group: None,
@@ -532,7 +527,7 @@ fn a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it(
         .expect("mint");
     let (narrow, _s2) = gov
         .create_key(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "k-narrow".to_string(),
                 allowed_pools: Some(vec![]), // exactly nothing
                 group: None,
@@ -543,14 +538,11 @@ fn a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it(
         )
         .expect("mint");
 
-    let handle = std::sync::Arc::new(busbar_core::state::AppHandle::new(governed_app_with(
-        ONE_TOOL_ONE_RESOURCE,
-        &gov,
-    )));
+    let handle = app_handle(governed_app_with(ONE_TOOL_ONE_RESOURCE, &gov));
     let mut streams = [&wide, &narrow].map(|key| {
         let id = serde_json::json!(7);
         crate::mcp::subscribe::Listen {
-            host: busbar_core::plane_host::engine_host_from_handle(&handle),
+            host: engine_host_from_handle(&handle),
             standing: busbar_substrate::trust::validate::Standing::opened(
                 Some(key),
                 busbar_substrate::trust::validate::Snapshot::Watching,
@@ -717,19 +709,19 @@ async fn discover_declares_the_capabilities_the_listen_stream_delivers() {
 fn a_revoked_key_stops_being_served_on_the_next_poll() {
     use std::time::Duration;
 
-    let gov = std::sync::Arc::new(
-        busbar_core::governance::GovState::new(
-            std::sync::Arc::new(busbar_core::governance::MemoryStore::new()),
+    let gov = engine()
+        .governance(
+            std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
+            None,
             None,
         )
-        .expect("a memory-backed registry constructs"),
-    );
+        .expect("a memory-backed registry constructs");
     // A LIVE, ADMITTED key — exactly what the auth middleware resolves and attaches at ingress. The
     // fixture must start live, because the defect is about what happens to a key AFTER it was
     // legitimately admitted; a key already dead at open is one the auth chain would have refused.
     let (admitted, _secret) = gov
         .create_key(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "k-live".to_string(),
                 allowed_pools: None,
                 group: None,
@@ -741,12 +733,10 @@ fn a_revoked_key_stops_being_served_on_the_next_poll() {
         .expect("mint");
     assert!(admitted.is_live() && admitted.enabled, "admitted at open");
 
-    let handle = std::sync::Arc::new(busbar_core::state::AppHandle::new(governed_app_with(
-        ONE_TOOL, &gov,
-    )));
+    let handle = app_handle(governed_app_with(ONE_TOOL, &gov));
     let id = serde_json::json!(7);
     let mut state = crate::mcp::subscribe::Listen {
-        host: busbar_core::plane_host::engine_host_from_handle(&handle),
+        host: engine_host_from_handle(&handle),
         // THE ID AND THE BOUND, never the principal. `Snapshot::Watching` because a generation move
         // is what this response exists to REPORT — pinning it would end the stream on the first
         // change it was opened to hear about.
@@ -817,7 +807,7 @@ fn a_revoked_key_stops_being_served_on_the_next_poll() {
         Duration::ZERO,
     );
     assert_eq!(
-        expired.still_permitted(Some(&*gov), 1, 0),
+        expired.still_permitted(Some(gov.gov_resolve()), 1, 0),
         Err(busbar_substrate::trust::validate::Lapsed::Expired),
         "the bound still ends a standing permission on its own"
     );

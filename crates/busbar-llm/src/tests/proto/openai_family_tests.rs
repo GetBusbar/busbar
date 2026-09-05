@@ -70,21 +70,21 @@ fn context_length_prose_scan_precise_no_false_positive() {
 fn bearer_error_code_mirrors_native_type_code_pairing() {
     use super::bearer_error_code as code;
     assert_eq!(
-        code(busbar_core::proxy::KIND_AUTHENTICATION),
+        code(busbar_substrate::proxy::KIND_AUTHENTICATION),
         serde_json::Value::String("invalid_api_key".to_string())
     );
     assert_eq!(
-        code(busbar_core::proxy::KIND_INSUFFICIENT_QUOTA),
+        code(busbar_substrate::proxy::KIND_INSUFFICIENT_QUOTA),
         serde_json::Value::String("insufficient_quota".to_string())
     );
     // Every modeled non-auth/non-quota type carries no code.
     for t in [
-        busbar_core::proxy::KIND_INVALID_REQUEST,
-        busbar_core::proxy::KIND_PERMISSION,
-        busbar_core::proxy::KIND_NOT_FOUND,
-        busbar_core::proxy::KIND_RATE_LIMIT,
-        busbar_core::proxy::KIND_SERVER_ERROR,
-        busbar_core::proxy::KIND_API_ERROR,
+        busbar_substrate::proxy::KIND_INVALID_REQUEST,
+        busbar_substrate::proxy::KIND_PERMISSION,
+        busbar_substrate::proxy::KIND_NOT_FOUND,
+        busbar_substrate::proxy::KIND_RATE_LIMIT,
+        busbar_substrate::proxy::KIND_SERVER_ERROR,
+        busbar_substrate::proxy::KIND_API_ERROR,
     ] {
         assert_eq!(code(t), serde_json::Value::Null, "{t} must emit code:null");
     }

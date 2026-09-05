@@ -279,8 +279,7 @@ async fn arrival_runs_run_gauntlet_session_refusing_a_denied_destination_before_
     // ARRIVAL runs `run_gauntlet_session`: a denied destination is REFUSED at the open-pass gate before
     // any lease/durable open — the governed open returns the gate's `403`, proving the gate ran. This
     // is the D3 call-site invariant at the ROUTE layer: no byte, no charge on a refused destination.
-    let app = busbar_core::test_support::TestApp::new().build();
-    let host = busbar_core::plane_host::engine_host(&app);
+    let host = busbar_substrate::testkit::fixture_host::FixtureHost::new().into_host();
     let denied = runtime_for("blocked-model", &["blocked-model"]);
     // Mint is a live `open_governed` production ingress (the browser `ek_` pass); the Sideband/Telephony
     // WS legs prove the same verify-before-charge through `ws_accept`'s destination gauntlet + the

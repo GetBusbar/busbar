@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config validation failed:\n  - limits.upstream_error_body_max_bytes must be >= 1 (0 would buffer no upstream error body)\n"},"headers":{},"status":1}

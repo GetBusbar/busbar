@@ -10,9 +10,9 @@
 //! with itself while the handler never called it.
 
 use crate::mcp::envelope::PROTOCOL_VERSION;
+use crate::mcp::test_engine::*;
 use crate::mcp::McpCfg;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 
@@ -23,8 +23,8 @@ const CANONICAL: &str = "https://gateway.example.com/mcp";
 const META_LOGGING_LEVEL: &str = "io.busbar/loggingLevel";
 
 async fn serve() -> (String, tokio::task::JoinHandle<()>) {
-    busbar_core::metrics::init();
-    let app = TestApp::new()
+    metrics_init();
+    let app = test_app()
         .mcp(&McpCfg {
             canonical_uri: CANONICAL.to_string(),
             authorization_servers: vec!["https://login.example.com".to_string()],
@@ -32,7 +32,7 @@ async fn serve() -> (String, tokio::task::JoinHandle<()>) {
             allowed_origins: Vec::new(),
         })
         .build();
-    let router = busbar_core::build_router(app);
+    let router = build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

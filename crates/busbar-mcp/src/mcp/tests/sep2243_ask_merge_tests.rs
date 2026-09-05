@@ -13,8 +13,8 @@
 use crate::mcp::connect::connect_support::{
     approved_hash, call, gov_with_scopes, mcp_cfg, server_cfg, wire_tool, Peer,
 };
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
 const TOOL: &str = "lookup";
@@ -32,20 +32,19 @@ fn schema() -> serde_json::Value {
     })
 }
 
-fn signing_governance() -> Arc<busbar_core::governance::GovState> {
-    Arc::new(
-        busbar_core::governance::GovState::new_with_signer(
-            Arc::new(busbar_core::governance::MemoryStore::new()),
+fn signing_governance() -> Arc<dyn GovKit> {
+    engine()
+        .governance(
+            Arc::new(busbar_store_memory::MemoryStore::new()),
             None,
             Some(
-                busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+                busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
                     &[9u8; 32],
-                    busbar_core::governance::signing::DEFAULT_KID,
+                    busbar_substrate::governance::signing::DEFAULT_KID,
                 ),
             ),
         )
-        .expect("a governance state with a signer"),
-    )
+        .expect("a governance state with a signer")
 }
 
 /// A registration whose tool ASKS the caller for `region` — the routing-annotated argument — before
@@ -76,14 +75,10 @@ fn asking_server(peer: &Peer) -> crate::mcp::config::McpServerDefCfg {
     cfg
 }
 
-async fn deployment() -> (
-    Peer,
-    Arc<busbar_core::state::App>,
-    busbar_api::PlaneRequestCtx,
-) {
-    busbar_core::metrics::init();
+async fn deployment() -> (Peer, Arc<dyn EngineApp>, busbar_api::PlaneRequestCtx) {
+    metrics_init();
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("geo", asking_server(&peer))
         .governance(signing_governance())

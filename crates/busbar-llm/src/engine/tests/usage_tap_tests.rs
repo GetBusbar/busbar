@@ -116,7 +116,7 @@ fn gemini_rewrite_role_round_trips_model_and_assistant() {
         &[],
         super::APPLICATION_JSON,
         "gemini",
-        Some(busbar_core::operation::Operation::CHAT),
+        Some(busbar_api::operation::Operation::CHAT),
     )
     .expect("the gemini reader accepts this body");
     let p = f.prompt();
@@ -209,7 +209,7 @@ async fn apply_global_rewrites_chains_in_order() {
         &mut v,
         "pool",
         "anthropic",
-        busbar_core::operation::Operation::CHAT,
+        busbar_api::operation::Operation::CHAT,
         false,
         1,
     )
@@ -232,7 +232,8 @@ async fn apply_global_rewrites_chains_in_order() {
 #[test]
 fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec, SECS_PER_DAY};
+    use busbar_core::governance::{GovState, MemoryStore, SECS_PER_DAY};
+    use busbar_substrate::governance::NewKeySpec;
 
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, None).expect("gov"));
@@ -275,7 +276,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     // different (later) day — making the bug observable: the old code charged into "today".
     let charged_at: u64 = 1_700_000_000; // 2023-11-14 (day window = 1_700_000_000/86400*86400)
     let day_window = charged_at / SECS_PER_DAY * SECS_PER_DAY;
-    let today_window = busbar_core::store::now() / SECS_PER_DAY * SECS_PER_DAY;
+    let today_window = busbar_substrate::store::now() / SECS_PER_DAY * SECS_PER_DAY;
     assert_ne!(
         day_window, today_window,
         "test precondition: charged_at must be a different day than now, or the bug is masked"
@@ -330,7 +331,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
             "group:daygrp@day",
             "day",
             true,
-            busbar_core::store::now(),
+            busbar_substrate::store::now(),
         )
         .expect("usage read")
         .tokens;
@@ -340,7 +341,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     );
     // The key's all-time attribution bucket sees the tokens regardless of the day (sanity).
     assert_eq!(
-        gov.usage_for(&cost, &key.id, busbar_core::store::now())
+        gov.usage_for(&cost, &key.id, busbar_substrate::store::now())
             .expect("usage read")
             .map(|u| u.tokens)
             .unwrap_or(0),
@@ -356,7 +357,8 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
 #[test]
 fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_substrate::governance::NewKeySpec;
 
     let store = Arc::new(MemoryStore::new());
     // No fee, no rate card → the derived-spend math can't overflow, isolating the SUM under test.
@@ -434,7 +436,8 @@ fn test_stable_hash_is_deterministic() {
 #[test]
 fn ledger_prices_an_aliased_lane_at_the_rate_card() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_substrate::governance::NewKeySpec;
 
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, None).expect("gov"));

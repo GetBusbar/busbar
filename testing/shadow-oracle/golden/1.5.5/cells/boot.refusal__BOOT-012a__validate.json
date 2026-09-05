@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config validation failed:\n  - model 'm-gemini' has max_concurrent: 0; must be >= 1, or omit it (default = unbounded)\n"},"headers":{},"status":1}

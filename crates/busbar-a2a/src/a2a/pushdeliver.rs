@@ -60,8 +60,8 @@
 //! guard left no record**. A security control that fires silently is one nobody can audit after the
 //! fact — and this control fires precisely when a callback that was legitimate at registration has
 //! been re-pointed at something that is not, which is the event an incident review goes looking for.
-//! Every attempt now appends to the TASK's own provenance chain (`busbar_core::provenance`'s three
-//! `task.push_*` kinds), through the one mechanism in [`busbar_core::audit`]. A log line is still emitted;
+//! Every attempt now appends to the TASK's own provenance chain (the neutral audit vocabulary's three
+//! `task.push_*` kinds), through the one mechanism in [`busbar_substrate::audit`]. A log line is still emitted;
 //! it is no longer the only thing that happens.
 
 use std::collections::HashMap;
@@ -284,7 +284,7 @@ pub(crate) fn auth_for_test(task_id: &str) -> Option<DeliveryAuth> {
 ///
 /// Stated here because the absence looks exactly like the defect this plane's other three response
 /// sites really did have. Every other place busbar puts JSON on this plane's wire is a JSON-RPC
-/// message and is read or written through [`busbar_core::ingress::jsonrpc`]; a reviewer who has just been
+/// message and is read or written through [`busbar_substrate::ingress::jsonrpc`]; a reviewer who has just been
 /// through those will read the missing `jsonrpc`, `method` and `id` members here as a fourth
 /// instance and add them. It would be a protocol violation.
 ///
@@ -363,7 +363,7 @@ pub(crate) fn deliver(
     outcome
 }
 
-/// APPEND THE DELIVERY'S OUTCOME to the task's chain, in the ONE mechanism (`busbar_core::audit`, through
+/// APPEND THE DELIVERY'S OUTCOME to the task's chain, in the ONE mechanism (`busbar_substrate::audit`, through
 /// the task registry that owns this task's chain position).
 ///
 /// [`PushRefusal::NoCallback`] writes NOTHING, and that is not an exception to the rule: no delivery

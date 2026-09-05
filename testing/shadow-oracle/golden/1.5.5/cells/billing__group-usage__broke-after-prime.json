@@ -1,0 +1,1 @@
+{"applied":["hdr.date","ts.unix"],"body":{"json":{"as_of":0,"buckets":[{"budget_cap":1,"budget_remaining_cents":0,"requests":1,"requests_cap":1,"spend_cents":250,"tokens":18,"window":"day"}],"enabled":true,"group":"broke"}},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"182","content-type":"application/json"},"status":200}

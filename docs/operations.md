@@ -30,10 +30,11 @@ never silent.
 
 **Operational config moved into `config.yaml` (1.5.3).** Several knobs that used to be env vars now
 live in config.yaml, so they are reviewable, `--validate`-checked, and part of the deployment artifact.
-These env vars were deprecated in 1.5.3, honored for one release, and **removed in 1.6.0** — they no
-longer have any effect. Use the config.yaml key instead:
+These env vars were deprecated in 1.5.3 and remain **deprecated but honoured** in 1.6.0 — each still
+takes effect exactly as it did in 1.5.5, with a boot warning (`BUSBAR-3021`) naming the config.yaml key
+that replaces it. Move each at your convenience; none has a removal date yet.
 
-| Removed env var (deprecated 1.5.3, removed 1.6.0) | config.yaml key |
+| Deprecated env var (since 1.5.3, still honoured) | config.yaml key |
 |---|---|
 | `BUSBAR_CONFIG_OVERLAY` | `config.overlay.file` (see [config mutability](#config-mutability-locked--overlay)) |
 | `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
@@ -41,8 +42,8 @@ longer have any effect. Use the config.yaml key instead:
 | `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
 | `BUSBAR_PROVIDERS` | `providers_file:` (or the `--providers <path>` flag) |
 
-`TOKIO_WORKER_THREADS` is still honored as a fallback for `advanced.worker_threads`. `BUSBAR_CONFIG`
-is unchanged.
+`TOKIO_WORKER_THREADS` is still honored, undeprecated, as a fallback for `advanced.worker_threads`.
+`BUSBAR_CONFIG` is unchanged.
 
 ### Config mutability (`locked` + `overlay`)
 

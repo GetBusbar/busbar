@@ -18,7 +18,7 @@ fn a_rebuild_carries_the_probe_schedule() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let no_lane_cfg = || {
-        cfg_with_provider_api_key(busbar_core::config::SecretRef::env(
+        cfg_with_provider_api_key(busbar_api::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_PROBE_SCHEDULE",
         ))
     };
@@ -73,7 +73,7 @@ fn a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it()
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let cfg = || {
-        cfg_with_provider_api_key(busbar_core::config::SecretRef::env(
+        cfg_with_provider_api_key(busbar_api::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_CLIENT_REBUILD",
         ))
     };

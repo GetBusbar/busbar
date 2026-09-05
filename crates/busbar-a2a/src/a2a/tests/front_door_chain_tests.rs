@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE A2A FRONT DOOR'S AUDIT CHAIN, DRIVEN — a real inbound task, through `busbar_core::build_router`,
+//! THE A2A FRONT DOOR'S AUDIT CHAIN, DRIVEN — a real inbound task, through the real router,
 //! leaving real hash-chained events in a real sink, read back and RECOMPUTED.
 //!
 //! ## What this file replaces, and why the cell it closes had to be re-pointed

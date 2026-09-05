@@ -92,12 +92,12 @@ async fn run(
             seen: seen.clone(),
             reject,
         }),
-        on_error: busbar_core::config::PolicyOnError::default(),
+        on_error: busbar_substrate::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt,
         send_user,
-        on_empty: busbar_core::config::PolicyOnError::Reject,
+        on_empty: busbar_substrate::config::PolicyOnError::Reject,
     };
     let cands = vec![WeightedLane {
         reasoning: None,
@@ -117,7 +117,7 @@ async fn run(
         crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        busbar_core::operation::Operation::CHAT,
+        busbar_api::operation::Operation::CHAT,
         false,
         None,
         None,
@@ -173,12 +173,12 @@ async fn global_gate_reject_short_circuits_the_request() {
             seen: Arc::new(StdMutex::new(None)),
             reject: Some((451, "blocked by global policy".to_string())),
         }),
-        on_error: busbar_core::config::PolicyOnError::default(),
+        on_error: busbar_substrate::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_core::config::PolicyOnError::Reject,
+        on_empty: busbar_substrate::config::PolicyOnError::Reject,
     };
     // Inject the global gate (Arc refcount is 1 right after build()).
     Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
@@ -229,12 +229,12 @@ async fn global_gate_abstain_does_not_reject() {
             seen: Arc::new(StdMutex::new(None)),
             reject: None, // abstain
         }),
-        on_error: busbar_core::config::PolicyOnError::default(),
+        on_error: busbar_substrate::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_core::config::PolicyOnError::Reject,
+        on_empty: busbar_substrate::config::PolicyOnError::Reject,
     };
     Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
 
@@ -307,12 +307,12 @@ impl RoutingPolicy for CannedGate {
 fn canned_gate(canned: Canned, name: &'static str) -> ResolvedPolicy {
     ResolvedPolicy::Policy {
         policy: Arc::new(CannedGate { canned, name }),
-        on_error: busbar_core::config::PolicyOnError::default(),
+        on_error: busbar_substrate::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_core::config::PolicyOnError::Reject,
+        on_empty: busbar_substrate::config::PolicyOnError::Reject,
     }
 }
 
@@ -419,7 +419,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     let mut rc = RequestCtx::new(60, 1);
     rc.active_restricts.push(RestrictConstraint {
         tags_any: vec!["baa".to_string()],
-        on_empty: busbar_core::config::PolicyOnError::Reject,
+        on_empty: busbar_substrate::config::PolicyOnError::Reject,
         name: "baa-gate",
     });
     let out = rc.enforce_restricts(&rt, "fb", cands.clone()).unwrap();
@@ -433,7 +433,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     let mut rc_reject = RequestCtx::new(60, 1);
     rc_reject.active_restricts.push(RestrictConstraint {
         tags_any: vec!["hipaa".to_string()],
-        on_empty: busbar_core::config::PolicyOnError::Reject,
+        on_empty: busbar_substrate::config::PolicyOnError::Reject,
         name: "hipaa-gate",
     });
     assert!(
@@ -447,7 +447,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     let mut rc_weighted = RequestCtx::new(60, 1);
     rc_weighted.active_restricts.push(RestrictConstraint {
         tags_any: vec!["hipaa".to_string()],
-        on_empty: busbar_core::config::PolicyOnError::Weighted,
+        on_empty: busbar_substrate::config::PolicyOnError::Weighted,
         name: "hipaa-advisory",
     });
     let out = rc_weighted
@@ -558,7 +558,7 @@ fn lanes(n: usize) -> Vec<WeightedLane> {
         .collect()
 }
 
-async fn fire(app: Arc<busbar_core::state::App>, n_lanes: usize) -> Response {
+async fn fire<A: busbar_substrate::testkit::BuiltAppSeam>(app: Arc<A>, n_lanes: usize) -> Response {
     forward_with_pool(
         &app,
         lanes(n_lanes),
@@ -630,7 +630,7 @@ impl busbar_api::RoutingPolicy for CaptureTap {
 }
 
 /// Build an in-process TAP capture as the App stage-tap triple.
-async fn webhook_tap() -> (Arc<CaptureTap>, busbar_core::hooks::TapEntry) {
+async fn webhook_tap() -> (Arc<CaptureTap>, busbar_substrate::hooks::TapEntry) {
     let cap = Arc::new(CaptureTap {
         last: std::sync::Mutex::new(None),
     });
@@ -711,7 +711,7 @@ async fn substrate_fire_stage_taps_honors_group_scope_via_host_seam() {
         .pool("p", &[(0, 1)])
         .build();
     Arc::get_mut(&mut app).expect("sole owner").groups_registry = tree;
-    let host = busbar_core::plane_host::engine_host_value(&app);
+    let host = busbar_substrate::testkit::engine_host_value(&app);
 
     let shape = busbar_substrate::proxy::proxy_vocab::StageShape::zeroed(
         1,
@@ -729,7 +729,7 @@ async fn substrate_fire_stage_taps_honors_group_scope_via_host_seam() {
         status: Some(200),
     };
     // A tap SCOPED to `engineering`.
-    let scoped_tap = |cap: &Arc<CaptureTap>| -> Vec<busbar_core::hooks::TapEntry> {
+    let scoped_tap = |cap: &Arc<CaptureTap>| -> Vec<busbar_substrate::hooks::TapEntry> {
         let policy: Arc<dyn busbar_api::RoutingPolicy> = cap.clone();
         vec![(
             std::time::Duration::from_millis(500),
@@ -801,7 +801,7 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
     Arc::get_mut(&mut app)
         .expect("sole owner")
         .tap_hooks_response = vec![tap];
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let serve = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -839,7 +839,7 @@ async fn completion_tap_status_is_protocol_native_gemini_400() {
     Arc::get_mut(&mut app)
         .expect("sole owner")
         .tap_hooks_response = vec![tap];
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let serve = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1126,8 +1126,8 @@ async fn on_error_fallback_hook_fires_and_decides() {
         .build();
     let gate = ResolvedPolicy::Policy {
         policy: Arc::new(ErroringPolicy),
-        on_error: busbar_core::config::PolicyOnError::Weighted,
-        on_error_chain: vec![busbar_core::hooks::FallbackHook {
+        on_error: busbar_substrate::config::PolicyOnError::Weighted,
+        on_error_chain: vec![busbar_substrate::hooks::FallbackHook {
             policy: Arc::new(CannedGate {
                 canned: Canned::Reject(451, "fallback says no"),
                 name: "backup",
@@ -1135,12 +1135,12 @@ async fn on_error_fallback_hook_fires_and_decides() {
             timeout: std::time::Duration::from_millis(500),
             send_prompt: false,
             send_user: false,
-            on_empty: busbar_core::config::PolicyOnError::Reject,
+            on_empty: busbar_substrate::config::PolicyOnError::Reject,
         }],
         timeout: std::time::Duration::from_millis(50),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_core::config::PolicyOnError::Reject,
+        on_empty: busbar_substrate::config::PolicyOnError::Reject,
     };
     Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
     let resp = fire(app, 1).await;
@@ -1166,18 +1166,18 @@ async fn on_error_chain_exhausted_applies_terminal() {
         .build();
     let gate = ResolvedPolicy::Policy {
         policy: Arc::new(ErroringPolicy),
-        on_error: busbar_core::config::PolicyOnError::Reject,
-        on_error_chain: vec![busbar_core::hooks::FallbackHook {
+        on_error: busbar_substrate::config::PolicyOnError::Reject,
+        on_error_chain: vec![busbar_substrate::hooks::FallbackHook {
             policy: Arc::new(ErroringPolicy), // the fallback fails too
             timeout: std::time::Duration::from_millis(50),
             send_prompt: false,
             send_user: false,
-            on_empty: busbar_core::config::PolicyOnError::Reject,
+            on_empty: busbar_substrate::config::PolicyOnError::Reject,
         }],
         timeout: std::time::Duration::from_millis(50),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_core::config::PolicyOnError::Reject,
+        on_empty: busbar_substrate::config::PolicyOnError::Reject,
     };
     Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
     let resp = fire(app, 1).await;
@@ -1210,12 +1210,12 @@ async fn on_error_reject_terminal_short_circuits_before_a_live_lane_ever_dispatc
         .build();
     let gate = ResolvedPolicy::Policy {
         policy: Arc::new(ErroringPolicy),
-        on_error: busbar_core::config::PolicyOnError::Reject,
+        on_error: busbar_substrate::config::PolicyOnError::Reject,
         on_error_chain: vec![],
         timeout: std::time::Duration::from_millis(50),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_core::config::PolicyOnError::Reject,
+        on_empty: busbar_substrate::config::PolicyOnError::Reject,
     };
     Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
     let resp = fire(app, 1).await;
@@ -1662,7 +1662,8 @@ async fn max_tokens_saturates_not_wraps() {
 #[tokio::test]
 async fn send_user_projects_governance_key_identity() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_substrate::governance::NewKeySpec;
     let store = std::sync::Arc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
@@ -1701,12 +1702,12 @@ async fn send_user_projects_governance_key_identity() {
             seen: seen.clone(),
             reject: None,
         }),
-        on_error: busbar_core::config::PolicyOnError::default(),
+        on_error: busbar_substrate::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: true,
-        on_empty: busbar_core::config::PolicyOnError::Reject,
+        on_empty: busbar_substrate::config::PolicyOnError::Reject,
     };
     let cands = vec![WeightedLane {
         reasoning: None,
@@ -1727,7 +1728,7 @@ async fn send_user_projects_governance_key_identity() {
         crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        busbar_core::operation::Operation::CHAT,
+        busbar_api::operation::Operation::CHAT,
         false,
         Some(&secret),
         None,
@@ -1765,12 +1766,12 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
             seen: seen.clone(),
             reject: None,
         }),
-        on_error: busbar_core::config::PolicyOnError::default(),
+        on_error: busbar_substrate::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: true,
-        on_empty: busbar_core::config::PolicyOnError::Reject,
+        on_empty: busbar_substrate::config::PolicyOnError::Reject,
     };
     let cands = vec![WeightedLane {
         reasoning: None,
@@ -1808,7 +1809,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
         crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        busbar_core::operation::Operation::CHAT,
+        busbar_api::operation::Operation::CHAT,
         false,
         Some("sso-jwt-not-a-vkey-secret"),
         Some(&synth),
@@ -1837,7 +1838,8 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
 #[tokio::test]
 async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_substrate::governance::NewKeySpec;
     let store = std::sync::Arc::new(MemoryStore::new());
     let gov = std::sync::Arc::new(GovState::new(store, None).expect("gov state"));
     let (disabled_key, secret) = gov
@@ -1872,12 +1874,12 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
             seen: seen.clone(),
             reject: None,
         }),
-        on_error: busbar_core::config::PolicyOnError::default(),
+        on_error: busbar_substrate::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: true,
-        on_empty: busbar_core::config::PolicyOnError::Reject,
+        on_empty: busbar_substrate::config::PolicyOnError::Reject,
     };
     let cands = vec![WeightedLane {
         reasoning: None,
@@ -1915,7 +1917,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
         crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        busbar_core::operation::Operation::CHAT,
+        busbar_api::operation::Operation::CHAT,
         false,
         Some(&secret), // the RAW token, which DOES hash-match the disabled key in `by_hash`
         Some(&synth),
@@ -1945,12 +1947,12 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
             seen: seen.clone(),
             reject: None,
         }),
-        on_error: busbar_core::config::PolicyOnError::default(),
+        on_error: busbar_substrate::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: true,
-        on_empty: busbar_core::config::PolicyOnError::Reject,
+        on_empty: busbar_substrate::config::PolicyOnError::Reject,
     };
     let mut rt = pool_runtime_with(&[(0, &[])], Vec::new());
     rt.policy = Some(policy);
@@ -2085,12 +2087,12 @@ async fn reject_rides_the_full_forward_path() {
                         seen: seen.clone(),
                         reject: Some((451, "PII detected".to_string())),
                     }),
-                    on_error: busbar_core::config::PolicyOnError::default(),
+                    on_error: busbar_substrate::config::PolicyOnError::default(),
                     on_error_chain: Vec::new(),
                     timeout: std::time::Duration::from_millis(500),
                     send_prompt: false,
                     send_user: false,
-                    on_empty: busbar_core::config::PolicyOnError::Reject,
+                    on_empty: busbar_substrate::config::PolicyOnError::Reject,
                 }),
                 gates: Vec::new(),
                 rewrite_hooks: Vec::new(),
@@ -2274,12 +2276,12 @@ async fn same_request_id_joins_gate_decision_and_completion_tap() {
                     seen: seen.clone(),
                     reject: None,
                 }),
-                on_error: busbar_core::config::PolicyOnError::default(),
+                on_error: busbar_substrate::config::PolicyOnError::default(),
                 on_error_chain: Vec::new(),
                 timeout: std::time::Duration::from_millis(500),
                 send_prompt: false,
                 send_user: false,
-                on_empty: busbar_core::config::PolicyOnError::Reject,
+                on_empty: busbar_substrate::config::PolicyOnError::Reject,
             },
         )];
     }

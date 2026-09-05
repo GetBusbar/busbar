@@ -1,0 +1,1 @@
+{"applied":["hdr.date"],"body":{"json":{"error":{"code":"invalid_request","message":"malformed settings body: invalid type: string \"not-an-object\", expected a map at line 1 column 27"}}},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"148","content-type":"application/json"},"status":400}

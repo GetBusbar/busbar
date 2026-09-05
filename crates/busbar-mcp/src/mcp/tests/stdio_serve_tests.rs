@@ -22,8 +22,8 @@ use crate::mcp::connect::connect_support::{
 };
 use crate::mcp::envelope::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION, PROTOCOL_VERSION};
 use crate::mcp::stdio_serve::SessionIdentity;
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -76,23 +76,20 @@ struct Client {
 
 impl Client {
     /// Boot a session over duplex pipes, as the given identity.
-    fn open(app: Arc<busbar_core::state::App>, gov: busbar_api::PlaneRequestCtx) -> Self {
-        let handle = Arc::new(busbar_core::state::AppHandle::new(app));
+    fn open(app: Arc<dyn EngineApp>, gov: busbar_api::PlaneRequestCtx) -> Self {
+        let handle = app_handle(app);
         Self::open_on(handle, gov)
     }
 
     /// The same, on a caller-held handle — for the tests that swap a second `App` mid-session.
-    fn open_on(
-        handle: Arc<busbar_core::state::AppHandle>,
-        gov: busbar_api::PlaneRequestCtx,
-    ) -> Self {
+    fn open_on(handle: Arc<dyn EngineHandle>, gov: busbar_api::PlaneRequestCtx) -> Self {
         let (stdin_client, stdin_server) = tokio::io::duplex(1 << 16);
         let (stdout_server, stdout_client) = tokio::io::duplex(1 << 16);
         let identity = SessionIdentity {
             principal: busbar_api::AuthPrincipal(None),
             gov,
         };
-        let factory = busbar_core::plane_host::live_host_factory(handle);
+        let factory = handle.live_host_factory();
         let session = super::new_session(factory, identity);
         let serve = tokio::spawn(super::run_session(
             session.clone(),
@@ -173,8 +170,8 @@ impl Client {
 }
 
 /// A deployment fronting one approved tool and one operator-declared resource, ungoverned.
-async fn plain_deployment() -> (Peer, Arc<busbar_core::state::App>) {
-    busbar_core::metrics::init();
+async fn plain_deployment() -> (Peer, Arc<dyn EngineApp>) {
+    metrics_init();
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
     let mut cfg = server_cfg(
         &peer,
@@ -193,7 +190,7 @@ async fn plain_deployment() -> (Peer, Arc<busbar_core::state::App>) {
             blob: None,
         },
     );
-    let app = TestApp::new().mcp(&mcp_cfg()).mcp_server("ws", cfg).build();
+    let app = test_app().mcp(&mcp_cfg()).mcp_server("ws", cfg).build();
     (peer, app)
 }
 
@@ -366,7 +363,7 @@ async fn logging_set_level_makes_the_sessions_records_ride_the_channel() {
 /// (`CANCEL.NO-FURTHER-MESSAGES`) — and the session keeps serving afterwards.
 #[tokio::test]
 async fn a_cancelled_request_is_aborted_and_never_answered() {
-    busbar_core::metrics::init();
+    metrics_init();
     // A deployment whose one tool ASKS the caller first: the dispatch parks on the live ask, which
     // is the honest way to hold a request in flight long enough to cancel it.
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
@@ -391,7 +388,7 @@ async fn a_cancelled_request_is_aborted_and_never_answered() {
         );
         entry.ask_caller = vec![round];
     }
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("ws", cfg)
         .governance(signing_governance())
@@ -441,20 +438,19 @@ async fn a_cancelled_request_is_aborted_and_never_answered() {
     client.eof().await;
 }
 
-fn signing_governance() -> Arc<busbar_core::governance::GovState> {
-    Arc::new(
-        busbar_core::governance::GovState::new_with_signer(
-            Arc::new(busbar_core::governance::MemoryStore::new()),
+fn signing_governance() -> Arc<dyn GovKit> {
+    engine()
+        .governance(
+            Arc::new(busbar_store_memory::MemoryStore::new()),
             None,
             Some(
-                busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+                busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
                     &[7u8; 32],
-                    busbar_core::governance::signing::DEFAULT_KID,
+                    busbar_substrate::governance::signing::DEFAULT_KID,
                 ),
             ),
         )
-        .expect("a governance state with a signer"),
-    )
+        .expect("a governance state with a signer")
 }
 
 // ═══ THE SERVER DIRECTION: the asks and the notifications the channel makes real ════════════════
@@ -465,7 +461,7 @@ fn signing_governance() -> Arc<busbar_core::governance::GovState> {
 /// gets the finished result — with the upstream contacted exactly once, after the answer.
 #[tokio::test]
 async fn a_caller_ask_is_driven_live_over_the_channel_and_the_call_completes() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
     let mut cfg = server_cfg(
         &peer,
@@ -488,7 +484,7 @@ async fn a_caller_ask_is_driven_live_over_the_channel_and_the_call_completes() {
         );
         entry.ask_caller = vec![round];
     }
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("ws", cfg)
         .governance(signing_governance())
@@ -554,8 +550,8 @@ async fn a_caller_ask_is_driven_live_over_the_channel_and_the_call_completes() {
 /// time, with `budget_exhausted` named, and the refused call never contacts the upstream.
 #[tokio::test]
 async fn a_budgeted_key_is_refused_over_budget_through_the_stdio_binding() {
-    use busbar_core::governance::{GovState, MemoryStore};
-    busbar_core::metrics::init();
+    use busbar_store_memory::MemoryStore;
+    metrics_init();
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
     let mut cfg = server_cfg(
         &peer,
@@ -567,15 +563,16 @@ async fn a_budgeted_key_is_refused_over_budget_through_the_stdio_binding() {
         entry.input_schema = Some(schema());
     }
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[3u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov_state =
-        Arc::new(GovState::new_with_signer(store, None, Some(signer)).expect("gov state"));
+    let gov_state = engine()
+        .governance(store, None, Some(signer))
+        .expect("gov state");
     let (key, _secret) = gov_state
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "tiny-agent".to_string(),
                 allowed_pools: None,
                 group: Some("tiny".to_string()),
@@ -586,11 +583,11 @@ async fn a_budgeted_key_is_refused_over_budget_through_the_stdio_binding() {
             1_000_000_000,
         )
         .expect("a minted key");
-    let tiny: busbar_core::config::GroupCfg =
+    let tiny: serde_json::Value =
         serde_yaml::from_str("limits:\n  - { requests: 1, per: hour }\n").expect("group parses");
     let mut groups = std::collections::BTreeMap::new();
     groups.insert("tiny".to_string(), tiny);
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("ws", cfg)
         .governance(gov_state)
@@ -651,7 +648,7 @@ async fn a_budgeted_key_is_refused_over_budget_through_the_stdio_binding() {
 #[tokio::test]
 async fn subscriptions_and_resource_watches_ride_the_channel() {
     let (_peer, app) = plain_deployment().await;
-    let handle = Arc::new(busbar_core::state::AppHandle::new(app));
+    let handle = app_handle(app);
     let mut client = Client::open_on(handle.clone(), busbar_api::PlaneRequestCtx::default());
 
     client
@@ -715,10 +712,7 @@ async fn subscriptions_and_resource_watches_ride_the_channel() {
             blob: None,
         },
     );
-    let app2 = TestApp::new()
-        .mcp(&mcp_cfg())
-        .mcp_server("ws", cfg2)
-        .build();
+    let app2 = test_app().mcp(&mcp_cfg()).mcp_server("ws", cfg2).build();
     handle.swap(app2);
 
     // Both consequences arrive, in whichever order the two watchers observe the swap.
@@ -757,7 +751,7 @@ async fn subscriptions_and_resource_watches_ride_the_channel() {
 /// method cannot be added to the transport without appearing in the filter first.
 #[tokio::test]
 async fn each_of_the_three_asks_is_issued_as_its_own_request() {
-    busbar_core::metrics::init();
+    metrics_init();
     for (ask_method, params, answer) in [
         (
             "elicitation/create",
@@ -795,7 +789,7 @@ async fn each_of_the_three_asks_is_issued_as_its_own_request() {
             );
             entry.ask_caller = vec![round];
         }
-        let app = TestApp::new()
+        let app = test_app()
             .mcp(&mcp_cfg())
             .mcp_server("ws", cfg)
             .governance(signing_governance())
@@ -840,7 +834,7 @@ async fn each_of_the_three_asks_is_issued_as_its_own_request() {
 /// resolves the pending ask exactly as a direct response would.
 #[tokio::test]
 async fn an_out_of_band_elicitation_response_redeems_the_pending_ask() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
     let mut cfg = server_cfg(
         &peer,
@@ -860,7 +854,7 @@ async fn an_out_of_band_elicitation_response_redeems_the_pending_ask() {
         );
         entry.ask_caller = vec![round];
     }
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("ws", cfg)
         .governance(signing_governance())
@@ -901,7 +895,7 @@ async fn an_out_of_band_elicitation_response_redeems_the_pending_ask() {
 #[tokio::test]
 async fn unsubscribe_stops_the_resource_updates() {
     let (_peer, app) = plain_deployment().await;
-    let handle = Arc::new(busbar_core::state::AppHandle::new(app));
+    let handle = app_handle(app);
     let mut client = Client::open_on(handle.clone(), busbar_api::PlaneRequestCtx::default());
     let uri = format!("ws_{RESOURCE_URI}");
     client
@@ -938,12 +932,7 @@ async fn unsubscribe_stops_the_resource_updates() {
             blob: None,
         },
     );
-    handle.swap(
-        TestApp::new()
-            .mcp(&mcp_cfg())
-            .mcp_server("ws", cfg2)
-            .build(),
-    );
+    handle.swap(test_app().mcp(&mcp_cfg()).mcp_server("ws", cfg2).build());
     client.expect_quiet(700).await;
     client.eof().await;
 }
@@ -954,18 +943,19 @@ async fn unsubscribe_stops_the_resource_updates() {
 /// permits a server-originated cancellation for.
 #[tokio::test]
 async fn an_early_closed_subscription_is_announced_with_cancelled() {
-    use busbar_core::governance::{GovState, MemoryStore};
-    busbar_core::metrics::init();
+    use busbar_store_memory::MemoryStore;
+    metrics_init();
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov_state =
-        Arc::new(GovState::new_with_signer(store, None, Some(signer)).expect("gov state"));
+    let gov_state = engine()
+        .governance(store, None, Some(signer))
+        .expect("gov state");
     let (key, _secret) = gov_state
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "sub-agent".to_string(),
                 allowed_pools: None,
                 group: None,
@@ -990,7 +980,7 @@ async fn an_early_closed_subscription_is_announced_with_cancelled() {
         entry.input_schema = Some(schema());
     }
     drop(app);
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("ws", cfg)
         .governance(gov_state.clone())

@@ -3,7 +3,7 @@ use crate::engine::AppEngineExt as _;
 use crate::test_support::*;
 use busbar_core::auth::AuthMiddleware;
 use busbar_core::config::AuthCfg;
-use busbar_core::state::now;
+use busbar_substrate::store::now;
 // The common vocabulary the former `use super::*` (busbar-core `test_support`) re-exported into this
 // integration suite, now that it lives in the plane crate and globs the plane's `test_support`.
 use axum::{
@@ -22,8 +22,8 @@ use serde_json::json;
 /// Test-only anthropic-ingress convenience wrapper (the former `proxy::forward`, kept here so
 /// the production entry point is a single `forward_with_pool`). Binds anthropic ingress, the
 /// lane-default breaker cell (empty pool name), and no affinity.
-async fn forward(
-    app: std::sync::Arc<busbar_core::state::App>,
+async fn forward<A: busbar_substrate::testkit::BuiltAppSeam>(
+    app: std::sync::Arc<A>,
     cands: Vec<crate::engine::WeightedLane>,
     body: bytes::Bytes,
     caller_token: Option<&str>,
@@ -103,7 +103,7 @@ async fn capture_latency_metrics() {
     // `Server-Timing: busbar;dur` header actually reports — instead of the total-including-the-
     // loopback-HTTP figure the raw handle time conflates. `dur` is busbar's OWN added latency.
     use std::sync::atomic::Ordering;
-    let run_once = |app: std::sync::Arc<busbar_core::state::App>,
+    let run_once = |app: std::sync::Arc<_>,
                     cands: Vec<crate::engine::WeightedLane>,
                     body: bytes::Bytes| async move {
         let slot = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
@@ -310,9 +310,10 @@ async fn test_non_stream_json_relay() {
     // the forward path (forward → forward_with_pool) must have emitted the
     // upstream-attempt counter into the Prometheus exposition.
     assert!(
-        busbar_core::metrics::render().contains(busbar_core::metrics::UPSTREAM_ATTEMPTS_TOTAL),
+        busbar_core::metrics::render()
+            .contains(busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL),
         "forward path should emit {} into /metrics",
-        busbar_core::metrics::UPSTREAM_ATTEMPTS_TOTAL
+        busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL
     );
     server.shutdown().await;
 }
@@ -465,7 +466,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -603,7 +604,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -872,7 +873,7 @@ async fn test_metrics_admitted_in_open_relay_mode() {
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
@@ -926,7 +927,7 @@ async fn test_metrics_requires_auth_in_chain_mode() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
@@ -1001,7 +1002,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
     let app = TestApp::new().keys_chain().governance(gov).build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1052,7 +1053,8 @@ async fn test_governance_vkey_auth_and_pool_acl() {
 #[tokio::test]
 async fn test_governance_budget_over_quota() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore, Store};
+    use busbar_api::Store;
+    use busbar_core::governance::{GovState, MemoryStore};
 
     busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -1121,7 +1123,7 @@ async fn test_governance_budget_over_quota() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1173,7 +1175,8 @@ async fn test_governance_budget_over_quota() {
 /// per-protocol over-quota envelope tests below: the rejection fires before resolution, so no lane/pool/backend is
 /// needed — only a parseable body that carries `model` where the protocol expects it.
 async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use busbar_core::governance::{GovState, MemoryStore, Store};
+    use busbar_api::Store;
+    use busbar_core::governance::{GovState, MemoryStore};
 
     let store = Arc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
@@ -1239,7 +1242,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
         .cost(cost)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1476,7 +1479,7 @@ async fn test_governance_rate_limit_429() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1588,7 +1591,7 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
         ))
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1804,7 +1807,7 @@ async fn test_governance_admin_api() {
     let app = TestApp::new().keys_chain().governance(gov).build();
     let (host, rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1944,7 +1947,8 @@ async fn test_sse_incremental_arrival() {
     let text = String::from_utf8_lossy(&collected_bytes);
     let mut events_found = 0;
     for line in text.lines() {
-        if line.starts_with("data: event-") && !line.contains(busbar_core::proto::SSE_DONE_SENTINEL)
+        if line.starts_with("data: event-")
+            && !line.contains(busbar_substrate::proto::SSE_DONE_SENTINEL)
         {
             events_found += 1;
         }
@@ -2329,7 +2333,7 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
         .pool("default", &[(0, 1)])
         // 1.5.3: the passthrough EGRESS posture is the `pools:`-level
         // `upstream_credentials:`, independent of the (open) front-door chain.
-        .upstream_creds(busbar_core::auth::UpstreamCreds::Passthrough)
+        .upstream_creds(busbar_api::UpstreamCreds::Passthrough)
         .build();
 
     // Scenario A response: pushed immediately before the forward() that consumes it.
@@ -2498,7 +2502,7 @@ async fn test_passthrough_forwards_caller_token() {
         .pool("default", &[(0, 1)])
         // 1.5.3: the passthrough EGRESS posture is the `pools:`-level
         // `upstream_credentials:`, independent of the (open) front-door chain.
-        .upstream_creds(busbar_core::auth::UpstreamCreds::Passthrough)
+        .upstream_creds(busbar_api::UpstreamCreds::Passthrough)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -3548,7 +3552,7 @@ mod disposition_matrix_tests {
                 busbar_core::config::ProviderCfg {
                     protocol: "anthropic".into(),
                     base_url: "https://api.example.com".into(),
-                    api_key: busbar_core::config::SecretRef::env("API_KEY"),
+                    api_key: busbar_api::SecretRef::env("API_KEY"),
                     health: None,
                     error_map,
                     path: None,
@@ -3572,7 +3576,7 @@ mod disposition_matrix_tests {
                 agent_defs: busbar_core::plane::config::AgentsSection::default().0,
                 tool_pools: Default::default(),
                 agent_pools: Default::default(),
-                upstream_credentials: busbar_core::auth::UpstreamCreds::Own,
+                upstream_credentials: busbar_api::UpstreamCreds::Own,
                 listen: "0.0.0.0:8080".into(),
                 public_url: None,
                 tls: None,
@@ -3700,7 +3704,7 @@ mod disposition_matrix_tests {
         let t = now();
         let breaker_state = app.store.breaker_state(0);
         assert!(
-            matches!(breaker_state, busbar_core::store::BreakerState::Closed),
+            matches!(breaker_state, busbar_substrate::store::BreakerState::Closed),
             "client fault must not trip breaker"
         );
 
@@ -3888,7 +3892,7 @@ async fn test_exhaustion_status_503_with_retry_after() {
 #[tokio::test]
 async fn test_exhaustion_least_bad_selects_soonest() {
     crate::testkit::install_test_seams();
-    use busbar_core::store::now as store_now;
+    use busbar_substrate::store::now as store_now;
 
     // Lane 0 server (the "wrong" member — far cooldown). Marker identifies it if picked.
     let state0 = Arc::new(MockServerState::new());
@@ -3997,7 +4001,7 @@ async fn test_exhaustion_least_bad_selects_soonest() {
 #[tokio::test]
 async fn test_forward_once_records_success_and_spends_budget() {
     crate::testkit::install_test_seams();
-    use busbar_core::store::now as store_now;
+    use busbar_substrate::store::now as store_now;
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -4145,7 +4149,7 @@ async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
 #[tokio::test]
 async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
     crate::testkit::install_test_seams();
-    use busbar_core::store::now as store_now;
+    use busbar_substrate::store::now as store_now;
     for (upstream_status, want_kind) in [
         (StatusCode::UNAUTHORIZED, "authentication_error"),
         (StatusCode::FORBIDDEN, "permission_error"),
@@ -4220,7 +4224,7 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
 #[tokio::test]
 async fn test_fallback_pool_loop_guard() {
     crate::testkit::install_test_seams();
-    use busbar_core::store::now as store_now;
+    use busbar_substrate::store::now as store_now;
 
     // No upstream is ever reached (all pools exhausted); the server only supplies base_urls.
     let state = Arc::new(MockServerState::new());
@@ -4312,7 +4316,7 @@ async fn test_fallback_pool_loop_guard() {
 #[tokio::test]
 async fn test_fallback_pool_routes_to_backup() {
     crate::testkit::install_test_seams();
-    use busbar_core::store::now as store_now;
+    use busbar_substrate::store::now as store_now;
 
     // Backup member (lane 2) returns a recognizable success body.
     let state = Arc::new(MockServerState::new());
@@ -4602,7 +4606,7 @@ async fn test_sticky_session_while_healthy() {
 #[tokio::test]
 async fn test_sticky_yields_when_tripped() {
     crate::testkit::install_test_seams();
-    use busbar_core::store::now as store_now;
+    use busbar_substrate::store::now as store_now;
 
     // Separate mock servers for each lane, each returning a distinguishable body
     // so we can assert WHICH member served.
@@ -4739,12 +4743,12 @@ async fn test_health_probe_recovers_tripped_lane() {
     app.store.record_hard_down(0, "test trip");
     assert_ne!(
         app.store.breaker_state(0),
-        busbar_core::store::BreakerState::Closed,
+        busbar_substrate::store::BreakerState::Closed,
         "lane should be tripped before the probe"
     );
 
     crate::engine::health::probe_lane(
-        busbar_core::plane_host::engine_host(&app).as_ref(),
+        busbar_substrate::testkit::engine_host(&app).as_ref(),
         0,
         Duration::from_secs(5),
     )
@@ -4752,7 +4756,7 @@ async fn test_health_probe_recovers_tripped_lane() {
 
     assert_eq!(
         app.store.breaker_state(0),
-        busbar_core::store::BreakerState::Closed,
+        busbar_substrate::store::BreakerState::Closed,
         "a 2xx health probe must recover the tripped lane"
     );
     server0.shutdown().await;
@@ -4787,14 +4791,14 @@ async fn test_health_probe_failure_records_transient() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let before = app.store.snapshot(0, busbar_core::store::now()).err;
+    let before = app.store.snapshot(0, busbar_substrate::store::now()).err;
     crate::engine::health::probe_lane(
-        busbar_core::plane_host::engine_host(&app).as_ref(),
+        busbar_substrate::testkit::engine_host(&app).as_ref(),
         0,
         Duration::from_secs(5),
     )
     .await;
-    let after = app.store.snapshot(0, busbar_core::store::now()).err;
+    let after = app.store.snapshot(0, busbar_substrate::store::now()).err;
     assert_eq!(
         after,
         before + 1,
@@ -5033,7 +5037,7 @@ async fn test_openai_ingress_same_protocol_passthrough() {
         &HeaderMap::new(),
         body_bytes,
         "openai",
-        busbar_core::operation::Operation::CHAT,
+        busbar_api::operation::Operation::CHAT,
         None,
     )
     .await;
@@ -5100,7 +5104,7 @@ async fn test_openai_ingress_missing_model() {
         &HeaderMap::new(),
         body_bytes,
         "openai",
-        busbar_core::operation::Operation::CHAT,
+        busbar_api::operation::Operation::CHAT,
         None,
     )
     .await;
@@ -5189,7 +5193,7 @@ async fn test_openai_ingress_unknown_model() {
         &HeaderMap::new(),
         body_bytes,
         "openai",
-        busbar_core::operation::Operation::CHAT,
+        busbar_api::operation::Operation::CHAT,
         None,
     )
     .await;
@@ -5334,7 +5338,7 @@ async fn test_openai_ingress_single_model_anthropic_response_translated() {
         &axum::http::HeaderMap::new(),
         Bytes::from(body.to_string()),
         "openai",
-        busbar_core::operation::Operation::CHAT,
+        busbar_api::operation::Operation::CHAT,
         None,
     )
     .await;
@@ -5394,7 +5398,7 @@ async fn forwarded_openai_to_anthropic(
         &axum::http::HeaderMap::new(),
         Bytes::from(request_body.to_string()),
         "openai",
-        busbar_core::operation::Operation::CHAT,
+        busbar_api::operation::Operation::CHAT,
         None,
     )
     .await;
@@ -5744,7 +5748,7 @@ async fn test_context_length_failover_no_penalty() {
     );
 
     // KEY: neither lane was penalized — context-length is a request problem, not a lane fault.
-    let now = busbar_core::state::now();
+    let now = busbar_substrate::store::now();
     for idx in 0..2 {
         assert_eq!(
             app.store.cooldown_remaining(idx, now),
@@ -5834,7 +5838,7 @@ async fn test_prefers_larger_context_max() {
     assert_eq!(response.status().as_u16(), 200);
 
     // Verify: lane 0 was NOT penalized (context-length is not a lane fault)
-    let t = busbar_core::state::now();
+    let t = busbar_substrate::store::now();
     assert!(
         app.store.usable(0, t),
         "lane 0 should remain usable after context-length"
@@ -5906,7 +5910,7 @@ async fn test_same_size_pool_exhausts() {
     assert_eq!(response.status().as_u16(), 503);
 
     // Verify: neither lane was penalized (context-length is not a lane fault)
-    let t = busbar_core::state::now();
+    let t = busbar_substrate::store::now();
     for idx in 0..2 {
         assert_eq!(
             app.store.cooldown_remaining(idx, t),

@@ -21,8 +21,8 @@
 //!   is the operator saying what may answer it, and neither implies the other.
 
 use super::upstream_support::{call, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer};
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 const SUBJECT: &str = "busbar-own-subject-token-for-the-exchange";
@@ -55,9 +55,9 @@ fn rooted_server(peer: &Peer) -> crate::mcp::config::McpServerDefCfg {
 /// final result and nothing of the ask.
 #[tokio::test]
 async fn a_granted_roots_ask_is_answered_with_the_operators_declared_roots() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::AsksForRoots, ISSUED).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", rooted_server(&peer))
         .build();
@@ -133,9 +133,9 @@ async fn a_granted_roots_ask_is_answered_with_the_operators_declared_roots() {
 /// — the `Ungranted` arm, whose remedy is a config key.
 #[tokio::test]
 async fn an_ungranted_roots_ask_is_still_refused_and_names_the_grant() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::AsksForRoots, ISSUED).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         // The stock registration: all grants false, nothing declared.
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
@@ -185,12 +185,12 @@ async fn an_ungranted_roots_ask_is_still_refused_and_names_the_grant() {
 /// `Unsatisfiable` arm — a different answer with a different remedy, naming the exact key.
 #[tokio::test]
 async fn a_granted_ask_with_no_declaration_refuses_and_names_the_key() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::AsksForRoots, ISSUED).await;
     let mut cfg = exchanging_server(&peer, SUBJECT);
     cfg.grants.roots = true;
     // NO `roots:` — the grant admits the ask and there is nothing the operator said to answer with.
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", cfg)
         .build();

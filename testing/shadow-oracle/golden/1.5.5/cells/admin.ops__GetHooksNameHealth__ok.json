@@ -1,0 +1,1 @@
+{"applied":["hdr.date"],"body":{"json":{"detail":null,"name":"busbar-headroom","reachable":true,"transport":{"kind":"plugin","target":"busbar-headroom"}}},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"114","content-type":"application/json"},"status":200}

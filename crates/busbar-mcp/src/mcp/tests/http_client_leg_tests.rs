@@ -45,10 +45,10 @@ use super::upstream_support::{
 use crate::mcp::client::catalogue::LiveSightings;
 use crate::mcp::client::issue::{issue, Issued};
 use crate::mcp::client::verb::UpstreamVerb;
+use crate::mcp::test_engine::*;
 use crate::mcp::upstream::{authorise_verb, Authorised, SetupRefusal};
 use crate::testkit::TestAppMcpExt;
 use busbar_api::VirtualKey;
-use busbar_core::test_support::TestApp;
 use busbar_substrate::trust::validate::Generations;
 use std::collections::BTreeSet;
 
@@ -141,16 +141,16 @@ fn verbs_here() -> Vec<UpstreamVerb> {
         .collect()
 }
 
-async fn rig(behaviour: Behaviour) -> (Peer, std::sync::Arc<busbar_core::state::App>) {
-    busbar_core::metrics::init();
+async fn rig(behaviour: Behaviour) -> (Peer, std::sync::Arc<dyn EngineApp>) {
+    metrics_init();
     let peer = Peer::start(behaviour, ISSUED).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(SERVER, exchanging_server(&peer, SUBJECT))
         .build();
     // The client-leg `issue()` chains its outcome on the process-wide `call` stream; this harness does
     // not boot through `mcp_hydrate`, so register that stream once (no-sink) so the emit mints a Seq.
-    busbar_core::calllog::ensure_global_call_stream_registered();
+    engine().ensure_call_stream_registered();
     (peer, app)
 }
 
@@ -159,7 +159,7 @@ async fn rig(behaviour: Behaviour) -> (Peer, std::sync::Arc<busbar_core::state::
 /// `authorise_verb` is the only constructor of the value [`issue`] needs for a verb, which is what
 /// makes "the gate ran" a property of having the value rather than a call somebody remembered.
 fn authorise(
-    app: &std::sync::Arc<busbar_core::state::App>,
+    app: &std::sync::Arc<dyn EngineApp>,
     caller: Option<&VirtualKey>,
 ) -> Result<Authorised, SetupRefusal> {
     let entry = crate::mcp::runtime(app)
@@ -222,7 +222,7 @@ async fn every_owed_method_reaches_the_upstream_with_the_mirrored_headers_this_r
     let caller = key_with_scopes("k-http-sweep", &[("mcp_server", SERVER)]);
     let principal = caller.id.clone();
     let auth = authorise(&app, Some(&caller)).expect("a caller granted the server is admitted");
-    let before = busbar_core::calllog::CALLS.next_seq(&principal);
+    let before = engine().call_next_seq(&principal);
 
     let verbs = verbs_here();
     for (n, verb) in verbs.iter().enumerate() {
@@ -232,7 +232,7 @@ async fn every_owed_method_reaches_the_upstream_with_the_mirrored_headers_this_r
             &auth,
             verb,
             request_id,
-            &busbar_core::plane_host::engine_host(&app),
+            &engine_host(&app),
         )
         .await
         .unwrap_or_else(|e| panic!("`{}` must reach the upstream: {e}", verb.method()));
@@ -329,7 +329,7 @@ async fn every_owed_method_reaches_the_upstream_with_the_mirrored_headers_this_r
     // operator asking "what did this key cause busbar to send" would be answered with the tool calls
     // and silence about everything else.
     assert_eq!(
-        busbar_core::calllog::CALLS.next_seq(&principal) - before,
+        engine().call_next_seq(&principal) - before,
         verbs.len() as u64,
         "every issued verb must leave exactly one per-call record"
     );
@@ -387,7 +387,7 @@ async fn an_ungranted_caller_issues_nothing_and_causes_no_outbound_traffic() {
 /// answering `prompts/list` after an operator had stopped it answering `tools/call`.
 #[tokio::test]
 async fn an_unpinned_registration_issues_nothing() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let mut cfg = exchanging_server(&peer, SUBJECT);
     // `unpinned` is the config's own spelling for NO authenticity root: registrable, never
@@ -397,7 +397,7 @@ async fn an_unpinned_registration_issues_nothing() {
         mechanism: crate::mcp::config::McpPinMechanism::Unpinned,
         key: None,
     };
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(SERVER, cfg)
         .build();
@@ -432,7 +432,7 @@ async fn a_link_local_uri_in_a_verbs_params_is_refused_before_the_exchange() {
             uri: "http://169.254.169.254/latest/meta-data/iam/security-credentials/".to_string(),
         },
         1,
-        &busbar_core::plane_host::engine_host(&app),
+        &engine_host(&app),
     )
     .await
     .expect_err("a cloud-metadata URI in a verb's params must be refused");
@@ -469,7 +469,7 @@ async fn an_upstreams_ask_terminates_at_a_verb_and_is_never_proxied() {
             arguments: serde_json::json!({}),
         },
         7,
-        &busbar_core::plane_host::engine_host(&app),
+        &engine_host(&app),
     )
     .await
     .expect_err("an input-required answer to a verb is a failure, not a result");
@@ -503,7 +503,7 @@ async fn a_verbs_exchange_asks_for_no_tool_scope_and_binds_to_this_upstream() {
         &auth,
         &UpstreamVerb::ResourcesList,
         12,
-        &busbar_core::plane_host::engine_host(&app),
+        &engine_host(&app),
     )
     .await
     .expect("the call goes out");
@@ -543,7 +543,7 @@ async fn an_upstream_error_is_recorded_as_dispatched_with_the_upstream_failed_re
         &auth,
         &UpstreamVerb::PromptsList,
         3,
-        &busbar_core::plane_host::engine_host(&app),
+        &engine_host(&app),
     )
     .await
     .expect_err("a JSON-RPC error from the upstream is a failed verb");
@@ -556,7 +556,7 @@ async fn an_upstream_error_is_recorded_as_dispatched_with_the_upstream_failed_re
     let _ = principal;
     // The record's own fields are asserted through the chain the dispatcher wrote to, which is the
     // caller's — `issue` attributes to `auth.caller.id`.
-    let seq = busbar_core::calllog::CALLS.next_seq(&caller.id);
+    let seq = engine().call_next_seq(&caller.id);
     assert!(
         seq > 1,
         "the failed verb still left a record: a call that went out and broke is exactly the call an \

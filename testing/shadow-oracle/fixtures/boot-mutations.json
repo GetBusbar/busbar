@@ -1,0 +1,2226 @@
+{
+  "_comment": [
+    "Shadow-oracle BOOT mutations: one deterministic edit of the oracle baseline (oracle-config.sh oracle_write_config) per row of docs/design/inventory/1.5.5-config.md section 3.1 (BOOT-P01..P41), 3.2 (BOOT-001..110), 3.3 (BOOT-120..184) and 3.4 (BOOT-W01..W42).",
+    "The recorder loads <work>/config.yaml as a YAML document, applies `op` in order, re-serializes, then runs `busbar --validate` (mode=validate), boots and waits for exit or /healthz (mode=boot), or both (mode=both). It captures exit code + stderr + stdout and diffs 1.5.5 against 1.6.0.",
+    "op vocabulary: {set: <dotted>, value} replaces/creates the node at the path; {delete: <dotted>} removes it; {raw_yaml: <text>} APPENDS the text verbatim to the serialized config.yaml (used where the edit must survive as raw text, e.g. `${VAR}` interpolation rows); {env: {VAR: value}} adds to the busbar process environment on top of oracle_env; {args: [...]} are CLI arguments passed to the busbar binary instead of / in addition to `--validate`; {providers_set: <dotted>, value} edits <work>/providers.yaml the same way `set` edits config.yaml.",
+    "Dotted paths use YAML keys verbatim; a purely numeric segment is a list index (groups.broke.limits.0 = the first limit map of group `broke`; pools.oracle-unused.members.0.weight = the first member's weight).",
+    "op: [] means `no mutation` — the baseline already exhibits the row. op: null means the row cannot be triggered from config/env/args alone; `notes` names the fixture it needs.",
+    "expect.exit: refusals exit 1 (BOOT-184 exits 2); warnings exit 0 — in boot mode `0` means the recorder reached /healthz and then stopped the process cleanly. expect.stderr_contains is a literal substring of the inventory's exact message with placeholders filled in where the mutation fixes them; expect.stdout_contains is null unless a stdout literal is load-bearing.",
+    "Baseline facts relied on: listen/admin_listen loopback; identity-providers.admin-tokens {module: admin-tokens, token: {env: BUSBAR_ADMIN_TOKEN}}; auth {chain: [keys], signing_key: {file: <work>/signing.key}, admin_auth: [admin-tokens]}; export.metrics {module: prometheus, settings: {buffer_seconds: 60}}; groups oracle/broke; six config-side providers with api_key {env: ORACLE_UPSTREAM_KEY} (=unused); six models m-<dialect>; one pool oracle-unused [m-openai-chat]; providers.yaml catalog with protocol + base_url http://127.0.0.1:<mock>. oracle_env exports BUSBAR_CONFIG, BUSBAR_PROVIDERS, ORACLE_UPSTREAM_KEY=unused, BUSBAR_ADMIN_TOKEN, RUST_LOG=warn.",
+    "MAX_SEMAPHORE_PERMITS = tokio::sync::Semaphore::MAX_PERMITS = usize::MAX >> 3 = 2305843009213693951 on 64-bit; the over-ceiling mutations use 2305843009213693952.",
+    "Ordering traps worth knowing: env interpolation (P02-P06) runs on the raw text BEFORE the legacy-marker detector (P41), which runs BEFORE serde parse (P01, P07-P40), which runs BEFORE config::resolve (BOOT-056 resolve twin, BOOT-074c/d/e, BOOT-101), which runs BEFORE config_validate (the rest of 3.2). A `both`-scoped row that is shadowed by an earlier stage from config.yaml is marked op: null with the reason."
+  ],
+  "mutations": [
+    {
+      "id": "BOOT-P01",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "listne", "value": "127.0.0.1:1" } ],
+      "expect": { "exit": 1, "stderr_contains": "unknown field `listne`", "stdout_contains": null },
+      "notes": "§3.1 P01: typo of `listen` at the top level hits DeployCfg (deny_unknown_fields, config/mod.rs:2572). Reported as `config.yaml: invalid YAML: unknown field `listne`, expected one of ...`; no augment_config_error hint (listne is not a retired key)."
+    },
+    {
+      "id": "BOOT-P02",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "raw_yaml": "public_url: \"http://127.0.0.1/${ORACLE_UNCLOSED\"\n" } ],
+      "expect": { "exit": 1, "stderr_contains": "unclosed variable reference starting at '${", "stdout_contains": null },
+      "notes": "§3.1 P02 (config/mod.rs:141-145). Interpolation runs on the raw text before parsing so the appended key never reaches serde. The var_name slice length after `${` is implementation-defined, hence the substring stops at `'${`."
+    },
+    {
+      "id": "BOOT-P03",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "raw_yaml": "public_url: \"http://127.0.0.1/${}\"\n" } ],
+      "expect": { "exit": 1, "stderr_contains": "empty variable name in ${}", "stdout_contains": null },
+      "notes": "§3.1 P03 (config/mod.rs:146-148)."
+    },
+    {
+      "id": "BOOT-P04",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "raw_yaml": "public_url: \"${ORACLE_UNSET_VAR_P04}\"\n" } ],
+      "expect": { "exit": 1, "stderr_contains": "unset environment variable: ORACLE_UNSET_VAR_P04", "stdout_contains": null },
+      "notes": "§3.1 P04 (config/mod.rs:152-154) is Strict at boot/reload only. TRAP: at --validate the load is Lenient — the bare name is spliced in and, because is_env_placeholder only covers providers.<p>.base_url/token_url, `public_url: ORACLE_UNSET_VAR_P04` would instead fail BOOT-060. Run boot mode only; the recorder must NOT export ORACLE_UNSET_VAR_P04."
+    },
+    {
+      "id": "BOOT-P05",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "raw_yaml": "public_url: \"http://127.0.0.1/${ORACLE_CTRL_VAR}\"\n" },
+        { "env": { "ORACLE_CTRL_VAR": "a\tb" } }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "environment variable 'ORACLE_CTRL_VAR' contains a control character (U+0009)", "stdout_contains": null },
+      "notes": "§3.1 P05: reject_yaml_unsafe_value (config/mod.rs:56-82, :163-165); the env value carries a TAB (U+0009). Message text read from the 1.6.0 tree's reject_yaml_unsafe_value; the inventory only says `naming the var`."
+    },
+    {
+      "id": "BOOT-P06",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "raw_yaml": "security:\n  blocked_metadata_hosts: [${ORACLE_SHAPE_VAR}]\n" },
+        { "env": { "ORACLE_SHAPE_VAR": "10.9.9.9, 10.9.9.8" } }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "would change the config's YAML structure when interpolated", "stdout_contains": null },
+      "notes": "§3.1 P06: an unquoted `${VAR}` inside a YAML flow sequence whose value carries a `,` injects a sibling element (sequence length 2 vs the placeholder's 1) — assert_interpolation_preserves_structure (config/mod.rs:186-188, :238-325). Baseline has no `security:` block so the appended top-level key does not duplicate."
+    },
+    {
+      "id": "BOOT-P07",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.hooks", "value": { "members": [ { "model": "m-openai-chat" } ] } } ],
+      "expect": { "exit": 1, "stderr_contains": "a pool may not be named `hooks`: that key is RESERVED at the `pools:` section level", "stdout_contains": null },
+      "notes": "§3.1 P07 (config/mod.rs:1565-1569): a MAPPING under the reserved `pools.hooks` key is treated as a pool named `hooks`."
+    },
+    {
+      "id": "BOOT-P08",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.hooks", "value": "not-a-list" } ],
+      "expect": { "exit": 1, "stderr_contains": "the reserved `pools.hooks:` all-pools attach must be a list of hook names:", "stdout_contains": null },
+      "notes": "§3.1 P08 (config/mod.rs:1574-1578)."
+    },
+    {
+      "id": "BOOT-P09",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.upstream_credentials", "value": "borrowed" } ],
+      "expect": { "exit": 1, "stderr_contains": "the reserved `pools.upstream_credentials:` all-pools default must be `own` or `passthrough`:", "stdout_contains": null },
+      "notes": "§3.1 P09 (config/mod.rs:1582-1587)."
+    },
+    {
+      "id": "BOOT-P10",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.hooks", "value": [ "" ] } ],
+      "expect": { "exit": 1, "stderr_contains": "a pool `hooks:` entry must be a non-empty strategy keyword or hook name", "stdout_contains": null },
+      "notes": "§3.1 P10 (config/mod.rs:1466-1470)."
+    },
+    {
+      "id": "BOOT-P11",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.hooks", "value": [ "cheapest", "fastest" ] } ],
+      "expect": { "exit": 1, "stderr_contains": "a pool `hooks:` list names more than one ordering strategy; a pool has one base ordering", "stdout_contains": null },
+      "notes": "§3.1 P11 (config/mod.rs:1473-1477). Parse-time, so it fires before the hooks-ranking feature gate (BOOT-079)."
+    },
+    {
+      "id": "BOOT-P12",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "hooks.h12", "value": { "module": "oracle-hook", "on_error": "bogus" } } ],
+      "expect": { "exit": 1, "stderr_contains": "on_error keyword 'bogus' is not one of the reserved terminals (nothing | weighted | reject | first)", "stdout_contains": null },
+      "notes": "§3.1 P12 (config/mod.rs:1341-1345). Parse-time: the `oracle-hook` plugin never has to exist."
+    },
+    {
+      "id": "BOOT-P13",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "hooks.h13", "value": { "module": "oracle-hook", "on_error": { "hook": "" } } } ],
+      "expect": { "exit": 1, "stderr_contains": "on_error: { hook: … } must name a non-empty hook", "stdout_contains": null },
+      "notes": "§3.1 P13 (config/mod.rs:1351-1355)."
+    },
+    {
+      "id": "BOOT-P14",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "hooks.h14", "value": { "module": "oracle-hook", "on_error": 7 } } ],
+      "expect": { "exit": 1, "stderr_contains": "on_error is a bare terminal (nothing | weighted | reject | first) or a structured hook reference `{ hook: <name> }`", "stdout_contains": null },
+      "notes": "§3.1 P14 (config/mod.rs:1358-1362): an integer node is neither string nor mapping."
+    },
+    {
+      "id": "BOOT-P15",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.on_exhausted", "value": "bogus" } ],
+      "expect": { "exit": 1, "stderr_contains": "unknown on_exhausted keyword 'bogus': the bare keywords are `reject` | `least_bad`", "stdout_contains": null },
+      "notes": "§3.1 P15 (config/mod.rs:2335-2340)."
+    },
+    {
+      "id": "BOOT-P16",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.on_exhausted", "value": { "fallback_pool": "oracle-unused", "queue": { "max_ms": 10 } } } ],
+      "expect": { "exit": 1, "stderr_contains": "on_exhausted takes exactly one of `fallback_pool` | `queue`, not both", "stdout_contains": null },
+      "notes": "§3.1 P16 (config/mod.rs:2350-2352). Parse-time, so the self-reference never reaches BOOT-047."
+    },
+    {
+      "id": "BOOT-P17",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.on_exhausted", "value": { "fallback_pool": "" } } ],
+      "expect": { "exit": 1, "stderr_contains": "on_exhausted: { fallback_pool: … } must name a non-empty pool", "stdout_contains": null },
+      "notes": "§3.1 P17 (config/mod.rs:2356-2360)."
+    },
+    {
+      "id": "BOOT-P18",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.on_exhausted", "value": 7 } ],
+      "expect": { "exit": 1, "stderr_contains": "on_exhausted is `reject`, `least_bad`, `{ fallback_pool: <pool> }`, or `{ queue: { max_ms: <ms> } }`", "stdout_contains": null },
+      "notes": "§3.1 P18 (config/mod.rs:2370-2379): an integer node."
+    },
+    {
+      "id": "BOOT-P19",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.limits.0", "value": { "requests": 1, "tokens": 1, "per": "day" } } ],
+      "expect": { "exit": 1, "stderr_contains": "a limit takes exactly ONE metric key; found both 'requests' and 'tokens'", "stdout_contains": null },
+      "notes": "§3.1 P19 (config/groups.rs:271-275). The recorder must serialize the map with `requests` before `tokens` (insertion order) for the {prev}/{m} placeholders to read requests/tokens."
+    },
+    {
+      "id": "BOOT-P20",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.limits.0", "value": { "per": "day" } } ],
+      "expect": { "exit": 1, "stderr_contains": "a limit needs exactly one metric key (requests | tokens | budget | concurrent)", "stdout_contains": null },
+      "notes": "§3.1 P20 (config/groups.rs:282-285)."
+    },
+    {
+      "id": "BOOT-P21",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.limits.0", "value": { "concurrent": 1, "pool": "oracle-unused" } } ],
+      "expect": { "exit": 1, "stderr_contains": "`concurrent` is a per-group in-flight gauge and takes NO `pool:` qualifier; remove `pool`", "stdout_contains": null },
+      "notes": "§3.1 P21 (config/groups.rs:289-292)."
+    },
+    {
+      "id": "BOOT-P22",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.limits.0", "value": { "concurrent": 1, "per": "day" } } ],
+      "expect": { "exit": 1, "stderr_contains": "`concurrent` is an instantaneous in-flight cap and takes NO `per:` window; remove `per`", "stdout_contains": null },
+      "notes": "§3.1 P22 (config/groups.rs:327-330)."
+    },
+    {
+      "id": "BOOT-P23",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.limits.0", "value": { "requests": 1 } } ],
+      "expect": { "exit": 1, "stderr_contains": "a `requests` limit requires a `per:` window (minute | hour | day | month | total)", "stdout_contains": null },
+      "notes": "§3.1 P23 (config/groups.rs:339-343)."
+    },
+    {
+      "id": "BOOT-P24",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.limits.0", "value": { "budget": 1, "per": "day", "pool": "oracle-unused", "on_exhaust": "downgrade" } } ],
+      "expect": { "exit": 1, "stderr_contains": "`on_exhaust: downgrade` requires `downgrade_to: <pool>` - where should the exhausted traffic go?", "stdout_contains": null },
+      "notes": "§3.1 P24 (config/groups.rs:297-300)."
+    },
+    {
+      "id": "BOOT-P25",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.limits.0", "value": { "budget": 1, "per": "day", "pool": "oracle-unused", "downgrade_to": "oracle-unused" } } ],
+      "expect": { "exit": 1, "stderr_contains": "`downgrade_to` only makes sense with `on_exhaust: downgrade`", "stdout_contains": null },
+      "notes": "§3.1 P25 (config/groups.rs:303-305)."
+    },
+    {
+      "id": "BOOT-P26",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.limits.0", "value": { "requests": 1, "per": "day", "on_exhaust": "block" } } ],
+      "expect": { "exit": 1, "stderr_contains": "`on_exhaust` is a BUDGET-exhaustion behavior; a `requests` limit does not take it", "stdout_contains": null },
+      "notes": "§3.1 P26 (config/groups.rs:308-312)."
+    },
+    {
+      "id": "BOOT-P27",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.limits.0", "value": { "budget": 1, "per": "day", "on_exhaust": "downgrade", "downgrade_to": "oracle-unused" } } ],
+      "expect": { "exit": 1, "stderr_contains": "`on_exhaust: downgrade` requires a `pool:` scope on the limit - a GROUP-WIDE budget charges every pool", "stdout_contains": null },
+      "notes": "§3.1 P27 (config/groups.rs:315-319): downgrade_to present so :297 does not fire first; no `pool:`."
+    },
+    {
+      "id": "BOOT-P28",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.limits.0", "value": { "budget": 1, "per": "day", "pool": "oracle-unused", "on_exhaust": "downgrade", "downgrade_to": "oracle-unused" } } ],
+      "expect": { "exit": 1, "stderr_contains": "`downgrade_to` must name a DIFFERENT pool than the limit's own `pool:`", "stdout_contains": null },
+      "notes": "§3.1 P28 (config/groups.rs:322-324)."
+    },
+    {
+      "id": "BOOT-P29",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.limits.0", "value": { "requests": 1, "per": "day", "bogus": 1 } } ],
+      "expect": { "exit": 1, "stderr_contains": "unknown field `bogus`", "stdout_contains": null },
+      "notes": "§3.1 P29 (config/groups.rs:253-267): serde unknown_field with the eight-key expected list."
+    },
+    {
+      "id": "BOOT-P30",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.limits.0", "value": "requests" } ],
+      "expect": { "exit": 1, "stderr_contains": "a limit map `{ <metric>: <amount>, per: <window>, pool: <name> }`", "stdout_contains": null },
+      "notes": "§3.1 P30 (config/groups.rs:201-206): a scalar where a limit map is expected."
+    },
+    {
+      "id": "BOOT-P31",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key", "value": "s3cret-literal" } ],
+      "expect": { "exit": 1, "stderr_contains": "a secret value must be a REFERENCE, never an inline literal (the value is not echoed)", "stdout_contains": null },
+      "notes": "§3.1 P31 / §5.1 SEC-010 (crates/secret-ref/src/lib.rs:144-153). The literal must NOT appear in stderr — the recorder can assert its absence too."
+    },
+    {
+      "id": "BOOT-P32",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key", "value": 7 } ],
+      "expect": { "exit": 1, "stderr_contains": "expected a secret reference map: { module: <secret-module>, settings: {…} }, { env: <VAR> }, or { file: <path> }", "stdout_contains": null },
+      "notes": "§3.1 P32..P40 expanded 1:1 onto §5.1 SEC-011..SEC-019. P32 = SEC-011: a non-map, non-string scalar falls to serde's invalid-type error built from expecting() (secret-ref lib.rs:133-138)."
+    },
+    {
+      "id": "BOOT-P33",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key", "value": { "env": "ORACLE_UPSTREAM_KEY", "file": "/tmp/oracle-key" } } ],
+      "expect": { "exit": 1, "stderr_contains": "a secret reference takes exactly one of `env:` / `file:`", "stdout_contains": null },
+      "notes": "§3.1 P33 = §5.1 SEC-012 (secret-ref lib.rs:178-189): both sugars at once."
+    },
+    {
+      "id": "BOOT-P34",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key", "value": { "module": "vault", "env": "ORACLE_UPSTREAM_KEY" } } ],
+      "expect": { "exit": 1, "stderr_contains": "a secret reference is either `{ module: …, settings: … }` or the `{ env: … }` / `{ file: … }` sugar, not both", "stdout_contains": null },
+      "notes": "§3.1 P34 = §5.1 SEC-013 (secret-ref lib.rs:203-206)."
+    },
+    {
+      "id": "BOOT-P35",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key", "value": { "env": "ORACLE_UPSTREAM_KEY", "settings": {} } } ],
+      "expect": { "exit": 1, "stderr_contains": "the `{ env: … }` / `{ file: … }` sugar takes no `settings:`", "stdout_contains": null },
+      "notes": "§3.1 P35 = §5.1 SEC-014 (secret-ref lib.rs:219-224)."
+    },
+    {
+      "id": "BOOT-P36",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key", "value": { "module": "" } } ],
+      "expect": { "exit": 1, "stderr_contains": "a secret reference `module:` must be non-empty", "stdout_contains": null },
+      "notes": "§3.1 P36 = §5.1 SEC-015 (secret-ref lib.rs:208-212)."
+    },
+    {
+      "id": "BOOT-P37",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key", "value": { "env": "" } } ],
+      "expect": { "exit": 1, "stderr_contains": "a `{ env: … }` secret reference must name a non-empty value", "stdout_contains": null },
+      "notes": "§3.1 P37 = §5.1 SEC-016 (secret-ref lib.rs:225-229), the env kind."
+    },
+    {
+      "id": "BOOT-P38",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key", "value": {} } ],
+      "expect": { "exit": 1, "stderr_contains": "a secret reference needs `module:` (with optional `settings:`) or the `{ env: <VAR> }` / `{ file: <path> }` sugar", "stdout_contains": null },
+      "notes": "§3.1 P38 = §5.1 SEC-017 (secret-ref lib.rs:235-238)."
+    },
+    {
+      "id": "BOOT-P39",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key", "value": { "bogus": "ORACLE_UPSTREAM_KEY" } } ],
+      "expect": { "exit": 1, "stderr_contains": "unknown field `bogus`, expected one of `module`, `settings`, `env`, `file`", "stdout_contains": null },
+      "notes": "§3.1 P39 = §5.1 SEC-018 (secret-ref lib.rs:193-198)."
+    },
+    {
+      "id": "BOOT-P40",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "raw_yaml": "admin_tls:\n  cert: { module: file, module: file }\n  key: { file: /tmp/oracle-unused.pem }\n" } ],
+      "expect": { "exit": 1, "stderr_contains": "duplicate field `module`", "stdout_contains": null },
+      "notes": "§3.1 P40 = §5.1 SEC-019 (secret-ref lib.rs:166-176). A duplicate key cannot be expressed through the parsed document, so it is appended as raw text on a top-level key the baseline lacks (`admin_tls`). TRAP: if serde_yaml's own duplicate-key detection fires before the SecretRef visitor the message is serde_yaml's `duplicate entry with key` instead — record whichever 1.5.5 emits and hold 1.6.0 to it."
+    },
+    {
+      "id": "BOOT-P41",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key_env", "value": "ORACLE_UPSTREAM_KEY" } ],
+      "expect": { "exit": 1, "stderr_contains": "`providers.gemini.api_key_env:` (secret fields are now secret references: api_key: {env: VAR})", "stdout_contains": null },
+      "notes": "§3.1 P41 legacy detector marker #21 (config/migrate.rs:277-289, error text :42-58). Runs before DeployCfg deserializes, so the unknown field under ProviderDeploy (P01) is never reached. The banner opens with `this looks like a busbar 1.x config; run `busbar --migrate-config`."
+    },
+    {
+      "id": "BOOT-001",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "security", "value": { "blocked_metadata_hosts": [ "169.254.0.0/16" ] } } ],
+      "expect": { "exit": 1, "stderr_contains": "security.blocked_metadata_hosts entry '169.254.0.0/16' contains '/' (CIDR is not supported here)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-001 (config_validate/mod.rs:68 → :2001)."
+    },
+    {
+      "id": "BOOT-002",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "security", "value": { "allow_metadata_hosts": [ "169.254.0.0/16" ] } } ],
+      "expect": { "exit": 1, "stderr_contains": "security.allow_metadata_hosts entry '169.254.0.0/16' contains '/' (CIDR is not supported here)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-002 (:73 → :2001)."
+    },
+    {
+      "id": "BOOT-003",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.allow_metadata_hosts", "value": [ "169.254.0.0/16" ] } ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' allow_metadata_hosts entry '169.254.0.0/16' contains '/' (CIDR is not supported here)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-003 (:320 → :2001); the config-side ProviderDeploy list REPLACES the catalog list."
+    },
+    {
+      "id": "BOOT-004",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "limits.reasoning_effort_budgets", "value": { "minimal": 0, "low": 4096, "medium": 8192, "high": 16384 } } ],
+      "expect": { "exit": 1, "stderr_contains": "limits.reasoning_effort_budgets entries must be > 0 (got 0/4096/8192/16384)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-004 (:86)."
+    },
+    {
+      "id": "BOOT-005",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "limits.reasoning_effort_budgets", "value": { "minimal": 4096, "low": 1024, "medium": 8192, "high": 16384 } } ],
+      "expect": { "exit": 1, "stderr_contains": "limits.reasoning_effort_budgets must be ascending (minimal <= low <= medium <= high); got 4096/1024/8192/16384", "stdout_contains": null },
+      "notes": "§3.2 BOOT-005 (:92)."
+    },
+    {
+      "id": "BOOT-010",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "models.m-gemini.provider", "value": "nope" } ],
+      "expect": { "exit": 1, "stderr_contains": "model 'm-gemini' references unknown provider 'nope'", "stdout_contains": null },
+      "notes": "§3.2 BOOT-010 (:109). m-gemini is not a pool member, so BOOT-043a does not co-fire."
+    },
+    {
+      "id": "BOOT-011",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "models.m-gemini.default_max_tokens", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "model 'm-gemini' has default_max_tokens: 0; must be > 0", "stdout_contains": null },
+      "notes": "§3.2 BOOT-011 (:117)."
+    },
+    {
+      "id": "BOOT-012a",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "models.m-gemini.max_concurrent", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "model 'm-gemini' has max_concurrent: 0; must be >= 1, or omit it (default = unbounded)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-012a (:129)."
+    },
+    {
+      "id": "BOOT-012b",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "models.m-gemini.max_concurrent", "value": 2305843009213693952 } ],
+      "expect": { "exit": 1, "stderr_contains": "model 'm-gemini' has max_concurrent: 2305843009213693952; must be <= 2305843009213693951", "stdout_contains": null },
+      "notes": "§3.2 BOOT-012b (:144). MAX_SEMAPHORE_PERMITS+1; assumes a 64-bit binary (usize::MAX >> 3)."
+    },
+    {
+      "id": "BOOT-012c",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "models.m-gemini.max_requests", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "model 'm-gemini' has max_requests: 0; a lane with a zero lifetime budget never admits a request", "stdout_contains": null },
+      "notes": "§3.2 BOOT-012c (:158)."
+    },
+    {
+      "id": "BOOT-012d",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "models.m-gemini.attempt_timeout_ms", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "model 'm-gemini' has attempt_timeout_ms: 0; a zero cap fails every attempt instantly", "stdout_contains": null },
+      "notes": "§3.2 BOOT-012d (:169)."
+    },
+    {
+      "id": "BOOT-012e",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "models.m-gemini.upstream_model", "value": "   " } ],
+      "expect": { "exit": 1, "stderr_contains": "model 'm-gemini' has an empty upstream_model; set a non-empty provider model id", "stdout_contains": null },
+      "notes": "§3.2 BOOT-012e (:179): whitespace-only trims to empty."
+    },
+    {
+      "id": "BOOT-013",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "models.admin", "value": { "provider": "gemini" } } ],
+      "expect": { "exit": 1, "stderr_contains": "model name 'admin' is reserved: 'admin' is a built-in management prefix", "stdout_contains": null },
+      "notes": "§3.2 BOOT-013 (:194)."
+    },
+    {
+      "id": "BOOT-014",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.gemini", "value": { "members": [ { "model": "m-gemini" } ] } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool name 'gemini' conflicts with provider name 'gemini'; pools and providers must have distinct names", "stdout_contains": null },
+      "notes": "§3.2 BOOT-014 (:210)."
+    },
+    {
+      "id": "BOOT-015",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.m-gemini", "value": { "members": [ { "model": "m-gemini" } ] } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool name 'm-gemini' conflicts with model name 'm-gemini'; pools and models must have distinct names", "stdout_contains": null },
+      "notes": "§3.2 BOOT-015 (:216)."
+    },
+    {
+      "id": "BOOT-016",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.admin", "value": { "members": [ { "model": "m-gemini" } ] } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool name 'admin' is reserved: 'admin' is a built-in management prefix", "stdout_contains": null },
+      "notes": "§3.2 BOOT-016 (:234)."
+    },
+    {
+      "id": "BOOT-017",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "providers_set": "admin", "value": { "protocol": "anthropic", "base_url": "http://127.0.0.1:9" } },
+        { "set": "providers.admin", "value": { "api_key": { "env": "ORACLE_UPSTREAM_KEY" } } }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "provider name 'admin' is reserved: 'admin' is a built-in management prefix", "stdout_contains": null },
+      "notes": "§3.2 BOOT-017 (:246). Edits BOTH artifacts: the catalog entry so the deployment resolves (base_url is required in the catalog), and the config-side deployment so the provider exists. Loopback http base_url passes BOOT-023."
+    },
+    {
+      "id": "BOOT-020",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.protocol", "value": "bogus" } ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' has unknown protocol 'bogus': must be one of:", "stdout_contains": null },
+      "notes": "§3.2 BOOT-020 (:266). The deployment-side `protocol` overrides the catalog value. The list after `must be one of:` is KNOWN_PROTOCOLS (anthropic, openai, gemini, bedrock, responses, cohere per oracle-config.sh) — its order is what the diff will compare."
+    },
+    {
+      "id": "BOOT-021a",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.health", "value": { "mode": "none", "interval_secs": 0 } } ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' health.interval_secs must be >= 1 (got 0)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-021a (:280)."
+    },
+    {
+      "id": "BOOT-021b",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.health", "value": { "mode": "none", "timeout_secs": 0 } } ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' health.timeout_secs must be >= 1 (got 0)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-021b (:286)."
+    },
+    {
+      "id": "BOOT-022",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.error_map", "value": { "E1": "bogus" } } ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' error_map code 'E1': invalid StatusClass 'bogus', must be one of: rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length", "stdout_contains": null },
+      "notes": "§3.2 BOOT-022 (:295). error_map MERGES with the (empty) catalog map."
+    },
+    {
+      "id": "BOOT-023",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.base_url", "value": "http://example.com" } ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' base_url must use https for a public host (got 'http://example.com'); plaintext http is permitted only for a private/loopback local-model upstream", "stdout_contains": null },
+      "notes": "§3.2 BOOT-023 (:348). The value contains `://` so is_env_placeholder does not suppress it at --validate; fires in both modes."
+    },
+    {
+      "id": "BOOT-024",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.base_url", "value": "ftp://127.0.0.1" } ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' base_url must use http or https (got 'ftp://127.0.0.1')", "stdout_contains": null },
+      "notes": "§3.2 BOOT-024 (:353)."
+    },
+    {
+      "id": "BOOT-025",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.base_url", "value": "https://169.254.169.254" } ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' base_url 'https://169.254.169.254' targets a blocked cloud-metadata host '169.254.169.254'", "stdout_contains": null },
+      "notes": "§3.2 BOOT-025 (:372). https so the :348 public-host http check cannot co-fire; 169.254.169.254 is on the hardcoded denylist."
+    },
+    {
+      "id": "BOOT-026",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.path", "value": "v1/chat" } ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' path 'v1/chat' must begin with '/': a path override is appended to base_url verbatim", "stdout_contains": null },
+      "notes": "§3.2 BOOT-026 (:393)."
+    },
+    {
+      "id": "BOOT-027",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "set": "providers.gemini.base_url", "value": "https://127.0.0.1" },
+        { "set": "providers.gemini.path", "value": "@169.254.169.254/" }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' base_url+path 'https://127.0.0.1@169.254.169.254/' targets a blocked cloud-metadata host '169.254.169.254'", "stdout_contains": null },
+      "notes": "§3.2 BOOT-027 (:405): the userinfo `@` fuses the path into the authority. BOOT-026 (no leading '/') co-fires in the same collect-all error list; the diff must accept both lines."
+    },
+    {
+      "id": "BOOT-028",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.path_base", "value": "v1beta" } ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' path_base 'v1beta' must begin with '/': it is appended to base_url verbatim", "stdout_contains": null },
+      "notes": "§3.2 BOOT-028 (:417)."
+    },
+    {
+      "id": "BOOT-029",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "set": "providers.gemini.base_url", "value": "https://127.0.0.1" },
+        { "set": "providers.gemini.path_base", "value": "@169.254.169.254/" }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' base_url+path_base 'https://127.0.0.1@169.254.169.254/' targets a blocked cloud-metadata host '169.254.169.254'", "stdout_contains": null },
+      "notes": "§3.2 BOOT-029 (:429). BOOT-028 co-fires (same fusing trick as BOOT-027)."
+    },
+    {
+      "id": "BOOT-030",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "set": "providers.gemini.auth", "value": "oauth-client-credentials" },
+        { "set": "providers.gemini.scope", "value": "oracle" }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' uses auth: oauth-client-credentials but has no `token_url`", "stdout_contains": null },
+      "notes": "§3.2 BOOT-030 (:451). scope set so BOOT-034 stays quiet; BOOT-035 (credential shape) may still co-fire if the credential is validated without a token_url."
+    },
+    {
+      "id": "BOOT-031",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "set": "providers.gemini.auth", "value": "oauth-client-credentials" },
+        { "set": "providers.gemini.scope", "value": "oracle" },
+        { "set": "providers.gemini.token_url", "value": "http://example.com/token" }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' token_url must use https for a public host (got 'http://example.com/token')", "stdout_contains": null },
+      "notes": "§3.2 BOOT-031 (:471). Value has `://` so the --validate placeholder skip does not apply. BOOT-035 may co-fire."
+    },
+    {
+      "id": "BOOT-032",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "set": "providers.gemini.auth", "value": "oauth-client-credentials" },
+        { "set": "providers.gemini.scope", "value": "oracle" },
+        { "set": "providers.gemini.token_url", "value": "ftp://127.0.0.1/token" }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' token_url must use http or https (got 'ftp://127.0.0.1/token')", "stdout_contains": null },
+      "notes": "§3.2 BOOT-032 (:476). BOOT-035 may co-fire."
+    },
+    {
+      "id": "BOOT-033",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "set": "providers.gemini.auth", "value": "oauth-client-credentials" },
+        { "set": "providers.gemini.scope", "value": "oracle" },
+        { "set": "providers.gemini.token_url", "value": "https://169.254.169.254/token" }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' token_url 'https://169.254.169.254/token' targets a blocked cloud-metadata host '169.254.169.254'", "stdout_contains": null },
+      "notes": "§3.2 BOOT-033 (:487). BOOT-035 may co-fire."
+    },
+    {
+      "id": "BOOT-034",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "set": "providers.gemini.auth", "value": "oauth-client-credentials" },
+        { "set": "providers.gemini.token_url", "value": "https://127.0.0.1/token" }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' uses auth: oauth-client-credentials but has no `scope`", "stdout_contains": null },
+      "notes": "§3.2 BOOT-034 (:500). BOOT-035 may co-fire."
+    },
+    {
+      "id": "BOOT-035",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "set": "providers.gemini.auth", "value": "oauth-client-credentials" },
+        { "set": "providers.gemini.scope", "value": "oracle" },
+        { "set": "providers.gemini.token_url", "value": "https://127.0.0.1/token" }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' oauth-client-credentials credential (from env:ORACLE_UPSTREAM_KEY) is invalid:", "stdout_contains": null },
+      "notes": "§3.2 BOOT-035 (:515): the baseline credential `unused` (ORACLE_UPSTREAM_KEY) is not a client-credentials shape, so oauth_client_credentials::validate_credential rejects it. The `(from …)` text is SecretRef::describe() = `env:ORACLE_UPSTREAM_KEY`. TRAP: if 1.5.5 does not resolve the secret at --validate this fires only in boot mode — then narrow to boot."
+    },
+    {
+      "id": "BOOT-036",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.auth", "value": "jwt-bearer" } ],
+      "expect": { "exit": 1, "stderr_contains": "provider 'gemini' jwt-bearer credential (from env:ORACLE_UPSTREAM_KEY) is invalid:", "stdout_contains": null },
+      "notes": "§3.2 BOOT-036 (:542): `unused` is not a service-account JSON document. Same --validate-vs-boot caveat as BOOT-035."
+    },
+    {
+      "id": "BOOT-040",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.members", "value": [] } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' has no members; a pool with an empty member list is un-routable", "stdout_contains": null },
+      "notes": "§3.2 BOOT-040 (:563)."
+    },
+    {
+      "id": "BOOT-041",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.members.0.weight", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' member 'm-openai-chat' weight must be >= 1 (got 0)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-041 (:577)."
+    },
+    {
+      "id": "BOOT-042",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.members.0.attempt_timeout_ms", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' member 'm-openai-chat' has attempt_timeout_ms: 0; a zero cap fails every attempt instantly", "stdout_contains": null },
+      "notes": "§3.2 BOOT-042 (:586)."
+    },
+    {
+      "id": "BOOT-043a",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "models.m-openai-chat.provider", "value": "nope" } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' member 'm-openai-chat' references model 'm-openai-chat', which is defined but whose provider is unresolvable", "stdout_contains": null },
+      "notes": "§3.2 BOOT-043a (:607). BOOT-010 for m-openai-chat co-fires (the message itself says so)."
+    },
+    {
+      "id": "BOOT-043b",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.members.0.model", "value": "nope" } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' references unknown model 'nope'", "stdout_contains": null },
+      "notes": "§3.2 BOOT-043b (:612)."
+    },
+    {
+      "id": "BOOT-044a",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.breaker", "value": { "base_cooldown_secs": 0 } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' breaker base_cooldown_secs must be >= 1 (got 0)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-044a (:643). max_cooldown_secs keeps its 120 default."
+    },
+    {
+      "id": "BOOT-044b",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.breaker", "value": { "max_cooldown_secs": 0 } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' breaker max_cooldown_secs must be >= 1 (got 0)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-044b (:649). BOOT-044c (0 < default base 15) co-fires."
+    },
+    {
+      "id": "BOOT-044c",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.breaker", "value": { "base_cooldown_secs": 30, "max_cooldown_secs": 20 } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' breaker max_cooldown_secs (20) must be >= base_cooldown_secs (30)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-044c (:657)."
+    },
+    {
+      "id": "BOOT-044d",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.breaker", "value": { "trip": { "min_requests": 0 } } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' breaker trip.min_requests must be >= 1 (got 0)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-044d (:666)."
+    },
+    {
+      "id": "BOOT-044e",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.breaker", "value": { "trip": { "window_secs": 0 } } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' breaker trip.window_secs must be >= 1 (got 0)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-044e (:674)."
+    },
+    {
+      "id": "BOOT-044f",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.breaker", "value": { "trip": { "mode": "error_rate", "threshold": 1.5 } } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' breaker trip.threshold must be in (0.0, 1.0] for error_rate mode (got 1.5)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-044f (:684). 1.5 has an exact f64 Display."
+    },
+    {
+      "id": "BOOT-044g",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.breaker", "value": { "trip": { "mode": "consecutive", "consecutive_n": 0 } } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' breaker trip.consecutive_n must be >= 1 for consecutive mode (got 0)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-044g (:694)."
+    },
+    {
+      "id": "BOOT-045a",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.failover", "value": { "timeout_secs": 0 } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' failover.timeout_secs must be >= 1; a 0 budget rejects the primary attempt before it runs", "stdout_contains": null },
+      "notes": "§3.2 BOOT-045a (:714)."
+    },
+    {
+      "id": "BOOT-045b",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.failover", "value": { "timeout_secs": 86401 } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' failover.timeout_secs (86401) exceeds the maximum of 86400 s (24h)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-045b (:725)."
+    },
+    {
+      "id": "BOOT-045c",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.failover", "value": { "exclusions": [ "m-gemini" ] } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' failover.exclusions references 'm-gemini', which is not a member of the pool", "stdout_contains": null },
+      "notes": "§3.2 BOOT-045c (:746): m-gemini is a defined model but not a member of oracle-unused."
+    },
+    {
+      "id": "BOOT-046",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.on_exhausted", "value": { "fallback_pool": "nope" } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' on_exhausted references unknown fallback pool 'nope'", "stdout_contains": null },
+      "notes": "§3.2 BOOT-046 (:769)."
+    },
+    {
+      "id": "BOOT-047",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.on_exhausted", "value": { "fallback_pool": "oracle-unused" } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' on_exhausted references itself as its fallback pool ('oracle-unused')", "stdout_contains": null },
+      "notes": "§3.2 BOOT-047 (:782)."
+    },
+    {
+      "id": "BOOT-048",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "set": "pools.oracle-ring", "value": { "members": [ { "model": "m-gemini" } ], "on_exhausted": { "fallback_pool": "oracle-unused" } } },
+        { "set": "pools.oracle-unused.on_exhausted", "value": { "fallback_pool": "oracle-ring" } }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "fallback_pool cycle detected:", "stdout_contains": null },
+      "notes": "§3.2 BOOT-048 (:888): a two-pool ring, reported once from the lexicographically smallest member (`oracle-ring` < `oracle-unused`). The rendered path format after the colon is what the diff compares."
+    },
+    {
+      "id": "BOOT-049a",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.on_exhausted", "value": { "queue": { "max_ms": 0 } } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' on_exhausted.queue.max_ms must be > 0; a 0 wait never queues", "stdout_contains": null },
+      "notes": "§3.2 BOOT-049a (:806)."
+    },
+    {
+      "id": "BOOT-049b",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.on_exhausted", "value": { "queue": { "max_ms": 120001 } } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' on_exhausted.queue.max_ms (120001 ms) exceeds the resolved failover budget (120 s = 120000 ms)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-049b (:811): default failover.timeout_secs = 120."
+    },
+    {
+      "id": "BOOT-050",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.affinity", "value": { "header_name": "" } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' affinity.header_name must not be empty", "stdout_contains": null },
+      "notes": "§3.2 BOOT-050 (:833)."
+    },
+    {
+      "id": "BOOT-051",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.affinity", "value": { "header_name": "x-sessión" } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' affinity.header_name 'x-sessión' must be ASCII", "stdout_contains": null },
+      "notes": "§3.2 BOOT-051 (:839): U+00F3 in the header name."
+    },
+    {
+      "id": "BOOT-052",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.affinity", "value": { "header_name": "x-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' affinity.header_name is 65 chars; must be <= 64", "stdout_contains": null },
+      "notes": "§3.2 BOOT-052 (:845, MAX_AFFINITY_HEADER_NAME_LEN :11): `x-` + 63 `a` = 65 chars."
+    },
+    {
+      "id": "BOOT-053",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "hooks.h53", "value": { "module": "" } } ],
+      "expect": { "exit": 1, "stderr_contains": "hook 'h53' names no plugin: set `module:` to a `kind: hook` plugin's signed-manifest name or alias", "stdout_contains": null },
+      "notes": "§3.2 BOOT-053 (:917)."
+    },
+    {
+      "id": "BOOT-054",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "hooks.h54", "value": { "module": "oracle-hook", "kind": "tap", "prompt": "rw" } } ],
+      "expect": { "exit": 1, "stderr_contains": "hook 'h54' is a tap with `prompt: rw`, but only a gate can rewrite (a tap never replies)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-054 (:927). Validation runs before plugin preflight, so the missing `oracle-hook` plugin (BOOT-132) never gets a turn."
+    },
+    {
+      "id": "BOOT-055",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "is a tap with `default: true`, but a tap cannot be a pool's base ordering", "stdout_contains": null },
+      "notes": "§3.2 BOOT-055 (:936). needs overlay/admin-API hook fixture: `default:` is a runtime HookCfg key (CFG-234), NOT a HookDefCfg key — writing it under config.yaml `hooks.<h>` trips BOOT-P01 (unknown field) instead."
+    },
+    {
+      "id": "BOOT-056",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "hooks.weighted", "value": { "module": "oracle-hook" } } ],
+      "expect": { "exit": 1, "stderr_contains": "hooks.weighted: 'weighted' is a reserved name (an on_error terminal, built-in ranking strategy, or built-in auth module) and cannot name a hook definition", "stdout_contains": null },
+      "notes": "§3.2 BOOT-056. TRAP: config::resolve runs BEFORE config_validate (§3.5 order), so the resolve-side twin (config/mod.rs:4194-4198, quoted in the row's citation) is what stderr shows; the config_validate text `hook 'weighted' uses a reserved name` (:949) is shadowed from config.yaml. If 1.5.5 turns out to emit the :949 text instead, swap this substring for `hook 'weighted' uses a reserved name`."
+    },
+    {
+      "id": "BOOT-057",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "more than one hook sets `default: true`", "stdout_contains": null },
+      "notes": "§3.2 BOOT-057 (:971). needs overlay/admin-API hook fixture: `default:` is runtime-HookCfg-only (see BOOT-055)."
+    },
+    {
+      "id": "BOOT-058a",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.hooks", "value": [ "nohook" ] } ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' references unknown hook 'nohook'; define it under top-level `hooks:`", "stdout_contains": null },
+      "notes": "§3.2 BOOT-058a (:985): `nohook` is not a strategy keyword so it lowers to a gate name."
+    },
+    {
+      "id": "BOOT-058b",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "set": "hooks.h58", "value": { "module": "oracle-hook", "kind": "tap" } },
+        { "set": "pools.oracle-unused.hooks", "value": [ "h58" ] }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "pool 'oracle-unused' hook 'h58' is a tap, but a hook named in a pool's `hooks:` list must be a gate (fire-and-wait)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-058b (:989)."
+    },
+    {
+      "id": "BOOT-059a",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "on_error names the built-in ranking strategy", "stdout_contains": null },
+      "notes": "§3.2 BOOT-059a (:1023). needs a binary built WITHOUT the `hooks-ranking` feature; the published 1.5.5 and the 1.6.0 default build both carry it (Cargo.toml default features), so the branch is unreachable."
+    },
+    {
+      "id": "BOOT-059b",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "hooks.h59", "value": { "module": "oracle-hook", "on_error": { "hook": "h59" } } } ],
+      "expect": { "exit": 1, "stderr_contains": "hook on_error chain does not terminate:", "stdout_contains": null },
+      "notes": "§3.2 BOOT-059b (:1032): a self-referential fallback. The rendered `{} -> h59 is a cycle` path format after the colon is what the diff compares."
+    },
+    {
+      "id": "BOOT-059c",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "hooks.h59", "value": { "module": "oracle-hook", "on_error": { "hook": "nohook" } } } ],
+      "expect": { "exit": 1, "stderr_contains": "hook 'h59' on_error names unknown fallback 'nohook'", "stdout_contains": null },
+      "notes": "§3.2 BOOT-059c (:1040)."
+    },
+    {
+      "id": "BOOT-059d",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "set": "hooks.h59t", "value": { "module": "oracle-hook", "kind": "tap" } },
+        { "set": "hooks.h59", "value": { "module": "oracle-hook", "on_error": { "hook": "h59t" } } }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "hook 'h59' on_error fallback 'h59t' is a tap; a fallback must be a gate (fire-and-wait)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-059d (:1048)."
+    },
+    {
+      "id": "BOOT-060",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "public_url", "value": "ftp://127.0.0.1" } ],
+      "expect": { "exit": 1, "stderr_contains": "public_url must be an absolute http(s) URL (got 'ftp://127.0.0.1')", "stdout_contains": null },
+      "notes": "§3.2 BOOT-060 (:1818)."
+    },
+    {
+      "id": "BOOT-061",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "public_url", "value": "https://" } ],
+      "expect": { "exit": 1, "stderr_contains": "public_url 'https://' has no host", "stdout_contains": null },
+      "notes": "§3.2 BOOT-061 (:1824): scheme_is(https) passes, extract_normalized_host returns None."
+    },
+    {
+      "id": "BOOT-062",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "public_url", "value": "http://example.com" } ],
+      "expect": { "exit": 1, "stderr_contains": "public_url must use https for a public host (got 'http://example.com')", "stdout_contains": null },
+      "notes": "§3.2 BOOT-062 (:1828)."
+    },
+    {
+      "id": "BOOT-063",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "public_url", "value": "https://127.0.0.1/v1" } ],
+      "expect": { "exit": 1, "stderr_contains": "public_url must be a bare origin (scheme://host[:port]) with no path, query, or fragment (got 'https://127.0.0.1/v1')", "stdout_contains": null },
+      "notes": "§3.2 BOOT-063 (:1841)."
+    },
+    {
+      "id": "BOOT-064",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "public_url", "value": "https://169.254.169.254" } ],
+      "expect": { "exit": 1, "stderr_contains": "public_url 'https://169.254.169.254' targets a blocked cloud-metadata host '169.254.169.254'", "stdout_contains": null },
+      "notes": "§3.2 BOOT-064 (:1851)."
+    },
+    {
+      "id": "BOOT-070",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "identity-providers.admin-tokens.browser_login", "value": { "client_id": "oracle" } } ],
+      "expect": { "exit": 1, "stderr_contains": "auth.methods has a `browser_login` method but top-level `public_url:` is unset", "stdout_contains": null },
+      "notes": "§3.2 BOOT-070 (:1099): the PRESENCE of browser_login on a resolved provider (here the admin-plane admin-tokens definition) with no public_url. If 1.5.5 only counts data-plane chain members as `methods`, move the block onto a `keys`-backed definition referenced from auth.chain."
+    },
+    {
+      "id": "BOOT-071",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "auth.key_ttl", "value": "bogus" } ],
+      "expect": { "exit": 1, "stderr_contains": "auth.key_ttl 'bogus' is not a valid duration:", "stdout_contains": null },
+      "notes": "§3.2 BOOT-071 (:1111)."
+    },
+    {
+      "id": "BOOT-072",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "auth.role_bindings", "value": { "oracle-oidc": { "dev": {} } } } ],
+      "expect": { "exit": 1, "stderr_contains": "role_bindings names module 'oracle-oidc', which appears in neither auth.chain nor auth.admin_auth", "stdout_contains": null },
+      "notes": "§3.2 BOOT-072 (:1116)."
+    },
+    {
+      "id": "BOOT-073a",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "auth.role_bindings", "value": { "admin-tokens": { "admin": {} } } } ],
+      "expect": { "exit": 1, "stderr_contains": "role_bindings.admin-tokens binds role 'admin', which shadows the reserved operator principal id", "stdout_contains": null },
+      "notes": "§3.2 BOOT-073a (:1125); admin-tokens is in admin_auth so BOOT-072 stays quiet."
+    },
+    {
+      "id": "BOOT-073b",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "auth.role_bindings", "value": { "admin-tokens": { "dev": { "admin_scope": "bogus" } } } } ],
+      "expect": { "exit": 1, "stderr_contains": "role_bindings.admin-tokens.dev has unknown admin_scope 'bogus': expected read-only or full", "stdout_contains": null },
+      "notes": "§3.2 BOOT-073b (:1133)."
+    },
+    {
+      "id": "BOOT-073c",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "auth.role_bindings", "value": { "admin-tokens": { "dev": { "group": "nogroup" } } } } ],
+      "expect": { "exit": 1, "stderr_contains": "role_bindings.admin-tokens.dev names group 'nogroup', which does not exist.", "stdout_contains": null },
+      "notes": "§3.2 BOOT-073c (:1140); the multi-line paste stub follows."
+    },
+    {
+      "id": "BOOT-074a",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "identity-providers.admin-tokens.max_admin_scope", "value": "bogus" } ],
+      "expect": { "exit": 1, "stderr_contains": "unknown max_admin_scope 'bogus': expected read-only or full", "stdout_contains": null },
+      "notes": "§3.2 BOOT-074a (:1157-1161 / config/mod.rs:523): Scope::parse_ceiling on the referenced admin-tokens entry. The prefix `auth chain entry 'admin-tokens'` may precede the quoted text."
+    },
+    {
+      "id": "BOOT-074b",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "sets `token:`, which belongs to the built-in `admin-tokens` module only", "stdout_contains": null },
+      "notes": "§3.2 BOOT-074b (:1174). needs overlay/admin-API fixture: unreachable from config.yaml at 1.5.5 — an inline `auth.chain` map entry trips the legacy detector first (BOOT-P41 marker 18), and a `token:` on a named definition trips BOOT-074c at definition parse before the chain-entry check."
+    },
+    {
+      "id": "BOOT-074c",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "identity-providers.oracle-keys", "value": { "module": "keys", "token": { "env": "ORACLE_UNUSED_TOKEN" } } } ],
+      "expect": { "exit": 1, "stderr_contains": "identity-providers.oracle-keys: `token:` is the built-in `admin-tokens` operator credential and is meaningless on `module: keys`", "stdout_contains": null },
+      "notes": "§3.2 BOOT-074c (config/mod.rs:843-846, config/named_map.rs:155): the definition-side check fires even for an unreferenced definition."
+    },
+    {
+      "id": "BOOT-074d",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "identity-providers.oracle-blank", "value": { "module": "" } } ],
+      "expect": { "exit": 1, "stderr_contains": "identity-providers.oracle-blank.module must be a non-empty module name", "stdout_contains": null },
+      "notes": "§3.2 BOOT-074d (config/mod.rs:861-863)."
+    },
+    {
+      "id": "BOOT-074e",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "auth.chain", "value": [ "keys", "oracle-missing" ] } ],
+      "expect": { "exit": 1, "stderr_contains": "auth.chain references 'oracle-missing', which is not defined in `identity-providers:` (and is not a built-in:", "stdout_contains": null },
+      "notes": "§3.2 BOOT-074e (config/mod.rs:884-889); the built-in list that follows is `keys`/`admin-tokens`."
+    },
+    {
+      "id": "BOOT-075",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "delete": "auth.signing_key" } ],
+      "expect": { "exit": 1, "stderr_contains": "auth.signing_key is required for signed-token auth (auth.chain names the built-in `keys` verifier), but none is set - and busbar no longer auto-generates one.", "stdout_contains": null },
+      "notes": "§3.2 BOOT-075 (:1257)."
+    },
+    {
+      "id": "BOOT-076",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "delete": "identity-providers.admin-tokens" } ],
+      "expect": { "exit": 1, "stderr_contains": "auth.chain names the built-in `keys` verifier but no admin credential can mint one", "stdout_contains": null },
+      "notes": "§3.2 BOOT-076 (:1276): admin_auth still names the bare built-in `admin-tokens`, but with its definition (and therefore its `token:`) gone there is no mint path. Distinct from BOOT-W03, which is the explicitly-empty admin_auth case."
+    },
+    {
+      "id": "BOOT-077",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "the static-token allowlist module was REMOVED in 1.5.0", "stdout_contains": null },
+      "notes": "§3.2 BOOT-077 (:1237). needs an admin-API/overlay fixture: from config.yaml `auth.chain: [tokens]` (or `static-tokens`) is caught first by the legacy detector (BOOT-P41 marker #7, config/migrate.rs:105-117), which runs before deserialization, so config_validate never sees it."
+    },
+    {
+      "id": "BOOT-078",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.hooks", "value": [ "nohook" ] } ],
+      "expect": { "exit": 1, "stderr_contains": "global_hooks references unknown hook 'nohook'; define it under top-level `hooks:`", "stdout_contains": null },
+      "notes": "§3.2 BOOT-078 (:1191): the reserved `pools.hooks:` list lowers to the runtime global_hooks."
+    },
+    {
+      "id": "BOOT-079",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "ranking strategy but this binary was built WITHOUT the `hooks-ranking` feature", "stdout_contains": null },
+      "notes": "§3.2 BOOT-079 (:1204). needs a binary built WITHOUT the `hooks-ranking` feature (default features include it on both 1.5.5 and 1.6.0)."
+    },
+    {
+      "id": "BOOT-080",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "limits.upstream_request_timeout_secs", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call instantly)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-080 (:1387)."
+    },
+    {
+      "id": "BOOT-081",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "limits.tls_handshake_timeout_secs", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "limits.tls_handshake_timeout_secs must be >= 1 (0 would abort every TLS handshake)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-081 (:1394)."
+    },
+    {
+      "id": "BOOT-082",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "limits.request_body_read_timeout_secs", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "limits.request_body_read_timeout_secs must be >= 1 (0 would abort every request whose body is not instantly buffered)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-082 (:1400)."
+    },
+    {
+      "id": "BOOT-083a",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "export.req-log", "value": { "module": "request-log-webhook", "settings": { "url": "https://127.0.0.1/oracle-hook", "max_inflight_deliveries": 0 } } } ],
+      "expect": { "exit": 1, "stderr_contains": "export.request-log-webhook.settings.max_inflight_deliveries must be >= 1 (a 0-permit semaphore admits nothing", "stdout_contains": null },
+      "notes": "§3.2 BOOT-083a (:1407). The instance is named `req-log`; the message names the module path, not the instance."
+    },
+    {
+      "id": "BOOT-083b",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "export.req-log", "value": { "module": "request-log-webhook", "settings": { "url": "https://127.0.0.1/oracle-hook", "max_inflight_deliveries": 2305843009213693952 } } } ],
+      "expect": { "exit": 1, "stderr_contains": "export.request-log-webhook.settings.max_inflight_deliveries must be <= 2305843009213693951", "stdout_contains": null },
+      "notes": "§3.2 BOOT-083b (:1417); MAX_SEMAPHORE_PERMITS+1 on 64-bit."
+    },
+    {
+      "id": "BOOT-084",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "limits.max_honored_retry_after_secs", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "limits.max_honored_retry_after_secs must be >= 1 (a 0 ceiling would clamp every honored Retry-After to 0)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-084 (:1425)."
+    },
+    {
+      "id": "BOOT-085",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "limits.hard_down_cooldown_secs", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "limits.hard_down_cooldown_secs must be >= 1 (a 0 sticky cooldown would re-ready a hard-down lane immediately)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-085 (:1432)."
+    },
+    {
+      "id": "BOOT-086a",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "limits.request_body_max_bytes", "value": 65535 } ],
+      "expect": { "exit": 1, "stderr_contains": "limits.request_body_max_bytes (65535) is below the 65536-byte floor", "stdout_contains": null },
+      "notes": "§3.2 BOOT-086a (:1441), REQUEST_BODY_MAX_BYTES_FLOOR = 64 KiB."
+    },
+    {
+      "id": "BOOT-086b",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "limits.request_body_max_bytes", "value": 1073741825 } ],
+      "expect": { "exit": 1, "stderr_contains": "limits.request_body_max_bytes (1073741825) exceeds the 1073741824-byte ceiling", "stdout_contains": null },
+      "notes": "§3.2 BOOT-086b (:1448), REQUEST_BODY_MAX_BYTES_CEIL = 1 GiB."
+    },
+    {
+      "id": "BOOT-087",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "limits.upstream_error_body_max_bytes", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "limits.upstream_error_body_max_bytes must be >= 1 (0 would buffer no upstream error body)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-087 (:1460)."
+    },
+    {
+      "id": "BOOT-088",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "limits.default_max_tokens", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "limits.default_max_tokens must be >= 1 (0 would be injected verbatim and rejected upstream)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-088 (:1468)."
+    },
+    {
+      "id": "BOOT-089a",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "health.default_probe_interval_secs", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "health.default_probe_interval_secs must be >= 1", "stdout_contains": null },
+      "notes": "§3.2 BOOT-089a (:1478)."
+    },
+    {
+      "id": "BOOT-089b",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "health.default_probe_timeout_secs", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "health.default_probe_timeout_secs must be >= 1", "stdout_contains": null },
+      "notes": "§3.2 BOOT-089b (:1481)."
+    },
+    {
+      "id": "BOOT-089c",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "routing.default_policy_timeout_ms", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "routing.default_policy_timeout_ms must be >= 1 (0 would make every policy decision time out instantly)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-089c (:1484)."
+    },
+    {
+      "id": "BOOT-089d",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "advanced.rate_sweep_interval", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "advanced.rate_sweep_interval is 0; must be >= 1. A value of 0 disables the rate-map idle-entry sweep", "stdout_contains": null },
+      "notes": "§3.2 BOOT-089d (:1494)."
+    },
+    {
+      "id": "BOOT-089e",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "limits.max_inbound_concurrent", "value": 2305843009213693952 } ],
+      "expect": { "exit": 1, "stderr_contains": "limits.max_inbound_concurrent must be <= 2305843009213693951", "stdout_contains": null },
+      "notes": "§3.2 BOOT-089e (:1508); MAX_SEMAPHORE_PERMITS+1 on 64-bit."
+    },
+    {
+      "id": "BOOT-089f",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "export.req-log", "value": { "module": "request-log-webhook", "settings": { "url": "https://127.0.0.1/oracle-hook", "delivery_timeout_secs": 0 } } } ],
+      "expect": { "exit": 1, "stderr_contains": "export instance targeting 'https://127.0.0.1/oracle-hook' (#", "stdout_contains": null },
+      "notes": "§3.2 BOOT-089f (:1334): full text `the `module: request-log-webhook` export instance targeting '<url>' (#{i}) sets settings.delivery_timeout_secs: 0, which would abort every delivery — it must be >= 1`; the instance index {i} (0- or 1-based) is left to the diff."
+    },
+    {
+      "id": "BOOT-090",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key", "value": { "module": "env" } } ],
+      "expect": { "exit": 1, "stderr_contains": "secret module 'env' requires settings.key (the environment variable name)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-090 (:1677); the `{what}:` prefix is the ref's path (providers.gemini.api_key)."
+    },
+    {
+      "id": "BOOT-091",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key", "value": { "module": "file" } } ],
+      "expect": { "exit": 1, "stderr_contains": "secret module 'file' requires settings.path (the file to read)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-091 (:1681)."
+    },
+    {
+      "id": "BOOT-092",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "secrets", "value": { "env": { "settings": {} } } } ],
+      "expect": { "exit": 1, "stderr_contains": "secrets.env: the built-in 'env' secret module takes no module-level config", "stdout_contains": null },
+      "notes": "§3.2 BOOT-092 (:1704)."
+    },
+    {
+      "id": "BOOT-093",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "store", "value": { "module": "" } } ],
+      "expect": { "exit": 1, "stderr_contains": "store.module must be non-empty; use `memory` (the compiled-in RAM store) or a store plugin name/alias", "stdout_contains": null },
+      "notes": "§3.2 BOOT-093 (:1654)."
+    },
+    {
+      "id": "BOOT-094",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "an admin-tokens token is configured but this binary was built WITHOUT the `auth-admin-tokens` feature", "stdout_contains": null },
+      "notes": "§3.2 BOOT-094 (:1722). needs a binary built WITHOUT the `auth-admin-tokens` feature; the baseline (admin-tokens with a token) would trip it on such a build, but the published binaries carry the feature."
+    },
+    {
+      "id": "BOOT-100",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "set": "pools.oracle-unused.members.0.context_max", "value": 1000 },
+        { "set": "pools.oracle-two", "value": { "members": [ { "model": "m-openai-chat", "context_max": 2000 } ] } }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "model 'm-openai-chat' has conflicting context_max across pools (", "stdout_contains": null },
+      "notes": "§3.2 BOOT-100 (:1354; also main.rs:531-534): 1000 vs 2000 — the order of the two values inside the parentheses follows pool iteration order, left to the diff."
+    },
+    {
+      "id": "BOOT-101",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "export.metrics.settings.buffer_seconds", "value": 0 } ],
+      "expect": { "exit": 1, "stderr_contains": "the `module: prometheus` export instance sets settings.buffer_seconds: 0, which retains no observations", "stdout_contains": null },
+      "notes": "§3.2 BOOT-101 (config/mod.rs:4100-4110), raised in resolve — so reported under `[error] config errors:` rather than `config validation failed:`."
+    },
+    {
+      "id": "BOOT-105a",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "rate_card", "value": {
+        "m-anthropic": { "input_utok": 1, "output_utok": 1 },
+        "m-openai-chat": { "input_utok": 1, "output_utok": 1 },
+        "m-openai-responses": { "input_utok": 1, "output_utok": 1 },
+        "m-gemini": { "input_utok": -1, "output_utok": 1 },
+        "m-bedrock": { "input_utok": 1, "output_utok": 1 },
+        "m-cohere": { "input_utok": 1, "output_utok": 1 } } } ],
+      "expect": { "exit": 1, "stderr_contains": "rate_card['m-gemini'].input_utok must be a finite, non-negative number of micro-units per token (got -1)", "stdout_contains": null },
+      "notes": "§3.2 BOOT-105a (:1576). A complete card so BOOT-105b stays quiet."
+    },
+    {
+      "id": "BOOT-105b",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "rate_card", "value": { "m-gemini": { "input_utok": 1, "output_utok": 1 } } } ],
+      "expect": { "exit": 1, "stderr_contains": "rate_card is present but 5 configured models have no rate entry (rate_card is AUTHORITATIVE and COMPLETE", "stdout_contains": null },
+      "notes": "§3.2 BOOT-105b (:1606, stub :1600): five of six models unpriced → the plural `s have` arm; a paste-ready stub for the five follows."
+    },
+    {
+      "id": "BOOT-105c",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "rate_card", "value": {
+        "m-anthropic": { "input_utok": 1, "output_utok": 1 },
+        "m-openai-chat": { "input_utok": 1, "output_utok": 1 },
+        "m-openai-responses": { "input_utok": 1, "output_utok": 1 },
+        "m-gemini": { "input_utok": 1, "output_utok": 1 },
+        "m-bedrock": { "input_utok": 1, "output_utok": 1 },
+        "m-cohere": { "input_utok": 1, "output_utok": 1 },
+        "nope": { "input_utok": 1, "output_utok": 1 } } } ],
+      "expect": { "exit": 1, "stderr_contains": "rate_card names model 'nope', which is not defined under models:", "stdout_contains": null },
+      "notes": "§3.2 BOOT-105c (:1618)."
+    },
+    {
+      "id": "BOOT-106",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "per_request_fee", "value": -1 } ],
+      "expect": { "exit": 1, "stderr_contains": "per_request_fee must be >= 0 (got -1); a negative fee would credit every request", "stdout_contains": null },
+      "notes": "§3.2 BOOT-106 (:1627)."
+    },
+    {
+      "id": "BOOT-107",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.limits.0", "value": { "requests": 1, "per": "day", "pool": "nopool" } } ],
+      "expect": { "exit": 1, "stderr_contains": "groups.broke.limits has `pool: nopool`, but no such pool exists", "stdout_contains": null },
+      "notes": "§3.2 BOOT-107 (config/groups.rs:424-428)."
+    },
+    {
+      "id": "BOOT-108",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.limits.0", "value": { "budget": 1, "per": "day", "pool": "oracle-unused", "on_exhaust": "downgrade", "downgrade_to": "nopool" } } ],
+      "expect": { "exit": 1, "stderr_contains": "groups.broke.limits has `downgrade_to: nopool`, but no such pool exists", "stdout_contains": null },
+      "notes": "§3.2 BOOT-108 (config/groups.rs:434-437)."
+    },
+    {
+      "id": "BOOT-109a",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.parent", "value": "nogroup" } ],
+      "expect": { "exit": 1, "stderr_contains": "groups.broke names parent 'nogroup', which does not exist.", "stdout_contains": null },
+      "notes": "§3.2 BOOT-109a (config/groups.rs:444-448)."
+    },
+    {
+      "id": "BOOT-109b",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        { "set": "groups.broke.parent", "value": "oracle" },
+        { "set": "groups.oracle.parent", "value": "broke" }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "is CYCLIC (", "stdout_contains": null },
+      "notes": "§3.2 BOOT-109b (config/groups.rs:457-461): `groups chain starting at 'broke' is CYCLIC (broke -> oracle -> broke)` — BTreeMap order visits `broke` first; the rendered path is left to the diff."
+    },
+    {
+      "id": "BOOT-110",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "groups.broke.limits.0", "value": { "requests": 0, "per": "day" } } ],
+      "expect": { "exit": 1, "stderr_contains": "groups.broke has a `requests` limit of 0, which rejects every request through the group from the first admission", "stdout_contains": null },
+      "notes": "§3.2 BOOT-110 (:1640)."
+    },
+    {
+      "id": "BOOT-120",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "env",
+      "op": [ { "env": { "BUSBAR_CONFIG": "/nonexistent/oracle/config.yaml" } } ],
+      "expect": { "exit": 1, "stderr_contains": "cannot read config file '/nonexistent/oracle/config.yaml':", "stdout_contains": null },
+      "notes": "§3.3 BOOT-120 (main.rs:1608-1612). The env op OVERRIDES oracle_env's BUSBAR_CONFIG."
+    },
+    {
+      "id": "BOOT-121",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "env",
+      "op": [ { "env": { "BUSBAR_PROVIDERS": "/nonexistent/oracle/providers.yaml" } } ],
+      "expect": { "exit": 1, "stderr_contains": "cannot read providers file '/nonexistent/oracle/providers.yaml':", "stdout_contains": null },
+      "notes": "§3.3 BOOT-121 (main.rs:1659-1664). TRAP: oracle_env exports BUSBAR_PROVIDERS, which beats `providers_file:`, so the mutation must go through the env var (overriding oracle_env's value) rather than config.providers_file."
+    },
+    {
+      "id": "BOOT-122",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "providers",
+      "op": [ { "providers_set": "gemini.protocol", "value": [ 1 ] } ],
+      "expect": { "exit": 1, "stderr_contains": "providers.yaml: invalid YAML:", "stdout_contains": null },
+      "notes": "§3.3 BOOT-122 (main.rs:1670): a sequence where ProviderDef.protocol wants a string — serde invalid-type."
+    },
+    {
+      "id": "BOOT-123",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "was written by a newer busbar (overlay version", "stdout_contains": null },
+      "notes": "§3.3 BOOT-123 (main.rs:1717-1722). needs an overlay-file fixture: a busbar-overlay.json next to config.yaml carrying a version number above the binary's; the op vocabulary cannot write a second file."
+    },
+    {
+      "id": "BOOT-124",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "config", "value": { "overlay": true } } ],
+      "expect": { "exit": 1, "stderr_contains": "config.overlay: `true` names no backend — use `{ file: <path> }`, or `false` together with `config.locked: true` to run immutable.", "stdout_contains": null },
+      "notes": "§3.3 BOOT-124 (config/overlay.rs:114-118); the inventory scopes it `both`."
+    },
+    {
+      "id": "BOOT-125",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "config", "value": { "locked": false, "overlay": false } } ],
+      "expect": { "exit": 1, "stderr_contains": "config is mutable (config.locked: false) but has no writable overlay backend", "stdout_contains": null },
+      "notes": "§3.3 BOOT-125 (config/overlay.rs:128-132)."
+    },
+    {
+      "id": "BOOT-130",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "store", "value": { "module": "sqlite" } } ],
+      "expect": { "exit": 1, "stderr_contains": "store.module: 'sqlite' requires the plugin subsystem, but plugins.enabled is false (the default).", "stdout_contains": null },
+      "notes": "§3.3 BOOT-130 (main.rs:1843-1849): boot/reload only — --validate passes (module is non-blank)."
+    },
+    {
+      "id": "BOOT-131",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [
+        { "set": "identity-providers.oracle-oidc", "value": { "module": "oidc" } },
+        { "set": "auth.chain", "value": [ "keys", "oracle-oidc" ] }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "auth.chain names plugin module(s) [", "stdout_contains": null },
+      "notes": "§3.3 BOOT-131 (main.rs:1854-1859): `oidc` is neither built-in; with plugins disabled the chain check (:1854) fires before the identity-providers check (:1882). Rendering of the module list is left to the diff."
+    },
+    {
+      "id": "BOOT-132",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "hooks.h132", "value": { "module": "oracle-hook" } } ],
+      "expect": { "exit": 1, "stderr_contains": "the hooks registry names plugin module(s) [", "stdout_contains": null },
+      "notes": "§3.3 BOOT-132 (main.rs:1866-1871): a defined hook is in the registry even if no pool attaches it."
+    },
+    {
+      "id": "BOOT-133",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "identity-providers.oracle-oidc", "value": { "module": "oidc" } } ],
+      "expect": { "exit": 1, "stderr_contains": "require(s) the plugin subsystem, but plugins.enabled is false (the default). With plugins off, a provider's `module:` must be one of the built-ins:", "stdout_contains": null },
+      "notes": "§3.3 BOOT-133 (main.rs:1882-1889): the definition is NOT referenced from auth.chain, so BOOT-131 stays quiet and this arm reports it."
+    },
+    {
+      "id": "BOOT-134",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "plugins", "value": { "enabled": true, "dir": "/nonexistent/oracle-plugins", "trust": { "publishers": [ { "name": "oracle-pub", "public_key": "not-hex" } ] } } } ],
+      "expect": { "exit": 1, "stderr_contains": "plugins.trust is invalid: plugins.trust.publishers['oracle-pub']:", "stdout_contains": null },
+      "notes": "§3.3 BOOT-134 (main.rs:1894, config/mod.rs:2973-2983): a malformed hex key. plugins.enabled is set so the trust block is evaluated; the trust check (:1894) precedes any directory scan (:1911)."
+    },
+    {
+      "id": "BOOT-135",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "plugin validation failed:", "stdout_contains": null },
+      "notes": "§3.3 BOOT-135 (main.rs:1911). needs a plugin-tarball fixture with an invalid manifest in plugins.dir."
+    },
+    {
+      "id": "BOOT-136",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "resolves to plugin", "stdout_contains": null },
+      "notes": "§3.3 BOOT-136 (main.rs:1954-1957). needs a signed non-store plugin fixture whose name/alias store.module can reference."
+    },
+    {
+      "id": "BOOT-137a",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "not an `auth` plugin", "stdout_contains": null },
+      "notes": "§3.3 BOOT-137a (main.rs:1994-1997). needs a signed non-auth plugin fixture referenced from auth.chain."
+    },
+    {
+      "id": "BOOT-137b",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "but it was not loaded:", "stdout_contains": null },
+      "notes": "§3.3 BOOT-137b (main.rs:2001-2005). needs an auth plugin fixture that matches by name but is refused by trust policy (e.g. unsigned with allow_unsigned: false)."
+    },
+    {
+      "id": "BOOT-137c",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [
+        { "set": "plugins", "value": { "enabled": true, "dir": "/nonexistent/oracle-plugins" } },
+        { "set": "identity-providers.oracle-oidc", "value": { "module": "oidc" } },
+        { "set": "auth.chain", "value": [ "keys", "oracle-oidc" ] }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "no plugin matching auth.chain module 'oidc' is installed in '/nonexistent/oracle-plugins' (plugins ARE enabled; loadable: [", "stdout_contains": null },
+      "notes": "§3.3 BOOT-137c (main.rs:2006-2017): plugins on, empty catalog. TRAP: if 1.5.5 errors on a missing plugins.dir before resolution, have the recorder pre-create an empty directory at that path (the mutation is otherwise unchanged)."
+    },
+    {
+      "id": "BOOT-138a",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "not a `hook` plugin", "stdout_contains": null },
+      "notes": "§3.3 BOOT-138a (main.rs:2033-2036). needs a signed non-hook plugin fixture referenced from hooks.<h>.module."
+    },
+    {
+      "id": "BOOT-138b",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "but it was not loaded:", "stdout_contains": null },
+      "notes": "§3.3 BOOT-138b (main.rs:2040-2044). needs a hook plugin fixture present but refused by trust policy."
+    },
+    {
+      "id": "BOOT-138c",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [
+        { "set": "plugins", "value": { "enabled": true, "dir": "/nonexistent/oracle-plugins" } },
+        { "set": "hooks.h138", "value": { "module": "oracle-hook" } }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "no plugin matching the hook reference 'oracle-hook' is installed in '/nonexistent/oracle-plugins'", "stdout_contains": null },
+      "notes": "§3.3 BOOT-138c (main.rs:2045-2056). Same missing-dir caveat as BOOT-137c."
+    },
+    {
+      "id": "BOOT-139a",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "not an `auth` plugin. A provider's `module:` must be a built-in or a `kind: auth` plugin", "stdout_contains": null },
+      "notes": "§3.3 BOOT-139a (main.rs:2073-2079). needs a signed non-auth plugin fixture named from identity-providers.<n>.module."
+    },
+    {
+      "id": "BOOT-139b",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "but it was not loaded:", "stdout_contains": null },
+      "notes": "§3.3 BOOT-139b (main.rs:2083-2087). needs an auth plugin fixture present but refused by trust policy."
+    },
+    {
+      "id": "BOOT-140",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "plugins", "value": { "enabled": true, "dir": "/dev/null/oracle-plugins", "fetch": [ { "url": "https://127.0.0.1:9/oracle-plugin.tar.gz" } ] } } ],
+      "expect": { "exit": 1, "stderr_contains": "plugins.fetch: cannot create plugins dir '/dev/null/oracle-plugins':", "stdout_contains": null },
+      "notes": "§3.3 BOOT-140 (main.rs:2736-2739): create_dir_all under /dev/null fails with ENOTDIR on macOS and Linux; the mkdir precedes any fetch, so no network is touched."
+    },
+    {
+      "id": "BOOT-141",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "plugins", "value": { "enabled": true, "dir": "/tmp/oracle-plugins-boot-141", "fetch": [ { "url": "https://127.0.0.1:9/oracle-plugin.tar.gz" } ] } } ],
+      "expect": { "exit": 1, "stderr_contains": "plugins.fetch failed:", "stdout_contains": null },
+      "notes": "§3.3 BOOT-141 (main.rs:2729, :2743-2745): a loopback fetch to port 9 (nothing listens) is refused deterministically; boot is fatal-on-miss. Only the joined error text after the colon can vary by OS (connection refused wording) — compare the first line only."
+    },
+    {
+      "id": "BOOT-150",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "only a `kind: secret` plugin can back a secret reference", "stdout_contains": null },
+      "notes": "§3.3 BOOT-150 (main.rs:2452-2456). needs a signed non-secret plugin fixture whose name a SecretRef `module:` can reference."
+    },
+    {
+      "id": "BOOT-151",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key", "value": { "module": "vault" } } ],
+      "expect": { "exit": 1, "stderr_contains": "references secret module 'vault', which is not a built-in (`env` | `file`) and no loadable `kind: secret` plugin is named or aliased 'vault'", "stdout_contains": null },
+      "notes": "§3.3 BOOT-151 (main.rs:2459-2465): preflight_plugins_and_secrets runs at --validate too. The `{what}` prefix is providers.gemini.api_key."
+    },
+    {
+      "id": "BOOT-152",
+      "family": "boot.refusal",
+      "mode": "validate",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key", "value": { "env": "ORACLE_UNSET_SECRET_152" } } ],
+      "expect": { "exit": 1, "stderr_contains": "secret env:ORACLE_UNSET_SECRET_152 cannot resolve: environment variable 'ORACLE_UNSET_SECRET_152' is unset", "stdout_contains": null },
+      "notes": "§3.3 BOOT-152 (main.rs:2484-2498, :328-331): --validate ONLY (validate_builtin_secrets_resolve). At boot the same config only WARNs (BOOT-W16/W17) and serves. Recorder must not export the var."
+    },
+    {
+      "id": "BOOT-153",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "auth.signing_key", "value": { "file": "/nonexistent/oracle-signing.key" } } ],
+      "expect": { "exit": 1, "stderr_contains": "auth.signing_key did not resolve:", "stdout_contains": null },
+      "notes": "§3.3 BOOT-153 (main.rs:2243-2250). TRAP: at --validate the same mutation fails earlier as BOOT-152 (strict built-in secret resolution), so run boot mode only."
+    },
+    {
+      "id": "BOOT-160",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "references unknown provider", "stdout_contains": null },
+      "notes": "§3.3 BOOT-160 (main.rs:2829-2832) is the construction-path twin of BOOT-010; config_validate runs first on every boot, so the branch is dead from config.yaml. needs a fixture that bypasses validation (none exists)."
+    },
+    {
+      "id": "BOOT-161",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "references unknown model", "stdout_contains": null },
+      "notes": "§3.3 BOOT-161 (main.rs:3025-3028) is the construction-path twin of BOOT-043b; dead from config.yaml for the same reason as BOOT-160. needs a validation-bypass fixture (none exists)."
+    },
+    {
+      "id": "BOOT-162",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "auth chain construction failed:", "stdout_contains": null },
+      "notes": "§3.3 BOOT-162 (main.rs:3074). needs an auth plugin fixture that loads but fails construction (bad settings)."
+    },
+    {
+      "id": "BOOT-170",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "settings:", "stdout_contains": null },
+      "notes": "§3.3 BOOT-170 (main.rs:3449) `store '{}' settings: {e}`. needs a store plugin fixture (plugins on + signed store tarball) so store.settings are resolved for the plugin itself."
+    },
+    {
+      "id": "BOOT-171",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "plugin load failed:", "stdout_contains": null },
+      "notes": "§3.3 BOOT-171 (main.rs:3453). needs a store plugin fixture that fails to open (e.g. sqlite db_path in an unwritable dir)."
+    },
+    {
+      "id": "BOOT-172",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "governance boot: budget hydration failed (", "stdout_contains": null },
+      "notes": "§3.3 BOOT-172 (main.rs:3479-3483). needs a durable-store fixture whose ledger read fails."
+    },
+    {
+      "id": "BOOT-173",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "governance boot: could not read stored keys to validate budget_group references (", "stdout_contains": null },
+      "notes": "§3.3 BOOT-173 (main.rs:3492-3497). needs a durable-store fixture whose key table is unreadable."
+    },
+    {
+      "id": "BOOT-174",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "which does not exist in the top-level groups block.", "stdout_contains": null },
+      "notes": "§3.3 BOOT-174 (main.rs:3501-3505). needs a durable-store fixture holding a virtual key bound to a group absent from config."
+    },
+    {
+      "id": "BOOT-175",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "governance init failed:", "stdout_contains": null },
+      "notes": "§3.3 BOOT-175 (main.rs:3529). needs a durable-store fixture that fails governance initialization."
+    },
+    {
+      "id": "BOOT-180",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "listen", "value": "192.0.2.1:18080" } ],
+      "expect": { "exit": 1, "stderr_contains": "cannot bind listen address '192.0.2.1:18080':", "stdout_contains": null },
+      "notes": "§3.3 BOOT-180 (main.rs:1082): TEST-NET-1 is never a local interface, so bind fails with EADDRNOTAVAIL regardless of privileges. The OS error text after the colon may differ between macOS and Linux — compare the prefix."
+    },
+    {
+      "id": "BOOT-181",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [
+        { "set": "tls", "value": { "cert": { "env": "ORACLE_TLS_CERT" }, "key": { "env": "ORACLE_TLS_KEY" } } },
+        { "env": { "ORACLE_TLS_CERT": "not-a-pem-certificate", "ORACLE_TLS_KEY": "not-a-pem-key" } }
+      ],
+      "expect": { "exit": 1, "stderr_contains": "TLS configuration error for '", "stdout_contains": null },
+      "notes": "§3.3 BOOT-181 (main.rs:1119): non-PEM bytes resolve fine as secrets (non-empty) and fail at TLS build. No certificate fixture needed. The `{label}` (listen vs admin) and the rustls error text are left to the diff."
+    },
+    {
+      "id": "BOOT-182",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "server error on '", "stdout_contains": null },
+      "notes": "§3.3 BOOT-182 (main.rs:1108, :1123). needs a runtime fault-injection fixture (a listener that fails after bind); not reachable from config."
+    },
+    {
+      "id": "BOOT-183",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "env",
+      "op": null,
+      "expect": { "exit": 1, "stderr_contains": "failed to build the tokio runtime", "stdout_contains": null },
+      "notes": "§3.3 BOOT-183 (main.rs:753) is a panic, not die(); worker counts are capped at 128 so no env/config value provokes it. needs an OS-level fixture (thread-creation limit / RLIMIT_NPROC)."
+    },
+    {
+      "id": "BOOT-184",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "cli",
+      "op": [ { "args": [ "--bogus-flag" ] } ],
+      "expect": { "exit": 2, "stderr_contains": "busbar: unrecognized argument '--bogus-flag'. Try 'busbar --help'.", "stdout_contains": null },
+      "notes": "§3.3 BOOT-184 (main.rs:250-253): exit code 2. `boot` mode here just means `run the binary with these args and wait for exit`."
+    },
+    {
+      "id": "BOOT-W01",
+      "family": "boot.warning",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.oracle-unused.members", "value": [ { "model": "m-openai-chat" }, { "model": "m-gemini" } ] } ],
+      "expect": { "exit": 0, "stderr_contains": "heterogeneous pool: cross-protocol failover translates via the IR and may not preserve all provider features", "stdout_contains": null },
+      "notes": "§3.4 W01 (config_validate/mod.rs:623): openai + gemini members. A tracing::warn! — visible under RUST_LOG=warn; fields pool/protocols are rendered by the subscriber."
+    },
+    {
+      "id": "BOOT-W02",
+      "family": "boot.warning",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "identity-providers.admin-tokens.max_admin_scope", "value": "full" } ],
+      "expect": { "exit": 0, "stderr_contains": "auth chain entry grants max_admin_scope: full - principals identified by this module can hold FULL admin authority", "stdout_contains": null },
+      "notes": "§3.4 W02 (config_validate/mod.rs:1162): an EXPLICIT `full` on the referenced admin-tokens entry (the built-in is exempt only when the key is absent). If 1.5.5 skips admin-tokens even when explicit, move the key to a `keys`-backed definition referenced from auth.chain."
+    },
+    {
+      "id": "BOOT-W03",
+      "family": "boot.warning",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "auth.admin_auth", "value": [] } ],
+      "expect": { "exit": 0, "stderr_contains": "auth.chain names `keys` and auth.admin_auth is explicitly empty (open admin) — ANYONE can mint virtual keys through the admin API. Acceptable only for dev.", "stdout_contains": null },
+      "notes": "§3.4 W03 (config_validate/mod.rs:1284). In boot mode the admin API is then unauthenticated — the recorder must not reuse this process for minting."
+    },
+    {
+      "id": "BOOT-W04",
+      "family": "boot.warning",
+      "mode": "both",
+      "target": "config",
+      "op": [ { "set": "pools.upstream_credentials", "value": "passthrough" } ],
+      "expect": { "exit": 0, "stderr_contains": "upstream_credentials: passthrough with a NON-EMPTY configured api_key for this provider", "stdout_contains": null },
+      "notes": "§3.4 W04 (config_validate/mod.rs:1306): the all-pools passthrough default against six providers that each configure api_key {env: ORACLE_UPSTREAM_KEY} — expect one warn per provider (fields provider/api_key)."
+    },
+    {
+      "id": "BOOT-W10",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "security", "value": { "allow_all_metadata": true } } ],
+      "expect": { "exit": 0, "stderr_contains": "metadata protection DISABLED — all cloud-metadata endpoints reachable", "stdout_contains": null },
+      "notes": "§3.4 W10 (main.rs:887): boot only."
+    },
+    {
+      "id": "BOOT-W11",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "auth.chain", "value": [] } ],
+      "expect": { "exit": 0, "stderr_contains": "auth is DISABLED (auth.chain is empty) — busbar is running as an OPEN RELAY; do not run this in production", "stdout_contains": null },
+      "notes": "§3.4 W11 (main.rs:470, :3064-3065): printed as `[error] {banner}` on stderr AND tracing::error!, yet the process serves — exit 0 = /healthz reached. signing_key stays set (harmless without `keys`)."
+    },
+    {
+      "id": "BOOT-W12",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "delete": "auth" } ],
+      "expect": { "exit": 0, "stderr_contains": "auth is DISABLED: no `auth:` block in config — busbar is running as an OPEN RELAY (anyone can use it).", "stdout_contains": null },
+      "notes": "§3.4 W12 (main.rs:472, :3064-3065). The identity-providers.admin-tokens definition stays; the default admin chain [admin-tokens] still applies."
+    },
+    {
+      "id": "BOOT-W13",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 0, "stderr_contains": "does not name the `keys` verifier — those keys are INERT and NOT enforced", "stdout_contains": null },
+      "notes": "§3.4 W13 (main.rs:495-500, :3524-3525). needs a durable-store fixture already holding minted keys, booted with auth.chain lacking `keys`."
+    },
+    {
+      "id": "BOOT-W14",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": [],
+      "expect": { "exit": 0, "stderr_contains": "store: in-memory (ephemeral) - keys, groups' usage, and ledgers reset on restart; configure a durable store plugin for persistence", "stdout_contains": null },
+      "notes": "§3.4 W14 (main.rs:3439-3442): the baseline has no `store:` block, so every oracle boot already emits this — op [] records the baseline itself."
+    },
+    {
+      "id": "BOOT-W15",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "store", "value": { "module": "memory", "settings": { "token": { "env": "ORACLE_UNSET_STORE_SECRET" } } } } ],
+      "expect": { "exit": 0, "stderr_contains": "store settings hold a secret reference that does not resolve here; the store is restart-to-apply, so THIS WILL FAIL THE NEXT RESTART unless the secret exists then", "stdout_contains": null },
+      "notes": "§3.4 W15 (main.rs:3269-3272), the explicitly WARN-never-fail boot arm. The memory store ignores settings, so BOOT-170 (plugin-side resolution) cannot fire. Recorder must not export ORACLE_UNSET_STORE_SECRET. At --validate the same ref would trip BOOT-152 — boot only."
+    },
+    {
+      "id": "BOOT-W16",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key", "value": { "env": "ORACLE_UNSET_SECRET_W16" } } ],
+      "expect": { "exit": 0, "stderr_contains": "provider api_key did not resolve: secret env:ORACLE_UNSET_SECRET_W16 cannot resolve: environment variable 'ORACLE_UNSET_SECRET_W16' is unset", "stdout_contains": null },
+      "notes": "§3.4 W16 (main.rs:2841): boot degrades to an empty key with a warn (W17 co-fires). Boot only — --validate refuses (BOOT-152)."
+    },
+    {
+      "id": "BOOT-W17",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "providers.gemini.api_key", "value": { "env": "ORACLE_UNSET_SECRET_W17" } } ],
+      "expect": { "exit": 0, "stderr_contains": "[warn] provider gemini api_key (env:ORACLE_UNSET_SECRET_W17) empty", "stdout_contains": null },
+      "notes": "§3.4 W17 (main.rs:2846-2850): an unresolvable ref degrades to String::new() and THEN trips the empty-key eprintln — the only reachable path, because the secret resolver fails closed on an empty env/file value. W16 co-fires."
+    },
+    {
+      "id": "BOOT-W18",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "config", "value": { "overlay": { "file": "/dev/null/oracle-overlay.json" } } } ],
+      "expect": { "exit": 0, "stderr_contains": "the config overlay backend is NOT WRITABLE (is the config directory mounted read-only?)", "stdout_contains": null },
+      "notes": "§3.4 W18 (config/overlay.rs:142-151; shorter twin main.rs:860-864): a path under /dev/null can never be created (ENOTDIR) so the writability probe fails deterministically; boot continues without a durable overlay."
+    },
+    {
+      "id": "BOOT-W19",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "config", "value": { "overlay": { "file": "/etc/hosts" } } } ],
+      "expect": { "exit": 0, "stderr_contains": "config overlay is present but unreadable/corrupt; starting on base config.yaml ALONE", "stdout_contains": null },
+      "notes": "§3.4 W19 (config/overlay.rs:732-738): /etc/hosts exists on macOS and Linux, is not JSON, and is root-owned so busbar can never clobber it. W18 (not writable) co-fires for a non-root recorder."
+    },
+    {
+      "id": "BOOT-W20",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "cli",
+      "op": [ { "args": [ "--safe-mode" ] } ],
+      "expect": { "exit": 0, "stderr_contains": "SAFE MODE: config overlay NOT merged — running on base config.yaml alone", "stdout_contains": null },
+      "notes": "§3.4 W20 (main.rs:1695-1698): the flag alone; the baseline has no overlay file, which does not matter for the banner."
+    },
+    {
+      "id": "BOOT-W21",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 0, "stderr_contains": "definition this binary cannot parse; it is NOT applied (edit or remove it, then reload)", "stdout_contains": null },
+      "notes": "§3.4 W21 (config/overlay.rs:895-900). needs an overlay-file fixture (valid JSON overlay with an unparsable named-map entry)."
+    },
+    {
+      "id": "BOOT-W22",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 0, "stderr_contains": "plugin present but NOT loaded (trust policy)", "stdout_contains": null },
+      "notes": "§3.4 W22 (main.rs:1918-1923). needs an unsigned/third-party plugin tarball fixture in plugins.dir with plugins.enabled: true."
+    },
+    {
+      "id": "BOOT-W23",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 0, "stderr_contains": "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)", "stdout_contains": null },
+      "notes": "§3.4 W23 (main.rs:1939-1945). needs an unsigned plugin tarball fixture plus plugins.trust.allow_unsigned: true."
+    },
+    {
+      "id": "BOOT-W24",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 0, "stderr_contains": "plugins.fetch: miss on reload; keeping current artifact", "stdout_contains": null },
+      "notes": "§3.4 W24 (main.rs:2754-2758) is reload-only. needs a reload fixture (a booted process + POST /plugins/reload with a failing plugins.fetch entry)."
+    },
+    {
+      "id": "BOOT-W25",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "plugins", "value": { "enabled": true, "dir": "/nonexistent/oracle-plugins", "min_versions": { "oracle-plugin": "v1.0.0" } } } ],
+      "expect": { "exit": 0, "stderr_contains": "anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading 'v'); it cannot be satisfied, so this plugin will be refused. Fix or remove the entry.", "stdout_contains": null },
+      "notes": "§3.4 W25 (config/mod.rs:2992-2998): a leading `v` breaks the semver parse. plugins.enabled so the plugins block is evaluated; an empty/missing dir loads nothing, so boot proceeds (same missing-dir caveat as BOOT-137c)."
+    },
+    {
+      "id": "BOOT-W26",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": null,
+      "expect": { "exit": 0, "stderr_contains": "this pin REPLACES the binary-version floor, so the plugin is refused unconditionally until this is fixed", "stdout_contains": null },
+      "notes": "§3.4 W26 (config/mod.rs:3003-3010): `plugins.first_party_floors` is #[serde(skip)] — derived from persisted plugin_versions rollback pins. needs an overlay/store fixture carrying a non-semver rollback pin."
+    },
+    {
+      "id": "BOOT-W30",
+      "family": "boot.warning",
+      "mode": "both",
+      "target": "env",
+      "op": [],
+      "expect": { "exit": 0, "stderr_contains": "[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).", "stdout_contains": null },
+      "notes": "§3.4 W30 (main.rs:1591-1594): oracle_env already exports BUSBAR_PROVIDERS for every run, so the baseline itself carries this line — op [] records it; the diff must expect it on EVERY cell, not only this one."
+    },
+    {
+      "id": "BOOT-W31",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "env",
+      "op": [ { "env": { "BUSBAR_CONFIG_OVERLAY": "/tmp/oracle-overlay-w31.json" } } ],
+      "expect": { "exit": 0, "stderr_contains": "BUSBAR_CONFIG_OVERLAY is DEPRECATED and will be removed in a future release; set `config.overlay.file` in config.yaml instead.", "stdout_contains": null },
+      "notes": "§3.4 W31 (config/overlay.rs:95-99): honored because the baseline sets no config.overlay. The recorder should delete /tmp/oracle-overlay-w31.json afterwards if busbar creates it."
+    },
+    {
+      "id": "BOOT-W32",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "env",
+      "op": [ { "env": { "BUSBAR_WORKER_THREADS": "2" } } ],
+      "expect": { "exit": 0, "stderr_contains": "[warn] BUSBAR_WORKER_THREADS is DEPRECATED; set `advanced.worker_threads` in config.yaml instead (it is honored for now).", "stdout_contains": null },
+      "notes": "§3.4 W32 (main.rs:725-729)."
+    },
+    {
+      "id": "BOOT-W33",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "env",
+      "op": [ { "env": { "TOKIO_WORKER_THREADS": "abc" } } ],
+      "expect": { "exit": 0, "stderr_contains": "[warn] TOKIO_WORKER_THREADS=\"abc\" is not a positive integer; ignoring it and using the default worker-thread count", "stdout_contains": null },
+      "notes": "§3.4 W33 (main.rs:572-575): {v:?} renders the value Debug-quoted. TOKIO_WORKER_THREADS is used (not BUSBAR_WORKER_THREADS) so W32 does not co-fire."
+    },
+    {
+      "id": "BOOT-W34",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "config",
+      "op": [ { "set": "advanced.worker_threads", "value": 0 } ],
+      "expect": { "exit": 0, "stderr_contains": "[warn] advanced.worker_threads: 0 in config.yaml is not a positive integer (it must be >= 1); ignoring it and using the default worker-thread count", "stdout_contains": null },
+      "notes": "§3.4 W34 (main.rs:615-618, :601): read by the pre-runtime Lenient pass; boot continues."
+    },
+    {
+      "id": "BOOT-W35",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "env",
+      "op": [ { "env": { "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE": "1" } } ],
+      "expect": { "exit": 0, "stderr_contains": "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE is DEPRECATED; set `advanced.upstream_h2_prior_knowledge` in config.yaml (honored for now).", "stdout_contains": null },
+      "notes": "§3.4 W35 (main.rs:3144-3147). Forces h2c prior-knowledge to the mock upstream — only the boot banner is recorded, no cells."
+    },
+    {
+      "id": "BOOT-W36",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "env",
+      "op": [ { "env": { "BUSBAR_UPSTREAM_HTTP1_ONLY": "1" } } ],
+      "expect": { "exit": 0, "stderr_contains": "BUSBAR_UPSTREAM_HTTP1_ONLY is DEPRECATED; set `advanced.upstream_http1_only` in config.yaml (honored for now).", "stdout_contains": null },
+      "notes": "§3.4 W36 (main.rs:3164-3167)."
+    },
+    {
+      "id": "BOOT-W40",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "cli",
+      "op": [
+        { "set": "listne", "value": "127.0.0.1:1" },
+        { "args": [ "--print-metadata-blocklist" ] }
+      ],
+      "expect": { "exit": 0, "stderr_contains": "did not parse; printing the built-in metadata denylist only (security.blocked_metadata_hosts skipped). Run busbar normally to see the parse error.", "stdout_contains": "169.254.169.254" },
+      "notes": "§3.4 W40 (main.rs:167-171): the unparseable config from BOOT-P01 plus the CLI flag; the `{config_path}` prefix is the recorder's work dir. stdout carries the built-in denylist (must include the IMDS address)."
+    },
+    {
+      "id": "BOOT-W41",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "cli",
+      "op": [
+        { "raw_yaml": "public_url: \"http://127.0.0.1/${}\"\n" },
+        { "args": [ "--print-metadata-blocklist" ] }
+      ],
+      "expect": { "exit": 0, "stderr_contains": "failed to interpolate; printing the built-in metadata denylist only (security.blocked_metadata_hosts skipped). Run busbar normally to see the interpolation error.", "stdout_contains": "169.254.169.254" },
+      "notes": "§3.4 W41 (main.rs:180-184): the BOOT-P03 interpolation failure plus the CLI flag."
+    },
+    {
+      "id": "BOOT-W42",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "cli",
+      "op": [
+        { "env": { "BUSBAR_CONFIG": "/nonexistent/oracle/config.yaml" } },
+        { "args": [ "--list-plugins" ] }
+      ],
+      "expect": { "exit": 0, "stderr_contains": "[warn] config not readable (", "stdout_contains": null },
+      "notes": "§3.4 W42 (main.rs:393): --list-plugins falls back to the default plugins block (disabled) and lists nothing."
+    }
+  ]
+}

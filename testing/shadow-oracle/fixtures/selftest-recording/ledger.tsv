@@ -1,0 +1,3 @@
+self|a|ok	PASS	HTTP 200; usage {}	
+self|b|stream	PASS	HTTP 200; usage {}	
+self|c|gap	SKIP	UNSUPPORTED: fixture gap	recorded as a named gap, not a pass

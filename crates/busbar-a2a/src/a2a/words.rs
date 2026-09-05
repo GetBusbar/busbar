@@ -4,13 +4,13 @@
 //! THIS PLANE'S REFUSAL VOCABULARY, and the three facts of its RFC 9728 document.
 //!
 //! Everything in this file is an ANSWER TO A DECISION SOMETHING ELSE MADE. The decisions live in
-//! `busbar_core::ingress::protocol` — one sequence for every JSON-RPC plane busbar serves — and what
+//! `busbar_substrate::ingress::protocol` — one sequence for every JSON-RPC plane busbar serves — and what
 //! stays here is the WIRE: A2A section 5.4 binds a JSON-RPC code, an HTTP status and a ProtoJSON
 //! body to each of this protocol's errors at once, so a refusal rendered in the sibling plane's
 //! shape is a body the official TCK rejects by schema.
 //!
 //! That split — **a caller keeps its refusal VOCABULARY, not its DECISION** — is
-//! `busbar_core::net_guard`'s rule, stated for a second concern. It is why `mcp/envelope.rs` and this
+//! `busbar_substrate::net_guard`'s rule, stated for a second concern. It is why `mcp/envelope.rs` and this
 //! file can say completely different things about the same refusal without either of them deciding
 //! when it happens.
 

@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] providers.gemini.api_key: secret env:ORACLE_UNSET_SECRET_152 cannot resolve: environment variable 'ORACLE_UNSET_SECRET_152' is unset\n"},"headers":{},"status":1}

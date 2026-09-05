@@ -7,6 +7,7 @@
 
 use crate::engine::AppEngineExt as _;
 use crate::test_support::{LaneSpec, TestApp};
+use busbar_substrate::testkit::BuiltAppSeam as _;
 
 const POOL_QUEUED: &str = "busbar_pool_queued";
 
@@ -40,7 +41,7 @@ fn test_scrape_gauges_pool_queued_reads_live_depth() {
 
     // Hold a park guard, as a real queued request would for the duration of its wait.
     let guard = app.engine_tables().queued_depth().park("q-live-pool");
-    busbar_core::metrics::refresh_scrape_gauges(&app);
+    app.refresh_scrape_gauges();
     let out = busbar_core::metrics::render();
     assert_eq!(
         gauge_value(&out, POOL_QUEUED, "q-live-pool"),
@@ -50,7 +51,7 @@ fn test_scrape_gauges_pool_queued_reads_live_depth() {
 
     // Dropping the guard (request left the queue) returns the depth to 0.
     drop(guard);
-    busbar_core::metrics::refresh_scrape_gauges(&app);
+    app.refresh_scrape_gauges();
     let out = busbar_core::metrics::render();
     assert_eq!(
         gauge_value(&out, POOL_QUEUED, "q-live-pool"),

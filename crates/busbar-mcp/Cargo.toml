@@ -31,10 +31,13 @@ path = "src/lib.rs"
 # build compiles with NO busbar-core in its closure — every former `busbar_core::` reach is served by
 # the neutral substrate (the approvals seal, the config split, the hostless-egress seam) or gated to
 # the dual-compile/test-support surface. busbar-core stays an OPTIONAL dep, pulled ONLY by the
-# `test-support` feature, because the plane's `&App`-typed test helpers (`mcp::resource`/`runtime`)
-# name `busbar_core::state::App`: that surface compiles only where busbar-core is in the closure — the
-# dual-compile into core's own test binary, or a `test-support` build. (Optional rather than a
-# dev-dependency because a feature cannot reference a dev-dep-only crate.)
+# `test-support` feature, for ONE reason: the plane's test binary binds the engine's test kit in a
+# single function (`src/mcp/tests/engine.rs`, the only `busbar_core::` line in the test tree). Every
+# test reaches the engine through the neutral `busbar_substrate::testkit::engine_kit` seam from there,
+# so retargeting the tests at a different engine — or dropping this edge for a dev-dependency once the
+# weak `auth-admin-tokens` forward below no longer needs an optional dep to hang off — is a change to
+# that one function and this manifest, not to the tests. (Optional rather than a dev-dependency today
+# because a feature cannot reference a dev-dep-only crate.)
 busbar-core = { path = "../busbar-core", default-features = false, features = ["plane-mcp"], optional = true }
 # The substrate crate: the neutral shared surface the plugin names instead of busbar-core — the
 # diagnostics macros, the approvals seal, the config-section split, the hostless-egress seam. Carries
@@ -67,6 +70,12 @@ serde_urlencoded = { workspace = true }
 # so the edge is optional on that feature and absent from every shipped build; plain
 # `cargo test -p` reaches it via [dev-dependencies].
 reqwest = { workspace = true, features = ["http2", "json"], optional = true }
+# TEST MACHINERY ONLY, same edge as reqwest: the plane's test batteries mint governance registries
+# over the in-memory store (formerly reached as the engine's `governance::MemoryStore` re-export; now
+# named directly, so the tests spell no engine path). Optional on `test-support` because the one
+# battery a dependent test binary compiles in (`admin_view::adminverbs_tests`) needs it in the
+# LIBRARY build; absent from every shipped build.
+busbar-store-memory = { path = "../store-memory", optional = true }
 indexmap = { workspace = true }
 futures = { workspace = true }
 base64 = { workspace = true }
@@ -95,8 +104,8 @@ schemars = { workspace = true, optional = true }
 # which needs no app), just not the plane half.
 #
 # The App-needing plane tests are gated `#[cfg(all(test, feature = "test-support"))]`: `test-support`
-# is exactly the feature that pulls busbar-core into the closure (the `&App` fixtures name it), so the
-# gate is TRUE precisely when the tests can compile. `cargo test -p busbar-mcp --features test-support`
+# is exactly the feature that puts an engine in the closure for `src/mcp/tests/engine.rs` to bind, so
+# the gate is TRUE precisely when the tests have an engine to build an App with. `cargo test -p busbar-mcp --features test-support`
 # runs the full plane suite in THIS crate's own binary; a bare `cargo test -p busbar-mcp` runs only the
 # codec/App-free tests. (This replaced the former `busbar_mcp_native` build-script cfg + `#[path]`
 # dual-compile into busbar-core; both are gone.)
@@ -116,9 +125,10 @@ openapi-schema = ["busbar-substrate/openapi-schema", "dep:schemars"]
 # force-pulls the optional busbar-core into a non-test-support build; it only cascades where
 # busbar-core is already in the closure (the test-support / dual-compile surface that test needs).
 auth-admin-tokens = ["busbar-core?/auth-admin-tokens"]
-# Pulls busbar-core (the optional dep) and its test fixtures: the plane's `&App`-typed test helpers and
-# the dual-compile plane tests name `busbar_core::…`, so this feature is the one edge that puts
-# busbar-core in the closure — the default/prod build has none. Core's `TestApp` fixture names BOTH
+# Pulls busbar-core (the optional dep) and its test fixtures so the plane's test binary can bind the
+# engine's test kit (`src/mcp/tests/engine.rs`); the plane tests themselves name only the neutral
+# `busbar_substrate::testkit::engine_kit` seam. This feature is the one edge that puts busbar-core in
+# the closure — the default/prod build has none. Core's `TestApp` fixture names BOTH
 # planes' config types unconditionally (`crate::a2a::config::AgentsCfg`, the `tools:` types), so this
 # forwards `plane-mcp`/`plane-a2a` too — the same both-planes shape core's own dual-compile test binary
 # builds with — or the fixture's `crate::a2a` references are configured out and cannot resolve.
@@ -128,6 +138,7 @@ test-support = [
     "busbar-core/plane-mcp",
     "busbar-core/plane-a2a",
     "dep:reqwest",
+    "dep:busbar-store-memory",
 ]
 
 [dev-dependencies]

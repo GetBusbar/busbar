@@ -1249,27 +1249,18 @@ impl super::proto_codec::StreamFraming for BedrockStreamFraming {
         started_at: Option<std::time::Instant>,
     ) {
         // A native ConverseStream `metadata` frame carries a `metrics` object with the stream's real
-        // `latencyMs`. Inject the elapsed wall-clock since the first byte was fed; if timing is somehow
-        // unavailable, OMIT `metrics` entirely rather than emit a tell-tale `0`. The writer leaves
-        // `metrics` off so this is the single source of it. Only the `metadata` frame is special.
+        // `latencyMs`, and the service model marks it required. Inject the elapsed wall-clock since
+        // the first byte was fed; a frame that already carries one (a same-protocol upstream's own
+        // measurement) is left alone, and if timing is somehow unavailable the member is still
+        // emitted (as `0`) rather than dropped. The writer leaves `metrics` off so this is the
+        // single source of it. Only the `metadata` frame is special.
         if event_type != ET_METADATA {
             return;
         }
-        if let Some(start) = started_at {
-            // u128 → u64 for JSON; saturate (elapsed never realistically exceeds u64 ms).
-            let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-            if let Some(obj) = data.as_object_mut() {
-                let mut metrics = serde_json::Map::new();
-                metrics.insert(
-                    FIELD_LATENCY_MS.to_string(),
-                    serde_json::Value::from(elapsed_ms),
-                );
-                obj.insert(
-                    FIELD_METRICS.to_string(),
-                    serde_json::Value::Object(metrics),
-                );
-            }
-        }
+        // u128 -> u64 for JSON; saturate (elapsed never realistically exceeds u64 ms).
+        let elapsed_ms =
+            started_at.map(|start| u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX));
+        ensure_metrics(data, elapsed_ms);
     }
 
     fn on_combined_stop_delta(
@@ -1467,17 +1458,11 @@ pub(crate) fn bedrock_response_to_eventstream(
             // `MessageDelta` arm deliberately omits `metrics`, and the LIVE StreamTranslate path injects
             // it there (`proto::mod.rs`). On this BUFFERED synthesis path StreamTranslate is bypassed,
             // so inject it HERE too — otherwise `metrics == None`, which a real endpoint never returns
-            // (a deterministic proxy tell). Use the request's elapsed wall-clock, consistent with the
-            // live path; if timing is unavailable OMIT `metrics` rather than emit a tell-tale `0`.
+            // (a deterministic proxy tell, and a missing required member). Use the request's elapsed
+            // wall-clock, consistent with the live path; the member is emitted even when timing is
+            // unavailable (see `ensure_metrics`).
             if event_type == ET_METADATA {
-                if let (Some(ms), Some(obj)) = (elapsed_ms, payload.as_object_mut()) {
-                    let mut metrics = serde_json::Map::new();
-                    metrics.insert(FIELD_LATENCY_MS.to_string(), serde_json::Value::from(ms));
-                    obj.insert(
-                        FIELD_METRICS.to_string(),
-                        serde_json::Value::Object(metrics),
-                    );
-                }
+                ensure_metrics(&mut payload, elapsed_ms);
             }
             if let Ok(bytes) = busbar_substrate::json::to_vec(&payload) {
                 out.extend_from_slice(&busbar_substrate::eventstream::encode_frame(
@@ -1651,6 +1636,197 @@ pub(crate) fn bedrock_response_to_eventstream(
         &mut out,
     );
     out
+}
+
+/// Build a `metrics` object carrying `latencyMs`, the one member the Converse `metrics` shape has.
+fn metrics_object(latency_ms: u64) -> serde_json::Value {
+    let mut metrics = serde_json::Map::new();
+    metrics.insert(
+        FIELD_LATENCY_MS.to_string(),
+        serde_json::Value::from(latency_ms),
+    );
+    serde_json::Value::Object(metrics)
+}
+
+/// True when `value` already carries a well-formed `metrics.latencyMs` (an integer), i.e. the
+/// upstream's own measurement, which is always passed through in preference to busbar's.
+fn has_valid_metrics(value: &serde_json::Value) -> bool {
+    value
+        .get(FIELD_METRICS)
+        .and_then(|m| m.get(FIELD_LATENCY_MS))
+        .is_some_and(|ms| ms.is_u64() || ms.is_i64())
+}
+
+/// Ensure a Converse-shaped JSON object carries `metrics.latencyMs`. A `metrics` the upstream
+/// supplied is kept as-is; otherwise busbar's measured latency is written. `metrics` is a REQUIRED
+/// member of the Converse response (and of the ConverseStream `metadata` event), so when no
+/// measurement is available at all the member is still emitted, as `0`, rather than dropped: an
+/// absent required member is the larger deviation from the service model. Non-object values are
+/// left alone.
+pub(crate) fn ensure_metrics(value: &mut serde_json::Value, elapsed_ms: Option<u64>) {
+    if has_valid_metrics(value) {
+        return;
+    }
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            FIELD_METRICS.to_string(),
+            metrics_object(elapsed_ms.unwrap_or(0)),
+        );
+    }
+}
+
+/// Complete a SERIALIZED Converse response body so it carries `metrics.latencyMs`, preserving every
+/// other byte. Returns `None` when the body already carries a well-formed `metrics` (pass the
+/// upstream's through untouched) or when it is not a JSON object. When the top-level object simply
+/// lacks the member, the member is spliced in before the closing brace so key order, whitespace and
+/// number formatting of the upstream body survive; only a malformed `metrics` (present but without
+/// an integer `latencyMs`) forces a full re-serialization.
+pub(crate) fn complete_converse_body(
+    body: &[u8],
+    parsed: &serde_json::Value,
+    elapsed_ms: Option<u64>,
+) -> Option<Vec<u8>> {
+    let obj = parsed.as_object()?;
+    if has_valid_metrics(parsed) {
+        return None;
+    }
+    let latency_ms = elapsed_ms.unwrap_or(0);
+    if obj.contains_key(FIELD_METRICS) {
+        // Present but unusable: replace it. Splicing would leave two `metrics` keys.
+        let mut fixed = parsed.clone();
+        ensure_metrics(&mut fixed, Some(latency_ms));
+        return busbar_substrate::json::to_vec(&fixed).ok();
+    }
+    // The last significant byte must be the object's closing brace (the parse above guarantees a
+    // top-level object, so this only guards against trailing garbage a lenient parser accepted).
+    let close = body.iter().rposition(|b| !b.is_ascii_whitespace())?;
+    if body[close] != b'}' {
+        return None;
+    }
+    let prev = body[..close].iter().rposition(|b| !b.is_ascii_whitespace())?;
+    let separator = if body[prev] == b'{' { "" } else { "," };
+    let member = format!(
+        "{separator}\"{FIELD_METRICS}\":{{\"{FIELD_LATENCY_MS}\":{latency_ms}}}"
+    );
+    let mut out = Vec::with_capacity(body.len() + member.len());
+    out.extend_from_slice(&body[..close]);
+    out.extend_from_slice(member.as_bytes());
+    out.extend_from_slice(&body[close..]);
+    Some(out)
+}
+
+/// The same-protocol (Bedrock -> Bedrock) NON-stream response translator. The forward path relays a
+/// same-protocol non-stream 2xx verbatim, chunk by chunk, so nothing ever added the `metrics` member
+/// a Converse response is required to carry when the upstream left it out. This translator stands
+/// in for that relay on Bedrock ingress: it buffers the body, and at end-of-stream emits it with
+/// `metrics.latencyMs` present (the upstream's own value when it sent one, else busbar's measured
+/// latency from the moment the upstream's headers arrived to the end of its body). A body that is
+/// not a Converse response (an InvokeModel embeddings / image / rerank body) is emitted unchanged.
+///
+/// Because the forward path takes billing usage from the installed translator, this also reports
+/// the body's usage, via the same per-operation tap the relay used (`handler::same_protocol_usage`).
+///
+/// Bounded: past the translation cap the body is relayed verbatim from that point on (no member can
+/// be added to a body busbar will not hold whole), keeping only the tail so usage can still be
+/// recovered from the trailing `usage` object.
+pub(crate) struct BedrockConverseBodyTranslator {
+    started: std::time::Instant,
+    buf: Vec<u8>,
+    cap: usize,
+    /// Set once the body outgrew `cap`: everything is relayed as it arrives and `buf` holds only
+    /// the most recent `cap` bytes.
+    passthrough: bool,
+    usage: Option<busbar_substrate::billing::TokenUsage>,
+}
+
+impl BedrockConverseBodyTranslator {
+    pub(crate) fn new() -> Self {
+        Self::with_cap(crate::engine::max_translated_body_bytes())
+    }
+
+    pub(crate) fn with_cap(cap: usize) -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            buf: Vec::new(),
+            cap,
+            passthrough: false,
+            usage: None,
+        }
+    }
+
+    fn elapsed_ms(&self) -> Option<u64> {
+        u64::try_from(self.started.elapsed().as_millis()).ok()
+    }
+
+    /// Drop the oldest bytes so `buf` keeps only the last `cap` (the usage object sits at the end).
+    fn keep_tail(&mut self) {
+        if self.buf.len() > self.cap {
+            let excess = self.buf.len() - self.cap;
+            self.buf.drain(..excess);
+        }
+    }
+}
+
+impl busbar_substrate::proto::StreamTranslator for BedrockConverseBodyTranslator {
+    fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
+        self.buf.extend_from_slice(chunk);
+        if self.passthrough {
+            self.keep_tail();
+            return chunk.to_vec();
+        }
+        if self.buf.len() > self.cap {
+            // Too large to complete: release everything withheld so far and relay from here on.
+            self.passthrough = true;
+            let withheld = self.buf.clone();
+            self.keep_tail();
+            return withheld;
+        }
+        Vec::new()
+    }
+
+    fn finish(&mut self) -> Vec<u8> {
+        let body = std::mem::take(&mut self.buf);
+        if self.passthrough {
+            // Only a tail fragment is held: isolate the trailing `usage` object for billing, and
+            // fall back to the same conservative floor the verbatim relay used for an over-cap body.
+            // The floor mirrors the relay's: an over-cap body demonstrably consumed tokens, so it
+            // is never metered at zero; the retained tail prices as output at the shared
+            // bytes-per-token rate (a genuine under-estimate, never an over-charge).
+            let tail_len = body.len() as u64;
+            self.usage = protocol()
+                .reader()
+                .recover_truncated_usage(&body)
+                .or_else(|| {
+                    Some(busbar_substrate::billing::TokenUsage {
+                        output: (tail_len / crate::engine::TRUNCATED_TAIL_BYTES_PER_TOKEN).max(1),
+                        ..Default::default()
+                    })
+                });
+            return Vec::new();
+        }
+        let parsed = busbar_substrate::json::parse::<serde_json::Value>(&body).ok();
+        self.usage = handler::same_protocol_usage(&body, parsed.as_ref());
+        match parsed {
+            Some(v) if handler::is_converse_response(&v) => {
+                complete_converse_body(&body, &v, self.elapsed_ms()).unwrap_or(body)
+            }
+            _ => body,
+        }
+    }
+
+    fn usage(&self) -> Option<busbar_substrate::billing::TokenUsage> {
+        self.usage.clone()
+    }
+
+    fn terminal_error(&self) -> Option<&str> {
+        None
+    }
+
+    fn aborted(&self) -> bool {
+        false
+    }
+
+    fn set_client_include_usage(&mut self, _include: bool) {}
 }
 
 #[cfg(test)]

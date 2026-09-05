@@ -1,0 +1,1 @@
+{"applied":["hdr.date"],"body":{"json":{"error":{"code":"invalid_request","message":"invalid JSON"}}},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"content-length":"61","content-type":"application/json"},"status":400}

@@ -38,6 +38,35 @@ use super::RootCfg;
 ///    field anywhere in the tree whose type mentions `SecretRef`, and requires the declaring type to
 ///    appear in [`SECRET_BEARING_TYPES`] below. A new one fails the test with the type named.
 pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretRef)> {
+    walk_secret_refs(cfg, TokenRefs::Every)
+}
+
+/// The subset of [`secret_refs`] that boot actually RESOLVES, for the strict `--validate` pass.
+///
+/// `--validate` promises that a clean run means a clean boot, and the converse matters just as much:
+/// it must not refuse a config boot would serve. Boot resolves exactly one identity-provider
+/// `token:` — the `admin-tokens` operator credential `AuthCfg::admin_token_ref` picks out of the
+/// resolved chains — and never touches the `token:` on a definition nothing references. An operator
+/// who keeps a spare `identity-providers:` entry on file, its env var unset until the day it is
+/// wired in, has a config that boots and ran `--validate` clean in every earlier release. Resolving
+/// every definition's token would turn that into a refusal, so this walk keeps every OTHER reference
+/// (the full walk is still what the structural and module-existence checks use, so nothing is hidden
+/// from them) and narrows only the token set to what boot reads.
+pub(crate) fn boot_resolved_secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretRef)> {
+    walk_secret_refs(cfg, TokenRefs::BootResolved)
+}
+
+/// Which identity-provider `token:` references a walk reports. See [`boot_resolved_secret_refs`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TokenRefs {
+    /// Every `token:` in the config: on each `identity-providers:` definition and on each resolved
+    /// chain entry. The coverage contract — nothing that can hold a secret is skipped.
+    Every,
+    /// Only the one `token:` boot resolves (the operator credential from the resolved chains).
+    BootResolved,
+}
+
+fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::config::SecretRef)> {
     // EXHAUSTIVE, no `..`: see layer 1 above. Fields bound with a leading underscore carry no secret
     // reference, and the grouped comments say why. If you are here because the compiler stopped you,
     // the question to answer is "can this field hold a `SecretRef`, at any depth?" — not "is it
@@ -195,7 +224,9 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
             max_admin_scope: _,
             settings: _, // opaque plugin settings bag; see the `RootCfg` note above.
         } = def;
-        if let Some(tok) = token {
+        // A definition's own `token:` is only ever READ through the resolved chains (below), so the
+        // boot-resolved walk leaves it out here and reports it from the chain entry instead.
+        if let (Some(tok), TokenRefs::Every) = (token, tokens) {
             refs.push((format!("identity-providers.{name}.token"), tok));
         }
         push_browser_login_refs(
@@ -228,6 +259,12 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
         // future construction path that does not go through `identity-providers:` (a synthesized
         // entry, an admin-applied chain) would otherwise reintroduce exactly this blind spot.
         // Duplicate paths are harmless: both consumers are pure checks over the list.
+        //
+        // The boot-resolved walk reports only the token boot reads: `admin_token_ref` returns the
+        // first `admin-tokens` entry's reference, and that is compared by ADDRESS (the accessor hands
+        // back a borrow into these very entries), so a second `admin-tokens` entry, or a token on a
+        // module that never reads one, is left out exactly as boot leaves it unread.
+        let boot_token = auth.admin_token_ref();
         for (plane, entries) in [("chain", chain), ("admin_auth", admin_auth)] {
             for entry in entries {
                 let crate::config::AuthChainEntry {
@@ -238,7 +275,13 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
                     settings: _,
                 } = entry;
                 if let Some(tok) = token {
-                    refs.push((format!("auth.{plane}.{name}.token"), tok));
+                    let reported = match tokens {
+                        TokenRefs::Every => true,
+                        TokenRefs::BootResolved => boot_token.is_some_and(|b| std::ptr::eq(b, tok)),
+                    };
+                    if reported {
+                        refs.push((format!("auth.{plane}.{name}.token"), tok));
+                    }
                 }
             }
         }

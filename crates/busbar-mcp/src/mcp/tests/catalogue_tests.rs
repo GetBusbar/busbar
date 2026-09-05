@@ -561,7 +561,7 @@ fn no_principal_sees_another_principals_prompts_resources_or_templates() {
 
 /// THE FAIL-CLOSED FLOOR, reached through this plane's own entry types.
 ///
-/// `busbar_core::catalogue` refuses an item that requires NO grant, and every MCP entry type requires two.
+/// the engine's neutral catalogue (`busbar_substrate::catalogue`) refuses an item that requires NO grant, and every MCP entry type requires two.
 /// This is the plane-side half of that: a caller holding NOTHING sees nothing on any surface, which
 /// is the assertion that would go red if a `required_grants` were ever emptied.
 #[test]

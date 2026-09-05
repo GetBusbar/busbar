@@ -417,6 +417,17 @@ A model has a `rate_card` entry present but every tier (input, output, cache_rea
 
 **What to do:** If the model is intentionally free, ignore this. Otherwise fill in the model's `rate_card` rates (micro-units per token) so its usage prices and counts against any `budget:` limit.
 
+<a id="deprecated-env-var-honored"></a>
+### BUSBAR-3021 — A deprecated environment variable is set and still honored
+
+- **Severity:** actionable
+- **Since:** 1.5.0
+- **Slug:** `deprecated-env-var-honored`
+
+One of the 1.5.x environment overrides (BUSBAR_PROVIDERS, BUSBAR_CONFIG_OVERLAY, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE, BUSBAR_UPSTREAM_HTTP1_ONLY) is set. It is honored exactly as before, and the warning names the config.yaml key that replaces it.
+
+**What to do:** Move the value to the named config.yaml key and unset the variable. Nothing changes until you do.
+
 ## 4xxx — Auth & identity
 
 <a id="token-exchange-mint-failed"></a>

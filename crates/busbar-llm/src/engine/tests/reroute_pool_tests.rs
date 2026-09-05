@@ -107,7 +107,7 @@ async fn a_tripped_pool_primary_reroutes_the_request_to_its_twin_and_stays_untou
     // Trip the PRIMARY's cell Open with a cooldown far past the real wall clock the selection reads,
     // so it is genuinely inadmissible rather than merely unlucky in the weighted draw.
     app.store
-        .force_open_in("", 0, busbar_core::state::now() + 1_000_000);
+        .force_open_in("", 0, busbar_substrate::store::now() + 1_000_000);
 
     let response = crate::engine::forward_with_pool(
         &app,

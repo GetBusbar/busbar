@@ -24,8 +24,8 @@
 //! then behave exactly as the un-pooled breaker unit — no twin answer, no reroute, one member.
 
 use super::upstream_support::{call, gov_with_scopes, mcp_cfg, Behaviour, Peer};
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
@@ -96,8 +96,8 @@ fn pooled_app(
     a: crate::mcp::config::McpServerDefCfg,
     b: crate::mcp::config::McpServerDefCfg,
     repeatable: &[&str],
-) -> Arc<busbar_core::state::App> {
-    TestApp::new()
+) -> Arc<dyn EngineApp> {
+    test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs-a", a)
         .mcp_server("fs-b", b)
@@ -129,7 +129,7 @@ fn result_text(body: &serde_json::Value) -> String {
 /// gets an answer from member B, with A's trip recorded and A untouched on the second call.
 #[tokio::test]
 async fn a_tripped_pool_primary_reroutes_the_next_tools_call_to_its_twin_and_stays_untouched() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer_a = Peer::start(Behaviour::DeniesWithStatus(401), "unused").await;
     let peer_b = Peer::start(Behaviour::Result, "unused").await;
     let app = pooled_app(
@@ -152,15 +152,15 @@ async fn a_tripped_pool_primary_reroutes_the_next_tools_call_to_its_twin_and_sta
     );
     assert!(
         matches!(
-            app.plane_breakers.state_at("tool:fs", 0),
-            busbar_core::store::BreakerState::Open { .. }
+            app.breaker_state_at("tool:fs", 0),
+            busbar_substrate::store::BreakerState::Open { .. }
         ),
         "A's trip is recorded on the POOL cell at A's lane"
     );
     assert!(
         matches!(
-            app.plane_breakers.state_at("tool:fs", 1),
-            busbar_core::store::BreakerState::Closed
+            app.breaker_state_at("tool:fs", 1),
+            busbar_substrate::store::BreakerState::Closed
         ),
         "B's cell is untouched by A's failure"
     );
@@ -184,7 +184,7 @@ async fn a_tripped_pool_primary_reroutes_the_next_tools_call_to_its_twin_and_sta
 /// and the caller sees only B's answer.
 #[tokio::test]
 async fn an_unreachable_primary_is_rerouted_before_first_byte_within_one_call() {
-    busbar_core::metrics::init();
+    metrics_init();
     // A's endpoint is a loopback port bound and then SYNCHRONOUSLY released: a std `TcpListener`
     // closes its socket the instant it drops, so a connect to `dead_url` refuses deterministically
     // on every platform. Binding a `Peer` and dropping it instead only ABORTS its async accept task
@@ -217,7 +217,7 @@ async fn an_unreachable_primary_is_rerouted_before_first_byte_within_one_call() 
 /// never dispatched to. (A is tripped first so the walk actually reaches B's pin check.)
 #[tokio::test]
 async fn a_member_with_a_different_approved_digest_is_refused_never_dispatched() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer_a = Peer::start(Behaviour::DeniesWithStatus(401), "unused").await;
     let peer_b = Peer::start(Behaviour::Result, "unused").await;
     let app = pooled_app(
@@ -252,7 +252,7 @@ async fn a_member_with_a_different_approved_digest_is_refused_never_dispatched()
 /// on A IS retried on B, and the caller gets B's answer.
 #[tokio::test]
 async fn an_operator_listed_repeatable_operation_is_retried_on_the_twin_after_dispatch() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer_a = Peer::start(Behaviour::DeniesWithStatus(500), "unused").await;
     let peer_b = Peer::start(Behaviour::Result, "unused").await;
     let app = pooled_app(
@@ -279,7 +279,7 @@ async fn an_operator_listed_repeatable_operation_is_retried_on_the_twin_after_di
 /// and the next call still dispatches to it. The negative twin of the trip tests above.
 #[tokio::test]
 async fn a_client_fault_answer_never_penalizes_the_member() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer_a = Peer::start(Behaviour::DeniesWithStatus(404), "unused").await;
     let peer_b = Peer::start(Behaviour::Result, "unused").await;
     let app = pooled_app(
@@ -292,8 +292,8 @@ async fn a_client_fault_answer_never_penalizes_the_member() {
     let (_, _) = call(&app, &g, "tools/call", params()).await;
     assert!(
         matches!(
-            app.plane_breakers.state_at("tool:fs", 0),
-            busbar_core::store::BreakerState::Closed
+            app.breaker_state_at("tool:fs", 0),
+            busbar_substrate::store::BreakerState::Closed
         ),
         "a 404 is the request's fault, never the member's"
     );
@@ -311,17 +311,17 @@ async fn a_client_fault_answer_never_penalizes_the_member() {
 /// The NEXT snapshot declares one server (`keep`); its pool — which outlives the apply — carries a
 /// child for `keep` and one for `orphan`, a registration the next generation dropped. After the
 /// swap the pool holds only `keep`: the orphan is retired, the survivor kept. This flows through the
-/// MCP plane's `on_swap` hook, with `busbar_core::state::AppHandle::swap` itself naming no MCP type.
+/// MCP plane's `on_swap` hook, with the engine handle's own `swap` naming no MCP type.
 ///
 /// RELOCATED from busbar-core's `tests/tests.rs` when the dual-compile was removed: it reaches the
 /// MCP connection pool's crate-private internals (`runtime(app).pool.children`), which stay
 /// crate-private, so the test lives on the plane it exercises rather than widening those to `pub`.
 #[test]
 fn a_config_swap_retires_the_orphaned_stdio_child_through_on_swap() {
-    busbar_core::metrics::init();
+    metrics_init();
 
     // The next generation declares only `keep`, so its catalogue's server set is exactly {"keep"}.
-    let next = TestApp::new()
+    let next = test_app()
         .mcp_server(
             "keep",
             crate::testkit::swap_test_http_server("https://mcp.internal/keep"),
@@ -340,8 +340,8 @@ fn a_config_swap_retires_the_orphaned_stdio_child_through_on_swap() {
     );
 
     // A prior snapshot to swap away from — its identity is immaterial; `on_swap` reconciles `next`.
-    let prior = TestApp::new().build();
-    let handle = std::sync::Arc::new(busbar_core::state::AppHandle::new(prior));
+    let prior = test_app().build();
+    let handle = app_handle(prior);
 
     handle.swap(next.clone());
 

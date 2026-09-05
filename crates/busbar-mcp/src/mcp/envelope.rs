@@ -271,7 +271,7 @@ pub(crate) async fn legacy_verb(_ctx: busbar_substrate::plane_routes::PlaneReqCt
 /// reaching this function is an admitted caller.
 pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
     // S4a Option A: this handler no longer extracts `axum::State<Arc<AppHandle>>` /
-    // `Extension<..>`. The core route adapter (`busbar_core::router::mount_plane_route`) took them
+    // `Extension<..>`. Core's route adapter (the mount behind the substrate's `MountHost` seam) took them
     // off the request and handed them across the NEUTRAL `PlaneReqCtx` seam, so this plane names no
     // router state type. `gov`/`principal` are the SAME values the auth middleware resolved and
     // attached BEFORE this `RouteAuth::Key` handler ran — surfaced here, so nothing below re-runs the

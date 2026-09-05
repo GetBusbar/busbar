@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config validation failed:\n  - limits.reasoning_effort_budgets entries must be > 0 (got 0/4096/8192/16384)\n"},"headers":{},"status":1}

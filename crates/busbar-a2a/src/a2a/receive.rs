@@ -947,7 +947,7 @@ async fn invoke_inner(
 }
 
 /// EVERYTHING AFTER THE ENVELOPE: this plane's own vocabulary and its verb dispatch — steps 9 to
-/// 12 of the measurement in `busbar_core::ingress::protocol`.
+/// 12 of the measurement in `busbar_substrate::ingress::protocol`.
 ///
 /// `rpc_id` and `envelope` arrive ALREADY DECIDED by the shared reader: the id is a string or a
 /// number by construction, never `null` and never a notification's absence. A second reading of
@@ -1047,7 +1047,7 @@ async fn admitted(
     // ── THE OPERATOR'S HOOK GATE — `agents.hooks:` and `agents.<agent>.hooks:`. ─────────────────
     //
     // The twin of the MCP plane's dispatch gate, through the SAME seam
-    // (`busbar_core::hooks::gate::decide`) with the same projection and the same verdict type. Not a
+    // (the host's `EngineHost::gate_decide`) with the same projection and the same verdict type. Not a
     // second implementation of hooks for a second plane: a hook is a decision about one request,
     // and the only thing this arm supplies that the seam cannot work out is the pair of facts only
     // this plane knows — which agent the submission resolved to, and what its dialect is called.
@@ -1062,7 +1062,7 @@ async fn admitted(
     // be a plane where the control's scope depends on which method a caller happened to use.
     if engine_host.gate_attached(crate::PLANE_DECL.key, &admitted.dispatch.agent_id) {
         // FIRE THE GATE THROUGH THE HOST SEAM (`plane_host::gate_decide_over`) — the twin of the MCP
-        // dispatch gate, now inverted so this plane body no longer names `busbar_core::hooks::gate::decide` or
+        // dispatch gate, now inverted so this plane body no longer names core's hook gate directly or
         // holds the resolved `ResolvedPolicy` set (the Seam-B inversion); the host re-selects the gate
         // set by `(plane_key, container)` and runs the same decision. The presence check keeps the whole
         // block zero-cost when nothing is attached.
@@ -2530,7 +2530,7 @@ async fn stream_hop(
             // draining an upstream into a channel nobody is reading.
             //
             // THE CONTEXT THIS CLOSURE RUNS IN: production's `post_stream` rides the hostless
-            // egress seam, whose pump (`busbar_core::egress::seam::pump`) invokes the sink
+            // egress seam (`busbar_substrate::egress::seam`), whose host-side pump invokes the sink
             // synchronously on this `spawn_blocking` thread — a BARE blocking thread, no runtime
             // driving it. An earlier transport (`on_a_dedicated_runtime`, a nested current-thread
             // `Runtime::block_on`) is exactly what made a runtime-bound send panic on the first

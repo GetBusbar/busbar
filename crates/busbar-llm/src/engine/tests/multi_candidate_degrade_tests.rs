@@ -10,7 +10,7 @@
 
 use super::translate_request_cross_protocol;
 use crate::test_support::{LaneSpec, TestApp};
-use busbar_core::operation::Operation;
+use busbar_api::operation::Operation;
 use serde_json::json;
 
 fn http() -> busbar_substrate::transport::Transport {

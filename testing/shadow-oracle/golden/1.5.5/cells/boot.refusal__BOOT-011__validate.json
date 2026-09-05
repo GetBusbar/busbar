@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config validation failed:\n  - model 'm-gemini' has default_max_tokens: 0; must be > 0 (or omit it to use the 4096 fallback)\n"},"headers":{},"status":1}

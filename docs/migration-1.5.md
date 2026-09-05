@@ -483,13 +483,13 @@ purpose.
 ### 1.5.3 config consolidation
 
 1.5.3 also moves operational config out of environment variables and **into `config.yaml`**, and makes admin-API
-config mutability explicit and **durable by default**. Every migrated env var was deprecated in 1.5.3, honored
-for one release, and **removed in 1.6.0** — on 1.6.0 and later the env vars no longer have any effect, so move
-each into config.yaml.
+config mutability explicit and **durable by default**. Every migrated env var was deprecated in 1.5.3 and remains
+**deprecated but honored** in 1.6.0 — each still takes effect exactly as it did in 1.5.5, with a boot warning
+(`BUSBAR-3021`) naming the config.yaml key that replaces it. Move each into config.yaml at your convenience.
 
-#### Env var → config.yaml (all removed in 1.6.0)
+#### Env var → config.yaml (deprecated since 1.5.3, still honored)
 
-| Removed env var | New home in config.yaml |
+| Deprecated env var | New home in config.yaml |
 |---|---|
 | `BUSBAR_PROVIDERS` | `providers_file:` (top-level; relative to config.yaml; default `providers.yaml` next to it), or the `--providers <path>` flag. |
 | `BUSBAR_CONFIG_OVERLAY` | `config.overlay.file` |

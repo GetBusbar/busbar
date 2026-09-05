@@ -1,0 +1,1 @@
+{"applied":["hdr.date","key.id","ts.unix"],"body":{"json":{"allowed_pools":null,"created_at":0,"enabled":true,"group":"oracle","id":"<KEY>","labels":{},"name":"oracle-ok","state":"active"}},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"content-length":"169","content-type":"application/json"},"status":200}

@@ -121,12 +121,20 @@ you can name the tarball anything.
 `name` is the canonical identity (`[a-z0-9-]+`, e.g. `busbar-store-valkey-plugin`); `alias` is the short
 config name (`valkey`). `store.module:` accepts either. `kind` is `store`, `secret`, `auth`, or `hook`.
 `version` is strict semver. `abi_version` declares which per-kind payload-schema generation the
-cdylib was built against. It is set **per kind**: `store` is at `4`, `auth` at `2`, `secret` and
-`hook` at `1` (auth was bumped 1→2 in 1.5.2 for the additive browser-login primitives; store was
-bumped 2→3 in 1.6.0 for the neutral kind-tagged durable verbs and 3→4 in 1.7.0 when the plane record
-structs relocated out of `busbar-api`). The loader
-enforces a supported-version RANGE per kind, so a plugin built against an outdated (or too-new) ABI
-is refused at load rather than mis-called. See `busbar-plugin-abi` for the authoritative versions.
+cdylib was built against. It is set **per kind**: `auth` is at `2`, `secret` and `hook` at `1`
+(auth was bumped 1→2 in 1.5.2 for the additive browser-login primitives), and `store` accepts the
+range `2..=4`. The loader enforces a supported-version RANGE per kind, so a plugin built against an
+outdated (or too-new) ABI is refused at load rather than mis-called. See `busbar-plugin-abi` for the
+authoritative versions.
+
+**Store plugins and 1.6.0.** Every published 1.5.5 store plugin (`busbar-store-sqlite`, `-postgres`,
+`-mysql`, `-valkey`; all `abi_version: 2`) loads on 1.6.0 unchanged: the durable wire is additive,
+so every request variant the 1.5.x engine sent still exists, and the eight plane-record verbs
+1.6.0 added (the durable MCP call record and A2A task rows) are answered "unsupported" by a
+1.5.5 plugin and treated as inert by the engine — the same data the `memory` store keeps in
+process. Nothing installed needs rebuilding or re-pinning for 1.6.0. Store plugins built against
+ABI 4, which persist those records, are a later release and will ship as new tarballs; a
+`plugins.min_versions` floor you set today keeps meaning what it means.
 
 ## Enabling plugins
 

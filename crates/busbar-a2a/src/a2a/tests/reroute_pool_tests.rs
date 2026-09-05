@@ -128,7 +128,7 @@ async fn reroute_battery(h: Harness, submission: serde_json::Value) {
     assert_eq!(hits(&h, "backend-b.agent.test"), 0);
     assert!(
         matches!(
-            h.app.plane_breakers.state_at("agent:planner", 0),
+            h.app.breaker_state_at("agent:planner", 0),
             busbar_substrate::store::BreakerState::Open { .. }
         ),
         "A's trip is recorded on the pool cell at A's lane"
@@ -230,7 +230,7 @@ async fn an_accepted_task_stays_pinned_to_its_member_and_a_tripped_pin_refuses_t
 
     // (b) Trip B (the pinned member) and ask again: the verb is REFUSED with the breaker's own
     // rendering — and NOT rerouted to A, whose recorder must not move.
-    h.app.plane_breakers.force_open(
+    h.app.breaker_force_open(
         "agent:planner",
         1,
         busbar_substrate::store::now().saturating_add(600),
@@ -315,7 +315,7 @@ async fn a_client_fault_answer_never_penalizes_the_agent() {
     let (_, _, _) = submit(&h, "planner-a", &envelope()).await;
     assert!(
         matches!(
-            h.app.plane_breakers.state_at("agent:planner", 0),
+            h.app.breaker_state_at("agent:planner", 0),
             busbar_substrate::store::BreakerState::Closed
         ),
         "a 400 is the request's fault, never the member's"

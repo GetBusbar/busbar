@@ -21,17 +21,17 @@
 //! would have replaced one wrong code with another.
 
 use crate::mcp::envelope::PROTOCOL_VERSION;
+use crate::mcp::test_engine::*;
 use crate::mcp::McpCfg;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 
 /// Serve an MCP-enabled app. The auth chain is open because these tests are about the request
 /// ENVELOPE and every one of them must reach the handler to say anything; the audience boundary is
 /// owned by `auth::tests::test_mcp_token_is_confined_to_the_mcp_plane` and the refusal to CONFIGURE
 /// an anonymous MCP deployment is owned by `tests/mcp_open_front_door.rs`.
 async fn serve() -> (String, tokio::task::JoinHandle<()>) {
-    busbar_core::metrics::init();
-    let app = TestApp::new()
+    metrics_init();
+    let app = test_app()
         .mcp(&McpCfg {
             canonical_uri: "https://gateway.example.com/mcp".to_string(),
             authorization_servers: vec!["https://login.example.com".to_string()],
@@ -39,7 +39,7 @@ async fn serve() -> (String, tokio::task::JoinHandle<()>) {
             allowed_origins: Vec::new(),
         })
         .build();
-    let router = busbar_core::build_router(app);
+    let router = build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

@@ -1,0 +1,29 @@
+{
+  "$comment": "HAND-TRANSCRIBED, not fetched. The Gemini REST error envelope is google.rpc.Status (https://cloud.google.com/apis/design/errors, proto: google/rpc/status.proto), wrapped in an `error` object by the JSON REST mapping. The v1beta discovery document does not describe error bodies, so this is the only schema Gemini error rows can be checked against. Rows validated with it are reported with schema source 'transcribed' and the README names this as a gap.",
+  "type": "object",
+  "required": ["error"],
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {"type": "integer", "minimum": 100, "maximum": 599},
+        "message": {"type": "string"},
+        "status": {
+          "type": "string",
+          "enum": ["OK", "CANCELLED", "UNKNOWN", "INVALID_ARGUMENT", "DEADLINE_EXCEEDED", "NOT_FOUND", "ALREADY_EXISTS", "PERMISSION_DENIED", "UNAUTHENTICATED", "RESOURCE_EXHAUSTED", "FAILED_PRECONDITION", "ABORTED", "OUT_OF_RANGE", "UNIMPLEMENTED", "INTERNAL", "UNAVAILABLE", "DATA_LOSS"]
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["@type"],
+            "properties": {"@type": {"type": "string"}}
+          }
+        }
+      }
+    }
+  }
+}

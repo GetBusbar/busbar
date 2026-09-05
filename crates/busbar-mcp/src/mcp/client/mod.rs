@@ -3,7 +3,7 @@
 
 //! THE MCP CLIENT DIRECTION: busbar calling OUT to external MCP tool servers — the "7th wire
 //! protocol", so named because it sits beside the six stateless HTTP provider families in
-//! `busbar_core::proto` and is nothing like them.
+//! the LLM plane's dialect registry and is nothing like them.
 //!
 //! `crate::mcp` (the parent) is the SERVER direction: busbar's own front door. This module is the
 //! other half of the same governance boundary. They share the trust lifecycle, the scope kinds, the

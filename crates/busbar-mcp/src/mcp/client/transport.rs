@@ -84,14 +84,10 @@ impl HttpTransport {
         leg: &WireLeg<'_>,
         req: &OutboundRequest,
     ) -> Result<TransportResponse, TransportError> {
-        // THE BOOT INSTALL, on the dual-compile TEST path only. The busbar-core test binary that
-        // dual-compiles this plane has no composition root to install the hostless-egress driver (the
-        // `busbar` binary's `main` does that), so a plane test would otherwise drive an uninstalled
-        // seam. The install reaches the core-backed driver, so it lives in a `#[cfg(test)]` module
-        // (below) that links busbar-core as the plane's own test dependency — production installs the
-        // driver at boot and compiles this out entirely.
-        #[cfg(all(test, feature = "test-support"))]
-        test_egress_boot::install();
+        // The hostless-egress driver this send runs on is installed by whoever plays the composition
+        // root: the `busbar` binary's `main` at boot, and the neutral test fixture (`TestApp`) in a
+        // test binary. This plane installs nothing and names no driver; an uninstalled seam is a
+        // refused hop (`hostless()` is `None`), never an invented one.
         // THE PLANE POOL GUARD, PLANE-SIDE AND UNCHANGED: resolve-then-pin (the SSRF check + typed
         // `SsrfRefusal`) before any hop, so the destination cannot be one the check never saw. The
         // returned client is not used to run the hop any more — the hostless egress seam builds its
@@ -206,21 +202,6 @@ impl HttpTransport {
             body,
             peer_spki: buffered.peer_spki,
         })
-    }
-}
-
-/// TEST-ONLY: install the core-backed hostless-egress driver the composition root installs at boot.
-/// The plane's own test binary (which dual-compiles into busbar-core, the one place `busbar_core` is
-/// nameable) has no `main` to do it, so `send` calls this once, idempotently (`OnceLock`). It reaches
-/// `busbar_core::egress::seam::CoreHostlessEgress` — the driver's only production implementation — as
-/// the plane's OWN test dependency, so it stays inside this `#[cfg(test)]` module and out of every
-/// shipped build.
-#[cfg(all(test, feature = "test-support"))]
-mod test_egress_boot {
-    pub(super) fn install() {
-        busbar_substrate::egress::seam::install_hostless_egress(
-            &busbar_core::egress::seam::CoreHostlessEgress,
-        );
     }
 }
 

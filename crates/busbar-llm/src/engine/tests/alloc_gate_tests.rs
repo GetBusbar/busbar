@@ -117,7 +117,7 @@ fn alloc_gate_translate_write_stable() {
     // forward thread passes. Both are resolved ONCE, OUTSIDE the measured window (the host is one
     // `Arc::new`, the runtime an alloc-free slot read), so the pinned per-call count still measures
     // ONLY `translate_request_cross_protocol`'s own allocations — which stay ZERO.
-    let host = busbar_core::plane_host::engine_host(&app);
+    let host = busbar_substrate::testkit::engine_host(&app);
     let rt = crate::engine::native_runtime_arc(host.as_ref());
 
     // WARM the path once OUTSIDE the measured window: first-touch lazy statics (the protocol
@@ -202,7 +202,7 @@ async fn alloc_gate_openai_passthrough_forward() {
         .pool("", &[(0, 1)])
         .build();
 
-    async fn one_request(app: &Arc<busbar_core::state::App>) {
+    async fn one_request<A: busbar_substrate::testkit::BuiltAppSeam + ?Sized>(app: &Arc<A>) {
         let resp = crate::engine::forward_with_pool(
             app,
             vec![member(0)],

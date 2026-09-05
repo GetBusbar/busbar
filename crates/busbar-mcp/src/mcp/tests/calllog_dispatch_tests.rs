@@ -34,7 +34,7 @@
 //!
 //! ## The `CALLS` global is serialised here, deliberately
 //!
-//! [`busbar_core::calllog::CALLS`] is process state (see its own header for why it must not ride the
+//! the engine's process-wide call log (`CALLS`) is process state (see its own header for why it must not ride the
 //! swappable `App`). Two tests in this binary attaching different sinks to it concurrently would
 //! interleave, so they take one lock — and each also uses its own principal, so a leaked chain
 //! position from a sibling cannot make a green.
@@ -42,14 +42,12 @@
 use super::upstream_support::{
     call_as, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer,
 };
+use crate::mcp::test_engine::*;
 use crate::record::{McpCallRecord, KIND_CALL};
 use crate::testkit::TestAppMcpExt;
 use busbar_api::{PlaneSelector, Store};
-use busbar_core::calllog::verify_call_rows;
-use busbar_core::calllog::{
-    CallRecorded, OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED,
-};
-use busbar_core::test_support::TestApp;
+use busbar_substrate::audit::vocab::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
+use busbar_substrate::plane::calllog::CallRecorded;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -76,7 +74,7 @@ fn list_mcp_call_principals(store: &Arc<dyn Store>) -> Vec<String> {
         .expect("enumerate call-chain principals over the generic plane-record ABI")
 }
 
-/// Reframe the plane's typed records into the neutral [`CallRecorded`] rows [`verify_call_rows`]
+/// Reframe the plane's typed records into the neutral [`CallRecorded`] rows `verify_call_rows`
 /// takes — the fields are identical, and the chain verifier is core's (it names no plane type).
 fn as_call_rows(records: &[McpCallRecord]) -> Vec<CallRecorded> {
     records
@@ -304,7 +302,7 @@ fn assert_record(
 #[tokio::test]
 async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_store_plugin() {
     let _serial = CALLS_GLOBAL.lock().await;
-    busbar_core::metrics::init();
+    metrics_init();
     let (file, cfg) = durable_cfg("dispatched");
     // ITS OWN PRINCIPAL. `CALLS` chains per principal in a process global that no test resets, so a
     // shared principal would carry a sibling test's sequence into this one's fresh store — observed,
@@ -312,7 +310,7 @@ async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_
     let principal = "calllog-dispatched-principal";
 
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();
@@ -323,8 +321,8 @@ async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_
     // store only through the dispatcher.
     {
         let store = open_plugin(&cfg);
-        busbar_core::calllog::aim_global_call_sink(Some(
-            busbar_core::plane::store::PlaneStoreView::narrow(store),
+        engine().aim_call_sink(Some(
+            busbar_substrate::plane::store::PlaneStoreView::narrow(store),
         ));
     }
 
@@ -345,7 +343,7 @@ async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_
     // ledger file. The plugin's persist is atomic (see `FileStore::mutate`), so those writes can't
     // tear the reopen below; detaching anyway keeps this test's ledger holding exactly what this
     // test wrote, so the `records.len()` assertion is about dispatch, not about scheduling.
-    busbar_core::calllog::aim_global_call_sink(None);
+    engine().aim_call_sink(None);
 
     // THE RESTART. A fresh `dlopen` + `busbar_open` over the same on-disk ledger — the only way a
     // durability claim can be made honestly, because a write's `Ok(())` is worth nothing.
@@ -370,7 +368,8 @@ async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_
         OUTCOME_DISPATCHED,
         true,
     );
-    verify_call_rows(&as_call_rows(&records))
+    engine()
+        .verify_call_rows(&as_call_rows(&records))
         .expect("the persisted chain must verify against its own hashes");
 
     // The BYTES the plugin actually kept, printed so a release report can quote evidence rather
@@ -394,12 +393,12 @@ async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_
 #[tokio::test]
 async fn a_refused_tools_call_lands_a_durable_record_carrying_the_refusal_reason() {
     let _serial = CALLS_GLOBAL.lock().await;
-    busbar_core::metrics::init();
+    metrics_init();
     let (_file, cfg) = durable_cfg("refused");
     let principal = "calllog-refused-principal";
 
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();
@@ -408,8 +407,8 @@ async fn a_refused_tools_call_lands_a_durable_record_carrying_the_refusal_reason
 
     {
         let store = open_plugin(&cfg);
-        busbar_core::calllog::aim_global_call_sink(Some(
-            busbar_core::plane::store::PlaneStoreView::narrow(store),
+        engine().aim_call_sink(Some(
+            busbar_substrate::plane::store::PlaneStoreView::narrow(store),
         ));
     }
 
@@ -427,7 +426,7 @@ async fn a_refused_tools_call_lands_a_durable_record_carrying_the_refusal_reason
     // DETACH before the read-back — same isolation as the dispatched-call test above: siblings
     // record through the process-global `CALLS` without the lock, and this test's ledger must hold
     // exactly what this test wrote when the reopened handle reads it.
-    busbar_core::calllog::aim_global_call_sink(None);
+    engine().aim_call_sink(None);
 
     let reopened = open_plugin(&cfg);
     let records = list_mcp_calls(&reopened, principal);
@@ -442,7 +441,9 @@ async fn a_refused_tools_call_lands_a_durable_record_carrying_the_refusal_reason
         "the refusal must carry a stable, greppable reason token: {:?}",
         records[0]
     );
-    verify_call_rows(&as_call_rows(&records)).expect("the persisted chain must verify");
+    engine()
+        .verify_call_rows(&as_call_rows(&records))
+        .expect("the persisted chain must verify");
 }
 
 /// THE PERMANENT NEGATIVE. With NO sink attached — which is what `store: memory` is from the
@@ -452,12 +453,12 @@ async fn a_refused_tools_call_lands_a_durable_record_carrying_the_refusal_reason
 #[tokio::test]
 async fn with_no_durable_sink_the_call_still_serves_and_nothing_is_kept() {
     let _serial = CALLS_GLOBAL.lock().await;
-    busbar_core::metrics::init();
+    metrics_init();
     let (_file, cfg) = durable_cfg("nosink");
     let principal = "calllog-nosink-principal";
 
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();
@@ -466,7 +467,7 @@ async fn with_no_durable_sink_the_call_still_serves_and_nothing_is_kept() {
     // The RAM default: `busbar-store-memory` implements none of the call-log methods, so attaching
     // it is indistinguishable from attaching nothing — which is the documented `store: memory`
     // contract, asserted rather than assumed.
-    busbar_core::calllog::aim_global_call_sink(None);
+    engine().aim_call_sink(None);
 
     let (status, body) = call_as(
         &app,
@@ -517,15 +518,15 @@ async fn with_no_durable_sink_the_call_still_serves_and_nothing_is_kept() {
 #[tokio::test]
 async fn the_client_legs_own_outcome_is_what_the_chain_records_success_and_failure_apart() {
     let _serial = CALLS_GLOBAL.lock().await;
-    busbar_core::metrics::init();
+    metrics_init();
     let (file, cfg) = durable_cfg("clientleg");
     let principal = "calllog-clientleg-principal";
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
 
     {
         let store = open_plugin(&cfg);
-        busbar_core::calllog::aim_global_call_sink(Some(
-            busbar_core::plane::store::PlaneStoreView::narrow(store),
+        engine().aim_call_sink(Some(
+            busbar_substrate::plane::store::PlaneStoreView::narrow(store),
         ));
     }
 
@@ -534,7 +535,7 @@ async fn the_client_legs_own_outcome_is_what_the_chain_records_success_and_failu
     // and the ONLY thing that went wrong is the answer the far end gave. Nothing on busbar's side
     // of the leg can be blamed, so a chain that records this as a refusal is lying about who failed.
     let failing = Peer::start(Behaviour::Errors, ISSUED).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&failing, SUBJECT))
         .build();
@@ -559,7 +560,7 @@ async fn the_client_legs_own_outcome_is_what_the_chain_records_success_and_failu
 
     // ── LEG 2: THE CONTROL. The identical call, the identical principal, a working upstream. ─────
     let working = Peer::start(Behaviour::Result, ISSUED).await;
-    let app_ok = TestApp::new()
+    let app_ok = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&working, SUBJECT))
         .build();
@@ -576,7 +577,7 @@ async fn the_client_legs_own_outcome_is_what_the_chain_records_success_and_failu
 
     // Detach before the read-back, for the reason the headline test states: siblings in this binary
     // dispatch through the process-global `CALLS` without taking the serialising lock.
-    busbar_core::calllog::aim_global_call_sink(None);
+    engine().aim_call_sink(None);
 
     let reopened = open_plugin(&cfg);
     let records = list_mcp_calls(&reopened, principal);
@@ -614,7 +615,8 @@ async fn the_client_legs_own_outcome_is_what_the_chain_records_success_and_failu
 
     // ── AND IT IS A CHAIN, not a list. The two legs are linked, so neither row can be edited,
     // reordered or dropped without the verifier saying so.
-    verify_call_rows(&as_call_rows(&records))
+    engine()
+        .verify_call_rows(&as_call_rows(&records))
         .expect("the persisted client-leg chain must verify against its own hashes");
     assert_eq!(records[0].seq, 1);
     assert_eq!(records[1].seq, 2);

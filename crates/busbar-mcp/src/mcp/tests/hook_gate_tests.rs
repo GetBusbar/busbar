@@ -27,9 +27,8 @@
 use super::upstream_support::{
     call_as, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer,
 };
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::config::{HookCfg, HookKind, PromptAccess, UserAccess};
-use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 const SUBJECT: &str = "busbar-own-subject-token-for-the-exchange";
@@ -37,28 +36,29 @@ const ISSUED: &str = "downscoped-access-token-issued-by-the-as";
 
 /// The `hooks:` DEFINITION a test attaches: a `kind: gate` backed by the hermetic test cdylib,
 /// holding the `prompt: ro` grant so the content projection is sent.
-fn gate(settings: serde_json::Value) -> HookCfg {
-    HookCfg {
-        kind: HookKind::Gate,
-        plugin: "test-hook".to_string(),
+fn gate(settings: serde_json::Value) -> serde_json::Value {
+    // The `hooks.<name>:` DOCUMENT as an operator writes it — the engine's own parser turns it into
+    // its config type, so the grammar under test is the file grammar, not a struct literal.
+    serde_json::json!({
+        "kind": "gate",
+        "module": "test-hook",
         // NOT `DEFAULT_POLICY_TIMEOUT_MS` (1 ms) — same reasoning as the A2A twin
         // (`a2a/tests/hook_gate_tests.rs`): under parallel-suite load the 1 ms deadline fires on
         // scheduling delay alone, and `on_error: "weighted"` turns the timed-out gate into a
         // PROCEED, flaking every verdict assertion here. The verdict is under test, not the
         // deadline; 10 s cannot fire for an in-process dlopen call.
-        timeout_ms: 10_000,
-        on_error: "weighted".to_string(),
-        prompt: PromptAccess::Ro,
-        user: UserAccess::Ro,
-        priority: 0,
-        settings: settings.as_object().cloned().unwrap_or_default(),
-        on_empty: None,
-        global: false,
-        default: false,
-        signals: Vec::new(),
-        groups: Vec::new(),
-        phase: Vec::new(),
-    }
+        "timeout_ms": 10_000,
+        "on_error": "weighted",
+        "prompt": "ro",
+        "user": "ro",
+        "priority": 0,
+        "settings": settings.as_object().cloned().unwrap_or_default(),
+        "global": false,
+        "default": false,
+        "signals": [],
+        "groups": [],
+        "phase": [],
+    })
 }
 
 /// The env that loads the test cdylib under the alias `test-hook`, declaring the manifest intent
@@ -70,14 +70,9 @@ fn gate(settings: serde_json::Value) -> HookCfg {
 /// stops running while the run stays green and nobody reads the line. It is not hypothetical for
 /// THIS file: with the firing sites reverted and the cdylib missing, all four tests here reported
 /// `ok`. The panic names the command that fixes it.
-fn hook_env() -> busbar_core::hooks::HookEnv {
-    busbar_core::test_support::test_hook_env(
-        &["test-hook"],
-        busbar_plugin_sign::HookNeeds {
-            prompt: busbar_plugin_sign::NeedLevel::Rw,
-            user: busbar_plugin_sign::NeedLevel::Ro,
-        },
-    )
+fn hook_env() -> HookEnvHandle {
+    engine()
+        .hook_env(&["test-hook"], HookNeed::Rw, HookNeed::Ro)
     .expect(
         "the busbar-hook-test-plugin cdylib is not built. This battery is the acceptance test for \
          \"a hook fires on a non-LLM protocol\" and it CANNOT be skipped: with no gate to load, \
@@ -100,7 +95,7 @@ async fn tools_hooks_reject_all_rejects_a_tools_call() {
     let params = serde_json::json!({ "name": "fs_read", "arguments": { "path": "/etc/hosts" } });
 
     // ── THE CONTROL: no hook attached, so this deployment serves the call. ───────────────────────
-    let ungated = TestApp::new()
+    let ungated = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();
@@ -120,7 +115,7 @@ async fn tools_hooks_reject_all_rejects_a_tools_call() {
     assert_eq!(peer.mcp_hits(), 1, "the control reached the upstream");
 
     // ── THE TEST: `tools.hooks: [reject-all]`, same call, same deployment otherwise. ─────────────
-    let gated = TestApp::new()
+    let gated = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .tools_hooks(&["reject-all"])
@@ -163,7 +158,7 @@ async fn mcp_content_reaches_the_gate() {
     let env = hook_env();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .tools_hooks(&["screen"])

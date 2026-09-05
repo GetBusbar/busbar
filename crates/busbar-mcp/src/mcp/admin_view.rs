@@ -36,7 +36,7 @@ use busbar_substrate::api::NamedDefView;
 ///
 /// `module` carries the PIN MECHANISM rather than a plugin name, and that is the honest projection
 /// rather than a hack: an MCP server has no backing plugin (see
-/// [`busbar_core::config::named_map::NamedMapSection::requires_module`]), and the field a UI renders as
+/// core's named-map section rule that a `tools:` entry requires no module), and the field a UI renders as
 /// "what is behind this entry" is, for a remote endpoint, the authenticity root it is bound to. An
 /// empty string there would render as a blank column on the one screen an operator uses to spot an
 /// `unpinned` registration.
@@ -304,7 +304,7 @@ fn capability_views(
     out.into_values().collect()
 }
 
-// ══ THE TRUST VERBS: this plane's half of the ONE surface in `busbar_core::admin::planeverbs` ══════════
+// ══ THE TRUST VERBS: this plane's half of the ONE surface in the substrate's `admin_verbs` seam ══════════
 
 /// Everything the MCP look needs, cloned out of the live snapshot.
 ///

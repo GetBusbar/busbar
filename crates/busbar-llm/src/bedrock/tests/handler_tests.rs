@@ -81,7 +81,7 @@ fn embeddings_read_request_captures_input_text() {
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
     use crate::ir::embeddings::EmbeddingsReq;
-    use busbar_core::test_support::warn_capture::WarnCapture;
+    use busbar_substrate::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let req = EmbeddingsReq {

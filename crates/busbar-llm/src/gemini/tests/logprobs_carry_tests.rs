@@ -186,7 +186,9 @@ fn openai_logprobs_reach_gemini_caller() {
     assert_eq!(lr["topCandidates"][0]["candidates"][0]["token"], "Hi");
 }
 
-/// A response WITHOUT logprobs gains nothing on translation in either direction.
+/// A response WITHOUT logprobs gains nothing on translation in either direction. On the OpenAI
+/// side the choice's `logprobs` member is required by the published schema, so "nothing" is the
+/// spec's JSON null rather than an absent key.
 #[test]
 fn absence_gains_nothing() {
     let mut body = gemini_body_with_logprobs();
@@ -197,9 +199,10 @@ fn absence_gains_nothing() {
     let ir = Protocol::gemini().reader().read_response(&body).unwrap();
     assert!(ir.logprobs.is_empty());
     let out = Protocol::openai().writer().write_response(&ir);
-    assert!(
-        out["choices"][0].get("logprobs").is_none(),
-        "no logprobs from the backend -> no logprobs key emitted: {out}"
+    assert_eq!(
+        out["choices"][0].get("logprobs"),
+        Some(&serde_json::Value::Null),
+        "no logprobs from the backend -> the required choice member is null: {out}"
     );
 }
 

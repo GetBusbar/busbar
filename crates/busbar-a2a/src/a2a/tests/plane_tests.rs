@@ -12,6 +12,7 @@
 
 use super::*;
 use crate::a2a::config::{AgentDefCfg, PinMechanism};
+use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
 use busbar_substrate::trust::TrustState;
 
@@ -179,14 +180,15 @@ fn a_booted_app_carries_the_plane_only_when_agents_are_configured() {
     // THE LOWERING IS WIRED, not merely writable. This drives the real `App` build — the same
     // function boot and every config apply call — rather than `from_config` alone, because a plane
     // that lowers correctly and is never asked for at boot is a plane no deployment has.
-    busbar_core::metrics::init();
-    let none = busbar_core::test_support::TestApp::new().build();
+    engine().metrics_init();
+    let none = engine().new_app_plus().build();
     assert!(
         crate::a2a::runtime(none.as_ref()).is_none(),
         "a deployment with no `agents:` holds no registry, so there is no job to spawn"
     );
 
-    let one = busbar_core::test_support::TestApp::new()
+    let one = engine()
+        .new_app_plus()
         .public_url("https://busbar.example")
         .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
         .build();
@@ -342,7 +344,6 @@ fn every_registry_mutation_moves_the_generation() {
 /// discriminates on `TypeId` and catches a divergent engine rather than accepting any value.
 #[test]
 fn the_durable_handle_engine_and_its_rows_survive_erase_into_a_core_box_dyn_any_slot() {
-    use busbar_core::test_support::TestApp;
     use busbar_substrate::plane::handle_engine::{
         DurableHandleEngine, HandleMeta, SubmitRecord, SweepBounds,
     };
@@ -411,7 +412,8 @@ fn the_durable_handle_engine_and_its_rows_survive_erase_into_a_core_box_dyn_any_
     // inside core's `TestApp` (`plane_scratch` map), so this is core holding the plane's engine
     // type-erased — exactly the `Box<dyn Any>` core-readback path the opaque design is paying for.
     // `plane_scratch_any`'s init is an `Fn` (called at most once), so the move goes through a cell.
-    let mut app = TestApp::new();
+    // (`engine` is the handle engine under test here; the engine KIT is reached by its full path.)
+    let mut app = crate::testkit::engine_boot::engine().new_app_plus();
     let pending = std::cell::RefCell::new(Some(engine));
     let _installed: &mut dyn Any = app.plane_scratch_any(SLOT_KEY, &|| {
         Box::new(pending.borrow_mut().take().expect("engine moved in once")) as Box<dyn Any>
@@ -450,7 +452,7 @@ fn the_durable_handle_engine_and_its_rows_survive_erase_into_a_core_box_dyn_any_
     // is vacuous (the downcast would be discriminating on nothing). This is the exact failure a
     // divergent-TypeId engine would trip at the point core hands the plane its state back.
     struct PlaneMonomorphisedEngineStandIn;
-    let mut app2 = TestApp::new();
+    let mut app2 = crate::testkit::engine_boot::engine().new_app_plus();
     app2.plane_scratch_any(SLOT_KEY, &|| {
         Box::new(PlaneMonomorphisedEngineStandIn) as Box<dyn Any>
     });

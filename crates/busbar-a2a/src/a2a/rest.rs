@@ -331,7 +331,7 @@ fn rest_key_ctx(
 ) -> (busbar_api::PlaneRequestCtx, busbar_api::AuthPrincipal, Wire) {
     // The engine handle is no longer named here: the shared sequence closes its own request out
     // through the neutral `ctx.host` seam, so this key-ctx neither loads the app nor asserts the
-    // handle's concrete type — the plane names no `busbar_core::state` type on this path.
+    // handle's concrete type — the plane names no host application-state type on this path.
     let gov =
         gov.expect("the a2a REST routes are RouteAuth::Key, so the middleware attached a gov ctx");
     let principal = principal

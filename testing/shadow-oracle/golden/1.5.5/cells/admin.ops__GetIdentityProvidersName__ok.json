@@ -1,0 +1,1 @@
+{"applied":["hdr.date","hdr.etag"],"body":{"json":{"browser_login_configured":false,"module":"admin-tokens","name":"admin-tokens","settings_keys":[],"token_configured":true}},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"123","content-type":"application/json","etag":"<ETAG>"},"status":200}

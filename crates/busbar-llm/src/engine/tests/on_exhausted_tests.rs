@@ -88,8 +88,8 @@ fn test_config_parsing_bare_fallback_pool_fails() {
 use crate::engine::forward_with_pool;
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_core::state::now;
-use busbar_core::store::BreakerState;
+use busbar_substrate::store::now;
+use busbar_substrate::store::BreakerState;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -474,8 +474,8 @@ fn retry_after(resp: &axum::response::Response) -> Option<String> {
 /// Drive one request through `forward_with_pool` under the shed budget. A correct shed returns
 /// immediately; a queue-instead-of-shed regression parks the inner future to the failover deadline
 /// and this `.expect` panics — the shed-not-queued assertion.
-async fn drive_shed(
-    app: std::sync::Arc<busbar_core::state::App>,
+async fn drive_shed<A: busbar_substrate::testkit::BuiltAppSeam>(
+    app: std::sync::Arc<A>,
     cands: Vec<WeightedLane>,
     pool: &str,
 ) -> axum::response::Response {
@@ -1099,8 +1099,8 @@ fn busy_real_lane(model: &str, base_url: &str, sem: &Arc<tokio::sync::Semaphore>
 
 /// Spawn one request through the real dispatch path with `'static` literals so it can run detached
 /// while the test frees a permit / trips a breaker underneath it.
-fn spawn_request(
-    app: std::sync::Arc<busbar_core::state::App>,
+fn spawn_request<A: busbar_substrate::testkit::BuiltAppSeam + Send + Sync + 'static>(
+    app: std::sync::Arc<A>,
 ) -> tokio::task::JoinHandle<axum::response::Response> {
     tokio::spawn(async move {
         forward_with_pool(
@@ -1122,8 +1122,8 @@ fn spawn_request(
 /// a tight interval rather than sleeping a fixed wall-clock time. Replaces flaky fixed-sleep syncs
 /// under CI scheduler pressure — it only proceeds once the spawned request(s) have actually reached
 /// the queue park point. Panics if the depth is not reached within the bound.
-async fn wait_until_queued(
-    app: &std::sync::Arc<busbar_core::state::App>,
+async fn wait_until_queued<A: busbar_substrate::testkit::BuiltAppSeam + ?Sized>(
+    app: &std::sync::Arc<A>,
     pool: &str,
     min_depth: u64,
 ) {
@@ -1367,7 +1367,7 @@ async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
     assert!(
         matches!(
             app.store.try_admit("p", 0, now()),
-            Err(busbar_core::store::Unavailable::ProbeInFlight)
+            Err(busbar_substrate::store::Unavailable::ProbeInFlight)
         ),
         "a third caller must NOT win a second concurrent probe — peer A's probe is still in flight"
     );

@@ -14,7 +14,7 @@
 //!
 //! The sentence was one word too strong. There IS a window in which busbar is holding a
 //! roots-derived fact on a caller's behalf: the life of a sealed `requestState`. An exchange that
-//! asked for roots mints state with a [`busbar_core::plane::approvals::DEFAULT_TTL_SECS`] window, and inside
+//! asked for roots mints state with a [`busbar_substrate::plane::approvals::DEFAULT_TTL_SECS`] window, and inside
 //! that window the caller can redeem an answer it gave BEFORE its roots changed. The caller has
 //! told busbar, in the protocol's own vocabulary, that the answer is stale — and a server that then
 //! redeems it is dispatching on roots the client just disavowed.
@@ -49,7 +49,7 @@ use std::sync::Mutex;
 pub(crate) const METHOD_NOTIFY_ROOTS_LIST_CHANGED: &str = "notifications/roots/list_changed";
 
 /// The per-principal roots epochs. One instance per deployment, carried across config applies on
-/// [`busbar_core::state::App`] exactly as the spent-approval ledger is, and for the same reason: a bump
+/// the engine snapshot exactly as the spent-approval ledger is, and for the same reason: a bump
 /// is what a CALLER said, not what the operator configured, and a config apply must not erase it.
 #[derive(Debug, Default)]
 pub(crate) struct RootsEpochs {

@@ -30,8 +30,8 @@ use super::upstream_support::{call, gov_with_scopes, mcp_cfg};
 use crate::mcp::config::{
     McpPinMechanism, McpServerDefCfg, ServerPinCfg, ServerRequestGrants, ToolAllowCfg, Transport,
 };
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 
@@ -110,8 +110,8 @@ done"#;
 /// two releases had.
 #[tokio::test]
 async fn a_tools_call_reaches_a_child_process_and_returns_its_result() {
-    busbar_core::metrics::init();
-    let app = TestApp::new()
+    metrics_init();
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", stdio_server(ECHO_SERVER))
         .build();
@@ -146,8 +146,8 @@ async fn a_tools_call_reaches_a_child_process_and_returns_its_result() {
 /// so a second call answering `2` is a second call served by the SAME process.
 #[tokio::test]
 async fn the_same_child_serves_consecutive_calls() {
-    busbar_core::metrics::init();
-    let app = TestApp::new()
+    metrics_init();
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(
             "fs",
@@ -202,9 +202,9 @@ done"#,
 /// registration that looks exactly like every other on the admin surface.
 #[tokio::test]
 async fn a_refresh_re_observes_a_child_process_tool_list() {
-    busbar_core::metrics::init();
+    metrics_init();
     let cache = std::sync::Arc::new(crate::mcp::client::catalogue::CatalogueCache::new());
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(
             "fs",
@@ -278,18 +278,15 @@ done"#,
 /// what keeps the two devices co-existing without either feeding the other.
 #[tokio::test]
 async fn a_crash_looping_child_backs_off_and_is_quarantined_through_the_dispatch_path() {
-    busbar_core::metrics::init();
-    let app = TestApp::new()
+    metrics_init();
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         // The child exits before reading anything. Its stdout closes, which is what busbar sees.
         .mcp_server("fs", stdio_server("exit 1"))
         .build();
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
     let params = serde_json::json!({ "name": "fs_read", "arguments": {} });
-    let reach_the_supervisor = || {
-        app.plane_breakers
-            .reset(&busbar_substrate::store::tool_key("fs"))
-    };
+    let reach_the_supervisor = || app.breaker_reset(&busbar_substrate::store::tool_key("fs"));
 
     let text = |b: &serde_json::Value| {
         b.pointer("/result/content/0/text")

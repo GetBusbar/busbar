@@ -13,6 +13,7 @@
 //! because the property under test spans them — the list is what gets hashed, and the call is what
 //! must then be refused.
 
+use crate::mcp::test_engine::*;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::routing::post;
@@ -312,14 +313,14 @@ pub(crate) fn gov_with_key(id: &str, pairs: &[(&str, &str)]) -> busbar_api::Plan
 
 /// Drive one JSON-RPC method against the built app, exactly as the ingress does.
 pub(crate) async fn call(
-    app: &std::sync::Arc<busbar_core::state::App>,
+    app: &std::sync::Arc<dyn EngineApp>,
     gov: &busbar_api::PlaneRequestCtx,
     method: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {
-    let handle = std::sync::Arc::new(busbar_core::state::AppHandle::new(app.clone()));
+    let handle = app_handle(app.clone());
     let ctx = crate::mcp::method::Ctx {
-        host: busbar_core::plane_host::engine_host_from_handle(&handle),
+        host: engine_host_from_handle(&handle),
         gov,
         actor: "test-principal",
         capabilities: &ALL_CAPABILITIES,

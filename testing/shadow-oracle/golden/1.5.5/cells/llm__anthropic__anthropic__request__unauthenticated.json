@@ -1,0 +1,1 @@
+{"applied":["hdr.date","id.wire"],"body":{"json":{"error":{"message":"invalid x-api-key","type":"authentication_error"},"request_id":"<ID>","type":"error"}},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"132","content-type":"application/json","request-id":"req_<ID>"},"status":401}

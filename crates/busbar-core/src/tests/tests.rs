@@ -2218,29 +2218,22 @@ fn plugins_boot_logging_wording_present() {
 const BOOT_MINIMAL_CONFIG: &str = "providers: {}\nmodels: {}\n";
 
 /// 1.5.3 durable-by-default at the BOOT path: with NO `config:` section the default overlay lands next
-/// to config.yaml and the config is reported mutable. Also pins that the `BUSBAR_CONFIG_OVERLAY` env
-/// var — deprecated in 1.5.3, REMOVED in 1.6.0 — has NO effect: it is set here to a bogus path and the
-/// resolved overlay is still the default next to config.yaml.
+/// to config.yaml and the config is reported mutable. The deprecated `BUSBAR_CONFIG_OVERLAY` env var
+/// (still honored when set) is cleared for the run so the DEFAULT path is what is under test; its
+/// precedence is pinned separately in the overlay consolidation tests.
 #[test]
 fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
     let (dir, config_path, _providers_path) = boot_config_dir("durable", BOOT_MINIMAL_CONFIG);
-    // The removed env var must be ignored. Guarded so its value is restored on drop (incl. panic).
-    let bogus = dir.join("env-overlay-should-be-ignored.json");
+    // Guarded so any ambient value is restored on drop (incl. panic).
     let _guard = EnvVarGuard::capture("BUSBAR_CONFIG_OVERLAY");
-    std::env::set_var("BUSBAR_CONFIG_OVERLAY", &bogus);
+    std::env::remove_var("BUSBAR_CONFIG_OVERLAY");
     let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
         .expect("a mutable default config must boot");
     assert!(!loaded.config_locked, "default config is mutable");
     assert_eq!(
         loaded.overlay_path.as_deref(),
         Some(dir.join("busbar-overlay.json").as_path()),
-        "durable-by-default: overlay next to config.yaml — the removed BUSBAR_CONFIG_OVERLAY env \
-         var must not redirect it"
-    );
-    assert_ne!(
-        loaded.overlay_path.as_deref(),
-        Some(bogus.as_path()),
-        "the removed BUSBAR_CONFIG_OVERLAY env var must have no effect"
+        "durable-by-default: overlay next to config.yaml"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

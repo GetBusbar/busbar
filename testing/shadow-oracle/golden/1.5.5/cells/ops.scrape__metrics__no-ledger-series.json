@@ -1,0 +1,1 @@
+{"applied":["audit.hash","body.keep-lines","hdr.date","hdr.length","metrics.shape"],"body":{"text":""},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"<LEN>","content-type":"text/plain; version=0.0.4"},"status":200}

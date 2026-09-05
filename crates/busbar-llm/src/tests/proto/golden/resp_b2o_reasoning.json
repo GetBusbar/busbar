@@ -1,1 +1,1 @@
-{"choices":[{"finish_reason":"length","index":0,"message":{"content":"42","role":"assistant"}}],"created":1752000000,"id":"chatcmpl-NORMALIZED","model":"gpt-4o","object":"chat.completion","usage":{"completion_tokens":33,"prompt_tokens":9,"total_tokens":42}}
+{"choices":[{"finish_reason":"length","index":0,"logprobs":null,"message":{"content":"42","refusal":null,"role":"assistant"}}],"created":1752000000,"id":"chatcmpl-NORMALIZED","model":"gpt-4o","object":"chat.completion","usage":{"completion_tokens":33,"prompt_tokens":9,"total_tokens":42}}

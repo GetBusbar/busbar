@@ -989,6 +989,14 @@ impl ProtocolWriter for OpenAiWriter {
             }
         }
 
+        // `refusal` is a REQUIRED member of the published `ChatCompletionResponseMessage` schema
+        // (nullable string), so it is always present: JSON null when the model did not refuse.
+        // A refusal has no distinct wire shape anywhere else — Anthropic/Bedrock/Gemini/Cohere carry
+        // a refused turn as plain assistant text, and this dialect's own reader folds an upstream
+        // `message.refusal` into a Text block plus the `Refusal` stop reason — so the text is always
+        // surfaced under `content` and `refusal` stays null rather than guessing which text was the
+        // refusal message. Real OpenAI emits the key on every completion; omitting it failed strict
+        // spec validation and was a proxy tell.
         let mut message_obj = serde_json::json!({
             "role": "assistant",
             "content": if text_parts.is_empty() {
@@ -996,6 +1004,7 @@ impl ProtocolWriter for OpenAiWriter {
             } else {
                 serde_json::json!(text_parts.concat())
             },
+            "refusal": serde_json::Value::Null,
         });
 
         // Add tool_calls only if present
@@ -1044,14 +1053,18 @@ impl ProtocolWriter for OpenAiWriter {
         choice_obj.insert("index".to_string(), serde_json::json!(0));
         choice_obj.insert("message".to_string(), message_obj);
         // Carried per-token logprobs (e.g. from a Gemini backend's `logprobsResult`) in OpenAI's
-        // native choice shape. Only emitted when the backend actually produced them: an absent
-        // `logprobs` key matches what OpenAI returns when they were not requested.
-        if !resp.logprobs.is_empty() {
-            choice_obj.insert(
-                "logprobs".to_string(),
-                write_openai_logprobs(&resp.logprobs),
-            );
-        }
+        // native choice shape. `logprobs` is a REQUIRED member of the published chat.completion
+        // choice schema (nullable object): the carried object when the backend produced any, JSON
+        // null otherwise — which is exactly what real OpenAI returns when they were not requested.
+        // Omitting the key failed strict spec validation and was a proxy tell.
+        choice_obj.insert(
+            "logprobs".to_string(),
+            if resp.logprobs.is_empty() {
+                serde_json::Value::Null
+            } else {
+                write_openai_logprobs(&resp.logprobs)
+            },
+        );
         choice_obj.insert("finish_reason".to_string(), finish_reason);
         choices_array.push(serde_json::Value::Object(choice_obj));
 

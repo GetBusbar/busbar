@@ -12,8 +12,10 @@
 //!
 //! WHAT EACH DIALECT MODULE OWNS: its `ProtocolDecl`, its wire codec (`reader.rs`/`writer.rs`), its
 //! `RequestHandler` and operation cells (`handler.rs`), its own wire constant bank, and its tests.
-//! Nothing here is reachable from `busbar-core`: core names no dialect, and this crate names
-//! `busbar-core` and no other busbar crate. Registration belongs to the composition root alone —
+//! Nothing here is reachable from `busbar-core`: core names no dialect, and this crate's production
+//! build names only the neutral ABI (`busbar-substrate` / `busbar-api`) — `busbar-core` is a
+//! dev-dependency for the money-path test fixture and nothing more. Registration belongs to the
+//! composition root alone —
 //! `crates/busbar/src/main.rs::register_protocols` installs [`DECLS`] behind the `proto-llm`
 //! feature, which carries the dependency edge too, so dropping the feature drops the whole LLM
 //! protocol and the deletion gate watches busbar refuse all six names at boot.
@@ -28,7 +30,7 @@
 //! THE DUAL COMPILE. `busbar-core`'s test and `test-support` builds compile these same source files
 //! back in under `crate::proto::{anthropic, …}` via `#[path]`, so core's pre-extraction fixture
 //! surface keeps exercising the real codecs from inside core's own test binary. Two consequences
-//! bind every file here: dialect sources address core as `busbar_core::…` (core's
+//! bind every file here: dialect sources address core by its crate name (core's
 //! `extern crate self as busbar_core` alias resolves that to itself), and a dialect referring to a
 //! SIBLING dialect must do it RELATIVELY — `super::gemini::…` from a `mod.rs`, `super::super::…`
 //! from one file deeper — because the parent module is this crate's root in one shape and
@@ -131,7 +133,7 @@ pub mod openai_responses;
 /// THE PATH-MODEL DIALECT ARRIVALS (gemini/bedrock URL-model ingress), RELOCATED here from
 /// `busbar-core` — the last piece of core→plane entanglement. They parse their own model out of the
 /// URL and reach the core request pipeline through the neutral
-/// [`busbar_substrate::ingress::arrival::ArrivalHost`] seam, so this crate names no `busbar_core::`
+/// [`busbar_substrate::ingress::arrival::ArrivalHost`] seam, so this crate names no core
 /// item. Registered via [`PATH_INGRESS`].
 pub mod arrival;
 
@@ -146,8 +148,12 @@ pub mod native_ingress;
 /// Phase 3-4 C M4). The relocated engine tests name `crate::test_support::{LaneSpec, TestApp,
 /// MockServer, …}`; the fixture builds the LLM runtime through the neutral `PlaneBuildInput` +
 /// `build_runtime` seam (naming no `Lane`/`NativeRuntime`), so it lives ONCE in core and the plane's
-/// tests reach it here. Gated exactly as core's is.
-#[cfg(any(test, feature = "test-support"))]
+/// tests reach it here.
+///
+/// `cfg(test)` ONLY, never `feature = "test-support"`: `busbar-core` is a DEV-dependency of this
+/// plane (its production build names nothing from core — only the substrate/api ABI), so core is
+/// present solely in this crate's own test binary. Nothing outside that binary reaches this module.
+#[cfg(test)]
 pub mod test_support {
     pub use busbar_core::test_support::*;
 
@@ -223,7 +229,7 @@ pub(crate) fn ensure_test_protocols_registered() {
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
 /// THE ORDER IS LOAD-BEARING AND IT IS NOT ALPHABETICAL. The composition root hands this slice to
-/// `busbar_core::proto::registry::install_protocols`, which folds it AHEAD of whatever built-in
+/// core's `proto::registry::install_protocols`, which folds it AHEAD of whatever built-in
 /// declarations core still carries; the resulting sequence is what `known_protocols()` reports (the
 /// "must be one of:" tail an operator reads on a bad `protocol:`) and what `telemetry` banks its
 /// per-protocol metric families against — it finds a family again by POSITION in that list. So this
@@ -233,7 +239,7 @@ pub(crate) fn ensure_test_protocols_registered() {
 /// THE LLM PLANE'S VOCABULARY DECLARATION — the plane's statement about ITSELF, relocated here from
 /// `busbar_substrate::proto::PLANE_DECL` so the LLM plane owns its declaration exactly as `busbar-mcp` and
 /// `busbar-a2a` own theirs. The composition root installs it through
-/// `busbar_core::plane::registry::install_planes` (`crates/busbar/src/main.rs::register_planes`, behind
+/// core's `plane::registry::install_planes` (`crates/busbar/src/main.rs::register_planes`, behind
 /// `proto-llm`); core's own test binary names it through the `#[cfg(test)]` row in
 /// `plane::registry::BUILTIN_PLANE_DECLS`, so both shapes boot the same `[llm, mcp, a2a]` plane list.
 ///
@@ -295,8 +301,8 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // THE PER-GENERATION RUNTIME SEAM stays `None` for the fallback plane THIS phase (R3/R4 sub-phase
         // B). The pool/lane/failover/egress runtime IS now carried in the opaque `plane_slots` runtime
         // slot every plane's runtime rides, and the money-path read (`App::engine_tables`) downcasts that
-        // slot once per call — but its type (`busbar_core::state::NativeRuntime`) still lives in core,
-        // and a plane crate may not name a `busbar_core::` item, so `busbar-core`'s `appbuild` composes
+        // slot once per call — but its type (core's `state::NativeRuntime`) still lives in core,
+        // and a plane crate may not name a core item, so `busbar-core`'s `appbuild` composes
         // the slot through a core-local constructor rather than through this pointer. Phase 3 relocates
         // the type here, at which point this becomes `Some(<this crate's build_runtime>)` like MCP's.
         build_runtime: Some(crate::engine::build_runtime::build_runtime),
@@ -328,13 +334,13 @@ pub static DECLS: &[&busbar_substrate::proto::ProtocolDecl] = &[
 /// travel — it named the core-only `Arrival` — so a path-model dialect now registers its arrival
 /// through this SIDE-TABLE instead of on its declaration. The composition root
 /// (`crates/busbar/src/main.rs::register_protocols`) hands this slice to
-/// `busbar_core::proto::registry::install_protocols_with_path_ingress` ALONGSIDE [`DECLS`], which
+/// core's `proto::registry::install_protocols_with_path_ingress` ALONGSIDE [`DECLS`], which
 /// asserts at boot that every `has_model_in_url` declaration here (gemini, bedrock) has an arrival —
 /// so a dialect that grows a URL model but forgets its arrival is a loud boot panic, not a silent
 /// fall-through. Only the two URL-model dialects appear; the four body-model dialects resolve their
 /// operation off the body and register nothing. The arrival fns live in THIS crate
 /// ([`crate::arrival::{gemini_arrival, bedrock_arrival}`]) and reach the core pipeline through the
-/// neutral `ArrivalHost` seam — no `busbar_core::` reference; this states the NAME→fn pairing.
+/// neutral `ArrivalHost` seam — no reference into core; this states the NAME→fn pairing.
 pub static PATH_INGRESS: &[(&str, busbar_substrate::ingress::arrival::PathIngress)] = &[
     (
         crate::proto_codec::PROTO_GEMINI,

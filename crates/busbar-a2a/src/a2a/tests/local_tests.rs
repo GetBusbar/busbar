@@ -5,7 +5,7 @@
 //!
 //! ## Why every test names its own principal
 //!
-//! `busbar_core::plane::taskstore::TASKS` is a process-global and these tests run in parallel with every
+//! `crate::taskstore::TASKS` is a process-global and these tests run in parallel with every
 //! other test in the crate. The tenancy boundary is the principal, so a test that invents its own
 //! principal is isolated by exactly the mechanism under test rather than by a lock somebody has to
 //! remember to take. Two of these tests then use that same mechanism as the ASSERTION — a second
@@ -23,6 +23,7 @@
 use super::super::local::{self, Dialect, LocalVerb};
 use super::super::task::{Direction, Task, TaskState};
 use crate::taskstore::TASKS;
+use crate::testkit::engine_boot::engine;
 
 // ══ HELPERS ══════════════════════════════════════════════════════════════════════════════════════
 
@@ -65,7 +66,7 @@ fn open(principal: &str, task_id: &str, context_id: &str, state: TaskState, now:
 /// (`task_get_scoped` / `task_set_push_callback`) are pure `TASKS.*` calls that ignore the app, so
 /// any host serves — the tenancy the tests assert is the process-global store's, keyed by principal.
 fn host() -> std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost> {
-    busbar_core::plane_host::engine_host(&busbar_core::test_support::TestApp::new().build())
+    engine().new_app_plus().build().engine_host()
 }
 
 fn envelope(method: &str, params: serde_json::Value) -> serde_json::Value {
@@ -1331,7 +1332,9 @@ async fn a_delete_whose_durable_clear_fails_keeps_the_config_and_returns_the_err
     }
     let refusing: std::sync::Arc<dyn busbar_api::Store> =
         std::sync::Arc::new(RefuseOneTaskRow(busbar_store_memory::MemoryStore::new()));
-    TASKS.set_sink(busbar_core::plane::store::PlaneStoreView::narrow(refusing));
+    TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+        refusing,
+    ));
 
     let refused = local::delete_push_config(
         host().as_ref(),

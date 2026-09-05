@@ -911,6 +911,16 @@ impl Default for TestApp {
 #[allow(dead_code)]
 impl TestApp {
     pub fn new() -> Self {
+        // THE TEST-SIDE BOOT BINDING. In production the composition root (`busbar`'s `main`) installs
+        // the core-backed hostless-egress driver once, before any plane dispatches. A plane's own test
+        // binary has no `main`, and a plane names no core type, so the fixture that stands in for the
+        // composition root does the same install here — idempotent (`OnceLock`, the first driver
+        // wins), and gated on the neutral egress-seam capability the driver itself lives behind, so a
+        // build with no plane that drives egress installs nothing.
+        #[cfg(feature = "egress-seam")]
+        busbar_substrate::egress::seam::install_hostless_egress(
+            &crate::egress::seam::CoreHostlessEgress,
+        );
         Self {
             mcp_durable_store: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,
@@ -2178,6 +2188,15 @@ pub mod warn_capture;
 /// The REAL `kind: store` plugin, loaded over the REAL C ABI: how a durability claim is judged.
 pub mod plugin_store;
 
+/// The engine's implementation of the neutral engine test-kit seam
+/// (`busbar_substrate::testkit::engine_kit`): what a plane crate's test binary binds in one line so
+/// its tests build and drive the whole fixture naming no other item of this crate.
+pub mod engine_kit;
+
+/// The engine's implementation of the WIDENED engine test-kit seam
+/// (`busbar_substrate::testkit::engine_kit_plus`), on the same fixture types as `engine_kit`.
+pub mod engine_kit_plus;
+
 /// Panic-safe process-env restore for a test that must temporarily override a `std::env` var (e.g.
 /// `BUSBAR_CONFIG`). A bare "set, assert, manually restore" sequence leaks the override to every
 /// later test in the same binary the instant an `assert!`/`assert_eq!` in between fails: the panic
@@ -2422,5 +2441,41 @@ impl busbar_substrate::testkit::TestAppSeam for TestApp {
         defs: std::sync::Arc<dyn std::any::Any + Send + Sync>,
     ) {
         TestApp::set_plane_defs_any(self, plane_key, defs);
+    }
+}
+
+// ── THE NEUTRAL BUILT-APP SEAM (busbar_substrate::testkit::BuiltAppSeam) ────────────────────────────
+// The second half of the fixture doorway: what a plane's tests drive on the `Arc<App>` that came OUT
+// of `TestApp::build()`. Each method is a thin delegate to the very fn the plane's tests used to name
+// directly (`plane_host::engine_host`, `build_router`, `App::plane_slot_mut`,
+// `metrics::refresh_scrape_gauges`), so a plane's money-path tests forward a request / mount the real
+// router / mutate their runtime slot through the trait, generic over `A: BuiltAppSeam`, naming no
+// `busbar_core::` item.
+impl busbar_substrate::testkit::BuiltAppSeam for crate::state::App {
+    fn engine_host_of(
+        app: &std::sync::Arc<Self>,
+    ) -> std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost> {
+        crate::plane_host::engine_host(app)
+    }
+
+    fn engine_host_value_of(
+        app: std::sync::Arc<Self>,
+    ) -> impl busbar_substrate::plane_host::EngineHost + 'static {
+        crate::plane_host::engine_host_value(&app)
+    }
+
+    fn router_of(app: std::sync::Arc<Self>) -> axum::Router {
+        crate::build_router(app)
+    }
+
+    fn plane_slot_mut(
+        &mut self,
+        key: &str,
+    ) -> Option<&mut std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+        crate::state::App::plane_slot_mut(self, key)
+    }
+
+    fn refresh_scrape_gauges(&self) {
+        crate::metrics::refresh_scrape_gauges(self);
     }
 }

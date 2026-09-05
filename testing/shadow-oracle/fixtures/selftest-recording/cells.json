@@ -1,0 +1,4 @@
+{"_comment":["Tiny tracked recording used ONLY by replay-selftest.sh to prove the differ can see a diff."],"counts":{"total":3},"cells":[
+{"id":"self|a|ok","plane":"self","family":"self","outcome":"ok"},
+{"id":"self|b|stream","plane":"self","family":"self","outcome":"ok_stream"},
+{"id":"self|c|gap","plane":"self","family":"self","outcome":"unsupported"}]}

@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# Prove the LLM spec conformance rig cannot pass vacuously, before any verdict from it is trusted.
+# Every case goes through run.sh (vendor -> validate -> verdict), the real pipeline, with the tiny
+# tracked fixture under fixtures/selftest-recording (three 1.5.5 cells that validate cleanly):
+#
+#   (a) the known-good fixture                       -> GREEN, every owed row PASS
+#   (b) one response field's TYPE mutated            -> RED, exactly one FAIL, naming the pointer
+#   (c) one SSE event field's TYPE mutated           -> RED, exactly one FAIL, naming sse[N]:/pointer
+#   (d) one REQUEST field's TYPE mutated             -> RED, exactly one FAIL, on the #request row
+#   (e) an empty recording directory                 -> RED, the vacuous-run ("zero rows") verdict
+#   (f) a cell present in cells.json but not recorded -> a named SKIP, never a PASS; verdict still
+#       GREEN on the rows that exist (the gap is visible, not fatal by itself)
+#
+# Needs the vendored specs (run.sh vendors them; cached by digest, so this is offline after once).
+set -uo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+FIX="${here}/fixtures/selftest-recording"
+W="$(mktemp -d "${TMPDIR:-/tmp}/llm-conformance-selftest.XXXXXX")"
+trap 'rm -rf "$W"' EXIT
+fails=0
+say() { printf '%s  %s\n' "$1" "$2"; [ "$1" = PASS ] || fails=$((fails+1)); }
+run() {  # run <recording> <out> [cells.json] -> rc
+  local cells="${3:-$1/cells.json}"
+  bash "${here}/run.sh" --recording "$1" --out "$2" --cells "$cells" >"$2.log" 2>&1; echo $?
+}
+count() { awk -F'\t' -v s="$2" '$2==s{n++} END{print n+0}' "$1/ledger.tsv"; }
+fail_rows() { awk -F'\t' '$2=="FAIL"{print $1"\t"$4}' "$1/ledger.tsv"; }
+
+# (a) known-good
+rc="$(run "$FIX" "$W/a")"
+if [ "$rc" = 0 ] && [ "$(count "$W/a" PASS)" = 6 ] && [ "$(count "$W/a" FAIL)" = 0 ] && [ "$(count "$W/a" SKIP)" = 0 ]; then
+  say PASS "(a) known-good fixture -> GREEN, 6/6 rows PASS"
+else
+  say FAIL "(a) known-good fixture rc=$rc pass=$(count "$W/a" PASS) fail=$(count "$W/a" FAIL) skip=$(count "$W/a" SKIP)"; tail -20 "$W/a.log"
+fi
+
+# (b) mutate a response field's type: cohere usage.tokens.input_tokens integer -> string
+cp -R "$FIX" "$W/b-rec"
+python3 - "$W/b-rec/raw/llm__cohere__cohere__request__ok/body" <<'EOF'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d["usage"]["tokens"]["input_tokens"]="11"
+open(p,"w").write(json.dumps(d,separators=(",",":")))
+EOF
+rc="$(run "$W/b-rec" "$W/b")"
+rows="$(fail_rows "$W/b")"
+if [ "$rc" != 0 ] && [ "$(count "$W/b" FAIL)" = 1 ] && grep -q $'^llm|cohere|cohere|request|ok#response\t' <<<"$rows" && grep -q '/usage/tokens/input_tokens type' <<<"$rows"; then
+  say PASS "(b) one mutated response type -> RED, exactly one FAIL naming /usage/tokens/input_tokens"
+else
+  say FAIL "(b) mutated response rc=$rc fails=$(count "$W/b" FAIL): $rows"
+fi
+
+# (c) mutate one SSE event: cohere content-delta index integer -> string
+cp -R "$FIX" "$W/c-rec"
+python3 - "$W/c-rec/raw/llm__cohere__cohere__request__ok_stream/body" <<'EOF'
+import sys
+p=sys.argv[1]; s=open(p).read()
+assert '"index":0' in s
+open(p,"w").write(s.replace('"index":0','"index":"0"',1))
+EOF
+rc="$(run "$W/c-rec" "$W/c")"
+rows="$(fail_rows "$W/c")"
+if [ "$rc" != 0 ] && [ "$(count "$W/c" FAIL)" = 1 ] && grep -q $'^llm|cohere|cohere|request|ok_stream#response\t' <<<"$rows" && grep -q 'sse\[1\]:/index type' <<<"$rows"; then
+  say PASS "(c) one mutated SSE event -> RED, exactly one FAIL naming sse[1]:/index"
+else
+  say FAIL "(c) mutated SSE rc=$rc fails=$(count "$W/c" FAIL): $rows"
+fi
+
+# (d) mutate the REQUEST: gemini contents array -> string
+cp -R "$FIX" "$W/d-rec"
+printf '%s' '{"contents":"ping"}' >"$W/d-rec/raw/llm__gemini__gemini__request__ok/request.body"
+rc="$(run "$W/d-rec" "$W/d")"
+rows="$(fail_rows "$W/d")"
+if [ "$rc" != 0 ] && [ "$(count "$W/d" FAIL)" = 1 ] && grep -q $'^llm|gemini|gemini|request|ok#request\t' <<<"$rows" && grep -q '/contents type' <<<"$rows"; then
+  say PASS "(d) one mutated request type -> RED, exactly one FAIL on the #request row naming /contents"
+else
+  say FAIL "(d) mutated request rc=$rc fails=$(count "$W/d" FAIL): $rows"
+fi
+
+# (e) empty recording -> vacuous RED
+mkdir -p "$W/e-rec"
+rc="$(run "$W/e-rec" "$W/e" "$FIX/cells.json")"
+if [ "$rc" != 0 ] && [ "$(awk 'NF{n++} END{print n+0}' "$W/e/ledger.tsv")" = 0 ] && grep -q 'VACUOUS RUN' "$W/e.log"; then
+  say PASS "(e) empty recording -> RED, vacuous run (zero rows)"
+else
+  say FAIL "(e) empty recording rc=$rc rows=$(awk 'NF{n++} END{print n+0}' "$W/e/ledger.tsv")"; tail -5 "$W/e.log"
+fi
+
+# (f) a cell in the universe that the recording lacks -> named SKIP, not a PASS
+cp -R "$FIX" "$W/f-rec"
+rm "$W/f-rec/cells/llm__gemini__gemini__request__ok.json"
+rc="$(run "$W/f-rec" "$W/f")"
+if [ "$rc" = 0 ] && [ "$(count "$W/f" SKIP)" = 2 ] && [ "$(count "$W/f" PASS)" = 4 ] && grep -q 'named gap' "$W/f/ledger.tsv" && [ "$(wc -l <"$W/f/owed-gaps.txt" | tr -d ' ')" = 2 ]; then
+  say PASS "(f) unrecorded cell -> 2 named SKIP rows (request+response), listed as gaps, never PASS"
+else
+  say FAIL "(f) unrecorded cell rc=$rc pass=$(count "$W/f" PASS) skip=$(count "$W/f" SKIP) gaps=$(wc -l <"$W/f/owed-gaps.txt" 2>/dev/null | tr -d ' ')"; tail -8 "$W/f.log"
+fi
+
+echo
+if [ "$fails" -eq 0 ]; then echo "llm-conformance selftest: GREEN (6/6)"; else echo "llm-conformance selftest: RED (${fails} failed)"; exit 1; fi

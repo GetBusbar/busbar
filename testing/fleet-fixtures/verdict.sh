@@ -20,18 +20,22 @@ cd "$(dirname "$0")" || exit 1
 LEDGER="${LEDGER:?LEDGER must point at the probe ledger tsv}"
 EXPECTED_IDS="${EXPECTED_IDS:-}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
+# The gate this verdict speaks for. The plugin functional gate is the default; the shadow oracle
+# (testing/shadow-oracle/replay.sh) reuses this file unchanged by setting GATE_NAME.
+GATE_NAME="${GATE_NAME:-plugin functional gate}"
+GATE_UPPER="$(printf '%s' "$GATE_NAME" | tr '[:lower:]' '[:upper:]')"
 
 # awk not `grep -c`: grep -c on an empty file prints 0 AND exits 1, which turns the vacuous-run
 # guard's own input into a broken test — the exact trap release-gate/gate.sh documents.
 rows="$(awk 'NF{n++} END{print n+0}' "$LEDGER" 2>/dev/null || echo 0)"
 
-echo "═══ PLUGIN FUNCTIONAL GATE ═══"
+echo "═══ ${GATE_UPPER} ═══"
 echo
 
 if [ "$rows" -eq 0 ]; then
-  echo "::error title=plugin functional gate::VACUOUS RUN: ZERO probes reported a result. Nothing was verified. RED by construction — a functional gate that passes because it exercised nothing is worse than none. Fix: look at the probe steps above; each owes a ledger row."
+  echo "::error title=${GATE_NAME}::VACUOUS RUN: ZERO probes reported a result. Nothing was verified. RED by construction — a functional gate that passes because it exercised nothing is worse than none. Fix: look at the probe steps above; each owes a ledger row."
   {
-    echo "## Plugin functional gate: RED — vacuous run"
+    echo "## ${GATE_NAME}: RED — vacuous run"
     echo
     echo "**Zero probes reported a result.** Ledger: \`${LEDGER}\`."
   } >> "$SUMMARY"
@@ -39,7 +43,7 @@ if [ "$rows" -eq 0 ]; then
 fi
 
 if [ -z "$EXPECTED_IDS" ]; then
-  echo "::error title=plugin functional gate::no EXPECTED_IDS were declared, so 'did not run' cannot be detected and a probe that silently failed to fire would read as green. RED. Fix: the workflow must pass EXPECTED_IDS derived from the plugin kind."
+  echo "::error title=${GATE_NAME}::no EXPECTED_IDS were declared, so 'did not run' cannot be detected and a probe that silently failed to fire would read as green. RED. Fix: the workflow must pass EXPECTED_IDS derived from the plugin kind."
   exit 1
 fi
 
@@ -71,7 +75,7 @@ printf 'owed: %s   pass: %s   fail: %s   skip: %s   did not run: %s\n' \
   "$(printf '%s' "$missing_ids" | wc -w | tr -d ' ')"
 
 {
-  echo "## Plugin functional gate"
+  echo "## ${GATE_NAME}"
   echo
   echo '```'
   cat "$report"
@@ -80,24 +84,24 @@ printf 'owed: %s   pass: %s   fail: %s   skip: %s   did not run: %s\n' \
 
 rc=0
 if [ -n "$fail_ids" ]; then
-  echo "::error title=plugin functional gate::RED — these probes FAILED: ${fail_ids}. Every probe ran; none was masked. Each has its own ::error:: above with expected vs observed."
+  echo "::error title=${GATE_NAME}::RED — these probes FAILED: ${fail_ids}. Every probe ran; none was masked. Each has its own ::error:: above with expected vs observed."
   rc=1
 fi
 if [ -n "$missing_ids" ]; then
-  echo "::error title=plugin functional gate::RED — these probes DID NOT RUN: ${missing_ids}. A probe that could not run is not a pass. Fix: find the step that owed the id and died before recording (a fixture that never came up, a step that errored in its preamble)."
+  echo "::error title=${GATE_NAME}::RED — these probes DID NOT RUN: ${missing_ids}. A probe that could not run is not a pass. Fix: find the step that owed the id and died before recording (a fixture that never came up, a step that errored in its preamble)."
   rc=1
 fi
 # A SKIP is never a pass. There is no allowlist here: a plugin functional probe that cannot run
 # means the plugin could not be exercised, which is exactly the thing being gated.
 if [ -n "$skip_ids" ]; then
-  echo "::error title=plugin functional gate::RED — these probes SKIPPED: ${skip_ids}. A skip is never a pass; the plugin was not exercised. If a probe genuinely cannot apply, it must not be in EXPECTED_IDS."
+  echo "::error title=${GATE_NAME}::RED — these probes SKIPPED: ${skip_ids}. A skip is never a pass; the plugin was not exercised. If a probe genuinely cannot apply, it must not be in EXPECTED_IDS."
   rc=1
 fi
 
 if [ "$rc" -ne 0 ]; then
-  echo; echo "PLUGIN FUNCTIONAL GATE: RED."
+  echo; echo "${GATE_UPPER}: RED."
   { echo; echo "### RED — the plugin was not proven functional."; } >> "$SUMMARY"
   exit 1
 fi
-echo; echo "PLUGIN FUNCTIONAL GATE: GREEN. All ${pass_n} owed probes ran and passed."
+echo; echo "${GATE_UPPER}: GREEN. All ${pass_n} owed probes ran and passed."
 { echo; echo "### GREEN — all ${pass_n} owed probes passed."; } >> "$SUMMARY"

@@ -1,0 +1,1 @@
+{"candidates":[{"content":{"parts":[{"text":"oracle-marker"}],"role":"model"},"finishReason":"STOP","index":0}],"modelVersion":"m-gemini","usageMetadata":{"candidatesTokenCount":7,"promptTokenCount":11,"totalTokenCount":18}}

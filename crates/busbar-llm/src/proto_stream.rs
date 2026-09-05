@@ -6,7 +6,7 @@
 //! `StreamDecodeState`/…), so it lives in the plugin; busbar-core keeps only the neutral
 //! `StreamTranslator` byte-in/byte-out seam (`proto::stream_translator`) and reaches this factory
 //! through an installed fn-ptr in production, or directly via the `#[path]` net in its test build.
-//! Addresses core as `busbar_core::`; the concrete IR is `crate::ir::*` (this crate's own).
+//! Addresses core by its crate name; the concrete IR is `crate::ir::*` (this crate's own).
 
 use busbar_substrate::proto::{
     find_frame_terminator, parse_sse_frame, write_sse_frame, IrError, StreamTranslator,

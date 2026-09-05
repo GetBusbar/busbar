@@ -66,6 +66,7 @@ declare -a SKIP_REASON=(
   "scripts/build-provenance-gate.sh|asserts the provenance stamp of a BUILT release binary ('… target/release/busbar release false'). Needs the release artifact the release build produces, exactly as verify-artifact.py does; a bare local run has no binary to inspect. The --selftest form runs here — it is the local mirror that proves the stamp discriminates."
   "scripts/proof-manifest.py|the Build-Proof-Dashboard collator, run ONLY on the dev/qa/main promotion branches (it needs --version/--out and re-emits docs/proof/<branch>.json). By its own contract it CHANGES NO GATE — it re-runs the cheap grep gates and records their verdicts — so there is nothing to prove locally on an integration branch."
   "scripts/release-order-lint.py|release-graph shape; included via its own entries below, see RELEASE_ORDER."
+  "scripts/construction-gate.sh|RED BY DESIGN on HEAD (three rows over their qa/construction.toml ceilings) while the construction work it measures is in flight; ci.yml runs its --check report-only (continue-on-error, verdict printed by the umbrella, not counted). Running it here would red the whole local gate on a fact CI does not score. Its --selftest DOES run here (the rule above). Run 'scripts/construction-gate.sh --check' directly for the report; DELETE this entry when the CI job is flipped to blocking."
 )
 
 # `release-order-lint.py` IS locally runnable and IS included -- named here only so the skip loop

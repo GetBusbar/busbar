@@ -3508,7 +3508,25 @@ pub const SIGNING_KEY_GENERATION_FAILED: Diagnostic = Diagnostic {
 /// tests assert uniqueness and class alignment over this neutral half; each plane crate asserts the
 /// same over its own `DIAGNOSTICS`. There is no cross-half code collision because numbering was
 /// preserved on the move.
+/// A deprecated 1.5.x environment variable is set; it is still honored, with this warning.
+pub const DEPRECATED_ENV_VAR_HONORED: Diagnostic = Diagnostic {
+    code: 3021,
+    class: Class::Config,
+    slug: "deprecated-env-var-honored",
+    title: "A deprecated environment variable is set and still honored",
+    severity: Severity::Actionable,
+    summary: "One of the 1.5.x environment overrides (BUSBAR_PROVIDERS, BUSBAR_CONFIG_OVERLAY, \
+              BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE, BUSBAR_UPSTREAM_HTTP1_ONLY) \
+              is set. It is honored exactly as before, and the warning names the config.yaml key \
+              that replaces it.",
+    action: "Move the value to the named config.yaml key and unset the variable. Nothing changes \
+             until you do.",
+    since: "1.5.0",
+    retired: false,
+};
+
 pub static REGISTRY: &[&Diagnostic] = &[
+    &DEPRECATED_ENV_VAR_HONORED,
     &DURABLE_WRITETHROUGH_BELOW_FLOOR,
     &DURABLE_SECOND_WRITER_DETACH,
     &DURABLE_AUDIT_RING_UNRECONCILED,

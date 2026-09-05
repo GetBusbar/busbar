@@ -202,6 +202,48 @@ async fn test_stats_reports_at_capacity_when_lane_saturated() {
     assert_eq!(bounded["breaker_state"], json!("closed"));
 }
 
+/// Every lane in `/stats` carries a numeric `limit` field that aliases `max_concurrent`: the
+/// configured cap for a bounded lane, and the semaphore's max permit count (never null) for an
+/// unbounded one. Older scrapers key on `limit`, so it must stay present and numeric.
+#[tokio::test]
+async fn test_stats_limit_is_numeric_alias_of_max_concurrent() {
+    let app = TestApp::new()
+        .lane(LaneSpec::new("bounded", crate::proto::PROTO_OPENAI, "http://b").max(3))
+        .lane(
+            LaneSpec::new("unbounded", crate::proto::PROTO_OPENAI, "http://u")
+                .max(tokio::sync::Semaphore::MAX_PERMITS),
+        )
+        .pool("p", &[(0, 1), (1, 1)])
+        .build();
+    let body = stats_json(app, GovCtx::default()).await;
+    let lane = |model: &str| -> Value {
+        body["lanes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["model"] == model)
+            .cloned()
+            .unwrap_or_else(|| panic!("lane {model} missing from /stats"))
+    };
+
+    let bounded = lane("bounded");
+    assert_eq!(bounded["limit"], json!(3), "bounded lane: configured cap");
+    assert_eq!(bounded["limit"], bounded["max_concurrent"]);
+
+    let unbounded = lane("unbounded");
+    assert!(
+        unbounded["limit"].is_u64(),
+        "unbounded lane: limit must be numeric, never null; got {}",
+        unbounded["limit"]
+    );
+    assert_eq!(
+        unbounded["limit"],
+        json!(tokio::sync::Semaphore::MAX_PERMITS),
+        "unbounded lane: limit is the semaphore's max permit count"
+    );
+    assert_eq!(unbounded["limit"], unbounded["max_concurrent"]);
+}
+
 /// A lane that is BOTH breaker-Open AND at capacity can never close its breaker (its recovery
 /// probe needs a dispatch it cannot win). `/stats` must make that combination legible — the
 /// breaker axis and the capacity axis are exposed INDEPENDENTLY, never collapsed into one string.

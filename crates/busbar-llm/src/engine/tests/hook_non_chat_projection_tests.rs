@@ -11,7 +11,7 @@
 //! empty.
 
 use super::*;
-use busbar_core::operation::Operation;
+use busbar_api::operation::Operation;
 
 /// The exact strings a `prompt: ro` gate is shown for this body, flattened across turns.
 fn gate_view(facts: &HookFacts) -> String {

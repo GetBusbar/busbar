@@ -19,10 +19,17 @@ use std::sync::Arc;
 
 // The self-enveloping admin-verb backing (core's `CorePlaneAdminEnvelope`) — bound plane-side so the
 // router that serves a plane verb has THIS crate's core copy's envelope, matching its recording
-// middleware's condition `Tag` type. The one `busbar_core::` name lives in this `tests/`-path file the
+// middleware's condition `Tag` type. The one core-implementation name lives in this `tests/`-path file the
 // neutral-purity lint excludes (the twin of core's `plane/tests/registry_tests.rs`).
 #[path = "a2a/tests/envelope_boot.rs"]
 mod envelope_boot;
+
+// The engine test-kit binding (`engine()`): the ONE function the plane's tests reach the engine's
+// fixture through, in a `tests/`-path file for the same reason as `envelope_boot` above. Not gated
+// on `cfg(test)`: the admin-verb battery compiles into the library under `test-support` (the shape
+// core's own test-support build takes) and binds through it there too.
+#[path = "a2a/tests/engine_boot.rs"]
+pub(crate) mod engine_boot;
 
 /// The A2A plane's scratch key — the same string as `PLANE_DECL.key`.
 const SCRATCH_KEY: &str = "a2a";
@@ -38,7 +45,7 @@ pub fn install_test_seams() {
     );
     // The self-enveloping admin-verb backing (core's `CorePlaneAdminEnvelope`), bound plane-side from
     // THIS crate's core copy through the `tests/`-path `envelope_boot` helper (the composition-root job
-    // `main` does in production) — so the plane's shipped source names no `busbar_core::` item.
+    // `main` does in production) — so the plane's shipped source names no core implementation item.
     envelope_boot::install();
     // Register the A2A plane in the process registry too (config sections / cross-plane refusal), the
     // same thing the finalizer does for plane-building tests.

@@ -8,7 +8,7 @@
 //! forcing a re-verification the timer has not asked for, and `suspend` is a human pulling an agent
 //! out of service on evidence the machine does not have. This module is the verb layer: it decides
 //! what each verb DOES to the trust lifecycle, and it is written over the plane-neutral machine in
-//! [`busbar_core::trust`] so none of these adds a state or a transition to it.
+//! [`busbar_substrate::trust`] so none of these adds a state or a transition to it.
 //!
 //! ## `connect` PREVIEWS. It never grants.
 //!
@@ -376,7 +376,7 @@ pub(crate) fn operator_resume(approval: &mut Approval<CardPin>) {
     approval.resume();
 }
 
-// ══ THE ADMIN MOUNT: this plane's half of the ONE surface in `busbar_core::admin::planeverbs` ══════════
+// ══ THE ADMIN MOUNT: this plane's half of the ONE surface in `busbar_substrate::admin_verbs` ══════════
 //
 // The sequence a trust verb follows — resolve the registration or refuse with a `404`, go and look,
 // audit whatever was found — is not this plane's. It is `admin::planeverbs`, once, because it was

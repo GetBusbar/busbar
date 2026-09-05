@@ -1,6 +1,6 @@
 use super::{forward_with_pool, KIND_INVALID_REQUEST};
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_core::store::{now as store_now, BreakerState};
+use busbar_substrate::store::{now as store_now, BreakerState};
 use reqwest::StatusCode;
 use serde_json::json;
 use std::sync::Arc;
@@ -495,7 +495,7 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
 #[tokio::test]
 async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker() {
     crate::testkit::install_test_seams();
-    use busbar_core::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
+    use busbar_substrate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,

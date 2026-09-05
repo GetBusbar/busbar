@@ -18,8 +18,8 @@
 use crate::mcp::connect::connect_support::{
     approved_hash, call, gov_with_key, gov_with_scopes, mcp_cfg, server_cfg, wire_tool, Peer,
 };
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
 const TOOL: &str = "probe";
@@ -39,20 +39,19 @@ fn arguments() -> serde_json::Value {
 
 /// A deployment that can seal state — without a signing key the plane refuses to ask at all, so an
 /// unsigned fixture would exercise the `NoSealer` refusal instead of the epoch.
-fn signing_governance() -> Arc<busbar_core::governance::GovState> {
-    Arc::new(
-        busbar_core::governance::GovState::new_with_signer(
-            Arc::new(busbar_core::governance::MemoryStore::new()),
+fn signing_governance() -> Arc<dyn GovKit> {
+    engine()
+        .governance(
+            Arc::new(busbar_store_memory::MemoryStore::new()),
             None,
             Some(
-                busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+                busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
                     &[7u8; 32],
-                    busbar_core::governance::signing::DEFAULT_KID,
+                    busbar_substrate::governance::signing::DEFAULT_KID,
                 ),
             ),
         )
-        .expect("a governance state with a signer"),
-    )
+        .expect("a governance state with a signer")
 }
 
 /// One registration whose only tool asks the caller for its roots before it runs — or, when
@@ -87,16 +86,10 @@ fn asking_server(peer: &Peer, ask_method: &str) -> crate::mcp::config::McpServer
     cfg
 }
 
-async fn deployment(
-    ask_method: &str,
-) -> (
-    Peer,
-    Arc<busbar_core::state::App>,
-    busbar_api::PlaneRequestCtx,
-) {
-    busbar_core::metrics::init();
+async fn deployment(ask_method: &str) -> (Peer, Arc<dyn EngineApp>, busbar_api::PlaneRequestCtx) {
+    metrics_init();
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("ws", asking_server(&peer, ask_method))
         .governance(signing_governance())
@@ -106,10 +99,7 @@ async fn deployment(
 }
 
 /// Ask the operator's question and hand back the sealed continuation state.
-async fn obtain_state(
-    app: &Arc<busbar_core::state::App>,
-    gov: &busbar_api::PlaneRequestCtx,
-) -> String {
+async fn obtain_state(app: &Arc<dyn EngineApp>, gov: &busbar_api::PlaneRequestCtx) -> String {
     let (status, body) = call(
         app,
         gov,
@@ -145,7 +135,7 @@ fn redemption(state: &str) -> serde_json::Value {
 /// by `rpc` (it reads its resource off the live app), so a unit stands in; `caller_principal` mirrors
 /// what the adapter derives from `gov`.
 fn rpc_ctx(
-    handle: Arc<busbar_core::state::AppHandle>,
+    handle: Arc<dyn EngineHandle>,
     gov: &busbar_api::PlaneRequestCtx,
     body: axum::body::Bytes,
 ) -> busbar_substrate::plane_routes::PlaneReqCtx {
@@ -159,7 +149,7 @@ fn rpc_ctx(
         caller_principal: gov.key.as_ref().map(|k| k.id.clone()),
         gov: Some(gov.clone()),
         principal: Some(busbar_api::AuthPrincipal(None)),
-        host: busbar_core::plane_host::engine_host_from_handle(&handle),
+        host: engine_host_from_handle(&handle),
         engine: handle,
         slot: Arc::new(()),
     }
@@ -169,11 +159,8 @@ fn rpc_ctx(
 /// mounts — as the principal `gov` authenticates. The bump is asserted only through its observable
 /// consequences in the cases below; here the assertion is the transport's own contract: `202`,
 /// empty body, even for a plane fact the notification moved.
-async fn announce_roots_changed(
-    app: &Arc<busbar_core::state::App>,
-    gov: &busbar_api::PlaneRequestCtx,
-) {
-    let handle = Arc::new(busbar_core::state::AppHandle::new(app.clone()));
+async fn announce_roots_changed(app: &Arc<dyn EngineApp>, gov: &busbar_api::PlaneRequestCtx) {
+    let handle = app_handle(app.clone());
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "notifications/roots/list_changed",
@@ -292,7 +279,7 @@ async fn the_same_name_with_an_id_is_a_request_and_moves_nothing() {
     let (_peer, app, gov) = deployment("roots/list").await;
     let state = obtain_state(&app, &gov).await;
 
-    let handle = Arc::new(busbar_core::state::AppHandle::new(app.clone()));
+    let handle = app_handle(app.clone());
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 9,

@@ -55,7 +55,7 @@
 //!
 //! ## HOW A tonic SERVICE SATISFIES `CoreRouteTable`
 //!
-//! busbar mounts core routes exclusively through [`busbar_core::core_routes::CoreRouter`] so every route
+//! busbar mounts core routes exclusively through the composition root's core router so every route
 //! declares its admission bar in the same act that wires it, and a pre-built router entering the
 //! tree with no `CoreRouteTable` entry is the one state that table exists to make impossible. A
 //! tonic service is a `tower::Service`, not an `axum::Router`, so `Router::route_service` would be

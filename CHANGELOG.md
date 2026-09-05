@@ -4,72 +4,138 @@ All notable changes to Busbar are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.6.0], unreleased
 
-Busbar speaks two more protocols. It is now an MCP server and a governed gateway in front of your
-MCP tool estate, and it serves A2A over all three of that specification's bindings. Everything a
-model-plane request already got — the caller's key, its grants, its budget, hooks and the audit
-chain — applies to a tool call and an agent task unchanged. A deployment with no `mcp:` and no
-`agents:` block gains no endpoint and no route. Each plane has a full operator reference: [the MCP
-guide](docs/mcp.md) and [the A2A guide](docs/a2a.md).
+Busbar 1.6.0 is 1.5.5 plus three more planes. Everything a model-plane request already got — the
+caller's key, its grants, its budget, hooks and the audit chain — applies to an MCP tool call, an
+A2A agent task and a live voice session unchanged, and a deployment that declares none of them
+gains no endpoint and no route. The bar for this release was measured, not asserted: the same
+config, the same requests and the same plugins were run through the published 1.5.5 binary and
+through 1.6.0, and every difference is either listed below as an improvement or does not exist.
 
-If you run dashboards, read the metrics breaking change first: both request families gained a
-`plane` label. See [the observability guide](docs/observability.md).
+### Additive planes
 
-### Breaking changes
+- **MCP.** Busbar is an MCP server (`mcp:`) and a governed gateway in front of your MCP tool estate
+  (`tools:`), over HTTP and over stdio. See [the MCP guide](docs/mcp.md).
+- **A2A.** Busbar serves A2A over all three of that specification's bindings (JSON-RPC, HTTP+JSON,
+  gRPC) in front of registered agents (`agents:`). See [the A2A guide](docs/a2a.md).
+- **Voice.** A `streams:` block declares the live-voice plane: full-duplex realtime sessions
+  (OpenAI Realtime and Gemini Live dialects over one IR) metered by the same ledger as everything
+  else. The grammar is documented at the head of `crates/busbar-voice/src/config.rs` until the
+  operator guide lands.
 
-- **`busbar_requests_total` and `busbar_request_duration_seconds` gained a `plane` label**
-  (`llm`, `mcp`, `a2a`), and existing model-plane series carry it too. Those are new series, so
-  counters restart from zero and a `rate()` window spanning the upgrade reads low once. Add
-  `plane="llm"` to a panel's selector to keep it describing exactly what it described before;
-  queries that only aggregate are unaffected.
-- **An `mcp:` block with an empty `auth.chain` now refuses to start.** An anonymous MCP request
-  is never narrowed by a key, so it would run with wildcard grants over every registered server.
-  Close the data-plane chain, or drop the `mcp:` block.
-- **Hooks now fire on the normalized IR**, the same representation the upstream request is built
-  from, so a screening hook can no longer be shown a different payload than the provider receives.
-  A client's in-band `{role: "system"}` turn now arrives in `system`, so **`message_count` is one
-  lower** than the client's array length for such a body; tool-call arguments are now projected into
-  the content a hook holding a `prompt: ro` or `prompt: rw` grant is shown, so a gate written to
-  screen a prompt screens them through the field it already reads; and a request body Busbar cannot
-  read is rejected with a `400` rather than forwarded. See [the hooks guide](docs/hooks.md).
-- **The deprecated `BUSBAR_PROVIDERS` env var is removed.** Deprecated in 1.5.3 and honored for
-  one release, it no longer has any effect. Point Busbar at its provider catalog with the new
-  `--providers <path>` flag or the top-level `providers_file:` key in config.yaml instead. Setting
-  `BUSBAR_PROVIDERS` now does nothing; the catalog resolves from `--providers`, then
-  `providers_file:`, then `providers.yaml` next to the config. `BUSBAR_CONFIG` is unchanged.
-- **The four remaining deprecated operational env vars are removed.** Deprecated in 1.5.3 and honored
-  for one release, `BUSBAR_CONFIG_OVERLAY`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and
-  `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` no longer have any effect. Set the config.yaml key instead:
-  `config.overlay.file`, `advanced.worker_threads`, `advanced.upstream_http1_only` and
-  `advanced.upstream_h2_prior_knowledge` respectively. `TOKIO_WORKER_THREADS` still works as a
-  fallback for `advanced.worker_threads`, and `BUSBAR_CONFIG` is unchanged.
-- **The store-plugin ABI floor is raised to `abi_version: 4`.** It bumped 2→3 in 1.6.0 (the fourteen
-  protocol-named durable ops collapsed into the eight neutral kind-tagged `PlaneRecord` verbs), and
-  now 3→4 as the four protocol-named durable record structs (`McpCallRecord`/`McpDemotionRow`/
-  `TaskRow`/`TaskEventRow`) relocate out of `busbar-api` into their owning plane crates. The durable
-  WIRE is byte-identical — still the kind-tagged neutral `PlaneRecord` variants carrying opaque
-  bodies — but a store plugin built against the older typed `busbar-api` contract can no longer be
-  compiled against it, so a stale artifact is refused at load (fail-closed, anti-downgrade) rather
-  than mis-linking. Rebuild third-party store plugins against the current `busbar-plugin` and re-pin
-  any `plugins.min_versions` floor. See [the plugin guide](docs/plugins.md).
-- **Clean-slate removal of five deprecated back-compat surfaces.** 1.x is a clean slate, so 1.6.0
-  drops the retired spellings 1.5.x still accepted. Every removal ships with a migration path — no
-  persisted state or boot is bricked. See [the 1.6.0 migration guide](docs/migration-1.6.md).
-  - **Hook `plugin:` key** (the read-only alias of `module:`) is removed. `busbar --migrate-config`
-    rewrites `plugin:` → `module:`, a persisted config overlay is auto-migrated at boot, and the
-    Admin API `POST`/`PUT /hooks` bodies must now name `module:`.
-  - **Hook `at: <stage>` key** (the single-stage tap, superseded by the `phase:` list) is removed.
-    `busbar --migrate-config` rewrites `at: <stage>` → `phase: [<stage>]` (behavior-preserving) and a
-    persisted overlay is auto-migrated at boot. (The `at:` **value** vocabulary was already removed in
-    1.5.3; this removes the **key**.)
-  - **`persist:` field on `PUT /api/v1/admin/config/settings`** (accepted-then-ignored since 1.5.3)
-    is removed. A pre-1.5.3 client that still sends it now gets a `400` naming `persist` as an
-    unknown field instead of a silent accept-and-ignore.
-  - **`at` response field on `GET /api/v1/admin/hooks[/{name}]`** is removed; read `fires_at` (the
-    resolved stage set) or `phase` (the literal echo).
-  - **`limit` field on the `/stats` lane/endpoint status JSON** (an alias of `max_concurrent`) is
-    removed; read `max_concurrent`.
+Each plane is inert until its section is written. An `mcp:` block with an empty `auth.chain`
+refuses to start, because an anonymous MCP request is never narrowed by a key and would run with
+wildcard grants over every registered server: close the data-plane chain, or drop the block.
+
+### Behaviour identical to 1.5.5
+
+Measured by the shadow oracle over 780 cells — boot refusals and warnings, `--validate`,
+`--migrate-config` on the whole migration corpus, the admin API, the six LLM dialects buffered and
+streaming, failover, billing, `/metrics`, and the published store plugins — 1.6.0 answers a 1.5.5
+config, request and plugin exactly as 1.5.5 did, apart from the improvements named next.
+
+### Improvements
+
+Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
+1.5.5 client or operator keeps working unchanged.
+
+- **Every error and warning line carries a diagnostic code.** `[error]`, `[warn]` and `warning:`
+  lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
+  The text after the code is byte-identical to 1.5.5; the code is a stable key into
+  [the diagnostics reference](docs/diagnostics.md), which says what each one means and what to do.
+- **The jemalloc background-purge line is `[info]` on macOS**, with an explanation, instead of a
+  `[warn]`. The behaviour it describes — Busbar's own idle-purge fallback — is unchanged.
+- **Admin views gained fields; none changed.** Hook objects on `GET /api/v1/admin/hooks[/{name}]`
+  carry `fires_at` (the resolved stage set), `groups` and `phase`; the overlay-section 404 lists
+  the sections that now exist (`identity-providers`, `export`, `tools`, `agents`); `openapi.json`
+  describes the MCP and A2A endpoints.
+- **Validation messages know the new keys.** An `expected one of` list now includes the plane keys
+  (`mcp`, `oauth_as`, `tools`, `agents`, `streams`, …) and the four new group-limit metrics
+  (`tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`); the reserved-name,
+  credential-mode and unknown-pool-member sentences are rephrased; the protocol list is reordered;
+  a plugin download failure quotes the HTTP client's current error text. Same refusal, same exit
+  code in every case.
+- **One new `/metrics` series on a 1.5.5 config:** `busbar_metering_pending_coalesced_total`, the
+  write-behind overflow sentinel (see BUSBAR-8019 in the diagnostics reference). No 1.5.5 series
+  changed shape.
+- **`--help` documents `-c`/`--config` and `--providers`; `--version` prints a second line.**
+  `-c <path>` names config.yaml (flag > `BUSBAR_CONFIG` > `/etc/busbar/config.yaml`) and
+  `--providers <path>` names the provider catalog (flag > `providers_file:` > `providers.yaml`
+  beside the config); both are additive. `--version` adds a `build: profile=… target=…`
+  provenance line under the version.
+- **Bedrock text blocks no longer open with an empty `contentBlockStart`.** On the ConverseStream
+  wire a text block starts with its first `contentBlockDelta`; `contentBlockStart` is emitted for
+  tool-use blocks only, as AWS does. See [Spec fidelity](#spec-fidelity).
+- **Responses API streams carry the lifecycle frames the spec declares:**
+  `response.content_part.added`, `response.output_text.done` and `response.content_part.done`, with
+  a contiguous `sequence_number`. 1.5.5 omitted them. See [Spec fidelity](#spec-fidelity).
+- **Fallback-lane and least-bad streams to OpenAI Chat Completions lanes are now metered.** This
+  is a billing change. A streaming request served through a fallback, least-bad or queue hop to
+  an OpenAI Chat Completions lane previously billed the key zero tokens; 1.6.0 injects
+  `stream_options.include_usage` on that hop exactly as it does on the primary hop, so the
+  trailing usage chunk arrives and the key is billed its real tokens. A client that did not opt
+  in sees an unchanged stream (the injected chunk is stripped); a client that did opt in now gets
+  its usage chunk on the fallback hop too. If you priced on 1.5.5's numbers for traffic that
+  routinely fails over, expect those keys' spend to rise to what they actually used.
+- **A degraded hop is accounted like a primary hop.** On a fallback, least-bad or queue hop: a
+  non-2xx records the breaker outcome by status class, honouring the upstream `Retry-After` as the
+  cooldown floor, and emits the upstream-failure series; an auth or billing hard-down trips the
+  lane in every breaker cell and, for Busbar's own lane credential, answers with the
+  ingress-native auth-failure envelope rather than relaying the upstream 401 verbatim; a
+  client-fault 4xx bumps the lane's `client_fault` counter (no breaker penalty either way); a
+  transport error emits the same upstream-failure and failover series; and a pool member's
+  `attempt_timeout_ms` override is honoured (the degraded path previously used only the lane-level
+  value, so the cap can only fire earlier where you set a tighter member override). Except for the
+  hard-down envelope, the relayed response is unchanged; only bookkeeping and metrics moved.
+
+### Breaking
+
+None. The accepted-differences register for this release has no entry of kind `breaking`: a config
+written for 1.5.5 boots, validates and migrates identically, every 1.5.5 key and minted secret
+carries over, and no client-visible status or body changed on the model plane beyond the two
+spec-fidelity stream shapes above.
+
+Four retired 1.5.x spellings that were never the documented form are rewritten for you rather
+than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap
+`at: <stage>` key are rewritten by `busbar --migrate-config` and auto-migrated in a persisted
+overlay at boot; the accepted-then-ignored `persist:` field on `PUT /api/v1/admin/config/settings`
+is now a `400` naming the field; and the always-`null` `at` field on the hook view gives way to
+`fires_at`. Details in [the 1.6.0 migration guide](docs/migration-1.6.md).
+
+### Deprecated env vars still honoured
+
+`BUSBAR_PROVIDERS`, `BUSBAR_CONFIG_OVERLAY`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY`
+and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` are read at the same points of the boot sequence as in
+1.5.5 and honoured exactly as before; each emits the 1.5.5 deprecation warning under one code,
+BUSBAR-3021, naming the config.yaml key that replaces it (`providers_file:` or `--providers`,
+`config.overlay.file`, `advanced.worker_threads`, `advanced.upstream_http1_only`,
+`advanced.upstream_h2_prior_knowledge`). `BUSBAR_PROVIDERS` pointing at a missing file refuses to
+boot, as it did in 1.5.5. `BUSBAR_CONFIG`, secret `{ env: NAME }` references, `RUST_LOG` and
+`TOKIO_WORKER_THREADS` are unchanged.
+
+### Plugins
+
+The four published 1.5.5 store plugins (sqlite, postgres, mysql, valkey, `abi_version: 2`) load
+unchanged: the store ABI window is `2..=4`, the durable wire is additive, and a 1.5.5 plugin answers
+the eight new plane-record verbs with "unsupported", which the engine treats as inert. Secret, auth
+and hook plugins are untouched. Stores built against ABI 4 — the ones that persist MCP call
+records and A2A tasks durably — are a later release; nothing you have installed needs rebuilding
+for 1.6.0. See [the plugin guide](docs/plugins.md).
+
+### Spec fidelity
+
+The LLM plane is now validated against the providers' published, machine-readable API
+specifications — OpenAI (Chat Completions and Responses), Anthropic, Google Gemini, AWS Bedrock
+and Cohere, each pinned by URL and digest — for every request the oracle sends and every buffered,
+streamed and error response Busbar returns. Where 1.5.5's bytes and the spec disagreed, the spec
+won; that is the origin of the two stream-shape improvements above. One documented disagreement
+runs the other way: Anthropic's published stream-event union has no `ping` member although the
+docs say `ping` events occur and real Anthropic streams carry them. Busbar keeps emitting
+`event: ping` in cross-protocol Anthropic streams — a client that cannot take it is not an
+Anthropic client — and records the row as a named gap of the spec, re-judged whenever the pin
+moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
+`testing/llm-conformance/README.md`.
 
 ### Added
 
@@ -85,19 +151,16 @@ If you run dashboards, read the metrics breaking change first: both request fami
   --build-info` now reports `target-features=` (`+lse` on the default arm64 build, `default`
   otherwise) so a running binary identifies which one it is. See "Running on 64-bit ARM" in
   [the operations guide](docs/operations.md).
-- **`-c`/`--config` and `--providers` flags make config input flag-first.** `-c <path>` /
-  `--config <path>` (also `--config=<path>`) names config.yaml with precedence **flag >
-  `BUSBAR_CONFIG` env > `/etc/busbar/config.yaml`**; `--providers <path>` (also `--providers=<path>`)
-  names the provider catalog with precedence **flag > `providers_file:` in config.yaml >
-  `providers.yaml` next to the config**. Both are additive and fully backward-compatible for anyone
-  on `BUSBAR_CONFIG` or the default path. When a flag actually overrides a lower layer the operator
-  also set (a different `BUSBAR_CONFIG`, or a `providers_file:` in config.yaml), Busbar logs a terse
-  boot notice naming both so an ignored value is never silent.
-
+- **MCP and A2A traffic is on `/metrics`** as `busbar_plane_requests_total` and
+  `busbar_plane_request_duration_seconds`, labelled `plane` (`mcp` / `a2a`) with the same `outcome`
+  vocabulary as model traffic, refusals issued before the handler runs included. The model-plane
+  families `busbar_requests_total` / `busbar_request_duration_seconds` are byte-identical to 1.5.5
+  and did not gain a label; sum the two families for one query across every plane. See
+  [the observability guide](docs/observability.md).
 - **Failover for MCP servers and A2A agents, declared as a pool.** Run the same server image in
-  two regions, or a hosted instance beside its self-hosted twin, and list them under a top-level
-  `tool_pools:` or `agent_pools:` map. A `tools/call` to a member whose breaker has tripped — or
-  that cannot be connected to at all — goes to its twin before the first byte, and a fresh A2A
+  two regions, or a hosted instance beside its self-hosted twin, and list them as a pool whose
+  members are `tools:` or `agents:` entries. A `tools/call` to a member whose breaker has tripped —
+  or that cannot be connected to at all — goes to its twin before the first byte, and a fresh A2A
   submission is walked the same way at admission. Busbar never decides two registrations are
   interchangeable on its own: you name them, and Busbar checks the claim against fingerprints it
   already computed (the approved tool schema digest on MCP, the approved card fingerprint on A2A)
@@ -129,7 +192,8 @@ If you run dashboards, read the metrics breaking change first: both request fami
   at a durable store and each inbound `tools/call` appends one hash-linked row: who called, which
   tool, under which approved schema, and whether it went out. Refusals are recorded as deliberately
   as successes. This is tamper-evidence, not tamper-prevention, and chains are verified at boot.
-  With the default `store: memory` nothing is persisted and nothing is claimed.
+  With the default `store: memory` nothing is persisted and nothing is claimed; with a 1.5.5 store
+  plugin the record is kept in process until an ABI-4 store ships.
 - **A quarantined MCP upstream stays quarantined across a restart**, so a restarted Busbar no
   longer hands an upstream its approval back until the next sweep. The first observation that finds
   the upstream serving what you approved clears it.
@@ -184,6 +248,13 @@ If you run dashboards, read the metrics breaking change first: both request fami
   one, so a skewed kernel accept distribution cannot pin hot connections onto one core. Non-unix
   builds keep the classic single work-stealing runtime; no config change is needed anywhere. See
   [the 1.6.0 migration guide](docs/migration-1.6.md).
+- **Hooks fire on the normalized IR**, the same representation the upstream request is built
+  from, so a screening hook can no longer be shown a different payload than the provider receives.
+  A client's in-band `{role: "system"}` turn arrives in `system`, so `message_count` is one lower
+  than the client's array length for such a body; tool-call arguments are projected into the
+  content a hook holding a `prompt: ro` or `prompt: rw` grant is shown, so a gate written to screen
+  a prompt screens them through the field it already reads; and a request body Busbar cannot read
+  is rejected with a `400` rather than forwarded. See [the hooks guide](docs/hooks.md).
 - The embedded OAuth 2.1 authorization server moved to `oauth-as` 0.9.1, a security release.
   Nothing you write changes. The discovery document no longer advertises `introspection_endpoint`,
   a path Busbar has never mounted and which answered 404.
@@ -207,9 +278,6 @@ If you run dashboards, read the metrics breaking change first: both request fami
   the registration an operator is most likely to have — one with no pool declared — has nowhere
   to send the calls in the meantime. These planes now refuse on a breaker trip and nothing less.
   An upstream's own `Retry-After` is still honoured. The LLM plane is unchanged.
-- **MCP and A2A traffic was invisible on `/metrics`** — not under-labelled, absent. Both planes now
-  emit `busbar_requests_total` and `busbar_request_duration_seconds` with the same `outcome`
-  vocabulary as model traffic, including refusals issued before the handler runs.
 - **The A2A gRPC binding answered `INTERNAL` to every request for Busbar's extended agent card.**
   The card declares a member `a2a.proto` has no field for, and the whole card failed to render
   rather than dropping it. The gRPC answer now carries the card minus those members; the card
@@ -226,11 +294,6 @@ If you run dashboards, read the metrics breaking change first: both request fami
   rejected outright.
 - **Unmodeled request fields dropped at the cross-protocol seam are now named in the log.** Around
   forty keys went silently; most are correctly untranslatable, and the silence was the defect.
-- **`busbar --validate` now checks every secret reference in the config**, including
-  `identity-providers.<name>.browser_login.client_secret`, which was not on the hand-written list
-  1.5.3 shipped. A config whose OAuth client secret named an unset variable reported `ok: config
-  valid` and then failed every hosted login at runtime. If your `--validate` job goes red on an
-  identity provider after this upgrade, that credential genuinely could not be resolved there.
 - **`transport: stdio` is configurable on Windows at all.** The boot check requiring `command:` to
   be an absolute path tested it with the unix spelling, so every drive-qualified or UNC path was
   refused. It now refuses a bare name, a relative path and a drive-relative path in each platform's
@@ -341,8 +404,8 @@ change; [config at a glance](docs/config-at-a-glance.md) shows the finished shap
 - Operational settings that were environment variables are now config keys under `config:` and
   `advanced:` (`config.overlay.file`, `advanced.worker_threads`, `advanced.upstream_http1_only`,
   `advanced.upstream_h2_prior_knowledge`), and the provider catalog moves to `providers_file:` / the
-  `--providers` flag. The old env vars are honored for one more release, with the config key winning
-  when both are set; all were removed in 1.6.0. `BUSBAR_CONFIG` is unchanged.
+  `--providers` flag. The old env vars are deprecated and still honored, with the config key winning
+  when both are set. `BUSBAR_CONFIG` is unchanged.
 - The `persist` field on admin config calls is ignored; durability is a property of the deployment.
 - The admin hooks API calls the field `module` rather than `plugin`, matching the config file.
   `plugin` is still accepted.

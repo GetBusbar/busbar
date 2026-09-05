@@ -22,7 +22,7 @@
 //! Everything the codec consumes from the engine comes through `busbar-core`'s public surface;
 //! nothing in `busbar-core` names this crate in production, and the `busbar` BINARY — the
 //! composition root — links it and hands [`PROTO_DECL`] to
-//! `busbar_core::proto::registry::install_protocols` at boot.
+//! the substrate's protocol registry (`busbar_substrate::proto::install_protocols`) at boot.
 
 pub mod codec;
 pub mod diagnostics;

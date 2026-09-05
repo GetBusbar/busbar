@@ -17,6 +17,7 @@
 //! the down-scope is observable, because the down-scope is a field of the exchange request and not of
 //! the tool call.
 
+use crate::mcp::test_engine::*;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::routing::post;
@@ -593,7 +594,7 @@ pub(super) fn wildcard_key(id: &str) -> busbar_api::VirtualKey {
 
 /// Drive one method at the handler, returning `(status, body)`.
 pub(super) async fn call(
-    app: &std::sync::Arc<busbar_core::state::App>,
+    app: &std::sync::Arc<dyn EngineApp>,
     gov: &busbar_api::PlaneRequestCtx,
     method: &str,
     params: serde_json::Value,
@@ -604,12 +605,12 @@ pub(super) async fn call(
 /// The same drive, with the ATTRIBUTED PRINCIPAL chosen by the caller.
 ///
 /// It exists because the MCP per-call log chains records PER PRINCIPAL in a process-wide global that
-/// a config apply must not reset (see `busbar_core::calllog::CALLS`). Every test in this binary sharing one
+/// a config apply must not reset (the engine's `CALLS`). Every test in this binary sharing one
 /// principal therefore shares one chain, and a test asserting `seq == 1` against a fresh store would
 /// read the sequence a SIBLING test left behind — which is exactly what happened the first time.
 /// A test that needs a virgin chain asks for its own principal.
 pub(super) async fn call_as(
-    app: &std::sync::Arc<busbar_core::state::App>,
+    app: &std::sync::Arc<dyn EngineApp>,
     gov: &busbar_api::PlaneRequestCtx,
     actor: &str,
     method: &str,
@@ -622,7 +623,7 @@ pub(super) async fn call_as(
 /// The same drive, keeping the RESPONSE HEADERS. The breaker battery asserts `Retry-After` — a
 /// header — and the (status, body) helpers above deliberately drop the header map.
 pub(super) async fn call_response(
-    app: &std::sync::Arc<busbar_core::state::App>,
+    app: &std::sync::Arc<dyn EngineApp>,
     gov: &busbar_api::PlaneRequestCtx,
     actor: &str,
     method: &str,
@@ -636,7 +637,7 @@ pub(super) async fn call_response(
 /// deliberately does not (see its comment: it declares the three ask capabilities and nothing
 /// about tasks, so the task-path filter keeps its own tests meaningful).
 pub(super) async fn call_response_caps(
-    app: &std::sync::Arc<busbar_core::state::App>,
+    app: &std::sync::Arc<dyn EngineApp>,
     gov: &busbar_api::PlaneRequestCtx,
     actor: &str,
     method: &str,
@@ -647,17 +648,18 @@ pub(super) async fn call_response_caps(
     // the gate reuses the snapshot and the declarative configured-hash comparison runs, exactly as it
     // did before verify-on-call. See `crate::testkit::prefresh_mcp_sightings`.
     crate::testkit::prefresh_mcp_sightings(app.as_ref());
-    let handle = std::sync::Arc::new(busbar_core::state::AppHandle::new(app.clone()));
-    // The sync leg's shared host arena, exactly as production's `rpc_dispatch` opens one — so the
-    // breaker/reroute batteries drive the CLUSTER-1 admit+settle path, not a legacy in-place shim.
-    let host = busbar_core::plane_host::HostDispatch::new(app);
+    let handle = app_handle(app.clone());
+    // The sync leg's shared host arena, exactly as production's `rpc_dispatch` opens one (its dispatch
+    // guard stack-pins this same `DispatchScope`) — so the breaker/reroute batteries drive the
+    // CLUSTER-1 admit+settle path, not a legacy in-place shim.
+    let scope = busbar_substrate::plane_host::DispatchScope::new();
     let ctx = crate::mcp::method::Ctx {
-        host: busbar_core::plane_host::engine_host_from_handle(&handle),
+        host: engine_host_from_handle(&handle),
         gov,
         actor,
         capabilities,
         headers: &NO_HEADERS,
-        scope: Some(host.scope()),
+        scope: Some(&scope),
     };
     let response = crate::mcp::method::dispatch(&ctx, method, Some(&params), Some(1.into()))
         .await

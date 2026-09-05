@@ -6,7 +6,11 @@
 //! the governed choke point, and the params THE PROVIDER RECEIVES are the ones the hook rewrote them
 //! to — asserted on the ACTUAL mint request the loopback provider saw (a rewrite is only real if the
 //! thing downstream saw the rewritten value). The tap fires through the neutral `host.transform_over`
-//! seam, after the gate and before the credential is leased.
+//! seam, after the gate and before the credential is leased. The host is the substrate's in-memory
+//! fixture host carrying a scripted rewrite under the plane's own decl key and `streams` container, so
+//! the plane's `tap_attached` / `transform_over` legs run exactly as they do over a configured
+//! deployment. (The same rewrite over the real loaded hook plugin is the engine's own hook battery to
+//! prove; this plane's tests do not link the engine.)
 //!
 //! ## The control is the byte-identical guarantee, exercised
 //!
@@ -19,48 +23,32 @@
 use crate::ir::config::SessionConfig;
 use crate::mount::{open_governed, GovernedOpen, Ingress, ProviderEndpoint};
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
-use busbar_core::config::{HookCfg, HookKind, PromptAccess, UserAccess};
-use busbar_core::test_support::{MockResponse, MockServer, MockServerState, TestApp};
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
-use busbar_substrate::plane_host::EngineHost;
+use busbar_substrate::plane_host::{EngineHost, TransformVerdict};
+use busbar_substrate::testkit::fixture_host::{FixtureHost, RewriteScript};
+use busbar_substrate::testkit::loopback_http::{MockResponse, MockServer, MockServerState};
 use std::sync::Arc;
 
-/// A `prompt: rw` REWRITE gate on the hermetic test cdylib; `raw_transform_reply` drives its rewrite.
-fn rewrite(raw_transform_reply: serde_json::Value) -> HookCfg {
-    HookCfg {
-        kind: HookKind::Gate,
-        plugin: "test-hook".to_string(),
-        timeout_ms: 10_000,
-        on_error: "weighted".to_string(),
-        prompt: PromptAccess::Rw,
-        user: UserAccess::Ro,
-        priority: 0,
-        settings: serde_json::json!({ "raw_transform_reply": raw_transform_reply })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-        on_empty: None,
-        global: false,
-        default: false,
-        signals: Vec::new(),
-        groups: Vec::new(),
-        phase: Vec::new(),
-    }
-}
+/// The `streams:` container the voice plane files its operator hooks under.
+const GATE_CONTAINER: &str = "streams";
 
-fn hook_env() -> busbar_core::hooks::HookEnv {
-    busbar_core::test_support::test_hook_env(
-        &["test-hook"],
-        busbar_plugin_sign::HookNeeds {
-            prompt: busbar_plugin_sign::NeedLevel::Rw,
-            user: busbar_plugin_sign::NeedLevel::Ro,
-        },
-    )
-    .expect(
-        "the busbar-hook-test-plugin cdylib is not built. This battery is the voice half of the \
-         release's hooks-tap acceptance test and it CANNOT be skipped. Build it: \
-         `cargo build -p busbar-hook-test-plugin`.",
-    )
+/// A `prompt: rw` REWRITE whose `raw_transform_reply` drives its rewrite — the same reply shape the
+/// hermetic test hook plugin reads off its settings: a `rewrite.messages[0].content` is the payload the
+/// hook committed in place of the plane's own; anything else abstains (the payload passes unchanged).
+fn rewrite(raw_transform_reply: serde_json::Value) -> RewriteScript {
+    let rewritten = raw_transform_reply["rewrite"]["messages"][0]["content"].clone();
+    Arc::new(move |args_json: &[u8]| {
+        if rewritten.is_null() {
+            return TransformVerdict::Proceed {
+                applied: false,
+                args_json: args_json.to_vec(),
+            };
+        }
+        TransformVerdict::Proceed {
+            applied: true,
+            args_json: serde_json::to_vec(&rewritten).expect("the rewrite serializes"),
+        }
+    })
 }
 
 fn runtime() -> VoiceRuntime {
@@ -71,28 +59,19 @@ fn runtime() -> VoiceRuntime {
     )
 }
 
-/// Build a host whose `voice`/`streams` container carries the attached rewrite chain, resolved the way
-/// production resolves it (`build()` itself resolves only `tools:`/`agents:`; the voice plane is
-/// registered so the neutral [`busbar_substrate::plane_host::ContainerGateSink`] files the rewrite map
-/// under the plane's own decl key). The `App` is returned so it outlives the borrowed host.
-fn tapped_host(
-    hook_name: &'static str,
-    cfg: HookCfg,
-) -> (Arc<busbar_core::state::App>, Arc<dyn EngineHost>) {
-    use busbar_substrate::plane_host::ContainerGateSink;
-    busbar_core::plane::registry::register_test_plane(&crate::PLANE_DECL);
-    let mut app = TestApp::new()
-        .hook(hook_name, cfg)
-        .hook_env(hook_env())
-        .build();
-    {
-        let app_mut = Arc::get_mut(&mut app).expect("a freshly built test app is sole-owned");
-        let hooks = vec![hook_name.to_string()];
-        let containers: [(&str, &[String]); 1] = [("streams", hooks.as_slice())];
-        app_mut.reresolve_container_gates("voice", &containers, &[]);
-    }
-    let host = busbar_core::plane_host::engine_host(&app);
-    (app, host)
+/// A host with nothing attached: the tap is a no-op.
+fn untapped_host() -> Arc<dyn EngineHost> {
+    FixtureHost::new().into_host()
+}
+
+/// Build a host whose `voice`/`streams` container carries the attached rewrite chain, filed under the
+/// plane's own decl key exactly where production's resolved rewrite map puts it, so `tap_attached`
+/// answers true and `transform_over` runs the rewrite. `hook_name` is the operator's name for the
+/// hook (it only labels the attachment here).
+fn tapped_host(_hook_name: &'static str, script: RewriteScript) -> Arc<dyn EngineHost> {
+    FixtureHost::new()
+        .attach_rewrite(crate::PLANE_DECL.key, GATE_CONTAINER, script)
+        .into_host()
 }
 
 /// A loopback provider `client_secrets` endpoint that returns an `ek_` and RECORDS the mint request —
@@ -148,8 +127,7 @@ async fn minted_session(
 async fn no_hook_leaves_the_params_byte_identical() {
     let (server, state) = mint_provider().await;
     // Nothing attached ⇒ the tap is a no-op and the provider sees the plane's ORIGINAL locked params.
-    let ungated = busbar_core::plane_host::engine_host(&TestApp::new().build());
-    let session = minted_session(ungated, &server.base_url(), &state).await;
+    let session = minted_session(untapped_host(), &server.base_url(), &state).await;
     assert_eq!(
         session,
         serde_json::to_value(runtime().session_defaults).unwrap(),
@@ -171,7 +149,7 @@ async fn a_rewrite_hook_edits_the_session_open_params_before_the_provider_dial()
         voice: Some("marin".to_string()),
         ..SessionConfig::default()
     };
-    let (_app, host) = tapped_host(
+    let host = tapped_host(
         "rewrite",
         rewrite(serde_json::json!({
             "rewrite": {

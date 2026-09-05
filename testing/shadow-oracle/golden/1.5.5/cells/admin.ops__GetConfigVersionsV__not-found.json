@@ -1,0 +1,1 @@
+{"applied":["hdr.date"],"body":{"json":{"error":{"code":"not_found","message":"config version 999999 (pruned or never recorded) not found"}}},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"101","content-type":"application/json"},"status":404}

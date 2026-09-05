@@ -12,12 +12,12 @@ use busbar_substrate::diagnostics::{
 pub(crate) struct UsageSink {
     /// The OPAQUE governance handle (App-retype WEDGE 3): the sink holds `busbar_substrate`'s
     /// [`GovHandle`](busbar_substrate::plane_host::GovHandle) (minted host-side via
-    /// `EngineHost::governance`) rather than naming `busbar_core::governance::GovState`. It is handed
+    /// `EngineHost::governance`) rather than naming core's `governance::GovState`. It is handed
     /// BACK to the host metering seams (`EngineHost::meter_ledger`/`meter_series`), which downcast it —
     /// byte-identical accrual against the SAME `GovState` the handle wraps.
     pub(crate) gov: busbar_substrate::plane_host::GovHandle,
     /// The OPAQUE cost handle (App-retype WEDGE 3) — the twin of `gov`, minted via `EngineHost::cost`
-    /// and downcast host-side at accrual. Was `Arc<busbar_core::cost::CostModel>`; an Arc bump per
+    /// and downcast host-side at accrual. Was an `Arc` of core's `cost::CostModel`; an Arc bump per
     /// request, rebuilt on config apply.
     pub(crate) cost: busbar_substrate::plane_host::CostHandle,
     /// The resolved virtual key, shared via `Arc`: `key_id` is read THROUGH it (`key.id`) at

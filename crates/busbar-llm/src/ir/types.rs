@@ -6,7 +6,7 @@
 //! re-exports them (`pub use types::*`), and busbar-core's gutted `ir/mod.rs` re-includes THIS file
 //! under `crate::ir` in its test/`test-support` build so `crate::ir::IrRequest` resolves there too.
 //! Neutral pieces (`facts`/`handle`/`invoke`/`subscribe`/`egress_prep`/`neutral_handles`) stay in
-//! busbar-core; these are the LLM-shaped types that name it as `busbar_core::` and cannot.
+//! busbar-core; these are the LLM-shaped types that name core by its crate name and cannot.
 
 use serde_json::Value;
 

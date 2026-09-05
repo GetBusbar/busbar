@@ -189,7 +189,7 @@ pub(crate) fn wire_for(transport: busbar_substrate::transport::Transport) -> &'s
 /// request arriving at busbar's MCP door and had no signal whatever about the upstream calls busbar
 /// itself originated: a registered server that had stopped answering was invisible on `/metrics`.
 ///
-/// The same argument `busbar_core::plane::observe` makes for putting the ingress count on the MOUNT rather
+/// The same argument `busbar_substrate::plane::observe` makes for putting the ingress count on the MOUNT rather
 /// than in each handler applies to the egress: there are two callers today (`mcp::upstream::call`
 /// and `mcp::client::issue::issue`) and a count at each of them is two sites that have to stay in
 /// agreement, plus a third the next verb author forgets. So the seam is the wire, the two callers

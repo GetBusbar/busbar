@@ -161,7 +161,7 @@ fn synth_anthropic_request_id_msd_is_uniform() {
         let bytes = token.as_bytes();
         for &msd in &[bytes[0], bytes[12]] {
             total += 1;
-            if busbar_core::proto::BASE62_ALPHABET[..29].contains(&msd) {
+            if busbar_substrate::proto::BASE62_ALPHABET[..29].contains(&msd) {
                 low += 1;
             }
         }
@@ -803,7 +803,8 @@ fn test_stream_roundtrip_identity() {
     // fixture).
     // Native Anthropic seeds `input:{}` on a tool_use `content_block_start` so an SDK accumulator
     // initializes the partial-json buffer before the first `input_json_delta`; the writer emits that
-    // seed, so the fixture must carry it for exact-equality round-trip.
+    // seed, so the fixture must carry it for exact-equality round-trip. Likewise the spec-required
+    // `caller` (`{"type":"direct"}`), which the writer emits on every tool_use block start.
     let data = serde_json::json!({
         "type": "content_block_start",
         "index": 0,
@@ -811,7 +812,8 @@ fn test_stream_roundtrip_identity() {
             "type": "tool_use",
             "id": "tool_123",
             "name": "get_weather",
-            "input": {}
+            "input": {},
+            "caller": {"type": "direct"}
         }
     });
     let ev = reader.read_response_event("content_block_start", &data);
@@ -907,15 +909,24 @@ fn test_stream_roundtrip_identity() {
     }
 
     // message_delta with usage. Native Anthropic ALWAYS carries `delta.stop_sequence` (explicit
-    // `null` when no stop sequence fired), so the round-tripped frame includes it.
+    // `null` when no stop sequence fired), so the round-tripped frame includes it — along with the
+    // other members the published `MessageDelta` / `MessageDeltaUsage` schemas require
+    // (`container`, `stop_details`, `output_tokens_details`, `server_tool_use`), `null` here.
     let data = serde_json::json!({
         "type": "message_delta",
-        "delta": { "stop_reason": "end_turn", "stop_sequence": null },
+        "delta": {
+            "container": null,
+            "stop_details": null,
+            "stop_reason": "end_turn",
+            "stop_sequence": null
+        },
         "usage": {
             "input_tokens": 10,
             "output_tokens": 20,
             "cache_creation_input_tokens": 5,
-            "cache_read_input_tokens": 15
+            "cache_read_input_tokens": 15,
+            "output_tokens_details": null,
+            "server_tool_use": null
         }
     });
     let ev = reader.read_response_event("message_delta", &data);
@@ -1411,11 +1422,11 @@ fn write_sse_frame_pins_both_framings_byte_for_byte() {
     let data = serde_json::json!({"a": 1});
 
     let mut out = Vec::new();
-    busbar_core::proto::write_sse_frame(&mut out, "x", &data);
+    busbar_substrate::proto::write_sse_frame(&mut out, "x", &data);
     assert_eq!(out, b"event: x\ndata: {\"a\":1}\n\n");
 
     let mut out = Vec::new();
-    busbar_core::proto::write_sse_frame(&mut out, "", &data);
+    busbar_substrate::proto::write_sse_frame(&mut out, "", &data);
     assert_eq!(out, b"data: {\"a\":1}\n\n");
 }
 
@@ -2016,8 +2027,9 @@ mod ir_property_tests {
         // (matching the SSE `event:` header) that `AnthropicWriter` now emits; the reader drops it
         // (it dispatches on the header, not `data.type`) and the writer re-synthesizes it, so the
         // same-protocol round-trip stays byte-identical with `type` present in the fixture.
-        // Native Anthropic seeds `input:{}` on a tool_use `content_block_start`; the writer emits it,
-        // so the fixture carries it for the byte-identical same-protocol round-trip.
+        // Native Anthropic seeds `input:{}` on a tool_use `content_block_start` and carries the
+        // spec-required `caller` (`{"type":"direct"}`); the writer emits both, so the fixture
+        // carries them for the byte-identical same-protocol round-trip.
         let data = serde_json::json!({
             "type": "content_block_start",
             "index": 0,
@@ -2025,7 +2037,8 @@ mod ir_property_tests {
                 "type": "tool_use",
                 "id": "call_123",
                 "name": "get_weather",
-                "input": {}
+                "input": {},
+                "caller": {"type": "direct"}
             }
         });
         let ev = reader.read_response_event("content_block_start", &data);
@@ -2109,14 +2122,24 @@ mod ir_property_tests {
         // carried no matched `stop_sequence`, so the IR's `stop_sequence` is `None`. Native
         // Anthropic ALWAYS carries `delta.stop_sequence` (explicit `null` when none fired), so
         // the writer emits it as `null` and the round-trip preserves that native shape.
+        // The delta and usage also carry the members the published `MessageDelta` /
+        // `MessageDeltaUsage` schemas require (`container`, `stop_details`,
+        // `output_tokens_details`, `server_tool_use`), `null` when nothing applies.
         let data = serde_json::json!({
             "type": "message_delta",
-            "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+            "delta": {
+                "container": null,
+                "stop_details": null,
+                "stop_reason": "end_turn",
+                "stop_sequence": null
+            },
             "usage": {
                 "input_tokens": 10,
                 "output_tokens": 20,
                 "cache_creation_input_tokens": 5,
-                "cache_read_input_tokens": 15
+                "cache_read_input_tokens": 15,
+                "output_tokens_details": null,
+                "server_tool_use": null
             }
         });
         let ev = reader.read_response_event("message_delta", &data);
@@ -2139,12 +2162,19 @@ mod ir_property_tests {
         // so this same-protocol round-trip is byte-faithful — previously the field was dropped.
         let data = serde_json::json!({
             "type": "message_delta",
-            "delta": {"stop_reason": "stop_sequence", "stop_sequence": "\n\nHuman:"},
+            "delta": {
+                "container": null,
+                "stop_details": null,
+                "stop_reason": "stop_sequence",
+                "stop_sequence": "\n\nHuman:"
+            },
             "usage": {
                 "input_tokens": 10,
                 "output_tokens": 20,
                 "cache_creation_input_tokens": 5,
-                "cache_read_input_tokens": 15
+                "cache_read_input_tokens": 15,
+                "output_tokens_details": null,
+                "server_tool_use": null
             }
         });
         let ev = reader.read_response_event("message_delta", &data);
@@ -2448,7 +2478,7 @@ mod ir_property_tests {
     #[test]
     fn test_openai_write_response_event_error() {
         let writer = OpenAiWriter;
-        let err = busbar_core::proto::IrError {
+        let err = busbar_substrate::proto::IrError {
             class: busbar_substrate::breaker::StatusClass::ClientError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
@@ -2474,7 +2504,7 @@ mod ir_property_tests {
     // Re-parse both sides and assert JSON equality with `usage` gone, plus assert the raw output has no
     // top-level `usage` key. Parsing both proves the splice stayed well-formed.
     fn assert_stripped_ok(input: &str) -> String {
-        let out = busbar_core::proto::strip_top_level_usage_member(input)
+        let out = busbar_substrate::proto::strip_top_level_usage_member(input)
             .unwrap_or_else(|| panic!("expected a byte-level strip for: {input}"));
         let parsed: serde_json::Value = serde_json::from_str(&out)
             .unwrap_or_else(|e| panic!("stripped output invalid: {e}: {out}"));
@@ -2544,7 +2574,7 @@ mod ir_property_tests {
         let input =
             r#"{"id":"x","choices":[{"delta":{"content":"the json \"usage\":null tell"}}]}"#;
         assert!(
-            busbar_core::proto::strip_top_level_usage_member(input).is_none(),
+            busbar_substrate::proto::strip_top_level_usage_member(input).is_none(),
             "must not match `usage` inside a string value"
         );
     }
@@ -2569,7 +2599,7 @@ mod ir_property_tests {
         // and with no TOP-LEVEL usage it returns None.
         let input = r#"{"id":"x","meta":{"usage":null},"choices":[]}"#;
         assert!(
-            busbar_core::proto::strip_top_level_usage_member(input).is_none(),
+            busbar_substrate::proto::strip_top_level_usage_member(input).is_none(),
             "nested usage must not be treated as the top-level member"
         );
     }
@@ -2578,6 +2608,6 @@ mod ir_property_tests {
     fn strip_usage_no_usage_key_returns_none() {
         // A content chunk with no `usage` key at all - nothing to do.
         let input = r#"{"id":"x","choices":[{"delta":{"content":"hi"}}]}"#;
-        assert!(busbar_core::proto::strip_top_level_usage_member(input).is_none());
+        assert!(busbar_substrate::proto::strip_top_level_usage_member(input).is_none());
     }
 }

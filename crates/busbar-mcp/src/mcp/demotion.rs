@@ -4,7 +4,7 @@
 //! BOOT REPLAY of the durable demotion record into the live MCP sightings cache.
 //!
 //! The record itself — the row store and the one settle rule — is engine trust state and lives in
-//! [`busbar_core::plane::quarantine`]. What stays here is the one piece that reaches into
+//! core's plane quarantine store, behind the neutral `PlaneStore` seam. What stays here is the one piece that reaches into
 //! `crate::mcp::client` to seed the plane's in-memory catalogue: the boot-time replay. A later phase
 //! moves this to a plane boot hook; until then it is the MCP plane's own concern and stays with it.
 

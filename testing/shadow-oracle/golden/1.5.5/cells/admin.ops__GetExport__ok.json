@@ -1,0 +1,1 @@
+{"applied":["hdr.date","hdr.etag"],"body":{"json":{"items":[{"module":"prometheus","name":"metrics","settings_keys":["buffer_seconds"]}],"next_cursor":null}},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"106","content-type":"application/json","etag":"<ETAG>"},"status":200}

@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config validation failed:\n  - rate_card['m-gemini'].input_utok must be a finite, non-negative number of micro-units per token (got -1)\n"},"headers":{},"status":1}

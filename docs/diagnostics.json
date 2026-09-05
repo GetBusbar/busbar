@@ -444,6 +444,18 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-3021",
+    "number": 3021,
+    "class": "config",
+    "slug": "deprecated-env-var-honored",
+    "title": "A deprecated environment variable is set and still honored",
+    "severity": "actionable",
+    "summary": "One of the 1.5.x environment overrides (BUSBAR_PROVIDERS, BUSBAR_CONFIG_OVERLAY, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE, BUSBAR_UPSTREAM_HTTP1_ONLY) is set. It is honored exactly as before, and the warning names the config.yaml key that replaces it.",
+    "action": "Move the value to the named config.yaml key and unset the variable. Nothing changes until you do.",
+    "since": "1.5.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-4001",
     "number": 4001,
     "class": "auth",

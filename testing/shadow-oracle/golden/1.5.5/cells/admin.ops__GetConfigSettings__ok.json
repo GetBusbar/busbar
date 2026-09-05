@@ -1,0 +1,1 @@
+{"applied":["hdr.date","hdr.etag"],"body":{"json":{"applied":false,"config_version":0,"settings":{"limits":{"request_body_max_bytes":33554432}}}},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"94","content-type":"application/json","etag":"<ETAG>"},"status":200}

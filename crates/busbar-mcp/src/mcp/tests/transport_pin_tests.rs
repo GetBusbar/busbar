@@ -29,8 +29,8 @@ use crate::mcp::connect::{
     connect_support::{approved_hash, mcp_cfg},
     refresh,
 };
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 
 const TOOL_NAME: &str = "read";
 const DESCRIPTION: &str = "reads a file from disk";
@@ -118,11 +118,11 @@ async fn refresh_against(
     mechanism: McpPinMechanism,
     key: &str,
 ) -> crate::mcp::connect::ConnectReport {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = tls_peer();
     let url = format!("https://127.0.0.1:{}/mcp", peer.addr.port());
     let cache = Arc::new(CatalogueCache::new());
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("fs", server_cfg(url, mechanism, key))
         .with_mcp_sightings(cache.clone())

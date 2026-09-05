@@ -24,11 +24,11 @@
 //!
 //! ## Why the scrape is a real HTTP GET and the traffic is a real socket
 //!
-//! `busbar_core::plane::tests::metrics_tests` states the rule this file follows: the failure guarded
+//! The engine's own plane metrics battery (`plane::tests::metrics_tests`) states the rule this file follows: the failure guarded
 //! against is not "the counter macro does not increment", it is "the emission is not on the path a
 //! deployment runs". So the call goes through `mcp::method::dispatch` to a REAL fake peer on a real
 //! loopback port, and the numbers are read out of the REAL `GET /metrics` route on a router built
-//! by `busbar_core::build_router`. A test that called `telemetry::upstream_attempt_on` directly would pass
+//! by the engine's router (`build_router`). A test that called `telemetry::upstream_attempt_on` directly would pass
 //! against an emit site no request ever reaches.
 //!
 //! ## The pool label is unique to this file ON PURPOSE
@@ -38,6 +38,7 @@
 //! what makes "this series exists" a statement about THIS leg.
 
 use super::upstream_support::{call, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer};
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
@@ -75,8 +76,8 @@ fn keys_of(line: &str) -> Vec<String> {
 }
 
 /// Scrape the REAL `/metrics` route on a router built exactly as production builds it.
-async fn scrape(app: &std::sync::Arc<busbar_core::state::App>) -> String {
-    let router = busbar_core::build_router(app.clone());
+async fn scrape(app: &std::sync::Arc<dyn EngineApp>) -> String {
+    let router = build_router(app.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -114,9 +115,9 @@ async fn dead_port() -> u16 {
 /// client leg emits no metric of any kind, so there is no series to be wrong about.
 #[tokio::test]
 async fn a_tool_call_counts_an_upstream_attempt_naming_the_registration_it_was_issued_to() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
-    let app = busbar_core::test_support::TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(SERVED, exchanging_server(&peer, SUBJECT))
         .build();
@@ -185,13 +186,13 @@ async fn a_tool_call_counts_an_upstream_attempt_naming_the_registration_it_was_i
 /// dead upstream sit at 100% healthy.
 #[tokio::test]
 async fn an_upstream_that_cannot_be_reached_is_counted_as_a_transient_failure_beside_its_attempt() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let mut cfg = exchanging_server(&peer, SUBJECT);
     // The registration keeps the peer's live token endpoint — the exchange must SUCCEED, so the leg
     // that fails is the tool call itself and not a refusal that never reached a socket.
     cfg.url = format!("http://127.0.0.1:{}/mcp", dead_port().await);
-    let app = busbar_core::test_support::TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(DEAD, cfg)
         .build();
@@ -277,11 +278,11 @@ async fn an_upstream_that_cannot_be_reached_is_counted_as_a_transient_failure_be
 /// which is precisely the shape of the regression.
 #[tokio::test]
 async fn an_unreachable_leg_is_counted_as_a_failure_and_not_only_as_an_attempt() {
-    busbar_core::metrics::init();
+    metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let mut cfg = exchanging_server(&peer, SUBJECT);
     cfg.url = format!("http://127.0.0.1:{}/mcp", dead_port().await);
-    let app = busbar_core::test_support::TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(UNREACHABLE, cfg)
         .build();

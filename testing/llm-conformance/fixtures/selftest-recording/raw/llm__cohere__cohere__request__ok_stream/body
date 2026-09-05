@@ -1,0 +1,6 @@
+data: {"delta":{"message":{"content":[],"role":"assistant"}},"id":"cohere-oracle","type":"message-start"}
+
+data: {"delta":{"message":{"content":{"text":"oracle-marker","type":"text"}}},"index":0,"type":"content-delta"}
+
+data: {"delta":{"finish_reason":"COMPLETE","usage":{"tokens":{"input_tokens":11,"output_tokens":7}}},"type":"message-end"}
+

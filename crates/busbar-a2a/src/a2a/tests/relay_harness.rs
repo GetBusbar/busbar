@@ -9,7 +9,7 @@
 //! second harness is a second thing that can stop matching what the router actually does, and the
 //! defect this whole area exists to catch — a relay that behaves when a test calls it and forwards
 //! the caller's credential when axum calls it — is invisible to any test that does not go through
-//! `busbar_core::build_router`.
+//! the real router.
 //!
 //! ## Why the recording seam stands in for the socket
 //!
@@ -19,7 +19,10 @@
 //! make a test pass. So the recording seam stands in for the socket here, and the socket-level half
 //! of the claim is discharged in `transport_tests.rs` against the real client.
 
+use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
+use busbar_substrate::testkit::engine_kit::{GovKit, HookEnvHandle};
+use busbar_substrate::testkit::engine_kit_plus::EngineAppPlus;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -257,7 +260,7 @@ impl RelayTransport for RecordingTransport {
                 // THE SINK IS CALLED ON A BARE BLOCKING THREAD, exactly as production calls it.
                 //
                 // Production's `ReqwestTransport::post_stream` rides `seam::hostless().stream`,
-                // whose pump (`busbar_core::egress::seam::pump`) invokes `on_chunk` synchronously
+                // whose pump (the engine's egress pump) invokes `on_chunk` synchronously
                 // on the calling thread — a plain `spawn_blocking` thread, NO runtime context.
                 // This fixture matches that context by doing the same. An earlier revision wrapped
                 // this loop in a nested current-thread `Runtime::block_on` to mirror the transport
@@ -477,10 +480,10 @@ pub(super) struct Harness {
     pub(super) bearer: String,
     pub(super) log: Arc<Mutex<Vec<Recorded>>>,
     pub(super) lookups: Arc<AtomicUsize>,
-    pub(super) gov: Arc<busbar_core::governance::GovState>,
+    pub(super) gov: Arc<dyn GovKit>,
     pub(super) plane: Arc<crate::a2a::plane::A2aPlane>,
     /// The built App, kept so the pool batteries can read the plane breaker cells directly.
-    pub(super) app: Arc<busbar_core::state::App>,
+    pub(super) app: Arc<dyn EngineAppPlus>,
     server: tokio::task::JoinHandle<()>,
 }
 
@@ -535,8 +538,10 @@ pub(super) async fn harness_on(outcome: Outcome, binding: &str) -> Harness {
 /// deployment it always did — a fixture that quietly gains a gate is a fixture whose other tests
 /// start proving something else.
 pub(super) struct Gates {
-    pub(super) env: busbar_core::hooks::HookEnv,
-    pub(super) hooks: Vec<(String, busbar_core::config::HookCfg)>,
+    /// The loaded hook-plugin environment, from the engine kit's `hook_env`.
+    pub(super) env: HookEnvHandle,
+    /// The `hooks:` definitions as config documents, parsed by the engine's own grammar at build.
+    pub(super) hooks: Vec<(String, serde_json::Value)>,
     pub(super) attach: Vec<String>,
 }
 
@@ -580,24 +585,22 @@ pub(super) async fn harness_full(
     defs: &[(&str, &str)],
     pools: &[(&str, &[&str])],
 ) -> Harness {
-    use busbar_core::governance::{GovState, NewKeySpec};
     use busbar_substrate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    busbar_core::metrics::init();
+    use busbar_substrate::governance::NewKeySpec;
+    engine().metrics_init();
 
-    let store: Arc<dyn busbar_core::governance::Store> =
-        Arc::new(busbar_store_memory::MemoryStore::new());
-    // Two handles on the SAME key material: one inside `GovState` (which consumes it) and one for
-    // the test to mint the caller's audience-bound token with, so the verifier busbar runs is
-    // verifying a token this test really minted.
+    let store: Arc<dyn busbar_api::Store> = Arc::new(busbar_store_memory::MemoryStore::new());
+    // Two handles on the SAME key material: one inside the governance registry (which consumes it)
+    // and one for the test to mint the caller's audience-bound token with, so the verifier busbar
+    // runs is verifying a token this test really minted.
     let signer = TokenSigner::from_secret_bytes(&[13u8; 32], DEFAULT_KID);
-    let gov = Arc::new(
-        GovState::new_with_signer(
+    let gov = engine()
+        .governance(
             store,
             None,
             Some(TokenSigner::from_secret_bytes(&[13u8; 32], DEFAULT_KID)),
         )
-        .expect("gov"),
-    );
+        .expect("gov");
     let (key, plain) = gov
         .mint_signed(
             NewKeySpec {
@@ -638,7 +641,8 @@ pub(super) async fn harness_full(
         Some("external-agent-1"),
     );
 
-    let mut builder = busbar_core::test_support::TestApp::new()
+    let mut builder = engine()
+        .new_app_plus()
         .public_url(PUBLIC_URL)
         .keys_chain()
         .governance(Arc::clone(&gov));
@@ -681,7 +685,7 @@ pub(super) async fn harness_full(
         },
     }));
 
-    let router = busbar_core::build_router(Arc::clone(&app));
+    let router = Arc::clone(&app).router();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

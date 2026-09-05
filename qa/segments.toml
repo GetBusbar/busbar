@@ -271,3 +271,47 @@ tier   = "fast"
 # --selftest (proving the scanner catches a planted `api_key: String` + an expose_secret-at-a-sink, and
 # passes the Redacted-wrapped good fixture) runs FIRST, so the scanner's own honesty is verified with the report.
 run    = "scripts/secret-hygiene-gate.sh --selftest && SECRET_GATE_REPORT_ONLY=1 scripts/secret-hygiene-gate.sh --report"
+
+[[segment]]
+id     = "llm-conformance"
+status = "active"
+tier   = "fast"
+# THE LLM SPEC CONFORMANCE GATE (testing/llm-conformance) — busbar's LLM wire, every ingress dialect,
+# validated against the providers' PUBLISHED machine-readable specs (OpenAI, Anthropic, Google, Bedrock,
+# Cohere; pinned by digest in spec-digests.tsv), the way mcp-conformance/a2a-tck hold the other planes to
+# theirs. Input is the shadow-oracle candidate recording of THIS build (target/oracle/recordings/candidate,
+# made by testing/shadow-oracle/record.sh; in ci.yml the shadow-oracle job records it and the
+# llm-conformance job downloads it). One ledger row per LLM cell x direction; RED on any schema violation,
+# any owed row missing, or zero rows. The --selftest (known-good fixture green; one mutated field, one
+# mutated SSE event, one mutated request each exactly one FAIL; empty recording vacuous-red; unrecorded
+# cell a named SKIP) runs FIRST. `--out` is deliberately not passed: the shared verdict.sh reads the
+# ledger after changing directory, so a relative --out reads as vacuous; run.sh's default is absolute.
+run    = "bash testing/llm-conformance/selftest.sh && bash testing/llm-conformance/run.sh --recording target/oracle/recordings/candidate"
+
+[[segment]]
+id     = "construction-gate"
+status = "active"
+tier   = "fast"
+# THE CONSTRUCTION GATE (scripts/construction-gate.sh) — how the tree is BUILT measured against
+# docs/design/ARCHITECTURE.md with the ceilings in qa/construction.toml (one attempt seam, request-path
+# function size, ports-only plane→kernel reaches, no uninstalled seam, neutral-no-dialect, single
+# terminal). RUNS REPORT-ONLY here (`--summary`: prints STATUS rule current/ceiling per row plus the
+# verdict line, exits 0), the same posture as plane-grep/secret-hygiene above, because `--check` is RED
+# by design on HEAD (three rows over their ceilings) while the construction work it measures is in
+# flight; ci.yml runs the real `--check` in its own job with continue-on-error for the same reason.
+# Arming is a one-token change (`--summary` -> `--check`) once every row is within its ceiling — no code
+# edit. The --selftest (each rule proves it sees its own planted violation; zero rows is red) runs FIRST.
+run    = "scripts/construction-gate.sh --selftest && scripts/construction-gate.sh --summary"
+
+[[segment]]
+id     = "design-bindings"
+status = "active"
+tier   = "fast"
+# THE DESIGN BINDINGS GATE (scripts/design-bindings.sh) — "is what we built compliant with what we
+# designed?" qa/design-bindings.json maps every ARCHITECTURE.md Appendix B binding to the checks that
+# prove it (tests, oracle cells, lints, gates); `--check` proves every referenced check still EXISTS in
+# the tree (a renamed-away test or dropped cell is RED) and lists every UNMAPPED binding as a named gap
+# (plain mode: reported, not red — the strict form that makes a gap red is verify-1.6.0-done.sh's DONE
+# claim). Regen-cleanliness of the committed ledger is asserted in ci.yml's design-bindings job. The
+# --selftest (one bogus ref exactly one FAIL, empty table vacuous-red, strict vs plain on a gap) runs FIRST.
+run    = "scripts/design-bindings.sh --selftest && scripts/design-bindings.sh --check"

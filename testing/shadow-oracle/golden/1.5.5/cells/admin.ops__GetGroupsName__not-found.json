@@ -1,0 +1,1 @@
+{"applied":["hdr.date","hdr.etag"],"body":{"json":{"error":{"code":"not_found","message":"group `does-not-exist` not found"}}},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"75","content-type":"application/json","etag":"<ETAG>"},"status":404}

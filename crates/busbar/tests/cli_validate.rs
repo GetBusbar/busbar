@@ -706,11 +706,11 @@ fn generate_signing_key_emits_a_usable_referenced_key() {
 }
 
 /// Run busbar against a fixture whose config.yaml points `config.overlay.file` at the given overlay —
-/// the full-config-coverage persistence path a real deployment uses. (Pre-1.6.0 this used the
-/// `BUSBAR_CONFIG_OVERLAY` env var; that var was deprecated in 1.5.3 and removed in 1.6.0, so the
-/// overlay is now named the same way production names it: `config.overlay.file` in config.yaml. This
-/// helper REWRITES config.yaml to append that pointer, so callers can keep writing a plain config via
-/// `write_configs(&dir, "")` first.)
+/// the full-config-coverage persistence path a real deployment uses. (The deprecated
+/// `BUSBAR_CONFIG_OVERLAY` env var is still honored, but the overlay is named here the same way
+/// production names it: `config.overlay.file` in config.yaml. This helper REWRITES config.yaml to
+/// append that pointer, so callers can keep writing a plain config via `write_configs(&dir, "")`
+/// first.)
 #[cfg(feature = "proto-llm")]
 fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, String, String) {
     // Append the overlay pointer to the fixture's config.yaml. Single-quoted YAML scalar so a Windows
@@ -799,14 +799,15 @@ fn validate_ok_on_valid_root_overlay() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The `BUSBAR_CONFIG_OVERLAY` env var was deprecated in 1.5.3 and REMOVED in 1.6.0: it no longer
-/// selects the overlay. Point it at a BAD overlay (one that would fail `--validate` if applied) and
-/// set NO `config.overlay.file`; validate must pass, proving the env var is ignored. Pre-1.6.0 the
-/// env var would have applied the overlay and this run would exit 1.
+/// The `BUSBAR_CONFIG_OVERLAY` env var was deprecated in 1.5.3 but is still HONORED (with a
+/// deprecation warning) when `config.overlay` is unset — an operator's existing pin keeps working
+/// across the upgrade. Point it at a BAD overlay (one that fails `--validate` when applied) and set
+/// NO `config.overlay.file`; validate must apply it and exit 1, proving the env var still selects the
+/// overlay.
 #[cfg(feature = "proto-llm")]
 #[test]
-fn validate_ignores_removed_busbar_config_overlay_env_var() {
-    let dir = fixture_dir("ovlenvgone");
+fn validate_honors_deprecated_busbar_config_overlay_env_var() {
+    let dir = fixture_dir("ovlenvdep");
     write_configs(&dir, "");
     let bad_overlay = dir.join("bad-overlay.json");
     std::fs::write(
@@ -823,16 +824,20 @@ fn validate_ignores_removed_busbar_config_overlay_env_var() {
         )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-        // The removed env var — must have NO effect on overlay resolution.
+        // The deprecated env var — still selects the overlay when `config.overlay` is unset.
         .env("BUSBAR_CONFIG_OVERLAY", &bad_overlay)
         .output()
         .expect("run busbar");
     let code = out.status.code().unwrap_or(-1);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(
-        code, 0,
-        "the removed BUSBAR_CONFIG_OVERLAY env var must be ignored, so the bad overlay is NOT \
-         applied and validate passes: {stderr}"
+        code, 1,
+        "the deprecated BUSBAR_CONFIG_OVERLAY env var must still be honored, so the bad overlay IS \
+         applied and validate fails: {stderr}"
+    );
+    assert!(
+        stderr.contains("reasoning_effort_budgets") && stderr.contains("ascending"),
+        "the env-selected overlay's root section was validated: {stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1145,17 +1150,17 @@ fn providers_flag_overrides_providers_file_and_default() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 1.6.0 REMOVAL: the `BUSBAR_PROVIDERS` env var is NO LONGER honored. With it set to a BOGUS
-/// (nonexistent) path but a valid providers.yaml at the DEFAULT location (next to config.yaml),
-/// `--validate` must still succeed and use the DEFAULT catalog — if the env var were still read, the
-/// bogus path would fail the load. This pins the deprecation removal (deprecated 1.5.3, removed 1.6.0).
+/// The `BUSBAR_PROVIDERS` env var was deprecated in 1.5.3 but is still HONORED, with a deprecation
+/// warning on stderr. With it set to a BOGUS (nonexistent) path — even though a valid providers.yaml
+/// sits at the DEFAULT location next to config.yaml — `--validate` must FAIL with the
+/// cannot-read-providers error naming the bogus path, and the warning must precede that error. This
+/// pins both halves: the var is warned about AND it still selects the catalog.
 #[cfg(feature = "proto-llm")]
 #[test]
-fn busbar_providers_env_is_no_longer_honored() {
-    let dir = fixture_dir("provenvgone");
+fn busbar_providers_env_is_deprecated_but_honored() {
+    let dir = fixture_dir("provenvdep");
     write_configs(&dir, ""); // config.yaml + providers.yaml (the default catalog) both in `dir`
     let config = dir.join("config.yaml");
-    let default_catalog = dir.join("providers.yaml");
     let bogus = dir.join("bogus-providers.yaml"); // never created
 
     let (code, stdout, stderr) = run_cli(
@@ -1164,18 +1169,41 @@ fn busbar_providers_env_is_no_longer_honored() {
         &[("BUSBAR_PROVIDERS", bogus.to_str().unwrap())],
     );
     assert_eq!(
-        code, 0,
-        "BUSBAR_PROVIDERS must be IGNORED in 1.6.0; the default providers.yaml next to config must \
-         resolve despite the bogus env value: stdout={stdout} stderr={stderr}"
+        code, 1,
+        "BUSBAR_PROVIDERS is still honored; the bogus env value must fail the load: \
+         stdout={stdout} stderr={stderr}"
     );
+    let warn =
+        "[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead \
+                (it is honored for now).";
+    assert!(
+        stderr.contains(warn),
+        "the deprecation warning must be printed verbatim: {stderr}"
+    );
+    let err = format!("cannot read providers file '{}': ", bogus.to_str().unwrap());
+    assert!(
+        stderr.contains(&err)
+            && stderr.contains("(set `providers_file:` in config.yaml, or BUSBAR_PROVIDERS)"),
+        "the load error must name the env-selected path and the remediation: {stderr}"
+    );
+    assert!(
+        stderr.find(warn).unwrap() < stderr.find(&err).unwrap(),
+        "the deprecation warning must precede the load error: {stderr}"
+    );
+
+    // And with a REAL path it is used: point it at the default catalog explicitly and validate
+    // passes, still with the warning.
+    let real = dir.join("providers.yaml");
+    let (code, stdout, stderr) = run_cli(
+        Some(&config),
+        &["--validate"],
+        &[("BUSBAR_PROVIDERS", real.to_str().unwrap())],
+    );
+    assert_eq!(code, 0, "a real BUSBAR_PROVIDERS path validates: {stderr}");
     assert!(stdout.contains("ok: config valid"), "got {stdout}");
     assert!(
-        stdout.contains(default_catalog.to_str().unwrap()),
-        "the default catalog (next to config) must be used, NOT the bogus BUSBAR_PROVIDERS value: {stdout}"
-    );
-    assert!(
-        !stdout.contains(bogus.to_str().unwrap()),
-        "the removed BUSBAR_PROVIDERS value must not appear anywhere: {stdout}"
+        stderr.contains(warn),
+        "the deprecation warning fires whenever the var is set: {stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

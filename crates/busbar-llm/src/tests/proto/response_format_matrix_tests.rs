@@ -167,7 +167,7 @@ fn req_with_tool_choice_no_tools() -> crate::ir::IrRequest {
 /// shape; Bedrock is a REGRESSION PROOF (it already guarded before this fix).
 #[test]
 fn tool_choice_without_tools_is_omitted_on_every_writer() {
-    use busbar_core::test_support::warn_capture::WarnCapture;
+    use busbar_substrate::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let req = req_with_tool_choice_no_tools();
@@ -324,7 +324,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
 /// NOT warn (the negative half is a regression proof for the false-positive risk).
 #[test]
 fn parallel_tool_calls_discarded_on_gemini_cohere_bedrock_warns() {
-    use busbar_core::test_support::warn_capture::WarnCapture;
+    use busbar_substrate::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let req = |parallel: Option<bool>| crate::ir::IrRequest {

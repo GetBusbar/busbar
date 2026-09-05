@@ -1,0 +1,1 @@
+{"applied":["hdr.date"],"body":{"json":{"error":{"code":"invalid_request","message":"malformed group body: missing field `config` at line 1 column 21"}}},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"113","content-type":"application/json"},"status":400}

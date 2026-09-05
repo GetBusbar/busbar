@@ -11,7 +11,7 @@
 //! in-tree instrument at all despite being the door every other binding re-frames onto.
 //!
 //! So this file is the in-tree oracle for the served direction: **every method A2A defines, driven
-//! through `busbar_core::build_router` on the binding whose cell it is claiming.** Not a call to a
+//! through the real router on the binding whose cell it is claiming.** Not a call to a
 //! handler — a handler that behaves when a test calls it and is mounted nowhere is the defect this
 //! plane has already had twice, and it is invisible to any test that does not go through the
 //! router.

@@ -1,4 +1,11 @@
-# busbar — Core & Plugin Contract (v0.1 DRAFT for review)
+# busbar — Core & Plugin Contract (v0.1 — SUPERSEDED)
+
+> **SUPERSEDED.** This draft describes a seam that plugins *call into* (`EngineHost`, "call the core
+> metering seam"). That direction is exactly what the architecture abolishes: planes return facts,
+> units decide, the kernel sequences. The authoritative contract is `ARCHITECTURE.md` (the only file
+> builders read); the history is `ARCHITECTURE-AUDIT-LOG.md`. Do not hand this file to a builder.
+> Its one lasting contribution — "an audit built on the definition must catch the voice-billing hole,
+> or the definition is wrong" — lives on as the meta-tests in `ARCHITECTURE.md` §8.2.
 
 > Purpose: the single, plain definition of what **core** is and does, and what **every
 > plugin type** is and does — written so that an audit built directly on it **must** catch

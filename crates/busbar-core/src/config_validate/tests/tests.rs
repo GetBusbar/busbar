@@ -1133,20 +1133,84 @@ fn test_validate_rejects_model_named_api() {
     );
 }
 
+/// The three `admin` refusals earlier releases enforced, pinned by their exact message text: the
+/// reverse-compatibility oracle compares this output byte-for-byte against the published binary,
+/// so the wording is part of the contract, not just the verdict.
+#[test]
+fn test_validate_rejects_pool_named_admin_with_legacy_message() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    pools.insert("admin".to_string(), make_pool(vec![make_member("mymodel")]));
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("a pool named 'admin' must fail validation");
+    let want = "pool name 'admin' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a pool reachable via that path is unreachable to clients and bypasses per-pool governance; rename it";
+    assert!(
+        errs.iter().any(|e| e == want),
+        "expected the exact legacy reserved-name error for the pool; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_provider_named_admin_with_legacy_message() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "admin".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let errs = validate(&cfg).expect_err("a provider named 'admin' must fail validation");
+    let want = "provider name 'admin' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a provider reachable via the adhoc /admin/<model> route is unreachable to clients; rename it";
+    assert!(
+        errs.iter().any(|e| e == want),
+        "expected the exact legacy reserved-name error for the provider; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_model_named_admin_with_legacy_message() {
+    let (mut providers, mut models, pools) = valid_maps();
+    providers
+        .entry("myprovider".to_string())
+        .or_insert_with(|| make_provider("anthropic", "https://api.example.com", "API_KEY"));
+    models.insert("admin".to_string(), make_model("myprovider", 10));
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("a model named 'admin' must fail validation");
+    let want = "model name 'admin' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a model reachable via /admin/v1/messages is unreachable to clients and bypasses per-model governance; rename it";
+    assert!(
+        errs.iter().any(|e| e == want),
+        "expected the exact legacy reserved-name error for the model; got: {errs:?}"
+    );
+}
+
 #[test]
 fn test_validate_allows_api_prefixed_but_boundary_safe_names() {
     // The reserved check mirrors the auth middleware's PATH-BOUNDARY-SAFE `is_admin` test: only
     // the exact `api` segment collides. `apix` and friends are normal routes (proven by
-    // test_admin_prefix_is_boundary_safe in auth.rs) and must NOT be rejected. `admin` is now a
-    // NORMAL lane too — the admin surface moved to `/api`, so `/admin/v1/messages` is an ordinary
-    // client route — which is exactly the drift the derive-from-ADMIN_PATH fix closes.
-    for name in ["apix", "api-pool", "api_portal", "admin", "adminx"] {
+    // test_admin_prefix_is_boundary_safe in auth.rs) and must NOT be rejected. `adminx` is a normal
+    // lane for the same reason; bare `admin` is refused separately by the legacy rule below.
+    for name in ["apix", "api-pool", "api_portal", "adminx"] {
         assert!(
             !reserved_admin_name(name),
             "'{name}' is a boundary-safe name and must not be treated as reserved"
         );
+        assert!(
+            !reserved_legacy_admin_name(name),
+            "'{name}' is a boundary-safe name and must not be treated as the legacy reserved name"
+        );
     }
     assert!(reserved_admin_name("api"), "'api' must be reserved");
+    assert!(
+        reserved_legacy_admin_name("admin"),
+        "'admin' must stay reserved"
+    );
+    assert!(
+        reserved_legacy_admin_name("admin/x"),
+        "'admin/x' puts admin in the first path segment and must stay reserved"
+    );
+    assert!(
+        !reserved_admin_name("admin"),
+        "'admin' is not the native-API root; it is refused by the legacy rule, not this one"
+    );
 
     // A full validate() pass with an `apix` pool must succeed (no reserved-name error).
     let (providers, models, _) = valid_maps();

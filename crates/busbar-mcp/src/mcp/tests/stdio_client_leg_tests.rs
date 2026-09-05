@@ -36,8 +36,8 @@ use crate::mcp::client::verb::UpstreamVerb;
 use crate::mcp::config::{
     McpPinMechanism, McpServerDefCfg, ServerPinCfg, ServerRequestGrants, ToolAllowCfg, Transport,
 };
+use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 
@@ -213,7 +213,7 @@ async fn await_log(path: &std::path::Path, needle: &str, what: &str) -> String {
 /// of having the value rather than a call somebody remembered to make. Nothing in this file has
 /// another way to get one.
 fn authorised(
-    app: &std::sync::Arc<busbar_core::state::App>,
+    app: &std::sync::Arc<dyn EngineApp>,
     scopes: &[(&str, &str)],
 ) -> crate::mcp::upstream::Authorised {
     let gov = gov_with_scopes(scopes);
@@ -253,9 +253,9 @@ fn authorised(
 /// is the only place a message with no reply can leave a trace.
 #[tokio::test]
 async fn every_issued_verb_reaches_a_real_child_and_is_correlated() {
-    busbar_core::metrics::init();
+    metrics_init();
     let log = log_path("issue-all");
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(
             "fs",
@@ -283,7 +283,7 @@ async fn every_issued_verb_reaches_a_real_child_and_is_correlated() {
             &auth,
             verb,
             id,
-            &busbar_core::plane_host::engine_host(&app),
+            &engine_host(&app),
         )
         .await
         .unwrap_or_else(|e| panic!("issuing `{}` to a live child failed: {e}", verb.method()));
@@ -349,9 +349,9 @@ async fn every_issued_verb_reaches_a_real_child_and_is_correlated() {
 /// conformant server answers with an error.
 #[tokio::test]
 async fn the_handshake_is_sent_once_per_child_and_not_per_call() {
-    busbar_core::metrics::init();
+    metrics_init();
     let log = log_path("handshake");
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(
             "fs",
@@ -366,7 +366,7 @@ async fn the_handshake_is_sent_once_per_child_and_not_per_call() {
             &auth,
             &UpstreamVerb::Ping,
             id,
-            &busbar_core::plane_host::engine_host(&app),
+            &engine_host(&app),
         )
         .await
         .expect("a ping to a live child");
@@ -398,9 +398,9 @@ async fn the_handshake_is_sent_once_per_child_and_not_per_call() {
 /// log being untouched rather than by reading the refusal text.
 #[tokio::test]
 async fn an_ungranted_caller_is_refused_before_the_child_is_reached() {
-    busbar_core::metrics::init();
+    metrics_init();
     let log = log_path("gate");
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(
             "fs",
@@ -426,7 +426,7 @@ async fn an_ungranted_caller_is_refused_before_the_child_is_reached() {
             &auth,
             &verb,
             1,
-            &busbar_core::plane_host::engine_host(&app),
+            &engine_host(&app),
         )
         .await
         .expect_err("a caller with no grant must be refused");
@@ -454,9 +454,9 @@ async fn an_ungranted_caller_is_refused_before_the_child_is_reached() {
 /// and every later call on that child would have been served the previous call's response.
 #[tokio::test]
 async fn a_chatty_child_is_handled_and_the_answer_is_still_the_right_one() {
-    busbar_core::metrics::init();
+    metrics_init();
     let log = log_path("chatty");
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(
             "fs",
@@ -470,7 +470,7 @@ async fn a_chatty_child_is_handled_and_the_answer_is_still_the_right_one() {
         &auth,
         &UpstreamVerb::ToolsList,
         77,
-        &busbar_core::plane_host::engine_host(&app),
+        &engine_host(&app),
     )
     .await
     .expect("a chatty child still answers") else {
@@ -531,9 +531,9 @@ async fn a_chatty_child_is_handled_and_the_answer_is_still_the_right_one() {
 /// silently-failing grant lookup looks like from outside.
 #[tokio::test]
 async fn a_granted_ask_is_refused_differently_than_an_ungranted_one() {
-    busbar_core::metrics::init();
+    metrics_init();
     let log = log_path("granted");
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(
             "fs",
@@ -555,7 +555,7 @@ async fn a_granted_ask_is_refused_differently_than_an_ungranted_one() {
         &auth,
         &UpstreamVerb::ToolsList,
         78,
-        &busbar_core::plane_host::engine_host(&app),
+        &engine_host(&app),
     )
     .await
     .expect("a chatty child still answers");
@@ -588,9 +588,9 @@ async fn a_granted_ask_is_refused_differently_than_an_ungranted_one() {
 /// driving busbar's outbound fetch rate.
 #[tokio::test]
 async fn a_peer_signal_brings_one_refresh_forward_and_is_then_rate_limited() {
-    busbar_core::metrics::init();
+    metrics_init();
     let log = log_path("trigger");
-    let app = TestApp::new()
+    let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(
             "fs",
@@ -614,7 +614,7 @@ async fn a_peer_signal_brings_one_refresh_forward_and_is_then_rate_limited() {
         &auth,
         &UpstreamVerb::ToolsList,
         79,
-        &busbar_core::plane_host::engine_host(&app),
+        &engine_host(&app),
     )
     .await
     .expect("the child answers");
@@ -655,7 +655,7 @@ async fn a_peer_signal_brings_one_refresh_forward_and_is_then_rate_limited() {
         &auth,
         &UpstreamVerb::ToolsList,
         80,
-        &busbar_core::plane_host::engine_host(&app),
+        &engine_host(&app),
     )
     .await
     .expect("the child answers again");

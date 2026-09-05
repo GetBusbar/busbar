@@ -31,6 +31,8 @@ use busbar_substrate::ingress::duplex_ws as ws_ingress;
 #[cfg(feature = "test-support")]
 use busbar_substrate::net_guard::GuardPolicy;
 #[cfg(feature = "test-support")]
+use busbar_substrate::testkit::fixture_host::FixtureHost;
+#[cfg(feature = "test-support")]
 use futures::SinkExt;
 
 fn runtime() -> VoiceRuntime {
@@ -162,8 +164,8 @@ async fn spawn_echo_provider() -> std::net::SocketAddr {
 /// The plane SELECTS `Transport::WebSocket` and lets the substrate open the socket: `dial_provider`
 /// dials the loopback provider THROUGH the net-guard and a frame crosses both directions. This is the
 /// plane using the neutral transport instead of carrying its own socket plumbing. Gated on
-/// `test-support` because the governed dial now rides the breaker beneath it, reached through a real
-/// `EngineHost` double over a bare app.
+/// `test-support` because the governed dial now rides the breaker beneath it, reached through the
+/// substrate's in-memory fixture host.
 #[cfg(feature = "test-support")]
 #[tokio::test]
 async fn dial_provider_routes_through_the_guarded_ws_transport() {
@@ -174,10 +176,9 @@ async fn dial_provider_routes_through_the_guarded_ws_transport() {
         allow_plaintext: true,
         ..GuardPolicy::default()
     };
-    let app = busbar_core::test_support::TestApp::new().build();
-    let host = busbar_core::plane_host::engine_host(&app);
+    let host = FixtureHost::new();
     let pool = crate::topology::stream_breaker_key("openai-realtime");
-    let (mut stream, mut sink) = dial_provider(host.as_ref(), &pool, 0, &url, policy)
+    let (mut stream, mut sink) = dial_provider(&host, &pool, 0, &url, policy)
         .await
         .expect("the plane dials the provider through the guarded transport");
     sink.send(b"realtime-frame".to_vec()).await.ok();
@@ -197,19 +198,12 @@ async fn dial_provider_routes_through_the_guarded_ws_transport() {
 #[tokio::test]
 async fn dial_provider_fails_closed_on_a_guarded_target() {
     // A public loopback under the fail-closed default is an internal address — refused, no socket.
-    let app = busbar_core::test_support::TestApp::new().build();
-    let host = busbar_core::plane_host::engine_host(&app);
+    let host = FixtureHost::new();
     let pool = crate::topology::stream_breaker_key("openai-realtime");
     assert!(
-        dial_provider(
-            host.as_ref(),
-            &pool,
-            0,
-            "wss://127.0.0.1/",
-            GuardPolicy::default()
-        )
-        .await
-        .is_err(),
+        dial_provider(&host, &pool, 0, "wss://127.0.0.1/", GuardPolicy::default())
+            .await
+            .is_err(),
         "the provider dial must refuse an unpinned/guard-failing target"
     );
 }
