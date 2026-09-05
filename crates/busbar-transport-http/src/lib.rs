@@ -777,9 +777,12 @@ async fn read_ingress_message(
     };
 
     let header_bytes = buf[..header_end].to_vec();
+    // A block this reader cannot parse is a message it cannot read. Taking it for an empty header
+    // list would invent a framing — declared length zero, no body — out of a parse failure, while
+    // the same unreadable bytes still went up as the HEAD frame.
     let headers = raw::parse_message(&header_bytes)
-        .map(|m| m.headers)
-        .unwrap_or_default();
+        .ok_or(TransportError::Framing)?
+        .headers;
     let mut rest = buf[header_end..].to_vec();
     buf.clear();
     drop(buf);

@@ -50,7 +50,8 @@ pub struct RawMessage {
 
 /// Split `bytes` into a start line, headers and body. `bytes` may end exactly at the header
 /// terminator (body empty) or carry the body already appended. Returns `None` on anything that
-/// does not look like an HTTP/1.x message (no CRLF-terminated start line, or unparsable headers).
+/// does not look like an HTTP/1.x message (no CRLF-terminated start line, a header line with no
+/// colon, or whitespace between a field name and its colon — which the wire forbids outright).
 #[must_use]
 pub fn parse_message(bytes: &[u8]) -> Option<RawMessage> {
     let text_end = bytes
@@ -73,7 +74,14 @@ pub fn parse_message(bytes: &[u8]) -> Option<RawMessage> {
     let mut headers = Vec::new();
     for line in lines {
         let (name, value) = line.split_once(':')?;
-        headers.push((name.trim().to_string(), value.trim().to_string()));
+        // No whitespace is allowed between a field name and its colon. Trimming it here would
+        // normalise a header no compliant peer would honour into one this transport does, and the
+        // disagreement that opens between an intermediary and its upstream is exactly the
+        // request-smuggling surface the rule exists to close. So: refuse the message.
+        if name != name.trim() {
+            return None;
+        }
+        headers.push((name.to_string(), value.trim().to_string()));
     }
 
     Some(RawMessage {
@@ -323,6 +331,26 @@ mod tests {
             "Transfer-Encoding".to_string(),
             "gzip".to_string()
         )]));
+    }
+
+    /// Whitespace between a field name and its colon is refused, not normalised away.
+    ///
+    /// RFC 9112 is explicit that a server MUST reject such a message: the historical divergence in
+    /// how intermediaries handled it is a request-smuggling surface, and trimming the name turns a
+    /// header no compliant peer would honour into one this transport does.
+    #[test]
+    fn whitespace_before_the_colon_is_refused_rather_than_trimmed() {
+        assert_eq!(
+            parse_message(b"GET / HTTP/1.1\r\nContent-Length : 5\r\n\r\n"),
+            None
+        );
+        assert_eq!(
+            parse_message(b"GET / HTTP/1.1\r\nTransfer-Encoding\t: chunked\r\n\r\n"),
+            None
+        );
+        // The legal shape still parses, value whitespace and all.
+        let ok = parse_message(b"GET / HTTP/1.1\r\nContent-Length:  5 \r\n\r\n").unwrap();
+        assert_eq!(ok.headers[0].1, "5");
     }
 
     #[test]

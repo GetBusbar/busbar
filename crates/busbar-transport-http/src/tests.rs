@@ -283,6 +283,48 @@ async fn a_body_past_the_configured_maximum_is_refused_on_both_sides() {
     );
 }
 
+/// A header block this transport cannot parse fails closed, rather than decoding as no headers.
+///
+/// The old reading took an unparsable block to mean an empty header list — declared length zero,
+/// no body read — while the raw bytes still went up as the HEAD frame. That is a framing divergence
+/// invented out of a parse failure: the reader must say it could not read the message.
+#[tokio::test]
+async fn an_unparsable_header_block_is_a_framing_error_not_a_headerless_request() {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let writer = tokio::spawn(async move {
+        let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(
+            &mut client,
+            b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length : 5\r\n\r\nhello",
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+
+    let conn = accept_fut.await.unwrap();
+    let mut frames = transport.frames(conn);
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the reader answers rather than hanging")
+        .expect("the stream yields the framing error");
+    assert_eq!(
+        first.unwrap_err(),
+        TransportError::Framing,
+        "a header block that does not parse is refused, not read as a request with no headers"
+    );
+    writer.abort();
+}
+
 /// A chunked body of at least a mebibyte, written in chunks that straddle the read budget, arrives
 /// byte-exact — and the trailers that follow it arrive as their own frame rather than as body.
 ///
