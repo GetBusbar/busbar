@@ -41,6 +41,10 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> Lower for T
 /// The boxed form, as it crosses the handoff.
 pub(crate) type LowerIo = Box<dyn Lower>;
 
+/// How many inbound frames one connection may hold for a `frames()` consumer that is not keeping
+/// up — the per-unit frame buffer the architecture's backpressure rule names.
+pub(crate) const INBOUND_FRAME_BUFFER: usize = 64;
+
 /// One inbound item: a stream-tagged frame, or a transport failure on that stream.
 pub(crate) type InboundItem = Result<(StreamId, Frame), TransportError>;
 
@@ -69,8 +73,8 @@ pub(crate) fn opened(tx: OutboundTx) -> OpenCall {
 pub(crate) struct ConnState {
     /// Every stream's inbound frames land on this ONE channel, tagged with their `StreamId` — the
     /// multiplexing is the tag, not a separate channel per stream, so `frames()` can just drain it.
-    pub(crate) inbound_tx: mpsc::UnboundedSender<InboundItem>,
-    pub(crate) inbound_rx: AsyncMutex<Option<mpsc::UnboundedReceiver<InboundItem>>>,
+    pub(crate) inbound_tx: mpsc::Sender<InboundItem>,
+    pub(crate) inbound_rx: AsyncMutex<Option<mpsc::Receiver<InboundItem>>>,
     /// One outbound channel per open stream (gRPC call). `write()` looks a stream up here; the
     /// task driving that RPC (accepted inbound, or opened by a dial-side `write` to a fresh
     /// `StreamId`) owns the receiving half and forwards each message onto the wire.
@@ -100,7 +104,7 @@ impl ConnState {
         dialer: Option<(Arc<crate::client::Dialer>, http::Uri, &'static str)>,
         chain: Vec<&'static str>,
     ) -> Arc<Self> {
-        let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
+        let (inbound_tx, inbound_rx) = mpsc::channel(INBOUND_FRAME_BUFFER);
         Arc::new(Self {
             inbound_tx,
             inbound_rx: AsyncMutex::new(Some(inbound_rx)),
@@ -110,5 +114,18 @@ impl ConnState {
             served_paths: SyncMutex::new(Vec::new()),
             chain,
         })
+    }
+}
+
+impl ConnState {
+    /// Hand one inbound item to whatever is polling `frames()`, waiting when the per-unit frame
+    /// buffer is full.
+    ///
+    /// This is the bidirectional half of backpressure the architecture requires and the transport
+    /// battery names as a cell: a peer writing faster than `frames()` is polled must stall against
+    /// the HTTP/2 flow-control window, not queue on this process's heap. Peer bytes are untrusted,
+    /// and this connection carries every multiplexed call's inbound messages on this one channel.
+    pub(crate) async fn send_inbound(&self, item: InboundItem) -> Result<(), ()> {
+        self.inbound_tx.send(item).await.map_err(|_| ())
     }
 }

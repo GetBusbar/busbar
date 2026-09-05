@@ -151,7 +151,7 @@ pub(crate) async fn forward_inbound(
                     bytes: slab,
                     meta,
                 };
-                if state.inbound_tx.send(Ok((stream_id, frame))).is_err() {
+                if state.send_inbound(Ok((stream_id, frame))).await.is_err() {
                     return; // the connection's frame pump has gone away
                 }
             }
@@ -175,9 +175,9 @@ pub(crate) async fn forward_inbound(
             bytes: SlabBytes::new(Arc::from([])),
             meta,
         };
-        let _ = state.inbound_tx.send(Ok((stream_id, frame)));
+        let _ = state.send_inbound(Ok((stream_id, frame))).await;
     } else if final_status.is_some() {
-        let _ = state.inbound_tx.send(Err(TransportError::Reset));
+        let _ = state.send_inbound(Err(TransportError::Reset)).await;
     }
 }
 

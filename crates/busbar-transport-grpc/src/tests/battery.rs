@@ -713,3 +713,41 @@ async fn dropping_a_served_calls_outbound_stream_prunes_its_entry() {
         "a served call whose outbound stream is gone is a call that is over"
     );
 }
+
+/// Bidirectional backpressure, the cell `grpc` is the one in-tree transport that could not pass.
+///
+/// Every multiplexed call's inbound messages share one channel. A peer writing faster than
+/// `frames()` is polled must stall — against the HTTP/2 flow-control window — rather than queue on
+/// this process's heap, so filling the per-unit frame buffer with nothing draining it must not
+/// complete.
+#[tokio::test]
+async fn the_inbound_channel_backpressures_a_peer_that_outruns_frames() {
+    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let one = || {
+        Ok((
+            StreamId(1),
+            busbar_contract::wire::Frame {
+                direction: busbar_contract_transport::wire::Direction::Inbound,
+                stream: StreamId(1),
+                bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b"x"[..])),
+                meta: busbar_contract_transport::wire::FrameMeta {
+                    bytes: 1,
+                    transport_units: None,
+                    status: None,
+                },
+            },
+        ))
+    };
+    // Nothing polls `frames()`, so nothing drains: well past the buffer's depth, the sender must
+    // still be waiting rather than have swallowed every message.
+    let flooded = tokio::time::timeout(Duration::from_millis(250), async {
+        for _ in 0..crate::conn::INBOUND_FRAME_BUFFER * 4 {
+            let _ = state.send_inbound(one()).await;
+        }
+    })
+    .await;
+    assert!(
+        flooded.is_err(),
+        "an undrained inbound channel must backpressure once the per-unit frame buffer is full"
+    );
+}
