@@ -688,6 +688,11 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     }
 
     /// Run the network guard over one candidate, converting its refusal into the loop's.
+    ///
+    /// Every refusal the guard can raise becomes the one reason this step has for "there is nowhere
+    /// to go", so which of them answered is not visible to a caller. The pin is dropped because
+    /// nothing on this path dials through this seam today; it is returned by the guard so that the
+    /// caller which eventually does will not resolve the name a second time.
     fn guard_destination(&self, candidate: &DestinationFacts) -> Result<(), Refusal> {
         guard_destination(
             candidate,
@@ -695,6 +700,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             self.bindings.guard,
             self.bindings.denylist,
         )
+        .map(|_pinned| ())
         .map_err(|_| Refusal::new(ReasonCode::NoDestination))
     }
 
@@ -1148,17 +1154,15 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 
 /// Judge one destination's address, before any dial.
 ///
-/// The guard's own published entry, `net::check_destination`, takes a
-/// `busbar_contract::VerifiedDestination`, and the only constructor for one takes the contract's
-/// kernel seal — which a composition root does not have and must not name. So the guard is reached
-/// through the primitives it is itself written over, in the order it writes them: the metadata
-/// denylist first, because a deployment's statement about which addresses exist to be reached at all
-/// is answered before anything is resolved; then the scheme; then exactly one resolution, pinned.
-/// Every judgement here is one of the guard's own functions, so this is the guard's ordering reached
-/// a different way rather than a second opinion about addressing.
+/// This is the trust unit's own check, reached through the entry that takes the facts a destination
+/// is sealed FROM — a composition root judges a candidate before it is sealed, because the seal is
+/// what the judgement produces. It used to be the guard's ordering written out a second time here,
+/// over the same primitives; two copies of an address judgement drift, and the copy that drifts is
+/// the one nobody re-derived.
 ///
 /// A destination that is not a network hop — a record leg, a client delivery, a kernel verb — has no
-/// address and passes: there is nothing to have judged.
+/// address and passes: there is nothing to have judged. The pin travels back rather than being
+/// dropped here, so a caller that goes on to dial does not resolve the name a second time.
 ///
 /// # Errors
 ///
@@ -1169,43 +1173,15 @@ pub fn guard_destination(
     resolver: &dyn Resolver,
     policy: GuardPolicy,
     denylist: &busbar_unit_trust::Denylist,
-) -> Result<(), busbar_unit_trust::NetworkRefusal> {
-    use busbar_unit_trust::net;
-    let DestinationFacts::Upstream { address, .. } = candidate else {
-        return Ok(());
-    };
-    let Some(authority) = address.authority() else {
-        // A spawned program is not a network hop, so there is no address to have judged.
-        return Ok(());
-    };
-    if let Some(host) = net::ssrf_blocked_host(
-        authority,
-        &denylist.allowed,
-        denylist.allow_all,
-        &denylist.blocked,
+) -> Result<Option<busbar_unit_trust::PinnedTarget>, busbar_unit_trust::NetworkRefusal> {
+    match busbar_unit_trust::net::check_destination_facts(
+        candidate, &[], resolver, policy, denylist,
     ) {
-        return Err(busbar_unit_trust::NetworkRefusal::MetadataDenied(host));
+        // Only an upstream is dialled at an address. Every other kind reaches its destination
+        // without one, so "this is not an upstream" is this caller's pass, not its refusal.
+        Err(busbar_unit_trust::NetworkRefusal::NotAnUpstream) => Ok(None),
+        other => other,
     }
-    // An authority may be spelled as a URL or as a bare `host:port`, and which of the two a
-    // deployment wrote is not a security question: both reach the same judgement.
-    let (https, host, port) = match net::split_url(authority) {
-        Ok((https, host, port, _path)) => {
-            net::judge_scheme(authority, https, policy)
-                .map_err(busbar_unit_trust::NetworkRefusal::Guard)?;
-            (https, host, port)
-        }
-        Err(_) => {
-            let (host, port) = split_authority(authority).ok_or_else(|| {
-                busbar_unit_trust::NetworkRefusal::Guard(busbar_unit_trust::AddressRefusal::NoHost(
-                    authority.to_string(),
-                ))
-            })?;
-            (true, host, port)
-        }
-    };
-    net::resolve_and_pin(&host, port, https, resolver, policy)
-        .map(|_pinned| ())
-        .map_err(busbar_unit_trust::NetworkRefusal::Guard)
 }
 
 /// The trust unit's spelling of where a unit came from.
@@ -1224,21 +1200,6 @@ fn trust_origin(kind: busbar_caps::OriginKind) -> OriginKind {
         busbar_caps::OriginKind::Bootstrap => OriginKind::Bootstrap,
         busbar_caps::OriginKind::Nested { .. } => OriginKind::Nested,
         busbar_caps::OriginKind::Delivery { .. } => OriginKind::Delivery,
-    }
-}
-
-/// An authority written as a bare `host:port`, split into the two.
-///
-/// Only reached when the guard's own URL recogniser says the string carries no scheme. It is a
-/// split and not a parse: everything that needs judging is judged by the guard's own functions, and
-/// a host that survives this still goes through every one of them.
-fn split_authority(authority: &str) -> Option<(String, u16)> {
-    match authority.rsplit_once(':') {
-        Some((host, port)) if !host.is_empty() => Some((host.to_string(), port.parse().ok()?)),
-        _ => Some((
-            authority.to_string(),
-            busbar_unit_trust::net::default_port(true),
-        )),
     }
 }
 
@@ -1503,6 +1464,36 @@ mod tests {
         .is_ok());
     }
 
+    /// A kind that is not dialled at an address PASSES here, and pins nothing.
+    ///
+    /// The trust unit's published door answers `NotAnUpstream` for these, because it is asked about
+    /// a destination that was already sealed and a caller reading that answer wants to know which
+    /// kind it holds. This caller is asking a narrower question — "is there an address here that
+    /// would fail the guard" — and for a verb, a delivery or a session accrual the answer is no.
+    /// Reading the unit's answer as a refusal would refuse every leg that never had an address.
+    #[test]
+    fn a_kind_that_is_not_dialled_at_an_address_passes_and_pins_nothing() {
+        let resolver = FixedResolver(vec![]);
+        for candidate in [
+            DestinationFacts::KernelVerb { verb: "status" },
+            DestinationFacts::SessionAccrual {
+                lane: LaneId::new("probe"),
+            },
+            DestinationFacts::Upgrade { to: "ws" },
+        ] {
+            assert_eq!(
+                guard_destination(
+                    &candidate,
+                    &resolver,
+                    GuardPolicy::default(),
+                    &busbar_unit_trust::Denylist::default(),
+                ),
+                Ok(None),
+                "{candidate:?} has no address to have judged"
+            );
+        }
+    }
+
     /// A cloud-metadata endpoint is refused, and it is refused whatever the deployment opted into.
     ///
     /// An operator saying "this agent is on our internal network" has said nothing about the address
@@ -1594,6 +1585,74 @@ mod tests {
             &busbar_unit_trust::Denylist::default(),
         )
         .is_err());
+    }
+
+    /// An authority carrying userinfo is refused, because its two readings differ.
+    ///
+    /// `user@agent.example:443` reads as `agent.example` to a URL parser and as `user@agent.example`
+    /// to a human skimming a config diff, and the trust unit's recogniser refuses a value whose two
+    /// readings differ rather than picking one. A guard that split on the last colon and never
+    /// looked for the `@` accepted it, resolved whatever the name answered with, and pinned that.
+    #[test]
+    fn a_userinfo_bearing_bare_authority_is_refused() {
+        let resolver = FixedResolver(vec!["93.184.216.34".parse().expect("an address")]);
+        assert!(guard_destination(
+            &upstream("user@agent.example:443"),
+            &resolver,
+            GuardPolicy::default(),
+            &busbar_unit_trust::Denylist::default(),
+        )
+        .is_err());
+    }
+
+    /// The guard the root runs and the guard the trust unit publishes answer identically.
+    ///
+    /// This is the drift proof, and it is a table rather than a spot check because the two used to
+    /// be two implementations: what a second copy costs is not that it is wrong on the case someone
+    /// thought of, it is that it is wrong on the case nobody re-derived. Every row goes through both
+    /// doors and the verdicts must match.
+    #[test]
+    fn the_root_guard_and_the_trust_units_own_door_agree() {
+        struct Seal;
+        impl busbar_contract::plugin::KernelSeal for Seal {
+            fn seal_origin(&self) -> &'static str {
+                "busbar a2a guard equivalence test"
+            }
+        }
+        let resolver = FixedResolver(vec!["93.184.216.34".parse().expect("an address")]);
+        for authority in [
+            "https://agent.example/",
+            "http://agent.example/",
+            "agent.example:443",
+            "user@agent.example:443",
+            "https://user@agent.example/",
+            "[::1]:443",
+            "https://169.254.169.254/latest/meta-data",
+        ] {
+            let facts = upstream(authority);
+            let sealed = busbar_contract::VerifiedDestination::seal(&Seal, facts, "http", None);
+            let through_the_root = guard_destination(
+                &facts,
+                &resolver,
+                GuardPolicy::default(),
+                &busbar_unit_trust::Denylist::default(),
+            )
+            .is_ok();
+            // The published door answers `NotAnUpstream` for a kind that is not dialled at an
+            // address; every row here IS an upstream, so the two verdicts are directly comparable.
+            let through_the_unit = busbar_unit_trust::net::check_destination(
+                &sealed,
+                &[],
+                &resolver,
+                GuardPolicy::default(),
+                &busbar_unit_trust::Denylist::default(),
+            )
+            .is_ok();
+            assert_eq!(
+                through_the_root, through_the_unit,
+                "the two doors disagree about `{authority}`"
+            );
+        }
     }
 
     /// Every origin has a spelling on the trust unit's side.

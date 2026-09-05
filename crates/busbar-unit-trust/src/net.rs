@@ -1331,7 +1331,34 @@ pub fn check_destination(
     policy: GuardPolicy,
     denylist: &Denylist,
 ) -> Result<Option<PinnedTarget>, NetworkRefusal> {
-    let busbar_contract::DestinationFacts::Upstream { address, .. } = dest.facts() else {
+    check_destination_facts(&dest.facts(), paths, resolver, policy, denylist)
+}
+
+/// The same check, over the facts a destination was sealed FROM.
+///
+/// The sealed value is the door a transport reaches the guard through, and it stays the published
+/// one. But a composition root judges a candidate BEFORE it is sealed — that is the whole point of
+/// judging it, and the seal is what the judgement produces — so it holds facts and no seal. Given
+/// only the sealed entry, such a caller had no way in and wrote the ordering out a second time,
+/// which is the one thing this file exists to stop: two copies of an address judgement drift, and
+/// the copy that drifts is the one nobody re-derived.
+///
+/// So the ordering lives here, once, and [`check_destination`] is a projection onto it rather than a
+/// second opinion. Nothing about the sealing rule is loosened by that: a seal was never what made
+/// the judgement correct, it is what records that the judgement happened.
+///
+/// # Errors
+///
+/// The destination is not an upstream, its host is on the denylist, or the guard refused the
+/// scheme, the name, or an address the resolver answered with.
+pub fn check_destination_facts(
+    facts: &busbar_contract::DestinationFacts,
+    paths: &[&str],
+    resolver: &dyn Resolver,
+    policy: GuardPolicy,
+    denylist: &Denylist,
+) -> Result<Option<PinnedTarget>, NetworkRefusal> {
+    let busbar_contract::DestinationFacts::Upstream { address, .. } = facts else {
         return Err(NetworkRefusal::NotAnUpstream);
     };
     let Some(authority) = address.authority() else {
