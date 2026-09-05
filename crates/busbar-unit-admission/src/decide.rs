@@ -464,9 +464,12 @@ impl<S: CellStore> Door<S> {
     /// escapes a requests cap by hammering failures, each one refunding its own slot, and the cap
     /// only ever counts successes.
     ///
-    /// `now` must be the same pinned epoch the admission charge used, so the refund lands in the
-    /// same window per bucket; a bucket whose window has since rolled is a no-op. Floored at zero:
-    /// a refund can never drive a counter negative.
+    /// `now` must be the same pinned epoch the admission charge used, so the refund lands on the
+    /// same cell per bucket — including the straddle, where a concurrent admission rolled the cell
+    /// forward between this request's arrival and its charge and the charge landed in place on the
+    /// rolled cell. Only a bucket whose cell is genuinely OLDER than this request's window is a
+    /// no-op, because that is a window already left behind rather than one this request reached.
+    /// Floored at zero: a refund can never drive a counter negative.
     pub fn refund_request(&self, chain: &BucketChain, pool: &str, now: u64) {
         // Refund EXACTLY the buckets the admission charged: the same pool predicate, so a
         // pool-qualified bucket another pool's request never charged is never eroded by its refund.
@@ -486,7 +489,12 @@ impl<S: CellStore> Door<S> {
         let window = budget_window(period, now);
         let mut cells = self.cells.lock(&[bucket_id]);
         if let Some(cell) = cells.get_mut(bucket_id) {
-            if cell.window_start == window {
+            // The exact inverse of `resolve_for_charge`: that lands a charge in place on a cell
+            // holding this window OR a newer one, so this returns the fee from the same set. An
+            // equality test here would leave the flat fee for a failed straddling request on the
+            // rolled cell forever, and the derived spend the budget cap reads one fee too high for
+            // the rest of that window.
+            if cell.window_start >= window {
                 cell.billable_requests = cell.billable_requests.saturating_sub(1);
                 cell.dirty = true;
             }

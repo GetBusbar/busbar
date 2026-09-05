@@ -740,6 +740,100 @@ fn pool_scoped_accrual_and_refund_mirror_the_charge() {
         .expect("the refunded fee re-opened frontier's bucket");
 }
 
+/// A request that straddles a window boundary is charged on the LIVE cell, and its refund has to
+/// reach that same cell.
+///
+/// `now` is the arrival epoch, pinned when the request came in. A concurrent admission can roll the
+/// cell forward between then and the charge, and the charge deliberately lands in place on the
+/// rolled cell rather than resetting it — the check reads that same cell for exactly this reason.
+/// The refund is the other half of that charge, so it resolves the cell the same way: at or past
+/// this request's window. Anything else keeps the flat fee for a request that failed, and the
+/// derived spend the budget cap reads stays one fee too high for the rest of the window.
+#[test]
+fn a_refund_reaches_the_cell_a_straddling_charge_reached() {
+    let d = door();
+    let p = no_card(10);
+    let t = table(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Budget, 1_000, Some(MINUTE))],
+        ),
+    )]);
+    let c = chain(&t, "vk_straddle", Some("g"));
+
+    // A minute boundary, with `earlier` in the minute before `later`.
+    let later = 1_700_000_100;
+    let earlier = 1_700_000_099;
+    assert_ne!(
+        crate::window::budget_window(MINUTE, earlier),
+        crate::window::budget_window(MINUTE, later),
+        "the two epochs have to be in different minutes for this to be a straddle at all"
+    );
+
+    // A concurrent admission has already rolled the cell into the newer minute.
+    d.try_admit(&p, &c, "", later).expect("the roller admits");
+    let bucket = "group:g@minute";
+    let rolled = d.cells().snapshot(bucket).expect("the cell exists");
+    assert_eq!(rolled.billable_requests, 1);
+
+    // Our request arrived just before the boundary; its charge lands IN PLACE on the rolled cell.
+    d.try_admit(&p, &c, "", earlier).expect("the straddler admits");
+    assert_eq!(
+        d.cells().snapshot(bucket).expect("cell").billable_requests,
+        2,
+        "the straddling charge landed on the live cell, not on a fresh one"
+    );
+
+    // It failed. The refund must reach the cell the charge reached.
+    d.refund_request(&c, "", earlier);
+    assert_eq!(
+        d.cells().snapshot(bucket).expect("cell").billable_requests,
+        1,
+        "the fee for a failed request must come back off the cell it was charged to"
+    );
+}
+
+/// The previous release kept that fee, and this records what it did.
+///
+/// The tag resolved a refund on `window_start == window` while resolving a charge on
+/// `window > window_start`, so the two halves of one request could land on different cells and the
+/// flat fee for a failed straddling request was never returned. That asymmetry is what the
+/// improvement closes; naming it here keeps the change a deliberate divergence rather than a silent
+/// one.
+#[test]
+fn the_previous_release_kept_the_fee_a_straddling_refund_could_not_reach() {
+    // The rules, stated as the predicates they actually were.
+    let charge_lands_in_place =
+        |cell_window: u64, request_window: u64| request_window <= cell_window;
+    let old_refund_reaches = |cell_window: u64, request_window: u64| cell_window == request_window;
+    let new_refund_reaches = |cell_window: u64, request_window: u64| cell_window >= request_window;
+
+    let request_window = crate::window::budget_window(MINUTE, 1_700_000_099);
+    let rolled_cell = crate::window::budget_window(MINUTE, 1_700_000_100);
+    assert!(rolled_cell > request_window);
+
+    assert!(
+        charge_lands_in_place(rolled_cell, request_window),
+        "the charge reached the rolled cell"
+    );
+    assert!(
+        !old_refund_reaches(rolled_cell, request_window),
+        "and the previous release's refund did not: the fee stayed on the cell"
+    );
+    assert!(
+        new_refund_reaches(rolled_cell, request_window),
+        "the improvement makes the refund the exact inverse of the charge"
+    );
+
+    // A cell genuinely OLDER than the request's window is still a no-op under both rules: that is
+    // not a straddle, it is a window that has already been left behind.
+    let stale_cell = crate::window::budget_window(MINUTE, 1_700_000_000);
+    assert!(!old_refund_reaches(stale_cell, request_window));
+    assert!(!new_refund_reaches(stale_cell, request_window));
+}
+
 /// A budget block whose limit declared a downgrade NAMES the downgrade pool in the refusal, so the
 /// caller can re-admit there; the most restrictive of two merged budgets is the one whose
 /// behaviour governs; and a plain budget block still carries no downgrade.

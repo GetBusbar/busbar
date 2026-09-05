@@ -278,6 +278,17 @@
         "body"
       ],
       "rationale": "streamed usage carries the same attribution buckets as buffered. A stream's usage object now reports every per-dialect attribution sub-bucket the provider sent (reasoning tokens, the two Anthropic cache-creation TTL tiers and its web-search/service-tier pair, the four OpenAI audio and predicted-outputs slices, Gemini's tool-use prompt slice, Cohere's separately-metered billed_units trio), instead of reporting them only when the same request was made with stream:false. 1.5.5 carried NO sub-buckets on either path, so nothing a 1.5.5 client read has changed value or disappeared — the buckets are additive members that were absent before; 1.6.0 recovered them on the buffered path and this closes the streamed half of the same gap, so the two answers for one request finally agree. The totals are untouched: billable_tokens ignores the whole attribution struct. CAVEAT for a future re-record: Cohere's billed_units trio is the one bucket that is NOT a slice of the totals — to_token_usage lets billed_input/billed_output win over the raw counts — so a Cohere backend that reports billed_units on a STREAM will move that stream's ledgered figures to the same numbers its buffered twin already ledgers. No recorded cell exercises it (the oracle mock sends no billed_units on a stream), so this entry accepts `body` only; should a fixture ever start sending it, the effects.usage delta must be re-registered as kind=breaking with a CHANGELOG line rather than folded in here."
+    },
+    {
+      "id": "M-1 refund reaches the cell the charge reached",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-05 maximum spec compliance",
+      "cells": "^(billing|limits)\\|",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "A request pinned to window M whose charge landed in place on a cell a concurrent admission had already rolled to M+1 now has its flat per-request fee refunded from that same cell. 1.5.5 resolved a charge on `window > cell.window_start` (charge in place on a rolled cell) but a refund on `cell.window_start == window`, so the two halves of one request could land on different cells and a failed straddling request kept its fee for the life of that window -- leaving the derived spend a budget cap reads one fee too high. refund_bucket now mirrors resolve_for_charge exactly (`cell.window_start >= window`): the refund reaches the cell the charge reached. A cell genuinely OLDER than the request's window is still a no-op under both rules. Strictly in the client's favour and only ever reachable on a boundary straddle, which no scripted oracle cell drives -- the recorded billing and limits cells are unchanged. The divergence class it WOULD produce is effects.usage, and this register's own rule reserves that class for a kind=breaking entry naming a CHANGELOG line, so if a cell ever does show it the entry must be promoted by the owner rather than widened here."
     }
   ]
 }
