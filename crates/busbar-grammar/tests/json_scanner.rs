@@ -57,6 +57,30 @@ fn escapes_are_decoded_on_both_sides_without_allocating_anything() {
 }
 
 #[test]
+fn a_broken_surrogate_pair_in_a_key_is_a_miss_not_an_overflow() {
+    // A high half whose partner is not a low half: the arithmetic that combines the two would
+    // subtract 0xDC00 from something smaller. Every other bad escape here answers "no character",
+    // and so does this one.
+    assert_eq!(
+        resolve_pointer(b"{\"\\uD800\\u0041\": 1}", "/x"),
+        Resolved::Missing
+    );
+    assert_eq!(
+        resolve_pointer(b"{\"\\uD800\\uD800\": 1}", "/x"),
+        Resolved::Missing
+    );
+    // A lone high half with nothing after it, and a well-formed pair, both still behave.
+    assert_eq!(
+        resolve_pointer(b"{\"\\uD800\": 1}", "/x"),
+        Resolved::Missing
+    );
+    assert_eq!(
+        found("{\"\\uD83D\\uDE00\": 1}".as_bytes(), "/\u{1F600}"),
+        b"1"
+    );
+}
+
+#[test]
 fn a_brace_inside_a_string_does_not_confuse_the_scan() {
     let body = br#"{"decoy": "}{[]\"", "lane": "gold"}"#;
     assert_eq!(found(body, "/lane"), br#""gold""#);

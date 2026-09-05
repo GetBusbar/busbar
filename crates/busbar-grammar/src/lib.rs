@@ -390,6 +390,12 @@ fn next_json_char(raw: &[u8], at: &mut usize) -> Option<char> {
                     return None;
                 }
                 let low = hex4(raw, *at + 2)?;
+                // The second escape has to be the low half. Anything else is not a character, the
+                // same answer every other malformed escape here gives — and taking it on trust would
+                // run the combining arithmetic below off the bottom of its range.
+                if !(0xDC00..0xE000).contains(&low) {
+                    return None;
+                }
                 *at += 6;
                 0x10000 + ((first as u32 - 0xD800) << 10) + (low as u32 - 0xDC00)
             } else {
