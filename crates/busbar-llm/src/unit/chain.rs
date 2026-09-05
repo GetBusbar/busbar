@@ -515,6 +515,13 @@ async fn leg_legacy(fixture: Fixture) -> Observed {
 // LEG 2 — the step files, in the design's order
 // ---------------------------------------------------------------------------------------------
 
+/// THE ONE MINT SITE. The kernel lends a unit its seal; this rehearsal has no kernel, so it stands
+/// in for one — in ONE place, so that "who may open a decision" is as readable here as it is in the
+/// loop, and so a step's harness cannot quietly mint a second one.
+fn kernel_seal() -> KernelSeal {
+    KernelSeal::acquire_for_kernel()
+}
+
 /// THE NODE'S ONE INTERNER, standing in for the composition root's.
 ///
 /// A configured lane's name is read out of config at boot and a [`LaneId`] is a borrowed static
@@ -548,7 +555,7 @@ async fn leg_chain(fixture: Fixture) -> Observed {
 
     // THE SEAL, held for the length of this one unit. Every token below is minted from it and
     // dropped when the step it was lent to returns, exactly as the loop lends them.
-    let seal = KernelSeal::acquire_for_kernel();
+    let seal = kernel_seal();
 
     let resp = drive(
         &seal, &host, &rt, &gov, &headers, &body, started, charged_at, fixture,
@@ -951,7 +958,7 @@ async fn the_verify_refusal_carries_the_wire_triple_the_guards_named() {
     let (host, rt) = crate::engine::test_host_rt(&rig.app);
     let gov = rig.gov();
     let view = verify::HostPoolView::new(&*host, &*rt, gov.key.as_deref());
-    let seal = KernelSeal::acquire_for_kernel();
+    let seal = kernel_seal();
     let answer = verify::verify(
         &UnitToken::mint(&seal),
         &view,
@@ -1068,7 +1075,7 @@ async fn a_configured_lanes_runtime_name_can_be_sealed() {
         .to_string();
     assert_eq!(configured, LANE);
 
-    let seal = KernelSeal::acquire_for_kernel();
+    let seal = kernel_seal();
     let sealed = sealed_destinations(&seal, &configured);
     assert_eq!(sealed.len(), 1);
     assert_eq!(sealed[0].lane().as_str(), configured);
