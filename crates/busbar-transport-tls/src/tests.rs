@@ -525,3 +525,87 @@ async fn every_reserved_key_this_transport_publishes_is_declared() {
         "this transport publishes a reserved key it does not declare"
     );
 }
+
+/// A self-signed cert/key pair plus its own DER-encoded leaf, so a test can compute the exact
+/// fingerprint it expects a handshake to serve — not just check that a handshake happened.
+fn self_signed_with_der() -> (Arc<rustls::ServerConfig>, Arc<rustls::ClientConfig>, Vec<u8>) {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+            .unwrap();
+    let cert_pem = cert.pem();
+    let key_pem = signing_key.serialize_pem();
+    let cert_der = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let key_der = PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).unwrap();
+    let leaf_der = cert_der[0].as_ref().to_vec();
+
+    let server_cfg = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert_der.clone(), key_der)
+        .unwrap();
+
+    let mut roots = rustls::RootCertStore::empty();
+    for c in cert_der {
+        roots.add(c).unwrap();
+    }
+    let client_cfg = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+
+    (Arc::new(server_cfg), Arc::new(client_cfg), leaf_der)
+}
+
+/// R-03: `accept` must serve the config for the slot the *listener* was provisioned with, not a
+/// fixed slot of its own. Slot 0 holds one certificate; the listener is provisioned at slot 7 with
+/// a different one. If `accept` ever regresses to a hardcoded slot, this either fails the handshake
+/// (the client trusts only the slot-7 cert's root) or, worse, silently serves the wrong identity —
+/// so the served fingerprint is checked explicitly, and shown to differ from slot 0's, rather than
+/// just checking that a handshake happened.
+#[tokio::test]
+async fn accept_serves_the_slot_the_listener_was_provisioned_with() {
+    let (server_cfg_0, _client_cfg_0, cert_0_der) = self_signed_with_der();
+    let (server_cfg_7, client_cfg_7, cert_7_der) = self_signed_with_der();
+    assert_ne!(cert_0_der, cert_7_der, "the two slots must hold genuinely different certs");
+
+    let server = StdArc::new(TlsTransport::new());
+    server.register_server_config(0, server_cfg_0);
+    server.register_server_config(7, server_cfg_7);
+
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    // Provisioned at slot 7, not 0 — this is the case `A6`/`R-03` exists for: any listener whose
+    // key landed in a non-zero slot.
+    let listener = server.listen(&cfg, &fixture_key(7)).await.unwrap();
+    let addr = listener.local_addr();
+
+    let client = StdArc::new(TlsTransport::new());
+    // The client trusts only the slot-7 cert's root, so a handshake against slot 0's cert (the old,
+    // hardcoded `get(&0)` behavior) fails outright rather than merely serving a surprising cert.
+    client.register_client_config(0, client_cfg_7);
+
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .expect("handshake against the slot-7 listener must succeed with the slot-7 trust root");
+    let _server_conn = accept_fut.await.unwrap();
+
+    let record = client.arrival(&client_conn);
+    let served_fp = record
+        .peer_cert
+        .as_ref()
+        .expect("the client sees the server's certificate as its peer cert")
+        .fingerprint
+        .clone();
+
+    let fp_0 = format!("{:x?}", ring_fingerprint(&cert_0_der));
+    let fp_7 = format!("{:x?}", ring_fingerprint(&cert_7_der));
+    assert_eq!(served_fp, fp_7, "accept served the slot-7 certificate, byte for byte");
+    assert_ne!(served_fp, fp_0, "slot 0's certificate must not be what accept served");
+}

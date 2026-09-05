@@ -115,7 +115,9 @@ impl ListenerHandle for TlsListenerHandle {
 pub struct TlsTransport {
     next_id: AtomicU64,
     conns: Mutex<HashMap<u64, Arc<Inner>>>,
-    listeners: Mutex<HashMap<String, Arc<TcpListener>>>,
+    /// Keyed by the bound address; the value carries the slot the listener was provisioned with,
+    /// so `accept` uses the same config `listen` validated rather than a fixed slot of its own.
+    listeners: Mutex<HashMap<String, (Arc<TcpListener>, u64)>>,
     server_configs: Mutex<HashMap<u64, Arc<rustls::ServerConfig>>>,
     client_configs: Mutex<HashMap<u64, Arc<rustls::ClientConfig>>>,
 }
@@ -208,12 +210,22 @@ impl TlsTransport {
         let alpn = client_conn
             .alpn_protocol()
             .map(|p| String::from_utf8_lossy(p).into_owned());
+        // From the dialling side, "peer" certificates are the server's own chain — this is how a
+        // test (or a caller) can confirm which cert a listener actually served, independent of
+        // which slot it was supposed to serve.
+        let peer_cert = client_conn.peer_certificates().and_then(|certs| {
+            certs.first().map(|c| CertFacts {
+                subject: "peer".to_string(),
+                issuer: "peer".to_string(),
+                fingerprint: format!("{:x?}", ring_fingerprint(c.as_ref())),
+            })
+        });
         let (read, write) = tokio::io::split(stream);
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let inner = Arc::new(Inner {
             sni: None,
             alpn,
-            peer_cert: None,
+            peer_cert,
             chain,
             read: AsyncMutex::new(InnerRead::Client(read)),
             write: AsyncMutex::new(InnerWrite::Client(write)),
@@ -333,8 +345,8 @@ impl Transport for TlsTransport {
             self.listeners
                 .lock()
                 .expect("poisoned")
-                .insert(addr.clone(), Arc::new(listener));
-            let _ = server_cfg; // resolved once here; consumed again per-accept from the same slot
+                .insert(addr.clone(), (Arc::new(listener), keys.slot()));
+            let _ = server_cfg; // resolved once here to fail fast; re-resolved per-accept by slot
             Ok(Listener::new(Arc::new(TlsListenerHandle { addr })))
         })
     }
@@ -342,7 +354,7 @@ impl Transport for TlsTransport {
     fn accept<'a>(&'a self, l: &'a Listener) -> Fut<'a, Conn> {
         Box::pin(async move {
             let addr = l.local_addr();
-            let listener = self
+            let (listener, slot) = self
                 .listeners
                 .lock()
                 .expect("poisoned")
@@ -351,15 +363,16 @@ impl Transport for TlsTransport {
                 .ok_or(TransportError::Closed)?;
             let (stream, peer) = listener.accept().await.map_err(|_| TransportError::Closed)?;
             stream.set_nodelay(true).ok();
-            // Every accepted connection on this listener uses the config registered for slot 0 —
-            // the listener has no per-connection SNI to route on before the handshake completes,
-            // so `listen`'s own slot is the one config an accept loop can use. A deployment that
-            // needs SNI-routed certs resolves that at the transport-key unit, not here.
+            // Every accepted connection on this listener uses the config registered for the slot
+            // this listener was provisioned with in `listen` — not a fixed slot of accept's own —
+            // because the listener has no per-connection SNI to route on before the handshake
+            // completes. A deployment that needs SNI-routed certs resolves that at the
+            // transport-key unit, not here.
             let cfg = self
                 .server_configs
                 .lock()
                 .expect("poisoned")
-                .get(&0)
+                .get(&slot)
                 .cloned()
                 .ok_or(TransportError::KeyUnavailable)?;
             let acceptor = TlsAcceptor::from(cfg);
