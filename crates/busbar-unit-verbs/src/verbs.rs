@@ -26,14 +26,28 @@
 //! or [`crate::store::Store`].
 
 use crate::governance::{Governance, GovernanceError, RotateOutcome};
-use crate::idempotency::{IdempotencyCache, Probe};
+use crate::idempotency::{IdempotencyCache, Probe, ReplayEncoder};
 use crate::mint::{plan_mint_group, GroupLookup, MintPlan};
 use crate::posture::{ApprovalState, PostureCtx};
-use crate::rate::{MutationClass, MutationLimiter, RateCheck};
+use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
 use crate::refusal::{ReasonCode, Refusal, RefusalStep};
 use crate::store::Store;
 use crate::verb::{KernelVerb, VerbScope, LEGACY_VERBS, NEW_VERBS};
 use busbar_caps::{AdminToken, SecretOnce, UnitKey};
+
+/// CG-39: the nonce seam. This crate has no CSPRNG dependency of its own, so the 128-bit nonce a
+/// [`SecretOnce`] is bound to — the thing that proves exactly one occurrence of the minted secret
+/// at its declared target location — must come from the composition root's own entropy (the secret
+/// plugin's CSPRNG). Deliberately has **no** `Default` impl and
+/// no derivable placeholder: a mandatory seam, bound once at [`Verbs::new`], never silently
+/// defaulted to something predictable (a derivable nonce is security-shaped — it must never reach a
+/// release binary).
+pub trait NonceSource {
+    /// Fill `buf` with 128 bits of nonce material for exactly one mint. Called once per
+    /// [`SecretOnce`]; two calls must not return the same bytes (the property the CSPRNG, not this
+    /// trait, is responsible for).
+    fn fill(&self, buf: &mut [u8; 16]);
+}
 
 /// The longest a group/parent name may be. `// contract:` in spirit (1.5.5 pins this in
 /// `busbar-core::admin::v1::service::MAX_GROUP_NAME_LEN`), kept as a plain constant here because
@@ -54,6 +68,55 @@ pub struct MintedKeyOutcome {
     pub expires_at: Option<u64>,
 }
 
+/// The result of [`Verbs::create_key`]/[`Verbs::rotate_key`]: either a fresh mint/rotation, or the
+/// verbatim replay of a previous call's response for the same idempotency key. CG-40: a replay
+/// carries no [`MintedKeyOutcome`] at all — there is no decode step that could reconstruct (and
+/// thereby re-mint) a fresh [`SecretOnce`]; `body` is exactly the bytes the encoder produced for the
+/// original call, byte-for-byte, for as long as the idempotency window is open.
+#[derive(Debug)]
+pub enum MintOutcome {
+    /// A fresh mint or rotation. `body` is [`ReplayEncoder::encode`]'s output over `outcome` — the
+    /// exact bytes cached for any future replay of this idempotency key.
+    Minted {
+        /// The freshly minted or rotated capability.
+        outcome: MintedKeyOutcome,
+        /// The encoded response body, as cached for replay.
+        body: Vec<u8>,
+    },
+    /// A replay: the previously encoded response body, verbatim. No secret was minted or rotated on
+    /// this call.
+    Replayed {
+        /// The exact bytes committed by the original call.
+        body: Vec<u8>,
+    },
+}
+
+impl MintOutcome {
+    /// The response body to send: the fresh encoding on a mint, the cached bytes verbatim on a
+    /// replay — the two cases a caller building an HTTP response must treat identically.
+    pub fn body(&self) -> &[u8] {
+        match self {
+            MintOutcome::Minted { body, .. } => body,
+            MintOutcome::Replayed { body } => body,
+        }
+    }
+
+    /// Whether this outcome is a replay (no fresh secret was minted).
+    pub fn is_replay(&self) -> bool {
+        matches!(self, MintOutcome::Replayed { .. })
+    }
+
+    /// The freshly minted or rotated capability, or `None` for a replay — a replay never carries
+    /// one (CG-40: there is no decode step that could reconstruct, and thereby re-mint, a fresh
+    /// `SecretOnce`).
+    pub fn minted_outcome(&self) -> Option<&MintedKeyOutcome> {
+        match self {
+            MintOutcome::Minted { outcome, .. } => Some(outcome),
+            MintOutcome::Replayed { .. } => None,
+        }
+    }
+}
+
 /// Resolve the scope a [`KernelVerb`] requires. Legacy verbs read [`LEGACY_VERBS`]; the 17 new
 /// verbs are `Full` (every one of them mutates state or reads privileged material — there is no
 /// read-only new verb); the named surfaces split by their own nature (`Get*` reads, the two
@@ -72,21 +135,41 @@ pub fn required_scope(verb: KernelVerb) -> VerbScope {
     VerbScope::ReadOnly
 }
 
-/// `Verbs` — the closed kernel-verb executor. Generic over the two seams the integrator binds.
-pub struct Verbs<G: Governance, S: Store> {
+/// `Verbs` — the closed kernel-verb executor. Generic over the seams the integrator binds: the
+/// [`Governance`] and [`Store`] record-store adapters, the [`NonceSource`] the secret plugin lends
+/// (CG-39), and the [`ReplayEncoder`] the admin plane's own writer implements (CG-40).
+/// `config_class_rules` (CG-38) is data rather than a fifth type parameter — a `&'static` table has
+/// no behaviour to seal behind a trait.
+pub struct Verbs<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>> {
     governance: G,
     store: S,
+    nonce_source: N,
+    replay_encoder: E,
+    config_class_rules: &'static [ConfigClassRule],
     create_key_cache: IdempotencyCache<Vec<u8>>,
     rotate_key_cache: IdempotencyCache<Vec<u8>>,
     limiter: MutationLimiter,
 }
 
-impl<G: Governance, S: Store> Verbs<G, S> {
-    /// Build a fresh executor over the two bound seams.
-    pub fn new(governance: G, store: S) -> Self {
+impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>> Verbs<G, S, N, E> {
+    /// Build a fresh executor over the four bound seams. `config_class_rules` is the composition
+    /// root's sealed CG-38 table (see [`crate::rate::CONFIG_CLASS_RULES`] for the 1.5.5-parity
+    /// default); `nonce_source` and `replay_encoder` are mandatory — there is no `Default` for
+    /// either, so a caller cannot silently construct a `Verbs` with a predictable nonce or a
+    /// re-minting replay path.
+    pub fn new(
+        governance: G,
+        store: S,
+        nonce_source: N,
+        replay_encoder: E,
+        config_class_rules: &'static [ConfigClassRule],
+    ) -> Self {
         Verbs {
             governance,
             store,
+            nonce_source,
+            replay_encoder,
+            config_class_rules,
             create_key_cache: IdempotencyCache::new(),
             rotate_key_cache: IdempotencyCache::new(),
             limiter: MutationLimiter::new(),
@@ -105,7 +188,7 @@ impl<G: Governance, S: Store> Verbs<G, S> {
         if !granted.allows(required_scope(verb)) {
             return Err(Refusal::new(RefusalStep::Admit, ReasonCode::Unauthorized));
         }
-        let class = MutationClass::for_verb(verb);
+        let class = MutationClass::for_verb(verb, self.config_class_rules);
         if class == MutationClass::Forbidden {
             // Never rate-limited (a read, or a verb this limiter does not shape).
             return Ok(class);
@@ -113,6 +196,25 @@ impl<G: Governance, S: Store> Verbs<G, S> {
         match self.limiter.check(actor, class, now) {
             RateCheck::Admitted => Ok(class),
             RateCheck::Denied { .. } => Err(Refusal::new(RefusalStep::Admit, ReasonCode::RateLimited)),
+        }
+    }
+
+    /// CG-39: mint a [`SecretOnce`] whose nonce comes from the bound [`NonceSource`] — never a
+    /// value derivable from the unit key or the secret's own shape.
+    fn to_secret_once(
+        &self,
+        admin: &AdminToken,
+        unit: UnitKey,
+        minted: crate::governance::MintedKey,
+        target: &str,
+    ) -> MintedKeyOutcome {
+        let mut buf = [0u8; 16];
+        self.nonce_source.fill(&mut buf);
+        let nonce = u128::from_be_bytes(buf);
+        MintedKeyOutcome {
+            id: minted.id,
+            secret: SecretOnce::mint(admin, nonce, unit, target),
+            expires_at: minted.expires_at,
         }
     }
 
@@ -139,7 +241,7 @@ impl<G: Governance, S: Store> Verbs<G, S> {
         idempotency_key: Option<&str>,
         group: Option<&str>,
         parent: Option<&str>,
-    ) -> Result<MintedKeyOutcome, Refusal> {
+    ) -> Result<MintOutcome, Refusal> {
         self.admit(KernelVerb::PostKeys, actor, granted, now)?;
         if group.is_none() && parent.is_some() {
             return Err(Refusal::new(RefusalStep::Verify, ReasonCode::Validation));
@@ -149,7 +251,7 @@ impl<G: Governance, S: Store> Verbs<G, S> {
             None => None,
             Some(key) => match self.create_key_cache.probe(key, now) {
                 Probe::NoKey => None,
-                Probe::Replay(cached) => return Ok(decode_minted_key_bytes(&cached, admin, unit)),
+                Probe::Replay(body) => return Ok(MintOutcome::Replayed { body }),
                 Probe::InFlight => {
                     return Err(Refusal::new(
                         RefusalStep::Admit,
@@ -180,11 +282,12 @@ impl<G: Governance, S: Store> Verbs<G, S> {
         }
         match self.governance.mint_key(admin, group) {
             Ok(minted) => {
-                let outcome = to_secret_once(admin, unit, minted, "response.secret");
+                let outcome = self.to_secret_once(admin, unit, minted, "response.secret");
+                let body = self.replay_encoder.encode(&outcome);
                 if let Some(r) = reservation {
-                    r.commit(encode_minted_key_bytes(&outcome), now);
+                    r.commit(body.clone(), now);
                 }
-                Ok(outcome)
+                Ok(MintOutcome::Minted { outcome, body })
             }
             Err(e) => {
                 if let Some(r) = reservation {
@@ -197,8 +300,8 @@ impl<G: Governance, S: Store> Verbs<G, S> {
 
     /// `POST /api/v1/admin/keys/{id}/rotate` — ported in full: same idempotency mechanics as
     /// [`Verbs::create_key`], SCOPED to `(actor, "rotate:{id}:{k}")` rather than `(actor, k)` — the
-    /// architecture document's PB-21 note that a create and a rotate sharing a header value must
-    /// never replay each other.
+    /// architecture document's note that a create and a rotate sharing a header value must never
+    /// replay each other.
     #[allow(clippy::too_many_arguments)]
     pub fn rotate_key(
         &self,
@@ -209,14 +312,14 @@ impl<G: Governance, S: Store> Verbs<G, S> {
         unit: UnitKey,
         idempotency_key: Option<&str>,
         id: &str,
-    ) -> Result<MintedKeyOutcome, Refusal> {
+    ) -> Result<MintOutcome, Refusal> {
         self.admit(KernelVerb::PostKeysIdRotate, actor, granted, now)?;
         let ck = idempotency_key.map(|k| (actor.to_string(), format!("rotate:{id}:{k}")));
         let reservation = match ck {
             None => None,
             Some(key) => match self.rotate_key_cache.probe(key, now) {
                 Probe::NoKey => None,
-                Probe::Replay(cached) => return Ok(decode_minted_key_bytes(&cached, admin, unit)),
+                Probe::Replay(body) => return Ok(MintOutcome::Replayed { body }),
                 Probe::InFlight => {
                     return Err(Refusal::new(
                         RefusalStep::Admit,
@@ -240,11 +343,12 @@ impl<G: Governance, S: Store> Verbs<G, S> {
                 Err(Refusal::new(RefusalStep::Verify, ReasonCode::Conflict))
             }
             Ok(RotateOutcome::Rotated(minted)) => {
-                let outcome = to_secret_once(admin, unit, minted, "response.token");
+                let outcome = self.to_secret_once(admin, unit, minted, "response.token");
+                let body = self.replay_encoder.encode(&outcome);
                 if let Some(r) = reservation {
-                    r.commit(encode_minted_key_bytes(&outcome), now);
+                    r.commit(body.clone(), now);
                 }
-                Ok(outcome)
+                Ok(MintOutcome::Minted { outcome, body })
             }
             Err(e) => {
                 if let Some(r) = reservation {
@@ -309,54 +413,6 @@ impl<'a, G: Governance> GroupLookup for GovernanceGroupLookup<'a, G> {
     }
     fn actual_parent(&self, name: &str) -> Option<String> {
         self.0.actual_parent(name)
-    }
-}
-
-fn to_secret_once(
-    admin: &AdminToken,
-    unit: UnitKey,
-    minted: crate::governance::MintedKey,
-    target: &str,
-) -> MintedKeyOutcome {
-    // contract: nonce uniqueness here is a placeholder scheme (unit key folded with the secret's
-    // own byte length) — a real deployment mints this from a CSPRNG, which this crate does not
-    // depend on. What matters for the capability property is that a `SecretOnce` for THIS mint
-    // exists at all and is the only thing carrying the plaintext past this point.
-    let nonce = (unit.get() as u128) << 64 | minted.secret.len() as u128;
-    MintedKeyOutcome {
-        id: minted.id,
-        secret: SecretOnce::mint(admin, nonce, unit, target),
-        expires_at: minted.expires_at,
-    }
-}
-
-/// `// contract:` — this crate has no serializer, so the idempotency cache for mint/rotate stores
-/// an OPAQUE byte encoding of the outcome (a real integrator's codec already has one: the JSON body
-/// it was about to send). This placeholder just round-trips the fields a test needs; it does not
-/// carry the real `SecretOnce` (which cannot be serialized at all — that is the point of the type),
-/// so a replay decodes to a FRESH `SecretOnce` over the same id/secret-length/expiry, never the
-/// original capability value. A real integrator's codec caches its own already-encoded response
-/// bytes and never needs to decode them back into this crate's types at all.
-fn encode_minted_key_bytes(outcome: &MintedKeyOutcome) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(outcome.id.as_bytes());
-    out.push(0);
-    out.extend_from_slice(&outcome.expires_at.unwrap_or(0).to_le_bytes());
-    out
-}
-
-fn decode_minted_key_bytes(bytes: &[u8], admin: &AdminToken, unit: UnitKey) -> MintedKeyOutcome {
-    let split = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
-    let id = String::from_utf8_lossy(&bytes[..split]).into_owned();
-    let expires_at = bytes
-        .get(split + 1..split + 9)
-        .and_then(|b| b.try_into().ok())
-        .map(u64::from_le_bytes)
-        .filter(|v| *v != 0);
-    MintedKeyOutcome {
-        secret: SecretOnce::mint(admin, unit.get() as u128, unit, "response.replay"),
-        id,
-        expires_at,
     }
 }
 
