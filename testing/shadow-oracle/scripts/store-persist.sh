@@ -66,6 +66,10 @@ rate_card:
   m-openai-chat: { input_utok: 100000, output_utok: 200000 }
 YAML
 env_() { BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ADMIN" RUST_LOG=warn "$@"; }
+# Backgrounding a shell FUNCTION tracks the subshell's pid, and killing that orphans busbar on the
+# port (the next recording then refuses to boot against the stale process). Spawn through a subshell
+# that execs, so the pid tracked and killed IS busbar's.
+spawn_() { local log="$1"; shift; ( exec env BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ADMIN" RUST_LOG=warn "$@" ) >>"$log" 2>&1 & echo $!; }
 eff='{}'
 step() { eff="$(jq -c --arg k "$1" --arg v "$2" '. + {($k): $v}' <<<"$eff")"; }
 fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"; exit 0; }
@@ -75,7 +79,7 @@ step validate_tail "$(tail -c 300 "$W/validate.log" | tr '\n' ' ')"
 [ "$(jq -r .validate_exit <<<"$eff")" = 0 ] || fail 1 "$(cat "$W/validate.log")"
 env_ "$BIN" --list-plugins >"$W/plugins.log" 2>&1; step list_plugins "$(grep -w "$alias_" "$W/plugins.log" | head -1 | tr '\n' ' ')"
 
-env_ "$BIN" >"$W/busbar1.log" 2>&1 & pid=$!; track_pid $pid
+pid="$(spawn_ "$W/busbar1.log" "$BIN")"; track_pid $pid
 wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 2 "$(tail -c 500 "$W/busbar1.log")"
 mint="$(curl -sS -m 10 -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"store-oracle","group":"oracle"}')"
 kid="$(jq -r '.id // empty' <<<"$mint")"; tok="$(jq -r '.token // empty' <<<"$mint")"
@@ -89,7 +93,7 @@ step usage_before_restart "$u1"
 kill $pid; wait $pid 2>/dev/null
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
 
-env_ "$BIN" >"$W/busbar2.log" 2>&1 & pid=$!; track_pid $pid
+pid="$(spawn_ "$W/busbar2.log" "$BIN")"; track_pid $pid
 wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 4 "$(tail -c 500 "$W/busbar2.log")"
 k2="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:${AP}/api/v1/admin/keys/${kid}")"
 step key_after_restart "$k2"
