@@ -513,15 +513,15 @@
    ],
    "tree_hash": "d3d217f048326eeafb049f4b0d23a1341bee1b3d26a18de7be1b8cfd985194a4",
    "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
+   "round": 7,
    "result": "findings",
    "counts": {
-    "MEDIUM": 2,
-    "LOW": 3,
-    "NIT": 2
+    "MEDIUM": 1,
+    "LOW": 6,
+    "NIT": 1
    },
-   "report": "pass 2 fresh eyes, plane_host+plane+teller only: mutate splits a durable write with no compensation; identity/trust-anchor registries hold private keys with no removal path; cancelled unit at route/meter never posted; all 15 production files and 5 test files read, teller/tests.rs unread; no fix shipped, fix agent dispatched",
-   "auditor": "opus-pass2",
+   "report": "pass 1 of the remainder (store, net_guard, tls, trust, testkit, metrics, telemetry, hooks, proxy, topology): nat64-embedded v4 bypassed the imds refusal (fixed 1c267b91); host_matches_any block side, alternate-encoding trailing dot, metrics spawn panic, telemetry bank growth reported; 36 production files read fully",
+   "auditor": "opus-pass1",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-substrate/src/tests"
