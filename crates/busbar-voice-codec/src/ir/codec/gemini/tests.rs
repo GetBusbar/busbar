@@ -693,6 +693,38 @@ fn the_gemini_turn_boundary_resets_the_playback_position() {
     assert_eq!(st.flush_playback(), 240, "this turn's audio only");
 }
 
+#[test]
+fn a_downlink_blob_at_the_uplink_rate_is_not_counted_as_playback() {
+    // The playback position is BYTES ÷ the negotiated format's bytes-per-ms, and `pcm16` means
+    // 24 kHz (48 B/ms). A downlink blob tagged 16 kHz is not that format: counted at 48 B/ms it
+    // reports two thirds of the audio it is, and the barge-in truncate cuts the user off mid-word.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "serverContent": { "modelTurn": { "parts": [
+            { "inlineData": { "mimeType": "audio/pcm;rate=16000", "data": b64(&vec![0u8; 480]) } }
+        ] } }
+    });
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    assert!(
+        ir.is_empty(),
+        "a downlink blob at a rate this dialect does not synthesize has no frame: {ir:?}"
+    );
+    assert_eq!(
+        st.played_ms(),
+        0,
+        "and nothing it carried was accounted as played"
+    );
+    // The 24 kHz downlink the dialect DOES synthesize still counts.
+    let ok = json!({
+        "serverContent": { "modelTurn": { "parts": [
+            { "inlineData": { "mimeType": "audio/pcm;rate=24000", "data": b64(&vec![0u8; 480]) } }
+        ] } }
+    });
+    assert_eq!(codec.read_down(wire(&ok.to_string()), &mut st).len(), 1);
+    assert_eq!(st.played_ms(), 10, "480 bytes at 48 B/ms");
+}
+
 // ── setupComplete ↔ SessionCreated ────────────────────────────────────────────────────────────────
 
 #[test]
@@ -953,16 +985,34 @@ fn cached_content_tokens_are_not_billed_twice() {
 
 #[test]
 fn audio_format_from_mime_probe() {
+    // Uplink: either PCM rate is the shared token (no millisecond count is taken from the uplink).
     assert_eq!(
-        audio_format_from_mime("audio/pcm;rate=24000"),
+        audio_format_from_mime("audio/pcm;rate=24000", UpDown::Up),
         Some(AudioFormat::Pcm16)
     );
     assert_eq!(
-        audio_format_from_mime("audio/pcm;rate=16000"),
+        audio_format_from_mime("audio/pcm;rate=16000", UpDown::Up),
         Some(AudioFormat::Pcm16)
     );
-    assert_eq!(audio_format_from_mime("text/plain"), None);
-    assert_eq!(audio_format_from_mime("video/mp4"), None);
+    // Downlink: only the rate the shared token actually means — the truncate math divides by it.
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=24000", UpDown::Down),
+        Some(AudioFormat::Pcm16)
+    );
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=16000", UpDown::Down),
+        None,
+        "a 16 kHz downlink blob is not the 24 kHz format the position is measured in"
+    );
+    // An untagged `audio/pcm` is the direction's own rate.
+    assert_eq!(
+        audio_format_from_mime("audio/pcm", UpDown::Down),
+        Some(AudioFormat::Pcm16)
+    );
+    for dir in [UpDown::Up, UpDown::Down] {
+        assert_eq!(audio_format_from_mime("text/plain", dir), None);
+        assert_eq!(audio_format_from_mime("video/mp4", dir), None);
+    }
 }
 
 // ── degrade, don't error (drop+warn asymmetries) ─────────────────────────────────────────────────
