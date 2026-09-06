@@ -2782,3 +2782,37 @@ fn malformed_pools_is_never_replaced_by_a_synthesized_one() {
         out.todos
     );
 }
+
+/// Same take-on-match rule on the `export:` DESTINATION: `export_mut` normalized a non-mapping
+/// `export:` by overwriting it, so an operator's malformed export block was deleted and the
+/// observability keys being lifted into it were taken off `observability:` first — losing both. The
+/// migrator must touch neither and say why.
+#[test]
+fn malformed_export_is_never_replaced_by_a_synthesized_one() {
+    let out = migrate_config(
+        "observability:\n  request_log_webhook_url: https://x.example/log\nexport: not-a-mapping\nproviders: {}\nmodels: {}\n",
+    )
+    .unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    assert_eq!(
+        doc["export"].as_str(),
+        Some("not-a-mapping"),
+        "the operator's `export:` was destroyed and replaced with a synthesized mapping: {}",
+        out.yaml
+    );
+    // `observability:` is a RETIRED section, so the block itself still has to go — but the sink it
+    // carried may not disappear WITHOUT A WORD. The ledger has to print the key and its value so the
+    // operator can put it back by hand.
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.contains("https://x.example/log")),
+        "the webhook sink was deleted with the retired block and never named in the ledger: {:?}",
+        out.todos
+    );
+    assert!(
+        out.todos.iter().any(|t| t.contains("export")),
+        "a section this migrator refuses to touch must say so: {:?}",
+        out.todos
+    );
+}
