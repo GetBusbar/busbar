@@ -225,9 +225,10 @@
         "status": "mapped",
         "note": "testing/mcp-conformance/src/suites/server-adversarial.mjs; battery-subject role=server, not yet folded into rigs-ledger.sh's mcp.rig|* rows (those read only --official-subject's checks.json)",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-mcp",
-          "note": "no root-mcp cell puts a malformed envelope through the decode step; every cell on this leg starts from a draft the plane already decoded"
+          "test": "crates/busbar/src/root/units_mcp.rs::an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused",
+          "note": "a real frame through the plane's own ingress decoder, over a real arena: a tools/call envelope resolves to the method table's own operation class and the step proceeds carrying it; five malformed shapes (wrong version, non-string method, an identifier that is neither string nor number, no version member, a method the table never named) each refuse at the decode step with decode_failed; an unrecognised notice is DROPPED rather than refused, because a refusal is an answer and this protocol forbids answering a message with no identifier. The metadata block is read as the depth-1 walk it is -- the block resolves by pointer and its separator-carrying member names do not, which is why the block is located by pointer and its members read by name out of it"
         }
       },
       "authenticate": {

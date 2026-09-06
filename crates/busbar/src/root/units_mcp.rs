@@ -50,8 +50,8 @@ use std::sync::Arc;
 
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, Store as AbiStore};
 use busbar_caps::{
-    Admit, AdmitToken, Arrival, ArrivalRecord, Authenticate, Decision, PrincipalId, ReasonCode,
-    Refusal, TrustToken, UnitToken, UsageToken, Verify,
+    Admit, AdmitToken, Arrival, ArrivalRecord, Authenticate, Decision, Decode, PrincipalId,
+    ReasonCode, Refusal, TrustToken, UnitToken, UsageToken, Verify,
 };
 use busbar_contract::dest::DestinationFacts;
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
@@ -168,6 +168,100 @@ pub fn arrival(arrived: &Arrived<'_>, token: &UnitToken<Arrival>) -> Decision<Ar
         return Decision::refuse(token, Refusal::new(ReasonCode::HandoffMismatch));
     }
     Decision::proceed(token, arrived.record.clone())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step 0b — decode, through the plane's own reading of the envelope
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// What the plane made of one inbound frame.
+///
+/// Three answers rather than two, because "not a unit" is not one thing. A notice nothing
+/// recognises is dropped and a partial frame is waited on, and neither is a refusal: this protocol
+/// forbids answering a message that carries no identifier, so refusing one would be an answer to a
+/// caller who is owed silence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Read<'u> {
+    /// A draft the loop runs. Boxed because the fact map is a fixed array sized for the declared
+    /// key ceiling, and an enum whose other arms are empty should not be that wide everywhere.
+    Unit(Box<Decoded<'u>>),
+    /// A notice this node does not recognise. Counted, never answered.
+    Dropped,
+    /// Not a whole frame yet.
+    NeedMore,
+}
+
+/// What the plane's read of one request body yielded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Decoded<'u> {
+    /// The operation class the plane's method table named.
+    pub op: OpClassId,
+    /// Whether the unit holds its direction open rather than being answered once.
+    pub streaming: bool,
+    /// The facts the plane read off the bytes, including the caller's metadata block.
+    pub facts: busbar_contract::bounded::Facts<'u>,
+}
+
+/// Read one inbound frame through the plane's own ingress decoder.
+///
+/// The root does not parse this protocol and must not: the envelope shape, the method table and the
+/// pointer table are all the plane's, and a second reading here would be a second grammar. What the
+/// root owns is the mapping from the plane's decode failure onto the loop's closed reason
+/// vocabulary, which is the thing the journal and the refusal both name.
+///
+/// # Errors
+/// Returns the reason a refusal at the decode step carries when the plane could not read the bytes.
+pub fn read_ingress<'u>(
+    plane: &McpPlane,
+    frames: &mut busbar_contract::wire::FrameCursor<'u>,
+    ctx: &busbar_contract::unit::Ctx<'u>,
+) -> Result<Read<'u>, ReasonCode> {
+    let ingress = plane
+        .decode_ingress(frames, None, ctx)
+        .map_err(|failure| match failure {
+            // The arena running out is a budget, not a misread body, and the two carry different
+            // reasons because a caller who is over a bound and a caller who sent nonsense are owed
+            // different answers.
+            busbar_contract::wire::Decode::Oversize => ReasonCode::ArenaBudget,
+            _ => ReasonCode::DecodeFailed,
+        })?;
+    Ok(match ingress {
+        busbar_contract::plane::Ingress::OneShot(draft) => Read::Unit(Box::new(Decoded {
+            op: draft.op,
+            streaming: false,
+            facts: draft.facts,
+        })),
+        busbar_contract::plane::Ingress::Open(draft) => Read::Unit(Box::new(Decoded {
+            op: draft.op,
+            streaming: true,
+            facts: draft.facts,
+        })),
+        busbar_contract::plane::Ingress::Discard { .. } => Read::Dropped,
+        busbar_contract::plane::Ingress::NeedMore => Read::NeedMore,
+        // This plane opens no handshake unit and closes no session of its own — every claim it
+        // makes carries its credential on the first frame. A decoder that started answering either
+        // would be a plane whose shape changed, and carrying such a frame on as a unit would give
+        // it a class nobody decoded.
+        _ => return Err(ReasonCode::DecodeFailed),
+    })
+}
+
+/// Answer the decode step with the class the plane named.
+///
+/// The bytes are read once, at the one step entitled to read them, and this restates that answer
+/// rather than re-deriving it: re-reading here would advance the codec a second time over the same
+/// frame and could disagree with the draft every later step is built from.
+pub fn decode(read: &Result<Read<'_>, ReasonCode>, token: &UnitToken<Decode>) -> Decision<Decode> {
+    match read {
+        Ok(Read::Unit(decoded)) => Decision::proceed(token, decoded.op),
+        // Neither of these opens a unit, so neither should have reached a step. Refusing rather
+        // than inventing a class is the honest answer to a caller of this binding that got the
+        // sequencing wrong.
+        Ok(Read::Dropped | Read::NeedMore) => {
+            Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
+        }
+        Err(reason) => Decision::refuse(token, Refusal::new(*reason)),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1608,6 +1702,202 @@ mod tests {
         .into_result(&seal)
         .expect_err("http is below the layer this stack ended on, not the layer itself");
         assert_eq!(refusal.reason(), ReasonCode::HandoffMismatch);
+    }
+
+    // ── the decode step's own scaffolding ──────────────────────────────────────────────────────
+    //
+    // Driving the decode step means driving the plane's own ingress decoder, and that takes the
+    // four borrowed views and the one resource a plugin call is given. They are built here rather
+    // than mocked away, because a decode cell that did not hand the plane a real arena would not be
+    // driving the step that can run out of one.
+
+    /// A leaking arena. Test-only, run a bounded number of times per process: the trait's
+    /// allocators hand back borrowed slices, so an honest double either leaks or is unsafe, and
+    /// this crate's tests do not reach for unsafe.
+    struct CellArena;
+
+    impl busbar_contract::bounded::Arena for CellArena {
+        fn alloc_bytes<'a>(
+            &'a self,
+            src: &[u8],
+        ) -> Result<busbar_contract::bounded::ArenaBytes<'a>, busbar_contract::bounded::ArenaBudget>
+        {
+            let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
+            Ok(busbar_contract::bounded::ArenaBytes::new(leaked))
+        }
+
+        fn alloc_str<'a>(
+            &'a self,
+            src: &str,
+        ) -> Result<&'a str, busbar_contract::bounded::ArenaBudget> {
+            Ok(Box::leak(src.to_string().into_boxed_str()))
+        }
+
+        fn alloc_spans<'a>(
+            &'a self,
+            src: &[(&'a str, busbar_contract::bounded::Span)],
+        ) -> Result<
+            &'a [(&'a str, busbar_contract::bounded::Span)],
+            busbar_contract::bounded::ArenaBudget,
+        > {
+            Ok(Box::leak(src.to_vec().into_boxed_slice()))
+        }
+
+        fn remaining(&self) -> usize {
+            usize::MAX
+        }
+    }
+
+    struct CellConfig;
+
+    impl busbar_contract::unit::ConfigView for CellConfig {
+        fn get_str(&self, _key: &str) -> Option<&str> {
+            None
+        }
+        fn get_int(&self, _key: &str) -> Option<i64> {
+            None
+        }
+        fn get_bool(&self, _key: &str) -> Option<bool> {
+            None
+        }
+    }
+
+    /// The document surface, composed the way the node composes it.
+    struct CellTransport;
+
+    impl busbar_contract::unit::TransportView for CellTransport {
+        fn key(&self) -> &'static str {
+            claims::TRANSPORT_HTTP
+        }
+        fn chain(&self) -> &[&'static str] {
+            &["tcp", "tls", "http"]
+        }
+        fn fact(&self, _key: &str) -> Option<&str> {
+            None
+        }
+    }
+
+    /// One inbound frame carrying `body`.
+    fn one_frame(body: &str) -> Vec<busbar_contract::wire::Frame> {
+        vec![busbar_contract::wire::Frame {
+            direction: busbar_contract::wire::Direction::Inbound,
+            stream: busbar_contract::ids::StreamId(0),
+            bytes: busbar_contract::bounded::SlabBytes::new(std::sync::Arc::from(body.as_bytes())),
+            meta: busbar_contract::wire::FrameMeta::default(),
+        }]
+    }
+
+    /// A JSON-RPC envelope resolves to the operation the plane's own method table names; a body
+    /// that is not this protocol's shape is refused at the step that read it; and the caller's
+    /// metadata block is read one level down and no further.
+    ///
+    /// The metadata walk is the part that cannot be done by pointer at all, and that is why it is
+    /// driven here rather than assumed. This protocol's metadata keys carry `/` in them, and a
+    /// pointer reads a `/` as a level, so `/params/_meta/io.modelcontextprotocol/protocolVersion`
+    /// names a nesting that does not exist. The block is located by pointer and its members are
+    /// read by name out of it — one level down, never deeper — which is what makes the protocol
+    /// version and the progress token reachable as the facts the later steps read.
+    #[test]
+    fn an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused() {
+        use busbar_caps::KernelSeal;
+        use busbar_contract::bounded::{FactValue, Labels};
+        use busbar_contract::unit::{Clock, Ctx};
+        use busbar_contract::wire::FrameCursor;
+        use busbar_plane_mcp::facts as f;
+
+        let seal = KernelSeal::acquire_for_kernel();
+        let arena = CellArena;
+        let config = CellConfig;
+        let transport = CellTransport;
+        let labels = Labels::new();
+        let clock = Clock {
+            unix_secs: 1_700_000_000,
+            monotonic_nanos: 0,
+        };
+        let plane = McpPlane::EMPTY;
+
+        // A well-formed call, carrying the caller's own metadata block. Both members the loop reads
+        // are keyed with a separator in the name, which is the whole reason the walk exists.
+        let body = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"grep","_meta":{"io.modelcontextprotocol/protocolVersion":"2025-06-18","progressToken":"p-42"}}}"#;
+        let frames = one_frame(body);
+        let mut cursor = FrameCursor::new(&frames);
+        let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+        let read = read_ingress(&plane, &mut cursor, &ctx);
+        let Ok(Read::Unit(decoded)) = &read else {
+            panic!("a well-formed call is a unit: {read:?}");
+        };
+        let facts = decoded.facts;
+        assert_eq!(decoded.op, ops::OP_TOOL_CALL);
+        // A call is answered once and does not hold the direction open.
+        assert!(!decoded.streaming);
+        // The depth-1 walk: located by pointer, members read by name out of the block.
+        assert_eq!(
+            facts.get(f::FACT_PROTOCOL_VERSION),
+            Some(FactValue::Str("2025-06-18"))
+        );
+        assert_eq!(
+            facts.get(f::FACT_PROGRESS_TOKEN),
+            Some(FactValue::Str("p-42"))
+        );
+        // And the subject the method's own row points at, which is what approve names a resource
+        // from — proof the same read served the whole pointer table and not just the envelope.
+        assert_eq!(facts.get(f::FACT_SUBJECT), Some(FactValue::Str("grep")));
+        assert_eq!(
+            decode(&read, &UnitToken::mint(&seal))
+                .into_result(&seal)
+                .expect("a resolved operation proceeds"),
+            ops::OP_TOOL_CALL
+        );
+
+        // Why the block is walked at all, stated against the pointer grammar itself: the BLOCK is
+        // reachable by pointer and its members are not, because their names carry the separator a
+        // pointer reads as a level. So the same two facts asked for by pointer resolve to nothing,
+        // and a binding that read them that way would report a caller who sent both as a caller who
+        // sent neither.
+        assert!(matches!(
+            busbar_contract::spans::resolve_pointer(
+                body.as_bytes(),
+                busbar_plane_mcp::jsonrpc::PTR_PARAMS_META
+            ),
+            busbar_contract::spans::Resolved::Found(_)
+        ));
+        assert!(!matches!(
+            busbar_contract::spans::resolve_pointer(
+                body.as_bytes(),
+                "/params/_meta/io.modelcontextprotocol/protocolVersion"
+            ),
+            busbar_contract::spans::Resolved::Found(_)
+        ));
+
+        // Every way the bytes can fail to be this protocol, refused at this step. A version member
+        // that is not this protocol's version, a method member that is not a string, an identifier
+        // that is neither a string nor a number, and a method the table does not name: none of them
+        // is guessed at, and none of them reaches a later step under a class nobody decoded.
+        for malformed in [
+            r#"{"jsonrpc":"1.0","id":1,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":7}"#,
+            r#"{"jsonrpc":"2.0","id":{},"method":"tools/list"}"#,
+            r#"{"id":1,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/obliterate"}"#,
+        ] {
+            let frames = one_frame(malformed);
+            let mut cursor = FrameCursor::new(&frames);
+            let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+            let read = read_ingress(&plane, &mut cursor, &ctx);
+            assert_eq!(read, Err(ReasonCode::DecodeFailed), "{malformed} was read");
+            let refusal = decode(&read, &UnitToken::mint(&seal))
+                .into_result(&seal)
+                .expect_err("a body this plane cannot read is refused");
+            assert_eq!(refusal.reason(), ReasonCode::DecodeFailed);
+            assert_eq!(refusal.step(), busbar_caps::StepName::Decode);
+        }
+
+        // A notice nobody recognises is DROPPED, never refused: a refusal is an answer, and this
+        // protocol forbids answering a message that carries no identifier.
+        let frames = one_frame(r#"{"jsonrpc":"2.0","method":"notifications/unheard-of"}"#);
+        let mut cursor = FrameCursor::new(&frames);
+        let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+        assert_eq!(read_ingress(&plane, &mut cursor, &ctx), Ok(Read::Dropped));
     }
 
     /// The plane declares one scheme with two alternatives, and the authenticate binding offers the
