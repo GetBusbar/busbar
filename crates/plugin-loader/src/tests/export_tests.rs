@@ -63,31 +63,11 @@ unsafe extern "C-unwind" fn fake_free(ptr: *mut u8, len: usize) {
 /// `cargo test -p busbar-plugin-loader` only produces the latter). Under CI a missing cdylib is a
 /// hard failure rather than a silent skip, so this coverage of the load seam cannot quietly vanish.
 fn export_example_plugin_path() -> Option<std::path::PathBuf> {
-    let candidate = (|| {
-        let exe = std::env::current_exe().ok()?;
-        let profile_dir = exe.parent()?.parent()?;
-        let name = crate::plugin_library_filename("busbar_export_example_plugin");
-        let uplifted = profile_dir.join(&name);
-        let raw = profile_dir.join("deps").join(&name);
-        [uplifted, raw]
-            .into_iter()
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p)
-    })();
-    if candidate.is_none() && std::env::var_os("CI").is_some() {
-        panic!(
-            "the export example plugin cdylib is not built under CI: `cargo test --workspace` \
-             must build busbar_export_example_plugin (checked both the uplifted target dir and \
-             target/deps). Refusing to silently skip the routes-query load rules."
-        );
-    }
-    candidate
+    crate::fixture_guard::locate(
+        "busbar_export_example_plugin",
+        crate::fixture_guard::FixtureClass::InTree,
+        "the routes-query load rules",
+    )
 }
 
 /// Stage the hermetic export example plugin (a genuine `Library`, handle and `close`), then splice
@@ -117,7 +97,7 @@ fn raw_with_fake_call() -> Option<RawPlugin> {
 #[test]
 fn a_panic_on_the_routes_query_fails_the_load() {
     let Some(raw) = raw_with_fake_call() else {
-        eprintln!("skip: export example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("export example plugin");
         return;
     };
     *ROUTES_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_PANIC;
@@ -138,7 +118,7 @@ fn a_panic_on_the_routes_query_fails_the_load() {
 #[test]
 fn an_unsupported_routes_query_loads_with_no_routes() {
     let Some(raw) = raw_with_fake_call() else {
-        eprintln!("skip: export example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("export example plugin");
         return;
     };
     *ROUTES_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_UNSUPPORTED;
