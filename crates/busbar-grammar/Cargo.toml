@@ -27,3 +27,10 @@ path = "src/lib.rs"
 
 [dependencies]
 serde = { workspace = true }
+
+# THE ROUND-TRIP, PROVEN. The `serde` dependency above is here because a resolved span is sealed
+# into the policy journal and read BACK out of it; a derive that only writes is half of that, and
+# nothing in the crate showed which half it had. The test that seals a span and reads it back is
+# what makes the claim checkable, and it needs a serialization to do it in.
+[dev-dependencies]
+serde_json = { workspace = true }
