@@ -250,6 +250,9 @@ pub fn rehydrate_sessions(
             Ok(row) => Ok(RehydrateOutcome::Active {
                 id: row.id.clone(),
                 meta: row.meta(),
+                // The resumed session's ROLLBACK TARGET — the durable record this row is, so a
+                // post-boot mutation whose event append fails has a row to put back.
+                row_record: row.record(),
                 row: row.clone().arc(),
                 // Voice sessions carry no resumable event chain beyond genesis in this build.
                 pos: ChainPosition::genesis(),

@@ -188,6 +188,14 @@ pub struct SubmitRecord {
 }
 
 /// What a plane's rehydrate classifier decides for one persisted row.
+///
+/// `large_enum_variant`: `Active` carries the whole resumed handle — its opaque row, its neutral
+/// projection, its chain position and the durable record it rolls back to — while the two counted
+/// outcomes carry nothing at all, so the spread is what the type MEANS rather than an oversight.
+/// One of these is produced per persisted row at BOOT, matched immediately and dropped; boxing it
+/// would buy a heap allocation per row on the one path where nothing is hot, and would put an
+/// indirection in front of the fields the install reads straight through.
+#[allow(clippy::large_enum_variant)]
 pub enum RehydrateOutcome {
     /// This row could not be decoded / read back — counted, never resumed.
     Unreadable,
@@ -200,6 +208,16 @@ pub enum RehydrateOutcome {
         id: String,
         /// The opaque row snapshot.
         row: Arc<dyn Any + Send + Sync>,
+        /// THE DURABLE ROW AS IT STANDS IN THE STORE — the resumed handle's ROLLBACK TARGET.
+        ///
+        /// A handle brought back here has never been through [`DurableHandleEngine::submit`] in this
+        /// process, so the last-persisted record a failed mutation compensates by re-upserting
+        /// (see [`DurableHandleEngine::mutate`]) is one the BOOT has to install: without it the first
+        /// post-boot mutation is the one case with nothing to restore, and a restart is what makes
+        /// that case ordinary. The plane re-derives it from the row it just decoded (the record
+        /// builder it already owns); a row it cannot re-derive a record for is not safely resumable
+        /// and belongs in [`Unreadable`](Self::Unreadable).
+        row_record: PlaneRecord,
         /// The neutral projection.
         meta: HandleMeta,
         /// The chain position resumed from the persisted events.
@@ -289,11 +307,19 @@ impl std::fmt::Display for ScopedMutateError {
     }
 }
 
-/// One live handle in the working set: its opaque row, its neutral projection, and its chain position.
+/// One live handle in the working set: its opaque row, its neutral projection, its chain position,
+/// and the durable row record LAST PERSISTED for it.
 struct HandleSlot {
     row: Arc<dyn Any + Send + Sync>,
     meta: HandleMeta,
     pos: ChainPosition,
+    /// THE ROLLBACK TARGET. Every path that installs a slot installs one: `submit` the record it
+    /// just upserted, `rehydrate` the record the plane re-derived from the row it read back. A
+    /// mutation whose event append fails re-upserts THIS record, so the durable row goes back to
+    /// what memory still says. Kept beside the opaque row rather than re-derived, because the engine
+    /// may not decode a plane's row and a rollback that had to ask the plane to re-encode would be
+    /// asking at exactly the moment the store is already failing.
+    row_record: PlaneRecord,
 }
 
 /// ONE KEY IN THE EXPIRY INDEX: a handle's age and its id, in the order the sweep evicts by — oldest
@@ -466,10 +492,26 @@ impl DurableHandleEngine {
     }
 
     /// Apply one [`Mutation`] to an already-locked `slot`: durable row upsert FIRST, then event append,
-    /// then — only after both persist — the in-memory row/meta/position. A durable failure returns via
-    /// `?` BEFORE any in-memory field is touched, so the slot is left untouched (the caller retries).
+    /// then — only after both persist — the in-memory row/meta/position. A durable failure returns
+    /// BEFORE any in-memory field is touched, so the slot is left untouched (the caller retries).
     /// The slot is held under its per-handle inner lock across the whole call, serializing that one
     /// handle's chain against a concurrent same-handle mutation.
+    ///
+    /// AN APPEND THAT FAILS TAKES THE ROW WRITE BACK WITH IT — the mutate-path counterpart of the
+    /// compensation [`submit`](Self::submit) does. The two writes are not one transaction and the
+    /// caller is told the mutation failed either way; what must not survive is the ROW alone. A
+    /// durable row that says terminal while the live handle still says ACTIVE is a divergence the
+    /// next boot resolves the wrong way — [`rehydrate`](Self::rehydrate) counts the handle terminal
+    /// and leaves it, with no event linking it to the transition that supposedly settled it. So the
+    /// slot's last-persisted record ([`HandleSlot::row_record`]) is re-upserted before the failure
+    /// returns, restoring the row memory still agrees with. Where `submit` DELETES (its row named a
+    /// handle nobody had ever been told about), this RESTORES: the row here belongs to a live handle
+    /// that must keep answering.
+    ///
+    /// If the restore fails too there is nothing left to try, and the divergence is real: the
+    /// returned error then names BOTH failures, so the append's cause reaches the caller (that is
+    /// the failure that happened first) with the rollback's beside it rather than swallowed. On the
+    /// sweep's abandon arm that composed error is what reaches `report_fail`.
     ///
     /// This is the ONE place a live handle's `updated_at` and `terminal` move, so it is where the
     /// expiry index is re-keyed: a handle left under a stale key is a handle the sweep would judge at
@@ -485,7 +527,21 @@ impl DurableHandleEngine {
             self.upsert_record(rec)?;
         }
         if let Some(ev) = &m.event {
-            self.append_record(&ev.record)?;
+            if let Err(e) = self.append_record(&ev.record) {
+                // Only a row write needs taking back; an event-only mutation left the row alone.
+                if m.row_record.is_some() {
+                    if let Err(undo) = self.upsert_record(&slot.row_record) {
+                        return Err(StoreError(format!(
+                            "{e}; the row write that preceded it could NOT be rolled back ({undo}), \
+                             so the durable row for `{id}` is ahead of the live handle"
+                        )));
+                    }
+                }
+                return Err(e);
+            }
+        }
+        if let Some(rec) = m.row_record {
+            slot.row_record = rec;
         }
         if let Some(ev) = m.event {
             slot.pos.tail_hash = ev.tail_hash;
@@ -622,6 +678,8 @@ impl DurableHandleEngine {
                 row: sr.row,
                 meta: sr.meta,
                 pos,
+                // The record just persisted IS this handle's first rollback target.
+                row_record: sr.row_record,
             },
         );
         Ok(row)
@@ -797,8 +855,10 @@ impl DurableHandleEngine {
             let Some(m) = verdict else {
                 continue;
             };
-            // A failed compensating write leaves the handle ACTIVE (the mutation applies nothing on
-            // a durable failure) and is reported, never swallowed.
+            // A failed compensating write leaves the handle ACTIVE in memory AND in the store (the
+            // mutation applies nothing on a durable failure, and an append that fails after the row
+            // upsert restores the last-persisted row), and is reported, never swallowed. Where even
+            // the restore failed, the reported error names both halves.
             if let Err(e) = self.apply_mutation_to_slot(id, &mut slot, m) {
                 report_fail(id, &e);
             }
@@ -936,6 +996,7 @@ impl DurableHandleEngine {
                 RehydrateOutcome::Active {
                     id,
                     row,
+                    row_record,
                     meta,
                     pos,
                     event_unreadable,
@@ -945,7 +1006,12 @@ impl DurableHandleEngine {
                         &mut handles,
                         &self.expiry,
                         id,
-                        HandleSlot { row, meta, pos },
+                        HandleSlot {
+                            row,
+                            meta,
+                            pos,
+                            row_record,
+                        },
                     );
                     out.active += 1;
                 }
