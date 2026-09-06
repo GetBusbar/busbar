@@ -28,6 +28,9 @@
 #       This is the guard that stops a class being quietly dropped from MONEY_CLASSES: removing
 #       effects.usage (or effects.egress / effects.readback / effects.files / ...) from that set
 #       makes the matching case here go green-when-it-should-be-red, i.e. RED in this selftest.
+#   (r) diff-cells.py --strict --id-filter used directly as a subset gate (land.sh's shape):
+#       a filter that selects a diverging cell exits 1, and a filter that selects NOTHING also
+#       exits 1 — a subset gate that compared zero cells has proven nothing
 # The tracked fixture recording under fixtures/selftest-recording is used read-only: every case
 # below works on a `cp -R` of it, never the tracked copy itself.
 set -uo pipefail
@@ -282,6 +285,24 @@ json.dump({"accepted":[{"id":"bad money accept","kind":"improvement","by":"selft
     && say PASS "improvement accepting '${mc}' -> loader refuses (money class)" \
     || say FAIL "improvement accepting '${mc}' was NOT refused (rc=$rc msg_ok=$msg_ok) — is ${mc} still in MONEY_CLASSES?"
 done
+
+# (p) --strict on a filtered subset: the differ is a gate on its own when a caller (land.sh) uses it
+# that way. A filter that selects the mutated cell must exit 1 …
+DC="python3 ${here}/diff-cells.py"
+$DC --golden "$FIX" --candidate "$W/mut" --out "$W/out-p" --cells "$CELLS" --accepted "$W/no-accept.json" \
+  --allow-harness-skew --strict --id-filter '^self\|a\|ok$' >"$W/out-p.log" 2>&1
+rc=$?
+owed_p="$(wc -l <"$W/out-p/owed.txt" | tr -d ' ')"
+[ "$rc" = 1 ] && [ "$owed_p" = 1 ] && grep -q "unaccepted divergence" "$W/out-p.log" && say PASS "--strict with a filter selecting the mutated cell -> exit 1" || say FAIL "strict filtered rc=$rc owed=$owed_p (see $W/out-p.log)"
+
+# … and a filter that selects NOTHING is red too: a subset gate that compared zero cells proved
+# nothing, and must never be mistaken for a clean run.
+$DC --golden "$FIX" --candidate "$W/mut" --out "$W/out-q" --cells "$CELLS" --accepted "$W/no-accept.json" \
+  --allow-harness-skew --strict --id-filter 'no-such-cell-anywhere' >"$W/out-q.log" 2>&1
+rc=$?
+grep -q "no owed cells matched" "$W/out-q.log" && msg_ok=1 || msg_ok=0
+[ "$rc" = 1 ] && [ "$msg_ok" = 1 ] && say PASS "--strict with a filter matching nothing -> exit 1 (nothing was compared)" || say FAIL "strict empty filter rc=$rc msg_ok=$msg_ok (see $W/out-q.log)"
+
 
 echo
 [ "$fails" -eq 0 ] && echo "replay selftest: GREEN" || { echo "replay selftest: RED ($fails)"; exit 1; }
