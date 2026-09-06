@@ -1794,13 +1794,13 @@ During a self-serve key refresh, the store tombstone of the prior binding commit
 <a id="accrual-group-missing"></a>
 ### BUSBAR-8007 — Group missing at accrual (tokens ledgered to the key bucket only)
 
-- **Severity:** benign_recurring
+- **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `accrual-group-missing`
 
-A group referenced by a key was gone by the time usage was accrued (the group was deleted between admission and accrual), so busbar degrades to ledgering the tokens on the key's own bucket only rather than lose them. The request was already admitted and served; nothing is lost. This is a per-request, self-degrading path, so it is emitted at debug.
+A group referenced by a key was gone by the time usage was accrued (the group was deleted between admission and accrual), so busbar degrades to ledgering the tokens on the key's own bucket only rather than lose them. The KEY's bucket keeps every token, but the GROUP's does not: that group's ledger under-counts by this request, and the budget cap derived from it reads low for the rest of the window, so a caller already over its group budget can be admitted. That is a money signal, not a footnote, which is why this is a warning and not a debug line. Admission and accrual read ONE pinned cost-model snapshot per request, so this cannot fire for a config apply that merely rebuilt the model — it means the group is genuinely gone.
 
-**What to do:** None — self-heals; tokens are preserved on the key bucket. Frequent occurrence for one key means a group is being deleted out from under active keys; reconcile the key's group assignment.
+**What to do:** Reconcile the key's group assignment: a group is being deleted out from under active keys. The tokens themselves are preserved on the key bucket, but the named group's derived spend is low by this request until its window rolls.
 
 <a id="metering-flush-partial-failure"></a>
 ### BUSBAR-8008 — Metering flush: some keys failed to persist this tick (retained for retry)

@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::diagnostics::{
-    diag_debug, diag_error, diag_warn, ACCRUAL_GROUP_MISSING, BUDGET_FLUSH_PARTIAL_FAILURE,
+    diag_error, diag_warn, ACCRUAL_GROUP_MISSING, BUDGET_FLUSH_PARTIAL_FAILURE,
     DELETE_KEY_CACHE_RECONCILE_FAILED, METERING_FLUSH_PARTIAL_FAILURE,
     REFRESH_SELF_CACHE_REFRESH_FAILED, REFRESH_SELF_INCONSISTENT_BINDING,
     ROTATE_KEY_CACHE_RECONCILE_FAILED,
@@ -809,10 +809,20 @@ impl GovState {
         }
         // A missing group cannot block ACCRUAL (the request was already admitted/served);
         // degrade to the key-only bucket so the tokens are never lost.
+        //
+        // AT WARN, LIKE ITS SIBLINGS IN THIS FILE. It had been at debug on the reading that nothing
+        // is lost, which is true only of the KEY's bucket: the GROUP's ledger is short by this
+        // request, and the budget cap derived from it reads low for the rest of that window — a
+        // caller already over its group budget can be admitted. Every other money-integrity
+        // diagnostic here (`METERING_FLUSH_PARTIAL_FAILURE`, `BUDGET_FLUSH_PARTIAL_FAILURE`) is a
+        // warn for exactly that reason, and this one is the same class of event. It is also RARE
+        // rather than per-request: `cost` is the snapshot the request's admission charged against,
+        // handed down from the sink, so a config apply that merely rebuilt the model cannot reach
+        // this arm — only a group that is genuinely gone can.
         let chain = match cost.chain_for(key) {
             Ok(c) => c,
             Err(missing) => {
-                diag_debug!(ACCRUAL_GROUP_MISSING, key = %key.id, group = missing,
+                diag_warn!(ACCRUAL_GROUP_MISSING, key = %key.id, group = missing,
                     "group missing at accrual; tokens ledgered to the key bucket only");
                 self.accrue_bucket(&key.id, super::WINDOW_TOTAL, model, units, now);
                 return;
