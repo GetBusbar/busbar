@@ -145,6 +145,18 @@ jobs:
         run: python3 scripts/release-order-lint.py --selftest
       - name: Release-order lint
         run: python3 scripts/release-order-lint.py --root .
+      # CI-UMBRELLA MEMBERSHIP lint: `ci-umbrella` is the ONE required check, and its `needs:` list
+      # is the whole of what "CI is green" means. That list is hand-maintained, and a job added
+      # without its `needs:` line is invisible to it: the job goes red and the required check reports
+      # GREEN. `deletion-test-matrix` -- an enforcement gate on every pull request -- sat outside
+      # `needs` for its whole life, so its red would not have blocked a single merge. This lint makes
+      # omission impossible: every job is in `needs` (and in the RESULTS ledger) unless a
+      # `# non-gating:` / `# report-only:` line names it WITH a reason. Self-test runs FIRST, and its
+      # last case re-plants exactly that historical defect in this very file and requires a red.
+      - name: ci-umbrella membership self-test (the historical omission re-planted, proven RED)
+        run: python3 scripts/ci-umbrella-lint.py --selftest
+      - name: ci-umbrella membership (no job is outside the required check by accident)
+        run: python3 scripts/ci-umbrella-lint.py --root .
       # NO-SELF-FILED-ISSUES lint: this repository must not open issues against itself. It used to —
       # verify-deploy.yml filed #51 when a published release was broken — and that was wrong three
       # ways: a robot's issue is indistinguishable from a user's in the queue a human triages, the
@@ -1855,6 +1867,7 @@ jobs:
       - service-image-pins
       - executable-config-lint
       - no-default-features
+      - deletion-test-matrix
       - no-plugins-gate
       - txn-guards
       - timing
@@ -1866,7 +1879,21 @@ jobs:
       - teller-steps
       # In `needs` so the umbrella waits for it and can print its verdict, but NOT in RESULTS below:
       # the job is report-only (continue-on-error) until its check is green on HEAD. See the job.
+      # report-only: construction-gate -- RED BY DESIGN on HEAD while the construction work it
+      #   measures is in flight; waited for and PRINTED by this job, deliberately not counted, until
+      #   the job is flipped off continue-on-error. Delete this line and add a RESULTS row then.
       - construction-gate
+    # ── THE JOBS DELIBERATELY OUTSIDE THIS LIST ───────────────────────────────────────────────────
+    # scripts/ci-umbrella-lint.py reads these two lines and requires that EVERY job in this file is
+    # either in `needs` above or named here with a reason. `deletion-test-matrix` -- an enforcement
+    # gate running on every pull request -- was missing from `needs` for its whole life, which meant
+    # a red there reported GREEN on the one required check. Omission is now impossible; deliberate
+    # exclusion is possible, in writing.
+    # non-gating: coverage -- a REPORTING job (it uploads to Codecov and asserts no threshold here);
+    #   coverage policy is enforced by codecov.yml on the PR, not by this workflow's required check.
+    # non-gating: proof-manifest -- publishes the Build Proof Dashboard on dev/qa/main only. By its
+    #   own contract it CHANGES NO GATE, it records verdicts other jobs produced; a manifest refresh
+    #   must never be able to gate a promotion.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -1893,6 +1920,7 @@ jobs:
         migration-corpus|full|${{ needs.migration-corpus.result }}
         executable-config-lint|full|${{ needs.executable-config-lint.result }}
         no-default-features|full|${{ needs.no-default-features.result }}
+        deletion-test-matrix|full|${{ needs.deletion-test-matrix.result }}
         no-plugins-gate|full|${{ needs.no-plugins-gate.result }}
         txn-guards|full|${{ needs.txn-guards.result }}
         timing|full|${{ needs.timing.result }}
