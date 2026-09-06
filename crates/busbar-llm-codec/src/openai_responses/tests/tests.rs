@@ -3999,6 +3999,52 @@ fn test_writer_open_tool_indices_capped() {
     );
 }
 
+/// `append_logprobs` is the one writer accumulator with NO ceiling on either axis: every sibling
+/// (`append_text`, `append_tool_args`, `append_citations`) refuses a NEW index past
+/// `MAX_OPEN_TOOLS` and stops growing an existing buffer at `accum_byte_cap`, and this one grew a
+/// map entry per distinct index and a `Vec` per index without limit. A backend streaming logprobs
+/// at unbounded cardinality or unbounded length exhausts memory on the request path.
+#[test]
+fn test_writer_logprob_accum_is_bounded_on_both_axes() {
+    let writer = ResponsesWriter;
+    let lp = |t: &str| crate::ir::IrTokenLogprob {
+        token: t.to_string(),
+        logprob: -0.5,
+        bytes: None,
+        top: Vec::new(),
+    };
+
+    // CARDINALITY: a new index past the cap is refused, exactly as `append_text` refuses one.
+    for i in 0..(MAX_OPEN_TOOLS + 200) {
+        writer.append_logprobs(i, &[lp("x")]);
+    }
+    let indices = writer
+        .logprob_accum
+        .lock()
+        .map(|m| m.len())
+        .expect("lock held only by this test");
+    assert!(
+        indices <= MAX_OPEN_TOOLS,
+        "logprob_accum must track at most MAX_OPEN_TOOLS indices, got {indices}"
+    );
+
+    // LENGTH: one index's buffer stops growing at the translate-body cap.
+    let writer = ResponsesWriter;
+    let chunk: Vec<crate::ir::IrTokenLogprob> = (0..512).map(|_| lp(&"t".repeat(64))).collect();
+    for _ in 0..2048 {
+        writer.append_logprobs(0, &chunk);
+    }
+    let held: usize = writer
+        .logprob_accum
+        .lock()
+        .map(|m| m.get(&0).map_or(0, |v| v.iter().map(logprob_bytes).sum()))
+        .expect("lock held only by this test");
+    assert!(
+        held <= accum_byte_cap(),
+        "one index's logprob buffer must stop growing at accum_byte_cap, held {held}"
+    );
+}
+
 /// Production `extract_error` must synthesize the
 /// canonical `context_length_exceeded` code when an oversized-context error carries the
 /// condition only in its MESSAGE (null/generic `code`). Without this the breaker pipeline never

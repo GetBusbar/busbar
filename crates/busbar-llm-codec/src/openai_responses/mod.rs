@@ -210,6 +210,18 @@ fn citation_bytes(c: &crate::ir::IrCitation) -> usize {
         + c.raw.as_ref().map_or(0, |v| v.to_string().len())
 }
 
+/// The carried WEIGHT of one streamed token logprob, for the same byte-budget discipline
+/// [`citation_bytes`] gives a citation: the token text, its optional raw bytes, and every
+/// alternative in `top` (a `top_logprobs: 20` ask makes each position twenty times heavier than the
+/// token alone, which is exactly the axis an unbounded accumulator loses on). The `f64` fields are
+/// fixed-size and contribute nothing an attacker controls.
+fn logprob_bytes(l: &crate::ir::IrTokenLogprob) -> usize {
+    fn one(token: &str, bytes: &Option<Vec<u8>>) -> usize {
+        token.len() + bytes.as_ref().map_or(0, Vec::len)
+    }
+    one(&l.token, &l.bytes) + l.top.iter().map(|t| one(&t.token, &t.bytes)).sum::<usize>()
+}
+
 /// Key offset under which the streaming reader tracks OPEN TEXT output indices inside the shared
 /// `StreamDecodeState::open_tools` set. A native /v1/responses stream can carry MULTIPLE message
 /// (text) output items, each at its OWN `output_index`, so a single index-blind `text_block_open`
@@ -1812,12 +1824,35 @@ impl ResponsesWriter {
     /// Buffer streamed token logprobs for the message item at `index` until `BlockStop` builds the
     /// `output_text.done` event and the finalized part that carry them. Lock poisoning degrades to
     /// a no-op.
+    ///
+    /// Bounded on BOTH axes, like every sibling accumulator on this writer (`append_text`,
+    /// `append_tool_args`, `append_citations`): a NEW index is refused once `MAX_OPEN_TOOLS` are
+    /// tracked, and an existing buffer stops growing once its carried weight ([`logprob_bytes`])
+    /// would cross [`accum_byte_cap`]. This was the one accumulator with no ceiling on either axis —
+    /// a backend streaming logprobs at unbounded cardinality (one entry per distinct output index)
+    /// or unbounded length (a `Vec` per index, each position carrying up to twenty `top`
+    /// alternatives) grew the writer's memory without limit on the request path. The whole batch is
+    /// refused rather than split, so a position is never emitted with a truncated `top` list.
     fn append_logprobs(&self, index: usize, lps: &[crate::ir::IrTokenLogprob]) {
         if lps.is_empty() {
             return;
         }
+        let added: usize = lps.iter().map(logprob_bytes).sum();
         if let Ok(mut map) = self.logprob_accum.lock() {
-            map.entry(index).or_default().extend_from_slice(lps);
+            match map.get_mut(&index) {
+                Some(entry) => {
+                    let held: usize = entry.iter().map(logprob_bytes).sum();
+                    if held.saturating_add(added) <= accum_byte_cap() {
+                        entry.extend_from_slice(lps);
+                    }
+                }
+                None => {
+                    if map.len() >= MAX_OPEN_TOOLS || added > accum_byte_cap() {
+                        return;
+                    }
+                    map.entry(index).or_default().extend_from_slice(lps);
+                }
+            }
         }
     }
 
