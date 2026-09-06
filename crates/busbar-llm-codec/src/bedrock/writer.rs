@@ -339,9 +339,7 @@ impl ProtocolWriter for BedrockWriter {
                 let raw_doc_video_stashed =
                     message_doc_video.iter().flat_map(|v| v.iter()).any(|e| {
                         e.get("m").and_then(|v| v.as_u64()) == Some(msg_idx as u64)
-                            && e.get("b")
-                                .or_else(|| e.get("i"))
-                                .and_then(|v| v.as_u64())
+                            && e.get("b").or_else(|| e.get("i")).and_then(|v| v.as_u64())
                                 == Some(block_idx as u64)
                     });
                 // The prompt-cache boundary carried on this block, if any. Emitted as a

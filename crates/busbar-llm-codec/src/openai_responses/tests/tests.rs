@@ -7266,6 +7266,59 @@ fn responses_output_text_annotations_read_into_ir_citations() {
     );
 }
 
+/// Regression: the Responses wire's `url_citation` is FLAT — `{"type":"url_citation","url":…,
+/// "title":…}` — not the Chat wire's nested `{"type":"url_citation","url_citation":{…}}`. This is
+/// the shape a real `/v1/responses` web-search answer carries AND the shape this dialect's own
+/// writer emits (`url_annotations`), so reading only the nested form dropped every citation on the
+/// way in: a Responses→Anthropic/Gemini client lost every grounding source, and a Responses answer
+/// re-serialized through the IR could not read back what busbar itself had just written.
+#[test]
+fn responses_flat_url_citation_annotations_read_into_ir_citations() {
+    let json = serde_json::json!({
+        "id": "resp_cite_flat",
+        "object": OBJ_RESPONSE,
+        "status": STATUS_COMPLETED,
+        "output": [{
+            "type": ITEM_TYPE_MESSAGE,
+            "role": "assistant",
+            "content": [{
+                "type": CONTENT_TYPE_OUTPUT_TEXT,
+                "text": "See the source for details.",
+                "annotations": [{
+                    "type": "url_citation",
+                    "url": "https://example.com/flat",
+                    "title": "Flat Responses Source",
+                    "start_index": 7,
+                    "end_index": 20
+                }]
+            }]
+        }],
+        "usage": {"input_tokens": 10, "output_tokens": 5}
+    });
+
+    let resp = ResponsesReader
+        .read_response(&json)
+        .expect("read_response should succeed");
+    let citations = resp
+        .content
+        .iter()
+        .find_map(|b| match b {
+            crate::ir::IrBlock::Text { citations, .. } => Some(citations),
+            _ => None,
+        })
+        .expect("a Text block must be present");
+    assert_eq!(
+        citations.len(),
+        1,
+        "the flat Responses annotation shape must be read, got {citations:?}"
+    );
+    assert_eq!(
+        citations[0].url.as_deref(),
+        Some("https://example.com/flat")
+    );
+    assert_eq!(citations[0].title.as_deref(), Some("Flat Responses Source"));
+}
+
 // Performance follow-up (no behavior change): `read_reasoning_text` returns `Cow<'_, str>`
 // instead of an owned `String` so `total_text_chars` (which only needs a char count and
 // immediately discards the text) does not pay an allocation on the common single-part case.
