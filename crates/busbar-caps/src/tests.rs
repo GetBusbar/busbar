@@ -1006,3 +1006,60 @@ fn the_residual_of_an_underspent_hold_is_what_settlement_releases() {
     assert_eq!(posted.released(), 750);
     assert_eq!(posted.overdraft(), 0);
 }
+
+/// A settlement is money, and a usage report is not.
+///
+/// The report carries one quantity per meter class, each in the class's OWN unit — seconds of
+/// audio, bytes relayed, tokens generated — and adding those together produces a number that is
+/// not a figure in any unit at all. The reservation the hold carries is nano-units. Posting the
+/// sum of the quantities against a reservation in nano-units subtracts two different units from
+/// each other, and the residual, the overdraft and every legacy row derived from them are wrong by
+/// whatever the classes happened to be.
+///
+/// So the priced total comes in at the seam, in the unit the reservation is written in, and the
+/// posting is the answer to "what does this cost", not "how much of everything was there".
+#[test]
+fn a_posting_settles_the_priced_amount_and_not_the_sum_of_the_quantities() {
+    let k = Kernel::new();
+    let hold = Hold::open(&k.admit_token(), who("acct-1"), 1_000);
+    // Two classes whose quantities are in nothing comparable: two minutes of audio and three
+    // megabytes of relay. Their sum, 3_000_120, is a number with no unit.
+    let report = Usage::report(
+        &k.usage_token(),
+        vec![
+            UsageLine {
+                class: MeterClassId::new("seconds"),
+                quantity: 120,
+                source: QuantitySource::Count,
+                estimated: false,
+            },
+            UsageLine {
+                class: MeterClassId::new("bytes"),
+                quantity: 3_000_000,
+                source: QuantitySource::Count,
+                estimated: false,
+            },
+        ],
+    )
+    .expect("two lines are within the bound");
+
+    // What the cost unit priced those two lines at, in the nano-units the reservation is in.
+    let priced: u128 = 1_500;
+    let posted = Posted::settle(hold, priced, &report, &k.ledger_token());
+
+    assert_eq!(
+        posted.settled(),
+        1_500,
+        "the posting is what the lines priced at, not what they summed to"
+    );
+    assert_eq!(posted.reserved(), 1_000);
+    assert_eq!(
+        posted.released(),
+        0,
+        "a settlement above the reservation releases nothing"
+    );
+    assert!(
+        posted.flags().contains(PostingFlags::OVERDRAFT),
+        "settling above the reservation is an overdraft even when the hold's own counter is quiet"
+    );
+}
