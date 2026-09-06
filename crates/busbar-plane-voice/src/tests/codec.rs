@@ -751,6 +751,113 @@ fn admitted_milliseconds_meter_as_seconds() {
     assert_eq!(seconds_line(0), Some(0));
 }
 
+/// A one-shot request sees its own answer, and the unit meters what it was priced on.
+///
+/// A transcribe or speech unit is admitted with no session, because it is one request and one
+/// answer. The response step demanded a session anyway, so the answer was a decode refusal and the
+/// unit metered nothing at all: a whole operation class billed at zero.
+#[test]
+fn a_one_shot_text_to_speech_unit_meters_the_text_it_was_asked_to_speak() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/audio/speech");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+
+    let request =
+        serde_json::to_vec(&json!({ "input": "eight chars of text here", "voice": "marin" }))
+            .expect("request fixture serializes");
+    let frames = [frame(&request)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::OneShot(draft) = plane
+        .decode_ingress(&mut cursor, None, &c)
+        .expect("a speech request is one whole unit")
+    else {
+        panic!("a one-shot request admits as one unit");
+    };
+    assert_eq!(draft.op.as_str(), "tts");
+
+    // The answer is audio, and it arrives with no session because there never was one.
+    let audio = [0u8; 64];
+    let answers = [frame(&audio)];
+    let mut answer_cursor = FrameCursor::new(&answers);
+    let Progress::Terminal { r, .. } = plane
+        .decode_response(
+            &mut answer_cursor,
+            &destination("api.openai.com", LaneId::new("realtime")),
+            None,
+            &c,
+        )
+        .expect("a one-shot answer decodes without a session")
+    else {
+        panic!("a one-shot answer ends the unit");
+    };
+
+    let unit = crate::tests::harness::unit(draft.op, draft.body_ir, draft.facts);
+    let locators = plane.meter(&unit, &r, &c);
+    let quantity = |class: &str| {
+        locators
+            .lines
+            .as_slice()
+            .iter()
+            .find(|l| l.class.as_str() == class)
+            .and_then(|l| l.quantity)
+    };
+    // "eight chars of text here" is 24 bytes, six tokens at the class's own declared divisor.
+    assert_eq!(quantity("text_tokens_in"), Some(6));
+}
+
+/// A one-shot transcription's answer states the text it produced, and that is what it prices at.
+#[test]
+fn a_one_shot_transcription_meters_the_text_it_returned() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/audio/transcriptions");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+
+    let audio = [0u8; 64];
+    let frames = [frame(&audio)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::OneShot(draft) = plane
+        .decode_ingress(&mut cursor, None, &c)
+        .expect("a transcription request is one whole unit")
+    else {
+        panic!("a one-shot request admits as one unit");
+    };
+    assert_eq!(draft.op.as_str(), "transcribe");
+
+    let answer = serde_json::to_vec(&json!({ "text": "twelve bytes" })).unwrap();
+    let answers = [frame(&answer)];
+    let mut answer_cursor = FrameCursor::new(&answers);
+    let Progress::Terminal { r, .. } = plane
+        .decode_response(
+            &mut answer_cursor,
+            &destination("api.openai.com", LaneId::new("realtime")),
+            None,
+            &c,
+        )
+        .expect("a one-shot answer decodes without a session")
+    else {
+        panic!("a one-shot answer ends the unit");
+    };
+
+    let unit = crate::tests::harness::unit(draft.op, draft.body_ir, draft.facts);
+    let quantity = |class: &str| {
+        plane
+            .meter(&unit, &r, &c)
+            .lines
+            .as_slice()
+            .iter()
+            .find(|l| l.class.as_str() == class)
+            .and_then(|l| l.quantity)
+    };
+    // "twelve bytes" is twelve bytes, three tokens at the class's own declared divisor.
+    assert_eq!(quantity("text_tokens_out"), Some(3));
+}
+
 /// A tiny standard base64 encoder, independent of the one this crate's `twilio` module carries, so
 /// the test fixtures above do not depend on that module's own correctness to construct their input.
 fn base64_of(bytes: &[u8]) -> String {

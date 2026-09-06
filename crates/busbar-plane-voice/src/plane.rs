@@ -245,8 +245,14 @@ impl Plane for VoicePlane {
         st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<Progress<'u>, Decode> {
-        let state = st
-            .ok_or(Decode::MissingDeclaredFact)?
+        // A one-shot operation has no session, by construction: `decode_one_shot` admitted it
+        // without one and there is none to hand back here. Requiring one turned every transcribe
+        // and every text-to-speech answer into a decode refusal, so the unit that WAS admitted
+        // never saw its own answer and never metered anything at all.
+        let Some(halfbox) = st else {
+            return decode_one_shot_response(frames, ctx);
+        };
+        let state = halfbox
             .get_mut::<VoiceSessionState>()
             .ok_or(Decode::MissingDeclaredFact)?;
         let upstream_dialect = upstream_dialect_for(self, dest);
@@ -398,7 +404,7 @@ impl Plane for VoicePlane {
         RoutePlan::default()
     }
 
-    fn meter<'u>(&self, _u: &Unit<'u>, r: &Response<'u>, _ctx: &Ctx<'u>) -> UsageLocators {
+    fn meter<'u>(&self, u: &Unit<'u>, r: &Response<'u>, _ctx: &Ctx<'u>) -> UsageLocators {
         let mut lines = busbar_contract::bounded::BoundedVec::new();
         let classes = [
             (meta::FACT_AUDIO_TOKENS_IN, "audio_tokens_in"),
@@ -407,8 +413,16 @@ impl Plane for VoicePlane {
             (meta::FACT_TEXT_TOKENS_OUT, "text_tokens_out"),
             (meta::FACT_CACHED_TOKENS, "cached_tokens"),
         ];
+        // A duplex turn's figures all come off the upstream's usage report, which is the answer. A
+        // one-shot request's input figure comes off the request, which decode read and put on the
+        // unit. The answer is asked first either way: a figure the destination confirmed beats one
+        // this node estimated, and the unit's own is only reached where the answer reported none.
+        let reported = |key: &str| match r.facts.get(key) {
+            Some(value) => Some(value),
+            None => u.draft_facts().get(key),
+        };
         for (fact_key, class) in classes {
-            if let Some(FactValue::Int(v)) = r.facts.get(fact_key) {
+            if let Some(FactValue::Int(v)) = reported(fact_key) {
                 let _ = lines.push(UsageLocator {
                     class: MeterClassId::new(class),
                     location: None,
@@ -622,6 +636,22 @@ fn decode_one_shot<'u>(frames: &mut FrameCursor<'u>, ctx: &Ctx<'u>) -> Result<In
     facts
         .set(meta::FACT_DIALECT, FactValue::Str(dialect.name()))
         .map_err(|_| Decode::Oversize)?;
+    // What a text-to-speech request is priced on is the text it asks to be spoken, and that text is
+    // in the request rather than in the answer. Decode is the step that reads the request's bytes,
+    // so the figure is taken here and travels on the unit; the metering step reads it back off the
+    // draft rather than opening the body a second time.
+    if dialect == Dialect::OneShotTts {
+        if let Some(text) = crate::oneshot::tts_input_text(body) {
+            facts
+                .set(
+                    meta::FACT_TEXT_TOKENS_IN,
+                    FactValue::Int(
+                        i64::try_from(meta::text_tokens_of(text.len())).unwrap_or(i64::MAX),
+                    ),
+                )
+                .map_err(|_| Decode::Oversize)?;
+        }
+    }
     Ok(Ingress::OneShot(Box::new(UnitDraft {
         op,
         body_ir: view(body, ctx)?,
@@ -629,6 +659,61 @@ fn decode_one_shot<'u>(frames: &mut FrameCursor<'u>, ctx: &Ctx<'u>) -> Result<In
         correlation_out: None,
         facts,
     })))
+}
+
+/// Decode the answer to a one-shot transcribe or text-to-speech request.
+///
+/// There is no session and no codec state: the operation is one request and one answer, and the
+/// answer ends the unit. What the answer states is what is stamped — a transcription's own text,
+/// under the class the emitted text prices at. A speech answer is audio bytes whose duration this
+/// plane cannot read without knowing the format the upstream chose, so it states nothing about
+/// them: the request's own text estimate, taken at decode, is what that unit is priced on.
+fn decode_one_shot_response<'u>(
+    frames: &mut FrameCursor<'u>,
+    ctx: &Ctx<'u>,
+) -> Result<Progress<'u>, Decode> {
+    let path = ctx
+        .transport()
+        .fact(FACT_PATH)
+        .ok_or(Decode::MissingDeclaredFact)?;
+    let dialect = claims::dialect_for(path).ok_or(Decode::UnsupportedOperation)?;
+    if !matches!(dialect, Dialect::OneShotTranscribe | Dialect::OneShotTts) {
+        return Err(Decode::UnsupportedOperation);
+    }
+    let frame = frames.next_frame();
+    let body: &'u [u8] = frame.map(|f| f.bytes.as_slice()).unwrap_or(&[]);
+    let mut facts = Facts::new();
+    if dialect == Dialect::OneShotTranscribe {
+        if let Some(text) = transcript_text(body) {
+            facts
+                .set(
+                    meta::FACT_TEXT_TOKENS_OUT,
+                    FactValue::Int(
+                        i64::try_from(meta::text_tokens_of(text.len())).unwrap_or(i64::MAX),
+                    ),
+                )
+                .map_err(|_| Decode::Oversize)?;
+        }
+    }
+    Ok(Progress::Terminal {
+        for_: None,
+        r: Box::new(Response {
+            ir: view(body, ctx)?,
+            finish: FinishClass::TurnComplete,
+            facts,
+        }),
+    })
+}
+
+/// The text a one-shot transcription answered with, in the provisional wire shape this plane
+/// documents (`{"text": "..."}`). `None` for anything else, which states nothing rather than
+/// guessing a figure.
+fn transcript_text(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    value
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
 }
 
 /// Decode one frame of a duplex session bound to one of the two WS dialects (OpenAI Realtime or

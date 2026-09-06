@@ -39,6 +39,17 @@ const BYTES_PER_TOKEN: u32 = 4;
 /// its own unit (see [`audio_seconds_in`]), not in bytes a divisor would have to convert.
 const SECONDS_PER_UNIT: u32 = 1;
 
+/// The `text_tokens` figure a span of text estimates to, through the class's own declared divisor.
+///
+/// A one-shot text-to-speech request is priced on the text it asks to be spoken, and no upstream
+/// reports a token count for it before the audio comes back. So the figure is an estimate, and it
+/// is the class's OWN default divisor that produces it rather than a second constant invented at
+/// the call site: what the class says a token costs in bytes is what a token costs here.
+#[must_use]
+pub const fn text_tokens_of(byte_len: usize) -> u64 {
+    (byte_len as u64).div_ceil(BYTES_PER_TOKEN as u64)
+}
+
 /// Milliseconds in the second the `audio_seconds_in` class is denominated in.
 const MS_PER_SECOND: u64 = 1_000;
 
