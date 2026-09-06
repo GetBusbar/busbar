@@ -474,7 +474,14 @@ fn responses_request_reasoning_items_survive_roundtrip() {
             "encrypted_content": "ENC_BLOB_MARK"
         }]
     });
-    let out = roundtrip_req(&body);
+    // Driven through `with_warns` NOT because this test asserts on a warn, but for HERMETICITY: the
+    // fixture carries a reasoning-item `id`, so the read hits the same drop-warn callsite
+    // `responses_request_reasoning_id_dropped_with_warn` asserts on. `tracing` caches callsite
+    // interest PROCESS-GLOBALLY, so executing that callsite from a parallel test that holds no
+    // capture can leave it cached "disabled" under the sibling's thread-local subscriber and hand
+    // that sibling an empty capture — an order-dependent flake. Taking the capture fixture's
+    // reentrant gate here serialises the two, so neither ordering can produce it.
+    let (out, _cap) = with_warns(|| roundtrip_req(&body));
 
     // A reasoning item is a top-level `input` entry (a sibling of the message), not nested in a
     // message's content — find it directly rather than via the content-flattening helper.

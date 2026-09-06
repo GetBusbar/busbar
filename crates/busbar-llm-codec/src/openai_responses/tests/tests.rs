@@ -5707,8 +5707,23 @@ fn reasoning_input_item_round_trips_through_request() {
             }
         ]
     });
-    let reader = ResponsesReader;
-    let ir = reader.read_request(&body).expect("read_request");
+    // HERMETICITY (not an assertion about warns): this fixture carries a reasoning-item `id`, so the
+    // read hits the drop-warn callsite that `responses_request_reasoning_id_dropped_with_warn`
+    // captures. `tracing` caches callsite interest PROCESS-GLOBALLY, so running that callsite from a
+    // parallel test holding no capture can leave it cached "disabled" while the sibling's
+    // thread-local capture is installed, handing the sibling an EMPTY capture — an order-dependent
+    // flake. Holding the capture fixture's reentrant gate for the duration of this read serialises
+    // the two tests, so neither ordering can produce it.
+    let ir = {
+        use busbar_substrate_values::testkit::warn_capture::WarnCapture;
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let cap = WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            let reader = ResponsesReader;
+            reader.read_request(&body).expect("read_request")
+        })
+    };
 
     // The reasoning input item is preserved as an assistant Thinking block (NOT dropped).
     let thinking = ir
