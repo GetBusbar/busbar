@@ -38,14 +38,15 @@
 //! What leaves the unit is `{ slot, fingerprint }` and nothing else; its debug output says so
 //! rather than printing anything derived from the material.
 //!
-//! **A hazard this allocation exposes, named here because this is what exposes it.** The TLS
-//! transport's `listen`, `dial` and `adopt` all read the slot off the handle they were given, which
-//! is correct. Its `accept` does not: it reads slot 0 directly. So an administrative listener
-//! provisioned at slot 1 passes `listen` and then mis-serves every accepted connection — either
-//! refusing for want of a key or presenting the data listener's certificate. Nothing here works
-//! around it: the workaround would be to put every listener in slot 0, which would make the slot
-//! meaningless and hide the defect behind the composition that was supposed to reveal it. The fix
-//! belongs in the transport, and until it lands a deployment with two TLS listeners is exposed.
+//! The allocation once exposed a hazard worth naming here, and the note that named it has been
+//! replaced by the test that settles it: the TLS transport's `accept` read slot 0 directly rather
+//! than the slot its listener was provisioned with, so an administrative listener at slot 1 passed
+//! `listen` and then mis-served every accepted connection. The transport reads the listener's own
+//! slot now, and `two_tls_listeners_each_present_their_own_certificate` below drives two listeners
+//! in slots 0 and 1 through a real handshake and asserts each presents the material provisioned into
+//! its own slot — and that a peer trusting one of them is refused by the other. A prose warning that
+//! a fix has landed for is a warning nobody can act on; an executing assertion is one that fails if
+//! the slot is ever read from a fixed place again.
 
 use busbar_contract::{ConfigView, Listener, Transport, TransportConfigView, TransportError};
 #[cfg(feature = "plane-voice")]
