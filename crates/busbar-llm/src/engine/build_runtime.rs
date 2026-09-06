@@ -105,7 +105,10 @@ pub(crate) fn build_runtime(
             allow_all: input.allow_all_metadata,
             blocked_hosts: &input.blocked_metadata_hosts,
         };
-        let api_key = li.api_key_plaintext.clone();
+        // AUDIT POINT: the resolved credential leaves redaction here and nowhere else on this path —
+        // the minters below need the plaintext to sign/exchange with, and the `Lane` this builds
+        // re-wraps it.
+        let api_key = li.api_key.expose_secret().clone();
         let credential = match li.auth_style {
             AuthStyleInput::JwtBearer => egress_auth::jwt_bearer::build(
                 &api_key,

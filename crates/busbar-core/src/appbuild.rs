@@ -740,7 +740,7 @@ pub fn build_app_from_config(
             path: provider_cfg.path.clone(),
             path_base: provider_cfg.path_base.clone(),
             upstream_model: ld.upstream_model.clone(),
-            api_key_plaintext: api_key,
+            api_key: busbar_api::Redacted::new(api_key),
             auth_style: auth_style_of(provider_cfg.auth),
             scope: provider_cfg.scope.clone(),
             token_url: provider_cfg.token_url.clone(),
