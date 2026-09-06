@@ -657,6 +657,19 @@ mod rehearsal {
         /// reported split, and whether those figures are evidence rather than a charge. Empty while
         /// the answer was still in flight when the step ran, which is every stream.
         bound: (Option<usize>, Option<(u64, u64)>, bool),
+        /// WHETHER THE STEP WAS HANDED THE ADMISSION'S METER HALF. Everything the step does with a
+        /// delivered answer — report the row, price it against the card the half carries, spend that
+        /// into the hold the door opened — is behind this one fact, so a step handed nothing seals
+        /// nothing and looks exactly like a step that had nothing to seal.
+        sink_bound: bool,
+        /// The row the step SEALED — the same figures the walk's tap accrued, reported once more so
+        /// the record has them. `None` where the step was bound to no serving LANE: a lane binds
+        /// where the tap had already finished when the step ran, and a response relayed in the
+        /// dialect it arrived in is still in flight then.
+        sealed_row: Option<String>,
+        /// What the step spent against the hold — what the response turned out to be worth, priced
+        /// against the card the meter half carries.
+        hold_accrued: u64,
         /// How the AUDIT step sealed the end, at the moment it really runs.
         finish: Option<busbar_contract::FinishClass>,
         /// What the walk's tap reported, read AFTER the body was drained — which for a stream is the
@@ -673,6 +686,9 @@ mod rehearsal {
                 fee_count: 0,
                 refund: false,
                 bound: (None, None, false),
+                sink_bound: false,
+                sealed_row: None,
+                hold_accrued: 0,
                 finish: None,
                 tap: None,
             }
@@ -932,6 +948,7 @@ mod rehearsal {
         // here rather than inside the facts.
         let tables = crate::engine::EngineTables::new(rt);
         let lane = facts.lane.and_then(|i| tables.lanes().get(i));
+        metering.sink_bound = meter_sink.is_some();
         let ctx = meter::MeterCtx::bind(host, meter_sink.as_ref(), lane, &facts, charged);
         // The rehearsal drives this plane's steps and keeps no books, so what a report is worth is a
         // question it cannot answer: it holds no card, and inventing one here would be this crate
@@ -950,6 +967,16 @@ mod rehearsal {
         // The accrual arm's own report of itself. `row` is filled whether the step posted or only
         // sealed, so it cannot be the instrument here: one-posting-per-unit is what this pins.
         metering.posted_here = metered.posted;
+        // The sealing arm's OWN output, which is the half `posted_here` cannot show: a step that
+        // sealed reports the row and prices the hold, and a step handed no meter half does neither.
+        // Without these two the one-posting proof below is satisfied by a step that did nothing at
+        // all, which is not the same claim.
+        metering.sealed_row = metered.row.as_ref().map(|r| {
+            format!(
+                "{}/{} in={} out={}",
+                r.model, r.provider, r.tokens_input, r.tokens_output
+            )
+        });
         metering.fee_count = metered.fee_count;
         metering.refund = metered.refund;
         // What the step was actually BOUND to, read off the facts rather than off the response: the
@@ -961,7 +988,9 @@ mod rehearsal {
         );
         // The hold reaches no exit path in this rehearsal: the exit is the kernel's, and there is no
         // plane-side settle. Held to the end of the unit so the accounting is not silently dropped.
-        let _hold = metered.hold;
+        let hold = metered.hold;
+        metering.hold_accrued = hold.as_ref().map_or(0, busbar_caps::Hold::accrued);
+        let _hold = hold;
         let _usage = metered.decision;
 
         // ---- STEP 7, AUDIT ----------------------------------------------------------------------
@@ -1379,6 +1408,33 @@ mod rehearsal {
                 "{fixture:?}: the tokens are accrued once, not twice"
             );
         }
+
+        // AND THE SEALING IS A SEALING, not an absence. Every assertion above is equally true of a
+        // step handed NO meter half at all: it would post nothing, report nothing, and the walk's one
+        // row would still be the only row — so on its own the claim is satisfied by a step that did
+        // nothing, which is a different claim. What separates the two is whether the step was handed
+        // the half in the first place, and on the routed path it is: the walk takes the half to
+        // ACCRUE through and the step is handed the same half to PRICE against, which is the only
+        // way the hold the door opened at zero can come to hold what the answer was worth.
+        for fixture in [Fixture::BufferedOk, Fixture::StreamedOk] {
+            let (_, metering) = leg_chain_metered(fixture).await;
+            assert!(
+                metering.sink_bound,
+                "{fixture:?}: the Route step hands the Meter step the admission's meter half"
+            );
+        }
+
+        // WHAT THE STEP THEN DOES WITH IT is decided by the other half of the binding — the serving
+        // LANE, which binds only where the tap had already finished when the step ran. Both fixtures
+        // here are relayed in the dialect they arrived in, so both are still in flight at step 6 and
+        // both honestly seal nothing: a figure invented at that moment would be one no upstream ever
+        // reported. The step's own tests pin the sealing arm itself, on a binding that has both.
+        let (_, streamed) = leg_chain_metered(Fixture::StreamedOk).await;
+        assert_eq!(
+            streamed.sealed_row, None,
+            "a stream is served on its headers, so no lane is bound yet"
+        );
+        assert_eq!(streamed.hold_accrued, 0, "and there is nothing to price yet");
     }
 
     /// GAP 3, CLOSED — the VERIFY step hands its named refusal back with the decision.
