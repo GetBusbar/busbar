@@ -543,9 +543,10 @@
         "status": "mapped",
         "note": "shared kernel gate; plane-agnostic",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-admin",
-          "note": "arrival is the shared kernel gate ahead of any plane's units; the root-admin cells begin at a decoded admin request and none of them drives it"
+          "test": "crates/busbar/src/root/units_admin.rs::the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at",
+          "note": "the exemption is what Arrival decides for this leg: on a table with no room at all the admin unit still enters and its step proceeds under the admin transport, while the same table refuses a data-listener unit at Arrival with InFlightCap"
         }
       },
       "decode": {
