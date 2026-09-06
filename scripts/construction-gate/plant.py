@@ -143,6 +143,24 @@ def plant(rule, pristine, scratch, cfg, baseline):
         append(scratch, "crates/busbar-voice/src/lib.rs",
                "#[cfg(test)]\nmod planted_tests {\n"
                "    fn t() { let _ = busbar_core::planted::Thing; }\n}")
+    elif rule == "cfgtest-raw-string":
+        # NOT a rule of its own: a plant against the SCANNER. A `#[cfg(test)]` module whose body
+        # holds a raw BYTE string literal with unbalanced braces in it -- `br#"{"a": "{{"}"#`, a
+        # perfectly ordinary JSON-ish template -- followed, AFTER the module closes, by a plain
+        # production reach.
+        #
+        # A `"(?:\\.|[^"\\])*"` reading of that literal is not one literal but a plain string from
+        # the raw literal's opening quote to its first inner quote, so the `{{` after that inner
+        # quote is never blanked. Two unmatched opens go into the cfg(test) brace-depth counter,
+        # the module never closes, and the production reach below it is filed as test code: the
+        # ports-only row stays GREEN on a reach that is right there in production. The self-test
+        # asserts the reach is still seen as production, i.e. the cfg(test) block did not swallow
+        # the rest of the file.
+        append(scratch, "crates/busbar-voice/src/lib.rs",
+               "#[cfg(test)]\nmod planted_raw_string_tests {\n"
+               '    const PLANTED_TEMPLATE: &[u8] = br#"{"a": "{{"}"#;\n'
+               "    fn t() { let _ = PLANTED_TEMPLATE; }\n}\n\n"
+               "fn planted_reach_after_cfg_test() { let _ = busbar_core::planted::Thing; }")
     elif rule == "no-uninstalled-seam":
         append(scratch, "crates/busbar-substrate/src/lib.rs",
                "static PLANTED_SEAM: std::sync::OnceLock<u8> = std::sync::OnceLock::new();\n"

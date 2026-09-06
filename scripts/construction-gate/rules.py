@@ -93,14 +93,46 @@ def strip_comments(line, state):
     return "".join(out)
 
 
-_STR_RE = re.compile(r'"(?:\\.|[^"\\])*"')
+# EVERY Rust string literal form, RAW FIRST. `br#"…"#` read by a `"(?:\\.|[^"\\])*"` regex is not
+# one literal but a plain string starting at the raw literal's OPENING quote and ending at the first
+# inner quote -- so the braces after that inner quote are never blanked. They land in the
+# `#[cfg(test)]` brace-depth counter in scan_file, close the cfg(test) block early, and every line
+# after it in the module is silently reclassified from test code to production code (or, with the
+# imbalance the other way, production code is swallowed as test code and its violations go
+# unreported). A gate that mis-attributes the code it reads is worse than one that does not read it.
+#
+# Alternation order is load-bearing: the longer prefixes must be tried first, so `b?r` (which covers
+# `r`, `br`) precedes `b?` (which covers `b`, and the bare form). A raw literal takes no escapes and
+# is closed only by a quote followed by the SAME run of hashes it opened with -- expressed here as a
+# backreference to the captured hash run, which is why `r#"a "quoted" b"#` stays one literal.
+# The lookbehind keeps the `b`/`r` from being the tail of a longer identifier.
+_STR_RE = re.compile(
+    r'(?<![A-Za-z0-9_])b?r(?P<hashes>#*)"(?P<rawbody>(?:[^"]|"(?!(?P=hashes)))*)"(?P=hashes)'
+    r'|(?<![A-Za-z0-9_])b?"(?P<body>(?:\\.|[^"\\])*)"'
+)
 _CHAR_RE = re.compile(r"'(?:\\.|[^'\\])'")
+
+
+def _blank_one_string(m):
+    """The literal with its BODY spaced out and its delimiters (`b`/`r`/hashes/quotes) intact.
+    Length is preserved exactly: line offsets computed from `Line.blank` (see `_trait_span` and
+    friends, which sum `len(l.blank) + 1`) must keep pointing at the same columns."""
+    start = m.start()
+    body_start, body_end = m.span("rawbody") if m.group("rawbody") is not None else m.span("body")
+    text = m.group(0)
+    return (text[:body_start - start] + " " * (body_end - body_start) + text[body_end - start:])
+
+
+def _string_body(m):
+    """The contents of a literal matched by `_STR_RE`, without its delimiters."""
+    raw = m.group("rawbody")
+    return m.group("body") if raw is None else raw
 
 
 def blank_literals(code):
     """Replace string and char literal contents with spaces so braces/parens inside them do not
     disturb structure matching. Lifetimes (`'a`) are not char literals and are left alone."""
-    code = _STR_RE.sub(lambda m: '"' + " " * (len(m.group(0)) - 2) + '"', code)
+    code = _STR_RE.sub(_blank_one_string, code)
     return _CHAR_RE.sub("' '", code)
 
 
@@ -1207,7 +1239,7 @@ def rule_lean_core(tree, cfg):
                 if l.intest:
                     continue
                 for m in _STR_RE.finditer(l.code):
-                    content = m.group(0)[1:-1]
+                    content = _string_body(m)
                     if word_rx.search(content):
                         offenders.append(f'"{content}" at {rel}:{l.no}')
     current = len(offenders)

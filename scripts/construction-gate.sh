@@ -280,7 +280,29 @@ run_selftest() {
     fi
   fi
 
-  # 5. Zero rows is red: a ledger nothing wrote must not pass the verdict.
+  # 5. The scanner's own lexer: a raw BYTE string literal inside a #[cfg(test)] module must not be
+  #    able to unbalance the cfg(test) brace-depth counter and swallow the production code after it.
+  #    The plant puts `br#"{"a": "{{"}"#` in a test module and a production busbar_core:: reach
+  #    AFTER that module closes; a scanner whose string regex cannot read raw literals files the
+  #    reach as test code and reports GREEN on a production violation, which is the one failure mode
+  #    every other row in this self-test is blind to (they all plant into unshielded code).
+  rule=cfgtest-raw-string
+  python3 "$planter" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fail=1; note "plant FAILED for $rule"
+  else
+    CONSTRUCTION_TOML="$scratch/calibrated.toml" CONSTRUCTION_OUT="$out" bash "$gate" --check >/dev/null 2>&1
+    local shielded_ids
+    shielded_ids="$(awk -F'\t' '$2=="FAIL"{print $1}' "$out/ledger.tsv" | tr '\n' ' ' | sed 's/ $//')"
+    if [ "$shielded_ids" = "ports-only:busbar-voice" ]; then
+      note "RED $rule: the raw-byte-string cfg(test) block did not swallow the production reach"
+    else
+      fail=1; note "RED $rule FAILED: expected exactly one FAIL row [ports-only:busbar-voice], got [${shielded_ids:-none}]"
+      awk -F'\t' '$2=="FAIL"{print "    " $1 ": " $4}' "$out/ledger.tsv"
+    fi
+  fi
+
+  # 6. Zero rows is red: a ledger nothing wrote must not pass the verdict.
   local empty="$scratch/empty.tsv"; : >"$empty"
   if GATE_NAME=construction EXPECTED_IDS="one-attempt-seam" LEDGER="$empty" \
        bash "$ROOT/testing/fleet-fixtures/verdict.sh" >/dev/null 2>&1; then
