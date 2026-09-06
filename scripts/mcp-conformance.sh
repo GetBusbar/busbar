@@ -543,6 +543,20 @@ battery_subject() {
   fi
 
   require_armed "battery subject" MCP_SUBJECT_BUSBAR_BIN MCP_SUBJECT_SERVER_CMD MCP_SUBJECT_CLIENT_CMD
+  # THE SEAM IS ARMED SEPARATELY, SO IT IS CHECKED SEPARATELY. The block above sets
+  # MCP_SUBJECT_UPSTREAM_CONFIG_CMD, but only on the RELEASE path -- it is guarded on
+  # `MCP_SUBJECT_SERVER_CMD`/`MCP_SUBJECT_CLIENT_CMD` both being empty. An operator who sets either
+  # of those (the repository variables at .github/workflows/mcp-conformance.yml's `Judge busbar`
+  # step do exactly that, and are documented as taking precedence) skips the block entirely, and
+  # then nothing sets the seam launcher. It was the ONE variable in that step with neither an `if:`
+  # guard nor a role in the arm state, so an empty value reached the battery unremarked.
+  #
+  # What happened next was not a silent skip -- MCP_NO_SKIPS below turns the six `pr`-tier SEAM.*
+  # scenarios from SKIP into FAIL, so the run still went red. It was worse: the run went red
+  # ACCUSING BUSBAR of a defect it had not been tested for. This check is the same
+  # `NOT ARMED, SO NOT RUN -- and that is RED` refusal every other leg gets, raised BEFORE boot, so
+  # the reason is the reason and not a fabrication about the subject.
+  require_armed "battery subject seam" MCP_SUBJECT_UPSTREAM_CONFIG_CMD
   # MCP_NO_SKIPS: a skipping test is not a passing test. Set HERE and not on the control legs,
   # because on the control legs a skip is the harness telling the truth about a peer it was never
   # pointed at, whereas here it is a green tick over a surface of BUSBAR that nobody touched.
