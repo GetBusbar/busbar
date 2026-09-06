@@ -966,6 +966,46 @@ async fn close_gives_up_on_a_peer_that_never_reads() {
     );
 }
 
+/// A close must reach a pump that is ALREADY SUSPENDED in the socket read, on a peer that will
+/// never speak again.
+///
+/// The sibling cell above it proves the fence by writing a message after the close — but that write
+/// is what ends the read, so the fence is only ever checked on the way out of a read that completed.
+/// A peer that finishes the upgrade and then says nothing sends no such byte: the read is
+/// outstanding until a message arrives and none ever does. A flag alone cannot reach that pump, so
+/// the pump — and the split socket halves it holds the last handle on — outlive the session for the
+/// life of the process, which is one leaked socket per closed-but-silent connection.
+#[tokio::test]
+async fn a_close_wakes_a_pump_parked_on_a_peer_that_never_speaks() {
+    let t = Arc::new(WsTransport::new());
+    // `a` is held for the whole cell: a dropped peer would close the duplex and end the read on
+    // its own, which is not the peer this cell is about.
+    let (a, b) = pair(&t, 64 * 1024).await;
+
+    let pump = {
+        let (t, b) = (t.clone(), b.clone());
+        tokio::spawn(async move {
+            let mut frames = t.frames(b);
+            frames.next().await
+        })
+    };
+    // Parked in the read before the close, with nothing in flight to end it.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!pump.is_finished(), "the pump must be parked in the read");
+
+    t.close(b, CloseReason::Normal);
+
+    let ended = tokio::time::timeout(Duration::from_secs(5), pump)
+        .await
+        .expect("the close must wake a read parked on a peer that will never speak")
+        .unwrap();
+    assert!(
+        ended.is_none(),
+        "the woken pump ends the session rather than yielding: {ended:?}"
+    );
+    drop(a);
+}
+
 /// The Pong this transport owes a Ping is sent from inside the frame pump, which means nothing
 /// above it holds a handle that could cancel it. A peer that pings and then stops reading therefore
 /// parks the pump in that send: no further frame is ever yielded, the layer above is never told the
