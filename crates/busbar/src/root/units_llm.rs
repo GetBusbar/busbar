@@ -393,7 +393,8 @@ impl LlmNode {
             walk: Walk::open(arrival),
         };
 
-        let hold = busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
+        let hold =
+            busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
         let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
             key,
             origin: OriginKind::Client,
@@ -657,7 +658,8 @@ impl LateAccrual {
         if amount == 0 {
             return;
         }
-        let accrual = busbar_caps::HoldAccrual::after_terminal(principal.clone(), amount, &ledger_token);
+        let accrual =
+            busbar_caps::HoldAccrual::after_terminal(principal.clone(), amount, &ledger_token);
         let posted = busbar_caps::Posted::settle_late(accrual, &ledger_token);
         let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
         let _settled = settle(
@@ -728,13 +730,16 @@ impl http_body::Body for LateBody {
     }
 
     fn is_end_stream(&self) -> bool {
-        self.inner.as_ref().is_none_or(http_body::Body::is_end_stream)
+        self.inner
+            .as_ref()
+            .is_none_or(http_body::Body::is_end_stream)
     }
 
     fn size_hint(&self) -> http_body::SizeHint {
-        self.inner
-            .as_ref()
-            .map_or_else(|| http_body::SizeHint::with_exact(0), http_body::Body::size_hint)
+        self.inner.as_ref().map_or_else(
+            || http_body::SizeHint::with_exact(0),
+            http_body::Body::size_hint,
+        )
     }
 }
 

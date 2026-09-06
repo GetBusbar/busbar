@@ -360,11 +360,7 @@ impl ProductionUnits {
             write,
         )
         .expect("a memory-buffered journal cannot fail to open");
-        ProductionUnits::admin_only_sharing(
-            dispatch,
-            Arc::new(Mutex::new(durability)),
-            read,
-        )
+        ProductionUnits::admin_only_sharing(dispatch, Arc::new(Mutex::new(durability)), read)
     }
 
     /// The same composition again, over a book the caller already opened.
@@ -400,10 +396,7 @@ impl ProductionUnits {
         // because what they read is the durability the constructor took ownership of — the handle
         // does not exist until it has. Binding it here is what makes the served figures this node's
         // rather than an empty table that looks like a balanced one.
-        units.admin.ledger = Arc::new(crate::root::units_admin::NodeLedger::new(
-            durability,
-            read,
-        ));
+        units.admin.ledger = Arc::new(crate::root::units_admin::NodeLedger::new(durability, read));
         units
     }
 

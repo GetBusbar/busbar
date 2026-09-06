@@ -1460,7 +1460,8 @@ async fn run(data_workers: usize) {
             root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
                 std::sync::Arc::clone(&book.durability),
-                std::sync::Arc::clone(&book.rows) as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
+                std::sync::Arc::clone(&book.rows)
+                    as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
             )
         },
     );

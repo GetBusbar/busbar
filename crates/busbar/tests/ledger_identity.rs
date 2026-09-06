@@ -469,7 +469,11 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         .sum();
     assert_eq!(served_fees, 0);
     for row in rows {
-        assert_eq!(row["day"].as_u64(), Some(day), "every row is the run's own day");
+        assert_eq!(
+            row["day"].as_u64(),
+            Some(day),
+            "every row is the run's own day"
+        );
     }
 
     // THE RECONCILIATION, and it holds over a table with rows in it. Both sides of it come out of one
@@ -500,7 +504,11 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
 /// One administrative read, as bytes.
 fn get_bytes(port: u16, path: &str, bearer: &str) -> Vec<u8> {
     let r = get(port, path, Some(bearer));
-    assert_eq!(r.status, 200, "GET {path} answered {}: {}", r.status, r.body);
+    assert_eq!(
+        r.status, 200,
+        "GET {path} answered {}: {}",
+        r.status, r.body
+    );
     r.body.into_bytes()
 }
 
