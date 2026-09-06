@@ -461,6 +461,19 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub pinned: &'r [&'r str],
     /// The admission unit's long-lived door.
     pub door: &'r Door<S>,
+    /// The configured limit tree, resolved once at boot into the shape the door walks.
+    ///
+    /// Borrowed from the node's one table rather than resolved per unit: a second table would be a
+    /// second set of parent indices, and two answers to what a group's cap is.
+    pub groups: &'r busbar_unit_admission::GroupTable,
+    /// The group this caller charges through, as the deployment bound its key.
+    ///
+    /// `None` is a real posture and the common one: a principal bound to no group is authenticated,
+    /// attributed on its own bucket, and under no group's cap — which is what a deployment with no
+    /// `groups:` section has for every caller. A principal bound to a group this node does not have
+    /// is a different thing entirely, and the chain refuses it rather than admitting under caps it
+    /// could not read.
+    pub group: Option<&'r str>,
     /// What the door prices a unit against.
     pub pricer: &'r Pricer,
     /// What the deployment's card charges for a byte of the priced document, in nano-units.
@@ -556,6 +569,28 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     #[must_use]
     pub fn draft(&self) -> &A2aDraft {
         &self.draft
+    }
+
+    /// The buckets this unit is judged and charged against: the caller's own attribution bucket,
+    /// then the group it charges through, then that group's parent, to the root.
+    ///
+    /// The same walk and the same precedence the shipped plane's door uses, over the same table the
+    /// root resolved from the deployment's `groups:` section — so a group's `concurrent` cap, its
+    /// windowed limits and its freeze flag mean here what they mean there. The attribution bucket
+    /// carries no caps and never blocks; it is charged on every admission so that a deployment with
+    /// no groups at all still has one figure per principal.
+    ///
+    /// # Errors
+    ///
+    /// The caller is bound to a group this node's configuration does not have. Fail-closed: caps
+    /// that cannot be read cannot be enforced, so nothing is admitted under them.
+    fn chain(
+        &self,
+        principal: &PrincipalId,
+    ) -> Result<busbar_unit_admission::BucketChain, busbar_unit_admission::MissingGroup> {
+        self.bindings
+            .groups
+            .chain_for(principal.as_str(), self.bindings.group)
     }
 
     /// The balance one unit of this plane settles into: the caller's own attribution bucket, in
@@ -996,7 +1031,14 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // checks every bucket of the pool-filtered chain and charges nothing, pass two charges. The
         // epoch is the pinned arrival epoch and never a fresh clock read, because a check and a
         // charge that read two different clocks are a check of one window and a charge in another.
-        let chain = busbar_unit_admission::BucketChain::unchecked(Vec::new(), Vec::new());
+        // The chain the deployment configured, not an empty one. An empty chain is a yes from every
+        // cap at once: no gauge is raised, no window bucket is read and no freeze flag is
+        // consulted, so a group's `concurrent: 1` would admit every unit that ever arrives.
+        let Ok(chain) = self.chain(principal) else {
+            // Fail-closed, and rendered the way the door renders it for the same cause: a principal
+            // whose caps cannot be read is over quota, not merely rate-limited.
+            return Decision::refuse(token, Refusal::new(ReasonCode::OverBudget));
+        };
         let mut unit = AdmissionUnit::new(
             self.bindings.door,
             self.bindings.pricer,
@@ -1070,14 +1112,28 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // as it is NOW, and the exit is where it is spent. Zero is a top-up that does not happen,
         // never a unit that does not run.
         meter.offer_headroom({
-            let chain = busbar_unit_admission::BucketChain::unchecked(Vec::new(), Vec::new());
-            AdmissionUnit::new(
-                self.bindings.door,
-                self.bindings.pricer,
-                self.bindings.pool,
-                self.bindings.now,
-            )
-            .headroom_nanos(&chain)
+            // The same chain the door was judged against, rebuilt over the principal the
+            // authenticate step settled on — so a top-up is measured against the window that
+            // admitted this unit rather than against nothing at all. A group this node cannot read
+            // is a headroom of zero: a reservation that does not grow, never a unit that does not
+            // run.
+            let principal = self
+                .progress
+                .lock()
+                .expect("progress lock")
+                .principal
+                .clone();
+            let who = principal.as_ref().map_or("", PrincipalId::as_str);
+            match self.bindings.groups.chain_for(who, self.bindings.group) {
+                Err(_) => 0,
+                Ok(chain) => AdmissionUnit::new(
+                    self.bindings.door,
+                    self.bindings.pricer,
+                    self.bindings.pool,
+                    self.bindings.now,
+                )
+                .headroom_nanos(&chain),
+            }
         });
 
         // A plan with no leg at all is an operation this plane does not carry: a refusal at the

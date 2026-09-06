@@ -693,6 +693,11 @@ pub struct VoiceNode {
     /// The admission unit's long-lived door. Its ledger cells are hydrated once, at boot, and are
     /// never re-read on the request path.
     pub door: Mutex<Door<InMemoryCells>>,
+    /// The configured limit tree, resolved once at boot into the shape the door walks.
+    ///
+    /// One table for the node, because the parent indices a chain chases are positions in it: two
+    /// tables would be two readings of what a group's cap is.
+    pub groups: busbar_unit_admission::GroupTable,
     /// What the door prices an estimate against.
     pub pricer: Pricer,
     /// The authentication chain, resolved from configuration at boot.
@@ -751,6 +756,8 @@ impl std::fmt::Debug for VoiceNode {
 pub struct VoiceNodeParts {
     /// The plane, with its configured upstream list.
     pub plane: VoicePlane,
+    /// The configured limit tree, resolved at boot into the shape the door walks.
+    pub groups: busbar_unit_admission::GroupTable,
     /// What the door prices an estimate against.
     pub pricer: Pricer,
     /// The authentication chain, resolved at boot.
@@ -776,6 +783,7 @@ impl VoiceNode {
         VoiceNode {
             plane: parts.plane,
             door: Mutex::new(Door::new(InMemoryCells::new())),
+            groups: parts.groups,
             pricer: parts.pricer,
             auth: parts.auth,
             auth_bindings: parts.auth_bindings,
@@ -991,6 +999,12 @@ pub struct VoiceUnit<'n> {
     pub from_session: bool,
     /// The dialect the decode step named.
     pub dialect: Dialect,
+    /// The group this session's caller charges through, as the deployment bound its key.
+    ///
+    /// A session-long fact rather than a per-turn one: the key is presented once, at the open, and
+    /// every turn of the session charges the same chain. `None` is the ordinary posture for a
+    /// deployment with no `groups:` section — authenticated, attributed, and under no group's cap.
+    pub group: Option<String>,
     /// What the turn reported, once the upstream reported it.
     pub usage: TurnUsage,
     /// The identifier a tool call's answer must carry, as the plane's draft minted it.
@@ -1061,6 +1075,7 @@ impl<'n> VoiceUnit<'n> {
             grants: Grants::of(Scope::Full),
             from_session: shape != UnitShape::SessionOpen,
             dialect: Dialect::OpenaiRealtime,
+            group: None,
             usage: TurnUsage::default(),
             call_id: None,
             now_ms: 0,
@@ -1090,6 +1105,36 @@ impl<'n> VoiceUnit<'n> {
     pub fn on_dialect(mut self, dialect: Dialect) -> Self {
         self.dialect = dialect;
         self
+    }
+
+    /// The group this unit's caller charges through.
+    ///
+    /// Carried in rather than looked up here, for the reason every other fact on this struct is:
+    /// which group a key belongs to is the governance state's answer, decided before the first step
+    /// runs, and a step that resolved it would be a step deciding its own input.
+    #[must_use]
+    pub fn charging_through(mut self, group: impl Into<String>) -> Self {
+        self.group = Some(group.into());
+        self
+    }
+
+    /// The buckets this unit is judged and charged against: the caller's own attribution bucket,
+    /// then the group it charges through, then that group's parent, to the root.
+    ///
+    /// The same walk and the same precedence the shipped plane's door uses, over the table the root
+    /// resolved from the deployment's `groups:` section. The attribution bucket carries no caps and
+    /// never blocks; it is charged on every admission so a deployment with no groups still has one
+    /// figure per principal.
+    ///
+    /// # Errors
+    ///
+    /// The caller is bound to a group this node's configuration does not have. Fail-closed: caps
+    /// that cannot be read cannot be enforced, so nothing is admitted under them.
+    fn chain(
+        &self,
+        principal: &str,
+    ) -> Result<busbar_unit_admission::BucketChain, busbar_unit_admission::MissingGroup> {
+        self.node.groups.chain_for(principal, self.group.as_deref())
     }
 
     /// What the turn reported.
@@ -1208,8 +1253,16 @@ impl<'n> VoiceUnit<'n> {
     /// The door's own read of what the principal's slice has left in the window. It is not a
     /// decision and cannot become one: zero means the reservation does not grow and the rest of the
     /// turn is carried as an overdraft, which is a turn that still runs.
+    ///
+    /// Read off the session's own chain, so a turn grows into the window its group actually has
+    /// left rather than into an unbounded one. Only a bucket carrying a budget cap answers a
+    /// headroom, and the principal's attribution bucket carries none by construction — which is why
+    /// this reading needs the group and not the principal's name. A group this node cannot read is
+    /// zero, the same fail-closed direction the door takes.
     fn headroom_nanos(&self) -> u64 {
-        let chain = busbar_unit_admission::BucketChain::unchecked(Vec::new(), Vec::new());
+        let Ok(chain) = self.chain("") else {
+            return 0;
+        };
         let door = self.node.door.lock().unwrap_or_else(|e| e.into_inner());
         busbar_unit_admission::AdmissionUnit::new(
             &door,
@@ -1424,7 +1477,14 @@ impl Units for VoiceUnit<'_> {
         // reservation with no admission behind it, and a unit whose hold and whose answer could
         // disagree about whether it was let in.
         let estimate = self.estimate();
-        let chain = busbar_unit_admission::BucketChain::unchecked(Vec::new(), Vec::new());
+        // The chain the deployment configured, not an empty one. An empty chain is a yes from every
+        // cap at once: no gauge is raised, no window bucket is read and no freeze flag is
+        // consulted, so a group's `concurrent: 1` would admit every turn that ever arrives.
+        let Ok(chain) = self.chain(principal.as_str()) else {
+            // Fail-closed, rendered the way the door renders the same cause: a principal whose caps
+            // cannot be read is over quota, not merely rate-limited.
+            return Decision::refuse(token, Refusal::new(ReasonCode::OverBudget));
+        };
         let door = self.node.door.lock().unwrap_or_else(|e| e.into_inner());
         // The pinned arrival epoch, never a fresh clock read: the door's own contract.
         let mut unit = busbar_unit_admission::AdmissionUnit::new(
@@ -1902,6 +1962,11 @@ mod tests {
     }
 
     fn node(io: VoiceIo) -> VoiceNode {
+        // A deployment that configured no group: every caller is attributed and none is capped.
+        node_governed_by(io, busbar_unit_admission::GroupTable::default())
+    }
+
+    fn node_governed_by(io: VoiceIo, groups: busbar_unit_admission::GroupTable) -> VoiceNode {
         let durability = crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             Box::new(busbar_unit_wal::NullShipper::new()),
@@ -1910,6 +1975,7 @@ mod tests {
         .expect("a memory-buffered journal cannot fail to open");
         VoiceNode::new(VoiceNodeParts {
             plane: VoicePlane::new(UPSTREAMS),
+            groups,
             pricer: Pricer::flat(0),
             auth: Auth::new(AuthChain::new(Vec::new(), false)),
             // The chain these tests run is the empty one — the open front door — so the seams have
