@@ -8240,6 +8240,16 @@
             },
             "description": "Rotated (body includes the once-shown new secret; an Idempotency-Key retry replays it verbatim)"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: an id or name exceeds its length cap"
+          },
           "401": {
             "content": {
               "application/json": {
