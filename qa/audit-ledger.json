@@ -395,13 +395,17 @@
    "paths": [
     "crates/busbar-plane-llm/src"
    ],
-   "tree_hash": "634319c73b7061e6440df653e8c65358bc245a59fba76b08c8f5a56a4c1acccd",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "df2d3d5c22c0dfaa6602fa06c09f1bc8c5be3278575f1d87e0ad2b9f98cebde1",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 1,
+    "LOW": 2
+   },
+   "report": "pass 2 fresh eyes: model-listing route claimed by the model rung (fixed e95344d7), stream decode state never written back (fixed 013a30f3), target-carried stream ask unheard (fixed 2c8f7de0); all src and tests read fully",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-llm/src/tests"
