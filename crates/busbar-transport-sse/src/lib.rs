@@ -8,8 +8,8 @@
 //! inherits the lower layer's status leg"). This crate does not open a socket itself: `dial`
 //! delegates straight to an [`busbar_transport_http::HttpTransport`] it holds, and `frames`
 //! re-segments the byte stream `http` already assembled at the SSE frame terminator (a blank
-//! line), using the parser [`proto`] carries — ported from `busbar_substrate::proto` per the
-//! design's rule that a transport's own wire pieces live in the transport crate.
+//! line), using the terminator scan [`proto`] carries — ported from `busbar_substrate::proto` per
+//! the design's rule that a transport's own wire pieces live in the transport crate.
 //!
 //! The re-segmentation buffer is held to the design's per-connection reading budget
 //! (`MAX_CURSOR_BYTES`). Upstream bytes are untrusted, and this is the one accumulator with no cap
@@ -221,7 +221,10 @@ impl Transport for SseTransport {
                         st.buf.extend_from_slice(http_frame.bytes.as_slice());
                         let (carved, _moved) = carve_complete_frames(&mut st.buf, st.scanned);
                         for raw in carved {
-                            if proto::parse_sse_frame(&raw).is_some() {
+                            // Whether this frame carries a payload at all is the only question here;
+                            // the payload itself travels on untouched, so a full parse would build
+                            // one only to drop it.
+                            if proto::frame_carries_data(&raw) {
                                 let status = if st.status_attached {
                                     None
                                 } else {

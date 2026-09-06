@@ -533,6 +533,37 @@ async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
     );
 }
 
+/// The predicate the re-segmenter admits carved frames on answers exactly what a full parse would.
+///
+/// `frames` asks one question of every frame it carves — does this frame carry a payload — and
+/// asking it by parsing the frame and dropping the result costs a `String`, a `Vec` and a join per
+/// frame on the streaming path, all of it thrown away before the frame is handed on untouched. The
+/// predicate is only worth having if it admits exactly the same frames, invalid UTF-8 and the
+/// spec's three line terminators included, so that is what is asserted rather than the saving.
+#[test]
+fn the_data_line_predicate_admits_exactly_what_a_full_parse_does() {
+    let invalid_utf8: &[u8] = &[b'd', b'a', b't', b'a', b':', b' ', 0xff];
+    for frame in [
+        b"event: message\ndata: {\"a\":1}".as_slice(),
+        b"data: {\"a\":1}",
+        b"event: ping",
+        b"data: line1\ndata: line2",
+        b"event: message\rdata: {\"a\":1}\r\r",
+        b"data: a\rdata: b\n",
+        b"id: 1\nretry: 5",
+        b"data",
+        b"\n\n",
+        b"",
+        invalid_utf8,
+    ] {
+        assert_eq!(
+            proto::frame_carries_data(frame),
+            proto::parse_sse_frame(frame).is_some(),
+            "the predicate and the parse disagree on {frame:?}"
+        );
+    }
+}
+
 /// A terminal framing error is the last thing the stream says. Frames carved out of the same buffer
 /// that then overran the cursor budget were queued before the budget was checked, so a consumer
 /// that kept polling was handed an event AFTER the error that ended the stream — payload out of a
