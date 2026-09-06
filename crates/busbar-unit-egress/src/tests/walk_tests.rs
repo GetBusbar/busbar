@@ -13,7 +13,7 @@
 use busbar_contract_transport::wire::StatusClass;
 use busbar_contract_transport::wire::TransportError;
 
-use super::harness::{frame, ok_frames, Health, Script};
+use super::harness::{frame, frame_with_upstream, ok_frames, Health, Script};
 use super::{member, Node};
 use crate::ports::{disposition, Outcome};
 use crate::wire::RouteOutcome;
@@ -215,6 +215,118 @@ fn a_member_that_answers_with_a_server_error_is_failed_over_from() {
     assert_eq!(
         node.telemetry.failovers.lock().unwrap().as_slice(),
         &[("primary".to_string(), disposition::TRANSIENT)]
+    );
+}
+
+/// A withdrawn credential answers 403, and 403 is a 4xx — so the coarse class alone says
+/// `ClientError`, which is the caller's own fault and penalises nothing. The exact number is the
+/// only thing that tells the two apart, and it has to reach the classifier for the destination to
+/// go down. The verdict here is stated against the NUMBER: a walk that hands the classifier no
+/// number falls through to the coarse-class default and relays instead of failing over.
+#[test]
+fn a_403_reaches_the_classifier_as_a_403_and_the_destination_goes_hard_down() {
+    let mut node = two_lane_pool();
+    node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
+    node.breaker.set_verdict(
+        403,
+        crate::ports::Classified {
+            disposition: crate::ports::Disposition::HardDown,
+            outcome: Outcome::HardDown,
+            label: disposition::HARD_DOWN,
+        },
+    );
+    node.transport.script(
+        "a",
+        Script::Frames(vec![frame_with_upstream(
+            Some(StatusClass::ClientError),
+            Some(403),
+            None,
+            "forbidden",
+        )]),
+    );
+    node.transport.script("b", Script::Frames(ok_frames()));
+
+    let outcome = node.route("primary");
+    assert_eq!(
+        node.breaker
+            .classified
+            .lock()
+            .unwrap()
+            .first()
+            .map(|s| s.code),
+        Some(Some(403)),
+        "the upstream's own number crossed the seam, not just the 4xx class"
+    );
+    assert_eq!(
+        node.breaker.outcomes("primary", DestinationId::new(0)),
+        vec![Outcome::HardDown],
+        "and the destination is recorded hard-down, which is what fans out to its siblings"
+    );
+    assert!(
+        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == DestinationId::new(1)),
+        "a hard-down member is failed over from, never relayed: {outcome:?}"
+    );
+}
+
+/// The wait an upstream asks for is a fact about THAT answer, and the only layer that ever sees it
+/// is the transport that read the response head. It has to arrive at the classifier or the
+/// cooldown is computed from the ladder alone and the upstream's floor is silently dropped.
+#[test]
+fn a_429_carries_the_upstreams_own_retry_after_through_to_the_breaker() {
+    let mut node = two_lane_pool();
+    node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
+    node.transport.script(
+        "a",
+        Script::Frames(vec![frame_with_upstream(
+            Some(StatusClass::ClientError),
+            Some(429),
+            Some(7),
+            "slow down",
+        )]),
+    );
+    node.transport.script("b", Script::Frames(ok_frames()));
+
+    assert!(node.route("primary").is_delivered());
+    let seen = node.breaker.classified.lock().unwrap().first().copied();
+    assert_eq!(seen.map(|s| s.code), Some(Some(429)));
+    assert_eq!(
+        seen.map(|s| s.retry_after),
+        Some(Some(7)),
+        "the seven seconds the upstream asked for reached the classifier"
+    );
+    assert_eq!(
+        node.breaker.outcomes("primary", DestinationId::new(0)),
+        vec![Outcome::Transient {
+            retry_after: Some(7)
+        }],
+        "and it is what the breaker is told to floor the cooldown at"
+    );
+}
+
+/// The other half of the same claim: an upstream that asked for nothing must not have a wait
+/// invented for it. `None` here is what leaves the cooldown to the ladder.
+#[test]
+fn a_server_error_with_no_retry_after_leaves_the_cooldown_to_the_ladder() {
+    let mut node = two_lane_pool();
+    node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
+    node.transport.script(
+        "a",
+        Script::Frames(vec![frame_with_upstream(
+            Some(StatusClass::ServerError),
+            Some(503),
+            None,
+            "boom",
+        )]),
+    );
+    node.transport.script("b", Script::Frames(ok_frames()));
+
+    assert!(node.route("primary").is_delivered());
+    let seen = node.breaker.classified.lock().unwrap().first().copied();
+    assert_eq!(seen.map(|s| s.code), Some(Some(503)));
+    assert_eq!(seen.map(|s| s.retry_after), Some(None));
+    assert_eq!(
+        node.breaker.outcomes("primary", DestinationId::new(0)),
+        vec![Outcome::Transient { retry_after: None }],
     );
 }
 

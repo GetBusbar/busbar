@@ -37,11 +37,18 @@ fn route_token() -> UnitToken<Route> {
 /// The integrator's binding of the egress unit's `Breaker` port onto the breaker unit's
 /// `BreakerUnit`. A thin wrapper with no policy of its own beyond the one status fold the module
 /// doc above names; the destination goes across untouched.
-struct BreakerAdapter(BreakerUnit);
+struct BreakerAdapter(BreakerUnit, BreakerCfg);
 
 impl BreakerAdapter {
     fn new() -> Self {
-        Self(BreakerUnit::new())
+        Self::with_cfg(BreakerCfg::default())
+    }
+
+    /// The same adapter over a stated ladder. The default base cooldown (15s) is longer than any
+    /// realistic `Retry-After` a test would state, so a test about the upstream's own floor needs
+    /// a ladder short enough for the floor to be the thing that decides.
+    fn with_cfg(cfg: BreakerCfg) -> Self {
+        Self(BreakerUnit::new(), cfg)
     }
 
     /// Fold the transport's coarse status-class reading down to a representative HTTP-shaped code,
@@ -179,7 +186,7 @@ impl Breaker for BreakerAdapter {
             pool,
             destination,
             map_outcome_to_breaker(outcome),
-            &BreakerCfg::default(),
+            &self.1,
             now,
             token,
         )
@@ -235,8 +242,8 @@ fn classify_folds_the_declared_error_map_through_the_adapter() {
 
 #[test]
 fn classify_falls_back_to_the_coarse_transport_class_when_no_code_is_known() {
-    // This is the shape the walk actually builds today (`attempt.rs`'s `UpstreamStatus { code:
-    // None, .. }`): only the transport's coarse reading is known.
+    // A transport whose wire puts no number on an answer reports none, and the coarse reading is
+    // then the only leg there is. The walk carries the number when the transport read one.
     let breaker = BreakerAdapter::new();
     let out = breaker.classify(
         DestinationId::new(1),
@@ -278,6 +285,111 @@ fn a_hard_down_trip_suppresses_a_later_admit_with_the_cooldown_the_port_expects(
     assert_eq!(
         breaker.cooldown_remaining("pool", DestinationId::new(4), 10, &route_token()),
         1790
+    );
+}
+
+/// A 403 is a 4xx, so the coarse class says `ClientError` and the coarse class alone would record
+/// nothing at all. The number says the credential was refused, which is a fact about the SHARED
+/// destination — so the disposition is hard-down and the trip fans out to every pool cell that
+/// names the destination, not just the pool the failing attempt ran through.
+#[test]
+fn a_403_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destination_with_it() {
+    let breaker = BreakerAdapter::new();
+    let destination = DestinationId::new(41);
+
+    let out = breaker.classify(
+        destination,
+        UpstreamStatus {
+            class: Some(StatusClass::ClientError),
+            code: Some(403),
+            retry_after: None,
+        },
+    );
+    assert_eq!(
+        out.disposition,
+        Disposition::HardDown,
+        "the number is what tells a withdrawn credential from a malformed request"
+    );
+    assert_eq!(out.outcome, Outcome::HardDown);
+
+    // Two pools name the same destination. Touch both so both cells exist — `hard_down_all` fans
+    // out to the pools already known for the destination.
+    assert!(breaker.ready("primary", destination, 0, &route_token()));
+    assert!(breaker.ready("secondary", destination, 0, &route_token()));
+
+    assert!(breaker.observe("primary", destination, out.outcome, 0, &route_token()));
+
+    assert!(
+        breaker.cooldown_remaining("secondary", destination, 0, &route_token()) > 0,
+        "the sibling lane goes down with it: a refused credential is not one pool's problem"
+    );
+    assert!(!breaker.ready("secondary", destination, 0, &route_token()));
+}
+
+/// The upstream asked for seven seconds, so it waits seven seconds — the ladder's own (much
+/// shorter, here) cooldown is raised to the upstream's floor rather than the two being added or
+/// the upstream's being ignored.
+#[test]
+fn a_429_with_a_retry_after_of_seven_sets_a_seven_second_cooldown() {
+    let breaker = BreakerAdapter::with_cfg(BreakerCfg {
+        base_cooldown_secs: 1,
+        ..BreakerCfg::default()
+    });
+    let destination = DestinationId::new(42);
+
+    let out = breaker.classify(
+        destination,
+        UpstreamStatus {
+            class: Some(StatusClass::ClientError),
+            code: Some(429),
+            retry_after: Some(7),
+        },
+    );
+    assert_eq!(out.disposition, Disposition::TransientUpstream);
+    assert_eq!(
+        out.outcome,
+        Outcome::Transient {
+            retry_after: Some(7)
+        }
+    );
+
+    breaker.observe("primary", destination, out.outcome, 100, &route_token());
+    assert_eq!(
+        breaker.cooldown_remaining("primary", destination, 100, &route_token()),
+        7,
+        "the upstream's own wait is the floor the cooldown lands on"
+    );
+}
+
+/// And an upstream that asked for nothing gets the ladder, untouched. The default is a decision,
+/// not a fallback for a wait that went missing on the way here.
+#[test]
+fn a_server_error_with_no_retry_after_keeps_the_ladders_own_cooldown() {
+    let breaker = BreakerAdapter::with_cfg(BreakerCfg {
+        base_cooldown_secs: 20,
+        ..BreakerCfg::default()
+    });
+    let destination = DestinationId::new(43);
+
+    let out = breaker.classify(
+        destination,
+        UpstreamStatus {
+            class: Some(StatusClass::ServerError),
+            code: Some(503),
+            retry_after: None,
+        },
+    );
+    assert_eq!(out.disposition, Disposition::TransientUpstream);
+    assert_eq!(out.outcome, Outcome::Transient { retry_after: None });
+
+    breaker.observe("primary", destination, out.outcome, 100, &route_token());
+    // The failure streak is incremented before the cooldown is computed, so the first failure is
+    // already one rung up the ladder (`base << 1` = 40), and every trip is jittered ±10% — so the
+    // claim is the BAND that value sits in, not a point a reseeded jitter would break.
+    let remaining = breaker.cooldown_remaining("primary", destination, 100, &route_token());
+    assert!(
+        (36..=44).contains(&remaining),
+        "the ladder's own cooldown, jittered — nothing from the upstream moved it: {remaining}"
     );
 }
 
