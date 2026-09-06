@@ -22,6 +22,16 @@ pub enum StoreError {
     NotFound,
     /// The underlying store failed; details are for the integrator's own logs only.
     Failed,
+    /// THIS COMPOSITION HAS NO STORE. Not a failure: a node whose integrator wired no store has
+    /// nothing that could have succeeded, and there is no retry that would change it.
+    ///
+    /// A separate variant because [`StoreError::Failed`] is a promise of the opposite — that the
+    /// store exists and did not answer — and it is served as unavailability, which tells an operator
+    /// to retry and to page somebody. An operator running a disaster-recovery ceremony against a
+    /// node that has no store would follow that advice forever. What is true is that the operation
+    /// is not available HERE, which is what the irreducible set's other path — the off-node CLI on a
+    /// stopped node — exists for.
+    Unconfigured,
 }
 
 impl StoreError {
@@ -29,7 +39,10 @@ impl StoreError {
     /// [`crate::governance::GovernanceError::into_refusal`] maps a governance failure.
     pub fn into_refusal(self) -> Refusal {
         let reason = match self {
-            StoreError::NotFound => ReasonCode::NotFound,
+            // An absent store and an absent row are one answer to a caller: there is nothing here.
+            // The DIFFERENCE between them is a fact about the deployment rather than about the
+            // request, and a caller cannot act on it either way.
+            StoreError::NotFound | StoreError::Unconfigured => ReasonCode::NotFound,
             StoreError::Failed => ReasonCode::StoreError,
         };
         Refusal::new(RefusalStep::Verify, reason)
