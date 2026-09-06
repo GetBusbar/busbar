@@ -188,10 +188,24 @@ fn bounds() -> SweepBounds {
 }
 
 fn submit_demo(engine: &DurableHandleEngine, row: DemoRow, now: u64) {
+    submit_demo_bounded(engine, row, now, bounds(), demo_abandon);
+}
+
+/// `submit_demo` with the sweep bounds and the abandon callback supplied — the retention tests need
+/// to vary the ceilings and to COUNT how many times a handle is actually handed to abandon.
+fn submit_demo_bounded<A>(
+    engine: &DurableHandleEngine,
+    row: DemoRow,
+    now: u64,
+    bounds: SweepBounds,
+    abandon: A,
+) where
+    A: Fn(&str, &(dyn std::any::Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
+{
     engine
         .submit(
             now,
-            bounds(),
+            bounds,
             |_pos| {
                 let record = row.record();
                 let meta = row.meta();
@@ -206,7 +220,7 @@ fn submit_demo(engine: &DurableHandleEngine, row: DemoRow, now: u64) {
                     }),
                 })
             },
-            demo_abandon,
+            abandon,
             no_report,
         )
         .expect("submit");
@@ -684,6 +698,103 @@ fn two_different_handles_mutate_concurrently_without_serializing_on_each_other()
     t2.join().unwrap();
     assert_eq!(engine.meta("a").unwrap().cursor, 1);
     assert_eq!(engine.meta("b").unwrap().cursor, 2);
+}
+
+/// TWO SUBMITS RACING THE SWEEP. The abandon rule's durable writes run with the OUTER lock released,
+/// so two submits can be inside the sweep at once and both can see the same idle handle as a
+/// candidate. What must hold either way: a handle is handed to the abandon callback AT MOST ONCE (the
+/// re-read under the handle's own inner lock is what makes the second racer see an already-settled
+/// handle and stand down), and no handle is lost — every pre-existing handle and every submitted one
+/// is in the working set at the end.
+#[test]
+fn two_submits_racing_the_sweep_neither_double_abandon_nor_lose_a_handle() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
+
+    // Ceilings wide enough that NOTHING is evicted: the only rule that may fire is abandon, so a
+    // missing handle at the end is a lost handle and not a retention decision.
+    let wide = SweepBounds {
+        abandon_secs: 100,
+        terminal_ttl_secs: 1_000_000,
+        max_retained: usize::MAX,
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counting = {
+        let calls = Arc::clone(&calls);
+        move |id: &str, row: &(dyn std::any::Any + Send + Sync), pos: &ChainPosition, now: u64| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            demo_abandon(id, row, pos, now)
+        }
+    };
+
+    // Eight ACTIVE handles at now=0, all of them idle past `abandon_secs` by the time the racers run.
+    let engine = Arc::new(DurableHandleEngine::new());
+    for i in 0..8u64 {
+        submit_demo_bounded(
+            &engine,
+            DemoRow {
+                id: format!("idle{i}"),
+                owner: "o".into(),
+                updated_at: 0,
+                terminal: false,
+                cursor: 0,
+            },
+            0,
+            wide,
+            &counting,
+        );
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing was idle yet");
+
+    // Two threads, eight submits each, every one of them at a `now` far past the abandon age — so
+    // every submit's sweep sees the same eight idle handles as candidates.
+    let threads: Vec<_> = (0..2u64)
+        .map(|t| {
+            let engine = Arc::clone(&engine);
+            let counting = counting.clone();
+            thread::spawn(move || {
+                for k in 0..8u64 {
+                    let now = 1_000 + k;
+                    submit_demo_bounded(
+                        &engine,
+                        DemoRow {
+                            id: format!("s{t}-{k}"),
+                            owner: "o".into(),
+                            updated_at: now,
+                            terminal: false,
+                            cursor: 0,
+                        },
+                        now,
+                        wide,
+                        &counting,
+                    );
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().expect("a racing submitter panicked");
+    }
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        8,
+        "each idle handle was handed to abandon exactly once across both racers"
+    );
+    for i in 0..8u64 {
+        let id = format!("idle{i}");
+        let meta = engine
+            .meta(&id)
+            .expect("an abandoned handle stays resident");
+        assert!(meta.terminal, "{id} was left active past the abandon age");
+    }
+    for t in 0..2u64 {
+        for k in 0..8u64 {
+            let id = format!("s{t}-{k}");
+            assert!(engine.get_unscoped(&id).is_some(), "{id} was lost");
+        }
+    }
+    assert_eq!(engine.len(), 24, "no handle was lost and none was evicted");
 }
 
 #[test]

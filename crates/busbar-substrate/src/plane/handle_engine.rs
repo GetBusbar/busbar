@@ -52,11 +52,15 @@
 //!   `append_record`) BEFORE it takes the outer lock — a submit is a FRESH id at the genesis chain
 //!   position, with no existing per-handle chain another writer could fork, so its durable write needs
 //!   no cross-writer serialization. It takes the outer lock only to run the retention sweep and insert.
-//! - The sweep's abandon in [`sweep_locked`](DurableHandleEngine::sweep_locked) and the boot
-//!   [`rehydrate`](DurableHandleEngine::rehydrate) run under the outer lock and take inner locks beneath
-//!   it. The ordering is always outer-THEN-inner (no path ever takes the outer lock while holding an
-//!   inner one), so the two levels cannot deadlock. Abandon's durable I/O under the outer lock is
-//!   confined to the submit-driven sweep — the hot mutate path never holds the outer lock across I/O.
+//! - The sweep in [`sweep`](DurableHandleEngine::sweep) does its abandon writes with the outer lock
+//!   RELEASED: it collects the candidate shards under the lock, drops it, applies each abandon mutation
+//!   under that handle's own inner lock (re-reading `meta` first, because a concurrent `mutate` may have
+//!   settled the handle in the gap), and only then re-takes the outer lock for the two eviction rules.
+//!   NO PATH HOLDS THE OUTER LOCK ACROSS A STORE ROUND-TRIP. The boot
+//!   [`rehydrate`](DurableHandleEngine::rehydrate) still runs under the outer lock across `classify`'s
+//!   per-row I/O, which is harmless there (single-threaded boot, no concurrency).
+//! - The ordering is always outer-THEN-inner (no path ever takes the outer lock while holding an inner
+//!   one), so the two levels cannot deadlock.
 
 // PARTLY UNMOUNTED: a bare substrate build that never constructs the engine reads some accessors as
 // unused; the plane crates and the engine's own unit tests exercise the whole surface.
@@ -448,8 +452,8 @@ impl DurableHandleEngine {
             }
             None => genesis,
         };
+        self.sweep(now, bounds, &abandon, &report_fail);
         let mut handles = self.lock();
-        self.sweep_locked(&mut handles, now, bounds, &abandon, &report_fail);
         let row = sr.row.clone();
         handles.insert(
             sr.id,
@@ -556,52 +560,63 @@ impl DurableHandleEngine {
         Ok(slot.row.clone())
     }
 
-    /// THE RETENTION SWEEP under a held working-set lock. Three rules: (0) transition an ACTIVE handle
-    /// idle past `abandon_secs` via the plane's `abandon` callback (a durable-write failure leaves it
-    /// active and is reported through `report_fail`); (1) evict TERMINAL handles past
-    /// `terminal_ttl_secs`; (2) if still over `max_retained`, evict oldest TERMINAL first — never an
-    /// active one. Its abandon transition does durable I/O while the global lock is held — see the
-    /// module-level "Lock discipline" note on the per-engine-vs-per-handle asymmetry.
+    /// THE RETENTION SWEEP. Three rules, IN ORDER, and the order is part of the outcome: (0)
+    /// transition an ACTIVE handle idle past `abandon_secs` via the plane's `abandon` callback (a
+    /// durable-write failure leaves it active and is reported through `report_fail`); (1) evict
+    /// TERMINAL handles past `terminal_ttl_secs`; (2) if still over `max_retained`, evict oldest
+    /// TERMINAL first — never an active one. Because rule (0) settles a handle, a handle can be
+    /// abandoned by rule (0) and evicted by rule (2) within ONE sweep.
     ///
-    /// EACH RULE OPENS WITH A FULL SCAN, so this is three O(n) passes per submit under a lock every
-    /// other submit waits behind, and rule (0)'s store round-trips happen inside that window. Rule
-    /// (2) evicts only terminal handles, so a working set of live handles grows unbounded and each
-    /// pass over it gets longer — the cost grows with the condition the sweep exists to relieve. The
-    /// mechanism is due a redesign (a time-ordered expiry index, an amortised trigger, and the
-    /// abandon writes lifted outside the outer lock); what the redesign may not change is pinned by
+    /// RULE (0)'S DURABLE WRITES DO NOT RUN UNDER THE OUTER LOCK. The candidate slots are collected
+    /// under it (a meta read each) and the lock is RELEASED; the abandon mutations then apply against
+    /// the per-handle inner locks — the same discipline `mutate` follows — so a slow store no longer
+    /// blocks every other submit in the process. Re-entry re-reads each slot's `meta` under its inner
+    /// lock rather than trusting the values read before the gap: a concurrent `mutate` may have
+    /// settled or touched the handle in the meantime, and that is exactly the case where the abandon
+    /// must NOT fire. Rules (1) and (2) then re-take the outer lock.
+    ///
+    /// EACH OF RULES (1) AND (2) STILL OPENS WITH A FULL SCAN — two O(n) passes per submit. The
+    /// mechanism is due the rest of its redesign (a time-ordered expiry index and an amortised
+    /// trigger); what the redesign may not change is pinned by
     /// `the_sweep_keeps_every_active_handle_and_evicts_terminal_ones_oldest_first`, and the shape is
     /// written down in `docs/design/handle-engine-retention-sweep.md`.
-    fn sweep_locked<A, R>(
-        &self,
-        handles: &mut HashMap<String, Arc<Mutex<HandleSlot>>>,
-        now: u64,
-        bounds: SweepBounds,
-        abandon: &A,
-        report_fail: &R,
-    ) where
+    fn sweep<A, R>(&self, now: u64, bounds: SweepBounds, abandon: &A, report_fail: &R)
+    where
         A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
         R: Fn(&str, &StoreError),
     {
-        let abandoned: Vec<String> = handles
-            .iter()
-            .filter(|(_, s)| {
-                let s = Self::lock_slot(s);
-                !s.meta.terminal && now.saturating_sub(s.meta.updated_at) > bounds.abandon_secs
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in &abandoned {
-            let Some(slot_arc) = handles.get(id).cloned() else {
+        // Rule (0), phase one: choose the candidates under the outer lock, holding it for meta reads
+        // only, and clone out their shards.
+        let candidates: Vec<(String, Arc<Mutex<HandleSlot>>)> = {
+            let handles = self.lock();
+            handles
+                .iter()
+                .filter(|(_, s)| {
+                    let s = Self::lock_slot(s);
+                    !s.meta.terminal && now.saturating_sub(s.meta.updated_at) > bounds.abandon_secs
+                })
+                .map(|(id, s)| (id.clone(), s.clone()))
+                .collect()
+        };
+        // Rule (0), phase two: the durable writes, with the outer lock NOT held. The re-read is the
+        // whole point of the gap — a handle another writer settled or touched while the lock was down
+        // is no longer idle and must not be abandoned.
+        for (id, slot_arc) in &candidates {
+            let mut slot = Self::lock_slot(slot_arc);
+            if slot.meta.terminal || now.saturating_sub(slot.meta.updated_at) <= bounds.abandon_secs
+            {
                 continue;
-            };
-            let mut slot = Self::lock_slot(&slot_arc);
+            }
             let Some(m) = abandon(id, slot.row.as_ref(), &slot.pos, now) else {
                 continue;
             };
+            // A failed compensating write leaves the handle ACTIVE (the mutation applies nothing on
+            // a durable failure) and is reported, never swallowed.
             if let Err(e) = self.apply_mutation_to_slot(&mut slot, m) {
                 report_fail(id, &e);
             }
         }
+        let handles = &mut *self.lock();
         let expired: Vec<String> = handles
             .iter()
             .filter(|(_, s)| {
