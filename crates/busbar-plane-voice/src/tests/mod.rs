@@ -89,19 +89,36 @@ mod purity {
 mod style {
     use std::path::{Path, PathBuf};
 
-    fn src_dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+    fn crate_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
     }
 
-    fn walk(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
+    /// Everything this crate SAYS — not only the half of it under `src`.
+    ///
+    /// The rule is that this crate cites the design in words rather than by number, and a citation
+    /// is a citation wherever it is written: the integration tests are this crate's source too, and
+    /// the manifest is the first thing a reader of the crate opens. Walking only `src` let both
+    /// carry exactly what the rule forbids while a check named for the whole source passed.
+    fn checked_files() -> Vec<PathBuf> {
+        let root = crate_dir();
+        let mut out = vec![root.join("Cargo.toml")];
+        for dir in ["src", "tests"] {
+            let dir = root.join(dir);
+            if dir.is_dir() {
+                collect(&dir, &mut out);
+            }
+        }
+        out
+    }
+
+    fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
         let entries = std::fs::read_dir(dir).expect("the source directory is readable");
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                walk(&path, f);
+                collect(&path, out);
             } else if path.extension().is_some_and(|e| e == "rs") {
-                let text = std::fs::read_to_string(&path).expect("a source file is readable");
-                f(&path, &text);
+                out.push(path);
             }
         }
     }
@@ -109,7 +126,8 @@ mod style {
     #[test]
     fn no_section_sign_or_parity_binding_identifier_anywhere_in_source() {
         let mut offenders = Vec::new();
-        walk(&src_dir(), &mut |path, text| {
+        for path in checked_files() {
+            let text = std::fs::read_to_string(&path).expect("a source file is readable");
             for (n, line) in text.lines().enumerate() {
                 if line.contains('\u{00A7}') {
                     offenders.push(format!("{}:{}: section sign", path.display(), n + 1));
@@ -125,7 +143,7 @@ mod style {
                     }
                 }
             }
-        });
+        }
         assert!(
             offenders.is_empty(),
             "the source cites the design by number rather than in words: {offenders:?}"
