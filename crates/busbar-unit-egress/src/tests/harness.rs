@@ -158,6 +158,9 @@ pub struct TestBreaker {
     pub log: Mutex<Vec<Recorded>>,
     /// Cells that were admitted, in order, so a test can read the pick order off the breaker.
     pub admitted: Mutex<Vec<(String, DestinationId)>>,
+    /// Every status the walk actually handed the classifier, in order — the only way a test can
+    /// see WHAT crossed the seam rather than only what came back across it.
+    pub classified: Mutex<Vec<UpstreamStatus>>,
 }
 
 impl TestBreaker {
@@ -318,8 +321,12 @@ impl Breaker for TestBreaker {
     }
 
     fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
-        // A test states a verdict per numeric code; the harness transport reports none, so a
-        // verdict set under zero stands for "whatever this upstream answered".
+        self.classified
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(status);
+        // A test states a verdict per numeric code; a frame with no numeric status on it reports
+        // none, so a verdict set under zero stands for "whatever this upstream answered".
         let key = status.code.unwrap_or(0);
         if let Some(v) = self
             .verdicts
@@ -329,8 +336,25 @@ impl Breaker for TestBreaker {
         {
             return *v;
         }
-        match status.class {
-            Some(StatusClass::ClientError) => Classified {
+        // No verdict was stated for this number. When there IS a number, the fallback follows the
+        // spec split every real classifier makes on it — a withdrawn credential and a rate limit
+        // are not the caller's fault, and folding them in with the rest of the 4xx would let this
+        // fixture agree with a walk that dropped the number on the floor. Only a frame carrying no
+        // number at all falls through to the coarse class below.
+        match (status.code, status.class) {
+            (Some(401 | 403), _) => Classified {
+                disposition: Disposition::HardDown,
+                outcome: Outcome::HardDown,
+                label: disposition::HARD_DOWN,
+            },
+            (Some(408 | 429), _) | (Some(500..=599), _) => Classified {
+                disposition: Disposition::TransientUpstream,
+                outcome: Outcome::Transient {
+                    retry_after: status.retry_after,
+                },
+                label: disposition::TRANSIENT,
+            },
+            (Some(400..=499), _) | (None, Some(StatusClass::ClientError)) => Classified {
                 disposition: Disposition::ClientFault,
                 outcome: Outcome::RecordNothing,
                 label: disposition::TRANSIENT,
@@ -638,6 +662,17 @@ pub enum Script {
 
 /// A response frame with the transport's own status reading on it.
 pub fn frame(status: Option<StatusClass>, body: &str) -> Frame {
+    frame_with_upstream(status, None, None, body)
+}
+
+/// A response frame carrying the whole status leg a real transport reads off an answer: the coarse
+/// class, the exact number the upstream put on it, and the wait it asked for.
+pub fn frame_with_upstream(
+    status: Option<StatusClass>,
+    status_code: Option<u16>,
+    retry_after_secs: Option<u64>,
+    body: &str,
+) -> Frame {
     Frame {
         direction: Direction::Inbound,
         stream: StreamId(0),
@@ -646,6 +681,8 @@ pub fn frame(status: Option<StatusClass>, body: &str) -> Frame {
             bytes: body.len() as u64,
             transport_units: None,
             status,
+            status_code,
+            retry_after_secs,
         },
     }
 }

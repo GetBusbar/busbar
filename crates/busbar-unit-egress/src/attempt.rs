@@ -336,10 +336,15 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
     // 7. The answer. The transport's status reading on the first frame is the leg the fee decision
     //    reads and the leg the breaker is told about; the plane's own decode runs per frame from
     //    here on.
+    // The whole leg the transport read, not just the coarse class. A classifier handed the class
+    // alone folds every 4xx together, so a withdrawn credential — the one signal that should take
+    // the destination down across every pool that names it — arrives looking like a caller typo,
+    // and an upstream that named its own wait has that wait dropped on the floor before the
+    // cooldown is computed.
     let status = UpstreamStatus {
         class: first.frame.meta.status,
-        code: None,
-        retry_after: None,
+        code: first.frame.meta.status_code,
+        retry_after: first.frame.meta.retry_after_secs,
     };
     let succeeded = matches!(first.frame.meta.status, Some(StatusClass::Success) | None);
     // An upstream answered, which is the one thing an abandonment says did not happen. From here
