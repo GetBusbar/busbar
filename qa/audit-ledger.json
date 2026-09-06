@@ -517,13 +517,15 @@
    "paths": [
     "crates/busbar-transport-grpc/src"
    ],
-   "tree_hash": "579deab203474686b70a6c3d9e21e395ec09606417a40d01a2877c536f57a334",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "34eb0c899feda55018ab137ec7c64b4b957fba8f1fe43eaded0d264217ed344a",
+   "audited_at": "6bb07275cc1e01ab81991315a9bbbab4a9f32a3d",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "pass 2 fresh eyes: per-stream Reset reaches the reader without a StreamId (needs a contract-transport seam); all files read fully",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-grpc/src/tests"
@@ -535,13 +537,16 @@
    "paths": [
     "crates/busbar-transport-http/src"
    ],
-   "tree_hash": "4caf970b031cc3baf67ab7da53a42d45e3df6460406757b6ba1c63320e8db234",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "fa09fcb995f50a9bfa58b0311374af2cf0b0c2cba868d359daaa4e6110a78ff2",
+   "audited_at": "6bb07275cc1e01ab81991315a9bbbab4a9f32a3d",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "pass 2 fresh eyes: 100-continue answered before the body cap (fixed 947f56ab); misplaced test doc (fixed 7c92721c); all files read fully",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-http/src/tests"
@@ -553,13 +558,13 @@
    "paths": [
     "crates/busbar-transport-sse/src"
    ],
-   "tree_hash": "1462d66a1b2d0a49ce5a3c8fab02f05dd03f6a6531c1eae1bb447e39f2e560cb",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
+   "tree_hash": "4dfff42f96a95069a657b0b9cdee84b21a5161b20ff82f4500bee59c23173f54",
+   "audited_at": "6bb07275cc1e01ab81991315a9bbbab4a9f32a3d",
+   "round": 6,
+   "result": "zero",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "report": "pass 2 fresh eyes: zero; all files read fully",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-sse/src/tests"
@@ -571,13 +576,13 @@
    "paths": [
     "crates/busbar-transport-stdio/src"
    ],
-   "tree_hash": "e96aece50fe48052d573e84de5e332e9fbf51e9b330cee354fffd941a8ad72ed",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
+   "tree_hash": "e3dc7383b3c9d22359657014256c76889159f50a0956c42b165a484336dd5cf5",
+   "audited_at": "6bb07275cc1e01ab81991315a9bbbab4a9f32a3d",
+   "round": 6,
+   "result": "zero",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "report": "pass 2 fresh eyes: zero; all files read fully",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-stdio/src/tests"
