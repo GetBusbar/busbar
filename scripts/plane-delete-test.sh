@@ -94,12 +94,13 @@ command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" 
 # plane-kind name). The NEUTRAL feature set to keep ON for the neutral-crate check (every default plane
 # EXCEPT the one being removed) — llm has no neutral-side feature of its own, so removing it keeps both
 # plane-mcp and plane-a2a. A crate/feature that appears or moves is a one-line edit here.
-# `voice` (busbar-voice, Plane 4) is now WIRED into the bin at M5, but OFF-DEFAULT: it has a
-# `dep:busbar-voice` optional dependency and the `plane-voice` bin feature (NOT in `default`), whose
-# forwards to the plane crate are `dep:busbar-voice`, `busbar-voice?/runtime` and
-# `busbar-voice?/openapi-schema` — all three stripped by neutralise_bin. Its bin_feature is
-# `plane-voice`; its neutral_keep is the full default plane set (removing voice touches neither mcp nor
-# a2a). Because voice is off-default, the bin's default build is already coherent without it.
+# `voice` (busbar-voice, Plane 4) is WIRED into the bin and DEFAULT-ON, on both of its features: it has
+# a `dep:busbar-voice` optional dependency and the `plane-voice` bin feature, whose forwards to the
+# plane crate are `dep:busbar-voice`, `busbar-voice?/runtime` and `busbar-voice?/openapi-schema` — all
+# three stripped by neutralise_bin. Its bin_feature is `plane-voice`; its neutral_keep is the full
+# default plane set (removing voice touches neither mcp nor a2a). Because `root-voice` also ships in
+# `default` and FORWARDS to `plane-voice`, the bin's default build is coherent without the crate only
+# once both come out — which is what neutralise_bin's forwarding closure is for.
 bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; a2a) echo plane-a2a ;; voice) echo plane-voice ;; esac; }
 neutral_keep() {
   case "$1" in
@@ -164,11 +165,57 @@ drop_member() {
 # `busbar-llm` is not a dependency"), which aborts before a single line is compiled — so all three
 # legs reported the llm plane as still coupled when what they had measured was the removal's own
 # manifest hygiene.
+#
+# The plane feature leaves `default` together with EVERY DEFAULT FEATURE THAT FORWARDS TO IT.
+#
+# The closure is the load-bearing word, and it is what an operator doing the literal `git rm -r` has to
+# do by hand. Dropping only the plane's own feature leaves any SWITCH-OVER feature that forwards to it
+# (`root-<P> = ["plane-<P>"]`) sitting in `default`, quietly turning the plane feature straight back on:
+# the crate is gone, the feature is on, and the composition root's module for that plane names a crate
+# that no longer exists. That reads as source coupling and is not — it is a manifest the removal left
+# half-done. Computed as a fixpoint over the [features] table rather than listed, because a list here
+# would be a second answer to "which features reach this plane", and the manifest is the first one.
+reaching_features() {
+  awk -v feat="$2" '
+    /^\[/ { in_f = ($0 ~ /^\[features\]/) }
+    !in_f { next }
+    /^[A-Za-z0-9_-]+[[:space:]]*=[[:space:]]*\[/ {
+      name = $0; sub(/[[:space:]]*=.*/, "", name)
+      body = $0;  sub(/^[^\[]*\[/, "", body); sub(/\].*$/, "", body)
+      names[++n] = name; bodies[name] = body
+    }
+    END {
+      # The reached set is carried as an ORDERED LIST, not as the keys of an associative array.
+      # Reading `a[k]` in awk CREATES `a[k]`, so a membership test written as a lookup quietly
+      # enrolls every name it asks about and the closure answers "everything" — which is not a
+      # conservative over-approximation here, it is the whole default set deleted.
+      rn = 1; rl[1] = feat; is_reached[feat] = 1
+      do {
+        # Two phases per round: decide, then add. Growing a set mid-scan is a set nobody can
+        # predict the contents of.
+        add_n = 0
+        for (i = 1; i <= n; i++) {
+          nm = names[i]
+          if (nm == "default" || (nm in is_reached)) continue
+          for (j = 1; j <= rn; j++) {
+            if (index(bodies[nm], "\"" rl[j] "\"") > 0) { add[++add_n] = nm; break }
+          }
+        }
+        for (i = 1; i <= add_n; i++) { rl[++rn] = add[i]; is_reached[add[i]] = 1 }
+      } while (add_n > 0)
+      for (j = 1; j <= rn; j++) printf "%s\n", rl[j]
+    }
+  ' "$1"
+}
+
 neutralise_bin() {
-  local s="$1" p="$2" f="$1/crates/busbar/Cargo.toml" t feat
+  local s="$1" p="$2" f="$1/crates/busbar/Cargo.toml" t feat reach
   feat="$(bin_feature "$p")"
+  # SPACE-separated, not newline: `awk -v` refuses a literal newline in an assignment, and a feature
+  # name never contains a space, so the flatter list loses nothing.
+  reach="$(reaching_features "$f" "$feat" | tr '\n' ' ')"
   t="$f.plane-delete.tmp"
-  awk -v p="$p" -v feat="$feat" '
+  awk -v p="$p" -v feat="$feat" -v reach="$reach" '
     function norm(line) {
       gsub(/,[[:space:]]*,/, ", ", line)      # normalise a comma left behind by a stripped token
       gsub(/\[[[:space:]]*,/, "[", line)
@@ -181,13 +228,16 @@ neutralise_bin() {
       featpat = "^" feat "[[:space:]]*=[[:space:]]*\\["
       optpat  = "\"busbar-" p "\\??/[^\"]*\""   # a dep feature ref, either spelling: "busbar-<P>[?]/<feature>"
       deptok  = "\"dep:busbar-" p "\""
-      feattok = "\"" feat "\""
+      nreach  = split(reach, reachtok, " ")
     }
     { line = $0 }
     line ~ deppat { next }                      # (c1) delete the optional dependency line entirely
     { gsub(optpat, "", line) }                  # (c2) strip busbar-<P>[?]/… refs (openapi-schema, root-llm, …)
     line ~ featpat { gsub(deptok, "", line) }   # (c3) strip dep:busbar-<P> from its own feature
-    line ~ /^default[[:space:]]*=[[:space:]]*\[/ { gsub(feattok, "", line) }  # (c4) drop from default
+    # (c4) drop the removed plane feature AND every feature forwarding to it from `default`
+    line ~ /^default[[:space:]]*=[[:space:]]*\[/ {
+      for (i = 1; i <= nreach; i++) if (reachtok[i] != "") gsub("\"" reachtok[i] "\"", "", line)
+    }
     { print norm(line) }
   ' "$f" >"$t" && mv "$t" "$f"
 }
