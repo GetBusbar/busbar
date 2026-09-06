@@ -188,6 +188,21 @@ pub const MCP_CALLER_ASK_REFUSED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// The number is 7105 and not the 7070 that follows this crate's own contiguous block, because the
+/// MCP plane's 7060..=7069 range is FULL and codes are REGISTERED, never renumbered or reused: the
+/// next free number in the shared plane space is the honest one to take.
+pub const MCP_DEMOTION_ROW_UNREADABLE: Diagnostic = Diagnostic {
+    code: 7105,
+    class: Class::Plane,
+    slug: "mcp-demotion-row-unreadable",
+    title: "A durable MCP demotion record could not be decoded at boot",
+    severity: Severity::Actionable,
+    summary: "A row in the durable MCP demotion record did not decode into a demotion at boot. The               row exists because an upstream was QUARANTINED — a live observation disagreed with               the operator's approval — so an unreadable one is a quarantine busbar can no longer               read the terms of, and skipping it silently would let a drifted upstream be served               again on the strength of a corrupt byte. The replay fails CLOSED: the server named by               the row stays demoted when its name can still be salvaged, and the row is retained               either way so the evidence is not destroyed by the restart that found it.",
+    action: "Investigate the durable governance store: an undecodable plane record is either              corruption or tampering. Capture the store for review before it is overwritten, then              clear the named server's demotion deliberately once the upstream is known good —              busbar will not clear it for you.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// MCP'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the composition
 /// root installs via `install_diagnostics`. Ascending by code, mirroring the neutral `REGISTRY`.
 pub static DIAGNOSTICS: &[&Diagnostic] = &[
@@ -202,6 +217,7 @@ pub static DIAGNOSTICS: &[&Diagnostic] = &[
     &MCP_TOOLCALL_UPSTREAM_FAILED,
     &MCP_TOOLCALL_REFUSED_PRE_UPSTREAM,
     &MCP_CALLER_ASK_REFUSED,
+    &MCP_DEMOTION_ROW_UNREADABLE,
 ];
 
 #[cfg(test)]
