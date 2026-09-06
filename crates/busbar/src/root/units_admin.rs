@@ -997,6 +997,11 @@ struct AdminInFlight {
     request: AdminRequest,
     verb: Option<ResolvedVerb>,
     granted: Option<VerbScope>,
+    /// Who the auth unit said is calling, as the loop sealed it. Kept here rather than re-derived
+    /// downstream because the credential that was presented is NOT the identity that was resolved:
+    /// the identity is what a record attributes to, and the credential is a secret that must not
+    /// travel past the step that verified it.
+    principal: Option<PrincipalId>,
     answer: Option<AdminAnswer>,
 }
 
@@ -1024,6 +1029,7 @@ impl AdminUnits {
                 request,
                 verb: None,
                 granted: None,
+                principal: None,
                 answer: None,
             },
         );
@@ -1086,6 +1092,17 @@ impl AdminUnits {
         if let Some(unit) = self.lock().get_mut(&key) {
             unit.granted = Some(granted);
         }
+    }
+
+    /// Keep the identity the auth step resolved, for the two steps downstream that attribute to it.
+    fn set_principal(&self, key: UnitKey, principal: PrincipalId) {
+        if let Some(unit) = self.lock().get_mut(&key) {
+            unit.principal = Some(principal);
+        }
+    }
+
+    fn principal(&self, key: UnitKey) -> Option<PrincipalId> {
+        self.lock().get(&key).and_then(|u| u.principal.clone())
     }
 
     fn answer(&self, key: UnitKey) -> Option<AdminAnswer> {
@@ -1338,8 +1355,12 @@ pub(crate) fn verify(
     binding: &AdminBinding,
     token: &UnitToken<Verify>,
     ctx: &UnitCtx,
-    _principal: &PrincipalId,
+    principal: &PrincipalId,
 ) -> Decision<Verify> {
+    // The first step the loop hands the resolved identity to, so it is the step that keeps it. Every
+    // later step that has to say WHO reads it from here rather than from the request, because the
+    // request carries the presented credential and a credential is not an identity.
+    binding.units.set_principal(ctx.key, principal.clone());
     match binding.units.verb(ctx.key) {
         None => Decision::refuse(token, Refusal::new(ReasonCode::NoDestination)),
         Some(_resolved) => Decision::proceed(token, Vec::new()),
@@ -1470,7 +1491,10 @@ pub(crate) fn route(
     match verbs.execute(
         verb,
         admin,
-        request.credential.as_deref().unwrap_or("admin"),
+        // The same identity the record attributes to, so the rate-limit bucket and the audit row
+        // name one actor. Keying the limiter on the credential instead let one principal evade its
+        // own mutation budget by presenting a second token.
+        &actor_of(binding, ctx.key),
         granted,
         request.at,
         Some(busbar_unit_verbs::PostureCtx {
@@ -1509,6 +1533,27 @@ pub(crate) fn route(
 fn mints_its_own_identity(verb: KernelVerb) -> bool {
     matches!(verb, KernelVerb::PostKeys | KernelVerb::PostKeysIdRotate)
 }
+
+/// The identity an administrative record attributes this unit to.
+///
+/// The resolved principal the auth step produced, and NEVER the bytes the caller presented. A record
+/// written from the credential is a record that publishes a live bearer secret to everyone entitled
+/// to read the administrative history — which is a wider set than the set entitled to hold the
+/// secret — and it also attributes two callers sharing one token to two different actors while
+/// attributing one caller rotating a token to one actor per rotation.
+///
+/// The fallback is a literal rather than the credential for the same reason: a unit refused before
+/// the identity was resolved has no actor to name, and saying so is the honest record.
+fn actor_of(binding: &AdminBinding, key: UnitKey) -> String {
+    binding
+        .units
+        .principal(key)
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| UNRESOLVED_ACTOR.to_string())
+}
+
+/// What an administrative record names when no identity was resolved for the unit.
+const UNRESOLVED_ACTOR: &str = "admin";
 
 /// The verbs unit's refusal vocabulary, said in the kernel's.
 ///
@@ -1573,7 +1618,7 @@ pub(crate) fn audit(
             resolved.verb,
             &request.path,
             outcome_word(outcome),
-            request.credential.as_deref().unwrap_or("admin"),
+            &actor_of(binding, ctx.key),
         );
     }
     Decision::proceed(
@@ -1610,7 +1655,7 @@ pub(crate) fn audit_refused(
             resolved.verb,
             &request.path,
             busbar_unit_audit::OUTCOME_REJECTED,
-            request.credential.as_deref().unwrap_or("admin"),
+            &actor_of(binding, ctx.key),
         );
     }
     Decision::proceed(
@@ -2408,6 +2453,82 @@ mod tests {
         assert_eq!(header_capacity(u32::MAX, 4_096), 512);
         // An honest count is still reserved for in full.
         assert_eq!(header_capacity(2, 4_096), 2);
+    }
+
+    /// A mutation's record names the caller, and never the bytes the caller presented.
+    ///
+    /// Both doors are walked, because both write a row and either one leaking is the whole leak: the
+    /// completed mutation and the refused one. The credential in the fixture is deliberately not a
+    /// substring of the identity, so "the row does not contain the credential" and "the row is the
+    /// identity" are two independent assertions rather than one restated.
+    ///
+    /// The chain this writes to is the one an operator's audit page reads and a store persists, so a
+    /// row carrying a live bearer token publishes it to everybody entitled to read history — a wider
+    /// set than the set entitled to hold the token.
+    #[test]
+    fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let binding = AdminBinding::new(Arc::new(RefusingDispatch));
+
+        let rows = |completed: bool| -> Vec<busbar_unit_audit::legacy::AuditEntry> {
+            let log = busbar_unit_audit::AuditLog::new();
+            let key = UnitKey::new(1);
+            let mut request = a_request();
+            request.method = "PUT".to_string();
+            request.path = "/api/v1/admin/config/settings".to_string();
+            request.credential = Some("sk-live-the-presented-secret".to_string());
+            binding.units.open(key, request);
+            let ctx = UnitCtx {
+                key,
+                origin: busbar_caps::OriginKind::Client,
+                session: None,
+                generation: busbar_kernel::registry::Generation::FIRST,
+                admin_listener: true,
+                kernel_verb_only: true,
+            };
+            let decode_token: UnitToken<Decode> = UnitToken::mint(&seal);
+            let _ = decode(&binding, &decode_token, &ctx).into_result(&seal);
+            let verify_token: UnitToken<Verify> = UnitToken::mint(&seal);
+            let _ = verify(
+                &binding,
+                &verify_token,
+                &ctx,
+                &PrincipalId::new("key_operator_7"),
+            )
+            .into_result(&seal);
+
+            let audit_token: UnitToken<Audit> = UnitToken::mint(&seal);
+            if completed {
+                let _ = audit(&binding, &log, &audit_token, &ctx, &Outcome::Completed)
+                    .into_result(&seal);
+            } else {
+                let _ = audit_refused(
+                    &binding,
+                    &log,
+                    &audit_token,
+                    &ctx,
+                    &Refusal::new(ReasonCode::ScopeDenied),
+                )
+                .into_result(&seal);
+            }
+            binding.units.close(key);
+            log.export()
+        };
+
+        for completed in [true, false] {
+            let entries = rows(completed);
+            assert_eq!(entries.len(), 1, "the mutation was not recorded");
+            assert_eq!(
+                entries[0].principal, "key_operator_7",
+                "the record does not name the identity the auth step resolved"
+            );
+            assert!(
+                !entries[0]
+                    .principal
+                    .contains("sk-live-the-presented-secret"),
+                "the presented credential reached the administrative chain"
+            );
+        }
     }
 
     /// Both tables were extracted from the same pinned tag. Every row the plane decodes to has to
