@@ -87,6 +87,24 @@ def report(target: Target, results: list[Result], out_path: str | None) -> int:
     musts = [r for r in results if REQUIREMENTS[r.requirement].level == "MUST"]
     must_counts = Counter(r.verdict for r in musts)
 
+    # TWO FLOORS, DECIDED HERE AND REPORTED IN THE JSON, because the exit code below used to be
+    # `1 if bad else 0` and that is green for two runs that established nothing.
+    #
+    # (1) COVERAGE. `run()`'s plan is a hand-written list beside `spec.py`'s registry, which is
+    #     exactly the enumeration that stops covering the thing added after it. A requirement
+    #     dropped from the plan does not fail: it leaves the denominator, so "21 of 21" quietly
+    #     becomes "20 of 20" and the count drifts with nothing going red.
+    # (2) A ZERO. Every verdict that is not a PASS -- UNTESTABLE, PARTIAL, NOT_APPLICABLE -- is by
+    #     design not counted as one, and none of them is `bad`. So a run against a subject that
+    #     answered every probe with something undecidable reported "0 of 21 MUST requirements
+    #     DEMONSTRATED" and exited 0. A suite that demonstrated nothing is the absence of evidence,
+    #     never a pass.
+    declared = set(REQUIREMENTS)
+    decided = {r.requirement for r in results}
+    coverage_drift = sorted(declared - decided)
+    unknown_ids = sorted(decided - declared)
+    demonstrated = must_counts.get(Verdict.PASS, 0)
+
     print()
     print("=" * 96)
     for line in _wrap(WARNING, 92):
@@ -103,7 +121,7 @@ def report(target: Target, results: list[Result], out_path: str | None) -> int:
     print(f"    {'TOTAL':<16} {len(musts)}")
     print()
     print(
-        f"  => {must_counts.get(Verdict.PASS, 0)} of {len(musts)} MUST requirements DEMONSTRATED "
+        f"  => {demonstrated} of {len(musts)} MUST requirements DEMONSTRATED "
         f"by this suite."
     )
     print(
@@ -111,6 +129,25 @@ def report(target: Target, results: list[Result], out_path: str | None) -> int:
         "figure."
     )
     print()
+
+    if coverage_drift or unknown_ids:
+        print("  COVERAGE FLOOR BREACHED:")
+        for req_id in coverage_drift:
+            print(
+                f"    - {req_id} is declared in spec.py and was NEVER RUN. It left the "
+                f"denominator instead of failing, so the count above is about a smaller suite "
+                f"than the one this directory claims to be."
+            )
+        for req_id in unknown_ids:
+            print(f"    - {req_id} was reported but is not a declared requirement.")
+        print()
+    if not demonstrated:
+        print(
+            "  ZERO FLOOR BREACHED: not one MUST requirement was DEMONSTRATED. PARTIAL, "
+            "UNTESTABLE and NOT_APPLICABLE are not passes, and a run that produced none of "
+            "either is the ABSENCE of a result, not a clean one."
+        )
+        print()
 
     bad = [r for r in results if r.verdict in {Verdict.FAIL, Verdict.ERROR}]
     if bad:
@@ -143,7 +180,10 @@ def report(target: Target, results: list[Result], out_path: str | None) -> int:
                     "card_url": target.card_url,
                     "declared_bindings": sorted({i.binding for i in target.interfaces}),
                     "must_total": len(musts),
-                    "must_passed": must_counts.get(Verdict.PASS, 0),
+                    "must_passed": demonstrated,
+                    "declared_requirements": len(declared),
+                    "requirements_never_run": coverage_drift,
+                    "requirements_not_declared": unknown_ids,
                     "counts": {v.value: n for v, n in counts.items()},
                     "results": [r.to_json() for r in results],
                     "requirements": {
@@ -162,7 +202,7 @@ def report(target: Target, results: list[Result], out_path: str | None) -> int:
             )
         print(f"  JSON: {out_path}")
 
-    return 1 if bad else 0
+    return 1 if (bad or coverage_drift or unknown_ids or not demonstrated) else 0
 
 
 def _wrap(text: str, width: int) -> list[str]:
