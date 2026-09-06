@@ -902,3 +902,72 @@ async fn a_malformed_sealed_method_refuses_instead_of_panicking() {
         .unwrap_err();
     assert_eq!(err, TransportError::AddressRefused);
 }
+
+/// A zero-length message is a legal one on this wire: the length-prefix framing spells a body of
+/// zero bytes, and a peer that sends the empty message is saying something — it is the shape an
+/// empty request or response takes. A codec that answers "not yet, send more" to a body it has
+/// already been handed in full does not merely drop that message: the call never leaves the state
+/// it was decoding it in, so every message queued behind it is lost too. The empty one and all of
+/// its successors must arrive.
+#[tokio::test]
+async fn an_empty_message_is_delivered_and_does_not_wedge_the_ones_behind_it() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let client_conn = client_t
+        .dial(&verified_upstream(host), &keys)
+        .await
+        .unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"open"))
+        .await
+        .unwrap();
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let (server_stream, opened) = server_frames.next().await.unwrap().unwrap();
+    assert_eq!(opened.bytes.as_slice(), b"open");
+
+    // The empty message first, then the ones that must not be stuck behind it.
+    server_t
+        .write(&server_conn, server_stream, ArenaBytes::new(b""))
+        .await
+        .unwrap();
+    for payload in [b"one".as_slice(), b"two".as_slice(), b"three".as_slice()] {
+        server_t
+            .write(&server_conn, server_stream, ArenaBytes::new(payload))
+            .await
+            .unwrap();
+    }
+
+    let mut client_frames = client_t.frames(client_conn);
+    let mut got: Vec<Vec<u8>> = Vec::new();
+    for _ in 0..4 {
+        let next = tokio::time::timeout(Duration::from_secs(5), client_frames.next())
+            .await
+            .expect("an empty message must not park the call that carries it");
+        let (_s, frame) = next.unwrap().unwrap();
+        assert_eq!(frame.meta.bytes, frame.bytes.as_slice().len() as u64);
+        got.push(frame.bytes.as_slice().to_vec());
+    }
+    assert_eq!(
+        got,
+        vec![
+            Vec::new(),
+            b"one".to_vec(),
+            b"two".to_vec(),
+            b"three".to_vec()
+        ],
+        "the empty message and every message behind it"
+    );
+}
