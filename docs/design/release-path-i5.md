@@ -82,6 +82,49 @@ There is nothing else to do. `release.yml` reads the version from `Cargo.toml`, 
 commit on `main` is not the staged qa sha, retags the recorded digest as `X.Y.Z` + `latest`, pushes
 the git tag `v1.6.0`, publishes the qa-built draft, and fans out.
 
+### 1.5-rc The 1.6.0 path: candidate first, release after the soak
+
+1.6.0 does not go straight to `v1.6.0`. It goes `v1.6.0-rc.1`, soaks, then `v1.6.0` — **from the
+same staged bytes, with no second build.** Three commands, in this order:
+
+```
+# 1. On qa, stage the candidate name onto the sha that is already staged and green.
+gh workflow run "Release stage" --repo GetBusbar/busbar --ref qa -f release_tag=v1.6.0-rc.1
+
+# 2. Fast-forward. The push mints the CANDIDATE, not the release, because the record offers an
+#    rc that has not been minted yet.
+git push origin qa:main
+
+# 3. After the soak, on the same sha, mint the release from the same record.
+gh workflow run Release --repo GetBusbar/busbar --ref main -f release_tag=v1.6.0
+```
+
+Step 1 costs a full staging run (~40 minutes, the two-arch PGO build is the long pole), and that
+cost is named rather than engineered away. The rc name is a property of the **record**, and the
+record is written by a staging run; deriving it later, at promote time, from "how many rc tags
+exist right now" would make the name a function of the tag namespace at an instant up to 90 days
+after the bytes were proved — a different fact than the one the record is for. `resolve-staged`
+takes the newest successful stage run for the sha, so this re-stage supersedes the earlier record
+for the same commit and the digest it proves is the digest it promotes.
+
+What step 2 mints: the git tag `v1.6.0-rc.1` and the immutable image pins
+`getbusbar/busbar:1.6.0-rc.1` (+ `-armv8.0`) on both registries. What it does **not** touch:
+`latest`, the `armv8.0` floating pointer, the draft release (it stays a draft), the downstream
+fan-out, Discord, and the public consumer sweep. `docker pull getbusbar/busbar` keeps serving 1.5.x
+for the whole soak. Soak testers pull `getbusbar/busbar:1.6.0-rc.1`; for binaries,
+`gh release download v1.6.0` works against the draft (a draft's assets are downloadable by tag
+through the API, which is what makes the draft a real artifact before it is a public one).
+
+Step 3 is a second promotion of the **same record**: same digest, same draft, same attestation, no
+compiler. It publishes the draft, moves `latest`, pushes `v1.6.0`, and fans out.
+
+A second candidate is `v1.6.0-rc.2` — never `rc.1` again. Both the git tag and the Docker Hub pin
+are immutable, and `plan` refuses a taken rc name before spending the build.
+
+**Why step 3 is a human act.** `1.6.0` on Docker Hub can never be overwritten, so the irreversible
+name is minted by an explicit dispatch after the soak has said something, not as a side effect of a
+push. The push mints only the reversible candidate.
+
 ### 1.6 Watch the release
 
 ```
