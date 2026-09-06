@@ -747,7 +747,10 @@ mod tests {
     #[test]
     fn the_fee_is_an_exact_number_of_micro_units_on_both_sides() {
         let card = card();
-        assert!(card.per_request_fee_cents() > 0, "the fixture charges a fee");
+        assert!(
+            card.per_request_fee_cents() > 0,
+            "the fixture charges a fee"
+        );
         assert_eq!(
             card.fee_unit_price_nanos() % NANOS_PER_MICRO,
             0,

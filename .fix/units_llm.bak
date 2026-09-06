@@ -2089,19 +2089,43 @@ mod tests {
         }
     }
 
-    /// One field of what a leg left behind, by name. Absent reads as empty rather than panicking,
-    /// so a comparison that named a field nobody observes fails on the VALUE rather than on the
-    /// lookup — a missing field is a divergence, not a test bug.
+    /// One field of what a leg left behind, by name.
+    ///
+    /// A name nothing observed is a PANIC and not an empty string. Reading a missing field as `""`
+    /// makes `assert_eq!(field(&o, "typo"), "")` pass, which is how three assertions here came to
+    /// hold over a field no leg has ever recorded — the comparison was against the default, not
+    /// against an observation. There is no divergence a missing field could be: the two legs record
+    /// the same list in the same order (the loop below checks that), so an absent name is a name
+    /// that was never observed by anybody, and that is a test bug.
     fn field(o: &Observed, k: &str) -> String {
         o.0.iter()
             .find(|(f, _)| *f == k)
             .map(|(_, v)| v.clone())
-            .unwrap_or_default()
+            .unwrap_or_else(|| {
+                panic!(
+                    "no leg observes a field called `{k}`; the ones observed are {:?}",
+                    o.0.iter().map(|(f, _)| *f).collect::<Vec<_>>()
+                )
+            })
     }
 
     /// Compare the two legs field by field, collecting every divergence under `label` rather than
     /// stopping at the first — one run should name everything that moved, not the earliest thing.
+    ///
+    /// THE TWO LISTS ARE CHECKED FIRST, and that is not ceremony. `zip` stops at the shorter one, so
+    /// a leg that stopped recording its last field — or that recorded a different set in a different
+    /// order — would have the missing ones silently dropped from the comparison and pass. A leg's
+    /// field list is fixed by `observe`, so any disagreement about it is itself the divergence.
     fn compare(label: &str, legacy: &Observed, looped: &Observed, failures: &mut Vec<String>) {
+        let want_names: Vec<&str> = legacy.0.iter().map(|(f, _)| *f).collect();
+        let got_names: Vec<&str> = looped.0.iter().map(|(f, _)| *f).collect();
+        if want_names != got_names {
+            failures.push(format!(
+                "{label}: the two legs observed different fields\n  shipped: {want_names:?}\n  \
+                 loop:    {got_names:?}"
+            ));
+            return;
+        }
         for ((f, want), (_, got)) in legacy.0.iter().zip(looped.0.iter()) {
             if want != got {
                 failures.push(format!(
@@ -2706,13 +2730,7 @@ mod tests {
         for fixture in CASES {
             let legacy = leg_legacy(fixture).await;
             let looped = leg_loop(fixture).await;
-            for ((field, want), (_, got)) in legacy.0.iter().zip(looped.0.iter()) {
-                if want != got {
-                    failures.push(format!(
-                        "{fixture:?}: field `{field}` diverges\n  shipped: {want}\n  loop:    {got}"
-                    ));
-                }
-            }
+            compare(&format!("{fixture:?}"), &legacy, &looped, &mut failures);
         }
         assert!(
             failures.is_empty(),
@@ -2973,13 +2991,12 @@ mod tests {
             for fixture in PATH_CASES {
                 let legacy = leg_legacy_path(fixture, proto).await;
                 let looped = leg_loop_path(fixture, proto).await;
-                for ((field, want), (_, got)) in legacy.0.iter().zip(looped.0.iter()) {
-                    if want != got {
-                        failures.push(format!(
-                            "{proto}/{fixture:?}: field `{field}` diverges\n  shipped: {want}\n  loop:    {got}"
-                        ));
-                    }
-                }
+                compare(
+                    &format!("{proto}/{fixture:?}"),
+                    &legacy,
+                    &looped,
+                    &mut failures,
+                );
             }
         }
         assert!(
@@ -3108,14 +3125,12 @@ mod tests {
                 rig.server.shutdown().await;
                 observed
             };
-            for ((field, want), (_, got)) in shipped.0.iter().zip(looped.0.iter()) {
-                if want != got {
-                    failures.push(format!(
-                        "{proto}: field `{field}` diverges on a URL that named no model\n  \
-                         shipped: {want}\n  loop:    {got}"
-                    ));
-                }
-            }
+            compare(
+                &format!("{proto} on a URL that named no model"),
+                &shipped,
+                &looped,
+                &mut failures,
+            );
         }
         assert!(
             failures.is_empty(),
@@ -3129,11 +3144,81 @@ mod tests {
     /// path-axis twin of the body-table comparison below, and for the same reason: a dialect missing
     /// from the replacement resolves no arrival and the surface 404s, which is a deletion wearing a
     /// routing bug's clothes.
+    /// The NAMES only; the pointers beside them are driven by
+    /// [`every_path_table_row_answers_in_the_dialect_it_is_named_for`].
     #[test]
     fn the_switched_path_table_names_every_dialect_the_plane_names() {
         let shipped: Vec<&str> = busbar_llm::PATH_INGRESS.iter().map(|(n, _)| *n).collect();
         let switched: Vec<&str> = PATH_INGRESS.iter().map(|(n, _)| *n).collect();
         assert_eq!(switched, shipped);
+    }
+
+    /// THE URL each path-model dialect's client sends for a buffered chat on the fixture's model.
+    ///
+    /// Spelled here, unlike the body table's endpoints, because these are the URL SPACES the two
+    /// dialects parse rather than endpoints either of them renders — there is nothing to read them
+    /// off. They are the same URLs `busbar_llm`'s own parse tests drive, which is what keeps this
+    /// file's guess and that file's subject the same string.
+    fn path_url(proto: &str) -> String {
+        let model = Fixture::BufferedOk.model();
+        if proto == GEMINI {
+            format!("/v1beta/models/{model}:generateContent")
+        } else {
+            format!("/model/{model}/converse")
+        }
+    }
+
+    /// **EVERY ROW OF THE PATH TABLE IS DRIVEN.** The path-axis twin of the body-table drive, and
+    /// for the same reason: two names in the right order say nothing about the two pointers beside
+    /// them, and a transposition sends every gemini URL through bedrock's parse — which reads no
+    /// model out of it, so the surface answers a refusal to every request on both dialects.
+    ///
+    /// Each row is reached through its OWN pointer with its own dialect's URL, and its answer is
+    /// compared against the shipped path-model entry point driven with the facts that URL means.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn every_path_table_row_answers_in_the_dialect_it_is_named_for() {
+        let mut failures: Vec<String> = Vec::new();
+        for (name, row) in PATH_INGRESS {
+            // LEG 1 — the shipped path-model entry point, with this dialect's own facts.
+            let legacy = leg_legacy_path(Fixture::BufferedOk, name).await;
+
+            // LEG 2 — THE ROW, through the pointer the table holds beside this name, over the URL a
+            // client of this dialect sends. The row does its own parse; nothing is handed to it.
+            let rig = rig(Fixture::BufferedOk).await;
+            let url = path_url(name);
+            let resp = row(ArrivalRequest {
+                host: Arc::new(NoRejectionExpected),
+                ctx: busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+                    host: rig.host(),
+                    gov: rig.gov(),
+                    caller_token: None,
+                }),
+                path: url.clone(),
+                model_hint: None,
+                uri: url
+                    .parse::<axum::http::Uri>()
+                    .expect("the dialect's own URL is a URI"),
+                headers: json_headers(),
+                body: path_body(name),
+            })
+            .await;
+            let looped = observe(&rig, resp).await;
+            rig.server.shutdown().await;
+
+            compare(
+                &format!("path table row `{name}`"),
+                &legacy,
+                &looped,
+                &mut failures,
+            );
+        }
+        assert!(
+            failures.is_empty(),
+            "{} divergence(s) across the {} rows of the path table:\n{}",
+            failures.len(),
+            PATH_INGRESS.len(),
+            failures.join("\n")
+        );
     }
 
     /// THE URL'S FACTS ARE ONE UNIT'S, and they are the unit's for the whole of it.
@@ -3182,11 +3267,153 @@ mod tests {
     /// The switch replaces one arrival table with another, and a dialect missing from the
     /// replacement does not fail loudly — it resolves no arrival and the surface 404s, which is a
     /// deletion wearing a routing bug's clothes. So the two tables are compared as data.
+    ///
+    /// The NAMES only. What sits beside each name is a bare `fn` pointer, and two rows whose
+    /// pointers were swapped have exactly these names in exactly this order — every openai request
+    /// answered as anthropic, and the table reading as correct. That half is
+    /// [`every_body_table_row_answers_in_the_dialect_it_is_named_for`], which drives them.
     #[test]
     fn the_switched_table_names_every_dialect_the_plane_names() {
         let shipped: Vec<&str> = busbar_llm::BODY_INGRESS.iter().map(|(n, _)| *n).collect();
         let switched: Vec<&str> = BODY_INGRESS.iter().map(|(n, _)| *n).collect();
         assert_eq!(switched, shipped);
+    }
+
+    /// The `ArrivalHost` a table row is handed when it is driven here.
+    ///
+    /// Every method on it is the pre-routing rejection path — the branch a request whose URL the
+    /// dialect names no operation for takes. The drives below send each dialect to its OWN endpoint,
+    /// so none of them is reached, and each says so rather than answering something plausible: a
+    /// stand-in that returned a 404 would let a row that took the rejection branch pass as a row
+    /// that answered.
+    struct NoRejectionExpected;
+
+    impl busbar_substrate::ingress::arrival::ArrivalHost for NoRejectionExpected {
+        fn finish_rejected(
+            &self,
+            _ctx: &busbar_substrate::ingress::arrival::ArrivalCtx,
+            proto: &str,
+            _pool: &str,
+            _started: Instant,
+            _charged_at: u64,
+            _resp: Response,
+        ) -> Response {
+            panic!("{proto}: the row rejected a request before routing")
+        }
+
+        fn ingress_error(
+            &self,
+            proto: &str,
+            _status: StatusCode,
+            _kind: &str,
+            message: &str,
+        ) -> Response {
+            panic!("{proto}: the row refused before routing: {message}")
+        }
+
+        fn envelope_dialect(
+            &self,
+            _ctx: &busbar_substrate::ingress::arrival::ArrivalCtx,
+            path: &str,
+        ) -> &'static str {
+            panic!("the row asked for an envelope dialect for {path}")
+        }
+
+        fn fallback_not_found(
+            &self,
+            _ctx: &busbar_substrate::ingress::arrival::ArrivalCtx,
+            path: &str,
+            _status: StatusCode,
+            _err_type: &str,
+            _message: &str,
+        ) -> Response {
+            panic!("the row named no operation for its own endpoint {path}")
+        }
+
+        fn percent_decode(&self, s: &str) -> String {
+            s.to_string()
+        }
+
+        fn kind_not_found(&self) -> &'static str {
+            busbar_substrate::proxy::KIND_NOT_FOUND
+        }
+
+        fn kind_invalid_request(&self) -> &'static str {
+            busbar_substrate::proxy::KIND_INVALID_REQUEST
+        }
+
+        fn err_type_not_found(&self) -> &'static str {
+            "not_found_error"
+        }
+    }
+
+    /// One dialect's OWN chat endpoint, read off the dialect's own handler.
+    ///
+    /// Read rather than written down, and from the same constant the dialect's inbound
+    /// `resolve_operation` matches against — a URL spelled here would be this file's guess about
+    /// somebody else's surface, and would go stale the day the surface moved.
+    fn chat_endpoint(proto: &str) -> String {
+        busbar_substrate::handlers::request_handler(proto)
+            .unwrap_or_else(|| panic!("{proto} has a request handler"))
+            .upstream_path(&busbar_substrate::wire::EgressCtx {
+                operation: busbar_api::operation::Operation::CHAT,
+                model: POOL,
+                stream: false,
+                path_base: None,
+            })
+    }
+
+    /// **EVERY ROW OF THE TABLE IS DRIVEN**, not only named.
+    ///
+    /// A `fn`-pointer table is two things — a list of names and a list of targets — and comparing it
+    /// to the plane's compares only the first. Transpose two of the targets and the names still
+    /// match, in order, and every request on those two dialects is answered in the other's wire
+    /// shape: a `model` field the caller never sent, an error envelope no client of that dialect
+    /// parses, and a table that reads as correct in every test there was.
+    ///
+    /// So each row is REACHED THROUGH ITS OWN POINTER, with a request built for the name beside it,
+    /// and its answer is compared against the shipped entry point for that same name. A transposed
+    /// row answers in the wrong dialect and the bytes say so.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn every_body_table_row_answers_in_the_dialect_it_is_named_for() {
+        let mut failures: Vec<String> = Vec::new();
+        for (name, row) in BODY_INGRESS {
+            let body = dialect_body(name, Decoded::Named);
+            // LEG 1 — the shipped entry point, asked for this dialect BY NAME.
+            let legacy =
+                leg_legacy_decode(name, busbar_api::operation::Operation::CHAT, body.clone()).await;
+
+            // LEG 2 — THE ROW, through the pointer the table holds beside this name.
+            let rig = rig(Fixture::BufferedOk).await;
+            let endpoint = chat_endpoint(name);
+            let resp = row(ArrivalRequest {
+                host: Arc::new(NoRejectionExpected),
+                ctx: busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+                    host: rig.host(),
+                    gov: rig.gov(),
+                    caller_token: None,
+                }),
+                path: endpoint.clone(),
+                model_hint: None,
+                uri: endpoint
+                    .parse::<axum::http::Uri>()
+                    .expect("the dialect's own endpoint is a URI"),
+                headers: json_headers(),
+                body,
+            })
+            .await;
+            let looped = observe(&rig, resp).await;
+            rig.server.shutdown().await;
+
+            compare(&format!("body table row `{name}`"), &legacy, &looped, &mut failures);
+        }
+        assert!(
+            failures.is_empty(),
+            "{} divergence(s) across the {} rows of the body table:\n{}",
+            failures.len(),
+            BODY_INGRESS.len(),
+            failures.join("\n")
+        );
     }
 
     /// THE INTERNER IS THE NODE'S, and it is idempotent.
