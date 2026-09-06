@@ -160,6 +160,7 @@ fn validate_ok_on_valid_config_without_plugins() {
 #[cfg(feature = "proto-llm")]
 #[test]
 fn validate_notes_unset_interpolated_env_vars_by_name() {
+    const UNSET_VAR: &str = "BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR";
     let dir = fixture_dir("unsetenv");
     // The var is guaranteed absent in the child by `run_busbar`'s `.env_remove` -- see the comment
     // there for why this must not be a `std::env::remove_var` in this shared-process parent.
@@ -171,7 +172,25 @@ fn validate_notes_unset_interpolated_env_vars_by_name() {
         &dir,
         &format!("# smoke-tests unset-env-var interpolation: ${{{UNSET_INTERPOLATION_VAR}}}\n"),
     );
-    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    // Scrub the var on the CHILD process only (`.env_remove`, mirroring
+    // `validate_fails_on_unresolvable_browser_login_client_secret` below), not process-wide: a
+    // `std::env::remove_var` here would race every other test in this threaded binary that reads
+    // or sets the ambient environment concurrently.
+    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .arg("--validate")
+        .env_remove(UNSET_VAR)
+        .env("MOCK_KEY", "test-key-value")
+        .env(
+            "BUSBAR_SIGNING_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .output()
+        .expect("run busbar");
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert_eq!(
         code, 0,
         "an unset interpolation var is a note, not a failure: {stderr}"
