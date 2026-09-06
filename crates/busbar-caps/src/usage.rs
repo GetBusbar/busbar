@@ -172,7 +172,13 @@ impl Usage {
         &self.lines
     }
 
-    /// The sum across every line.
+    /// The sum across every line, in no unit.
+    ///
+    /// Each line's quantity is in its own meter class's unit, so this is only a figure anyone can
+    /// use when every line is in the SAME class — a single-class report, which is what the kernel's
+    /// own settling sites build. Across classes it adds seconds to bytes, and it is never money:
+    /// what a report costs is the cost unit's answer, and the seam that moves money takes that
+    /// answer directly (see [`crate::Posted::settle`]).
     pub fn total(&self) -> u64 {
         self.lines
             .iter()
