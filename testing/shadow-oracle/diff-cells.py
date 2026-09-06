@@ -348,8 +348,14 @@ def main() -> int:
                 if fired:
                     if body_changed:
                         # a rewritten body cannot keep 1.5.5's byte length; the length header is the
-                        # accepted change's shadow, not a second divergence
-                        for side in (g, cc_t):
+                        # accepted change's shadow, not a second divergence. It has to come off ALL
+                        # THREE sides: `cc` (the untransformed candidate) is what classes_raw is
+                        # computed from, and those are the classes the row REPORTS and the classes
+                        # the accepted-entry match is tested against — leaving content-length on cc
+                        # alone gave every accepted-transform row a phantom `headers` class, which
+                        # both mis-described the row and made a correctly narrow `classes: [body]`
+                        # entry fail to match.
+                        for side in (g, cc, cc_t):
                             side.get("headers", {}).pop("content-length", None)
                     classes_raw, _ = compare(g, cc)
                     classes, detail = compare(g, cc_t)

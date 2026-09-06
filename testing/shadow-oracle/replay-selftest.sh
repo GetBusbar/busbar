@@ -16,6 +16,8 @@
 #   (k) the same id named in accepted-gaps.json          -> GREEN, with a named-gap line
 #   (l) golden/candidate meta.json harness_rev mismatch  -> exit 2
 #   (m) --allow-harness-skew on that same mismatch       -> proceeds
+#   (n) an accepted `transform` on a cell that carries content-length -> the row's class list is
+#       `body` alone, with no phantom `headers` from the length the rewrite itself moved
 # The tracked fixture recording under fixtures/selftest-recording is used read-only: every case
 # below works on a `cp -R` of it, never the tracked copy itself.
 set -uo pipefail
@@ -187,6 +189,31 @@ bash "${here}/replay.sh" --golden "$W/hrev-g" --candidate "$W/hrev-c" --out "$W/
   --allow-harness-skew --accepted "$W/no-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-m.log" 2>&1
 rc=$?
 [ "$rc" = 0 ] && [ "$(fails_in "$W/out-m")" = 0 ] && say PASS "--allow-harness-skew proceeds past the same mismatch" || say FAIL "--allow-harness-skew rc=$rc fails=$(fails_in "$W/out-m")"
+
+# (n) an accepted transform on a cell whose headers carry content-length: the length moves BECAUSE
+# the accepted rewrite moved the body, so it is the accepted change's shadow, not a second
+# divergence. The row must report `body` alone — a phantom `headers` both mis-describes the row and
+# would stop a correctly narrow `classes: ["body"]` entry from ever matching.
+cp -R "$FIX" "$W/clen-g"; cp -R "$FIX" "$W/clen-c"
+python3 - "$W/clen-g/cells/self__b__stream.json" "$W/clen-c/cells/self__b__stream.json" <<'EOF'
+import json, sys
+gp, cp_ = sys.argv[1], sys.argv[2]
+g = json.load(open(gp))
+g["headers"]["content-length"] = str(len(g["body"]["text"]))
+json.dump(g, open(gp, "w"), separators=(",", ":"), sort_keys=True)
+c = json.load(open(cp_))
+c["body"]["text"] = c["body"]["text"].replace("hi", "hi TOKEN123")
+c["headers"]["content-length"] = str(len(c["body"]["text"]))
+json.dump(c, open(cp_, "w"), separators=(",", ":"), sort_keys=True)
+EOF
+bash "${here}/replay.sh" --golden "$W/clen-g" --candidate "$W/clen-c" --out "$W/out-n" --cells "$CELLS" \
+  --allow-harness-skew --accepted "$W/xform-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-n.log" 2>&1
+rc=$?
+row="$(awk -F'\t' '$1=="self|b|stream"{print; exit}' "$W/out-n/ledger.tsv")"
+status_col="$(cut -f2 <<<"$row")"; title_col="$(cut -f3 <<<"$row")"
+[ "$rc" = 0 ] && [ "$status_col" = PASS ] && [[ "$title_col" == *"ACCEPTED"* ]] && [[ "$title_col" == *": body" ]] \
+  && say PASS "accepted transform + content-length -> class list is 'body' alone (no phantom headers)" \
+  || say FAIL "transform content-length rc=$rc status=$status_col title=$title_col (expected the class list to end ': body')"
 
 echo
 [ "$fails" -eq 0 ] && echo "replay selftest: GREEN" || { echo "replay selftest: RED ($fails)"; exit 1; }
