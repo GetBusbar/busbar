@@ -176,7 +176,17 @@ fn pool_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRefusal> {
 ///
 /// Multi-level (A→B→C) and possibly cyclic (A→B→A), so the walk carries a visited set and stops for
 /// the same reason the dispatch stops. A denial is the SAME refusal guard one raises.
-fn fallback_pools_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRefusal> {
+///
+/// The denied pool travels back with the refusal because the operator's diagnostic line names the
+/// pool the ACL actually tripped on, which on this guard is a pool DOWNSTREAM of the one the caller
+/// asked for. The shipped door names it: its fallback walk calls the same one-pool guard the first
+/// guard calls, and that guard logs whichever pool it was handed. Naming the requested pool here
+/// instead would tell an operator the ACL denied a pool the ACL in fact allows, and the pool that is
+/// actually misconfigured would appear in no line at all.
+fn fallback_pools_authorized(
+    view: &dyn PoolView,
+    pool: &str,
+) -> Option<(VerifyRefusal, Option<String>)> {
     if !view.has_key() || !view.key_is_scoped() {
         return None;
     }
@@ -188,7 +198,7 @@ fn fallback_pools_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRe
         }
         let next = view.on_exhausted_fallback(&current)?;
         if let Some(refusal) = pool_authorized(view, &next) {
-            return Some(refusal);
+            return Some((refusal, Some(next)));
         }
         current = next;
     }
@@ -211,14 +221,27 @@ fn priced(view: &dyn PoolView, name: &str) -> Option<VerifyRefusal> {
 /// checked without a token in hand, and so the composition root can ask the same question at a
 /// boot-time dry run.
 pub fn destination_guard(view: &dyn PoolView, pool: &str) -> Result<(), VerifyRefusal> {
+    destination_guard_named(view, pool).map_err(|(refusal, _)| refusal)
+}
+
+/// The three guards, and WHICH POOL the one that refused was reading.
+///
+/// The name is for the operator's diagnostics and for nothing else: it never reaches a body, a
+/// header or a reason code, so a denial stays indistinguishable from outside whether it tripped on
+/// the requested pool or on one only an exhaustion would have reached. It is `None` for the pricing
+/// guard, which refuses a NAME rather than a pool and carries that name on the refusal already.
+pub(crate) fn destination_guard_named(
+    view: &dyn PoolView,
+    pool: &str,
+) -> Result<(), (VerifyRefusal, Option<String>)> {
     if let Some(r) = pool_authorized(view, pool) {
-        return Err(r);
+        return Err((r, Some(pool.to_string())));
     }
     if let Some(r) = fallback_pools_authorized(view, pool) {
         return Err(r);
     }
     if let Some(r) = priced(view, pool) {
-        return Err(r);
+        return Err((r, None));
     }
     Ok(())
 }
@@ -340,18 +363,21 @@ pub fn verify(
     principal: &PrincipalId,
     destinations: Vec<VerifiedDestination>,
 ) -> Verified {
-    match destination_guard(view, pool) {
+    match destination_guard_named(view, pool) {
         Ok(()) => Verified {
             decision: Decision::proceed(token, destinations),
             refusal: None,
         },
-        Err(refusal) => {
+        Err((refusal, denied)) => {
             // The operator's own diagnostics, which are where the key id and the pool go precisely
             // because the caller-facing body must not name either. The two lines are the live
-            // doors' own, one per guard family.
+            // doors' own, one per guard family — and the pool the permission line names is the pool
+            // the ACL tripped on, which under the fallback guard is not the one the caller asked
+            // for.
             match &refusal {
                 VerifyRefusal::NotAuthorized => {
-                    tracing::info!(key_id = %principal, pool = %pool, "governance: key not authorized for pool");
+                    let denied = denied.as_deref().unwrap_or(pool);
+                    tracing::info!(key_id = %principal, pool = %denied, "governance: key not authorized for pool");
                 }
                 VerifyRefusal::NoRate { name } => {
                     tracing::info!(model = %name, "governance: no configured rate for model; rejecting (rate_card is authoritative and complete)");
@@ -483,6 +509,60 @@ mod tests {
         assert_eq!(
             envelope(refusal.status(), refusal.kind(), &refusal.message()),
             live
+        );
+    }
+
+    /// THE OPERATOR'S HALF of the same denial: the diagnostic names the pool the ACL tripped on.
+    ///
+    /// The caller-facing bytes are the previous test's — one 403, indistinguishable — and this is
+    /// the fact only the node's own log carries. A key restricted to A reaches A, whose exhaustion
+    /// policy names B, whose policy names C; the ACL denies B. An operator told "A" would go looking
+    /// at a pool the key is explicitly allowed to use, and the two edges that are actually
+    /// misconfigured would appear in no line at all. Guard one still names the pool it was handed,
+    /// and the pricing guard names no pool because it refuses a name.
+    #[test]
+    fn the_fallback_denial_names_the_pool_the_acl_tripped_on() {
+        let view = View {
+            keyed: true,
+            scopes: Some(vec!["a".into(), "c".into()]),
+            fallbacks: vec![("a".into(), "b".into()), ("b".into(), "c".into())],
+            ..Default::default()
+        };
+        let (refusal, denied) =
+            destination_guard_named(&view, "a").expect_err("a falls over to b, and b is denied");
+        assert_eq!(refusal, VerifyRefusal::NotAuthorized);
+        assert_eq!(
+            denied.as_deref(),
+            Some("b"),
+            "the fallback edge the key may not take is the one the operator has to fix"
+        );
+
+        let direct = View {
+            keyed: true,
+            scopes: Some(vec!["a".into()]),
+            ..Default::default()
+        };
+        assert_eq!(
+            destination_guard_named(&direct, "z")
+                .expect_err("z is not on the key's list")
+                .1
+                .as_deref(),
+            Some("z"),
+            "guard one names the pool it was handed"
+        );
+
+        let unpriced = View {
+            keyed: true,
+            card: true,
+            priced_names: vec!["gpt-priced".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            destination_guard_named(&unpriced, "gpt-unpriced")
+                .expect_err("no card entry for that name")
+                .1,
+            None,
+            "the pricing guard refuses a name, not a pool"
         );
     }
 
