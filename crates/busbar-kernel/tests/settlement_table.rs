@@ -8,6 +8,7 @@
 
 use busbar_caps::OriginKind;
 use busbar_caps::{Outcome, PostingFlags, ReasonCode, StepName};
+use busbar_contract::{DestinationFacts, LaneId, UpstreamAddress, UpstreamIdx};
 use busbar_kernel::teller::{
     fee_count, requests_drawn, requests_settled, settle_amount, Evidence, FeeEvidence, FinishClass,
     StatusAt, StatusClass,
@@ -317,6 +318,570 @@ fn a_stream_that_dies_before_its_status_trailer_posts_nothing() {
             ..billable()
         };
         assert_eq!(fee_count(&arrived), (1, PostingFlags::NONE));
+    }
+}
+
+/// EVERY combination of the three legs the fee is decided from, written out as data rather than as
+/// a second copy of the rule: where the transport says its status is reported, what it reported
+/// there, and what the plane said about the same exchange. This is the ONE table the fee has —
+/// there is no second spelling of it in a unit crate to drift from, and the arms a two-valued
+/// spelling cannot express (a `Partial` finish, a trailer that never arrived) each have a row.
+#[test]
+fn the_fee_table_is_exhaustive_over_status_placement_status_class_and_finish() {
+    #[allow(clippy::type_complexity)]
+    let rows: &[(
+        Option<StatusAt>,
+        Option<StatusClass>,
+        Option<FinishClass>,
+        u32,
+        bool,
+    )] = &[
+        (None, None, None, 1, false),
+        (None, None, Some(FinishClass::Complete), 1, false),
+        (None, None, Some(FinishClass::TurnComplete), 1, false),
+        (None, None, Some(FinishClass::Partial), 1, false),
+        (None, None, Some(FinishClass::Error), 0, false),
+        (None, Some(StatusClass::Success), None, 1, false),
+        (
+            None,
+            Some(StatusClass::Success),
+            Some(FinishClass::Complete),
+            1,
+            false,
+        ),
+        (
+            None,
+            Some(StatusClass::Success),
+            Some(FinishClass::TurnComplete),
+            1,
+            false,
+        ),
+        (
+            None,
+            Some(StatusClass::Success),
+            Some(FinishClass::Partial),
+            1,
+            false,
+        ),
+        (
+            None,
+            Some(StatusClass::Success),
+            Some(FinishClass::Error),
+            0,
+            true,
+        ),
+        (None, Some(StatusClass::ClientError), None, 0, false),
+        (
+            None,
+            Some(StatusClass::ClientError),
+            Some(FinishClass::Complete),
+            0,
+            true,
+        ),
+        (
+            None,
+            Some(StatusClass::ClientError),
+            Some(FinishClass::TurnComplete),
+            0,
+            true,
+        ),
+        (
+            None,
+            Some(StatusClass::ClientError),
+            Some(FinishClass::Partial),
+            0,
+            true,
+        ),
+        (
+            None,
+            Some(StatusClass::ClientError),
+            Some(FinishClass::Error),
+            0,
+            false,
+        ),
+        (None, Some(StatusClass::ServerError), None, 0, false),
+        (
+            None,
+            Some(StatusClass::ServerError),
+            Some(FinishClass::Complete),
+            0,
+            true,
+        ),
+        (
+            None,
+            Some(StatusClass::ServerError),
+            Some(FinishClass::TurnComplete),
+            0,
+            true,
+        ),
+        (
+            None,
+            Some(StatusClass::ServerError),
+            Some(FinishClass::Partial),
+            0,
+            true,
+        ),
+        (
+            None,
+            Some(StatusClass::ServerError),
+            Some(FinishClass::Error),
+            0,
+            false,
+        ),
+        (None, Some(StatusClass::Other), None, 0, false),
+        (
+            None,
+            Some(StatusClass::Other),
+            Some(FinishClass::Complete),
+            0,
+            true,
+        ),
+        (
+            None,
+            Some(StatusClass::Other),
+            Some(FinishClass::TurnComplete),
+            0,
+            true,
+        ),
+        (
+            None,
+            Some(StatusClass::Other),
+            Some(FinishClass::Partial),
+            0,
+            true,
+        ),
+        (
+            None,
+            Some(StatusClass::Other),
+            Some(FinishClass::Error),
+            0,
+            false,
+        ),
+        (Some(StatusAt::FirstFrame), None, None, 0, false),
+        (
+            Some(StatusAt::FirstFrame),
+            None,
+            Some(FinishClass::Complete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            None,
+            Some(FinishClass::TurnComplete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            None,
+            Some(FinishClass::Partial),
+            0,
+            false,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            None,
+            Some(FinishClass::Error),
+            0,
+            false,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::Success),
+            None,
+            1,
+            false,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::Success),
+            Some(FinishClass::Complete),
+            1,
+            false,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::Success),
+            Some(FinishClass::TurnComplete),
+            1,
+            false,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::Success),
+            Some(FinishClass::Partial),
+            1,
+            false,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::Success),
+            Some(FinishClass::Error),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::ClientError),
+            None,
+            0,
+            false,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::ClientError),
+            Some(FinishClass::Complete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::ClientError),
+            Some(FinishClass::TurnComplete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::ClientError),
+            Some(FinishClass::Partial),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::ClientError),
+            Some(FinishClass::Error),
+            0,
+            false,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::ServerError),
+            None,
+            0,
+            false,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::ServerError),
+            Some(FinishClass::Complete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::ServerError),
+            Some(FinishClass::TurnComplete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::ServerError),
+            Some(FinishClass::Partial),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::ServerError),
+            Some(FinishClass::Error),
+            0,
+            false,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::Other),
+            None,
+            0,
+            false,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::Other),
+            Some(FinishClass::Complete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::Other),
+            Some(FinishClass::TurnComplete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::Other),
+            Some(FinishClass::Partial),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::FirstFrame),
+            Some(StatusClass::Other),
+            Some(FinishClass::Error),
+            0,
+            false,
+        ),
+        (Some(StatusAt::Terminal), None, None, 0, false),
+        (
+            Some(StatusAt::Terminal),
+            None,
+            Some(FinishClass::Complete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            None,
+            Some(FinishClass::TurnComplete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            None,
+            Some(FinishClass::Partial),
+            0,
+            false,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            None,
+            Some(FinishClass::Error),
+            0,
+            false,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::Success),
+            None,
+            1,
+            false,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::Success),
+            Some(FinishClass::Complete),
+            1,
+            false,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::Success),
+            Some(FinishClass::TurnComplete),
+            1,
+            false,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::Success),
+            Some(FinishClass::Partial),
+            1,
+            false,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::Success),
+            Some(FinishClass::Error),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::ClientError),
+            None,
+            0,
+            false,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::ClientError),
+            Some(FinishClass::Complete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::ClientError),
+            Some(FinishClass::TurnComplete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::ClientError),
+            Some(FinishClass::Partial),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::ClientError),
+            Some(FinishClass::Error),
+            0,
+            false,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::ServerError),
+            None,
+            0,
+            false,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::ServerError),
+            Some(FinishClass::Complete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::ServerError),
+            Some(FinishClass::TurnComplete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::ServerError),
+            Some(FinishClass::Partial),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::ServerError),
+            Some(FinishClass::Error),
+            0,
+            false,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::Other),
+            None,
+            0,
+            false,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::Other),
+            Some(FinishClass::Complete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::Other),
+            Some(FinishClass::TurnComplete),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::Other),
+            Some(FinishClass::Partial),
+            0,
+            true,
+        ),
+        (
+            Some(StatusAt::Terminal),
+            Some(StatusClass::Other),
+            Some(FinishClass::Error),
+            0,
+            false,
+        ),
+    ];
+    assert_eq!(
+        rows.len(),
+        3 * 5 * 5,
+        "one row per combination, none skipped"
+    );
+    for &(status_at, status, finish, fee, disputed) in rows {
+        let evidence = FeeEvidence {
+            status_at,
+            status,
+            finish,
+            ..billable()
+        };
+        let expected = if disputed {
+            PostingFlags::METER_DISPUTED
+        } else {
+            PostingFlags::NONE
+        };
+        assert_eq!(
+            fee_count(&evidence),
+            (fee, expected),
+            "at {status_at:?} / {status:?} / {finish:?}"
+        );
+        // The three preconditions dominate the whole table: fail any one and the row posts nothing,
+        // undisputed, whatever the evidence says.
+        for ineligible in [
+            FeeEvidence {
+                client_open_or_one_shot: false,
+                ..evidence
+            },
+            FeeEvidence {
+                selected_upstream: false,
+                ..evidence
+            },
+            FeeEvidence {
+                relayed_first_response_frame: false,
+                ..evidence
+            },
+        ] {
+            assert_eq!(
+                fee_count(&ineligible),
+                (0, PostingFlags::NONE),
+                "ineligible at {status_at:?} / {status:?} / {finish:?}"
+            );
+        }
+    }
+}
+
+/// Which side of the fee line a route landed on is the DESTINATION KIND's answer, read from the
+/// contract's own predicate rather than restated anywhere else: an upstream leg and a session
+/// upstream carry the fee, a kernel verb, an accrual tick and an upgrade do not.
+#[test]
+fn the_upstream_leg_of_the_fee_is_the_destination_kinds_answer() {
+    let posts = |dest: DestinationFacts| {
+        fee_count(&FeeEvidence {
+            selected_upstream: dest.is_upstream_kind(),
+            ..billable()
+        })
+    };
+    assert_eq!(
+        posts(DestinationFacts::Upstream {
+            transport: "http",
+            address: UpstreamAddress::socket("api.example:443"),
+            lane: LaneId::new("gold"),
+        }),
+        (1, PostingFlags::NONE)
+    );
+    assert_eq!(
+        posts(DestinationFacts::SessionUpstream {
+            upstream: UpstreamIdx(0),
+            stream: None,
+            lane: LaneId::new("gold"),
+        }),
+        (1, PostingFlags::NONE)
+    );
+    for other in [
+        DestinationFacts::KernelVerb { verb: "health" },
+        DestinationFacts::SessionAccrual {
+            lane: LaneId::new("gold"),
+        },
+        DestinationFacts::Upgrade { to: "ws" },
+    ] {
+        assert_eq!(
+            posts(other),
+            (0, PostingFlags::NONE),
+            "{other:?} carries no fee"
+        );
     }
 }
 
