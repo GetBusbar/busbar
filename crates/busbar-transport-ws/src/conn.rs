@@ -81,6 +81,15 @@ pub(crate) struct ConnState {
     /// in a read: this is the fence that does, and it is what makes a close the end of the session
     /// for the read side too rather than only for the registry.
     pub(crate) closed: AtomicBool,
+    /// The wakeup that goes with the flag.
+    ///
+    /// A pump parked in the socket read has no next poll to check the flag at: on a peer that
+    /// completed the upgrade and then said nothing, the read is outstanding until a message arrives
+    /// and none ever does. The flag alone would leave that pump — and the split socket halves it
+    /// holds the last handle on — alive for the life of the process. The close notifies this, the
+    /// read is raced against it, and the pump ends where it was parked. Same shape as the `tcp`
+    /// layer's own, and for the same reason.
+    pub(crate) closing: tokio::sync::Notify,
     /// The composed stack this connection stands on, bottom layer first, ending in `ws`. It is what
     /// the layer below reported plus this one, carried across the handoff — a connection that named
     /// only itself was one a location could not resolve against.
@@ -102,9 +111,20 @@ impl ConnState {
             writer: AsyncMutex::new(writer),
             poisoned: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            closing: tokio::sync::Notify::new(),
             chain,
             lower,
         })
+    }
+
+    /// Mark this connection finalised and wake whatever is parked on it.
+    ///
+    /// The order matters: the flag is stored FIRST, so a pump that arms its wait and then re-reads
+    /// the flag can never miss both the store and the notification.
+    pub(crate) fn finalise(&self) {
+        self.closed
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.closing.notify_waiters();
     }
 
     pub(crate) fn is_poisoned(&self) -> bool {
