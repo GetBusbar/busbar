@@ -68,6 +68,7 @@ use busbar_unit_ledger::{BucketId, BucketScope, CapDimension, TotalsKey};
 use busbar_unit_scope::{Grants, PolicyView, Refused, Scope};
 use busbar_unit_trust::destination::{KindFacts, OriginKind};
 use busbar_unit_trust::guard::PoolView;
+use busbar_unit_trust::lane::{BreakerQuery, BreakerView};
 use busbar_unit_trust::net::{Denylist, GuardPolicy, Resolver};
 use busbar_unit_trust::{Trust, VerifyRequest};
 use busbar_unit_usage::{
@@ -303,6 +304,12 @@ impl<'r> Catalogue<'r> {
         Catalogue::new(plane, records::SCHEMA_CATALOGUE, records::OP_SCAN, net)
     }
 
+    /// Where one lane sits in the registered-server table, which is the position the breaker keys
+    /// its cells by.
+    fn lane_index(&self, lane: &LaneId) -> Option<usize> {
+        self.plane.servers().iter().position(|s| s.lane == *lane)
+    }
+
     /// The registered server one destination names, where it names one.
     fn server_for(&self, dest: &DestinationFacts) -> Option<&'static Server> {
         let lane = dest.lane()?;
@@ -409,6 +416,25 @@ impl KindFacts for Catalogue<'_> {
         // request rather than by an in-band handoff.
         false
     }
+
+    fn unit_price_within_max(&self, _dest: &DestinationFacts) -> bool {
+        // A card that states no maximum unit price has said nothing for a price to be over. Reading
+        // that silence as a ceiling of zero would exclude every registered server on every
+        // deployment whose card predates the field.
+        true
+    }
+
+    fn breaker_admits(&self, dest: &DestinationFacts, at: &BreakerQuery<'_>) -> bool {
+        // The mapping is this root's — a lane name is a position in the registered-server table and
+        // nothing outside here knows the order. The QUESTION is the query's, so the answer here is
+        // the same answer the pre-walk's filter gives about the same lane at the same moment.
+        match dest.lane().and_then(|lane| self.lane_index(&lane)) {
+            Some(index) => at.admits_lane(index),
+            // A destination priced on no registered lane has no position for the breaker to hold an
+            // opinion about; the allow-list conjunct beside this one has already refused it.
+            None => true,
+        }
+    }
 }
 
 /// What the guards read about this plane's pools.
@@ -493,8 +519,8 @@ pub fn verify(
     trust: &Trust,
     candidate: &[DestinationFacts],
     pool: &str,
-    pools: &dyn PoolView,
-    facts: &dyn KindFacts,
+    views: Views<'_>,
+    now: u64,
     trust_token: &TrustToken,
     token: &UnitToken<Verify>,
 ) -> Decision<Verify> {
@@ -504,9 +530,35 @@ pub fn verify(
         origin: OriginKind::Client,
         candidates: candidate,
         pool,
+        // The unit's pinned arrival epoch, carried in rather than read here: the readiness peek this
+        // step takes has to be the same moment the walk's own filter takes.
+        now,
         unpriced_message: UNPRICED_MESSAGE,
     };
-    trust.verify(&request, pools, facts, trust_token, token)
+    trust.verify(
+        &request,
+        views.pools,
+        views.facts,
+        views.breaker,
+        trust_token,
+        token,
+    )
+}
+
+/// The three tables the trust unit reads, as this root binds them.
+///
+/// They travel together because they are read together and about the same request: the pools this
+/// caller's key may use, the per-kind facts, and the breaker whose answer must match the walk's.
+/// Handing them singly is how a caller ends up asking one deployment's breaker about another
+/// deployment's pool.
+#[derive(Clone, Copy)]
+pub struct Views<'v> {
+    /// What the deployment says about its pools and this caller's key.
+    pub pools: &'v dyn PoolView,
+    /// What the per-kind destination rules consult.
+    pub facts: &'v dyn KindFacts,
+    /// The breaker the dialled kinds' rules are judged against.
+    pub breaker: &'v dyn BreakerView,
 }
 
 /// The origin a frame an upstream pushed opens its own unit under.
@@ -1580,6 +1632,107 @@ mod tests {
         assert!(facts.transport_key_resolves(&hop));
         assert!(facts.lane_permitted_for_op_class("fs-lane"));
         assert!(!facts.lane_permitted_for_op_class("some-other-lane"));
+    }
+
+    /// A registered server whose name answers with the metadata address is refused by the guard the
+    /// catalogue asks, and the ordinary one is not.
+    #[test]
+    fn a_registered_hop_answering_with_the_metadata_address_does_not_pass_the_guard() {
+        struct Metadata;
+        impl Resolver for Metadata {
+            fn resolve(&self, _host: &str) -> Result<Vec<std::net::IpAddr>, String> {
+                Ok(vec!["169.254.169.254".parse().expect("a fixture address")])
+            }
+        }
+        static SERVERS: &[Server] = &[Server {
+            id: "fs",
+            lane: LaneId::new("fs-lane"),
+            host: "fs.internal:443",
+            transport: claims::TRANSPORT_HTTP,
+        }];
+        let hop = DestinationFacts::Upstream {
+            transport: claims::TRANSPORT_HTTP,
+            address: busbar_contract::UpstreamAddress::socket("fs.internal:443"),
+            lane: LaneId::new("fs-lane"),
+        };
+        let plane = McpPlane::new(SERVERS);
+
+        static RESOLVER: Metadata = Metadata;
+        static DENYLIST: std::sync::LazyLock<Denylist> =
+            std::sync::LazyLock::new(Denylist::default);
+        let hostile = Catalogue::upstream_only(
+            plane,
+            NetSeam {
+                resolver: &RESOLVER,
+                policy: GuardPolicy::default(),
+                denylist: &DENYLIST,
+            },
+        );
+        assert!(hostile.allow_listed(&hop), "the deployment registered it");
+        assert!(
+            !hostile.net_guard_passes(&hop),
+            "and it answers with the address whose whole value is handing out credentials"
+        );
+
+        assert!(Catalogue::upstream_only(plane, seam()).net_guard_passes(&hop));
+    }
+
+    /// The breaker's answer at the seal is the breaker's answer about that lane's position.
+    #[test]
+    fn the_catalogue_asks_the_breaker_about_the_registered_lanes_position() {
+        struct Open(usize);
+        impl BreakerView for Open {
+            fn ready(&self, _pool: &str, lane: usize, _now: u64) -> bool {
+                lane != self.0
+            }
+            fn try_admit(
+                &self,
+                _pool: &str,
+                _lane: usize,
+                _now: u64,
+            ) -> Result<(), busbar_unit_trust::Unavailable> {
+                Ok(())
+            }
+        }
+        static SERVERS: &[Server] = &[
+            Server {
+                id: "first",
+                lane: LaneId::new("first-lane"),
+                host: "127.0.0.1:9",
+                transport: claims::TRANSPORT_HTTP,
+            },
+            Server {
+                id: "second",
+                lane: LaneId::new("second-lane"),
+                host: "127.0.0.1:10",
+                transport: claims::TRANSPORT_HTTP,
+            },
+        ];
+        let facts = Catalogue::upstream_only(McpPlane::new(SERVERS), seam());
+        let second = DestinationFacts::Upstream {
+            transport: claims::TRANSPORT_HTTP,
+            address: busbar_contract::UpstreamAddress::socket("127.0.0.1:10"),
+            lane: LaneId::new("second-lane"),
+        };
+
+        let open = Open(1);
+        let at = BreakerQuery {
+            breaker: &open,
+            pool: "second",
+            now: 7,
+        };
+        assert!(
+            !facts.breaker_admits(&second, &at),
+            "the second registration is at position one, and that is the open cell"
+        );
+
+        let elsewhere = Open(0);
+        let at = BreakerQuery {
+            breaker: &elsewhere,
+            pool: "second",
+            now: 7,
+        };
+        assert!(facts.breaker_admits(&second, &at));
     }
 
     /// An explicitly empty scope list denies every registration; an absent one denies none.

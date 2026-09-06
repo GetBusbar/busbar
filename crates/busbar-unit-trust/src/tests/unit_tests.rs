@@ -12,6 +12,9 @@ use crate::unit::{Trust, VerifyRequest};
 
 const UNPRICED: &str = "no configured rate for model 'arbitrary'";
 
+/// The pinned arrival epoch these tests ask every readiness peek at.
+const NOW: u64 = 7;
+
 fn kernel() -> (KernelSeal, TrustToken, UnitToken<Verify>) {
     let seal = KernelSeal::acquire_for_kernel();
     let trust = TrustToken::mint(&seal);
@@ -24,6 +27,7 @@ fn request<'a>(candidates: &'a [DestinationFacts], pool: &'a str) -> VerifyReque
         origin: OriginKind::Client,
         candidates,
         pool,
+        now: NOW,
         unpriced_message: UNPRICED,
     }
 }
@@ -36,6 +40,7 @@ fn a_permitted_candidate_is_sealed_on_its_lane() {
         &request(&candidates, "p"),
         &Pools::default(),
         &AllYes::default(),
+        &super::destination_tests::AllAdmitted,
         &trust,
         &token,
     );
@@ -55,7 +60,14 @@ fn a_kind_the_origin_may_not_reach_is_dropped_rather_than_refused() {
         ..request(&candidates, "p")
     };
     let sealed = Trust
-        .verify(&req, &Pools::default(), &AllYes::default(), &trust, &token)
+        .verify(
+            &req,
+            &Pools::default(),
+            &AllYes::default(),
+            &super::destination_tests::AllAdmitted,
+            &trust,
+            &token,
+        )
         .into_result(&seal)
         .expect("the step proceeds");
     assert!(sealed.is_empty());
@@ -77,6 +89,7 @@ fn a_candidate_failing_its_own_rule_is_dropped() {
             &request(&candidates, "p"),
             &Pools::default(),
             &facts,
+            &super::destination_tests::AllAdmitted,
             &trust,
             &token,
         )
@@ -101,6 +114,7 @@ fn an_all_excluded_pool_still_proceeds_with_an_empty_set() {
         &request(&candidates, "p"),
         &Pools::default(),
         &facts,
+        &super::destination_tests::AllAdmitted,
         &trust,
         &token,
     );
@@ -119,6 +133,7 @@ fn the_pool_allow_list_refuses_at_the_verify_step() {
             &request(&candidates, "cold"),
             &Pools::allowing(&["fast"]),
             &AllYes::default(),
+            &super::destination_tests::AllAdmitted,
             &trust,
             &token,
         )
@@ -145,6 +160,7 @@ fn a_reachable_fallback_pool_refuses_the_same_way() {
             &request(&candidates, "a"),
             &pools,
             &AllYes::default(),
+            &super::destination_tests::AllAdmitted,
             &trust,
             &token,
         )
@@ -163,6 +179,7 @@ fn an_unpriced_name_refuses_for_having_no_rate() {
             &request(&candidates, "arbitrary"),
             &pools,
             &AllYes::default(),
+            &super::destination_tests::AllAdmitted,
             &trust,
             &token,
         )
@@ -171,6 +188,100 @@ fn an_unpriced_name_refuses_for_having_no_rate() {
     // Not `Unpriced`, which is a class the present card does not price: nothing is wrong with the
     // caller's budget here, the name they supplied simply cannot be billed.
     assert_eq!(refusal.reason(), ReasonCode::NoRate);
+}
+
+/// THE BREAKER IS CONSULTED AT THE SEAL, and it answers what the pre-walk's filter answers.
+///
+/// Two paths ask about the same open breaker: the pre-walk that filters a lane out before the credit
+/// walk, and this step. They must give one answer — a step that sealed a lane the walk excludes is a
+/// second opinion about health, and the pick order stops being a stated policy the moment there are
+/// two of them.
+#[test]
+fn a_breaker_open_lane_is_excluded_at_the_seal_exactly_as_the_pre_walk_excludes_it() {
+    let (seal, trust, token) = kernel();
+    let lanes = super::Lanes::with(|l| {
+        l.open_breaker.insert(0);
+    });
+    assert!(
+        !crate::lane::survives_prewalk_filter(
+            crate::lane::LaneCandidate { idx: 0, weight: 1 },
+            &lanes,
+            &lanes,
+            "p",
+            NOW,
+        ),
+        "the pre-walk excludes the open lane"
+    );
+
+    let candidates = vec![super::destination_tests::kinds::upstream()];
+    let sealed = Trust
+        .verify(
+            &request(&candidates, "p"),
+            &Pools::default(),
+            &AllYes::default(),
+            &lanes,
+            &trust,
+            &token,
+        )
+        .into_result(&seal)
+        .expect("the step proceeds: an excluded lane is not a refusal");
+    assert!(
+        sealed.is_empty(),
+        "a lane the pre-walk excludes is not sealed by the step beside it"
+    );
+}
+
+/// A lane the breaker admits is sealed, and the peek asked about exactly that lane.
+#[test]
+fn an_admitted_lane_is_sealed_and_the_breaker_was_asked_about_it() {
+    let (seal, trust, token) = kernel();
+    let lanes = super::Lanes::default();
+    let candidates = vec![super::destination_tests::kinds::upstream()];
+    let sealed = Trust
+        .verify(
+            &request(&candidates, "p"),
+            &Pools::default(),
+            &AllYes::default(),
+            &lanes,
+            &trust,
+            &token,
+        )
+        .into_result(&seal)
+        .expect("the step proceeds");
+    assert_eq!(sealed.len(), 1);
+    assert_eq!(
+        *lanes.peeks.borrow(),
+        vec![0],
+        "the readiness peek, not the admission: an enumeration is not a dispatch"
+    );
+    assert!(
+        lanes.admissions.borrow().is_empty(),
+        "the one admission happens after selection, not here"
+    );
+}
+
+/// A card that prices this destination above its own maximum excludes it.
+#[test]
+fn a_unit_price_over_the_cards_maximum_is_not_sealed() {
+    let (seal, trust, token) = kernel();
+    let lanes = super::Lanes::default();
+    let candidates = vec![super::destination_tests::kinds::upstream()];
+    let facts = AllYes {
+        price_within_max: false,
+        ..AllYes::default()
+    };
+    let sealed = Trust
+        .verify(
+            &request(&candidates, "p"),
+            &Pools::default(),
+            &facts,
+            &lanes,
+            &trust,
+            &token,
+        )
+        .into_result(&seal)
+        .expect("the step proceeds");
+    assert!(sealed.is_empty());
 }
 
 /// THE NETWORK GUARD IS PART OF THE SEALED STEP, not a library beside it.
@@ -192,6 +303,7 @@ fn a_name_answering_with_the_metadata_address_is_not_sealed() {
             &request(&candidates, "p"),
             &Pools::default(),
             &facts,
+            &super::destination_tests::AllAdmitted,
             &trust,
             &token,
         )
@@ -217,6 +329,7 @@ fn a_loopback_answer_is_excluded_while_the_ordinary_upstream_still_seals() {
             &request(&candidates, "p"),
             &Pools::default(),
             &loopback,
+            &super::destination_tests::AllAdmitted,
             &trust,
             &token,
         )
@@ -233,6 +346,7 @@ fn a_loopback_answer_is_excluded_while_the_ordinary_upstream_still_seals() {
             &request(&candidates, "p"),
             &Pools::default(),
             &public,
+            &super::destination_tests::AllAdmitted,
             &trust,
             &token,
         )
@@ -264,6 +378,7 @@ fn a_lane_less_destination_leaves_the_sealed_set_without_refusing_the_step() {
             &request(&candidates, "p"),
             &Pools::default(),
             &AllYes::default(),
+            &super::destination_tests::AllAdmitted,
             &trust,
             &token,
         )

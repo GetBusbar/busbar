@@ -83,7 +83,8 @@ use busbar_unit_audit::{Audit as _, AuditInputs};
 use busbar_unit_auth::{Auth, AuthRequest};
 use busbar_unit_scope::{Grants, Scope};
 use busbar_unit_trust::{
-    kind_permitted, kind_rule_passes, GuardPolicy, KindFacts, OriginKind, PoolView, Resolver,
+    kind_permitted, kind_rule_passes, BreakerQuery, BreakerView, GuardPolicy, KindFacts,
+    OriginKind, PoolView, Resolver,
 };
 use busbar_unit_usage::{KernelCounts, LegDeclaration, LocatedValue, RetainedLocatorValues};
 
@@ -442,6 +443,9 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub pools: &'r dyn PoolView,
     /// What the per-kind destination rules consult.
     pub kinds: &'r dyn KindFacts,
+    /// The breaker the dialled kinds' rules are judged against. The same one the walk's own pre-walk
+    /// filter reads, so a lane excluded for an open breaker is excluded once and identically.
+    pub breaker: &'r dyn BreakerView,
     /// The name resolver the network guard runs its one resolution through.
     pub resolver: &'r dyn Resolver,
     /// How far the network guard lets this plane's hops reach.
@@ -646,13 +650,21 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             return Err(Refusal::new(ReasonCode::NoDestination));
         }
 
+        // The breaker, asked at the unit's pinned arrival epoch and about the pool it named — the
+        // same question, spelled the same way, that the pre-walk filter asks.
+        let at = BreakerQuery {
+            breaker: self.bindings.breaker,
+            pool: self.bindings.pool,
+            now: self.bindings.now,
+        };
+
         let candidates = self.candidates();
         let mut lanes = Vec::new();
         for candidate in &candidates {
             if !kind_permitted(origin, candidate) {
                 continue;
             }
-            if !kind_rule_passes(candidate, self.bindings.kinds) {
+            if !kind_rule_passes(candidate, self.bindings.kinds, &at) {
                 continue;
             }
             let Some(lane) = candidate.lane() else {

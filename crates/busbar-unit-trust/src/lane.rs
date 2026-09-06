@@ -54,6 +54,35 @@ pub trait BreakerView {
     fn try_admit(&self, pool: &str, lane: usize, now: u64) -> Result<(), Unavailable>;
 }
 
+/// The breaker together with the two things it must be asked ABOUT: which pool, and at what moment.
+///
+/// One value rather than three arguments because the readiness peek is asked from two places — the
+/// pre-walk that filters a lane out before the credit walk, and the verify step that decides what
+/// may be sealed — and they must ask the SAME question. A pool name or a clock read that differed
+/// between them would be two opinions about health, and then the pick order is a property of
+/// whichever loop ran rather than a stated policy. The moment is the unit's pinned arrival epoch,
+/// never a fresh clock read: two peeks either side of a half-open window would disagree about a
+/// lane nothing happened to.
+pub struct BreakerQuery<'a> {
+    /// The breaker to ask.
+    pub breaker: &'a dyn BreakerView,
+    /// The pool the request named, keyed as the breaker keys it.
+    pub pool: &'a str,
+    /// The unit's pinned arrival epoch.
+    pub now: u64,
+}
+
+impl BreakerQuery<'_> {
+    /// The readiness peek, over one lane of this pool at this moment.
+    ///
+    /// Every caller that excludes a lane for an open breaker goes through here, so there is exactly
+    /// one spelling of the question and no way for two of them to drift apart.
+    #[must_use]
+    pub fn admits_lane(&self, lane: usize) -> bool {
+        self.breaker.ready(self.pool, lane, self.now)
+    }
+}
+
 /// Whether a lane survives the pre-walk filter: drained, not admissible, or breaker-open lanes do
 /// not, and none of them consumes a turn.
 ///
@@ -72,5 +101,5 @@ pub fn survives_prewalk_filter(
     if !lanes.lane_admissible(candidate.idx) {
         return false;
     }
-    breaker.ready(pool, candidate.idx, now)
+    BreakerQuery { breaker, pool, now }.admits_lane(candidate.idx)
 }

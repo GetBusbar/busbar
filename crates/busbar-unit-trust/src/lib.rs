@@ -43,7 +43,9 @@
 //!
 //! - Weight-zero (an operator draining a member), not-admissible (dead or over its lifetime request
 //!   budget) and breaker-open lanes are filtered BEFORE the weighted credit walk, so they never
-//!   consume a turn.
+//!   consume a turn. The verify step excludes an open lane too, and it asks the SAME question
+//!   through [`BreakerQuery::admits_lane`] rather than forming its own opinion — one exclusion,
+//!   spelled once, so the pick order the walk produces is the pick order the seal agrees with.
 //! - Only an at-capacity lane reaches the admission after selection, and so does consume one.
 //!
 //! A pool with every lane excluded still proceeds through the door — the slot is drawn and retained
@@ -75,7 +77,9 @@ pub use guard::{
     destination_guard, fallback_pools_authorized, pool_authorized, priced, GuardRefusal, PoolView,
     RefusalKind,
 };
-pub use lane::{survives_prewalk_filter, BreakerView, LaneCandidate, LaneTable, Unavailable};
+pub use lane::{
+    survives_prewalk_filter, BreakerQuery, BreakerView, LaneCandidate, LaneTable, Unavailable,
+};
 pub use net::{
     check_destination, check_destination_facts, AddressRefusal, Denylist, GuardPolicy,
     NetworkRefusal, PinnedTarget, Resolver,

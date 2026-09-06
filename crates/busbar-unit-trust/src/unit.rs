@@ -10,6 +10,7 @@ use crate::destination::{
     kind_permitted, kind_rule_passes, DestinationFacts, KindFacts, OriginKind,
 };
 use crate::guard::{destination_guard, PoolView};
+use crate::lane::{BreakerQuery, BreakerView};
 
 /// Everything the unit is given about one verification.
 pub struct VerifyRequest<'a> {
@@ -19,6 +20,10 @@ pub struct VerifyRequest<'a> {
     pub candidates: &'a [DestinationFacts],
     /// The pool the request named.
     pub pool: &'a str,
+    /// The unit's pinned arrival epoch, which is the moment every readiness peek of this step is
+    /// asked at. Never a fresh clock read on the request path: a peek taken at a different moment
+    /// from the walk's own is a second opinion about a lane nothing happened to.
+    pub now: u64,
     /// The caller-facing text for the unpriced refusal, which names what the caller asked for.
     pub unpriced_message: &'static str,
 }
@@ -42,6 +47,7 @@ impl Trust {
         req: &VerifyRequest<'_>,
         pools: &dyn PoolView,
         facts: &dyn KindFacts,
+        breaker: &dyn BreakerView,
         trust: &TrustToken,
         token: &UnitToken<Verify>,
     ) -> Decision<Verify> {
@@ -50,11 +56,20 @@ impl Trust {
             return Decision::refuse(token, Refusal::new(refusal.kind.reason()));
         }
 
+        // The breaker is asked HERE, through the same query the pre-walk's filter asks through, so a
+        // lane excluded for an open breaker is excluded once and identically on both paths. Nothing
+        // is excluded twice and nothing is excluded two different ways.
+        let at = BreakerQuery {
+            breaker,
+            pool: req.pool,
+            now: req.now,
+        };
+
         let sealed: Vec<VerifiedDestination> = req
             .candidates
             .iter()
             .filter(|d| kind_permitted(req.origin, d))
-            .filter(|d| kind_rule_passes(d, facts))
+            .filter(|d| kind_rule_passes(d, facts, &at))
             // A destination whose kind carries no lane is not priced on one and does not enter the
             // sealed set. That is not an exclusion and nothing is lost by it: such a destination is
             // reached through the route plan rather than through this pool walk, so a seal here

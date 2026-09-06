@@ -18,6 +18,36 @@ impl crate::net::Resolver for Answering {
     }
 }
 
+/// A breaker with nothing open, for the tests that are about a kind's OTHER conjuncts.
+///
+/// The breaker's own arm has its own tests beside the walk's; a test about the transport key should
+/// not have to say anything about a circuit.
+pub(crate) struct AllAdmitted;
+
+impl crate::lane::BreakerView for AllAdmitted {
+    fn ready(&self, _pool: &str, _lane: usize, _now: u64) -> bool {
+        true
+    }
+    fn try_admit(
+        &self,
+        _pool: &str,
+        _lane: usize,
+        _now: u64,
+    ) -> Result<(), crate::lane::Unavailable> {
+        Ok(())
+    }
+}
+
+/// The query those tests ask through.
+pub(crate) fn admitting() -> crate::lane::BreakerQuery<'static> {
+    static BREAKER: AllAdmitted = AllAdmitted;
+    crate::lane::BreakerQuery {
+        breaker: &BREAKER,
+        pool: "p",
+        now: 0,
+    }
+}
+
 /// Facts that say yes to everything, so a test can turn exactly one answer off and see it land.
 pub(crate) struct AllYes {
     /// What every name this fake is asked about resolves to. `None` scripts no resolver at all and
@@ -26,6 +56,10 @@ pub(crate) struct AllYes {
     /// about a boolean somebody set.
     pub(crate) resolves_to: Option<&'static str>,
     pub(crate) net_guard: bool,
+    pub(crate) price_within_max: bool,
+    /// Where in the lane table this fake's one lane sits. The mapping is all an implementer of the
+    /// breaker predicate does; the question itself belongs to the query.
+    pub(crate) lane_index: usize,
     pub(crate) allow_listed: bool,
     pub(crate) transport_key: bool,
     pub(crate) lane_permitted: bool,
@@ -45,6 +79,8 @@ impl Default for AllYes {
         AllYes {
             resolves_to: None,
             net_guard: true,
+            price_within_max: true,
+            lane_index: 0,
             allow_listed: true,
             transport_key: true,
             lane_permitted: true,
@@ -114,6 +150,16 @@ impl KindFacts for AllYes {
     }
     fn upgrade_ok(&self) -> bool {
         self.upgrade
+    }
+    fn unit_price_within_max(&self, _d: &DestinationFacts) -> bool {
+        self.price_within_max
+    }
+    fn breaker_admits(&self, dest: &DestinationFacts, at: &crate::lane::BreakerQuery<'_>) -> bool {
+        match dest.lane() {
+            Some(_) => at.admits_lane(self.lane_index),
+            // Nothing priced on a lane has a lane for the breaker to have an opinion about.
+            None => true,
+        }
     }
 }
 
@@ -283,9 +329,9 @@ fn a_delivery_may_deliver_hop_or_dial_and_nothing_else() {
 }
 
 #[test]
-fn an_upstream_needs_the_allow_list_the_key_and_the_lane() {
+fn an_upstream_needs_every_conjunct_of_its_rule() {
     let d = kinds::upstream();
-    assert!(kind_rule_passes(&d, &AllYes::default()));
+    assert!(kind_rule_passes(&d, &AllYes::default(), &admitting()));
     for (label, facts) in [
         (
             "not allow-listed",
@@ -315,76 +361,104 @@ fn an_upstream_needs_the_allow_list_the_key_and_the_lane() {
                 ..AllYes::default()
             },
         ),
+        (
+            "the unit price is over the card's maximum",
+            AllYes {
+                price_within_max: false,
+                ..AllYes::default()
+            },
+        ),
     ] {
-        assert!(!kind_rule_passes(&d, &facts), "{label}");
+        assert!(!kind_rule_passes(&d, &facts, &admitting()), "{label}");
     }
+
+    // The last conjunct is the breaker's, and it is asked through the query rather than through the
+    // facts — the facts only say which lane this destination is.
+    let open = super::Lanes::with(|l| {
+        l.open_breaker.insert(0);
+    });
+    let at = crate::lane::BreakerQuery {
+        breaker: &open,
+        pool: "p",
+        now: 7,
+    };
+    assert!(
+        !kind_rule_passes(&d, &AllYes::default(), &at),
+        "the breaker is open on this lane"
+    );
 }
 
 /// A peer is dialled over the network too, so its address is judged beside its lease.
 #[test]
 fn a_peer_needs_its_lease_and_its_address() {
     let d = kinds::peer();
-    assert!(kind_rule_passes(&d, &AllYes::default()));
+    assert!(kind_rule_passes(&d, &AllYes::default(), &admitting()));
     assert!(!kind_rule_passes(
         &d,
         &AllYes {
             net_guard: false,
             ..AllYes::default()
-        }
+        },
+        &admitting()
     ));
 }
 
 #[test]
 fn a_session_upstream_needs_the_pairing_and_the_principal() {
     let d = kinds::session_upstream();
-    assert!(kind_rule_passes(&d, &AllYes::default()));
+    assert!(kind_rule_passes(&d, &AllYes::default(), &admitting()));
     assert!(!kind_rule_passes(
         &d,
         &AllYes {
             session_principal: false,
             ..AllYes::default()
-        }
+        },
+        &admitting()
     ));
     assert!(!kind_rule_passes(
         &d,
         &AllYes {
             session_upstream: false,
             ..AllYes::default()
-        }
+        },
+        &admitting()
     ));
 }
 
 #[test]
 fn a_client_destination_needs_the_selector_and_the_deadline() {
     let d = kinds::client();
-    assert!(kind_rule_passes(&d, &AllYes::default()));
+    assert!(kind_rule_passes(&d, &AllYes::default(), &admitting()));
     assert!(!kind_rule_passes(
         &d,
         &AllYes {
             client_selector: false,
             ..AllYes::default()
-        }
+        },
+        &admitting()
     ));
     assert!(!kind_rule_passes(
         &d,
         &AllYes {
             await_deadline: false,
             ..AllYes::default()
-        }
+        },
+        &admitting()
     ));
 }
 
 #[test]
 fn the_verb_scope_check_always_runs() {
     let d = kinds::kernel_verb();
-    assert!(kind_rule_passes(&d, &AllYes::default()));
+    assert!(kind_rule_passes(&d, &AllYes::default(), &admitting()));
     assert!(
         !kind_rule_passes(
             &d,
             &AllYes {
                 verb_scope: false,
                 ..AllYes::default()
-            }
+            },
+            &admitting()
         ),
         "the scope question is asked whatever the posture; the posture only changes the answer"
     );
@@ -422,7 +496,10 @@ fn the_remaining_kinds_each_carry_their_own_rule() {
             },
         ),
     ] {
-        assert!(kind_rule_passes(&kind, &AllYes::default()), "{kind:?}");
-        assert!(!kind_rule_passes(&kind, &facts), "{kind:?}");
+        assert!(
+            kind_rule_passes(&kind, &AllYes::default(), &admitting()),
+            "{kind:?}"
+        );
+        assert!(!kind_rule_passes(&kind, &facts, &admitting()), "{kind:?}");
     }
 }
