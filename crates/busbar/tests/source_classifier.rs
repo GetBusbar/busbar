@@ -43,7 +43,10 @@ mod tests {
 }
 "#;
     let prod = production_of(src);
-    assert!(prod.contains("dispatch()"), "production code survives: {prod}");
+    assert!(
+        prod.contains("dispatch()"),
+        "production code survives: {prod}"
+    );
     assert!(
         !prod.contains("Usage::report("),
         "a seam token that exists ONLY inside `#[cfg(test)] mod tests` was handed to the scan. \
@@ -137,10 +140,17 @@ fn comments_are_stripped_and_strings_are_not() {
 
 #[test]
 fn a_block_comment_spanning_lines_is_stripped() {
-    let src = "pub fn a() {}\n/* Usage::report(x)\n   still a comment */\npub fn b() { dispatch(); }\n";
+    let src =
+        "pub fn a() {}\n/* Usage::report(x)\n   still a comment */\npub fn b() { dispatch(); }\n";
     let prod = production_of(src);
-    assert!(!prod.contains("Usage::report("), "block comment leaked: {prod}");
-    assert!(prod.contains("dispatch()"), "code after the block comment was lost: {prod}");
+    assert!(
+        !prod.contains("Usage::report("),
+        "block comment leaked: {prod}"
+    );
+    assert!(
+        prod.contains("dispatch()"),
+        "code after the block comment was lost: {prod}"
+    );
 }
 
 #[test]
@@ -158,7 +168,10 @@ pub fn audit(&mut self) {
     let lines = classify(src, false);
     let body = item_body(&lines, "fn meter(").expect("the signature is present");
     let text: String = body.iter().map(|l| format!("{}\n", l.code)).collect();
-    assert!(text.contains("self.walk.step()"), "the body is the item's own: {text}");
+    assert!(
+        text.contains("self.walk.step()"),
+        "the body is the item's own: {text}"
+    );
     assert!(
         !text.contains("Usage::report("),
         "`item_body` ran past the item's closing brace and picked up the NEXT function. A gate \

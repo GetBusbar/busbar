@@ -250,13 +250,16 @@ fn named_test_is_real(root: &Path, id: &str, test: &str, kind: &str) -> Result<(
 
     let lines = common::classify(&src, common::is_test_path(Path::new(file)));
     let sig = format!("fn {func}(");
-    let at = lines.iter().position(|l| l.code.contains(&sig)).ok_or_else(|| {
-        format!(
+    let at = lines
+        .iter()
+        .position(|l| l.code.contains(&sig))
+        .ok_or_else(|| {
+            format!(
             "{kind} `{id}` is `proven` by {test}, but no `fn {func}(` exists in {file}. The named \
              instrument is gone or renamed; a claim that outlives its evidence is exactly the \
              drift this gate exists to stop. Restore or rename the reference, or flip the cell."
         )
-    })?;
+        })?;
 
     // (1) It is test code. A production `fn` with the right name is not an instrument that ran.
     if !lines[at].intest {
@@ -1032,8 +1035,7 @@ fn the_named_instrument() {
 fn fixture(root: &Path) -> serde_json::Value {
     let tests_dir = root.join("crates/x/tests");
     std::fs::create_dir_all(&tests_dir).expect("fixture tests dir");
-    std::fs::write(tests_dir.join("real_tests.rs"), GREEN_FIXTURE_TEST)
-        .expect("fixture test file");
+    std::fs::write(tests_dir.join("real_tests.rs"), GREEN_FIXTURE_TEST).expect("fixture test file");
     serde_json::json!({
         "capabilities": {
             "cap-a": "a capability defined at argument length for the fixture",
