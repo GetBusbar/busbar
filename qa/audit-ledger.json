@@ -97,16 +97,16 @@
     "crates/busbar/src/root"
    ],
    "tree_hash": "cb32af3d897621d61265e6e9cc3679fd55e19bfcba5e1e4cde7debf34892f9e7",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
+   "audited_at": "54f963a4c13620f668502d0b3a73f8f63cd6cc9e",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "HIGH": 7,
-    "MEDIUM": 9,
-    "LOW": 5
+    "HIGH": 8,
+    "MEDIUM": 5,
+    "LOW": 2
    },
-   "report": "pass 2 fresh eyes, report-only: root llm card pinned at boot across live reloads; voice and a2a evidence carries raw quantities not nanos; a2a bills refusals, replayable push tokens, empty record identity; admin RefusingStore makes three DR verbs 503; mcp scope names the server, wrong breaker lane, pool read as unpriced; voice lease never closed, verify wait leaks, double unit per tool call; fix agents dispatched; adapters/auth_bindings/durability/kernel/ledger_identity/migration/policy/transports/vocabulary unread",
-   "auditor": "opus-pass2",
+   "report": "pass 3 of the remainder (adapters, auth_bindings, durability, kernel, ledger_identity, migration, policy, transports, vocabulary, build.rs, units_llm and units_a2a tests read fully): node_book ships a null shipper with no data_dir (critical); migration::run never called; identity only proven at the standard tier; no verifier or revocation view bound; transport provisioning has no caller; late-accrual path has zero coverage; a2a redeem passes ts as expiry; fix agents dispatched",
+   "auditor": "opus-pass3",
    "fixed_at": null
   },
   {
@@ -2335,14 +2335,14 @@
     "testing/llm-conformance"
    ],
    "tree_hash": "489f53c7085544a3051e37534446d7f1e2b933099a6594903641d76610f47686",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 1,
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 1
+    "MEDIUM": 1
    },
-   "report": "pass 1: pinned spec digests not verified on any run after the first (fixed 21db45ef)",
-   "auditor": "opus-pass1",
+   "report": "named-gap register built (anthropic ping, G-1); one live spec deviation remains: bedrock ServiceQuotaExceededException not declared by Converse (owner ruling needed)",
+   "auditor": "opus-fix",
    "fixed_at": null
   },
   {
@@ -2352,14 +2352,16 @@
     "testing/mcp-conformance"
    ],
    "tree_hash": "ecf0bb5c075634b7842846916b8090bf0810fac6c13992a1718aa057e2a7a4b8",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 1,
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 1
+    "HIGH": 1,
+    "LOW": 3,
+    "NIT": 1
    },
-   "report": "pass 1: mcp-battery has no registry floor; reported to the pass-2 auditor",
-   "auditor": "opus-pass1",
+   "report": "pass 2 (all 26 files read): unimported suite left scenarios out of every number (fixed 9d97221b); literal-true adversarial row, differential missing never gates, name-collision seam unguarded reported",
+   "auditor": "opus-pass2",
    "fixed_at": null
   },
   {
@@ -2388,14 +2390,17 @@
     "testing/voice-conformance"
    ],
    "tree_hash": "ba336f403a545c7ad4bcfcb9a428ae6f7025ba4797d65d504906e521b3f55c1e",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 1,
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 2
+    "HIGH": 1,
+    "MEDIUM": 3,
+    "LOW": 2,
+    "NIT": 2
    },
-   "report": "pass 1: cross oo/gg print PASS before opening fixtures; || true masks a panic after PASS lines; reported to the pass-2 auditor",
-   "auditor": "opus-pass1",
+   "report": "pass 2 (runner, 14 legs, 40 fixtures, voice-conform.rs read): harness dying after PASS lines read green (fixed d503a797), asymmetry rows deferred by all pairs (fixed e2434f4f), literal-true rows (fixed 181f5f52), missing map fixtures silent (fixed 3a2c9625); no sample-rate or timing assertion exists in the rig",
+   "auditor": "opus-pass2",
    "fixed_at": null
   },
   {
