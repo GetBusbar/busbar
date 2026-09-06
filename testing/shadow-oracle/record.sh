@@ -51,6 +51,18 @@ case "$PLANE" in llm|core|all) ;; *) echo "record.sh: planes recorded natively: 
 
 LISTEN_PORT="${ORACLE_LISTEN_PORT:-48811}" ADMIN_PORT="${ORACLE_ADMIN_PORT:-48812}" MOCK_PORT="${ORACLE_MOCK_PORT:-48781}"
 
+# The mock port a SCRIPT cell is given. A script cell boots its own busbar on this recording's own
+# listen/admin ports (free by then, because the recording's busbar is stopped for it) but the
+# recording's mock upstream is STILL UP on MOCK_PORT, so the script needs a mock port of its own.
+# It must be a port none of this recording's three already hold — see the long note at the call
+# site: a bare ADMIN_PORT+1 is correct only for port sets where the mock happens to live elsewhere,
+# and it turns 15 cells into `port <N> busy` UNSUPPORTED skips for those where it does not.
+script_mock_port() {
+  local p=$((ADMIN_PORT + 1))
+  while [ "$p" = "$LISTEN_PORT" ] || [ "$p" = "$ADMIN_PORT" ] || [ "$p" = "$MOCK_PORT" ]; do p=$((p + 1)); done
+  echo "$p"
+}
+
 # A RECORDING MAY NOT DEPEND ON WHERE IT WAS STARTED FROM. Some cells carry a REPO-RELATIVE path in
 # their own argv — every `config.migrate|*` cell runs `--migrate-config
 # tests/migration-corpus/from-tags/<v>_config.yaml` — so the binary resolved it against whatever
@@ -789,7 +801,17 @@ while IFS=$'\x1f' read -r id outcome driver keep_lines keep_spec needs_fixture p
     ensure_baseline_config || { record "$id" FAIL "could not restore the baseline oracle config" ""; continue; }
     # the script reuses this recording's own (now free) listen/admin ports so two recordings never
     # collide; the recording's mock upstream is still up on MOCK_PORT, so the script's mock takes
-    # the port after the admin one (inside this recording's own block)
+    # the first port after the admin one that is NOT already one of this recording's three.
+    #
+    # THAT LAST CLAUSE IS THE WHOLE POINT. This used to be a bare ADMIN_PORT+1, which silently
+    # assumed the operator had not chosen MOCK_PORT = ADMIN_PORT+1 — an entirely natural choice, and
+    # the default set (48811/48812/48781) is the only reason it never bit: the default mock sits in
+    # its own range. Choose ORACLE_MOCK_PORT=$((ORACLE_ADMIN_PORT+1)) and every script cell asks for
+    # the port the recording's own mock is already holding, its assert_port_free guard fires, and
+    # the cell records `port <N> busy` -> UNSUPPORTED. Measured: 15 cells (all 7 teller|*, the 3
+    # auth.lifecycle|*, cooldown|trip-then-serve, both hazard|no-data-dir|*, boot.warning|BOOT-W24
+    # and plugins.store-persist|store-sqlite) went PASS -> SKIP that way, which is coverage silently
+    # shrinking — the golden still says "recorded", just of 15 fewer things.
     # A script cell boots busbar ITSELF, several times in some cells (store-persist kills its first
     # busbar by design, admin-restart restarts one), and the recorder cannot reach in to sweep
     # between those boots. So each script cell gets its OWN empty temp base: the only staging dirs
@@ -801,7 +823,7 @@ while IFS=$'\x1f' read -r id outcome driver keep_lines keep_spec needs_fixture p
     sweep_orphan_staging
     local_tmp="$WORK/cell-tmp/$safe"; rm -rf "$local_tmp"; mkdir -p "$local_tmp"
     BUSBAR_BIN="$BIN" RAW="$raw" WORK="$WORK" ORACLE_ADMIN_TOKEN="$ORACLE_ADMIN_TOKEN" TMPDIR="$local_tmp" \
-      SCRIPT_LISTEN_PORT="$LISTEN_PORT" SCRIPT_ADMIN_PORT="$ADMIN_PORT" SCRIPT_MOCK_PORT="$((ADMIN_PORT+1))" \
+      SCRIPT_LISTEN_PORT="$LISTEN_PORT" SCRIPT_ADMIN_PORT="$ADMIN_PORT" SCRIPT_MOCK_PORT="$(script_mock_port)" \
       bash "${here}/scripts/${sname}" "${local_args[@]}" >"$raw/script.log" 2>&1
     [ -s "$raw/captured.json" ] || { record "$id" FAIL "script ${sname} produced no captured.json" "$(tail -c 300 "$raw/script.log")"; continue; }
     # STRIP THE DIRECTORIES THIS RUN CHOSE, exactly as record_exec_cell does for an exec cell. A
