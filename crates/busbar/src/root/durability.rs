@@ -618,22 +618,30 @@ pub struct NodeBook {
 /// dual write is keeping up — would answer over a book nothing settles into. That is not a
 /// hypothetical shape; it is what a node has when each mount builds its own.
 ///
-/// Memory-buffered, with no data directory read and no shipper of its own, which is the previous
-/// release's shape: nothing is probed, nothing is opened, and no file appears beside a configuration
-/// that asked for none.
-#[must_use]
-pub fn node_book() -> NodeBook {
+/// THE TWO THINGS THAT DECIDE WHERE THE BOOK'S RECORDS GO ARE BOTH ARGUMENTS, and neither has a
+/// default here. `cfg` is the resolved durability configuration — the one `if` this module exists
+/// for reads it, so a book built from a `DurabilityConfig` of its own would be a second answer to
+/// the question the branch is the only place to ask. `shipper` is the configured store's, which is
+/// the whole of the unset branch's durability: without a data directory the journal is
+/// memory-buffered and shipped to the store SYNCHRONOUSLY, so a book handed a null shipper settles
+/// every posting into a log that writes nowhere and ships nowhere — and an empty book reconciles,
+/// which is why the emptiness would not read as a fault.
+///
+/// With no data directory nothing is probed, nothing is opened and no file appears beside a
+/// configuration that asked for none. That is not this function's decision; it is
+/// [`build_for_node`]'s one branch, and this function is one of its callers.
+///
+/// # Errors
+///
+/// As [`build_for_node`]: a configured data directory could not be opened, or the journal already
+/// there could not be read. There is no error arm on the unset branch.
+pub fn node_book(cfg: &DurabilityConfig, shipper: Box<dyn Shipper>) -> Result<NodeBook, OpenError> {
     let rows = std::sync::Arc::new(RecordingRows::new());
-    let durability = build(
-        &DurabilityConfig { data_dir: None },
-        Box::new(busbar_unit_wal::NullShipper::new()),
-        Box::new(RecordingRows::clone(&rows)),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
-    NodeBook {
+    let durability = build(cfg, shipper, Box::new(RecordingRows::clone(&rows)))?;
+    Ok(NodeBook {
         durability: std::sync::Arc::new(std::sync::Mutex::new(durability)),
         rows,
-    }
+    })
 }
 
 /// The root's wall clock, in whole seconds since the Unix epoch, as every other reading on this

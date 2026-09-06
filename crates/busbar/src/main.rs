@@ -1456,14 +1456,44 @@ async fn run(data_workers: usize) {
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
     // and out through the one exit. Off, this line does not exist and the surface is the one it was.
+    // THE THREE UNIT-SIDE SEAMS OVER THE LOADED STORE, built ONCE. The book's shipper below and the
+    // opening-balance seal after it are two readers of the same store, and two adapters would be two
+    // node-local shims: two shipped counts, two sealed replay caches, and two answers to what this
+    // node has already sent. `native` is the right schema and not an approximation — the plugin
+    // window tops out at the native payload schema, which is below the one where the record verbs
+    // gain a wire, so every store this binary can load answers them through the shim either way.
+    // A deployment with governance disabled has no configured store, and the honest answer there is
+    // an absence rather than a second store invented here.
+    #[cfg(any(feature = "root-admin", feature = "root-llm"))]
+    let store_adapter = app_handle
+        .load()
+        .governance
+        .as_ref()
+        .map(|gov| busbar_plugin_loader::store_adapter::StoreAdapter::native(gov.store()));
     // THE PROCESS'S ONE BOOK. Every plane's exit arm settles onto it and the administrative ledger
     // views read it, which is a property of there being ONE: a mount that opened its own would post
     // onto books nothing serves and serve books nothing posts to, and both halves of that would look
-    // healthy, because an empty ledger reconciles. It is memory-buffered and reads no data
-    // directory, so nothing appears beside a configuration that asked for none, and it is built
-    // before either listener binds because the first accepted connection can settle.
+    // healthy, because an empty ledger reconciles. It is built before either listener binds because
+    // the first accepted connection can settle.
+    //
+    // BOTH ARGUMENTS ARE THIS DEPLOYMENT'S, and the second is the one that used to be missing. The
+    // durability configuration decides whether a journal is opened on a disk — no data directory is
+    // resolvable off the current parse surface, so it is unset on every configuration this binary
+    // reads, and the branch that reads it stays the one place that does. The shipper is the
+    // configured store's: without a data directory the journal is memory-buffered and shipped to the
+    // store synchronously, and a null shipper there is a node that settles every posting into a log
+    // that writes nowhere and ships nowhere. A deployment with no store configured keeps nothing,
+    // which is the previous release's behaviour and not a silent loss — there was nowhere it was
+    // ever going.
     #[cfg(any(feature = "root-admin", feature = "root-llm"))]
-    let book = root::durability::node_book();
+    let book = root::durability::node_book(
+        &root::durability::DurabilityConfig::default(),
+        store_adapter.as_ref().map_or_else(
+            || Box::new(busbar_unit_wal::NullShipper::new()) as Box<dyn busbar_unit_wal::Shipper>,
+            busbar_plugin_loader::store_adapter::StoreAdapter::shipper,
+        ),
+    )
+    .unwrap_or_else(|e| die(format!("the node's book did not open: {e}")));
 
     // THE ROOT-DRIVEN LLM PLANE'S EXIT ARM, bound to that book. The loop already ended every unit
     // and handed back a posting; what this line adds is somewhere for the posting to go. Off, the
