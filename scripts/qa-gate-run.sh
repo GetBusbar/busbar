@@ -37,6 +37,9 @@
 #   siblings              registry-driven sibling checkouts (plugins.yaml + busbar-admin).
 #   segment ID            run exactly one segment by id (delegates to qa-segments.sh).
 #   loader                the loader-mechanism tests against the real sibling-built sqlite plugin.
+#   done-oracle           scripts/verify-1.6.0-done.sh in FULL mode (never --fast), with the pinned
+#                         1.5.5 golden and the pinned plugin set fetched first so its PARITY group
+#                         does the real `--plane all` replay rather than a named gap.
 #
 # Every subcommand is runnable locally, which is the other half of the point: the gate is no longer
 # a thing that only exists inside GitHub's YAML.
@@ -455,6 +458,59 @@ cmd_loader() {
   DEV_GATE=1 cargo test --release -p busbar-plugin-loader
 }
 
+# ── done-oracle: the 1.6.0 DONE claim, on every qa push, in FULL ─────────────────────────────────
+#
+# WHY THIS IS A GATE AND NOT A CHORE. `scripts/verify-1.6.0-done.sh` is the single verdict on
+# "busbar 1.6.0 is done", and nothing ran it automatically: ci.yml runs PARTS of it (shadow-oracle,
+# design-bindings, construction, service-image-pins) and qa-gate ran none of it. So the one script
+# that judges the whole claim only ever ran when a human remembered to type it, which makes the
+# claim a habit rather than a property of the branch.
+#
+# FULL, NEVER `--fast`. The judges' audit called a `--fast` run PROVISIONAL for a reason the script
+# itself now enforces: `--fast` substitutes `cargo build --workspace` for the full-gate battery, so
+# the BUILD group proves much less than its name and the script exits 3 with a PROVISIONAL banner
+# rather than exit 0. No flag is forwarded from here, deliberately — a CI step that could be talked
+# into `--fast` is a required check that can be talked into proving less.
+#
+# WHAT THE FETCHES ARE FOR. The PARITY group replays this build against the PUBLISHED 1.5.5 binary
+# over `--plane all`. Without the golden binary on disk that group degrades (the `fetch-golden.sh
+# --check` step reds, and the golden recording cannot be made); without the pinned plugin set the
+# `plugins` cell family is red for a reason that is not the code. Both are fetched by PINNED DIGEST
+# — same files, same refusals, as ci.yml's shadow-oracle job — and the plugin list is DERIVED from
+# plugin-digests.tsv rather than restated, so adding a plugin cannot leave one unfetched.
+#
+# THE CACHE IS THE WORKFLOW'S JOB, NOT THIS SCRIPT'S: `actions/cache` restores
+# `~/.cache/busbar-oracle` and `target/oracle/recordings/golden` under the SAME key ci.yml computes
+# (golden digest + harness_rev). On a warm cache the golden recording is restored rather than
+# re-recorded, which is the difference between a ~2h job and a ~3h one.
+cmd_done_oracle() {
+  [ $# -eq 0 ] || die "done-oracle takes no arguments (in particular, never --fast)"
+
+  log "fetch the PUBLISHED 1.5.5 golden binary by pinned digest"
+  bash testing/shadow-oracle/fetch-golden.sh
+
+  log "fetch the pinned plugin set (derived from plugin-digests.tsv, never restated)"
+  local plugins pl
+  plugins="$(grep -v '^#' testing/shadow-oracle/plugin-digests.tsv | cut -f1 | sort -u)"
+  [ -n "$plugins" ] || die "no plugins derived from plugin-digests.tsv — the plugins cell family would be red for the wrong reason"
+  for pl in $plugins; do
+    bash testing/shadow-oracle/fetch-plugin.sh "$pl" >/dev/null
+  done
+
+  # A REPORT THAT ONLY EXISTS IN THE LOG IS NOT EVIDENCE. The workflow uploads this file and the
+  # replay's own report/diff beside it, so a red is readable without re-running a two-hour job.
+  mkdir -p target/done-oracle
+  log "scripts/verify-1.6.0-done.sh (FULL — no --fast, so the banner and the exit code are the real claim)"
+  set +e
+  bash scripts/verify-1.6.0-done.sh 2>&1 | tee target/done-oracle/report.txt
+  local rc="${PIPESTATUS[0]}"
+  set -e
+  # 3 is the PROVISIONAL exit. It cannot happen from here (no --fast is forwarded), so if it ever
+  # does, the script's own demotion has been defeated and that is RED, not a pass.
+  [ "$rc" = 0 ] || die "the 1.6.0 done-oracle is RED (exit ${rc}) — see target/done-oracle/report.txt. DO NOT PROMOTE qa→main"
+  log "the 1.6.0 done-oracle is GREEN, in full"
+}
+
 case "${1:-}" in
   matrix)   cmd_matrix ;;
   fast)     cmd_fast ;;
@@ -463,6 +519,7 @@ case "${1:-}" in
   siblings) cmd_siblings ;;
   segment)  shift; cmd_segment "$@" ;;
   loader)   cmd_loader ;;
+  done-oracle) shift; cmd_done_oracle "$@" ;;
   -h | --help) sed -n '4,45p' "$0" ;;
-  *) echo "usage: $0 {matrix|fast|build [OUT]|hydrate [IN]|siblings|segment ID|loader}" >&2; exit 2 ;;
+  *) echo "usage: $0 {matrix|fast|build [OUT]|hydrate [IN]|siblings|segment ID|loader|done-oracle}" >&2; exit 2 ;;
 esac

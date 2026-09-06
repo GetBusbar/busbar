@@ -35,7 +35,10 @@
 #     build ─┐                      compile ONCE, upload target/ as an artifact
 #     fast ──┼─→ slow (matrix)  ─┐  one leg per live-mock segment, HYDRATES, never rebuilds
 #            └─→ loader        ──┼─→ umbrella (if: !cancelled())
-#                                ┘
+#     build ────→ done-oracle ───┘  scripts/verify-1.6.0-done.sh in FULL: the whole DONE claim,
+#                                   including the `--plane all` replay against the pinned 1.5.5
+#                                   golden. A SIBLING of `slow`, never in front of it — it is the
+#                                   longest job in the graph and wall clock is max(job).
 #
 # On a green run wall clock is max(job), not sum(job), so matrix WIDTH and BALANCE are the entire
 # win, and per-job FIXED COST is the entire risk, because it is paid N times. This workspace builds
@@ -345,6 +348,114 @@ jobs:
         working-directory: busbarAI
         run: ./scripts/qa-gate-run.sh loader
 
+  # ── done-oracle: scripts/verify-1.6.0-done.sh, in FULL, on every qa push ─────────────────────────
+  #
+  # THE HOLE THIS CLOSES. `scripts/verify-1.6.0-done.sh` is the one script that answers "is 1.6.0
+  # done" as a single verdict over nineteen groups. Nothing ran it. ci.yml runs four of the groups'
+  # underlying gates as jobs of their own (shadow-oracle, design-bindings, construction-gate,
+  # service-image-pins) and qa-gate ran none of them, so the umbrella verdict — the PARITY replay
+  # over `--plane all`, the AUDIT-LEDGER `--check`, STORE-QA, DESIGN, and the BUILD group's full
+  # `scripts/full-gate.sh` battery — only ever existed when a human remembered to type it. A claim
+  # that depends on someone remembering is not a property of the branch.
+  #
+  # FULL, NEVER `--fast`. `--fast` is refused BY CONSTRUCTION rather than by discipline: the step
+  # invokes `qa-gate-run.sh done-oracle`, which forwards no flag and refuses any argument. A `--fast`
+  # run that comes out clean prints PROVISIONAL and exits 3, and the exit code is all a CI step ever
+  # sees; a required check that can be talked into the provisional answer is not a required check.
+  #
+  # THE RUNNER BUDGET, STATED. This is the longest job in the graph, so it is its OWN job, a sibling
+  # of `slow` rather than anything's dependency: on a green run wall clock is max(job), and the fleet
+  # legs and this one overlap completely. Measured shape, warm cache:
+  #
+  #     hydrate + fetch (cached golden/plugins)          ~3 min
+  #     BUILD group (scripts/full-gate.sh, 14 cargo
+  #       invocations over 4 build configurations)       ~35-55 min
+  #     TEST + KERNEL + EQUALITY + ISOMORPHISM groups     ~20-30 min
+  #     PARITY: release build + candidate recording
+  #       (--plane all) + replay vs the cached golden     ~35-50 min
+  #     the cheap lint/gate groups                        ~5 min
+  #                                                      ── ~100-140 min warm, ~170 min cold
+  #
+  # `timeout-minutes: 240` is headroom over the cold case, not a target; `slow`'s ceiling is 180 and
+  # this must not be the job that turns a known-slow gate red rather than slow. If it ever exceeds
+  # `slow`'s wall clock by a wide margin it stops being free and the BUILD group is the lever (it is
+  # the only group that duplicates work ci.yml already did).
+  #
+  # THE CACHE KEY IS ci.yml's, CHARACTER FOR CHARACTER — same golden-digest prefix, same
+  # `harness-rev.sh` output, same two paths. That is what makes the golden recording a restore here
+  # instead of a second ~30-minute recording of the same published binary, and it is computed by the
+  # same shared function rather than restated, so the two jobs can never drift onto different
+  # definitions of "the harness changed".
+  done-oracle:
+    name: 1.6.0 done-oracle (FULL, incl. the --plane all replay)
+    needs: [build]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      # The plugins cell family loads PUBLISHED, signed plugin artifacts; without the release public
+      # key those cells are red for a reason that is not the code. Same wiring as ci.yml's
+      # shadow-oracle job.
+      BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: busbarAI
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      # PINNED, AND IT MUST EQUAL ci.yml's AND rust-toolchain.toml's — see the identical note on
+      # every other job in this file. This job compares a build of THIS commit against the published
+      # 1.5.5 bytes, so a toolchain that is a function of the calendar makes the comparison one too.
+      - uses: dtolnay/rust-toolchain@1.98.0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.BUILD_ARTIFACT }}
+          path: /tmp
+      - name: Hydrate target/ from the build-once artifact (and assert it was accepted as fresh)
+        working-directory: busbarAI
+        run: ./scripts/qa-gate-run.sh hydrate "$TARBALL"
+
+      - name: Oracle revision (keys the golden cache — identical to ci.yml's shadow-oracle job)
+        id: rev
+        working-directory: busbarAI
+        run: |
+          set -euo pipefail
+          digest=$(awk -F'\t' '$1=="1.5.5" && $2=="busbar-x86_64-unknown-linux-gnu.tar.gz"{print $3}' testing/shadow-oracle/golden-digests.tsv)
+          [ -n "$digest" ] || { echo "::error::no pinned 1.5.5 linux digest in golden-digests.tsv"; exit 1; }
+          rev=$(bash testing/shadow-oracle/harness-rev.sh | awk '{print $2}' | cut -c1-16)
+          echo "key=oracle-golden-${digest:0:12}-${rev}" >> "$GITHUB_OUTPUT"
+      - name: Cache the golden recording and the 1.5.5 artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/busbar-oracle
+            busbarAI/target/oracle/recordings/golden
+          key: ${{ steps.rev.outputs.key }}
+
+      - name: The 1.6.0 done-oracle, in full
+        working-directory: busbarAI
+        run: ./scripts/qa-gate-run.sh done-oracle
+
+      # A REPORT THAT ONLY EXISTS IN A LOG IS NOT EVIDENCE, and this job is too long to re-run to
+      # read one. `if: always()` because the RED run is the one whose report matters.
+      - name: Upload the done-oracle report and the parity diff
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-gate-done-oracle-report
+          path: |
+            busbarAI/target/done-oracle/report.txt
+            busbarAI/target/oracle/reports/latest/report.md
+            busbarAI/target/oracle/reports/latest/report.json
+            busbarAI/target/oracle/reports/latest/diverging.txt
+            busbarAI/target/oracle/reports/latest/owed-gaps.txt
+            busbarAI/target/oracle/reports/latest/ledger.tsv
+          if-no-files-found: warn
+          retention-days: 14
+
   # ── umbrella: the single required status. It must report even when a leg FAILED, so it cannot use
   # the default `if` (which requires every `needs` to have succeeded). `!cancelled()` rather than
   # `always()`: with cancel-in-progress a superseded run would otherwise end in a RED umbrella
@@ -354,7 +465,7 @@ jobs:
   # dev/main CI completion that the root jobs correctly skip.
   umbrella:
     name: qa-gate umbrella
-    needs: [build, fast, slow, loader]
+    needs: [build, fast, slow, loader, done-oracle]
     if: >-
       !cancelled() &&
       (github.event_name == 'workflow_dispatch' ||
@@ -380,6 +491,11 @@ jobs:
           check fast   "${{ needs.fast.result }}"
           check slow   "${{ needs.slow.result }}"
           check loader "${{ needs.loader.result }}"
+          # INDEX SYNTAX, not `needs.done-oracle.result`: a `-` inside a property path is parsed as
+          # subtraction by the expression evaluator, so the dotted form would not read this job's
+          # result at all — and an expression that evaluates to something other than "success" would
+          # have red every run, which is the loud failure. The quiet one is worse and this avoids it.
+          check done-oracle "${{ needs['done-oracle'].result }}"
           if [ "$fails" -ne 0 ]; then
             echo "qa-gate umbrella: RED ($fails tier(s) not green). DO NOT PROMOTE qa→main" >&2
             exit 1
