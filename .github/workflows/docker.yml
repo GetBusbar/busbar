@@ -195,14 +195,14 @@ jobs:
     if: ${{ inputs.promote_to != '' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
       - name: Log in to Docker Hub
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -395,16 +395,16 @@ jobs:
             baseline: "1"
             headroom: false
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install musl toolchain
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           # Keyed by ARCH, not target: the two arm64 legs share a triple but differ in RUSTFLAGS
           # (+lse vs baseline), and a shared cache would hand one leg the other's build products.
@@ -497,7 +497,7 @@ jobs:
             echo "::notice::the PGO marker gate above is the authoritative PGO proof for this cross target."
           fi
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: busbar-${{ matrix.arch }}
           path: target/pgo/${{ matrix.target }}/release/busbar
@@ -524,7 +524,7 @@ jobs:
       # the cdylib is built inside rust:alpine, untouched by this leg's RUSTFLAGS.
       - name: Checkout headroom-hook (first-party plugin source, pinned)
         if: ${{ matrix.headroom }}
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/headroom-hook
           ref: ${{ env.HEADROOM_HOOK_REF }}
@@ -653,7 +653,7 @@ jobs:
       # dlopen time — bundled alongside the plugin tarball so the Dockerfile can COPY them into
       # /lib. Named per-arch so the publish job (single image build spanning both arches) can stage
       # each into its own arch-specific Docker build context directory.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ matrix.headroom }}
         with:
           name: busbar-headroom-libs-${{ matrix.arch }}
@@ -663,7 +663,7 @@ jobs:
             headroom-libs/libc.musl-*.so.1
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ matrix.headroom }}
         with:
           name: busbar-headroom-${{ matrix.arch }}
@@ -678,10 +678,10 @@ jobs:
       digest: ${{ steps.push.outputs.digest }}
       digest_armv8: ${{ steps.push-armv8.outputs.digest }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Stage binaries + plugins into build context
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: busbar-*
           path: staged
@@ -713,16 +713,16 @@ jobs:
           cp Dockerfile providers.yaml compat-armv8.0/
           cp docker/config.yaml compat-armv8.0/docker/config.yaml
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -740,7 +740,7 @@ jobs:
 
       - name: Compute tags and labels
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: |
             ${{ env.DOCKERHUB_IMAGE }}
@@ -772,7 +772,7 @@ jobs:
 
       - name: Build and push
         id: push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -807,7 +807,7 @@ jobs:
 
       - name: Build and push the armv8.0 compat image (linux/arm64 only, suffixed tag)
         id: push-armv8
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: compat-armv8.0
           platforms: linux/arm64
@@ -822,7 +822,7 @@ jobs:
             org.opencontainers.image.version=${{ steps.ver.outputs.ver }}
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       # GHCR only: cosign stores signatures as sha256-*.sig tags, which we keep
       # off the Docker Hub tag list (clean public page). Hub verification runs
@@ -840,28 +840,28 @@ jobs:
         run: cosign sign --yes "${GHCR_IMAGE}@${DIGEST}"
 
       - name: Attest build provenance (Docker Hub)
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-name: index.docker.io/${{ env.DOCKERHUB_IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: false
 
       - name: Attest build provenance (GHCR)
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-name: ${{ env.GHCR_IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
       - name: Attest build provenance (Docker Hub, armv8.0 compat)
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-name: index.docker.io/${{ env.DOCKERHUB_IMAGE }}
           subject-digest: ${{ steps.push-armv8.outputs.digest }}
           push-to-registry: false
 
       - name: Attest build provenance (GHCR, armv8.0 compat)
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-name: ${{ env.GHCR_IMAGE }}
           subject-digest: ${{ steps.push-armv8.outputs.digest }}
