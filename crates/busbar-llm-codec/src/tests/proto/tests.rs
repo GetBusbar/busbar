@@ -791,6 +791,7 @@ fn test_irerror_bridge() {
         class: StatusClass::Billing,
         provider_signal: Some("test".to_string()),
         retry_after: None,
+        ..Default::default()
     };
 
     // Billing is a hard, non-retryable failure for the breaker.
@@ -2562,6 +2563,7 @@ mod ir_property_tests {
             class: busbar_substrate_values::breaker::StatusClass::ClientError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
+            ..Default::default()
         };
         let ev = crate::ir::IrStreamEvent::Error(err);
         let result = writer.write_response_event(&ev);

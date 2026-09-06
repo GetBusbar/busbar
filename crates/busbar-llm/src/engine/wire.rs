@@ -766,6 +766,7 @@ pub(crate) fn mid_stream_error_bytes(
         class: busbar_substrate::breaker::StatusClass::ServerError,
         provider_signal: Some(message.to_string()),
         retry_after: None,
+        ..Default::default()
     };
     let Some(dialect) =
         busbar_substrate::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())

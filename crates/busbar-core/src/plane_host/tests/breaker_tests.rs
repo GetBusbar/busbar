@@ -441,46 +441,55 @@ fn failure_signal_round_trips_through_classify() {
             class: BC::RateLimit,
             provider_signal: Some("slow_down".to_string()),
             retry_after: Some(30),
+            ..Default::default()
         },
         CanonicalSignal {
             class: BC::Overloaded,
             provider_signal: None,
             retry_after: Some(0),
+            ..Default::default()
         },
         CanonicalSignal {
             class: BC::ServerError,
             provider_signal: None,
             retry_after: None,
+            ..Default::default()
         },
         CanonicalSignal {
             class: BC::Timeout,
             provider_signal: None,
             retry_after: None,
+            ..Default::default()
         },
         CanonicalSignal {
             class: BC::Network,
             provider_signal: None,
             retry_after: None,
+            ..Default::default()
         },
         CanonicalSignal {
             class: BC::Auth,
             provider_signal: Some("invalid_key".to_string()),
             retry_after: None,
+            ..Default::default()
         },
         CanonicalSignal {
             class: BC::Billing,
             provider_signal: None,
             retry_after: None,
+            ..Default::default()
         },
         CanonicalSignal {
             class: BC::ClientError,
             provider_signal: None,
             retry_after: None,
+            ..Default::default()
         },
         CanonicalSignal {
             class: BC::ContextLength,
             provider_signal: None,
             retry_after: None,
+            ..Default::default()
         },
     ];
     for cs in cases {

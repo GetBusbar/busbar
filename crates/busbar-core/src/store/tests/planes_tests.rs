@@ -16,6 +16,7 @@ fn signal(class: StatusClass) -> CanonicalSignal {
         class,
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     }
 }
 

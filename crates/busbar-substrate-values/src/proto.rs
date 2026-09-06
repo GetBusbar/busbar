@@ -179,6 +179,7 @@ pub fn openai_classify(status: http::StatusCode, body: &[u8]) -> crate::breaker:
             class: StatusClass::ContextLength,
             provider_signal: Some(PROVIDER_SIGNAL_CONTEXT_LENGTH.to_string()),
             retry_after: None,
+            ..Default::default()
         };
     }
 
@@ -187,6 +188,7 @@ pub fn openai_classify(status: http::StatusCode, body: &[u8]) -> crate::breaker:
             class: StatusClass::RateLimit,
             provider_signal: Some("429".to_string()),
             retry_after: None,
+            ..Default::default()
         };
     }
 
@@ -195,6 +197,7 @@ pub fn openai_classify(status: http::StatusCode, body: &[u8]) -> crate::breaker:
             class: StatusClass::Auth,
             provider_signal: Some("auth".to_string()),
             retry_after: None,
+            ..Default::default()
         };
     }
 
@@ -203,6 +206,7 @@ pub fn openai_classify(status: http::StatusCode, body: &[u8]) -> crate::breaker:
             class: StatusClass::ServerError,
             provider_signal: Some("5xx".to_string()),
             retry_after: None,
+            ..Default::default()
         };
     }
 
@@ -211,6 +215,7 @@ pub fn openai_classify(status: http::StatusCode, body: &[u8]) -> crate::breaker:
             class: StatusClass::ClientError,
             provider_signal: Some(format!("{}", status.as_u16())),
             retry_after: None,
+            ..Default::default()
         };
     }
 
@@ -218,6 +223,7 @@ pub fn openai_classify(status: http::StatusCode, body: &[u8]) -> crate::breaker:
         class: StatusClass::ClientError,
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     }
 }
 

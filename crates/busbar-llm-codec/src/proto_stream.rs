@@ -1063,6 +1063,7 @@ impl StreamTranslate {
                 class: busbar_substrate_values::breaker::StatusClass::ServerError,
                 provider_signal: Some(ABORT_DETAIL.to_string()),
                 retry_after: None,
+                ..Default::default()
             };
             let ev = crate::ir::IrStreamEvent::Error(err);
             self.emit_ir_event(&ev, &mut out);

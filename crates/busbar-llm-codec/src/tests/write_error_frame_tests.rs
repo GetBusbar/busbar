@@ -28,7 +28,107 @@ fn a_mid_stream_error() -> CanonicalSignal {
         class: StatusClass::ServerError,
         provider_signal: Some("mid-stream transport failure".to_string()),
         retry_after: None,
+        ..Default::default()
     }
+}
+
+/// A MID-STREAM error has no HTTP status of its own — it rides inside a 200 body — so the only
+/// status a client ever sees is the one the ingress writer reconstructs. Reconstructing it from the
+/// lossy `StatusClass` alone rewrote what the upstream actually said: Gemini's 404/`NOT_FOUND`
+/// came out 400/`INVALID_ARGUMENT`, Bedrock's `ModelStreamErrorException` came out
+/// `InternalServerException`, and OpenAI's prose was replaced by its code. The exact status, name
+/// and message the upstream reported must survive to the frame.
+#[test]
+fn a_mid_stream_error_frames_the_status_and_message_the_upstream_reported() {
+    // What a Gemini `streamGenerateContent` sends when the model name is wrong: a `google.rpc.Status`
+    // with code 404, status NOT_FOUND and a sentence. `NOT_FOUND` classifies as ClientError, whose
+    // class-derived Gemini pair is (400, INVALID_ARGUMENT) — the wrong answer for this error.
+    let err = CanonicalSignal {
+        class: StatusClass::ClientError,
+        provider_signal: Some("NOT_FOUND".to_string()),
+        retry_after: None,
+        detail: busbar_substrate_values::breaker::ProviderErrorDetail {
+            http_status: Some(404),
+            status_name: Some("NOT_FOUND".to_string()),
+            message: Some("models/nope is not found for API version v1beta".to_string()),
+        },
+    };
+
+    let gemini = protocol_for("gemini")
+        .expect("gemini resolves")
+        .writer()
+        .write_error_frame(&err)
+        .expect("gemini frames a stream error");
+    assert_eq!(
+        gemini.1.pointer("/error/code"),
+        Some(&serde_json::json!(404)),
+        "the upstream's own status must reach the client, not the class-derived 400: {}",
+        gemini.1
+    );
+    assert_eq!(
+        gemini.1.pointer("/error/status"),
+        Some(&serde_json::json!("NOT_FOUND"))
+    );
+    assert_eq!(
+        gemini.1.pointer("/error/message"),
+        Some(&serde_json::json!(
+            "models/nope is not found for API version v1beta"
+        ))
+    );
+
+    // Bedrock names the exception itself. `ModelStreamErrorException` is a member of the
+    // ConverseStream output union; the class-derived name for a ClientError is `ValidationException`.
+    let bedrock_err = CanonicalSignal {
+        class: StatusClass::ServerError,
+        provider_signal: Some("ModelStreamErrorException".to_string()),
+        retry_after: None,
+        detail: busbar_substrate_values::breaker::ProviderErrorDetail {
+            http_status: Some(424),
+            status_name: Some("ModelStreamErrorException".to_string()),
+            message: Some("the model stream failed".to_string()),
+        },
+    };
+    let bedrock = protocol_for("bedrock")
+        .expect("bedrock resolves")
+        .writer()
+        .write_error_frame(&bedrock_err)
+        .expect("bedrock frames a stream error");
+    assert_eq!(
+        bedrock.0, "ModelStreamErrorException",
+        "the exception the upstream named must be the one framed, not the class-derived \
+         InternalServerException"
+    );
+    assert_eq!(
+        bedrock.1.pointer("/message"),
+        Some(&serde_json::json!("the model stream failed"))
+    );
+
+    // OpenAI chat: the prose must not be replaced by the code.
+    let openai_err = CanonicalSignal {
+        class: StatusClass::ClientError,
+        provider_signal: Some("model_not_found".to_string()),
+        retry_after: None,
+        detail: busbar_substrate_values::breaker::ProviderErrorDetail {
+            http_status: Some(404),
+            status_name: Some("invalid_request_error".to_string()),
+            message: Some("The model `nope` does not exist".to_string()),
+        },
+    };
+    let openai = protocol_for("openai")
+        .expect("openai resolves")
+        .writer()
+        .write_error_frame(&openai_err)
+        .expect("openai frames a stream error");
+    assert_eq!(
+        openai.1.pointer("/error/message"),
+        Some(&serde_json::json!("The model `nope` does not exist")),
+        "the provider's own sentence must reach the client, not its code: {}",
+        openai.1
+    );
+    assert_eq!(
+        openai.1.pointer("/error/code"),
+        Some(&serde_json::json!("model_not_found"))
+    );
 }
 
 #[test]
