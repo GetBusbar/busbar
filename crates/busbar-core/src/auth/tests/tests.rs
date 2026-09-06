@@ -3002,3 +3002,137 @@ fn test_1_5_2_keys_arm_is_cache_exempt() {
         "the keys engine arm must NOT cache vkey verdicts (revocation window unchanged)"
     );
 }
+
+// ─── The admin-tokens arm owes the chain THREE answers ──────────────────────────────────────────
+//
+// Accept (mine and valid), Reject (mine and wrong — stop, nobody else was asked), Pass (not mine —
+// ask the next arm). The arm used to answer only the first two, so with
+// `admin_auth: [admin-tokens, corp-oidc]` an OIDC bearer JWT was refused before `corp-oidc` was ever
+// asked and the second arm was silently dead. These four cells pin each answer and the chain's
+// behaviour when every arm passes.
+
+/// A test-only second admin arm that RECORDS whether the chain ever asked it, and identifies
+/// whatever it is handed. Standing in for `corp-oidc`: the point is not what it decides but that it
+/// is reached at all.
+#[cfg(feature = "auth-admin-tokens")]
+struct RecordingSecondArm(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+#[cfg(feature = "auth-admin-tokens")]
+impl crate::auth::AuthModule for RecordingSecondArm {
+    fn name(&self) -> &'static str {
+        "corp-oidc"
+    }
+    fn authenticate(&self, _candidate: Option<&str>) -> crate::auth::AuthOutcome {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        crate::auth::AuthOutcome::Identify(Principal::from_id("corp:alice"))
+    }
+}
+
+/// Build `[admin-tokens, corp-oidc]` over an operator token of `admintok`, plus the flag the second
+/// arm sets when it is asked. `second_arm = false` builds the single-arm chain instead.
+#[cfg(feature = "auth-admin-tokens")]
+fn admin_chain_fixture(
+    second_arm: bool,
+) -> (
+    std::sync::Arc<crate::state::App>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use crate::governance::{GovState, MemoryStore};
+    use std::sync::Arc;
+
+    let asked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let b = crate::test_support::TestApp::new().governance(gov);
+    let b = if second_arm {
+        b.admin_chain(vec!["admin-tokens".to_string(), "corp-oidc".to_string()])
+            .admin_module("corp-oidc", Box::new(RecordingSecondArm(asked.clone())))
+    } else {
+        b.admin_chain(vec!["admin-tokens".to_string()])
+    };
+    (b.build(), asked)
+}
+
+/// A JWS-compact (JWT-shaped) bearer is NOT an operator admin token, so `admin-tokens` must PASS and
+/// the chain must go on to ask `corp-oidc` — which identifies. This is the arm that was dead: before
+/// the fix the JWT was a terminal Reject here and the second arm was never reached.
+#[cfg(feature = "auth-admin-tokens")]
+#[test]
+fn admin_chain_jwt_shaped_credential_reaches_the_second_arm() {
+    let (app, asked) = admin_chain_fixture(true);
+    // A minimal RFC 7515 §7.1 compact serialization: {"alg":"RS256"}.{"sub":"alice"}.<sig>
+    let jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhbGljZSJ9.c2lnbmF0dXJl";
+    let (verdict, _) = crate::auth::run_admin_chain(&app, Some(jwt), None);
+    assert!(
+        asked.load(std::sync::atomic::Ordering::SeqCst),
+        "admin-tokens must PASS a credential that is not its own, so the second arm is asked"
+    );
+    match verdict {
+        ChainVerdict::Identified { module, .. } => assert_eq!(
+            module, "corp-oidc",
+            "the identifying arm must be the second one"
+        ),
+        other => panic!("expected the second arm to identify, got {other:?}"),
+    }
+}
+
+/// A credential that is NOT attributable to another issuer is MINE, and mine-and-wrong is TERMINAL:
+/// the chain stops at `admin-tokens` and `corp-oidc` is never asked. This is the 1.5.5 refusal that
+/// must not soften — a wrong admin token does not get a second opinion.
+#[cfg(feature = "auth-admin-tokens")]
+#[test]
+fn admin_chain_wrong_admin_token_is_terminal_and_never_asks_the_second_arm() {
+    let (app, asked) = admin_chain_fixture(true);
+    let (verdict, _) = crate::auth::run_admin_chain(&app, Some("not-the-admin-token"), None);
+    assert!(
+        matches!(verdict, ChainVerdict::Denied),
+        "a wrong admin-shaped credential must be denied, got {verdict:?}"
+    );
+    assert!(
+        !asked.load(std::sync::atomic::Ordering::SeqCst),
+        "a terminal Reject must stop the chain: the second arm must NEVER be asked"
+    );
+}
+
+/// Validation runs BEFORE any form test, so the real operator token identifies whatever it looks
+/// like — including an operator secret that carries no minted shape at all (there is none to carry).
+/// The second arm is not asked: the first arm answered.
+#[cfg(feature = "auth-admin-tokens")]
+#[test]
+fn admin_chain_valid_admin_token_identifies_before_the_second_arm() {
+    let (app, asked) = admin_chain_fixture(true);
+    let (verdict, _) = crate::auth::run_admin_chain(&app, Some("admintok"), None);
+    match verdict {
+        ChainVerdict::Identified {
+            ref module,
+            ref principal,
+            ..
+        } => {
+            assert_eq!(module, "admin-tokens", "the operator arm must be the one");
+            assert_eq!(
+                principal.id,
+                busbar_auth_admin_tokens::ADMIN_TOKENS_PRINCIPAL_ID
+            );
+        }
+        other => panic!("the configured operator token must identify, got {other:?}"),
+    }
+    assert!(
+        !asked.load(std::sync::atomic::Ordering::SeqCst),
+        "an Identify must stop the chain before the second arm"
+    );
+}
+
+/// A chain with nothing left after the Pass refuses. `[admin-tokens]` alone, handed a JWT: the arm
+/// passes, no arm remains, and the chain DENIES — the new Pass answer can never open the admin
+/// surface by running out of arms.
+#[cfg(feature = "auth-admin-tokens")]
+#[test]
+fn admin_chain_exhausted_after_pass_refuses() {
+    let (app, _) = admin_chain_fixture(false);
+    let jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhbGljZSJ9.c2lnbmF0dXJl";
+    let (verdict, _) = crate::auth::run_admin_chain(&app, Some(jwt), None);
+    assert!(
+        matches!(verdict, ChainVerdict::Denied),
+        "an all-Pass admin chain must fail closed, got {verdict:?}"
+    );
+}
