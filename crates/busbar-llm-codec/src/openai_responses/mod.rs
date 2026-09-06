@@ -1151,6 +1151,21 @@ fn read_cached_tokens(usage_val: &serde_json::Value) -> Option<u64> {
         .and_then(|v| v.as_u64())
 }
 
+/// Read the Responses CACHE-WRITE count from a `usage` object:
+/// `usage.input_tokens_details.cache_write_tokens` — "the number of input tokens that were written
+/// to the cache". It is a SLICE OF the `input_tokens` total, exactly as `cached_tokens` is: the
+/// pinned OpenAI spec's own usage arithmetic reports `input_tokens` = `input_cached_tokens` +
+/// `input_cache_write_tokens` + `input_uncached_tokens`. Mapping it into the IR's ADDITIVE
+/// `cache_creation_input_tokens` (the field Anthropic's `cache_creation_input_tokens` and Bedrock's
+/// `cacheWriteInputTokens` populate) is what prices those tokens at the cache-WRITE tier instead of
+/// leaving them inside the plain input total. `None` when the nested field is absent.
+fn read_cache_write_tokens(usage_val: &serde_json::Value) -> Option<u64> {
+    usage_val
+        .get("input_tokens_details")
+        .and_then(|d| d.get("cache_write_tokens"))
+        .and_then(|v| v.as_u64())
+}
+
 /// OpenAI Responses streaming writer.
 ///
 /// EVERY native `/v1/responses` SSE event carries a top-level monotonically-increasing integer
