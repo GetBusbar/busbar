@@ -90,6 +90,17 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   refused as though it were not. The refund now resolves the same cell the charge did. Strictly in
   the caller's favour, reachable only on a boundary straddle, and the admission `requests` slot is
   still never refunded.
+- **A stream that dies mid-flight is no longer served, and billed, as a completed one.** Two
+  upstream failure shapes reached the client as a clean success in 1.5.5. An OpenAI-compatible
+  backend (OpenAI, Azure, vLLM, OpenRouter) that fails after its 200 headers are on the wire sends
+  the failure inline as a `data: {"error":{…}}` chunk carrying no `choices`; that chunk decoded to
+  nothing, so the truncated answer ended with an ordinary terminator, the breaker recorded no
+  fault, and the partial completion was billed in full. A Cohere stream ending on the generic infra
+  `finish_reason: "ERROR"` had the same outcome by a different route: the reason had no native
+  token in any other dialect's writer, so a cross-protocol client read it as `stop`/`end_turn`.
+  Both now surface a real error to the client, record the upstream fault on the breaker, and are
+  not billed as completions. The content-moderation `ERROR_TOXIC` stop is untouched: a safety
+  refusal is a correctly-served response and must not fault a lane. No successful stream changes.
 
 ### Breaking
 
