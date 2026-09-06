@@ -29,6 +29,13 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::net_guard::{self, GuardPolicy, GuardRefusal};
 
+/// How many frames an upstream may have in flight ahead of the leg reading them. The same reasoning
+/// the inbound acceptor's queue is bounded by, pointed the other way: an upstream that emits faster
+/// than this side consumes would otherwise have its whole output rate charged to this node's memory.
+/// At the bound the dialer's reader stops taking messages off the socket, so the backlog is held by
+/// the upstream's transport. Deep enough that ordinary jitter in a media relay never reaches it.
+const MAX_QUEUED_UPSTREAM_FRAMES: usize = 64;
+
 /// Why an outbound duplex dial failed — the FACT, kept separate so a caller renders its own sentence
 /// (mirroring how [`GuardRefusal`] callers convert into their own vocabulary).
 #[derive(Debug)]
@@ -193,27 +200,28 @@ fn split_messages<S>(
     ws: tokio_tungstenite::WebSocketStream<S>,
 ) -> (
     futures::channel::mpsc::UnboundedSender<Vec<u8>>,
-    futures::channel::mpsc::UnboundedReceiver<Vec<u8>>,
+    futures::channel::mpsc::Receiver<Vec<u8>>,
 )
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (mut ws_tx, mut ws_rx) = ws.split();
-    let (in_tx, in_rx) = futures::channel::mpsc::unbounded::<Vec<u8>>();
+    let (mut in_tx, in_rx) = futures::channel::mpsc::channel::<Vec<u8>>(MAX_QUEUED_UPSTREAM_FRAMES);
     let (out_tx, mut out_rx) = futures::channel::mpsc::unbounded::<Vec<u8>>();
 
     // Reader task: inbound WS messages → `Vec<u8>` frames onto `in_tx`. Ends on close/error; dropping
-    // `in_tx` ends the pump's inbound stream (the message-duplex analogue of EOF).
+    // `in_tx` ends the pump's inbound stream (the message-duplex analogue of EOF). `send` awaits
+    // capacity, which is where the backpressure onto the upstream lives.
     tokio::spawn(async move {
         while let Some(msg) = ws_rx.next().await {
             match msg {
                 Ok(Message::Binary(b)) => {
-                    if in_tx.unbounded_send(b.to_vec()).is_err() {
+                    if in_tx.send(b.to_vec()).await.is_err() {
                         break;
                     }
                 }
                 Ok(Message::Text(t)) => {
-                    if in_tx.unbounded_send(t.as_bytes().to_vec()).is_err() {
+                    if in_tx.send(t.as_bytes().to_vec()).await.is_err() {
                         break;
                     }
                 }
@@ -239,7 +247,7 @@ where
 }
 
 /// The concrete frame-stream the dial returns — an mpsc receiver of inbound `Vec<u8>` frames.
-struct BoxedStream(futures::channel::mpsc::UnboundedReceiver<Vec<u8>>);
+struct BoxedStream(futures::channel::mpsc::Receiver<Vec<u8>>);
 
 impl Stream for BoxedStream {
     type Item = Vec<u8>;
