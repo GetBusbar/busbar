@@ -720,6 +720,11 @@ fn an_upstream_error_still_meters_the_turn_it_ended() {
     // PCM16 at 24 kHz is 48 bytes per millisecond, so a second of uplink is 48 000 bytes. Forty of
     // them is the forty seconds the caller spoke.
     let one_second = vec![0u8; 48_000];
+    let relay_unit = crate::tests::harness::unit(
+        busbar_contract::ids::OpClassId::new("duplex_turn"),
+        busbar_contract::bounded::Ir::empty(),
+        Facts::new(),
+    );
     for _ in 0..40 {
         let append = serde_json::to_vec(&json!({
             "type": "input_audio_buffer.append",
@@ -731,6 +736,16 @@ fn an_upstream_error_still_meters_the_turn_it_ended() {
         plane
             .decode_ingress(&mut cursor, Some(&mut state), &c)
             .expect("an uplink audio frame decodes");
+        // And then relays, which is where the caller's seconds are counted.
+        plane
+            .encode_ingress_frame(
+                &relay_unit,
+                &frames[0],
+                &destination("api.openai.com", LaneId::new("realtime")),
+                Some(&mut state),
+                &c,
+            )
+            .expect("an uplink audio frame relays");
     }
 
     for call_id in ["call_1", "call_2"] {
@@ -784,6 +799,81 @@ fn an_upstream_error_still_meters_the_turn_it_ended() {
     // Forty seconds of admitted audio, metered in the seconds the class is denominated in.
     assert_eq!(quantity("audio_seconds_in"), Some(40));
     assert_eq!(quantity("tool_calls"), Some(2));
+}
+
+/// The caller's audio is metered on the half the answer comes back on.
+///
+/// A session holds one state per CONNECTION: the client's, and one per upstream it dials. The
+/// uplink counter used to be taken at decode, against the client's half, and read back at the
+/// response step, against the upstream's — a different value entirely, and always zero. Every
+/// second a customer spoke on a duplex turn metered at nothing.
+#[test]
+fn uplink_audio_meters_on_the_half_the_upstream_answer_arrives_on() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut client = open_client_session(&plane, &c);
+    let mut upstream = SessionPlane::open_upstream(&plane, &dest, &c);
+
+    // The turn opens on a control event, so the audio that follows is a relayed frame rather than
+    // the unit's own body: the frame under test is the ordinary one, of which a call carries fifty
+    // a second.
+    let opening = client_wire(&session_update_fixture());
+    let frames = [frame(&opening)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(draft) = plane
+        .decode_ingress(&mut cursor, Some(&mut client), &c)
+        .expect("the turn opens")
+    else {
+        panic!("the first client event opens the turn");
+    };
+    let unit = crate::tests::harness::unit(draft.op, draft.body_ir, draft.facts);
+
+    // One second of PCM16 at 24 kHz.
+    let append = serde_json::to_vec(&json!({
+        "type": "input_audio_buffer.append",
+        "audio": base64_of(&vec![0u8; 48_000]),
+    }))
+    .expect("audio fixture serializes");
+    let frames = [frame(&append)];
+    let mut cursor = FrameCursor::new(&frames);
+    plane
+        .decode_ingress(&mut cursor, Some(&mut client), &c)
+        .expect("an uplink audio frame decodes");
+    plane
+        .encode_ingress_frame(&unit, &frames[0], &dest, Some(&mut upstream), &c)
+        .expect("an uplink audio frame relays to the provider");
+
+    let done = serde_json::to_vec(&json!({
+        "type": "response.done",
+        "response": { "usage": { "input_token_details": { "audio_tokens": 1 } } }
+    }))
+    .expect("usage fixture serializes");
+    let frames = [frame(&done)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Progress::Terminal { r, .. } = plane
+        .decode_response(&mut cursor, &dest, Some(&mut upstream), &c)
+        .expect("the usage report decodes")
+    else {
+        panic!("a usage report ends the turn");
+    };
+
+    let seconds = plane
+        .meter(&unit, &r, &c)
+        .lines
+        .as_slice()
+        .iter()
+        .find(|l| l.class.as_str() == "audio_seconds_in")
+        .and_then(|l| l.quantity);
+    assert_eq!(
+        seconds,
+        Some(1),
+        "the second the caller spoke was relayed to the provider and must be metered"
+    );
 }
 
 /// The duration class is denominated in seconds, and the counter behind it is in milliseconds.

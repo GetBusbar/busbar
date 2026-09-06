@@ -206,7 +206,12 @@ impl Plane for VoicePlane {
             .ok_or(Encode::Poisoned)?
             .get_mut::<VoiceSessionState>()
             .ok_or(Encode::Poisoned)?;
-        let client_dialect = state.dialect.ok_or(Encode::Poisoned)?;
+        // The client's own dialect off the session fact first, exactly as `decode_response` asks
+        // it: this seam is scoped to the DESTINATION, so the half it is handed is not guaranteed
+        // to be the one the client's arriving frames bound a dialect on.
+        let client_dialect = client_dialect_from_session(ctx)
+            .or(state.dialect)
+            .ok_or(Encode::Poisoned)?;
         let upstream_dialect = upstream_dialect_for(self, dest);
 
         let client_event = match client_dialect {
@@ -216,6 +221,10 @@ impl Plane for VoicePlane {
                     twilio::decode(f.bytes.as_slice()).map_err(|_| Encode::Unrepresentable)?;
                 match event {
                     twilio::TwilioEvent::Media { payload, .. } => {
+                        // Priced from the raw carrier payload, before the transform below widens
+                        // it: what the caller spoke is µ-law on this dialect's wire.
+                        let ms = AudioFormat::G711Ulaw.bytes_to_ms(payload.len() as u64);
+                        state.turn.audio_ms_in = state.turn.audio_ms_in.saturating_add(ms);
                         let pcm = ulaw::decode_frame(&payload);
                         IrClientEvent::AudioFrame(IrAudioFrame {
                             dir: UpDown::Up,
@@ -232,10 +241,36 @@ impl Plane for VoicePlane {
             }
             _ => match state.pending.take() {
                 Some(Pending::Ingress(ev)) => ev,
-                // `NeedMore`/non-audio control answered fully at decode: nothing further to relay.
-                _ => return Ok(None),
+                // Nothing stashed. Either decode answered the frame fully (a control event with
+                // nothing to relay) or the stash was left on another half of the session, which is
+                // not a reason to drop a caller's audio on the floor: the frame is re-read here.
+                // The reader is the one the stash existed to avoid calling twice, so it is called
+                // once either way.
+                None => {
+                    let reader = reader_for(client_dialect);
+                    let events = reader.read_up_ref(WireRef(f.bytes.as_slice()), &mut state.codec);
+                    match events.into_iter().next() {
+                        Some(ev) => ev,
+                        None => return Ok(None),
+                    }
+                }
             },
         };
+
+        // The uplink meter is taken HERE, at the seam that relays the frame to the provider, and
+        // not at decode: decode runs against the client half of the session and this step and the
+        // response step run against the destination's, so a figure counted at decode was read back
+        // from a half it was never written to and every second the caller spoke metered at zero.
+        // Counting where the audio actually leaves also means audio this node never relayed is
+        // audio nobody is charged for.
+        // Twilio's own uplink was counted from its carrier payload above, before the transform.
+        if client_dialect != Dialect::TwilioMediaStreams {
+            if let IrClientEvent::AudioFrame(f) = &client_event {
+                // See the module doc comment: the uplink format is assumed PCM16 for this estimate.
+                let ms = AudioFormat::Pcm16.bytes_to_ms(f.media.len() as u64);
+                state.turn.audio_ms_in = state.turn.audio_ms_in.saturating_add(ms);
+            }
+        }
 
         let writer = writer_for(upstream_dialect);
         // The upstream dialect may have NO verb for this concept (the cross-dialect drop rows): then
@@ -444,7 +479,21 @@ impl Plane for VoicePlane {
                 });
             }
         }
-        if let Some(FactValue::Int(ms)) = r.facts.get(meta::FACT_AUDIO_MS_IN) {
+        // The two halves of one duration, ADDED rather than one preferred over the other: the frame
+        // that opened the turn stated its own milliseconds on the draft (it never reaches the relay
+        // seam), and every frame after it is counted at that seam and reported on the answer. This
+        // is not a figure the destination confirmed, so the "answer wins" rule above does not
+        // govern it — taking the answer alone dropped the opening frame's audio every turn.
+        let opening = match u.draft_facts().get(meta::FACT_AUDIO_MS_IN) {
+            Some(FactValue::Int(ms)) => Some(ms),
+            _ => None,
+        };
+        let relayed = match r.facts.get(meta::FACT_AUDIO_MS_IN) {
+            Some(FactValue::Int(ms)) => Some(ms),
+            _ => None,
+        };
+        if opening.is_some() || relayed.is_some() {
+            let ms = opening.unwrap_or(0).saturating_add(relayed.unwrap_or(0));
             // The counter is milliseconds; the class is seconds. The conversion is the meter
             // boundary's, stated once in `meta` — a millisecond figure carried through under a
             // seconds-denominated class settles at a thousand times the duration it describes.
@@ -758,13 +807,22 @@ fn decode_twilio_frame<'u>(
                     reason: DiscardCode::ForgedSource,
                 });
             }
+            // Counted at the relay seam, not here: see `encode_ingress_frame`. A frame that OPENS
+            // the turn is the one exception — it becomes the unit's own egress body and never
+            // reaches that seam — so its milliseconds travel on the draft the unit is minted from.
             let ms = AudioFormat::G711Ulaw.bytes_to_ms(payload.len() as u64);
-            state.turn.audio_ms_in = state.turn.audio_ms_in.saturating_add(ms);
             let arena_bytes = ctx
                 .arena()
                 .alloc_bytes(&payload)
                 .map_err(|_| Decode::Oversize)?;
-            open_or_relay(state, Dialect::TwilioMediaStreams, arena_bytes, None, ctx)
+            open_or_relay(
+                state,
+                Dialect::TwilioMediaStreams,
+                arena_bytes,
+                None,
+                Some(ms),
+                ctx,
+            )
         }
         twilio::TwilioEvent::Mark { .. } => Ok(Ingress::Discard {
             reason: DiscardCode::Unsupported,
@@ -820,23 +878,24 @@ fn ingress_from_client_event<'u>(
             facts: Box::new(facts),
         });
     }
-    let (relay, interrupt_ms) = match &event {
+    let (relay, interrupt_ms, audio_ms) = match &event {
         IrClientEvent::AudioFrame(f) => {
             // See the module doc comment: the uplink format is assumed PCM16 for this estimate.
+            // The figure is not accumulated here — see `encode_ingress_frame`, which counts what
+            // is actually relayed on the half the response step later reads it back from.
             let ms = AudioFormat::Pcm16.bytes_to_ms(f.media.len() as u64);
-            state.turn.audio_ms_in = state.turn.audio_ms_in.saturating_add(ms);
             let bytes = ctx
                 .arena()
                 .alloc_bytes(&f.media)
                 .map_err(|_| Decode::Oversize)?;
-            (bytes, None)
+            (bytes, None, Some(ms))
         }
         IrClientEvent::Control(IrDuplexControl::ItemTruncate {
             audio_played_ms, ..
-        }) => (ArenaBytes::new(&[]), Some(*audio_played_ms)),
-        IrClientEvent::Control(_) | IrClientEvent::Tool(_) => (ArenaBytes::new(&[]), None),
+        }) => (ArenaBytes::new(&[]), Some(*audio_played_ms), None),
+        IrClientEvent::Control(_) | IrClientEvent::Tool(_) => (ArenaBytes::new(&[]), None, None),
     };
-    open_or_relay(state, dialect, relay, interrupt_ms, ctx)
+    open_or_relay(state, dialect, relay, interrupt_ms, audio_ms, ctx)
 }
 
 /// Open a fresh turn (this is its first frame) or relay onto the one already open, attaching the
@@ -846,6 +905,7 @@ fn open_or_relay<'u>(
     dialect: Dialect,
     relay: ArenaBytes<'u>,
     interrupt_ms: Option<u64>,
+    audio_ms: Option<u64>,
     ctx: &Ctx<'u>,
 ) -> Result<Ingress<'u>, Decode> {
     let mut facts = Facts::new();
@@ -856,6 +916,15 @@ fn open_or_relay<'u>(
         );
     }
     if !state.turn_open {
+        // The opening frame becomes the unit's own egress body rather than travelling through the
+        // relay seam, so what it carries of the caller's audio is stated on the draft. Every later
+        // frame of the turn is counted where it relays.
+        if let Some(ms) = audio_ms {
+            let _ = facts.set(
+                meta::FACT_AUDIO_MS_IN,
+                FactValue::Int(i64::try_from(ms).unwrap_or(i64::MAX)),
+            );
+        }
         let correlation = state.open_turn();
         let _ = facts.set(meta::FACT_DIALECT, FactValue::Str(dialect.name()));
         let ir = view(relay.as_slice(), ctx)?;
