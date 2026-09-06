@@ -18,12 +18,17 @@
 #   3. the live mock's own capture directory                            -> expect exactly ONE file
 #   4. /usage requests delta                                            -> expect exactly 1 (one bill,
 #      not two, even though two lanes were attempted)
+#   5. busbar_breaker_trips_total for lane-dead                         -> expect exactly 1: the dead
+#      lane was DIALLED and abandoned. Steps 2-4 are all satisfied by a binary that never touched
+#      lane-dead at all, so without this the cell evidenced only half of what it claims.
 #
 # Env from the recorder: BUSBAR_BIN RAW WORK ORACLE_ADMIN_TOKEN SCRIPT_LISTEN_PORT SCRIPT_ADMIN_PORT
 set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
 source "${repo}/testing/fleet-fixtures/lib.sh"
+# shellcheck source=../oracle-config.sh
+source "${here}/oracle-config.sh"   # oracle_scrape_metrics — the same helper cooldown-trip.sh uses
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
 LP="${TELLER_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-49611}}" AP="${TELLER_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-49612}}" MP="${TELLER_MOCK_PORT:-${SCRIPT_MOCK_PORT:-49621}}"
 DEADP=$((MP + 1))
@@ -88,6 +93,12 @@ pools:
       - { model: m-lane-live, weight: 1 }
     breaker: { base_cooldown_secs: 15, max_cooldown_secs: 120, trip: { mode: consecutive, consecutive_n: 1 } }
     failover: { timeout_secs: 30, max_hops: 3 }
+# The prometheus recorder, so /metrics carries busbar_breaker_trips_total. Step 5 reads the dead
+# lane's trip counter from it; without this instance the endpoint exists but publishes no series,
+# and the cell's own "an unread counter is not a zero" guard would refuse every run. Same module and
+# settings oracle-config.sh gives every other boot.
+export:
+  metrics: { module: prometheus, settings: { buffer_seconds: 60 } }
 YAML
 
 eff='{}'
@@ -130,6 +141,37 @@ stepjson route_body "$(jq -c . "$W/route.body" 2>/dev/null || jq -n --arg raw "$
 egress_count="$(find "$W/egress" -type f 2>/dev/null | wc -l | tr -d ' ')"
 step live_egress_count "$egress_count"
 
+# THE DEAD LANE WAS DIALLED, AND THAT IS MEASURED RATHER THAN ASSUMED. Everything above is equally
+# true of a busbar that never touched lane-dead at all: one 200, one file in the live mock's capture
+# dir, one bill. A binary whose walk simply picked the live lane first — no failover, no walk order,
+# no dial of the dead destination — produces this cell's every other measurement byte-for-byte, so
+# the cell was passing on evidence that does not distinguish the contract from its absence. "The
+# dead lane is dialled and abandoned" is half of what the header claims this cell proves, and it was
+# the unmeasured half.
+#
+# THE COUNTER, NOT THE LOG. `busbar_breaker_trips_total` for this pool's dead lane is exactly 1 when
+# the lane was dialled and failed, and 0 when it was never attempted, because the pool's breaker is
+# `trip: { mode: consecutive, consecutive_n: 1 }` — one failure is one trip. It is a number busbar
+# publishes, so it is deterministic and diffable; the same fact is visible as a WARN line in the boot
+# log, but log prose is not a contract and pinning it would make this cell fail on a reworded message.
+oracle_scrape_metrics "$LP" "$tok" "$W/metrics.txt" || true
+dead_dialled="$(awk '
+  /^busbar_breaker_trips_total\{/ && /pool="oracle"/ && /m-lane-dead/ { print $NF; found = 1; exit }
+  END { if (!found) print "" }
+' "$W/metrics.txt" 2>/dev/null | tr -d ' ')"
+# AN UNREADABLE COUNTER IS NOT A ZERO. A scrape that failed, or a series that is not there, means
+# this cell could not observe the dial — recording that as "0 dials" would state a failover breach
+# the run never actually saw. Refuse in the -1 UNSUPPORTED shape record.sh reads as a named gap.
+case "$dead_dialled" in
+  ''|*[!0-9.]*)
+    jq -n --argjson eff "$eff" \
+      '{status:-1, headers:{}, body:"", effects:($eff + {error: "busbar_breaker_trips_total for pool=oracle lane=m-lane-dead could not be read from /metrics, so whether the dead lane was dialled is unobserved; an unread counter is not a zero"})}' \
+      >"$RAW/captured.json"
+    exit 0 ;;
+esac
+# Prometheus counters are floats on the wire ("1" or "1.0"); the contract is the integer count.
+step dead_dialled "$(printf '%.0f' "$dead_dialled")"
+
 sleep 0.3
 usage="$(curl -sS -m 10 -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:${AP}/api/v1/admin/keys/${kid}/usage" | jq -c 'del(.as_of)')"
 stepjson usage "$usage"
@@ -142,9 +184,10 @@ if ! result="$(jq -n \
   --argjson route_status "$(jq -r .route_status <<<"$eff")" \
   --argjson route_body "$(jq -c .route_body <<<"$eff")" \
   --argjson live_egress_count "$(jq -r .live_egress_count <<<"$eff")" \
+  --argjson dead_dialled "$(jq -r .dead_dialled <<<"$eff")" \
   --argjson usage "$(jq -c .usage <<<"$eff")" \
   '{mint_status:$mint_status, route_status:$route_status, route_body:$route_body,
-    live_egress_count:$live_egress_count, usage:$usage}' 2>"$W/result.err")"; then
+    live_egress_count:$live_egress_count, dead_dialled:$dead_dialled, usage:$usage}' 2>"$W/result.err")"; then
   # CHECKED. Every value above is a number this run measured; if any of them is not one, the cell
   # measured something it cannot state and the body would go out EMPTY — and an empty body with
   # status 0 compares clean against a golden that failed the same way, which is the vacuous green
