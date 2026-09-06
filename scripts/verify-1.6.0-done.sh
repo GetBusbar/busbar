@@ -74,7 +74,7 @@ bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 hdr()  { printf '\n\033[1m══ %s ══\033[0m\n' "$*"; }
 
 FAST=0
-case "${1:-}" in --fast) FAST=1 ;; "" ) ;; -h|--help) sed -n '2,60p' "$0"; exit 0 ;; *) echo "usage: $0 [--fast]" >&2; exit 2 ;; esac
+case "${1:-}" in --fast) FAST=1 ;; "" ) ;; -h|--help) sed -n '2,66p' "$0"; exit 0 ;; *) echo "usage: $0 [--fast]" >&2; exit 2 ;; esac
 
 # Results accumulators (parallel arrays — bash 3.2 has no assoc arrays).
 G_NAME=(); G_STATE=(); G_NOTE=()
