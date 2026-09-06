@@ -1501,7 +1501,8 @@ fn probe_gemini_live_route() -> (&'static str, String) {
     let Some(admission) = busbar_voice::mount::voice_admission(slot.as_ref()) else {
         return (
             "FAIL",
-            "a plane that claims paths must admit (the claim-admits ratchet): admission is None".into(),
+            "a plane that claims paths must admit (the claim-admits ratchet): admission is None"
+                .into(),
         );
     };
     if !admission.audience.ends_with("/v1/realtime") {
