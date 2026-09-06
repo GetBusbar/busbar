@@ -178,52 +178,154 @@ fn request_facts<'u>(body: &'u [u8], envelope: &jsonrpc::Envelope) -> Facts<'u> 
     // block's keys carry separators, which a pointer would read as levels, so the whole block is
     // located by pointer and its members are read by name out of it.
     if let Some(block) = read_raw(body, "/params/_meta") {
-        if let Some(version) = member_of(block, f::META_PROTOCOL_VERSION_QUOTED) {
+        if let Some(version) = member_of(block, f::META_PROTOCOL_VERSION) {
             let _ = facts.set(f::FACT_PROTOCOL_VERSION, FactValue::Str(version));
         }
-        if let Some(token) = member_of(block, f::META_PROGRESS_TOKEN_QUOTED) {
+        if let Some(token) = member_of(block, f::META_PROGRESS_TOKEN) {
             let _ = facts.set(f::FACT_PROGRESS_TOKEN, FactValue::Str(token));
         }
     }
     facts
 }
 
-/// One quoted member of a flat object, by its exact quoted name.
+/// One quoted member of an object, by its exact name, one level down and no further.
 ///
 /// The metadata block's own keys contain separators, and a pointer reads a separator as a level, so
-/// they cannot be reached by pointer at all. This reads the member by name instead, which is the
-/// same walk one level down and no more.
+/// they cannot be reached by pointer at all. This walks the block's own members instead.
 ///
-/// The name arrives ALREADY QUOTED, as the constant it is. A member is looked for by its quoted
-/// name, and quoting a compile-time constant at request time buys nothing but a heap allocation on
-/// a path that runs once per metadata key on every request that carries a metadata block.
-fn member_of<'u>(object: &'u [u8], needle: &[u8]) -> Option<&'u str> {
-    let at = find(object, needle)?;
-    let mut i = at + needle.len();
-    while i < object.len() && matches!(object[i], b' ' | b'\t' | b'\n' | b'\r' | b':') {
+/// It used to scan the block's bytes for the quoted name and take whatever followed. That finds the
+/// name wherever it appears — as a key of a NESTED object, or written inside another member's
+/// string value — and hands back a value the caller never put at that name. The progress token in
+/// particular is a correlation, and a correlation read off a decoy answers the wrong request.
+fn member_of<'u>(object: &'u [u8], name: &str) -> Option<&'u str> {
+    let mut i = skip_space(object, 0);
+    if object.get(i) != Some(&b'{') {
+        return None;
+    }
+    i += 1;
+    loop {
+        i = skip_space(object, i);
+        match object.get(i) {
+            Some(b'}') | None => return None,
+            Some(b',') => {
+                i += 1;
+                continue;
+            }
+            Some(b'"') => {}
+            Some(_) => return None,
+        }
+        let (key, after_key) = string_at(object, i)?;
+        i = skip_space(object, after_key);
+        if object.get(i) != Some(&b':') {
+            return None;
+        }
+        i = skip_space(object, i + 1);
+        let matched = key_is(key, name);
+        if object.get(i) == Some(&b'"') {
+            let (value, after_value) = string_at(object, i)?;
+            if matched {
+                // A member present and not a string reads as absent, as it always has; a member
+                // present as a string reads as its own bytes, unescaped no more than before.
+                return core::str::from_utf8(value).ok();
+            }
+            i = after_value;
+        } else {
+            if matched {
+                return None;
+            }
+            i = skip_value(object, i)?;
+        }
+    }
+}
+
+/// Past any whitespace, from one position.
+fn skip_space(bytes: &[u8], mut i: usize) -> usize {
+    while matches!(bytes.get(i), Some(b' ' | b'\t' | b'\n' | b'\r')) {
         i += 1;
     }
-    if object.get(i) != Some(&b'"') {
+    i
+}
+
+/// The content of the quoted string beginning at `i`, and the position just past its closing quote.
+fn string_at(bytes: &[u8], i: usize) -> Option<(&[u8], usize)> {
+    if bytes.get(i) != Some(&b'"') {
         return None;
     }
     let start = i + 1;
     let mut j = start;
-    while j < object.len() {
-        match object[j] {
+    while j < bytes.len() {
+        match bytes[j] {
             b'\\' => j += 2,
-            b'"' => return core::str::from_utf8(object.get(start..j)?).ok(),
+            b'"' => return Some((bytes.get(start..j)?, j + 1)),
             _ => j += 1,
         }
     }
     None
 }
 
-/// Where a byte run first appears in another, if it does.
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return None;
+/// Whether one member's raw key names exactly this member.
+///
+/// The comparison is against the key as WRITTEN, which is what a name is: the two-character escapes
+/// stand for the characters they name, and a `\u` escape is answered "not this member" rather than
+/// half-decoded — no key this plane looks for is spelled that way, and a wrong answer here is a
+/// fact attributed to the wrong member.
+fn key_is(raw: &[u8], name: &str) -> bool {
+    let mut want = name.bytes();
+    let mut i = 0;
+    while i < raw.len() {
+        let (byte, width) = match raw[i] {
+            b'\\' => match raw.get(i + 1) {
+                Some(b'"') => (b'"', 2),
+                Some(b'\\') => (b'\\', 2),
+                Some(b'/') => (b'/', 2),
+                Some(b'n') => (b'\n', 2),
+                Some(b't') => (b'\t', 2),
+                Some(b'r') => (b'\r', 2),
+                Some(b'b') => (0x08, 2),
+                Some(b'f') => (0x0c, 2),
+                _ => return false,
+            },
+            other => (other, 1),
+        };
+        if want.next() != Some(byte) {
+            return false;
+        }
+        i += width;
     }
-    (0..=haystack.len() - needle.len()).find(|&i| &haystack[i..i + needle.len()] == needle)
+    want.next().is_none()
+}
+
+/// Past one whole non-string member value, from its first byte.
+///
+/// Objects and arrays are stepped over by depth, with strings inside them consumed whole so a brace
+/// written in one does not move the depth. Anything else runs to the member separator.
+fn skip_value(bytes: &[u8], mut i: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    loop {
+        match bytes.get(i)? {
+            b'"' => {
+                let (_, after) = string_at(bytes, i)?;
+                i = after;
+                if depth == 0 {
+                    return Some(i);
+                }
+                continue;
+            }
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            b',' if depth == 0 => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
 }
 
 /// Which code and words this dialect answers one refusal reason with.
@@ -1018,20 +1120,39 @@ mod tests {
     fn a_member_whose_name_carries_separators_is_read() {
         let block = br#"{"io.modelcontextprotocol/protocolVersion":"2026-07-28","other":1}"#;
         assert_eq!(
-            member_of(block, b"\"io.modelcontextprotocol/protocolVersion\""),
+            member_of(block, "io.modelcontextprotocol/protocolVersion"),
             Some("2026-07-28")
         );
-        assert_eq!(
-            member_of(block, b"\"io.modelcontextprotocol/clientInfo\""),
-            None
-        );
+        assert_eq!(member_of(block, "io.modelcontextprotocol/clientInfo"), None);
+    }
+
+    /// A member of a nested object is not a member of the block.
+    ///
+    /// The scan used to be for the quoted name anywhere in the block's bytes, so the first thing
+    /// that LOOKED like the member won — a nested object's own key, or the name written inside
+    /// somebody else's string value. Either one hands a later step a value the caller never put at
+    /// that name, and the progress token in particular is a correlation.
+    #[test]
+    fn a_nested_or_quoted_decoy_is_not_read_as_the_member() {
+        let nested = br#"{"inner":{"progressToken":"decoy"},"progressToken":"real"}"#;
+        assert_eq!(member_of(nested, "progressToken"), Some("real"));
+
+        let quoted =
+            br#"{"note":"the \"progressToken\":\"decoy\" is only prose","progressToken":"real"}"#;
+        assert_eq!(member_of(quoted, "progressToken"), Some("real"));
+
+        let only_nested = br#"{"inner":{"progressToken":"decoy"}}"#;
+        assert_eq!(member_of(only_nested, "progressToken"), None);
+
+        let suffix = br#"{"notTheProgressToken":"decoy"}"#;
+        assert_eq!(member_of(suffix, "progressToken"), None);
     }
 
     /// A member that is present and is not a string reads as absent.
     #[test]
     fn a_member_that_is_not_a_string_reads_as_absent() {
         let block = br#"{"progressToken":42}"#;
-        assert_eq!(member_of(block, b"\"progressToken\""), None);
+        assert_eq!(member_of(block, "progressToken"), None);
     }
 
     /// The codec state starts at nothing and counts up on both axes.
