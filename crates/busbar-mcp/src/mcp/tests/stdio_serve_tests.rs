@@ -968,6 +968,39 @@ async fn an_oversized_subscription_uri_is_refused() {
     client.eof().await;
 }
 
+/// THE BACKGROUND SET HOLDS WHAT IS STILL RUNNING, not everything that ever ran. Two of its three
+/// push sites fire per EVENT (one per SSE keepalive line, one per task-typed result), so a session
+/// that stays up must not pay for the tasks that already returned.
+#[tokio::test]
+async fn the_background_set_forgets_the_tasks_that_already_ended() {
+    let mut slots: Vec<tokio::task::AbortHandle> = Vec::new();
+    for _ in 0..64 {
+        let done = tokio::spawn(async {});
+        let handle = done.abort_handle();
+        // Let it actually finish before it is remembered — this is the per-event push site's shape:
+        // the keepalive ping resolves long before the next keepalive line arrives.
+        done.await.expect("the task ran to completion");
+        crate::mcp::stdio_serve::remember_background(&mut slots, handle);
+    }
+    // The one still-running task must survive: the set's whole purpose is aborting it at EOF.
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let live = tokio::spawn(async move {
+        let _ = rx.await;
+    });
+    crate::mcp::stdio_serve::remember_background(&mut slots, live.abort_handle());
+    assert_eq!(
+        slots.len(),
+        1,
+        "64 ended tasks and one live one leaves one handle, not 65"
+    );
+    assert!(
+        !slots[0].is_finished(),
+        "the handle kept is the LIVE one, not an ended one"
+    );
+    drop(tx);
+    let _ = live.await;
+}
+
 /// `resources/unsubscribe` STOPS the updates: after it, the same registration change that fired a
 /// notification before moves nothing on the channel.
 #[tokio::test]

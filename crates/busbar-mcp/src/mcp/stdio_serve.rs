@@ -468,6 +468,21 @@ struct Session {
     background: std::sync::Mutex<Vec<tokio::task::AbortHandle>>,
 }
 
+/// REMEMBER ONE BACKGROUND TASK, forgetting the ones that already ended.
+///
+/// The set exists for ONE purpose: abort at EOF whatever is still running. A handle whose task has
+/// already returned answers that purpose with nothing, so keeping it is pure accumulation — and two
+/// of the three push sites are per-event, not per-session (one per SSE keepalive line, one per
+/// task-typed result), so a long-lived session that never disconnects grew this vector forever. The
+/// sweep is O(n) on the push path, which is exactly the path that made n grow.
+fn remember_background(
+    slots: &mut Vec<tokio::task::AbortHandle>,
+    handle: tokio::task::AbortHandle,
+) {
+    slots.retain(|h| !h.is_finished());
+    slots.push(handle);
+}
+
 impl Session {
     /// The cached channel handle, once the pump has handed us one. Every emit path runs only after a
     /// frame (an answer to it, or a push that a prior subscribe/ask/task result set in motion), so in
@@ -977,7 +992,10 @@ impl Session {
                     let handle = tokio::spawn(async move {
                         let _ = session.issue_request("ping", &serde_json::json!({})).await;
                     });
-                    self.background.lock().unwrap().push(handle.abort_handle());
+                    remember_background(
+                        &mut self.background.lock().unwrap(),
+                        handle.abort_handle(),
+                    );
                 }
             }
         }
@@ -1057,7 +1075,7 @@ impl Session {
                 }
             }
         });
-        self.background.lock().unwrap().push(handle.abort_handle());
+        remember_background(&mut self.background.lock().unwrap(), handle.abort_handle());
     }
 
     /// The session's RESOURCE WATCH: the same generation poll `subscriptions/listen` runs, scoped
@@ -1124,7 +1142,7 @@ impl Session {
                 }
             }
         });
-        self.background.lock().unwrap().push(handle.abort_handle());
+        remember_background(&mut self.background.lock().unwrap(), handle.abort_handle());
     }
 
     /// The fingerprint of ONE resource as THIS session's caller can currently see it, or `None`
