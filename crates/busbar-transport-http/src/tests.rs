@@ -118,6 +118,44 @@ async fn the_envelopes_own_method_and_path_are_what_reach_the_upstream() {
     );
 }
 
+/// A second exchange on a connection whose answer can no longer be delivered is an ERROR, not an
+/// `Ok` the caller will read as sent-and-answered.
+///
+/// The response sender lives in the connection and is TAKEN by the first exchange. A second whole
+/// message therefore goes out on the wire — the upstream is asked, and charges for being asked —
+/// and then finds no sender to hand the answer to. Reporting `Ok` there tells the caller its
+/// request was carried when the only observable half of it, the response, has been dropped on the
+/// floor: a write that failed silently, which is the one thing this transport's write path must
+/// never do. The same holds when the receiver has gone: the head frame's send fails, and that is a
+/// closed connection, not a delivery.
+#[tokio::test]
+async fn a_second_egress_exchange_with_nowhere_to_answer_is_reported_not_swallowed() {
+    let uri = request_line_echo_server().await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    let req = b"POST /first HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
+    transport
+        .write(&conn, StreamId(0), ArenaBytes::new(req))
+        .await
+        .expect("the first exchange has a sender and answers normally");
+
+    // The sender is spent. The second message still reaches the upstream; its answer cannot reach
+    // anyone.
+    let again = b"POST /second HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
+    let err = transport
+        .write(&conn, StreamId(0), ArenaBytes::new(again))
+        .await
+        .expect_err("an exchange whose answer is unreachable must not report success");
+    assert_eq!(
+        err,
+        TransportError::Closed,
+        "the connection has no way left to deliver an answer, and that is what it must say"
+    );
+}
+
 #[tokio::test]
 async fn a_status_line_is_not_a_request_this_transport_can_send() {
     let uri = fixed_response_server(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
