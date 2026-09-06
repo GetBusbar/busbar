@@ -113,17 +113,24 @@ pub struct GeminiLiveCodec;
 #[must_use]
 pub fn audio_format_from_mime(mime: &str, dir: UpDown) -> Option<AudioFormat> {
     let m = mime.to_ascii_lowercase();
-    if !m.starts_with("audio/pcm") {
+    let mut fields = m.split(';').map(str::trim);
+    // THE MEDIA TYPE IS MATCHED WHOLE, never as a prefix. `audio/pcmu` is G.711 µ-law's own
+    // registered media type and `audio/pcma` is A-law's, and both begin with `audio/pcm`: a prefix
+    // test admits 8 kHz µ-law bytes as the shared 24 kHz token, which measures them at 48 bytes per
+    // millisecond instead of 8. That is six times short, and the next barge-in truncates a turn the
+    // caller is still most of the way through — the exact cut-off-mid-word this probe exists to stop.
+    if fields.next() != Some("audio/pcm") {
         return None;
     }
-    let rate_16k = m.contains("rate=16000");
-    let rate_24k = m.contains("rate=24000");
-    let untagged = !m.contains("rate=");
-    match dir {
-        // No millisecond count is taken from the uplink, so either PCM rate is the shared token.
-        UpDown::Up if rate_16k || rate_24k || untagged => Some(AudioFormat::Pcm16),
+    // THE RATE IS READ AS A PARAMETER, not looked for as a substring: `rate=240000` CONTAINS
+    // `rate=24000` and is a different rate by a factor of ten, which measures ten times long.
+    let rate = fields.find_map(|f| f.strip_prefix("rate="));
+    match (dir, rate) {
+        // No millisecond count is taken from the uplink, so either PCM rate is the shared token, and
+        // an untagged blob is the direction's own rate.
+        (UpDown::Up, None | Some("16000") | Some("24000")) => Some(AudioFormat::Pcm16),
         // The truncate math measures against THIS rate; anything else is a different format.
-        UpDown::Down if rate_24k || untagged => Some(AudioFormat::Pcm16),
+        (UpDown::Down, None | Some("24000")) => Some(AudioFormat::Pcm16),
         _ => None,
     }
 }
