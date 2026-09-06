@@ -103,7 +103,7 @@ if ! wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30; then
 fi
 
 # The one request that can only succeed if the resolved value was USED as the upstream credential.
-CHAT="$(curl -fsS "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
+CHAT="$(curl -fsS -m 30 "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{"model":"test-model","messages":[{"role":"user","content":"hi"}]}' 2>/dev/null || true)"
 GOT="$(printf '%s' "$CHAT" | jq -r '.choices[0].message.content // empty' 2>/dev/null)"

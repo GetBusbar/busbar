@@ -114,7 +114,7 @@ grep -qE "plugin validated.*first_party=true" "${WORK}/busbar.log" \
        "busbar booted but never validated the hook as a trusted first-party plugin. Log: $(tr '\n' '|' <"${WORK}/busbar.log" | tail -c 400)"
 
 # Drive a request through the tapped path.
-CHAT="$(curl -fsS "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
+CHAT="$(curl -fsS -m 30 "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{"model":"test-model","messages":[{"role":"user","content":"hi"}]}' 2>/dev/null || true)"
 GOT="$(printf '%s' "$CHAT" | jq -r '.choices[0].message.content // empty' 2>/dev/null)"
@@ -123,7 +123,7 @@ GOT="$(printf '%s' "$CHAT" | jq -r '.choices[0].message.content // empty' 2>/dev
 
 # THE BAR: an observable effect of the hook on the request.
 if [ "$HOOK_SIDECAR" = "1" ]; then
-  RECV="$(curl -fsS "http://127.0.0.1:${SIDECAR_PORT}/received" 2>/dev/null | jq -r '.count // 0' 2>/dev/null)"
+  RECV="$(curl -fsS -m 30 "http://127.0.0.1:${SIDECAR_PORT}/received" 2>/dev/null | jq -r '.count // 0' 2>/dev/null)"
   [ "${RECV:-0}" -ge 1 ] || fail_here "the hook did NOT fire: the sidecar received nothing" \
     "the request was served but the forwarding hook never relayed it to its sidecar. The hook is wired but inert."
   record "$ID" PASS "hook ${ALIAS}: forwarded a driven request to its sidecar (${RECV} received) and validated first-party" ""

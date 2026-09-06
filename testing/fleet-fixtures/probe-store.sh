@@ -141,7 +141,7 @@ if busbar_env "$BUSBAR_BIN" --list-plugins >"${WORK}/plugins.log" 2>&1; then
 fi
 
 # Mint a real virtual key over the real admin API.
-MINT="$(curl -fsS -X POST "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys" \
+MINT="$(curl -fsS -m 30 -X POST "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys" \
   -H "Authorization: Bearer fleet-fixture-admin" -H "Content-Type: application/json" \
   -d '{"name":"fleet-fixture"}' 2>/dev/null || true)"
 TOKEN="$(printf '%s' "$MINT" | jq -r '.token // empty' 2>/dev/null)"
@@ -153,7 +153,7 @@ fi
 echo "  minted key id=${KEY_ID}"
 
 # Drive a real chat-completion through busbar -> mock and assert the body.
-CHAT="$(curl -fsS "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
+CHAT="$(curl -fsS -m 30 "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
   -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
   -d '{"model":"test-model","messages":[{"role":"user","content":"hello"}]}' 2>/dev/null || true)"
 GOT="$(printf '%s' "$CHAT" | jq -r '.choices[0].message.content // empty' 2>/dev/null)"
@@ -162,7 +162,7 @@ if [ "$GOT" != "$MARKER" ]; then
     "expected body marker '${MARKER}', observed '$(printf '%s' "$CHAT" | tr '\n' ' ' | tail -c 300)'. The minted key is not usable, so the write did not take effect in the running plane."
 fi
 
-USAGE="$(curl -fsS "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${KEY_ID}/usage" \
+USAGE="$(curl -fsS -m 30 "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${KEY_ID}/usage" \
   -H "Authorization: Bearer fleet-fixture-admin" 2>/dev/null || true)"
 REQ_BEFORE="$(printf '%s' "$USAGE" | jq -r '.requests // 0' 2>/dev/null)"
 TOK_BEFORE="$(printf '%s' "$USAGE" | jq -r '.tokens // 0' 2>/dev/null)"
@@ -181,13 +181,13 @@ if ! wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30; then
     "$(tr '\n' '|' <"${WORK}/busbar.log" | tail -c 500)"
 fi
 
-GET_KEY="$(curl -fsS "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${KEY_ID}" \
+GET_KEY="$(curl -fsS -m 30 "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${KEY_ID}" \
   -H "Authorization: Bearer fleet-fixture-admin" 2>/dev/null || true)"
 if ! printf '%s' "$GET_KEY" | jq -e --arg id "$KEY_ID" '.id == $id' >/dev/null 2>&1; then
   fail_here "the minted key did NOT survive a restart (${ALIAS} store is not persisting)" \
     "GET keys/${KEY_ID} after restart returned '$(printf '%s' "$GET_KEY" | tr '\n' ' ' | tail -c 300)'. Persistence is the store plugin's entire job and it did not persist."
 fi
-USAGE2="$(curl -fsS "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${KEY_ID}/usage" \
+USAGE2="$(curl -fsS -m 30 "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${KEY_ID}/usage" \
   -H "Authorization: Bearer fleet-fixture-admin" 2>/dev/null || true)"
 REQ_AFTER="$(printf '%s' "$USAGE2" | jq -r '.requests // 0' 2>/dev/null)"
 TOK_AFTER="$(printf '%s' "$USAGE2" | jq -r '.tokens // 0' 2>/dev/null)"
@@ -198,7 +198,7 @@ fi
 
 # One more request post-restart, so the restarted instance is proven a live working lane through the
 # same store rather than just serving stale reads.
-CHAT2="$(curl -fsS "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
+CHAT2="$(curl -fsS -m 30 "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
   -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
   -d '{"model":"test-model","messages":[{"role":"user","content":"again"}]}' 2>/dev/null || true)"
 GOT2="$(printf '%s' "$CHAT2" | jq -r '.choices[0].message.content // empty' 2>/dev/null)"

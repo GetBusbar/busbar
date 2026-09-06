@@ -28,7 +28,10 @@ for p in "$LP" "$AP" "$MP"; do
 done
 
 ORACLE_MOCK_CAPTURE_DIR="$W/egress" python3 "${here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
-wait_for_http "http://127.0.0.1:${MP}/" 5
+# CHECKED: an unchecked wait here let the cell run with NO upstream and record whatever busbar
+# answers to that as the contract. fail() is defined further down (it needs $eff), so refuse in
+# the same -1 shape the port-busy guard above uses -- record.sh reads it as UNSUPPORTED, not a pass.
+wait_for_http "http://127.0.0.1:${MP}/" 5 || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"mock upstream did not come up"}}' >"$RAW/captured.json"; exit 0; }
 
 "$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null
 cat >"$W/providers.yaml" <<YAML

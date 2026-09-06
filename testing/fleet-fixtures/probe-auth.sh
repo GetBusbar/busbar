@@ -122,10 +122,10 @@ if ! wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30; then
 fi
 
 # Get a fresh signed id_token from the stub IdP and present it to busbar's exchange.
-IDTOKEN="$(curl -fsS "http://127.0.0.1:${IDP_PORT}/mint" 2>/dev/null || true)"
+IDTOKEN="$(curl -fsS -m 30 "http://127.0.0.1:${IDP_PORT}/mint" 2>/dev/null || true)"
 [ -n "$IDTOKEN" ] || fail_here "the stub IdP did not mint an id_token" "the credential exchange has nothing to present."
 
-EXCH="$(curl -fsS -X POST "http://127.0.0.1:${LISTEN_PORT}/auth/token" \
+EXCH="$(curl -fsS -m 30 -X POST "http://127.0.0.1:${LISTEN_PORT}/auth/token" \
   -H "Authorization: Bearer ${IDTOKEN}" 2>/dev/null || true)"
 APIKEY="$(printf '%s' "$EXCH" | jq -r '.api_key // empty' 2>/dev/null)"
 if [ -z "$APIKEY" ]; then
@@ -134,7 +134,7 @@ if [ -z "$APIKEY" ]; then
 fi
 
 # The minted key must actually authorize a real data-plane request.
-CHAT="$(curl -fsS "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
+CHAT="$(curl -fsS -m 30 "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
   -H "Authorization: Bearer ${APIKEY}" -H "Content-Type: application/json" \
   -d '{"model":"test-model","messages":[{"role":"user","content":"hi"}]}' 2>/dev/null || true)"
 GOT="$(printf '%s' "$CHAT" | jq -r '.choices[0].message.content // empty' 2>/dev/null)"
