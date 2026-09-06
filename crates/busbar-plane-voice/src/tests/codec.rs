@@ -1164,9 +1164,103 @@ fn the_turn_after_the_one_the_upstream_ended_opens_a_unit_of_its_own() {
         );
     };
     assert_ne!(
-        second.correlation_out.expect("the second turn correlates").value,
+        second
+            .correlation_out
+            .expect("the second turn correlates")
+            .value,
         first_correlation.value,
         "the second turn must not answer under the correlation of the one that ended"
+    );
+}
+
+/// A downlink frame names the turn it answers.
+///
+/// The turn's correlation is minted against the client's half of the session and every downlink
+/// frame is read against the upstream's, so reading it back off the reader's own half answered
+/// `None` for every response frame and every terminal a duplex turn ever produced: the audio, the
+/// usage report and the upstream error all came back naming no unit, on a session that has the
+/// turn AND every tool call it opened in flight at once.
+///
+/// What crosses between two halves of one session is a session fact — the same route this plane's
+/// own dialect already travels — so the turn publishes its identity on the open, and the downlink
+/// reads it there.
+#[test]
+fn a_downlink_frame_answers_the_turn_the_client_half_opened() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+
+    // The client's half opens the turn.
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut client = open_client_session(&plane, &c);
+    let opening = client_wire(&session_update_fixture());
+    let frames = [frame(&opening)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(turn) = plane
+        .decode_ingress(&mut cursor, Some(&mut client), &c)
+        .expect("the turn opens")
+    else {
+        panic!("the first client event opens a turn");
+    };
+    let correlation = turn.correlation_out.expect("a turn correlates");
+
+    // The kernel seals what the open published onto the session, which is how the upstream's half
+    // is told anything the client's half determined.
+    let turn_fact = turn
+        .facts
+        .get(crate::session::VoiceSessionState::TURN_FACT_KEY)
+        .expect("the open publishes the turn it opened");
+    let FactValue::Str(turn_fact) = turn_fact else {
+        panic!("the turn identity is published as a fact a session can carry, got {turn_fact:?}");
+    };
+    let session = crate::tests::harness::SealedSession::default()
+        .with_fact(crate::session::VoiceSessionState::TURN_FACT_KEY, turn_fact)
+        .with_fact(crate::meta::FACT_DIALECT, "openai-realtime")
+        .with_upstreams(1);
+    let c = crate::tests::harness::ctx_in_session(&arena, &config, &transport, &labels, &session);
+
+    // The upstream's half answers.
+    let mut upstream = SessionPlane::open_upstream(&plane, &dest, &c);
+    let delta = serde_json::to_vec(&json!({
+        "type": "response.output_audio.delta",
+        "delta": base64_of(&[0u8; 48]),
+    }))
+    .expect("audio fixture serializes");
+    let frames = [frame(&delta)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Progress::Frame { for_, .. } = plane
+        .decode_response(&mut cursor, &dest, Some(&mut upstream), &c)
+        .expect("a downlink audio frame decodes")
+    else {
+        panic!("a downlink audio frame is one frame of the turn");
+    };
+    assert_eq!(
+        for_,
+        Some(correlation),
+        "a downlink frame that names no turn answers nothing on a session with a turn and its \
+         tool calls all in flight"
+    );
+
+    let done = serde_json::to_vec(&json!({
+        "type": "response.done",
+        "response": { "usage": { "input_token_details": { "audio_tokens": 1 } } }
+    }))
+    .expect("usage fixture serializes");
+    let frames = [frame(&done)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Progress::Terminal { for_, .. } = plane
+        .decode_response(&mut cursor, &dest, Some(&mut upstream), &c)
+        .expect("the usage report decodes")
+    else {
+        panic!("a usage report ends the turn");
+    };
+    assert_eq!(
+        for_,
+        Some(correlation),
+        "the turn's own ending must name the turn it ends"
     );
 }
 
