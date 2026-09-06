@@ -44,6 +44,7 @@ Independent MCP conformance battery  (protocol revision ${REVISION})
   mcp-battery run --name NAME [--server-cmd CMD] [--client-cmd CMD] [options]
   mcp-battery compare --control FILE --subject FILE [--fail-on-divergence]
   mcp-battery list [--tier push|pr|prerelease]
+  mcp-battery selftest    proves EXCLUDED(tier) scenarios are reported, not silently dropped
 
 run options
   --name NAME            label for the report                (env MCP_SUBJECT_NAME)
@@ -69,7 +70,7 @@ exit codes
 }
 
 function summarise(results) {
-  const by = { PASS: 0, FAIL: 0, SKIP: 0, ERROR: 0 };
+  const by = { PASS: 0, FAIL: 0, SKIP: 0, ERROR: 0, EXCLUDED_TIER: 0 };
   for (const r of results) by[r.verdict] = (by[r.verdict] || 0) + 1;
   return by;
 }
@@ -87,7 +88,9 @@ function renderRun(results, target, quiet, roleAudit) {
   const by = summarise(results);
   if (!quiet) {
     for (const r of results) {
-      const mark = { PASS: 'PASS', FAIL: 'FAIL', SKIP: 'SKIP', ERROR: 'ERR ' }[r.verdict];
+      const mark = {
+        PASS: 'PASS', FAIL: 'FAIL', SKIP: 'SKIP', ERROR: 'ERR ', EXCLUDED_TIER: 'EXCL',
+      }[r.verdict];
       L.push(`  ${mark}  [${r.tier.padEnd(10)}] ${r.id}`);
       if (r.verdict === 'FAIL') {
         for (const a of r.assertions.filter((x) => !x.ok)) {
@@ -97,6 +100,7 @@ function renderRun(results, target, quiet, roleAudit) {
       }
       if (r.verdict === 'ERROR') L.push(`          ${String(r.error).split('\n')[0]}`);
       if (r.verdict === 'SKIP') L.push(`          skipped: ${r.error}`);
+      if (r.verdict === 'EXCLUDED_TIER') L.push(`          EXCLUDED(tier): ${r.error}`);
     }
     L.push('');
   }
@@ -115,7 +119,8 @@ function renderRun(results, target, quiet, roleAudit) {
       L.push(`roles NOT run: ${r} — ${why}; ${n} registered scenario(s) were not selected`);
     }
   }
-  L.push(`results     : ${by.PASS} pass, ${by.FAIL} fail, ${by.ERROR} error, ${by.SKIP} skip`
+  L.push(`results     : ${by.PASS} pass, ${by.FAIL} fail, ${by.ERROR} error, ${by.SKIP} skip, `
+    + `${by.EXCLUDED_TIER} EXCLUDED(tier)`
     + (roleAudit ? `  [roles: ${roleAudit.selected.join(',') || 'none'}]` : ''));
   return L.join('\n');
 }
@@ -260,7 +265,10 @@ Do ONE of these, and either way the choice is now visible in the log and in the 
   if (outPath) console.log(`written     : ${outPath}`);
 
   const by = summarise(results);
-  if (results.length === 0) {
+  // EXCLUDED(tier) rows are a deliberate, visible non-selection -- they must not count toward
+  // "something was selected" any more than they used to count when they were silently absent.
+  const selectedCount = results.length - by.EXCLUDED_TIER;
+  if (selectedCount === 0) {
     console.error('\nFATAL: zero tests selected. This gate refuses to pass vacuously.');
     process.exit(2);
   }
@@ -304,6 +312,7 @@ Do ONE of these, and either way the choice is now visible in the log and in the 
       // drift. The full-tier run is what checks it.
       if (!r) continue;
       if (r.verdict === 'SKIP') continue;   // nothing observed; not a drift
+      if (r.verdict === 'EXCLUDED_TIER') continue;   // not selected by this tier; not a drift
       pinsChecked += 1;
       const v = r.variance.find((x) => x.key === p.variancePoint);
       const actual = v ? v.value : '<variance point not recorded>';
@@ -378,6 +387,58 @@ function cmdCompare(args) {
   const blocking = report.counts.failures + report.counts.regressions + report.counts.missing
     + (args['fail-on-divergence'] ? report.counts.divergences : 0);
   process.exit(blocking > 0 ? 1 : 0);
+}
+
+// Proves the EXCLUDED(tier) mechanism itself, with no subject and no network: a scenario tagged
+// `tier: 'prerelease'` that a push/pr run does not select must still appear in the results, with
+// verdict EXCLUDED_TIER, a reason naming the tier, and a count that shows up in both the per-row
+// output and the summary line -- never a silent absence from the denominator.
+async function cmdSelftest() {
+  const target = new Target({ name: 'selftest' });
+  const knownPrereleaseOnly = ['SEAM.UPSTREAM-NAME-COLLISION', 'SEAM.DOWNSTREAM-CANCEL-PROPAGATES'];
+  const filter = { tiers: ['push', 'pr'], only: knownPrereleaseOnly };
+  const failures = [];
+
+  const allIds = new Set(allTests().map((t) => t.id));
+  for (const id of knownPrereleaseOnly) {
+    if (!allIds.has(id)) failures.push(`fixture scenario ${id} no longer exists in the registry`);
+  }
+
+  const results = await runAll(target, filter);
+  if (results.length !== knownPrereleaseOnly.length) {
+    failures.push(`expected ${knownPrereleaseOnly.length} result(s), got ${results.length}`);
+  }
+  for (const r of results) {
+    if (r.verdict !== VERDICT.EXCLUDED_TIER) {
+      failures.push(`${r.id}: expected verdict EXCLUDED_TIER, got ${r.verdict}`);
+    }
+    if (!/excluded by --tier push,pr/.test(String(r.error))) {
+      failures.push(`${r.id}: EXCLUDED_TIER record's reason does not name the tier: ${r.error}`);
+    }
+  }
+
+  const by = summarise(results);
+  if (by.EXCLUDED_TIER !== knownPrereleaseOnly.length) {
+    failures.push(`summarise() EXCLUDED_TIER count: expected ${knownPrereleaseOnly.length}, `
+      + `got ${by.EXCLUDED_TIER}`);
+  }
+
+  const rendered = renderRun(results, target, false, null);
+  if (!rendered.includes('EXCLUDED(tier)')) {
+    failures.push('renderRun() output never mentions "EXCLUDED(tier)" -- the exclusion is invisible');
+  }
+  if (!rendered.includes(`${knownPrereleaseOnly.length} EXCLUDED(tier)`)) {
+    failures.push('renderRun() summary line does not carry the EXCLUDED(tier) count');
+  }
+
+  if (failures.length) {
+    console.error('SELFTEST FAILED (EXCLUDED(tier) reporting):');
+    for (const f of failures) console.error(`  - ${f}`);
+    process.exit(1);
+  }
+  console.log('SELFTEST OK: tier-excluded scenarios appear as EXCLUDED(tier) rows with a count '
+    + '(not silently absent, not counted as executed).');
+  process.exit(0);
 }
 
 function cmdList(args) {
@@ -497,4 +558,5 @@ if (cmd === 'run') await cmdRun(args);
 else if (cmd === 'compare') cmdCompare(args);
 else if (cmd === 'selftest') await cmdSelftest();
 else if (cmd === 'list') cmdList(args);
+else if (cmd === 'selftest') await cmdSelftest();
 else { usage(); process.exit(args._.length ? 2 : 0); }
