@@ -28,13 +28,14 @@ already terminates in a single aggregator job — nothing further is needed insi
 only manual step is ticking these five in **Settings → Branches → branch protection → Require status
 checks to pass** for `main` and `qa`.
 
-> **`cargo-deny` is PATH-FILTERED, and that changes how it must be required.** `security.yml`
-> triggers only on changes to `Cargo.toml`, `Cargo.lock`, `deny.toml` and its own file. A required
-> status check that never reports does not pass — GitHub leaves the PR pending on it forever — so
-> requiring this context outright blocks every PR that touches no dependency. Either drop the
-> `paths:` filter from `security.yml` (it then reports on every PR and can be required plainly), or
-> leave it required and accept that dependency-free PRs need the check to be reported some other
-> way. The other four aggregators run unconditionally and have no such caveat.
+> **`cargo-deny` is NOT path-filtered, and it must stay that way.** `security.yml` once triggered
+> only on changes to `Cargo.toml`, `Cargo.lock`, `deny.toml` and its own file. A required status
+> check that never reports does not pass — GitHub leaves the PR pending on it forever — so requiring
+> a path-filtered context outright blocks every PR that touches no dependency. The filter has been
+> removed: `security.yml` now runs on every push and every pull request, so the context reports on
+> every PR and can be required plainly. **Do not reintroduce a `paths:` filter on `security.yml`
+> while this context is branch-protection-required.** All five aggregators now run unconditionally
+> and none has a reporting caveat.
 
 ## Intentionally NOT branch-protection-required (and why)
 
