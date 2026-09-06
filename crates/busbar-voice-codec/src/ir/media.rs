@@ -77,9 +77,14 @@ impl AudioFormat {
     }
 
     /// Convert a playback duration in milliseconds into the byte count that carries it.
+    ///
+    /// The multiply SATURATES, like every other arithmetic on this plane's untrusted counts: a
+    /// duration large enough to overflow came off a wire nobody vouches for, and wrapping answers a
+    /// SMALL byte count for an enormous span — a truncate/skip point far short of where it belongs,
+    /// arrived at silently. Saturating keeps the answer on the right side of the truth.
     #[must_use]
     pub fn ms_to_bytes(self, ms: u64) -> u64 {
-        ms * self.bytes_per_ms()
+        ms.saturating_mul(self.bytes_per_ms())
     }
 }
 

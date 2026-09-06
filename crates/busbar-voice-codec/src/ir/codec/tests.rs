@@ -1048,3 +1048,135 @@ fn usage_extraction_survives_reencode() {
     let ir = codec.read_down(w, &mut st);
     assert_eq!(ir[0], IrServerEvent::Usage(u));
 }
+
+// ── the two directions are negotiated SEPARATELY ─────────────────────────────────────────────────
+
+/// A `session.update` that names BOTH formats — the ordinary telephony shape: µ-law DOWN to the
+/// phone, pcm16 UP from the caller's own capture.
+fn ga_session_ulaw_out_pcm_in() -> Value {
+    json!({
+        "type": "session.update",
+        "session": { "input_audio_format": "pcm16", "output_audio_format": "g711_ulaw" }
+    })
+}
+
+#[test]
+fn a_ulaw_downlink_does_not_mute_the_pcm16_uplink() {
+    // THE CALLER MUST STILL BE HEARD. The uplink's format is the INPUT one; labelling the caller's
+    // audio with the OUTPUT format makes a µ-law downlink (which this dialect has no mime for) drop
+    // every uplink frame, and a session where nobody upstream ever hears the caller.
+    let openai = OpenAiRealtimeCodec;
+    let gemini = super::gemini::GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let cfg = openai.read_up(wire(&ga_session_ulaw_out_pcm_in().to_string()), &mut st);
+    assert_eq!(cfg.len(), 1, "the session config is one IR event");
+    assert_eq!(st.output_format(), AudioFormat::G711Ulaw);
+    assert_eq!(
+        st.input_format(),
+        AudioFormat::Pcm16,
+        "the uplink carries what the CLIENT captures, not what the model synthesizes"
+    );
+    for chunk in [&b"caller-a"[..], b"caller-b", b"caller-c"] {
+        let ir = openai.read_up(
+            wire(&json!({ "type": "input_audio_buffer.append", "audio": b64(chunk) }).to_string()),
+            &mut st,
+        );
+        let frame = ir.first().expect("the append decodes to an audio frame");
+        let w = gemini
+            .write_up(frame.clone(), &mut st)
+            .expect("uplink audio must reach the model, whatever the downlink format is");
+        let v = as_value(&w);
+        let audio = &v["realtimeInput"]["audio"];
+        assert_eq!(
+            audio["mimeType"].as_str(),
+            Some("audio/pcm;rate=16000"),
+            "the uplink states the INPUT format's mime, at the uplink's own rate: {v}"
+        );
+        assert_eq!(audio["data"].as_str(), Some(b64(chunk).as_str()));
+    }
+}
+
+#[test]
+fn a_ulaw_uplink_is_dropped_rather_than_labelled_as_pcm() {
+    // THE REVERSE PAIR, and the reverse harm: µ-law UP with a pcm16 downlink. Gemini has no µ-law
+    // mode at all, so the honest answer is the drop the caller can see (`None`) — never a
+    // `audio/pcm` label over 8 kHz µ-law bytes, which the peer would play as PCM.
+    let openai = OpenAiRealtimeCodec;
+    let gemini = super::gemini::GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    openai.read_up(
+        wire(
+            &json!({
+                "type": "session.update",
+                "session": { "input_audio_format": "g711_ulaw", "output_audio_format": "pcm16" }
+            })
+            .to_string(),
+        ),
+        &mut st,
+    );
+    assert_eq!(st.input_format(), AudioFormat::G711Ulaw);
+    assert_eq!(st.output_format(), AudioFormat::Pcm16);
+    let ir = openai.read_up(
+        wire(&json!({ "type": "input_audio_buffer.append", "audio": b64(b"ulaw") }).to_string()),
+        &mut st,
+    );
+    let frame = ir
+        .first()
+        .expect("the append decodes to an audio frame")
+        .clone();
+    assert!(
+        gemini.write_up(frame, &mut st).is_none(),
+        "µ-law uplink has no Gemini mime; the drop is the warn, a pcm label is a lie"
+    );
+    // And the downlink math still measures against the format the model actually synthesizes.
+    st.record_played(48 * 20);
+    assert_eq!(st.played_ms(), 20);
+}
+
+#[test]
+fn session_created_adopts_both_negotiated_formats() {
+    // The server's own `session.created` is the other place the negotiated formats are read.
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    codec.read_down(
+        wire(
+            &json!({
+                "type": "session.created",
+                "session": { "input_audio_format": "g711_ulaw", "output_audio_format": "g711_ulaw" }
+            })
+            .to_string(),
+        ),
+        &mut st,
+    );
+    assert_eq!(st.input_format(), AudioFormat::G711Ulaw);
+    assert_eq!(st.output_format(), AudioFormat::G711Ulaw);
+}
+
+#[test]
+fn the_tool_argument_ceiling_bounds_what_is_actually_held() {
+    // THE CEILING IS ON MEMORY, so it must be measured on the bytes KEPT. Fragments are stored
+    // lossily-converted, and every invalid byte becomes a three-byte replacement character: measured
+    // on the wire fragment instead, a peer streams the ceiling in invalid bytes and the plane holds
+    // three times it.
+    let mut st = DecodeState::default();
+    let call = st.ref_for_call_id("call_bloat");
+    let fragment = vec![0x80_u8; 64 * 1024]; // never valid UTF-8: 3 bytes held per byte sent
+    for n in 1..=4 {
+        st.push_call_args(call, &fragment);
+        let held = st.held_call_args_len(call);
+        assert!(
+            held.is_none_or(|len| len <= MAX_TOOL_ARG_BYTES),
+            "after {n} fragments the plane holds {held:?} bytes over a \
+             {MAX_TOOL_ARG_BYTES}-byte ceiling"
+        );
+    }
+}
+
+#[test]
+fn ms_to_bytes_saturates_like_its_siblings() {
+    // A duration nobody can have played is still not a small byte count: the conversion saturates
+    // rather than wrapping, exactly as the usage sums beside it do.
+    assert_eq!(AudioFormat::Pcm16.ms_to_bytes(u64::MAX), u64::MAX);
+    assert_eq!(AudioFormat::G711Ulaw.ms_to_bytes(u64::MAX), u64::MAX);
+    assert_eq!(AudioFormat::Pcm16.ms_to_bytes(10), 480);
+}
