@@ -257,13 +257,14 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly eight entries of kind `breaking`:
+The accepted-differences register for this release has exactly nine entries of kind `breaking`:
 two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
 both), one confined to Cohere backends that report `usage.billed_units`, one field removed
 from the hook view, one refusal that now comes out of the resolver rather than the validator, one
 key-rotate endpoint that now refuses an overlong id like its siblings, one where a rate-card
-edit stops repricing history it should not touch, and one provider credential that no longer
-degrades to an empty key.
+edit stops repricing history it should not touch, one provider credential that no longer
+degrades to an empty key, and one pool whose kind infers to a 1.6.0 plane that now refuses the
+knobs that plane cannot read instead of discarding them.
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
@@ -346,6 +347,19 @@ identically, and every 1.5.5 key and minted secret carries over.
   empty-credential lane was. Omitting `api_key` remains an error, and `--migrate-config` does not
   insert `none` for you: whether an upstream needs a credential is a fact about your deployment,
   not something a migration can read off the config file.
+- 1.6.0 Changed: a pool whose kind infers to `tools:`/`agents:` refuses the knobs that plane cannot
+  read, instead of discarding them. A `pools:` entry whose members name MCP servers or A2A agents is
+  projected onto that plane's ordered-failover engine, which reads `members:` and `repeatable:` and
+  nothing else; every other knob written on such a pool was silently dropped before validation, so a
+  per-pool `hooks:` never attached, a `breaker: { base_cooldown_secs: 0 }` was never rejected, and an
+  `on_exhausted: { fallback_pool: <typo> }` was never resolved. 1.6.0 refuses `hooks`, `breaker`,
+  `failover`, `on_exhausted`, `affinity` and `upstream_credentials` on such a pool, naming the pool,
+  the knobs and the plane its kind inferred to. **Migration:** unreachable from a 1.5.5 config, which
+  has no `tools:`/`agents:` sections — a 1.5.5 pool's members can only resolve against `models:` and
+  stay on the LLM plane, where all six knobs are read exactly as before. If you wrote one of them on
+  a 1.6.0 tool/agent pool it was doing nothing: delete it, or move the members to an LLM pool. The
+  neutral routing knobs (`weights:`, `tier:`, `attempt_timeout_ms:`) are unaffected. See
+  [the 1.6.0 migration guide](docs/migration-1.6.md).
 
 Four retired 1.5.x spellings that were never the documented form are rewritten for you rather
 than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap
