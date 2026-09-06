@@ -581,16 +581,32 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
     );
 }
 
+/// The pool REFUSES at its cap rather than making anyone wait, and the refusal is counted.
+///
+/// This cell used to be called `k_parents_blocked_on_children_wait_rather_than_deadlock`, and
+/// every word of that was wrong about what runs here. `NestedPool::enter` is a non-blocking
+/// try-acquire: it either takes a permit or returns `Err` immediately, on the caller's own thread,
+/// with nothing to park on. Nothing in this cell waits, no parent is ever blocked on a child, and
+/// deadlock is not a state this type HAS — there is no lock, no queue and no await anywhere in it.
+/// A name promising a liveness property over a data structure that cannot violate one is a green
+/// test standing in for a check nobody wrote.
+///
+/// What is actually proved, and what the name now says: at the cap `enter` refuses with
+/// `InFlightCap`; the refusal counter only counts refusals (a permit coming back does not
+/// un-refuse one), so it is a monotonic counter and not a gauge of parents waiting; every permit
+/// returns, so the pool is whole again however many refusals it made; and a depth past the bound is
+/// `ScopeDenied` — a different refusal, which does not touch the pool's count at all.
 #[test]
-fn k_parents_blocked_on_children_wait_rather_than_deadlock() {
+fn the_pool_refuses_at_its_cap_and_counts_the_refusal() {
     let pool = NestedPool::new(2, 4);
     let first = pool.enter(0).expect("a permit");
     let second = pool.enter(0).expect("a permit");
     assert_eq!(pool.available(), 0);
 
-    // Two more parents want children and there are none to be had. Neither deadlocks, and both
-    // refusals are COUNTED — a refusal is a thing that happened, not a parent still standing in
-    // the pool: the refused parent is already back with its caller and will never call `leave`.
+    // Two more parents want children and there are none to be had. Neither WAITS — `enter` is a
+    // try-acquire and answers on the spot — and both refusals are COUNTED: a refusal is a thing
+    // that happened, not a parent still standing in the pool, because the refused parent is
+    // already back with its caller and will never call `leave`.
     // Counted as a gauge it only ever went up, and the number an operator reads as "the pool is
     // the bottleneck right now" was really "the pool has ever been the bottleneck".
     assert_eq!(pool.enter(0), Err(ReasonCode::InFlightCap));
@@ -797,10 +813,72 @@ fn the_session_budget_holds_when_everything_connects_at_once() {
     }
 }
 
+/// The canary balances a draft against the hold it opened and the settlement it wrote, and it is
+/// UNBALANCED whenever one of those three is missing.
+///
+/// This cell used to be `a_canary_over_the_table_is_still_balanced_when_nothing_ran`, whose whole
+/// body was `assert_eq!(Canary::new().balanced(), Ok(()))` — `0 == 0 == 0`, on a counter nothing
+/// had touched, under a name promising a table and a pump it never went near. Every mutation of
+/// `balanced()` that matters passes it: drop either conjunct, forget the accruals term, compare the
+/// wrong pair, and a fresh canary still balances.
+///
+/// So the empty case stays (it is one line, and a counter that cannot balance at zero is broken),
+/// and the rest of the cell is the ASYMMETRY, which is what the check is for. Each case below is
+/// one conjunct of `drafts == holds + accruals == settlements` removed by hand: if the production
+/// rule stops enforcing that conjunct, the corresponding case starts balancing and this cell goes
+/// red.
 #[test]
-fn a_canary_over_the_table_is_still_balanced_when_nothing_ran() {
-    let canary = Canary::new();
-    assert_eq!(canary.balanced(), Ok(()));
+fn a_canary_balances_a_draft_against_its_hold_and_its_settlement() {
+    // Nothing ran: zero on all four sides, which is the only way an untouched counter may balance.
+    assert_eq!(Canary::new().balanced(), Ok(()));
+
+    // One unit all the way through: accepted, held, settled. This is the shape the rule exists to
+    // certify, and it is the only complete one below.
+    let whole = Canary::new();
+    whole.draft_accepted();
+    whole.hold_opened();
+    whole.settled();
+    assert_eq!(
+        whole.balanced(),
+        Ok(()),
+        "a draft that opened a hold and settled is what balance means"
+    );
+
+    // A spend that accrued into a parent's hold instead of opening its own counts on the same side
+    // as a hold. A rule that only totalled `holds` would call this one broken.
+    let accrued = Canary::new();
+    accrued.draft_accepted();
+    accrued.accrual_taken();
+    accrued.settled();
+    assert_eq!(
+        accrued.balanced(),
+        Ok(()),
+        "an accrual into a parent's hold stands where a hold would"
+    );
+
+    // A draft the door accepted that never opened a hold or accrued: the two remaining sides agree
+    // with each other (one settlement against one hold), so ONLY the drafts conjunct catches it.
+    let unheld = Canary::new();
+    unheld.draft_accepted();
+    unheld.draft_accepted();
+    unheld.hold_opened();
+    unheld.settled();
+    assert_eq!(
+        unheld.balanced(),
+        Err(unheld.counts()),
+        "a draft that never opened a hold is a unit nobody is accounting for"
+    );
+
+    // And the mirror: a hold that was opened and never settled. Drafts and holds agree here, so
+    // only the settlements conjunct catches it.
+    let unsettled = Canary::new();
+    unsettled.draft_accepted();
+    unsettled.hold_opened();
+    assert_eq!(
+        unsettled.balanced(),
+        Err(unsettled.counts()),
+        "a hold that never settled is money held against nothing"
+    );
 }
 
 /// A forged datagram is one datagram: it is discarded, it posts nothing, and the session stands.
