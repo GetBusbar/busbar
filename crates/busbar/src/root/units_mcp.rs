@@ -450,10 +450,27 @@ impl<'r> Catalogue<'r> {
         Catalogue::new(plane, records::SCHEMA_CATALOGUE, records::OP_SCAN, net)
     }
 
-    /// Where one lane sits in the registered-server table, which is the position the breaker keys
-    /// its cells by.
-    fn lane_index(&self, lane: &LaneId) -> Option<usize> {
-        self.plane.servers().iter().position(|s| s.lane == *lane)
+    /// Where one lane sits AMONG THE MEMBERS OF ONE POOL, which is the second half of the key the
+    /// breaker holds its cells under.
+    ///
+    /// The cell is `(pool, lane-within-pool)` and the member table under each pool key is a fixed,
+    /// small one — a lane past its end is a refusal the host seam makes without consulting the
+    /// cell's health at all. So the position that may be handed over is the position within the pool
+    /// the query names, never the position in the whole registered-server table: those two numbers
+    /// agree only for the first pool, and for the ninth registration the second one is past the end
+    /// of every member table there is. Reading it that way would refuse a healthy server for no
+    /// reason but how many OTHER servers the deployment registered.
+    ///
+    /// This plane declares one registration per pool, so a member of the named pool is that pool's
+    /// lane zero. A destination that is not a member of the named pool has no position in it, and
+    /// `None` is that answer rather than a borrowed index from somewhere else.
+    fn lane_in_pool(&self, pool: &str, lane: &LaneId) -> Option<usize> {
+        let name = pool.strip_prefix(POOL_PREFIX_TOOL).unwrap_or(pool);
+        self.plane
+            .servers()
+            .iter()
+            .filter(|s| s.id == name)
+            .position(|s| s.lane == *lane)
     }
 
     /// The registered server one destination names, where it names one.
@@ -571,13 +588,17 @@ impl KindFacts for Catalogue<'_> {
     }
 
     fn breaker_admits(&self, dest: &DestinationFacts, at: &BreakerQuery<'_>) -> bool {
-        // The mapping is this root's — a lane name is a position in the registered-server table and
-        // nothing outside here knows the order. The QUESTION is the query's, so the answer here is
-        // the same answer the pre-walk's filter gives about the same lane at the same moment.
-        match dest.lane().and_then(|lane| self.lane_index(&lane)) {
+        // The mapping is this root's — a lane name is a position among one pool's members and
+        // nothing outside here knows the membership. The QUESTION is the query's, so the answer here
+        // is the same answer the pre-walk's filter gives about the same lane at the same moment, and
+        // the pool it is asked about is the pool the query names rather than a second one.
+        match dest
+            .lane()
+            .and_then(|lane| self.lane_in_pool(at.pool, &lane))
+        {
             Some(index) => at.admits_lane(index),
-            // A destination priced on no registered lane has no position for the breaker to hold an
-            // opinion about; the allow-list conjunct beside this one has already refused it.
+            // A destination that is no member of the named pool has no position for the breaker to
+            // hold an opinion about; the allow-list conjunct beside this one has already refused it.
             None => true,
         }
     }
