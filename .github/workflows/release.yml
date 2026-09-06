@@ -742,11 +742,19 @@ jobs:
             echo "::error::REFUSING TO TAG: the Actions API could not be read, so the CI status of ${SHA} is UNKNOWN right now. Unknown is not green. No tag was pushed and the release is still a draft; re-run this workflow."
             exit 1
           fi
+          # NO `unique_by(.name)`, AND ITS ABSENCE IS THE WHOLE POINT — see the long note on
+          # REQUIRED_WORKFLOWS in `branch-green` above. `unique_by` keeps exactly ONE element per
+          # key and the Actions API returns runs newest-first, so a red run is discarded in favour
+          # of a NEWER run of the same name: the main push spawns an empty, all-skipped qa-gate run
+          # on this very sha, which is newer than the real two-hour qa soak, and `skipped` is
+          # counted green below. That is the precise masking bug gate 0 was rewritten to remove,
+          # and it was still live HERE — in the re-check that runs at the irreversible moment, with
+          # no other gate after it. Judging EVERY run on the sha is strictly stronger: a re-run
+          # updates its own run record rather than adding a second one, so this adds no false red.
           red="$(echo "$runs" | jq -r -s --arg skip "Release,Verify deploy" '
             ($skip | split(",")) as $not
             | [.[] | .workflow_runs[]?]
             | map(select(.id != (env.GITHUB_RUN_ID | tonumber) and (.name | IN($not[]) | not)))
-            | unique_by(.name)
             | .[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")
             | "\(.name) -> \(.conclusion // "still running") \(.html_url)"')"
           if [ -n "$red" ]; then
