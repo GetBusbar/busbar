@@ -172,16 +172,30 @@ impl RateNanos {
         }
     }
 
-    /// The nano-unit cost of a unit map's RESERVED FOUR at this rate: the four multiply-adds in u128
-    /// (a u64 count times a u64 nano rate cannot overflow u128). Byte-identical to the pre-M1b
-    /// `cost_nanos(&TierTokens)` — the map values ARE the old struct fields. Opens are NOT priced
-    /// here (they need the per-model `ExtraRates`); the enforcement/derive summation prices only the
-    /// reserved four, exactly as before M1b.
+    /// The nano-unit cost of a unit map's RESERVED FOUR at this rate: the four multiply-adds in
+    /// u128. Byte-identical to the pre-M1b `cost_nanos(&TierTokens)` — the map values ARE the old
+    /// struct fields. Opens are NOT priced here (they need the per-model `ExtraRates`); the
+    /// enforcement/derive summation prices only the reserved four, exactly as before M1b.
+    ///
+    /// ONE PRODUCT cannot overflow the accumulator — a u64 count times a u64 nano rate is inside a
+    /// u128 by a whole bit — but their SUM can, and four maximal products are past the top of it. So
+    /// the running total saturates. A plain add panics on overflow in a debug build and WRAPS in a
+    /// release one, and a wrapped total lands back near zero: an over-the-top ledger deriving as
+    /// nearly free, comparing under every budget cap and admitting the request. Pinning at the
+    /// maximum instead gives an astronomically over-cap figure, which blocks — the same saturation
+    /// posture the cross-model sum and the cent projection already take, applied one level lower so
+    /// no layer of the money fold is the exception.
+    ///
+    /// The admission unit carries its own copy of these four multiply-adds, because it depends on
+    /// nothing here and cannot call this. The two must agree exactly — a request judged at one
+    /// arithmetic and billed at another is what that split pair exists to avoid — and this is the
+    /// arithmetic that copy already performs.
     #[inline]
     pub(crate) fn reserved_nanos(&self, units: &BTreeMap<String, u64>) -> u128 {
         RESERVED_UNITS.iter().fold(0u128, |acc, u| {
             let n = units.get(*u).copied().unwrap_or(0);
-            acc + (n as u128) * (self.reserved_rate(u) as u128)
+            let amount = u128::from(n).saturating_mul(u128::from(self.reserved_rate(u)));
+            acc.saturating_add(amount)
         })
     }
 }

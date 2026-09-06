@@ -46,6 +46,14 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
   [the diagnostics reference](docs/diagnostics.md), which says what each one means and what to do.
+- **The enforcement pricer's money fold saturates instead of overflowing.** The sum of the four
+  reserved token tiers' costs is now a saturating add rather than a plain one. Nothing below the top
+  of the range moves — every figure any deployment has ever priced is byte-identical — but a ledger
+  large enough to pass the top of the accumulator used to panic in a debug build and WRAP in a
+  release one, and a wrapped total lands back near zero: an over-the-top spend comparing under every
+  budget cap and admitting the request. It now pins at the maximum, which blocks. This is the same
+  posture the admission unit's own copy of that arithmetic already took, so the two readings of one
+  deployment's rates agree again at every input.
 - **The jemalloc background-purge line is `[info]` on macOS**, with an explanation, instead of a
   `[warn]`. The behaviour it describes — Busbar's own idle-purge fallback — is unchanged.
 - **Admin views gained fields; none changed.** Hook objects on `GET /api/v1/admin/hooks[/{name}]`

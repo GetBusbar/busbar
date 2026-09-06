@@ -765,3 +765,91 @@ fn price_discount_is_single_divide_not_sum_of_per_component_floors() {
         "top-level lines must sum to the single-divide total"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The reserved-four money fold, at the top of its range
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The four reserved keys at the largest count and the largest rate the types allow.
+fn maximal_units() -> BTreeMap<String, u64> {
+    [
+        busbar_api::UNIT_INPUT,
+        busbar_api::UNIT_OUTPUT,
+        busbar_api::UNIT_CACHE_READ,
+        busbar_api::UNIT_CACHE_WRITE,
+    ]
+    .into_iter()
+    .map(|u| (u.to_string(), u64::MAX))
+    .collect()
+}
+
+fn maximal_rate() -> crate::cost::RateNanos {
+    crate::cost::RateNanos {
+        input: u64::MAX,
+        output: u64::MAX,
+        cache_read: u64::MAX,
+        cache_write: u64::MAX,
+    }
+}
+
+/// **THE ENFORCEMENT PRICER'S FOLD SATURATES.** Four maximal products are past the top of the
+/// accumulator, and what a plain add does with that is decide a budget wrongly.
+///
+/// One product cannot overflow — a u64 count times a u64 nano rate is inside a u128 by a whole bit —
+/// which is what the fold's own comment said, and it is why the SUM was left unchecked. Four of them
+/// are not: they are past the top. A plain add panics on overflow in a debug build and WRAPS in a
+/// release one, and a wrapped total lands back near zero — an over-the-top ledger deriving as nearly
+/// free, comparing under every budget cap and admitting the request. Pinning at the maximum instead
+/// gives an astronomically over-cap figure, which blocks.
+///
+/// The admission unit carries the same four multiply-adds in its own copy of this table and already
+/// saturates them. The two must agree exactly — a request judged at one arithmetic and billed at
+/// another is the failure that split pair exists to avoid — so this is that posture, here.
+#[test]
+fn the_reserved_fold_saturates_rather_than_wrapping_at_the_top_of_the_range() {
+    assert_eq!(maximal_rate().reserved_nanos(&maximal_units()), u128::MAX);
+}
+
+/// One key at the maximum is representable EXACTLY, so the saturation above is the sum saturating
+/// and not a single product being clipped. Without this, a fold that answered the maximum for
+/// anything large would pass the case above while destroying ordinary arithmetic.
+#[test]
+fn one_reserved_key_at_the_maximum_is_exact_and_does_not_saturate() {
+    let rate = crate::cost::RateNanos {
+        input: u64::MAX,
+        ..Default::default()
+    };
+    let units: BTreeMap<String, u64> = [(busbar_api::UNIT_INPUT.to_string(), u64::MAX)]
+        .into_iter()
+        .collect();
+    let expected = u128::from(u64::MAX) * u128::from(u64::MAX);
+    assert_eq!(rate.reserved_nanos(&units), expected);
+    assert!(
+        expected < u128::MAX,
+        "one product is inside the accumulator"
+    );
+}
+
+/// And ordinary figures are untouched: the fold is still an exact sum of four multiply-adds
+/// everywhere below the top of the range, which is every deployment there has ever been.
+#[test]
+fn ordinary_reserved_counts_still_sum_exactly() {
+    let rate = crate::cost::RateNanos {
+        input: 3,
+        output: 5,
+        cache_read: 7,
+        cache_write: 11,
+    };
+    let units: BTreeMap<String, u64> = [
+        (busbar_api::UNIT_INPUT.to_string(), 100),
+        (busbar_api::UNIT_OUTPUT.to_string(), 200),
+        (busbar_api::UNIT_CACHE_READ.to_string(), 300),
+        (busbar_api::UNIT_CACHE_WRITE.to_string(), 400),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        rate.reserved_nanos(&units),
+        100 * 3 + 200 * 5 + 300 * 7 + 400 * 11
+    );
+}
