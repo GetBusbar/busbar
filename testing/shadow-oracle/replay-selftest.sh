@@ -18,6 +18,16 @@
 #   (m) --allow-harness-skew on that same mismatch       -> proceeds
 #   (n) an accepted `transform` on a cell that carries content-length -> the row's class list is
 #       `body` alone, with no phantom `headers` from the length the rewrite itself moved
+#   (o) ONE mutation per remaining divergence class -> RED, exactly one FAIL, exactly that class:
+#       headers, body, effects.metrics, effects.audit, effects.stderr, effects.egress,
+#       effects.readback, effects.files, effects.usage_after_restart, effects.store_errors.
+#       Together with (b)/(c)/(e)/(f) and (p) this covers all 15 of CLASS_ORDER: a class the differ
+#       computes but no case exercises is a class that could stop working silently.
+#   (p) the golden ledger says PASS but the golden cell file is absent -> RED [missing.golden]
+#   (q) an `improvement` acceptance of each MONEY class -> the loader refuses it (exit != 0).
+#       This is the guard that stops a class being quietly dropped from MONEY_CLASSES: removing
+#       effects.usage (or effects.egress / effects.readback / effects.files / ...) from that set
+#       makes the matching case here go green-when-it-should-be-red, i.e. RED in this selftest.
 # The tracked fixture recording under fixtures/selftest-recording is used read-only: every case
 # below works on a `cp -R` of it, never the tracked copy itself.
 set -uo pipefail
@@ -214,6 +224,64 @@ status_col="$(cut -f2 <<<"$row")"; title_col="$(cut -f3 <<<"$row")"
 [ "$rc" = 0 ] && [ "$status_col" = PASS ] && [[ "$title_col" == *"ACCEPTED"* ]] && [[ "$title_col" == *": body" ]] \
   && say PASS "accepted transform + content-length -> class list is 'body' alone (no phantom headers)" \
   || say FAIL "transform content-length rc=$rc status=$status_col title=$title_col (expected the class list to end ': body')"
+
+# (o) one mutation per remaining class. Each fragment edits ONLY the candidate's self|a|ok cell, so
+# the expected outcome is always: exactly one FAIL, whose class column is exactly the named class.
+# A class that shows up alongside another (or not at all) is a differ that cannot name what moved.
+one_class_case() {  # <tag> <expected-class> <python fragment over the candidate cell dict `d`>
+  local tag="$1" want="$2" frag="$3" rc n cls
+  cp -R "$FIX" "$W/m-${tag}"
+  python3 -c 'import json,sys
+p=sys.argv[1]; d=json.load(open(p))
+exec(sys.argv[2])
+json.dump(d,open(p,"w"),separators=(",",":"),sort_keys=True)' "$W/m-${tag}/cells/self__a__ok.json" "$frag" || {
+    say FAIL "${want}: could not apply the mutation"; return; }
+  rc="$(run "$FIX" "$W/m-${tag}" "$W/out-${tag}")"
+  n="$(fails_in "$W/out-${tag}")"; cls="$(classes_of 'self|a|ok' "$W/out-${tag}")"
+  [ "$rc" != 0 ] && [ "$n" = 1 ] && [ "$cls" = "$want" ] \
+    && say PASS "${want} divergence -> exactly one FAIL [${want}]" \
+    || say FAIL "${want} divergence rc=$rc fails=$n classes=$cls (expected 1 FAIL [${want}])"
+}
+
+one_class_case hdr    headers        'd["headers"]["content-type"]="text/plain"'
+one_class_case body   body           'd["body"]["json"]["usage"]["out"]=8'
+one_class_case met    effects.metrics 'd["effects"]["metrics"]["busbar_requests_total{outcome=\"ok\"}"]=2'
+one_class_case aud    effects.audit  'd["effects"]["audit"]={"added":1,"items":[{"actor":"admin","action":"keys.create","resource":"vk_<KEY>","outcome":"ok","chain_ok":True}]}'
+one_class_case err    effects.stderr 'd["effects"]["stderr"]="[error] store error: disk full"'
+one_class_case egr    effects.egress 'd["effects"]["egress"]=[{"path":"/v1/messages","method":"POST","headers":{},"body":{}}]'
+one_class_case rbk    effects.readback 'd["effects"]["readback"]=[{"path":"/api/v1/admin/hooks/h","status":200,"body":{"json":{"name":"h"}}}]'
+one_class_case fls    effects.files  'd["effects"]["files"]=["busbar.wal"]'
+one_class_case uar    effects.usage_after_restart 'd["effects"]["usage_after_restart"]={"spend_micros":18,"requests":1}'
+one_class_case ste    effects.store_errors 'd["effects"]["store_errors"]=2'
+
+# (p) missing.golden: the golden's OWN ledger says PASS but its cell file is not there. That is a
+# recorder bug, and it must be red rather than quietly dropping the cell out of the comparison.
+cp -R "$FIX" "$W/mg-golden"; cp -R "$FIX" "$W/mg-cand"
+rm "$W/mg-golden/cells/self__a__ok.json"
+rc="$(run "$W/mg-golden" "$W/mg-cand" "$W/out-p")"
+n="$(fails_in "$W/out-p")"; cls="$(classes_of 'self|a|ok' "$W/out-p")"
+[ "$rc" != 0 ] && [ "$n" = 1 ] && [ "$cls" = "missing.golden" ] \
+  && say PASS "golden ledger PASS with no golden cell file -> exactly one FAIL [missing.golden]" \
+  || say FAIL "missing.golden rc=$rc fails=$n classes=$cls"
+
+# (q) the MONEY guard, per class. An `improvement` entry naming a money class must be refused by the
+# LOADER, whether or not it ever fires — so this runs against byte-identical recordings. If a class
+# is ever dropped from diff-cells.py's MONEY_CLASSES, its case here stops refusing and goes red.
+cp -R "$FIX" "$W/money-same"
+for mc in status effects.usage effects.usage_after_restart effects.store_errors missing.candidate \
+          effects.egress effects.readback effects.files; do
+  python3 -c 'import json,sys
+json.dump({"accepted":[{"id":"bad money accept","kind":"improvement","by":"selftest",
+  "cells":"^self\\|a\\|ok$","classes":[sys.argv[2]],"rationale":"should be refused"}]},
+  open(sys.argv[1],"w"))' "$W/money-accept.json" "$mc"
+  bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/money-same" --out "$W/out-q" --cells "$CELLS" \
+    --allow-harness-skew --accepted "$W/money-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-q.log" 2>&1
+  rc=$?
+  grep -q "not kind=breaking" "$W/out-q.log" && msg_ok=1 || msg_ok=0
+  [ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
+    && say PASS "improvement accepting '${mc}' -> loader refuses (money class)" \
+    || say FAIL "improvement accepting '${mc}' was NOT refused (rc=$rc msg_ok=$msg_ok) — is ${mc} still in MONEY_CLASSES?"
+done
 
 echo
 [ "$fails" -eq 0 ] && echo "replay selftest: GREEN" || { echo "replay selftest: RED ($fails)"; exit 1; }
