@@ -1543,6 +1543,52 @@ pub(crate) fn route(
         None => (None, busbar_unit_verbs::ApprovalState::NotYetApproved),
     };
 
+    // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
+    // verbs and are admitted exactly as every other new verb is — scope, rate class, then the
+    // operator ceremony and dual control — but their effect lands on `Store` rather than on a
+    // handler, and the unit gives each of them its own entry point for precisely that reason.
+    // Sending them through `execute` sent them to `execute_new_verb`, which asks the mounted router
+    // for a path that release never had: the ceremony ran, the gates passed, and the caller got a
+    // 404 from the surface underneath. Breaking a journal chain is not an operation that should be
+    // able to look like it happened when it did not, nor to look like it did not when it had.
+    if let Some(recovery) = recovery_verb(verb) {
+        let ran = match recovery {
+            RecoveryVerb::ChainBreak => {
+                verbs.chain_break(admin, &actor, granted, request.at, posture, approval)
+            }
+            RecoveryVerb::StoreRestore => {
+                // The backup the operator named. There is no default and no empty one: restoring
+                // "whatever the store thinks" is the single most destructive thing this surface can
+                // be asked to do by accident, so a request that names none is refused before the
+                // ceremony rather than resolved to something.
+                match backup_ref_of(&request.body) {
+                    Some(backup_ref) => verbs.store_restore(
+                        admin,
+                        &actor,
+                        granted,
+                        request.at,
+                        posture,
+                        approval,
+                        &backup_ref,
+                    ),
+                    None => {
+                        return Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
+                    }
+                }
+            }
+            RecoveryVerb::ResealEpochFloor => {
+                verbs.reseal_epoch_floor(admin, &actor, granted, request.at, posture, approval)
+            }
+        };
+        return match ran {
+            Ok(()) => {
+                binding.units.set_answer(ctx.key, applied_answer());
+                Decision::proceed(token, busbar_contract::RoutePlan::default())
+            }
+            Err(refusal) => Decision::refuse(token, Refusal::new(verbs_reason(refusal.reason))),
+        };
+    }
+
     match verbs.execute(
         verb,
         admin,
@@ -1564,6 +1610,88 @@ pub(crate) fn route(
         },
         Err(refusal) => Decision::refuse(token, Refusal::new(verbs_reason(refusal.reason))),
     }
+}
+
+/// The three verbs whose effect lands on the store rather than on a handler.
+///
+/// Named as a closed enumeration of its own rather than matched inline, so "these three and no
+/// others" is a fact with a test on it. The verbs unit draws the same line from the other side: it
+/// gives each of them a method, and gives `execute` no arm that could reach one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveryVerb {
+    ChainBreak,
+    StoreRestore,
+    ResealEpochFloor,
+}
+
+/// Which recovery verb this is, or `None` for a verb whose effect is the governance seam's.
+fn recovery_verb(verb: KernelVerb) -> Option<RecoveryVerb> {
+    match verb {
+        KernelVerb::ChainBreak => Some(RecoveryVerb::ChainBreak),
+        KernelVerb::StoreRestore => Some(RecoveryVerb::StoreRestore),
+        KernelVerb::ResealEpochFloor => Some(RecoveryVerb::ResealEpochFloor),
+        _ => None,
+    }
+}
+
+/// What an operation that changed something and has nothing to say answers with.
+///
+/// A recovery verb's whole result is its effect: the chain broke, the store restored, the floor
+/// resealed. There is no document to return and none was ever specified, so the answer carries no
+/// body and declares no content type — inventing a document here would put a schema on the wire that
+/// nothing describes and that a client would then be entitled to depend on.
+fn applied_answer() -> AdminAnswer {
+    AdminAnswer {
+        status: 204,
+        headers: Vec::new(),
+        body: Vec::new(),
+    }
+}
+
+/// The backup a `store_restore` request names, or `None` when it names none.
+///
+/// A deliberately small reader for a deliberately small document: one field, whose value is a JSON
+/// string. Written out rather than taken from a serialization crate because this crate carries none
+/// on the request path, and because getting it wrong in the permissive direction is what would let a
+/// malformed body restore something the operator did not ask for. Anything this does not understand
+/// — a missing field, a value that is not a string, an unterminated one — is `None`, and `None` is
+/// a refusal at the call site.
+fn backup_ref_of(body: &[u8]) -> Option<String> {
+    const FIELD: &str = "\"backup_ref\"";
+    let text = std::str::from_utf8(body).ok()?;
+    let after = &text[text.find(FIELD)? + FIELD.len()..];
+    let after = after.trim_start();
+    let after = after.strip_prefix(':')?.trim_start();
+    let mut chars = after.strip_prefix('"')?.chars();
+    let mut value = String::new();
+    loop {
+        match chars.next()? {
+            '"' => break,
+            '\\' => match chars.next()? {
+                '"' => value.push('"'),
+                '\\' => value.push('\\'),
+                '/' => value.push('/'),
+                'n' => value.push('\n'),
+                'r' => value.push('\r'),
+                't' => value.push('\t'),
+                'b' => value.push('\u{08}'),
+                'f' => value.push('\u{0c}'),
+                'u' => {
+                    let mut hex = String::with_capacity(4);
+                    for _ in 0..4 {
+                        hex.push(chars.next()?);
+                    }
+                    value.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+                }
+                // An escape this reader does not know is a document it does not understand, and a
+                // backup reference is the last field to guess at.
+                _ => return None,
+            },
+            c => value.push(c),
+        }
+    }
+    // An empty reference names nothing, which is the same refusal as naming no field at all.
+    (!value.is_empty()).then_some(value)
 }
 
 /// Whether the operation's own surface has already minted the identity this answer carries.
@@ -2799,9 +2927,14 @@ mod tests {
             },
             ApprovalState::NotYetApproved,
         )));
+        // The gate is what this cell is about, so the assertion is that the unit got PAST it. It no
+        // longer ends `Ok`, and that is the point of the verb reaching the store: the fixture's
+        // store refuses everything, so a chain break admitted by the ceremony now ends on the
+        // store's own answer rather than on the gate's. What must not appear here is the gate's
+        // refusal — that would be a fleet that ran the ceremony being told it had not.
         assert_eq!(
             under("/api/v1/admin/chain-break", ceremony_run),
-            Ok(()),
+            Err(ReasonCode::DurabilityUnavailable),
             "a fleet that ran the ceremony was still refused for not having run it"
         );
 
@@ -3516,6 +3649,254 @@ mod tests {
     /// unresolved fallback uses, so a test that passed by accident because the two agreed would
     /// stop passing.
     const AN_IDENTIFIED_OPERATOR: &str = "operator-alice";
+
+    /// Each of the three recovery verbs reaches the STORE, and a refusing store's answer is the
+    /// caller's.
+    ///
+    /// The three used to travel `Verbs::execute`, which sends every new verb to the governance seam
+    /// — and the governance seam is the mounted router, which has no route for any of them. So all
+    /// three passed the scope check, the rate class, the operator ceremony and dual control, and
+    /// then received a 404 from the surface underneath: the gates on the most destructive
+    /// operations this node has were being run in front of nothing.
+    ///
+    /// Two assertions per verb, and both are needed. That the store METHOD was reached — recorded by
+    /// the store itself, so nothing here infers it from a status — and that a store which refuses
+    /// surfaces as the documented refusal rather than as a success or as a decode failure. A test
+    /// that only checked the second would pass against a verb that never touched the store at all.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
+        /// A store that records what reached it and refuses it.
+        #[derive(Debug, Default)]
+        struct RecordingStore(Mutex<Vec<String>>);
+
+        impl busbar_unit_verbs::store::Store for RecordingStore {
+            fn chain_break(
+                &self,
+                _admin: &busbar_caps::AdminToken,
+            ) -> Result<(), busbar_unit_verbs::StoreError> {
+                self.0.lock().unwrap().push("chain_break".to_string());
+                Err(busbar_unit_verbs::StoreError::Failed)
+            }
+
+            fn store_restore(
+                &self,
+                _admin: &busbar_caps::AdminToken,
+                backup_ref: &str,
+            ) -> Result<(), busbar_unit_verbs::StoreError> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(format!("store_restore:{backup_ref}"));
+                Err(busbar_unit_verbs::StoreError::Failed)
+            }
+
+            fn reseal_epoch_floor(
+                &self,
+                _admin: &busbar_caps::AdminToken,
+            ) -> Result<(), busbar_unit_verbs::StoreError> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push("reseal_epoch_floor".to_string());
+                Err(busbar_unit_verbs::StoreError::Failed)
+            }
+
+            fn replay_new_verb(
+                &self,
+                _key: &(String, String),
+            ) -> Result<Option<Vec<u8>>, busbar_unit_verbs::StoreError> {
+                Ok(None)
+            }
+
+            fn commit_new_verb_replay(
+                &self,
+                _key: &(String, String),
+                _response: &[u8],
+            ) -> Result<(), busbar_unit_verbs::StoreError> {
+                Ok(())
+            }
+        }
+
+        /// A dispatch that must never be asked. If a recovery verb still travelled the governance
+        /// seam this would answer instead of the store, and the store's log would be empty — so the
+        /// two halves of the proof check each other.
+        struct NeverDispatched;
+        impl AdminDispatch for NeverDispatched {
+            fn execute(&self, verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
+                panic!("a recovery verb reached the governance seam: {verb:?}");
+            }
+        }
+
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let admin = crate::root::kernel::new_kernel().admin_token();
+
+        // The posture a fleet that has run its ceremony has, so the gates admit and what is left is
+        // the destination. Anything less and the verb would be refused before the store.
+        let ceremony_run = || -> Arc<dyn PostureView> {
+            struct Ran;
+            impl PostureView for Ran {
+                fn resolve(
+                    &self,
+                    _verb: KernelVerb,
+                    _actor: &str,
+                ) -> Option<(PostureCtx, ApprovalState)> {
+                    Some((
+                        PostureCtx {
+                            operator: busbar_unit_verbs::OperatorState::Set,
+                            dual_control: busbar_unit_verbs::DualControl::Single,
+                        },
+                        ApprovalState::NotYetApproved,
+                    ))
+                }
+            }
+            Arc::new(Ran)
+        };
+
+        for (path, body, reached) in [
+            ("/api/v1/admin/chain-break", "{}", "chain_break"),
+            (
+                "/api/v1/admin/store-restore",
+                "{\"backup_ref\":\"nightly-2026-09-05\"}",
+                "store_restore:nightly-2026-09-05",
+            ),
+            (
+                "/api/v1/admin/reseal-epoch-floor",
+                "{}",
+                "reseal_epoch_floor",
+            ),
+        ] {
+            let store = Arc::new(RecordingStore::default());
+            let binding =
+                AdminBinding::new(Arc::new(NeverDispatched)).with_posture_view(ceremony_run());
+            let key = UnitKey::new(1);
+            let mut request = a_request();
+            request.method = "POST".to_string();
+            request.path = path.to_string();
+            request.body = body.as_bytes().to_vec();
+            binding.units.open(key, request);
+            let ctx = UnitCtx {
+                key,
+                origin: busbar_caps::OriginKind::Client,
+                session: None,
+                generation: busbar_kernel::registry::Generation::FIRST,
+                admin_listener: true,
+                kernel_verb_only: true,
+            };
+            decode(&binding, &UnitToken::mint(&seal), &ctx)
+                .into_result(&seal)
+                .unwrap_or_else(|_| panic!("{path} is a row the plane's table declares"));
+            binding.units.set_granted(key, VerbScope::Full);
+
+            let token: UnitToken<Route> = UnitToken::mint(&seal);
+            let outcome = route(
+                &binding,
+                Arc::clone(&store) as Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
+                &admin,
+                &token,
+                &ctx,
+                &busbar_kernel::teller::AccrualMeter::new(),
+            )
+            .into_result(&seal);
+            binding.units.close(key);
+
+            assert_eq!(
+                store.0.lock().unwrap().as_slice(),
+                [reached.to_string()],
+                "{path} did not reach the store method it names"
+            );
+            assert_eq!(
+                outcome.err().map(|refusal| refusal.reason()),
+                Some(ReasonCode::DurabilityUnavailable),
+                "{path} did not surface the refusing store's refusal"
+            );
+        }
+    }
+
+    /// A `store_restore` that names no backup restores nothing.
+    ///
+    /// The single most destructive request this surface takes, and the one whose argument must not
+    /// be defaulted: a body that names no reference is refused before the ceremony runs, so the
+    /// store is never asked to restore "whatever it thinks". The reader is exercised over the shapes
+    /// a real body has and the shapes a malformed one does, because the refusal is only worth having
+    /// if it survives both.
+    ///
+    /// Every document below is written with ordinary escaped literals rather than raw ones. That is
+    /// not a style choice: the structure lints read this file by blanking string literals and then
+    /// counting braces, and their blanker does not know the raw byte-string form \u2014 so a JSON body
+    /// spelt that way leaks its braces into their depth tracking and silently reclassifies the rest
+    /// of this test module as production source.
+    #[test]
+    fn a_restore_that_names_no_backup_is_refused_rather_than_defaulted() {
+        assert_eq!(
+            backup_ref_of("{\"backup_ref\":\"nightly-2026-09-05\"}".as_bytes()),
+            Some("nightly-2026-09-05".to_string())
+        );
+        assert_eq!(
+            backup_ref_of("{ \"backup_ref\" : \"with \\\"quotes\\\" and \\\\slash\" }".as_bytes()),
+            Some("with \"quotes\" and \\slash".to_string())
+        );
+        // A `\u` escape, which is one of the two ways a JSON document carries a non-ASCII name.
+        assert_eq!(
+            backup_ref_of("{\"backup_ref\":\"\\u00e9t\\u00e9\"}".as_bytes()),
+            Some("\u{e9}t\u{e9}".to_string())
+        );
+        // And the other: the same name spelt as UTF-8 bytes.
+        assert_eq!(
+            backup_ref_of("{\"backup_ref\":\"\u{e9}t\u{e9}\"}".as_bytes()),
+            Some("\u{e9}t\u{e9}".to_string())
+        );
+        for malformed in [
+            "{}",
+            "{\"backup\":\"x\"}",
+            "{\"backup_ref\":\"\"}",
+            "{\"backup_ref\":null}",
+            "{\"backup_ref\":42}",
+            "{\"backup_ref\":\"unterminated",
+            "{\"backup_ref\":\"\\q\"}",
+            "",
+        ] {
+            assert_eq!(
+                backup_ref_of(malformed.as_bytes()),
+                None,
+                "a body naming no usable reference must not resolve to one"
+            );
+        }
+        // And bytes that are not text at all.
+        assert_eq!(backup_ref_of(&[0xff, 0xfe]), None);
+    }
+
+    /// These three verbs and no others land on the store.
+    ///
+    /// Written from this side as well as the verbs unit's, because the split is a fact two crates
+    /// have to agree about: a verb added to the unit's store methods without a row here would go
+    /// back to the governance seam and its 404, silently.
+    #[test]
+    fn exactly_three_verbs_land_on_the_store() {
+        let landing: Vec<KernelVerb> = NEW_VERBS
+            .iter()
+            .copied()
+            .filter(|verb| recovery_verb(*verb).is_some())
+            .collect();
+        assert_eq!(
+            landing,
+            vec![
+                KernelVerb::ChainBreak,
+                KernelVerb::StoreRestore,
+                KernelVerb::ResealEpochFloor
+            ]
+        );
+        for verb in LEGACY_VERBS
+            .iter()
+            .map(|row| row.verb)
+            .chain(LEDGER_VERBS.iter().chain(NAMED_SURFACES.iter()).copied())
+        {
+            assert!(
+                recovery_verb(verb).is_none(),
+                "{verb:?} is not a recovery verb"
+            );
+        }
+    }
 
     /// A unit whose verb never resolved is sealed by its METHOD, not as a read whatever it asked.
     ///
