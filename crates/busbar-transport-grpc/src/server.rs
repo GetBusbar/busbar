@@ -165,6 +165,8 @@ pub(crate) async fn forward_inbound(
                     bytes: slab.len() as u64,
                     transport_units: None,
                     status: None,
+                    status_code: None,
+                    retry_after_secs: None,
                 };
                 let frame = Frame {
                     direction: Direction::Inbound,
@@ -189,6 +191,8 @@ pub(crate) async fn forward_inbound(
             bytes: 0,
             transport_units: None,
             status: Some(status),
+            status_code: None,
+            retry_after_secs: None,
         };
         let frame = Frame {
             direction: Direction::Inbound,

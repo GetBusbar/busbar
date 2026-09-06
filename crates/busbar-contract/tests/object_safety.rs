@@ -727,6 +727,8 @@ fn a_continued_handshake_can_decorate_with_arena_bytes() {
             bytes: 9,
             transport_units: None,
             status: None,
+            status_code: None,
+            retry_after_secs: None,
         },
     };
 

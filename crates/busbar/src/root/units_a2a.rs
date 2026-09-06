@@ -1252,6 +1252,8 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
                     bytes,
                     transport_units: None,
                     status: None,
+                    status_code: None,
+                    retry_after_secs: None,
                 },
             },
         )
