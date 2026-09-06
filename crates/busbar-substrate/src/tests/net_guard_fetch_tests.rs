@@ -219,6 +219,36 @@ fn cloud_metadata_is_refused_unconditionally_and_as_metadata() {
     assert!(judge_address("h", ip("10.0.0.1"), private_ok()).is_ok());
 }
 
+/// THE WHOLE LINK-LOCAL /16 IS METADATA, not just the five literals a list can name.
+///
+/// Clouds put their instance-metadata service anywhere inside `169.254.0.0/16` (Tencent answers on
+/// `169.254.0.23`, AWS's IPv6-era ECS endpoint on `169.254.170.3`, the IMDS v6 alias on
+/// `169.254.169.253`), and nothing legitimate runs on link-local at all. An address-side predicate
+/// that enumerates literals leaves every other link-local address to the internal-range arm, which
+/// `allow_private: true` switches off — so the operator flag that says "our upstream is on the
+/// internal network" would pin and dial an unlisted metadata endpoint.
+#[test]
+fn unlisted_link_local_metadata_is_refused_as_metadata_under_allow_private() {
+    let unlisted = [
+        ("Tencent IMDS", "169.254.0.23"),
+        ("IMDS v6-alias endpoint", "169.254.169.253"),
+        ("ECS task metadata (v6-era)", "169.254.170.3"),
+        // The IPv4-COMPATIBLE spelling reaches the same target through `to_ipv4()`.
+        ("IPv4-COMPATIBLE Tencent", "::169.254.0.23"),
+        ("IPv4-MAPPED Tencent", "::ffff:169.254.0.23"),
+    ];
+    for (what, a) in unlisted {
+        for policy in [strict(), private_ok()] {
+            let err = judge_address("meta", ip(a), policy)
+                .expect_err("link-local metadata is refused under every policy");
+            assert!(
+                matches!(err, GuardRefusal::CloudMetadataAddress { .. }),
+                "{what} ({a}) must be refused AS METADATA, not merely as internal: {err:?}"
+            );
+        }
+    }
+}
+
 // ══ THE STRUCTURAL REFUSALS ══════════════════════════════════════════════════════════════════════
 
 /// The metadata NAMES are refused before any resolver is consulted, and `allow_private` does not

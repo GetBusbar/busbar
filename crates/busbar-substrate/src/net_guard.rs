@@ -162,24 +162,35 @@ pub fn ipv6_is_internal(v6: &Ipv6Addr) -> bool {
 /// may never be reached at all. Folding them together would make `allow_private` a switch that
 /// hands out cloud credentials.
 ///
+/// The v4 question is a RANGE question, not a list of literals. Clouds put IMDS anywhere inside
+/// `169.254.0.0/16` — AWS on `169.254.169.254` and `169.254.170.2`, Tencent on `169.254.0.23`, the
+/// v6-era ECS endpoint on `169.254.170.3` — and nothing legitimate runs on link-local at all, so
+/// the whole range is metadata. Only the endpoints that sit OUTSIDE link-local need naming, and
+/// they are named. Enumerating link-local literals instead would leave every unlisted one to the
+/// internal-range arm, which `allow_private` switches off: the operator flag that says "our
+/// upstream is on the internal network" would then pin and dial an unlisted IMDS. This is the same
+/// predicate the config-side metadata check applies, deliberately.
+///
 /// The v6 arm unwraps with `to_ipv4()`, not `to_ipv4_mapped()`, for the reason [`ipv6_is_internal`]
 /// gives: `to_ipv4()` is the superset that also covers the IPv4-COMPATIBLE form, so
 /// `[::169.254.169.254]` is caught. A guard that only unwrapped the MAPPED form let exactly that
 /// literal through — it matched no v6 range, unwrapped to nothing, and was connected to.
 pub fn ip_is_cloud_metadata(addr: &IpAddr) -> bool {
-    /// AWS/Azure/GCP/OpenStack/DigitalOcean IMDS, ECS task metadata, and Alibaba's.
-    const V4: &[Ipv4Addr] = &[
-        Ipv4Addr::new(169, 254, 169, 254),
-        Ipv4Addr::new(169, 254, 170, 2),
+    /// The metadata endpoints OUTSIDE link-local: Alibaba Cloud ECS (inside the otherwise-allowed
+    /// CGNAT /10), Azure WireServer, and Oracle Cloud's globally-routable-shaped IMDS.
+    const NON_LINK_LOCAL_V4: &[Ipv4Addr] = &[
         Ipv4Addr::new(100, 100, 100, 200),
         Ipv4Addr::new(168, 63, 129, 16),
         Ipv4Addr::new(192, 0, 0, 192),
     ];
+    fn is_metadata_v4(v4: &Ipv4Addr) -> bool {
+        v4.is_link_local() || NON_LINK_LOCAL_V4.contains(v4)
+    }
     match addr {
-        IpAddr::V4(v4) => V4.contains(v4),
+        IpAddr::V4(v4) => is_metadata_v4(v4),
         IpAddr::V6(v6) => {
             if let Some(v4) = v6.to_ipv4() {
-                return V4.contains(&v4);
+                return is_metadata_v4(&v4);
             }
             // IMDSv6.
             v6.segments() == [0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x254]
