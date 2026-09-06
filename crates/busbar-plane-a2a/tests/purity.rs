@@ -225,14 +225,23 @@ fn the_encode_step_is_deterministic() {
 }
 
 /// The plane does not read the clock, so a call at a different time gives the same answer.
+///
+/// The two readings are DECADES apart and the second is the earlier one, so a plane that folded
+/// `ctx.clock` into what it decoded — a timestamp, an expiry, a monotonic tie-break — cannot land on
+/// the same answer by accident.
 #[test]
 fn the_answer_does_not_move_with_the_clock() {
     let plane = A2aPlane::EMPTY;
     let body = br#"{"jsonrpc":"2.0","id":9,"method":"tasks/get","params":{"id":"t1"}}"#;
     let mut answers = Vec::new();
-    for _ in 0..2 {
+    for unix_secs in [2_000_000_000_u64, 1_000_000_000] {
         let scaffold = Scaffold::new("http");
-        let ctx = scaffold.ctx();
+        let ctx = scaffold.ctx_at(unix_secs);
+        assert_eq!(
+            ctx.clock().unix_secs,
+            unix_secs,
+            "the scaffold handed the plane the reading this test chose"
+        );
         let frames = vec![frame(body)];
         let mut cursor = FrameCursor::new(&frames);
         let Ok(Ingress::OneShot(draft)) = plane.decode_ingress(&mut cursor, None, &ctx) else {
@@ -240,7 +249,10 @@ fn the_answer_does_not_move_with_the_clock() {
         };
         answers.push(format!("{:?}{:?}", draft.op, draft.correlation_out));
     }
-    assert_eq!(answers[0], answers[1]);
+    assert_eq!(
+        answers[0], answers[1],
+        "the decoded answer moved with the clock: {answers:?}"
+    );
 }
 
 /// The plane never hands back a decision, an amount or a credential.

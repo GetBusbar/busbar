@@ -272,6 +272,24 @@ impl Scaffold {
         )
     }
 
+    /// The same context, with the wall-clock reading chosen by the caller.
+    ///
+    /// A test that asks whether an answer moves with the clock needs two readings to hand over;
+    /// every other test wants the one frozen reading [`Self::ctx`] supplies.
+    pub fn ctx_at(&self, unix_secs: u64) -> Ctx<'_> {
+        Ctx::new(
+            Clock {
+                unix_secs,
+                monotonic_nanos: CLOCK.monotonic_nanos,
+            },
+            &self.config,
+            Some(&self.session),
+            &self.transport,
+            &self.labels,
+            &self.arena,
+        )
+    }
+
     /// A context with no session, as a one-shot transport hands one over.
     pub fn ctx_without_session(&self) -> Ctx<'_> {
         Ctx::new(
