@@ -55,6 +55,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+# LEAST PRIVILEGE, STATED RATHER THAN INHERITED. With no `permissions:` block a workflow takes the
+# repository/org DEFAULT, which is a setting nobody can see from this file and which is write-all on
+# a repo that has never been narrowed. This workflow runs on EVERY branch push and on every pull
+# request, and — as the header says of secrets — it writes nothing either: no release, no tag, no
+# issue, no package, no commit. `contents: read` is what a checkout needs; `actions: read` is for
+# the control-report artifact the battery subject leg downloads from its sibling job. Withholding
+# the rest is the enforcement, the same reasoning verify-deploy.yml gives for `issues: write`.
+permissions:
+  contents: read
+  actions: read
+
 concurrency:
   group: mcp-conformance-${{ github.ref }}
   cancel-in-progress: true
