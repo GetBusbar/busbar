@@ -127,6 +127,13 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   copy; a `cachePoint` or `guardContent` earlier in the same message shifted the two apart, so the
   suppression missed and the attachment went upstream twice — read twice by the model and billed
   twice. The two index spaces are now tracked separately. See [Spec fidelity](#spec-fidelity).
+- **A Responses function-call item the writer refused to open no longer announces itself.** The
+  Responses stream writer bounds how many function-call items may be open at once so a pathological
+  backend cannot grow per-stream state without limit. Past that bound 1.5.5 still wrote
+  `response.output_item.added` — a lifecycle open for an item it had not tracked, so no
+  `response.output_item.done` ever followed and the item was missing from the terminal `output[]`
+  as well. The frame and the open are now decided together, as the text and reasoning items always
+  did. A stream within the bound is unchanged. See [Spec fidelity](#spec-fidelity).
 - **A Bedrock `Converse` response always carries `metrics`.** The published Converse output shape
   requires the member; 1.5.5's same-dialect passthrough dropped it when the upstream's own response
   did not carry one. 1.6.0 always emits it, with the normalized `latencyMs` for the call.

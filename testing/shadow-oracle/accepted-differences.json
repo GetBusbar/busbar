@@ -402,6 +402,18 @@
         "headers"
       ],
       "rationale": "Spec fidelity: the Converse reader parks a native document/video block at its WIRE index and also pushes a modelled block into the IR; the writer suppresses the modelled copy when it recognizes the parked one. A cachePoint or guardContent occupies a wire slot but yields no IR block, so past it the wire and IR indices disagree and the suppression missed -- the document was emitted twice, once modelled and once spliced. AWS reads the attachment twice and the caller pays its input tokens twice. 1.6.0 records the two index spaces separately so the block is emitted exactly once. Request-body only; no usage or billing class is waived here -- the double charge is the defect being removed, not an accepted difference."
+    },
+    {
+      "id": "S-11 a refused responses function-call open emits no output_item.added",
+      "kind": "improvement",
+      "changelog": "**A Responses function-call item the writer refused to open no longer announces itself.**",
+      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
+      "cells": "^llm\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|responses\\|request\\|ok_stream$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: the Responses stream writer bounds the number of concurrently open function-call items (MAX_OPEN_TOOLS) so a pathological backend cannot grow per-stream state without limit. The cap refused the open but the frame went out anyway: the sibling text and reasoning arms ask their open helper for a verdict and emit nothing when it refuses, while the function-call arm called the helper for its side effect and discarded the answer. Past the cap the wire therefore carried a response.output_item.added for an item that was never tracked -- so its BlockStop found nothing to close, no response.output_item.done ever followed, and the item was absent from the terminal output[] too: a lifecycle open, on the published item union, for an item that never opened and never ends. 1.6.0 decides the frame and the open together. Additive below the cap: a stream with at most MAX_OPEN_TOOLS function-call items is byte-identical. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
     }
   ]
 }

@@ -3989,6 +3989,60 @@ fn test_writer_open_tool_indices_capped() {
     );
 }
 
+/// A function-call open the cap REFUSED must emit no
+/// `response.output_item.added`. The cap is what decides whether the item exists; the frame is the
+/// wire's statement that it does. When they disagree the client is told an item opened that the
+/// writer never tracked, so the matching `BlockStop` finds nothing to close, no
+/// `response.output_item.done` ever follows, and the item is absent from the terminal `output[]`
+/// as well — a lifecycle open for an item that never opened and never ends.
+///
+/// The text arm has always decided both together (`open_text_item` returns the verdict and its
+/// caller honours it); this pins the function-call arm to the same contract: at most
+/// `MAX_OPEN_TOOLS` `output_item.added` frames, and every one of them closed by its `BlockStop`.
+#[test]
+fn test_writer_refused_tool_open_emits_no_output_item_added() {
+    let writer = ResponsesWriter;
+    let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
+        role: crate::ir::IrRole::Assistant,
+        usage: None,
+        id: None,
+        created: None,
+        model: None,
+    });
+    let mut added = Vec::new();
+    for i in 0..(MAX_OPEN_TOOLS + 200) {
+        if writer
+            .write_response_event(&IrStreamEvent::BlockStart {
+                index: i,
+                block: crate::ir::IrBlockMeta::ToolUse {
+                    id: format!("call_{i}"),
+                    name: "f".to_string(),
+                },
+            })
+            .is_some()
+        {
+            added.push(i);
+        }
+    }
+    assert!(
+        added.len() <= MAX_OPEN_TOOLS,
+        "the writer must open at most MAX_OPEN_TOOLS function-call items; it emitted \
+         {} `output_item.added` frames",
+        added.len()
+    );
+    // Every `added` frame is an open the wire must see closed: its BlockStop emits the matching
+    // `output_item.done`. A frame written past the cap would fail here too — `take_tool_open`
+    // cannot close an index that was never inserted.
+    for i in added {
+        assert!(
+            writer
+                .write_response_event(&IrStreamEvent::BlockStop { index: i })
+                .is_some(),
+            "`output_item.added` at index {i} was never closed by its BlockStop"
+        );
+    }
+}
+
 /// Production `extract_error` must synthesize the
 /// canonical `context_length_exceeded` code when an oversized-context error carries the
 /// condition only in its MESSAGE (null/generic `code`). Without this the breaker pipeline never

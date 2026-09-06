@@ -820,11 +820,20 @@ impl ProtocolWriter for ResponsesWriter {
                     // carried on the native `output_item.added`/`.done` pair so a client correlates the
                     // item's lifecycle. Synthesize it deterministically from the output index so the
                     // matching `.done` (which sees only the index) reconstructs the same id.
-                    let item_id = self.item_id_for(ITEM_ID_PREFIX_FC, *index);
-                    // Record the open function-call index so the matching `BlockStop` emits
+                    // Open the function-call index so the matching `BlockStop` emits
                     // `output_item.done` for THIS index only — a text block's BlockStop (whose
                     // BlockStart produced no `output_item.added`) must emit no `done`.
-                    self.mark_tool_open(*index);
+                    //
+                    // A refused open (the cap is reached, or the index is already open) emits NO
+                    // frame, exactly as the text and reasoning arms above do. The frame and the
+                    // open have to be decided together: `take_tool_open` closes only indices that
+                    // are in the set, so an `output_item.added` written past the cap would be an
+                    // open the client never sees closed — and the item never lands in the terminal
+                    // `output[]` either, so it simply vanishes.
+                    if !self.mark_tool_open(*index) {
+                        return Vec::new();
+                    }
+                    let item_id = self.item_id_for(ITEM_ID_PREFIX_FC, *index);
                     // Capture call_id/name now so the matching `output_item.done` can emit the
                     // fully finalized item (native `done` carries call_id/name/arguments; the IR
                     // BlockStop carries only the index).
