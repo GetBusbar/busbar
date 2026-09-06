@@ -290,6 +290,27 @@ FIX
     note "RED noun-floor: an empty noun set is refused, not reported as zero debt"
   fi
 
+  # ── The INSTRUMENT, not the meter: the two ways this gate scans nothing and prints zero debt. ──
+  # `CORE_ROOT` is a bare relative path, and a rename made `find … 2>/dev/null` go quiet, the code
+  # stream come back empty, all four nouns count 0, and the report say "debt: 0" about a crate it
+  # never opened. Both guards are exercised on real directories, not mocked.
+  if ( CORE_ROOT="$tmp/no-such-root" require_root ) >/dev/null 2>&1; then
+    fail=1; note "FAILED: a scan root that is not on disk was accepted"
+  else
+    note "RED root-guard: a scan root that is not on disk is refused, not scanned as zero files"
+  fi
+  mkdir -p "$tmp/empty-root"
+  if ( CORE_ROOT="$tmp/empty-root" require_files "$(CORE_ROOT="$tmp/empty-root" core_files | grep -c . || true)" ) >/dev/null 2>&1; then
+    fail=1; note "FAILED: a root holding no production .rs was accepted"
+  else
+    note "RED zero-file: a root that exists but holds no production .rs is refused"
+  fi
+  if ( require_root && require_files "$(core_files | grep -c . || true)" ) >/dev/null 2>&1; then
+    note "GREEN instrument: \`$CORE_ROOT\` exists and carries $(core_files | grep -c . || true) production .rs file(s)"
+  else
+    fail=1; note "FAILED: the guards refuse this tree's own scan root"
+  fi
+
   if [ "$fail" -ne 0 ]; then red "plane-config-noun-gate SELF-TEST FAILED"; return 1; fi
   grn "plane-config-noun-gate self-test: ALL GREEN (counts parse targets, ignores homonyms/seam)"
   return 0
