@@ -668,9 +668,9 @@ fn outbuf_commit_null_out_drops_without_leaking_or_writing() {
 }
 
 /// The new audit ABI variants dispatch through the trait: `AppendAudit` maps to `append_audit`
-/// (Unit response) and `ListAudit` to `list_audit` (Audit response). Against the memory store the
-/// trait defaults no-op, so append returns Unit and list returns an empty Audit vec — proving the
-/// ADDITIVE variants are wired end-to-end without breaking the existing dispatch.
+/// (Unit response) and `ListAudit` to `list_audit` (Audit response). The RAM default keeps what it
+/// is handed for the life of the process, so the record appended is the record listed — proving
+/// the ADDITIVE variants are wired end-to-end without breaking the existing dispatch.
 #[test]
 fn dispatch_handles_audit_variants() {
     use busbar_api::AuditRecord;
@@ -690,7 +690,10 @@ fn dispatch_handles_audit_variants() {
         other => panic!("expected Unit, got {other:?}"),
     }
     match dispatch(&store, StoreRequest::ListAudit).unwrap() {
-        StoreResponse::Audit(v) => assert!(v.is_empty(), "memory store persists no audit"),
+        StoreResponse::Audit(v) => {
+            assert_eq!(v.len(), 1, "the RAM store lists the one record it was handed");
+            assert_eq!(v[0].hash, "h");
+        }
         other => panic!("expected Audit, got {other:?}"),
     }
 }
@@ -698,9 +701,9 @@ fn dispatch_handles_audit_variants() {
 /// The neutral kind-tagged plane-record variants (1.6.0, ADDITIVE) round-trip through the ABI serde
 /// and dispatch onto the neutral trait methods. Each request is serialized to the on-wire JSON and
 /// deserialized back (proving the ABI enum carries them), then dispatched against the memory store —
-/// which does not override the neutral methods, so every one returns its DEFAULTED empty result.
-/// This proves the additive api+abi+sdk wiring compiles and is reachable end-to-end without any
-/// caller: a read comes back empty, a write comes back `Unit`, a purge `0`, a redeem `true`.
+/// whose RAM default keeps plane rows for the life of the process. This proves the additive
+/// api+abi+sdk wiring compiles and is reachable end-to-end without any caller: a write comes back
+/// `Unit` and the read that follows it finds the row, a purge and a redeem answer their counts.
 #[test]
 fn dispatch_handles_neutral_plane_variants() {
     use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector};
@@ -740,7 +743,7 @@ fn dispatch_handles_neutral_plane_variants() {
         id: "t-1".into(),
     }) {
         StoreResponse::PlaneRecord(b) => {
-            assert!(b.is_none(), "memory store persists no plane record")
+            assert!(b.is_some(), "the RAM store keeps the plane record it was handed")
         }
         other => panic!("expected PlaneRecord, got {other:?}"),
     }
@@ -760,20 +763,25 @@ fn dispatch_handles_neutral_plane_variants() {
         kind: "call".into(),
         selector: PlaneSelector::Parent("p-1".into()),
     }) {
-        StoreResponse::PlaneRecords(v) => assert!(v.is_empty(), "no records to list"),
+        StoreResponse::PlaneRecords(v) => {
+            assert_eq!(v.len(), 1, "the one record appended under this parent is listed");
+            assert_eq!(v[0], vec![9u8], "and it is the body that was appended");
+        }
         other => panic!("expected PlaneRecords, got {other:?}"),
     }
     match roundtrip(&StoreRequest::ListPlaneRecordParents {
         kind: "call".into(),
     }) {
-        StoreResponse::PlaneRecordParents(v) => assert!(v.is_empty(), "no parents to list"),
+        StoreResponse::PlaneRecordParents(v) => {
+            assert_eq!(v, vec!["p-1".to_string()], "the parent the append named is listed")
+        }
         other => panic!("expected PlaneRecordParents, got {other:?}"),
     }
     match roundtrip(&StoreRequest::PurgePlaneRecordsBefore {
         kind: "task".into(),
         before: 100,
     }) {
-        StoreResponse::Purged(n) => assert_eq!(n, 0, "nothing retained, nothing purged"),
+        StoreResponse::Purged(n) => assert_eq!(n, 1, "the terminal task row older than the cut is purged"),
         other => panic!("expected Purged, got {other:?}"),
     }
     match roundtrip(&StoreRequest::DeletePlaneRecord {
