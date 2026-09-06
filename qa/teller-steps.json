@@ -22,8 +22,11 @@
     "  none   -- with `note`: what the leg does instead, and why no cell drives this step yet. R-16:",
     "            name a gap, never paper it.",
     "The root column's gaps are PRINTED and named on every run but do not fail --check by themselves.",
-    "The legs are default-OFF and are being switched over plane by plane, so the shipped path is what",
-    "the gating rule is about; the root gaps are the switch-over queue. What IS red on this column: a",
+    "root-admin, root-mcp and root-a2a are now IN the binary's default feature set, so for those three",
+    "the loop IS the shipped path and --root-legs-gating (below) holds them to the same red rule the",
+    "rig column has: a gating step with no cell over the loop fails. root-llm and root-voice are still",
+    "default-off and being switched over plane by plane, so their root gaps remain the switch-over",
+    "queue and are printed rather than failed. What IS red on this column whatever the leg ships as: a",
     "`proven` root cell whose named test does not exist, and a leg with no proven cell at all.",
     "The two columns are independent verdicts about the same step and either may be \"none\" alone:",
     "mcp.approve and a2a.decode are exactly that shape today -- open on the rig, proven over the loop."

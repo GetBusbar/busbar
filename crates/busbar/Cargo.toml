@@ -132,9 +132,10 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 [features]
 # Pure forwards: every `#[cfg(feature = ...)]` site lives in busbar-core, so the binary's features
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
-# SAME default set the monolithic crate had; `root-admin` and `root-mcp` are the additions, and both
-# are paths rather than surfaces — the operations, their bytes and their features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin", "root-mcp"]
+# SAME default set the monolithic crate had; `root-admin`, `root-mcp` and `root-a2a` are the
+# additions, and all three are paths rather than surfaces — the operations, their bytes and their
+# features are unchanged.
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin", "root-mcp", "root-a2a"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -183,12 +184,21 @@ root-voice = ["plane-voice"]
 # the built binary: `proto-llm` in the same list is what pulls the crate in, so the feature is on
 # whenever `root-llm` is.
 root-llm = ["proto-llm", "busbar-llm?/teller-waist"]
-# THE A2A PLANE ON THE KERNEL. Default OFF, and off is the point: the root is BUILT before any
-# plane is SWITCHED onto it, so this feature installs the composition and diverts no byte. With it
-# on, `main()` assembles the A2A plane's scope entries and its record-leg binding at boot and holds
-# them; the serving path is still the one the A2A plugin mounts, which is why the conformance
-# battery, the TCK and the neutrality cells read identically with the feature on and with it off.
-# It carries no config key, no environment variable and no boot line, for the same reason.
+# THE A2A PLANE ON THE KERNEL, DEFAULT ON. `main()` assembles the A2A plane's scope entries and its
+# record-leg binding at boot and holds them; the serving path is still the one the A2A plugin
+# mounts, which is why the conformance battery, the TCK and the neutrality cells read identically
+# with the feature on and with it off. Default-off was the ordering, not the destination — the root
+# is BUILT before any plane is SWITCHED onto it — and the ordering is done: the rigs answer
+# identically both ways and the full owed golden came back at 0 diverging with it on.
+#
+# One thing had to land BEFORE the flip and did: the leg's exit used to hand settlement an empty
+# fee table, and no oracle cell could have caught it, because the golden records no a2a cells. A
+# default that shipped a plane whose fee nothing could observe would have been the flip covering
+# for the bug rather than the measurement clearing it.
+#
+# It carries no config key, no environment variable and no boot line, which is what keeps the
+# neutrality cells answering the same on both legs. The leg stays switchable — off, it costs one
+# unbuilt module and nothing else.
 root-a2a = []
 # THE MCP PLANE'S KERNEL BINDINGS, DEFAULT ON. Not a second MCP switch: `plane-mcp` above still
 # decides whether this binary speaks the protocol at all. This one decides whether the MCP plane's
