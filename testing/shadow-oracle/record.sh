@@ -49,6 +49,18 @@ LISTEN_PORT="${ORACLE_LISTEN_PORT:-48811}" ADMIN_PORT="${ORACLE_ADMIN_PORT:-4881
 mkdir -p "$OUT/cells" "$OUT/raw"
 LEDGER="$OUT/ledger.tsv"; : >"$LEDGER"; export LEDGER
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/shadow-oracle-record.XXXXXX")"; export WORK
+# WORK holds a config, a signing key, the egress captures and every cell's scratch — tens of MB per
+# run, and a full recording is ~900 cells. Nothing removed it, so every run (and every run that died
+# in its preamble) left one behind until the machine was rebooted. lib.sh has already installed
+# `trap _reap_fixtures EXIT`; replacing that trap outright would strand every busbar and mock this
+# script spawned, so the reaper is called FIRST and the tree goes only once nothing is writing to it.
+# ORACLE_KEEP_WORK=1 keeps it, for the forensics the `raw/` tree cannot answer (busbar.log mid-run,
+# the mock's control file, a half-written mutation config).
+_oracle_cleanup() {
+  _reap_fixtures
+  [ "${ORACLE_KEEP_WORK:-0}" = 1 ] || rm -rf "$WORK"
+}
+trap _oracle_cleanup EXIT
 export BUSBAR_BIN="$BIN"
 declaw "$BIN"
 VER="$("$BIN" --version 2>/dev/null | head -1)"
