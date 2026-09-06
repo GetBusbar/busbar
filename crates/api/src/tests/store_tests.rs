@@ -901,3 +901,49 @@ fn apply_model_delta_folds_usage_units_flooring_at_zero() {
     ledger.apply_model_delta(&d2);
     assert_eq!(ledger.models[0].usage_units.get("search"), Some(&0));
 }
+
+/// A stored key row carrying a field this busbar does not know — a newer busbar's added column, or
+/// a JSON backend's own bookkeeping stamp — must still READ. The scope partition captures the
+/// unnamed remainder of the row through a `#[serde(flatten)]` map, so a foreign field of any shape
+/// other than a string array used to fail the WHOLE `VirtualKey` deserialization ("invalid type:
+/// integer, expected a sequence"), taking a live credential's row down with it: the key stops
+/// resolving, and every caller holding it stops authenticating, for a field nothing here even reads.
+/// Only `allowed_*s` fields carry scopes; everything else is ignored, which is what the wire
+/// module's own doc already claims.
+#[test]
+fn foreign_wire_field_does_not_break_the_key_row() {
+    for (label, extra) in [
+        ("number", r#""mint_ceiling":5"#),
+        ("string", r#""note":"minted by hand""#),
+        ("object", r#""backend_meta":{"rev":3}"#),
+        ("bool", r#""pinned":true"#),
+        ("null", r#""future_field":null"#),
+    ] {
+        let wire = format!(
+            r#"{{"id":"vk_1","generation_hash":"h","name":"n","allowed_pools":["fast"],"enabled":true,"created_at":1,{extra}}}"#
+        );
+        let k: VirtualKey = serde_json::from_str(&wire)
+            .unwrap_or_else(|e| panic!("a foreign {label} field must not break the row: {e}"));
+        assert_eq!(k.id, "vk_1");
+        assert_eq!(
+            k.allowed_scopes,
+            Some(vec![ScopeRef::pool("fast")]),
+            "the pool grant must survive a foreign {label} field"
+        );
+    }
+}
+
+/// The other half of the same seam, and the direction that must NOT be permissive: an `allowed_*s`
+/// field that is NOT a string array is a CORRUPT scope grant, and the one thing it must never
+/// become is an omitted one — `None` means "every scope of every kind", so silently dropping a
+/// malformed grant field would turn a scoped key into a wildcard. It fails the read instead.
+#[test]
+fn malformed_scope_field_fails_the_read_rather_than_widening_to_wildcard() {
+    let wire = r#"{"id":"vk_1","generation_hash":"h","name":"n","allowed_mcp_servers":"filesystem","enabled":true,"created_at":1}"#;
+    let parsed = serde_json::from_str::<VirtualKey>(wire);
+    assert!(
+        parsed.is_err(),
+        "a malformed scope field must fail the read, never read as an omitted (wildcard) grant: \
+         {parsed:?}"
+    );
+}
