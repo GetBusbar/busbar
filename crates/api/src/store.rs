@@ -133,8 +133,16 @@ mod virtual_key_wire {
         /// so a registered kind's field sits inline exactly where its named field used to
         /// (`allowed_mcp_servers`/`allowed_mcp_tools`/…), and an empty map emits nothing — so a
         /// pool-only key's wire shape is byte-identical to the pre-generalization one.
+        ///
+        /// The value type is [`FlatField`], not `Vec<String>`, and that is a FORWARD-COMPATIBILITY
+        /// requirement rather than a convenience. A flattened map is GREEDY: every key the named
+        /// fields above did not claim lands here, including one a LATER version of this struct adds.
+        /// Typed as arrays-only, such a field is not a warning — it is a hard `Err`, and the whole
+        /// key becomes unreadable on any node that predates it. That failure is fleet-shaped: during
+        /// a rolling upgrade the old nodes are reading rows the new nodes wrote, and a key that will
+        /// not deserialize is a principal that cannot authenticate.
         #[serde(flatten)]
-        pub allowed_by_kind: BTreeMap<String, Vec<String>>,
+        pub allowed_by_kind: BTreeMap<String, FlatField>,
         pub enabled: bool,
         pub created_at: u64,
         #[serde(default)]
@@ -155,9 +163,125 @@ mod virtual_key_wire {
         pub minted_by: Option<String>,
     }
 
+    /// One value under a FLATTENED wire key. A scope grant is always an array of bare value
+    /// strings; anything else under a key this build does not recognize belongs to a version that
+    /// is not this one, and is carried past without judgement.
+    ///
+    /// Deserialized through a visitor rather than an `untagged` enum on purpose: `untagged` reports
+    /// its failures as "data did not match any variant", which is precisely the unhelpful error this
+    /// type exists to stop producing, and a visitor answers for every self-describing shape a future
+    /// field could take without enumerating them as variants.
+    pub(super) enum FlatField {
+        /// An array of bare value strings — the shape every `allowed_{kind}s` scope field has, and
+        /// the only shape [`assemble_scopes`] will read a grant out of.
+        Values(Vec<String>),
+        /// A value of any other shape: a scalar, a null, an object, a nested array. Not a scope
+        /// grant, and not this build's business.
+        Foreign,
+    }
+
+    impl serde::Serialize for FlatField {
+        /// Only [`FlatField::Values`] is ever reachable here: the map is built by
+        /// [`partition_scopes`], which produces grants and nothing else, and a `Foreign` read off
+        /// the wire is dropped by [`assemble_scopes`] long before a round-trip could re-emit it. The
+        /// `Foreign` arm is written to be TOTAL rather than to be taken — an empty array is the one
+        /// answer that stays inside the wire contract (a scope field is always an array) if some
+        /// future path ever does construct one.
+        fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            match self {
+                FlatField::Values(v) => v.serialize(s),
+                FlatField::Foreign => Vec::<String>::new().serialize(s),
+            }
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for FlatField {
+        fn deserialize<D>(d: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            struct V;
+            impl<'de> serde::de::Visitor<'de> for V {
+                type Value = FlatField;
+
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("an array of scope values, or any other value")
+                }
+
+                /// The one shape that is a grant. Element typing stays STRICT: an
+                /// `allowed_{kind}s` field whose entries are not bare strings is a corrupt grant,
+                /// not a foreign field, and reading it as "somebody else's data" would silently
+                /// drop a real grant — the widening this whole wire exists to refuse.
+                fn visit_seq<A>(self, mut seq: A) -> Result<FlatField, A::Error>
+                where
+                    A: serde::de::SeqAccess<'de>,
+                {
+                    let mut out = Vec::new();
+                    while let Some(s) = seq.next_element::<String>()? {
+                        out.push(s);
+                    }
+                    Ok(FlatField::Values(out))
+                }
+
+                fn visit_bool<E>(self, _: bool) -> Result<FlatField, E> {
+                    Ok(FlatField::Foreign)
+                }
+                fn visit_i64<E>(self, _: i64) -> Result<FlatField, E> {
+                    Ok(FlatField::Foreign)
+                }
+                fn visit_u64<E>(self, _: u64) -> Result<FlatField, E> {
+                    Ok(FlatField::Foreign)
+                }
+                fn visit_f64<E>(self, _: f64) -> Result<FlatField, E> {
+                    Ok(FlatField::Foreign)
+                }
+                fn visit_str<E>(self, _: &str) -> Result<FlatField, E> {
+                    Ok(FlatField::Foreign)
+                }
+                fn visit_bytes<E>(self, _: &[u8]) -> Result<FlatField, E> {
+                    Ok(FlatField::Foreign)
+                }
+                fn visit_unit<E>(self) -> Result<FlatField, E> {
+                    Ok(FlatField::Foreign)
+                }
+                fn visit_none<E>(self) -> Result<FlatField, E> {
+                    Ok(FlatField::Foreign)
+                }
+                fn visit_some<D>(self, d: D) -> Result<FlatField, D::Error>
+                where
+                    D: serde::Deserializer<'de>,
+                {
+                    <serde::de::IgnoredAny as serde::Deserialize>::deserialize(d)
+                        .map(|_| FlatField::Foreign)
+                }
+                fn visit_newtype_struct<D>(self, d: D) -> Result<FlatField, D::Error>
+                where
+                    D: serde::Deserializer<'de>,
+                {
+                    <serde::de::IgnoredAny as serde::Deserialize>::deserialize(d)
+                        .map(|_| FlatField::Foreign)
+                }
+                fn visit_map<A>(self, mut map: A) -> Result<FlatField, A::Error>
+                where
+                    A: serde::de::MapAccess<'de>,
+                {
+                    while map
+                        .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                        .is_some()
+                    {}
+                    Ok(FlatField::Foreign)
+                }
+            }
+            d.deserialize_any(V)
+        }
+    }
+
     /// The per-kind wire partition: `(allowed_pools, {allowed_{kind}s → values})`. The map carries
     /// every non-`pool` kind's grant under its frozen wire-field name.
-    pub(super) type ScopePartition = (Option<Vec<String>>, BTreeMap<String, Vec<String>>);
+    pub(super) type ScopePartition = (Option<Vec<String>>, BTreeMap<String, FlatField>);
 
     /// Partition `allowed_scopes` into the per-kind wire fields. `Err` names the offending kind:
     /// an unregistered kind must fail the WRITE, loudly, at the boundary - see the module doc.
@@ -189,7 +313,13 @@ mod virtual_key_wire {
         // `allowed_pools` is ALWAYS present for an explicit grant (even empty) so `Some([])` =
         // no-scopes survives the trip; the per-kind fields are additive and omitted when empty
         // (a kind with no values never gets a map entry above).
-        Ok((Some(pools), by_kind))
+        Ok((
+            Some(pools),
+            by_kind
+                .into_iter()
+                .map(|(field, values)| (field, FlatField::Values(values)))
+                .collect(),
+        ))
     }
 
     /// Reassemble the per-kind wire fields into kind-tagged scopes. All three absent = the
@@ -197,14 +327,18 @@ mod virtual_key_wire {
     /// (fail-closed, exhaustive-across-kinds) list.
     pub(super) fn assemble_scopes(
         pools: Option<Vec<String>>,
-        by_kind: BTreeMap<String, Vec<String>>,
+        by_kind: BTreeMap<String, FlatField>,
     ) -> Option<Vec<ScopeRef>> {
-        // Only `allowed_*` wire fields carry scopes; any other flattened key is ignored so a
-        // foreign top-level field never becomes a phantom scope kind.
+        // Only `allowed_*` wire fields carry scopes, and only where the value is the array a grant
+        // is always written as; any other flattened key is ignored so a foreign top-level field
+        // never becomes a phantom scope kind.
         let scope_fields: Vec<(String, Vec<String>)> = by_kind
             .into_iter()
-            .filter_map(|(field, values)| {
-                scope_kinds::kind_for_wire_field(&field).map(|kind| (kind, values))
+            .filter_map(|(field, value)| match value {
+                FlatField::Values(values) => {
+                    scope_kinds::kind_for_wire_field(&field).map(|kind| (kind, values))
+                }
+                FlatField::Foreign => None,
             })
             .collect();
         if pools.is_none() && scope_fields.is_empty() {

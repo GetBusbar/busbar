@@ -1025,3 +1025,34 @@ fn default_list_keys_since_treats_an_unstamped_row_as_changed() {
          backend that does stamp; got {ids:?}"
     );
 }
+
+/// A key row carrying a field this build has never heard of still READS.
+///
+/// The per-kind scope fields are flattened, and a flattened map is greedy: every key the named
+/// fields did not claim lands in it, including one a LATER version adds. Typed as arrays-only, a
+/// new scalar field (`"tenant":"acme"`, a bool, an object) is not a deserialize warning — it is a
+/// hard `Err`, so the whole key becomes unreadable. That is a fleet-shaped failure: during any
+/// rolling upgrade the old nodes are reading rows the new nodes wrote, and a key that will not
+/// deserialize is a principal that cannot authenticate. Only ARRAY-valued unknown fields are scope
+/// grants; anything else is somebody else's field and is passed over.
+#[test]
+fn a_row_with_a_new_scalar_field_still_reads_on_an_older_node() {
+    let row = r#"{
+        "id":"vk_1","generation_hash":"h","name":"n",
+        "allowed_pools":["fast"],
+        "enabled":true,"created_at":1,
+        "tenant":"acme",
+        "max_widgets":7,
+        "beta":true,
+        "shard":null,
+        "routing":{"region":"us-east"}
+    }"#;
+    let k: VirtualKey = serde_json::from_str(row)
+        .expect("a field a later version added must not make an existing key unreadable");
+    assert_eq!(k.id, "vk_1");
+    assert_eq!(
+        k.allowed_scopes,
+        Some(vec![ScopeRef::pool("fast")]),
+        "the grant this build DOES understand is unchanged by the fields it does not"
+    );
+}
