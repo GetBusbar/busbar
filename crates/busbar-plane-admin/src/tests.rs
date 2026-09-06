@@ -442,15 +442,8 @@ fn source_cites_the_design_in_words_not_in_symbols() {
             if line.contains('\u{00a7}') {
                 offenders.push(format!("{}:{}: section sign", path.display(), n + 1));
             }
-            let bytes = line.as_bytes();
-            for i in 0..bytes.len().saturating_sub(4) {
-                if bytes[i] == b'P'
-                    && bytes[i + 1] == b'B'
-                    && bytes[i + 2] == b'-'
-                    && bytes[i + 3].is_ascii_digit()
-                {
-                    offenders.push(format!("{}:{}: binding identifier", path.display(), n + 1));
-                }
+            if cites_a_binding(line) {
+                offenders.push(format!("{}:{}: binding identifier", path.display(), n + 1));
             }
         }
     });
@@ -458,6 +451,37 @@ fn source_cites_the_design_in_words_not_in_symbols() {
         offenders.is_empty(),
         "section-sign or parity-binding literal found: {offenders:?}"
     );
+}
+
+/// Whether a line cites a parity binding by its identifier rather than in words.
+///
+/// The window is four bytes wide, so the last position it can start at is four from the end. An
+/// exclusive bound of `len - 4` stops one position short of that, which makes the gate blind to a
+/// citation that ENDS a line — the one place a comment naturally puts one.
+fn cites_a_binding(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    (0..bytes.len().saturating_sub(3)).any(|i| {
+        bytes[i] == b'P'
+            && bytes[i + 1] == b'B'
+            && bytes[i + 2] == b'-'
+            && bytes[i + 3].is_ascii_digit()
+    })
+}
+
+/// The citations here are spelled in two pieces on purpose: a whole one would be the very literal
+/// the gate above forbids, and this file is inside the tree it walks.
+#[test]
+fn the_binding_scan_sees_a_citation_that_ends_a_line() {
+    assert!(
+        cites_a_binding(concat!("// the admin-listener exemption, P", "B-7")),
+        "a citation four bytes from the end is the shape a comment ends on"
+    );
+    assert!(cites_a_binding(concat!(
+        "P",
+        "B-60 is checked after Authenticate"
+    )));
+    assert!(!cites_a_binding("nothing here cites anything"));
+    assert!(!cites_a_binding(concat!("P", "B- with no number")));
 }
 
 fn walk(dir: &std::path::Path, f: &mut impl FnMut(&std::path::Path, &str)) {
