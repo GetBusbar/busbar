@@ -198,7 +198,7 @@ and is listed here only because the pricing surface is read alongside them.
 | Secret | `resolve`, `watch`, `sign`, `seal/unseal` (SIV-AEAD, deterministic); `watch` is inert for every migrated 1.5.5 ref (resolved once at 1.5.5's site, PB-34) | `KEY`, `REF_GRAMMAR` |
 | Hook | `observe(seat, &HookView) → HookFacts` at the four seats `Before(Approve)` (1.5.5 `Request`), `After(Admit)` (1.5.5 `Candidate` — AFTER the draw, so a restrict-to-empty veto consumes the `requests` slot exactly as 1.5.5's late reject did), `Before(Route)` (1.5.5 `Routing`, also after the draw), `After(Route)` (1.5.5 `Response`); `HookFacts { permutation: Option<Permutation> (None = abstain, 1.5.5's `Abstain`), restrict: Option<CandidateSet>, veto: Option<VetoCode>, rewrite: Option<IrPatch>, tap: Facts }`; COMPOSITION at a seat: hooks at a gate seat run CONCURRENTLY (`join_all`) against the same t0 candidate set, the reject winning by chain position — 1.5.5's order (proxy-hooks :126-130); sealed in `Policy`, `restrict` sets intersect, the first `veto` wins, the LAST non-`None` permutation wins, re-validated against the final restricted set (PB-5; a ranked order is walked as-is, as 1.5.5 does); the SWRR floor applies when every permutation above it is `None` OR when no ranked lane passes the pick-time gate (in this hop's set, non-zero weight, `ready_in` peek) — 1.5.5's fall-through, PB-5; `restrict` carries `on_empty ∈ { weighted | reject | first }` (the 1.5.5 key, default `reject` — PB-1; `weighted` = for a GATE, skip only that gate's restriction (candidate set unchanged), for the BASE POLICY, escape to the full pool under the SWRR floor (PB-28); `first` on the restrict-empty arm takes the SAME 503 as `reject` (1.5.5's `if matches!(on_empty, Weighted)` else-branch; `first` orders only as an `on_error`-chain terminal, PB-1)), sealed per migrated hook at `Migration`; a MIGRATED 1.5.5 `Request`-stage hook seats `After(Admit)` ahead of the `Candidate` hooks, in 1.5.5's order (PB-6, PB-46 — `Before(Approve)` is a 1.6.0-native seat); `After(Route)` is `Tap`-only (the response has relayed and the fee is decided) and fires once per request that reached the forward path with 1.5.5's `outcome`, OR once on a pre-forward auth refusal on a hooked pool with the synthetic `rejected_by_auth` (OWNER DECISION, PB-84 — every other pre-forward refusal still never taps), detached under `MAX_INFLIGHT_TAP_NOTIFICATIONS = 1024` (PB-84) — 1.5.5 `Gate` = veto/restrict/rewrite, 1.5.5 `Tap` = `tap` facts only; a `rewrite` is applied by the kernel to the `Ir` over the SPOOLED BODY (the head plus the spill, retained until the egress body is encoded at Route or the unit ends — the same bytes the pointers price; never to bytes on the wire; the patched body lives in the spill under `spill_budget`, so a 1.5.5 full-body rewrite gate works unchanged), price-neutral by default (`max_priced_delta = 0`), journaled `Access` with pre/post hash, bounded by `max_priced_delta`; the compiled-in 1.5.5 ranking strategies are in-tree hooks of this kind | `KEY`, kind (`Tap` | `Gate`), seats, `HOOK_FACTS`, `on_failure`, `max_priced_delta`, `may_change_destination`, `may_rewrite` |
 | Export | `receive(JournalEntry | ContentFacts | Segment) → Ack`; `ANCHOR { write(head), read_head(n) }` | `KEY`, sink, format, retention it owns |
-| Rate card (config) | unit price = f(lane, meter_class, extras), with a `*` default lane row (used by `SessionAccrual` on sessions that dialed nothing; absent while any bucket declares a `session_seconds` class → boot refusal `MissingDefaultLaneRow`) with a bucket-level tier multiplier (§4.5); versioned; quantity sources per (plane, transport); permitted lanes per op class; max unit price; lane aliases; `KernelVerb` section (default 0); **bucket chain and cap dimensions** (§4.6) | meter classes, prices, windows, frame selectors, divisors |
+| Rate card (config) | unit price = f(lane, meter_class, extras), with a `*` default lane row (used by `SessionAccrual` on sessions that dialed nothing; absent while any bucket declares a `session_seconds` class → boot refusal `MissingDefaultLaneRow`) with a bucket-level tier multiplier (§4.5); **DATED, not merely versioned — the deployment holds an append-only HISTORY of `(effective_from, effective_until, card)` entries numbered by a dense `history_seq`, and a card prices NATIVELY in one or more currencies (no pivot currency, no conversion; a currency a card does not name is a refusal, never a converted figure)** (§4.5); quantity sources per (plane, transport); permitted lanes per op class; max unit price; lane aliases; `KernelVerb` section (default 0); **bucket chain and cap dimensions** (§4.6) | meter classes, prices, windows, frame selectors, divisors |
 
 **The store trait is typed after the published ABI-2 store protocol**, extended with the 1.6.0-only
 operations: the twelve ABI-2 methods (`heartbeat`, `elect_checkpoint`, `claim_key`, `void_claims`,
@@ -296,8 +296,12 @@ decode           plane.decode_ingress → Ingress::{NeedMore | Open | OneShot | 
                  budget)) × the CHAIN's `tier_bp` ÷ 10^4⌉ (one tier per chain — `TierMismatch` otherwise; a 1.5× chain holds 1.5× — tier ≠ 1.0 boundary cell); estimate_c converts bytes to the
                  class's quantity through the per-class divisor — a pinned default in the plane's `METER_CLASSES` declaration, overridable by the card, so class caps work with no card at all (1.5.5 enforces `tokens` caps with pricing off), and a
                  client-located max_response is CLAMPED to the lane's declared max; a fan-out estimate is (for LOCALLY delivered recipients only; remote recipients are priced on their `Delivery` units — never both; §8.1 cell: Σ parent + children == the single-node figure)
-                 multiplied by the recipient count resolved at Approve; the rate-card version is captured
-                 NOW from the current Policy epoch. PRICING COVERAGE: a rate card present at boot must be
+                 multiplied by the recipient count resolved at Approve; the HOLD is sized against the card the
+                 history resolves for the unit's OWN arrival instant — `card_at(arrived)` under the history
+                 head pinned at the door — and the `history_seq` pinned there is recorded on the posting as a
+                 CACHED LOOKUP, never as the authority (§4.5 clause 4). The hold is a RESERVATION, not a price
+                 of record: a later amend of the history moves what the unit is BILLED and can never
+                 retroactively refuse a unit that was served (PB-22). PRICING COVERAGE: a rate card present at boot must be
                  COMPLETE over every configured lane for the card's declared meter-class set (1.5.5's rule:
                  every configured lane has an entry, no entry names an unknown lane — else boot/--validate
                  FAIL with a paste-able stub); `Unpriced` is defined only relative to a PRESENT card — with no card every class prices 0, unflagged, attribution only, and `Count`-sourced kernel lines are never `Unpriced`; a meter class OUTSIDE a present card's declared set (a plane's own
@@ -372,7 +376,7 @@ open-disputes report until a verdict, bounded by `dispute_max_age`):
 | crash-recovered, `Dispatched` present (`Recovery::materialize(&record, &RecoveryToken)`) | last checkpointed accrual (0 if none) | `recovered` |
 | crash-recovered, no `Dispatched` | 0 | `voided` |
 | two REPORTED evidence sources (the §4.5 variance-rule pairs) in one class family disagree beyond tolerance — for a `Locator` class the located figure is always the charge and the kernel floor is a tripwire only (§4.7) | the lower | `MeterDisputed` |
-| three-way lane mismatch | the cheaper entry | `MeterDisputed` |
+| three-way lane mismatch | the cheaper entry — "cheaper" evaluated ONCE, as `price(quantities, card_at(the unit's arrival instant), the bucket's currency)`, so the choice is deterministic and does not move when the card does (a later history amend reprices the entry that was chosen; it never re-chooses) | `MeterDisputed` |
 | accrual whose `HoldAccrual` was refused (parent already exited) | the child's own posting, backed by a synchronous slice draw at settle (overdraft if the slice is empty; on a `total` bucket it still posts, flagged `Overdraft` with no carry and the bucket stays exhausted — exposure ≤ `max_provider_push` × max price_c × `tier_bp` ÷ 10^4 nano-units per class) so the identity balances; a `late_accrual` ALWAYS posts | `late_accrual`, referencing the parent's settle |
 | value delivered, settle record lost (`DurabilityLost`) | retained and re-appended | `unposted` |
 
@@ -742,10 +746,24 @@ Records: `Hold+Dispatched`, `Dispatched` delta, `Settle` delta (carries audit fa
 `Lease` (concurrent), `Policy`, `Checkpoint`, … each ≤ `MAX_RECORD_BYTES` with an overflow
 continuation; **a torn tail is truncated at recovery to the last record whose `hash` verifies**.
 `JournalEntry { seq (presentation only), node, node_seq, lease_epoch, policy_epoch, prev_hash, body_hash,
-hash, subject, key_hash, class, steps ≤16, usage_lines ≤16 (meter_class, quantity, source, estimated),
-priced_amount (nano-units, i128, post-tier), pre_tier_amount, tier_bp, fee_count, currency, rate_card_version,
+hash, subject, key_hash, class, steps ≤16, lane, usage_lines ≤16 (meter_class, quantity, source, estimated),
+fee_count, tier_bp, arrived_ms, currency, history_seq, card_seq,
+priced_amount (nano-units, i128, post-tier), pre_tier_amount,
 bucket_chain_ref, window_start, wall, mono, audit: AuditFacts, correlation_hash, refs: [(node,
-node_seq, hash)], versions }`. **No client-supplied bytes are in the entry**: the client idempotency key
+node_seq, hash)], versions }`. **What is TRUTH and what is CACHE** (§4.5 clause 2): `lane`,
+`usage_lines`, `fee_count`, `tier_bp` and `arrived_ms` are the stored truth — quantities and the
+instant they happened. `priced_amount` and `pre_tier_amount` are a CACHED LOOKUP of
+`price(usage_lines, card_at(arrived_ms) under history_seq, currency)`, re-derivable at any time and
+never authoritative; `history_seq` is the head at settlement and `card_seq` the entry it resolved to,
+so the cache names both inputs that produced it. Where cache and lookup disagree the LOOKUP wins and
+the cache is corrected in place (§4.2). A body written by an earlier build carries no `usage_lines`
+and is read from its cache, flagged. **A `Policy` record additionally carries a rate-card HISTORY
+ENTRY** `{ history_seq, effective_from, effective_until, card, appended_at, author }` where `author`
+is `Opening | Config { policy_epoch } | Amend { operator_fingerprint, reason_hash }`; and a
+`Transaction` record additionally carries a REPRICING entry (§4.7's `amend_rate_history`)
+`{ key, window, currency, from_seq, to_seq, old_card_seq, new_card_seq, quantities, fee_count,
+old_nanos, new_nanos, delta, postings, operator_fingerprint, reason_hash }`. The fourteen record
+classes below do not change: a history entry is a `Policy`, a repricing is a `Transaction`. **No client-supplied bytes are in the entry**: the client idempotency key
 is stored as `H(client_key)` (`claim_key` keys on the hash); the correlation label is hashed. Hashing:
 `body_hash` on the unit's thread; `hash = H(version ‖ node ‖ node_seq ‖ prev_hash ‖ body_hash)` in the
 sequencer. `subject = Principal(pseudonym) | Arrival | Node | Aggregate`. `class = Transaction | Access |
@@ -758,7 +776,10 @@ Each node seals its own chain at WAL time. A `Checkpoint` — by the winner of `
 `checkpoint_entries` or `checkpoint_interval` (§4.7) — cross-links every head; seals per `(bucket,
 dimension, scope)` totals (**budget, Σ
 drawn, Σ released, Σ settled, Σ open holds, Σ adjustments, Σ unreconciled, Σ overdraft carried in/out,
-oldest open hold age, open-dispute count, oldest dispute age, Σ disputed**), the `backup_watermark`,
+oldest open hold age, open-dispute count, oldest dispute age, Σ disputed**), **the `history_seq` those
+totals were evaluated at — a checkpoint means "these figures, at that history", which is what makes a
+sealed total re-derivable rather than merely asserted; an amend NEVER rewrites a sealed body, it is
+expressed forward as adjusting entries (§4.7)** —, the `backup_watermark`,
 and the store `Seq` high-water; is signed via the secret plugin's `sign`; is anchored through an export
 plugin's `ANCHOR`. The anchor sink must lie outside every node's write authority — a trust assumption
 stated, not enforced; the default local-file anchor is self-attestation and the ledger endpoint (PB-16) reports it with an
@@ -775,10 +796,16 @@ confirmed (for the open window, `Δ drawn` is the
 window cap minus store remaining minus the checkpointed figure; closed windows must show Δ = 0 after
 their last transfer; adjustments release headroom to the store only inside the open window, otherwise
 they are pure ledger reversals; an attribution bucket's identity is Σ settlements == Σ accrued). **Independent recompute** on the node Tick: for every
-posting since the RECOMPUTE WATERMARK — the last recomputed `(node, node_seq)`, carried in the `Reconciliation` entry, never "since the last checkpoint" (at the headline rate a checkpoint is 42 ms old and would cover 4 % of postings); the watermark must reach the journal head every tick (cell: a hand-corrupted `priced_amount` older than the last checkpoint still alarms) — `Σ quantity × price` is recomputed from the `Policy` sealed at the
-posting's `policy_epoch` — the card at `rate_card_version`, `per_request_fee` (which prices the fee
-line) and the bucket's `tier_bp` are all sealed there — and compared to `priced_amount`; divergence
-alarms; the recompute applies clause 2 origin rule to the fee line (0 for non-client origins); on a no-card deployment the fee line is what the recompute checks (asserted by the no-card cell).
+posting since the RECOMPUTE WATERMARK — the last recomputed `(node, node_seq)`, carried in the `Reconciliation` entry, never "since the last checkpoint" (at the headline rate a checkpoint is 42 ms old and would cover 4 % of postings); the watermark must reach the journal head every tick (cell: a hand-corrupted `priced_amount` older than the last checkpoint still alarms) — `Σ quantity × price` is recomputed from the RATE-CARD HISTORY at the
+posting's `history_seq` — `card_at(arrived_ms)`, its `per_request_fee` for the posting's currency (which
+prices the fee line) and the bucket's `tier_bp` — and compared to the CACHED `priced_amount`. **The
+recompute is now the ARBITER, not merely an auditor: where the two disagree the lookup wins and the
+cache is corrected in place, journaled as a `Reconciliation` entry.** A disagreement is an ALARM when
+the posting's `history_seq` equals the head (nothing should have moved), and a NORMAL, EXPECTED,
+journaled correction when the head has advanced past it — which is exactly the state an
+`amend_rate_history` leaves behind. Tampering is still caught: a hand-corrupted `priced_amount`,
+`usage_line` quantity or `arrived_ms` all fail the re-derivation and alarm, and the chain hash over the
+body catches the last two independently. The recompute applies clause 2 origin rule to the fee line (0 for non-client origins); on a no-card deployment the fee line is what the recompute checks (asserted by the no-card cell).
 `verify` runs every T (default 24 h) writing a `Reconciliation` entry. WAL loss is a `ChainBreak`.
 **Retention** (any store) purges a segment only when **all** hold: older than an anchored checkpoint;
 below the `backup_watermark`; no open dispute or adjustment references it; and either an acked export of
@@ -867,33 +894,79 @@ secret plugin; rotation and escrow follow §4.7; key loss is treated as erasure 
   rule**, stated per source pair: `PlaneCount` or `Count × TransportFacts` versus its kernel companion — disagreement beyond the per-class tolerance (`variance_tolerance`,
   §4.7; a rate card may tighten it per class) post the lower, `MeterDisputed`; `KernelBytes` is
   cross-checked against the socket counter.
-- **Numeric contract, five numbered clauses — clauses 1–4 are 1.5.5's pricing law (`cost.rs`;
-  `billing-unified.md` in the dev tree restates it), with a changed storage layout; clause 5 is new in
-  1.6.0.**
-  1. *Rates*: integer nano-units per quantity (config micro-units × 1000, `f64::round` once at policy
-     load; NaN/negative clamp to 0); base unit price depends on `(lane, meter_class)`; an **extras table**
+- **MONEY IS A LOOKUP OVER QUANTITIES (owner decision 2026-09-06; `docs/design/rate-card-history.md`
+  is the full design and supersedes `rate-card-epochs.md`'s recommendation).** A posting stores
+  QUANTITIES per meter class and the INSTANT they happened; nothing priced is truth. A rate card is
+  an APPEND-ONLY DATED HISTORY of entries `(history_seq, effective_from, effective_until, card)`,
+  each card pricing NATIVELY in one or more currencies — no pivot currency, no conversion, ever
+  ("token → Yen, not token → USD → Yen"). A price is
+  `price(posting, currency, history@S) = Σ quantity × rate of card_at(posting.arrived_ms) under
+  snapshot S`, tiered once, truncated once. **A BOOKED LINE IS NEVER REWRITTEN**: a config
+  `PUT rate_card` APPENDS an entry effective now, and back-dating is the operator-signed
+  `amend_rate_history` verb (§4.7) which appends a dated entry AND emits one journaled, signed
+  REPRICING record per affected `(window, bucket)` — carrying both card versions, the summed
+  quantities, both amounts and the delta — so the original figure and the correction are both on the
+  record forever. **Statements are cut AS OF a snapshot**: every `/api/v1/admin/ledger/*` read takes
+  an optional `?as_of=<history_seq>` and `?currency=<CCY>`, defaults to the head, and echoes
+  `history_seq`, `head`, `currency` and the adjusting entries that make it differ from any earlier
+  snapshot. **Money reads never recompute silently.** `card_at` returning nothing is a REFUSAL
+  (`Refused(Admit, Unpriced)` under `allow_unpriced: false`), never a zero.
+  **Resolution rule**: among entries with `seq ≤ S` whose `[effective_from, effective_until)` covers
+  the instant, the HIGHEST `seq` wins. Overlap is legal and is the point — an amend out-ranks the
+  entry it corrects instead of deleting it.
+- **Numeric contract, five numbered clauses — clauses 1, 3 and 5 are 1.5.5's pricing law (`cost.rs`;
+  `billing-unified.md` in the dev tree restates it) with a currency axis added; clause 2 is the
+  changed storage layout; clause 4 is the dated history. Clause 5 is new in 1.6.0.**
+  1. *Rates*: integer nano-units of the currency's MAJOR unit per quantity (config micro-units × 1000, `f64::round` once at policy
+     load; NaN/negative clamp to 0), **one configured integer per `(lane, meter_class, currency)`, never derived from another currency's rate**; base unit price depends on `(lane, meter_class, currency)`; an **extras table**
      (open keys) adds further meter classes; budget caps are configured in cents (1.5.5's unit) and LIFTED to nano-units at policy load (`cap × 10^7`) for the ledger's draws and slices, but the ADMISSION COMPARISON is 1.5.5's — derived spend truncated once to cents, plus the fee lookahead, against the cap in cents (parity clause) — so no window ever refuses earlier or later than 1.5.5.
-  2. *Storage*: `pre_tier_amount` = Σ over the posting's usage lines of quantity × unit price, in
+  2. *Storage*: **the posting stores the QUANTITIES and the INSTANT — `lane`, `usage_lines`
+     (meter_class, quantity, source, estimated), `fee_count`, `tier_bp`, `arrived_ms`, `currency` —
+     and those are the truth. `pre_tier_amount` and `priced_amount` are stored beside them as a
+     CACHED LOOKUP (§4.1), re-derivable from the quantities and the history, never authoritative;
+     `history_seq` and `card_seq` name the two inputs that produced the cache.** The cached
+     `pre_tier_amount` = Σ over the posting's usage lines of quantity × unit price, in
      nano-units, INCLUDING the flat fee as its own usage line (class `fee`, quantity `fee_count`, unit
      price `per_request_fee` cents × 10^7 for `Origin::Client` `Open`/`OneShot` units whose Route selected an `Upstream`/`SessionUpstream` leg ONLY (§2.2 (a)) and 0 for Handshake, Tick (incl. Tick units routing `SessionAccrual`), Nested, Delivery and Provider units — one fee per client request, as 1.5.5 (oracle cell) — 1.5.5's key, clamped as there; the fee consumes budget
-     exactly as in 1.5.5); currency is a 1.6.0 addition (one per bucket; mixing is a boot refusal); `tier_bp` likewise: one per chain, mixing is a boot refusal.
+     exactly as in 1.5.5); currency is a 1.6.0 addition (one per bucket; mixing is a boot refusal; a bucket whose declared currency the card in force at boot does not price is a boot refusal, never a converted figure); `tier_bp` likewise: one per chain, mixing is a boot refusal.
   3. *Projections* (read only, truncating once over the summed nano-units incl. the fee line — since the
-     fee line is an exact multiple of 10^7 this equals 1.5.5's "truncate usage, then add fee"): cents =
-     `Σ nanos ÷ 10^7`; micros = `Σ nanos ÷ 10^3`; saturate at `i64::MAX`; cents floor at 0 (`derive_spend_cents`'s `.max(0)`), micros do NOT (`derive_spend_micros` has no clamp) — PB-16. Postings group
+     fee line is an exact multiple of one minor unit this equals 1.5.5's "truncate usage, then add fee"): **minor units = `Σ nanos ÷ 10^(9 − minor_exponent(currency))` — the ONE generalisation, so USD (exponent 2) divides by 10^7 and IS today's cent projection bit for bit, JPY (0) divides by 10^9 into whole yen, and BHD/KWD (3) divide by 10^6 into fils**; micros = `Σ nanos ÷ 10^3`; saturate at `i64::MAX`; cents floor at 0 (`derive_spend_cents`'s `.max(0)`), micros do NOT (`derive_spend_micros` has no clamp) — PB-16. Two currencies never sum: `Σ` is per currency. Postings group
      onto 1.5.5's store rows per `(key, day, lane, provider)`; the legacy `/usage` projection is per §10.
-  4. *Immutability*: priced once at settlement with the rate-card version captured at hold from the
-     `Policy` epoch current at Admit; a card change (a new `Policy`) applies to holds opened after it and
-     never to history; postings already made are immutable INTERNALLY — but the legacy `/usage` projection derives at READ TIME from the CURRENT card exactly as 1.5.5 does (retroactive repricing is 1.5.5 behaviour and is reproduced byte for byte; the immutable posting is on the 1.6.0 endpoints only) — parity clause.
+  4. *History, and the adjusting entry* (**this clause replaces the former *Immutability* clause;
+     the change is registered `breaking` and is the ONE user-observable difference this release
+     makes to money — §10, PB-103**): the quantities and the instant are immutable; the AMOUNT is a
+     lookup and is never immutable, because it was never a stored truth. A card change is an APPEND
+     to the history — `PUT /config/settings rate_card` appends an entry effective NOW, closing the
+     previous open entry, and stays GENUINELY LIVE (no restart, 1.5.5's ergonomics and 1.5.5's wire
+     bytes). Back-dating is the operator-signed `amend_rate_history` verb (§4.7), never a config side
+     effect: it (a) APPENDS an entry effective over the operator-named `[from, until)`, journaled
+     `Policy`, (b) emits one signed, journaled `Transaction` REPRICING record per affected
+     `(window, bucket)` carrying `from_seq`/`to_seq`, both card seqs, the summed quantities, both
+     amounts and the delta, and (c) moves `Σ delta` into `adjustments` and **NOTHING into `settled` —
+     no booked line is rewritten**, so the §4.2 identity closes with no new term.
+     **Reproducibility**: an invoice is a read at a named `history_seq`; two reads at the same
+     snapshot are byte-equal forever, two reads at different snapshots differ by exactly the sum of
+     the adjusting entries between them, and both reads SAY SO. **The legacy `/usage` projection
+     still derives at READ TIME from stored quantities — but against the card in force AT EACH ROW'S
+     INSTANT, not against the current card.** A window in which no card changed is byte-identical to
+     1.5.5; a window in which one did is not, and that is the registered breaking difference
+     (retroactive repricing of the whole day at the newest card is 1.5.5 behaviour and is
+     DELIBERATELY NOT reproduced — the only such case in this release).
   5. *Tier* (**new in 1.6.0**; 1.5.5 has no service-tier multiplier — its per-tier token classes are
      meter classes here, and an upstream-reported per-response tier prices through the extras table):
      `tier_bp` is a **bucket-level** multiplier from the bucket's config (default 10,000 = 1.0×) applied
      **once over the posting's summed pre-tier nano-units** (a single divide, never a sum of per-line
      floors); `priced_amount = pre_tier_amount × tier_bp
-     ÷ 10^4` truncated once; the posting stores `tier_bp`, `pre_tier_amount` and `priced_amount`; the
+     ÷ 10^4` truncated once; the posting stores `tier_bp` as truth and `pre_tier_amount`/`priced_amount` as the clause-2 cache; the
      recompute (§4.2) applies the same rule.
-  The oracle compares quantities byte-identical, amounts as "1.5.5 re-priced at the pinned migration
-  card == Σ stored nano-units" (fee and usage separately; an extras cell), plus a mid-window rate edit
-  asserting the expected divergence. The tiered-bucket cell has no 1.5.5 reference: its expected amounts
+  The oracle compares quantities byte-identical, amounts as "1.5.5 re-priced at the migration
+  card == Σ price(quantities, history@0)" — exact, because a single-entry history effective from
+  instant 0 IS that card and the arithmetic is the same rates in the same order with the same
+  saturation and the same single truncation (fee and usage separately; an extras cell) — plus a
+  mid-window rate edit asserting the divergence of PB-103 (each row at the card it was earned under,
+  not the whole day at the newest card), an `as_of` cell proving two snapshots differ by exactly the
+  adjusting entries, an amend cell proving `settled` does not move while `adjustments` does, and a
+  native-currency cell proving no cross-rate appears anywhere. The tiered-bucket cell has no 1.5.5 reference: its expected amounts
   are the verifier's hand computation only (§8.1).
 - The priced **lane** is cross-checked three ways (§2.2) through the lane-alias map; mismatch → the
   cheaper entry, `MeterDisputed`; above `lane_mismatch_alarm` per window per (plane, lane) → alarm, and `draining` on 1.6.0-native planes only (1.5.5's only drain triggers are SIGINT, SIGTERM and `POST /admin/restart` — a node never drains itself on the reference plane). The hold is opened at Σ per-class estimates × the max unit price over the verified set ×
@@ -952,14 +1025,30 @@ at the tag — 66 operations over 49 paths (34 `read-only`, 32 `full` — `POST 
 the 1.6.0 additions: `verify`, `plane_facts`, `plane_record_write`, `set_operator_key`, `set_escrow`,
 `chain_break`, `store_restore`, `reseal_epoch_floor`, `set_dual_control`, `set_overdraft_ceiling`,
 `set_dispute_max_age`, `commit_upgrade`, `resolve_dispute`, `resolve_slice`, `adjust`, `export_keyset`,
-`approve` (the maker-checker approval under `required`: its payload hash must equal the pending mutation's and its approver must differ from the maker) (17 verbs; keyset import is the off-node CLI, not a verb).
+`approve` (the maker-checker approval under `required`: its payload hash must equal the pending mutation's and its approver must differ from the maker), **`amend_rate_history`** (18 verbs; keyset import is the off-node CLI, not a verb).
 
-**HTTP binding of the 17.** Each of the 17 binds as `<kebab-case-verb>` under the admin prefix: POST for
+**`amend_rate_history` — the one verb that moves money already booked.** Payload
+`{ from, until, card, reason, signature }`. It is REFUSED without an operator signature; refused on a
+partial card (the card is AUTHORITATIVE and COMPLETE, as at boot, and must name every currency the
+deployment's buckets declare); refused when `from` is in the future (that is `PUT`, not an amend);
+refused when the named interval would leave any instant covered by no entry (`HistoryHole`). It
+appends a `Policy` history entry, emits the §4.5 clause 4 REPRICING records, and moves `Σ delta` into
+`adjustments` only. Idempotent by `Idempotency-Key` (PB-21) and, additionally, by construction: an
+amend equal to the newest `Amend` entry on `(from, until, card_hash, operator_fingerprint)` is a
+no-op returning the existing `history_seq`. Two DIFFERENT amends over one window both apply, in
+`seq` order, the second out-ranking the first, and the second's deltas are computed against the
+first's result — never against the original. Two further read-only verbs join the ledger set:
+`get_rate_history` (`GET /api/v1/admin/ledger/rate-history`) and `get_repricings`
+(`GET /api/v1/admin/ledger/repricings`), both `read-only`, and the five existing ledger reads gain
+optional `?as_of=<history_seq>` and `?currency=<CCY>` (§4.5).
+
+**HTTP binding of the 18.** Each of the 18 binds as `<kebab-case-verb>` under the admin prefix: POST for
 every mutating verb, GET for the two read-only verbs (`verify`, `plane_facts`). Bindings: `GET verify` ·
 `GET plane-facts` · `POST plane-record-write` · `POST set-operator-key` · `POST set-escrow` ·
 `POST chain-break` · `POST store-restore` · `POST reseal-epoch-floor` · `POST set-dual-control` ·
 `POST set-overdraft-ceiling` · `POST set-dispute-max-age` · `POST commit-upgrade` ·
-`POST resolve-dispute` · `POST resolve-slice` · `POST adjust` · `POST export-keyset` · `POST approve`.
+`POST resolve-dispute` · `POST resolve-slice` · `POST adjust` · `POST export-keyset` · `POST approve` ·
+`POST amend-rate-history`.
 
 The
 15 operations the dev tree added to the admin API since the tag are separate new surface with their own
@@ -977,6 +1066,9 @@ principals (`Refused(Approve, InsufficientApprovers)`); `required → single` ne
 
 **Irreducible set, required in both postures**: `chain_break`, `store_restore`, `commit_upgrade`,
 `set_dual_control`, `reseal_epoch_floor`, `set_operator_key` (once set), `set_escrow`, `export_keyset`,
+**`amend_rate_history`** (it moves money already booked, which is the same class of authority as
+`adjust` above `adjust_threshold`; consequence, stated: until the operator-key ceremony runs a
+deployment can APPEND to the rate-card history by config `PUT` but cannot BACK-DATE it at all),
 changes to the **binary-digest set** (no verb: it changes only through an operator-signed config reload; `plugins.trust.publishers` stays an ordinary 1.5.5 config key applied on reload — CONF-183 / BOOT-134, PB-11) (the 1.5.5 `plugins/reload` and
 `rollback` verbs themselves are ordinary mutating verbs — immediate under `single`; the digest set is
 initialised at `Bootstrap` with the booting binary's own digest **when an operator key is present, and
@@ -1039,7 +1131,8 @@ signature in both postures. A reload that would violate an operator-pinned `max_
 | `on_empty` (per restrict-capable hook) | `reject` (the 1.5.5 default, PB-1; migrated hooks sealed at `Migration`) | `weighted | reject | first` |
 | `in_flight_cap` (`Refused(Arrival, InFlightCap)` for client units, `Refused(Decode, InFlightCap)` for the rest) | read from 1.5.5's `limits.max_inbound_concurrent` (default 8,192; 0 = unbounded as there — then the arrival gate is open, the crash-exposure formula substitutes the node's measured peak in-flight count (published), and an operator-pinned `max_unposted_accrual` requires a finite `in_flight_cap` at boot, `Refused` otherwise) | `Refused(Arrival, InFlightCap)` above it; per-lane `max_concurrent` (1.5.5 `ModelCfg`) is the egress unit's per-destination pool ceiling — fail, never wait — an at-capacity lane is skipped within the pick (PB-2) |
 | `max_unposted_accrual` (per node) | **the ONE formula, from enforced quantities**: `in_flight_cap × (max_hold + max overdraft ceiling over capped buckets)` — accrual since the last Tick checkpoint can never exceed a unit's hold plus its journaled top-ups plus the ceiling at which it is aborted; published on the ledger endpoint (PB-16); alarmed above `unposted_alarm`; measured at M2 by the kill-mid-stream cell | asserted at boot/reload only when operator-pinned |
-| `currency` | `USD` — the label 1.5.5 emits on the ledger endpoint (PB-16) (`USAGE_CURRENCY`), still abstract minor units | one per bucket; the legacy `/usage` line is byte-identical |
+| `currency` | `USD` — the label 1.5.5 emits on the ledger endpoint (PB-16) (`USAGE_CURRENCY`), still abstract minor units; USD's minor exponent is 2, so `nanos ÷ 10^(9−2)` IS 1.5.5's cent projection bit for bit | one per bucket; the legacy `/usage` line is byte-identical; a card prices each currency NATIVELY (no pivot, no conversion) and a bucket whose currency the card does not price is a boot refusal, never a converted figure; two currencies never sum |
+| `rate_card` history | ONE entry, `Opening`, effective from instant 0, open-ended, sealed at `Bootstrap`/`Migration` from the config's card | append-only; a config `PUT` appends effective now; back-dating only through `amend_rate_history` (irreducible set); `card_at` resolves by highest `history_seq` among covering entries; a hole is `Refused(Admit, Unpriced)`, never a zero |
 | `session_idle_max` / `peer_table_ttl` | 300 s / `stale_serve_max + tick_interval` (631 s) | session idle close; peer-state aging outlives the quorum branch |
 | `stale_serve_max` | `lease_ttl + max_unit_duration` (630 s) | quorum-branch serving bound, before the store's release |
 | `slice_ttl` / WAL segment size / `wal_free_min` | 60 s / 64 MiB / 128 MiB | slice `valid_until`; incremental preallocation; discard-posture low-water |
@@ -1076,8 +1169,8 @@ the counts.
 
 who (pseudonymous principal or arrival subject) · what (unit key, `op_class`, verified destination,
 parent, pre/post hook head) · when · outcome (`UnitEnd`, step, `HookFailed`, emission under/overrun,
-`stale_policy`) · amount (usage lines with sources, pre-tier and priced nano-units, `tier_bp`,
-`fee_count`, currency, rate-card version, bucket-chain ref) · controls (hold/settle/slice/lease refs,
+`stale_policy`) · amount (usage lines with sources — the truth — plus the cached pre-tier and priced nano-units, `tier_bp`,
+`fee_count`, currency, `history_seq` and `card_seq`, bucket-chain ref) · controls (hold/settle/slice/lease refs,
 epochs, hooks applied with priced delta, replay, children) · integrity (prev hash). A plane contributes an op-class id and a finish class;
 two ids. Content is never in the chain; `content_facts` (incl. the correlation label) flow only to
 export plugins; every hook/export content access is an `Access` entry.
@@ -1213,8 +1306,10 @@ of the six kinds that today have gate rules but no implementor of their `busbar-
   amount literals hand-computed by a verifier with no kernel access who re-derives §4.5's clauses 1–4
   against `cost.rs` and clause 5 from this document alone (the tiered cell's only reference); hashed;
   pinned; owner-signed. **No diff-accept — live or
-  expired — covers `usage_lines`, `pre_tier_amount`, `priced_amount`, `tier_bp`, `fee_count`, `currency`,
-  `rate_card_version`, cardinality, or any settlement flag**; the negative corpus contains a pair per
+  expired — covers `usage_lines` (class or quantity), `lane`, `arrived_ms`, `pre_tier_amount`, `priced_amount`, `tier_bp`, `fee_count`, `currency`,
+  `history_seq`, `card_seq`, any field of a rate-card history entry (`effective_from`,
+  `effective_until`, `author`, a card cell) or of a repricing record (`from_seq`, `to_seq`,
+  `old_nanos`, `new_nanos`, `delta`, `operator_fingerprint`, `reason_hash`), cardinality, or any settlement flag**; the negative corpus contains a pair per
   field. Named owner-signed exceptions: NONE for any 1.5.5-reachable surface (parity clause); the only exception is the `required`-posture pending response, a posture no 1.5.5 config can be in.
   (the `required` posture is unreachable from a 1.5.5 config.)
 "Live accepts" = unexpired entries; capped at 20.
@@ -1277,9 +1372,15 @@ key: `verify` passes, others resolve · dispute older than `dispute_max_age` ala
 restart on every store · the 1.5.5 binary reads legacy cells written by 1.6.0 · `session_put` cleaned on
 lease expiry · the operator-key ceremony · 3-node upgrade keyset import · accrual bound violated on reload is refused.
 
-**Unit invariants (solo batteries)**. Ledger: priced once and stored in nano-units (pre-tier and
-post-tier); integer sums order-independent; derive after settle returns exactly what was settled;
-cents/micros only at read, truncation once, fee after; rollover at the boundary; all-zero tier is a
+**Unit invariants (solo batteries)**. Ledger: **quantities stored once and never rewritten; the
+lookup at the posting's own settlement snapshot returns exactly what was settled, and the stored
+nano-unit figures (pre-tier and post-tier) are a cache of that lookup, corrected by the recompute
+rather than trusted**; the lookup is a pure function of `(quantities, history snapshot, currency)` —
+same three inputs, same answer, forever; a history is append-only and `card_at` resolves by highest
+`seq` among covering entries; an amend moves `adjustments` and never `settled`; the difference
+between two snapshots equals the sum of the adjusting entries between them, exactly;
+integer sums order-independent;
+minor units/micros only at read, truncation once at `10^(9 − minor_exponent)`, fee after; two currencies never sum; rollover at the boundary; all-zero tier is a
 no-op; tier applied once over the sum; concurrent settles sum; corrections are reversals. Audit chain:
 every entry verifies; append-only; read-back byte-equal; a seal is recorded; restart replays to the
 anchored head. Admission: all-or-nothing chain draw; hold ≤ slice; top-up journaled; `Exhausted`
@@ -1429,7 +1530,11 @@ truncation; per-node in-process idempotency cache (mint twice across nodes, as 1
 parent check on admin mint; unbounded pool candidate sets; spill sized to 1.5.5's buffering; serve-
 through on any store outage for peerless deployments (write-behind, reconcile later); no new boot
 refusals; every 1.5.5 dynamic plugin loads; historical `/usage` figures reproduced by the legacy
-projection byte for byte, INCLUDING retroactive repricing at read time when the card changes (the immutable figure lives on new endpoints); every metric name, type (the duration SUMMARY), label and help text; every
+projection byte for byte, derived at read time from stored quantities exactly as 1.5.5 does — with
+**the single exception this release makes to money (PB-103, registered `breaking`)**: the derivation
+is against the card in force at each row's instant, read from the dated rate-card history (§4.5
+clause 4), not against the current card, so a window in which nobody changed prices is byte-identical
+and a window in which somebody did is not; every metric name, type (the duration SUMMARY), label and help text; every
 log line and span field; every CLI flag, env var and exit code; `/healthz`, `/stats`, `/metrics`
 (key-authed, served by the built-in export plugin) unchanged — each with a §8.1 cell: CLI flags and exit codes, env vars and their precedence, SIGHUP-not-handled, the 25 startup steps, the seven `#[instrument]` spans and the request-log record are oracle cells diffed against the 1.5.5 binary (PB-54). The 1.6.0 verbs, the dual-control
 posture, the operator key, the journal, chains, checkpoints, anchors and the disputes report are
@@ -1598,6 +1703,51 @@ the unit they entitle. Totality and type-level step order are what the surface c
   table. Together these are the hub-and-spoke shape already enforced; this row names it in the
   owner's words so it is legible as one decision rather than five independent rules.
 
+### Decisions 2026-09-06 (owner) — money is a lookup over quantities
+
+- **Money is a LOOKUP over quantities, never a stored truth.** In the owner's words: *"keep root
+  values and pricing is just a display/lookup concern. If I wanted to change to Yen from USD it
+  should be a token > Yen conversion not a token > USD > Yen. And if pricing changes we could build
+  a token 5c jan 1 > april 1, 10c april1 > sept etc. It feels wrong to boil it down to $ now and
+  lose that flexibility."* A posting stores QUANTITIES per meter class and the INSTANT they
+  happened; nothing priced is truth. A rate card is an APPEND-ONLY DATED HISTORY of
+  `(effective_from, effective_until, card)` entries numbered by `history_seq`, each card pricing
+  NATIVELY in one or more currencies — **no pivot currency and no conversion, ever**. A price is
+  `Σ quantity × rate of the card in force at the posting's instant`, in the currency asked for, at
+  a named history snapshot. Rounding is per that currency's minor unit
+  (`nanos ÷ 10^(9 − minor_exponent)`), which makes USD bit-identical to today's cents. The full
+  design, with every current behaviour cited to a line, is `docs/design/rate-card-history.md`; it
+  SUPERSEDES the recommendation of `docs/design/rate-card-epochs.md` (whose recorded evidence — the
+  hundredfold mid-window card that turned a 10,000,000-micro-unit window into 1,000,120,000 with no
+  restart and no epoch boundary — stands and is what decided this).
+- **Think banks: a booked line is never rewritten.** A config `PUT rate_card` APPENDS an entry
+  effective now and keeps its live-apply ergonomics unchanged. Back-dating is the operator-signed
+  `amend_rate_history` verb in the irreducible set, which appends a dated entry AND emits one
+  journaled, signed REPRICING record per affected `(window, bucket)` carrying the old card and the
+  new, the quantities, both amounts and the delta — so the original line and the correction are both
+  visible forever. The delta moves `adjustments` and never `settled`, so the §4.2 identity closes
+  with no new term and no sealed checkpoint body is ever rewritten.
+- **Statements are cut AS OF a history snapshot, and money reads never recompute silently.** Every
+  ledger read takes `?as_of=<history_seq>`, defaults to the head, and echoes `history_seq`, `head`,
+  `currency` and the adjusting entries that make its answer differ from any earlier snapshot. An
+  invoice is reconstructible forever by asking for the sequence number printed on it.
+- **The identity test proves three things, and the document says which:** exactness PER SNAPSHOT
+  (residual 0 for any `S`, not a tolerance); exactness against the published 1.5.5 binary for a
+  single-entry history (which is what the migration seals); and that the difference between two
+  snapshots equals EXACTLY the sum of the adjusting entries between them.
+- **The one user-observable cost, accepted:** `/usage` after a mid-window card change no longer
+  reprices the whole day at the newest card. Registered `breaking` (PB-103) with its verbatim
+  CHANGELOG line — the only `effects.usage` divergence in this release, and the only place the
+  parity clause is deliberately not honoured. Every other `/usage` byte, field, key, cap and error
+  is identical. **Residual risk accepted, stated:** an operator who relied on a one-line config
+  `PUT` silently making past figures right must now use a signed verb that leaves a permanent
+  record. That is the point, and it is a real ergonomic loss.
+- **Named as new work, not as a rewiring:** the posting journal record must grow the quantities and
+  the LANE (the node's books keep neither today); no operator-signed admin verb machinery exists in
+  the tree; and the three vocabularies for a card identity (a `String` version in the cost unit, a
+  `u64` in the journal, the ledger and the migration marker, and three spellings of the fee) must
+  converge on one before anything else lands.
+
 ### Decisions 2026-09-07 (owner) — THE PLUGIN TREE
 
 *(Normative spec: `docs/design/PLUGIN-TREE.md`. Where a row below and a sentence in §1–§7 disagree
@@ -1754,3 +1904,4 @@ published 1.5.5 binary.
 | PB-100 | admin wire details | `with_config_etag` stamps `ETag: "<config_version>"`; `if_match_version` parses `*` / bare / quoted / weak else 400 `MalformedIfMatch`, stale ⇒ 409 `version_conflict` on the ~20 config-plane mutations; every audit action is written at BOTH `applied` and `rejected` with the resource literals (`KEY_RESOURCE_NONE = "key:-"`, `config:settings`, `"process"`); `durable_write_through` / `rebase_nondurable_suffix` gap backfill and `restore_from_store`'s re-verify, `fetch_max` seq floor and seal-on-digest-failure; `VersionLog` `MAX_VERSIONS = 100`, RAM-only, re-seeded at boot (`GET /config/versions` lists only version 0 after a restart — the journal never feeds it); `POST /auth/token` returns `200 {api_key, key_id, group, exp, base_url}` (`base_url` = `public_url` verbatim) and its five refusals in the flat `{"error":"<msg>"}` envelope, with `resolve_exchange` (pools = union across granting bindings, one-key-per-sub upsert, `first_free_self_epoch`); the `GET /auth/token` flow verbatim (constant-time `state`, `id_token` nonce, `MAX_HOPS = 6`, host allowlist and `ssrf_blocked_host`, `FORBIDDEN_HOP_HEADERS`, the `busbar_login` cookie, the exact 400/401/403/502 pages); the data-plane 405 protocol-native envelope, NO CORS layer ever, `OPTIONS` ⇒ `None`, `HEAD` ⇒ `RouteMethod::Get` on plugin routes, `CONNECT`/`TRACE` ⇒ `None`, the six reserved exact paths with their mount-refusal literals, `authorization` never forwarded to a plugin; `/v1/models` picks its envelope by its OWN fingerprint (`anthropic-version`, else gemini path or `x-goog-api-key`, else openai — no `x-api-key` rung); the gemini path-404 family and path-derived `api_version` | routes-admin :124-141, :167, :198-201, :315-320, :590-595, :606, :627-628, :655-683, :714-726; auth-secrets :874-1144 |
 | PB-101 | inbound auth details | inbound Bedrock SigV4 verbatim (three-way gate, `chain: []` stays open, pre-buffer structural gate, `UNSIGNED-PAYLOAD` refused, constant-time compare, `DUMMY_SECRET`, the six-row admission matrix); mTLS is required-or-none with no `.allow_unauthenticated()`, the client cert is NEVER mapped to a principal, CN, SAN or fingerprint and has no HTTP status for a rejection — `ClientCertSubject` selectors and the `ClientCert` location are 1.6.0-native only; body-read: `MIN_BODY_THROUGHPUT_BYTES_PER_SEC = 1024`, `BODY_THROUGHPUT_GRACE = 10 s`, the total body deadline `translate_body_max_bytes() / 1024`, the read timeout inter-frame and reset on progress, no ingress whole-request deadline | auth-secrets :167-210, :2205-2214, :2261-2270; routes-admin :510-515 |
 | PB-102 | alarms and the disputes report | an alarm and a disputes-report entry are LEDGER-ENDPOINT rows only: no log event, no metric series, no stderr line on a 1.5.5 deployment (the ops inventory's event-field sweep and the closed 25-metric set are byte-identical); the `max_unit_duration` stall alarm on a long stream, the lane-mismatch alarm, the accrual-bound alarm and the `single`-posture mutation alarms all obey this | ops §5.3, O3 |
+| PB-103 | `/usage` across a rate-card change — **the ONE deliberate breaking difference, registered** | `spend_micros` is still DERIVED AT READ TIME from stored quantities and is still never a stored ledger charge — but it is derived against the card in force AT EACH ROW'S INSTANT, read from the dated append-only rate-card history (§4.5 clause 4), instead of against the operator's CURRENT card. A window in which no card changed is BYTE-IDENTICAL to 1.5.5 (a single-entry history effective from instant 0 is that card, and the arithmetic is the same rates, the same order, the same saturation and the same single truncation). A window in which a card changed is NOT: 1.5.5 reprices every row at the newest card (recorded: a 10,000,000-micro-unit window reads back as 1,000,120,000 after a hundredfold mid-window card, with no restart and no epoch boundary), 1.6.0 prices each row at what it was earned under. Everything else on `/usage` and every legacy admin response stays under PB-16: same field list, same wire order, same `currency` label, same `by_key` cap and `others` remainder, same 500 on a store outage, NO additive line. Back-dating remains available and becomes attributable: the operator-signed `amend_rate_history` verb (§4.7) appends a dated entry and journals a signed repricing record per affected `(window, bucket)`; it moves `adjustments` only and never `settled`, and it never changes what legacy `/usage` returns for a snapshot already read. Registered `breaking` in `testing/shadow-oracle/accepted-differences.json` with its verbatim CHANGELOG line (`scripts/changelog-register-check.sh` is the gate); the judge is the oracle cell `billing\|rate-card\|history-mid-window` against the recorded 1.5.5 cell `billing\|rate-card\|epoch-mid-window`, plus `ledger\|rate-history\|as-of`, `ledger\|amend\|adjusting-entries`, `ledger\|amend\|refused-unsigned`, `ledger\|currency\|native`, `ledger\|currency\|minor-unit-rounding` and `config\|rate-card\|append-not-replace` (additive, `improvement`) | governance §6, 7.3.1 (`proxy/usage.rs:57-107`), routes-admin ADM-*; `docs/design/rate-card-history.md` §9 |
