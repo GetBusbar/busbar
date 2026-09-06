@@ -1291,11 +1291,11 @@ impl Units for LlmUnit<'_> {
         // accruing a zero it could not tell from a free request.
         //
         // WHAT THIS LINE ADDS IS THE PRICING, and it is here because the card is here. The step
-        // assembles what the unit consumed and asks; this closure answers, against the card the node
-        // was bound at boot — the same card the late reading is priced against, through the same one
-        // expression — and the step spends the answer against the hold it was handed. A build with
-        // no card bound answers nothing, which is the honest figure for a node that can price
-        // nothing rather than a rate it invented for itself.
+        // assembles what the unit consumed and asks; this closure answers, against the card THIS
+        // UNIT WAS ADMITTED UNDER — the same card the late reading is priced against, through the
+        // same one expression — and the step spends the answer against the hold it was handed. A
+        // build with no card pinned answers nothing, which is the honest figure for a node that can
+        // price nothing rather than a rate it invented for itself.
         self.walk.meter(token, usage, &|report| {
             self.card
                 .as_deref()
