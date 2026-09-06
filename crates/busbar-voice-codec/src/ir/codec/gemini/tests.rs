@@ -998,6 +998,44 @@ fn a_streamed_argument_fragment_never_dispatches_a_call_without_its_arguments() 
 }
 
 #[test]
+fn a_free_form_tool_output_reaches_the_wire_carrying_its_text() {
+    // The OpenAI dialect's `function_call_output.output` is a FREE-FORM STRING: a tool that answers
+    // `OK` is answering. Relayed as `response: null` the model was told the tool returned nothing.
+    let codec = GeminiLiveCodec;
+    let w = up(
+        &codec,
+        IrClientEvent::Tool(IrDuplexTool::CallResult {
+            call_ref: CallRef(0),
+            call_id: "fc_plain".into(),
+            name: "restart".into(),
+            output: Bytes::from_static(b"OK"),
+        }),
+    );
+    let fr = &as_value(&w)["toolResponse"]["functionResponses"][0];
+    assert!(
+        !fr["response"].is_null(),
+        "the tool's answer is not nothing"
+    );
+    assert_eq!(fr["response"], json!({ "result": "OK" }));
+}
+
+#[test]
+fn a_json_tool_output_still_rides_as_the_object_it_is() {
+    let codec = GeminiLiveCodec;
+    let w = up(
+        &codec,
+        IrClientEvent::Tool(IrDuplexTool::CallResult {
+            call_ref: CallRef(0),
+            call_id: "fc_json".into(),
+            name: "get_weather".into(),
+            output: Bytes::from_static(br#"{"temp":72}"#),
+        }),
+    );
+    let fr = &as_value(&w)["toolResponse"]["functionResponses"][0];
+    assert_eq!(fr["response"], json!({ "temp": 72 }));
+}
+
+#[test]
 fn a_tool_call_whose_arguments_never_parse_frames_nothing() {
     // The other half of the same rule: when the accumulated whole is still not readable JSON, the
     // call is not dispatched at all — an unreadable argument list is not an empty one.

@@ -551,6 +551,18 @@ fn atomic_tool_call(call_ref: CallRef, call_id: &str, st: &mut DecodeState) -> O
     Some(tool_call_frame(Value::Object(fc)))
 }
 
+/// A TOOL PAYLOAD, AS THIS DIALECT MUST STATE IT. Gemini's `functionResponse.response` is a JSON
+/// OBJECT; the shared IR carries the tool's output as OPAQUE BYTES, because the dialect it was named
+/// from (`function_call_output.output`) is a FREE-FORM STRING — a tool that answers `OK` is answering.
+///
+/// So: JSON rides as the value it is, and anything else is WRAPPED (`{"result": "<the text>"}`) rather
+/// than flattened to `null`. `null` told the model the tool returned nothing, which is a different
+/// answer from the one the tool gave — the same confusion the argument seam above refuses.
+fn tool_payload(output: &Bytes) -> Value {
+    serde_json::from_slice::<Value>(output)
+        .unwrap_or_else(|_| json!({ "result": String::from_utf8_lossy(output).into_owned() }))
+}
+
 /// Frame one Gemini `toolResponse` around a single tool result. Gemini REQUIRES `name` on a
 /// `functionResponse`; it is emitted whenever the plane knows it (remembered from the originating
 /// call) and omitted when it does not — an invented name would answer for a tool nobody called.
@@ -560,10 +572,7 @@ fn tool_response_frame(call_id: &str, name: &str, output: &Bytes) -> Value {
     if !name.is_empty() {
         fr.insert("name".into(), json!(name));
     }
-    fr.insert(
-        "response".into(),
-        serde_json::from_slice::<Value>(output).unwrap_or(Value::Null),
-    );
+    fr.insert("response".into(), tool_payload(output));
     json!({ wire::TOOL_RESPONSE: { "functionResponses": [Value::Object(fr)] } })
 }
 
