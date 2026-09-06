@@ -379,3 +379,129 @@ async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
 fn the_step_has_the_doors_shape() {
     let _: AdmitStep = admit;
 }
+
+/// EVERY DOOR REFUSAL IS FILED AS WHAT IT WAS, and served as what it always was.
+///
+/// Three ways to be turned away at the door, and they are three different facts about a
+/// deployment: a group an administrator froze, a group at its in-flight ceiling, and a group
+/// whose budget is spent. A record that files all three as a spent budget cannot tell an
+/// operator which of the three happened, and the three need different answers — unfreeze the
+/// group, add capacity, raise the cap.
+///
+/// The other half is that NOTHING THE CALLER SEES MOVES. Each case is driven through the live
+/// door and through the step against the same deployment, and the status and the whole rendered
+/// body are compared byte for byte: the reason the record carries rides beside those bytes and
+/// never in them.
+#[tokio::test]
+async fn each_door_refusal_is_filed_as_itself_and_served_as_it_always_was() {
+    async fn body_of(resp: Response) -> Vec<u8> {
+        use http_body_util::BodyExt;
+        resp.into_body()
+            .collect()
+            .await
+            .expect("an in-memory error body")
+            .to_bytes()
+            .to_vec()
+    }
+
+    // The three blocking shapes, each as the one group the key belongs to.
+    let frozen = busbar_substrate::config::groups::GroupCfg {
+        enabled: false,
+        ..Default::default()
+    };
+    let one_limit = |metric, amount, per| busbar_substrate::config::groups::GroupCfg {
+        parent: None,
+        enabled: true,
+        limits: vec![busbar_substrate::config::groups::LimitCfg {
+            metric,
+            amount,
+            per,
+            scope: None,
+            on_exhaust: None,
+            downgrade_to: None,
+        }],
+        ..Default::default()
+    };
+    let saturated = one_limit(
+        busbar_substrate::config::groups::LimitMetric::Concurrent,
+        0,
+        None,
+    );
+    let spent = one_limit(
+        busbar_substrate::config::groups::LimitMetric::Budget,
+        100,
+        Some(busbar_substrate::config::groups::LimitWindow::Total),
+    );
+
+    for (name, cfg, seed, want) in [
+        ("frozen", frozen, None, ReasonCode::GroupFrozen),
+        ("saturated", saturated, None, ReasonCode::RateLimited),
+        (
+            "spent",
+            spent,
+            Some(("group:g@total", 250u64)),
+            ReasonCode::OverBudget,
+        ),
+    ] {
+        let groups = BTreeMap::from([("g".to_string(), cfg)]);
+        let (app, key) = governed(groups, Some("g"), seed);
+        let (host, _rt) = crate::engine::test_host_rt(&app);
+        let gov = busbar_api::PlaneRequestCtx {
+            key: Some(key.clone()),
+        };
+        let charged_at = busbar_substrate::store::now();
+
+        // LEG 1 — the live door, which is what a client is served today.
+        let live = host
+            .admission_door(
+                &gov,
+                crate::proto_codec::PROTO_OPENAI,
+                "p",
+                Instant::now(),
+                charged_at,
+            )
+            .err()
+            .unwrap_or_else(|| panic!("{name}: the door must refuse"));
+        let live_status = live.status().as_u16();
+        let live_body = body_of(*live).await;
+
+        // LEG 2 — the step.
+        let (seal, unit_token, admit_token) = tokens();
+        let cells = Cells(Resolved::Pool { has_lane: true });
+        let ctx = AdmitCtx {
+            host: &host,
+            cells: &cells,
+            gov: &gov,
+            proto: crate::proto_codec::PROTO_OPENAI,
+            destination: "p",
+            charged_at,
+        };
+        let refused = admit(
+            &unit_token,
+            &admit_token,
+            &ctx,
+            &PrincipalId::new(key.id.clone()),
+            &[],
+        );
+        let served = refused
+            .refusal
+            .expect("the door rendered and finished its own bytes");
+        assert_eq!(served.status().as_u16(), live_status, "{name}: status");
+        assert_eq!(body_of(served).await, live_body, "{name}: body");
+
+        let refusal = refused
+            .decision
+            .into_result(&seal)
+            .expect_err("the door said no");
+        assert_eq!(
+            refusal.reason(),
+            want,
+            "{name}: the journal carries the bucket that actually blocked"
+        );
+        assert_eq!(
+            refusal.step(),
+            Some(StepName::Admit),
+            "{name}: and the step it blocked at"
+        );
+    }
+}
