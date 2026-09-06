@@ -1267,6 +1267,50 @@ mod cg_49_sni {
     }
 }
 
+/// The `close_notify` a closing session owes its peer is a WRITE, and a write is only as bounded as
+/// what it waits on.
+///
+/// `close` hands it to a detached task and keeps no handle that could cancel it; `unit0_refusal`
+/// awaits it inline, on the caller's own thread of control. Either way the first thing it waits for
+/// is the writer lock, which in production is held by whatever write is already in flight — and a
+/// write to a peer that has stopped reading does not complete. Unbounded, that task holds the last
+/// clone of the connection state, and with it the rustls session and the socket, for the life of the
+/// process; on the refusal path the caller never gets an answer at all.
+///
+/// The lock is held here rather than raced, which is the same wait without the timing.
+#[tokio::test]
+async fn the_close_notify_gives_up_on_a_peer_that_never_takes_it() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let _client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+    let id = server_conn.id();
+
+    let captured = server.inner(id).expect("the connection is registered");
+    let held = captured.write.lock().await;
+
+    server.close(server_conn, CloseReason::Normal);
+
+    let gave_up = tokio::time::timeout(crate::CLOSE_NOTIFY_BUDGET * 8, async {
+        while StdArc::strong_count(&captured) > 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    drop(held);
+    assert!(
+        gave_up.is_ok(),
+        "the detached alert must give up within its budget and drop the session"
+    );
+}
+
 /// A writer that accepts every byte and then fails to flush: the exact shape a Unit 0 refusal must
 /// not be able to report as delivered. `write_all` succeeds, so only the flush leg can catch it.
 struct FlushFailsWriter {
