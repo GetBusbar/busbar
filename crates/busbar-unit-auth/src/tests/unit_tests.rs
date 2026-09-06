@@ -6,7 +6,7 @@
 use busbar_caps::{Authenticate, KernelSeal, ReasonCode, StepName, UnitToken};
 
 use super::{entry, Canned};
-use crate::admin::{admin_grants, kernel_verb_scope_satisfied, Scope};
+use crate::admin::{admin_grants, kernel_verb_scope_satisfied, Grants, Scope};
 use crate::chain::AuthChain;
 use crate::challenge::{Challenge, ChallengeBounds};
 use crate::module::AuthOutcome;
@@ -268,4 +268,27 @@ fn the_kernel_verb_scope_check_is_satisfied_for_anonymous_on_the_open_posture() 
         !kernel_verb_scope_satisfied(true, &Principal::from_id("alice")),
         "a resolved principal is judged on its own scopes"
     );
+}
+
+/// The satisfaction table, pinned pair by pair.
+///
+/// Pinned rather than derived from an ordering: a comparison would answer for a rung nobody has
+/// decided about yet, and the answer it invents comes from where the variant was written. Every
+/// pair below is a decision, and adding a rung to `Scope` fails to compile until its pairs are
+/// added here too — which is the whole point of spelling satisfaction as a match.
+#[test]
+fn satisfaction_is_a_decided_table_not_a_declaration_order() {
+    let cases = [
+        (Scope::ReadOnly, Scope::ReadOnly, true),
+        (Scope::ReadOnly, Scope::Full, false),
+        (Scope::Full, Scope::ReadOnly, true),
+        (Scope::Full, Scope::Full, true),
+    ];
+    for (held, needed, expected) in cases {
+        assert_eq!(
+            Grants::of(held).satisfies(needed),
+            expected,
+            "held {held:?} against needed {needed:?}"
+        );
+    }
 }
