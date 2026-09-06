@@ -50,9 +50,21 @@ rm -rf "$W"
 # fixture itself needs (providers catalog, signing key, logs) lives in `W`, outside both.
 mkdir -p "$W/run" "$W/cfg"
 
+# A `fail` IS THE HARNESS GIVING UP, NOT AN OUTCOME OF THE BINARY. record.sh reads `status` alone for
+# the named-gap case (-1 -> SKIP, UNSUPPORTED) but records EVERY other status as PASS — so `fail 1
+# "busbar did not come up"` and `fail 2 "could not mint a key"` were written as a golden that says
+# "this cell is exit 1/2", with a PASS row behind it, and a candidate that failed the same way for the
+# same reason matched it exactly. This is the one driver in scripts/ whose fail() never carried
+# `harness_error`, the marker record.sh:835 refuses a cell for; every sibling already emits it. A
+# status of -1 stays a plain named gap (`error`), as before.
 fail() { # <status> <message>
-  jq -n --argjson st "$1" --arg err "$2" \
-    '{status:$st, headers:{}, body:"", effects:{error:$err}}' >"$RAW/captured.json"
+  if [ "$1" -lt 0 ] 2>/dev/null; then
+    jq -n --argjson st "$1" --arg err "$2" \
+      '{status:$st, headers:{}, body:"", effects:{error:$err}}' >"$RAW/captured.json"
+  else
+    jq -n --argjson st "$1" --arg err "$2" \
+      '{status:$st, headers:{}, body:$err, effects:{error:$err, harness_error:$err}}' >"$RAW/captured.json"
+  fi
   exit 0
 }
 
