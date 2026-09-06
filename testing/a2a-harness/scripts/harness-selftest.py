@@ -155,8 +155,35 @@ def main():
     check("conformance_selection_contains_no_governance", ok,
           (p7.stdout + p7.stderr)[-600:])
 
+    # ---- 5. RED: a deviation recorded for a test that DID NOT RUN must make the run red.
+    #      `deviations.print_summary` prints these under `DEVIATION RECORD PROBLEMS (these are
+    #      RED)`, and until `runner.exit_code` existed the process exited 0 over them: the record
+    #      produces no result row, so it contributes to no outcome count. Drop a test from the
+    #      registry, or narrow `--role` past it, and its deviation stops being checked silently.
+    p8 = py("from a2aht import runner\n"
+            "rep = {'counts': {'PASS': 3},\n"
+            "       'known_deviations': {'recorded': 1, 'baselined': 0, 'source': 'selftest',\n"
+            "                            'problems': [{'id': 'gone.test',\n"
+            "                                          'kind': 'DEVIATION_NOT_RUN',\n"
+            "                                          'why': 'selftest'}]}}\n"
+            "print('NOT_RUN_EXIT=%d' % runner.exit_code(rep))\n"
+            "print('OLD_RULE_EXIT=%d' % (1 if sum(rep['counts'].get(o, 0)\n"
+            "                                     for o in runner.BAD_OUTCOMES) else 0))\n")
+    check("unrun_deviation_record_is_red",
+          "NOT_RUN_EXIT=1" in p8.stdout and "OLD_RULE_EXIT=0" in p8.stdout,
+          (p8.stdout + p8.stderr)[-800:])
+
+    # ---- 5b. GREEN twin: a clean report with no deviation problems still exits 0, so 5 is not a
+    #      rule that reddens everything.
+    p9 = py("from a2aht import runner\n"
+            "print('CLEAN_EXIT=%d' % runner.exit_code({'counts': {'PASS': 3, 'OBSERVED': 1}}))\n"
+            "print('ALLOW_RED_EXIT=%d' % runner.exit_code({'counts': {'FAIL': 2}}, allow_red=True))\n")
+    check("clean_report_and_allow_red_still_exit_zero",
+          "CLEAN_EXIT=0" in p9.stdout and "ALLOW_RED_EXIT=0" in p9.stdout,
+          (p9.stdout + p9.stderr)[-800:])
+
     # A selftest that ran no checks is not a pass.
-    if len(RESULTS) < 8:
+    if len(RESULTS) < 10:
         print("\nSELFTEST RAN ONLY %d CHECKS. Checks were deleted or never reached." % len(RESULTS))
         return 2
     bad = [n for n, ok, _ in RESULTS if not ok]
