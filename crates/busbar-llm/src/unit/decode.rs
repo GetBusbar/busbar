@@ -100,10 +100,17 @@ impl DecodeRefusal {
 
     /// The sentence the client reads. These are the 1.5.5 literals, verbatim, including the two 404s
     /// differing only in their subject.
+    ///
+    /// The endpoint one is READ from the hoisted copy rather than respelled: the const exists so the
+    /// sentence cannot drift between the sites that render it, and a step file that keeps its own
+    /// spelling is a site the hoist does not cover. The protocol one has no hoisted twin — this is
+    /// its only site — so it stays a literal here.
     pub fn message(self) -> &'static str {
         match self {
             DecodeRefusal::UnknownProtocol => "This protocol does not support that operation.",
-            DecodeRefusal::UnsupportedOperation => "This endpoint does not support that operation.",
+            DecodeRefusal::UnsupportedOperation => {
+                crate::engine::DETAIL_ENDPOINT_UNSUPPORTED_OPERATION
+            }
             DecodeRefusal::MissingModel => "Missing required parameter: 'model'.",
         }
     }

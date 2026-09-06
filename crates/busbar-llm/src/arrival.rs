@@ -321,7 +321,7 @@ pub fn gemini_path_parse(
                 PROTO_GEMINI,
                 StatusCode::NOT_FOUND,
                 host.kind_not_found(),
-                "This endpoint does not support that operation.",
+                crate::engine::DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
             ),
         ));
     };
@@ -409,7 +409,7 @@ pub fn bedrock_path_parse(
                 PROTO_BEDROCK,
                 StatusCode::NOT_FOUND,
                 host.kind_not_found(),
-                "This endpoint does not support that operation.",
+                crate::engine::DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
             ),
         ))
     };

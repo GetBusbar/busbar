@@ -248,7 +248,7 @@ pub(crate) async fn operation_ingress_inner(
                 proto,
                 StatusCode::NOT_FOUND,
                 crate::engine::KIND_NOT_FOUND,
-                "This endpoint does not support that operation.",
+                crate::engine::DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
             ),
         );
     };
@@ -513,9 +513,17 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
         )
         .await;
 
-        // STAGE 6 — audit + finish/metrics/refund. `pool_label` bounds the metric label — the
-        // effective model is a configured pool/lane on the served path — so this reproduces the
-        // pre-seam served tail exactly.
+        // STAGE 6 — the admitted finish: per-request metrics, the request-log webhook, and the
+        // refund of the flat admission fee on a non-2xx outcome. No audit record is written here;
+        // the admin-audit and call-log seams are reached from elsewhere and this path touches
+        // neither.
+        //
+        // The label is the EFFECTIVE model, which is the downgraded pool wherever a budget
+        // downgrade re-pooled the admission — the name the charge landed on, so the metric row and
+        // the ledger row name the same pool. `pool_label` is what bounds the Prometheus
+        // cardinality; on this path it is the name itself, because a request that reached stage 6
+        // resolved to a configured pool or by-model lane, and the `"unresolved"` sentinel belongs
+        // to the not-found return above.
         host.finish_admitted(
             req.gov,
             proto,
@@ -798,7 +806,7 @@ async fn ingress_path_model_inner(
                 proto,
                 StatusCode::NOT_FOUND,
                 crate::engine::KIND_NOT_FOUND,
-                "This endpoint does not support that operation.",
+                crate::engine::DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
             ),
         );
     };
