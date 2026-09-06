@@ -399,6 +399,35 @@ fn a_span_never_slices_backwards_however_it_was_built() {
 }
 
 #[test]
+fn a_span_survives_being_sealed_and_read_back() {
+    // The crate's own reason for naming serde at all is that a resolved span is SEALED into the
+    // policy journal and READ BACK out of it — "a span that cannot round-trip is a pointer nobody
+    // can settle against later". A derive that only WRITES is half of that: the value goes into the
+    // journal and the only way back out is a second reading of the same shape, written somewhere
+    // else, which is the fourth copy of one grammar this crate exists to abolish.
+    for span in [
+        Span::new(0, 0),
+        Span::new(5, 6),
+        Span::new(1 << 20, (1 << 20) + 7),
+        Span::default(),
+    ] {
+        let sealed = serde_json::to_string(&span).expect("a span seals");
+        let read_back: Span = serde_json::from_str(&sealed).expect("a sealed span reads back");
+        assert_eq!(read_back, span, "sealed as {sealed}");
+        assert_eq!(read_back.len(), span.len());
+    }
+    // And the span a scan produced settles against the one the journal handed back.
+    let body = br#"{"model":"m","lane":"gold"}"#;
+    let Resolved::Found(span) = resolve_pointer(body, "/lane") else {
+        panic!("the lane pointer resolves");
+    };
+    let read_back: Span =
+        serde_json::from_str(&serde_json::to_string(&span).expect("seals")).expect("reads back");
+    assert_eq!(read_back, span);
+    assert_eq!(read_back.of(body), br#""gold""#);
+}
+
+#[test]
 fn the_frontier_is_an_index_and_never_a_verdict() {
     // A complete value ends where it ends, whatever follows it. Bytes that ran out mid-value, and
     // bytes that are not structure at all, both come back as the whole input — so the frontier
