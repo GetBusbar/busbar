@@ -13,6 +13,28 @@ use std::sync::Arc as StdArc;
 
 /// New file per the mutation-hardening pass on this crate: `src/tests/mutation_hardening.rs`.
 mod mutation_hardening;
+/// Every await in this file that could park forever runs under this.
+///
+/// A test that hangs reports NOTHING. The job is killed by the CI runner's own wall clock, the
+/// failure names no cell, and the regression that caused it — a handshake nobody answers, a read
+/// that never wakes, a writer lock that is never given back — reads as infrastructure flakiness
+/// rather than as the red test it is. Wrapping the await turns "the suite hung" into "this cell
+/// parked", which is a bug report.
+///
+/// Ten seconds is deliberately generous: this is a HANG DETECTOR, not a timing assertion. No
+/// healthy cell here comes within two orders of magnitude of it, so the bound can never be what
+/// decides whether a passing test passes — only whether a parked one is reported.
+///
+/// Cells under `#[tokio::test(start_paused = true)]` are deliberately NOT wrapped: the paused
+/// clock auto-advances to the nearest deadline, so this bound would fire the instant it was armed.
+async fn bounded<T>(what: &str, f: impl std::future::Future<Output = T>) -> T {
+    match tokio::time::timeout(std::time::Duration::from_secs(10), f).await {
+        Ok(value) => value,
+        Err(_) => {
+            panic!("{what} parked; a park-forever regression must be a red test, not a hung job")
+        }
+    }
+}
 
 struct FixtureSeal;
 impl KernelSeal for FixtureSeal {
@@ -116,13 +138,19 @@ async fn a_certificate_fingerprint_is_the_sha256_of_its_der_in_lowercase_hex() {
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &fixture_key(0))
-        .await
-        .unwrap();
-    let _server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &fixture_key(0))",
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let _server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
     let fp = client
         .arrival(&client_conn)
@@ -167,7 +195,12 @@ async fn bound_pair() -> (StdArc<TlsTransport>, Listener, StdArc<TlsTransport>) 
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
-    let listener = server.listen(&cfg, &fixture_key(0)).await.unwrap();
+    let listener = bounded(
+        "server.listen(&cfg, &fixture_key(0))",
+        server.listen(&cfg, &fixture_key(0)),
+    )
+    .await
+    .unwrap();
 
     let client = StdArc::new(TlsTransport::new());
     client.register_client_config(0, client_cfg);
@@ -189,10 +222,20 @@ async fn a_silent_client_cannot_park_the_listener() {
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
-    let listener = server.listen(&cfg, &fixture_key(0)).await.unwrap();
+    let listener = bounded(
+        "server.listen(&cfg, &fixture_key(0))",
+        server.listen(&cfg, &fixture_key(0)),
+    )
+    .await
+    .unwrap();
     let addr = listener.local_addr();
 
-    let silent = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let silent = bounded(
+        "tokio::net::TcpStream::connect(&addr)",
+        tokio::net::TcpStream::connect(&addr),
+    )
+    .await
+    .unwrap();
     let refused = tokio::time::timeout(Duration::from_secs(5), server.accept(&listener))
         .await
         .expect("the accept answers rather than parking on a client that says nothing");
@@ -207,15 +250,17 @@ async fn a_silent_client_cannot_park_the_listener() {
     client.register_client_config(0, client_cfg);
     let dial_addr = addr.clone();
     let dialling = tokio::spawn(async move {
-        client
-            .dial(&upstream_dest(&dial_addr), &fixture_key(0))
-            .await
+        bounded(
+            "client.dial(&upstream_dest(&dial_addr), &fixture_key(0))",
+            client.dial(&upstream_dest(&dial_addr), &fixture_key(0)),
+        )
+        .await
     });
     let served = tokio::time::timeout(Duration::from_secs(5), server.accept(&listener))
         .await
         .expect("the listener still serves after shedding the silent one");
     served.expect("the well-behaved dial completes");
-    dialling
+    bounded("dialling", dialling)
         .await
         .unwrap()
         .expect("and so does its client half");
@@ -223,53 +268,75 @@ async fn a_silent_client_cannot_park_the_listener() {
 
 #[tokio::test]
 async fn byte_exact_round_trip_over_a_real_handshake() {
-    let (server, listener, client) = bound_pair().await;
+    let (server, listener, client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
 
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &fixture_key(0))
-        .await
-        .unwrap();
-    let server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &fixture_key(0))",
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
     let payload = b"tls says hello, byte for byte";
-    client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(payload))
-        .await
-        .unwrap();
+    bounded(
+        "client.write(&client_conn, StreamId(0), ArenaBytes::new(...",
+        client.write(&client_conn, StreamId(0), ArenaBytes::new(payload)),
+    )
+    .await
+    .unwrap();
 
     let mut frames = server.frames(server_conn);
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    let (_s, frame) = bounded("frames.next()", frames.next())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(frame.bytes.as_slice(), payload);
     assert_eq!(frame.meta.bytes, payload.len() as u64);
 }
 
 #[tokio::test]
 async fn half_close_and_cancel_mid_frame() {
-    let (server, listener, client) = bound_pair().await;
+    let (server, listener, client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &fixture_key(0))
-        .await
-        .unwrap();
-    let server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &fixture_key(0))",
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
-    client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"bye"))
-        .await
-        .unwrap();
+    bounded(
+        "client.write(&client_conn, StreamId(0), ArenaBytes::new(...",
+        client.write(&client_conn, StreamId(0), ArenaBytes::new(b"bye")),
+    )
+    .await
+    .unwrap();
     client.close(client_conn, CloseReason::Normal);
 
     let mut frames = server.frames(server_conn.clone());
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    let (_s, frame) = bounded("frames.next()", frames.next())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(frame.bytes.as_slice(), b"bye");
     // TLS half-close. `close()` sends the `close_notify` alert before the halves drop, so the
     // clean end-of-stream is what the peer should see; the error arm stays because the alert goes
@@ -279,39 +346,47 @@ async fn half_close_and_cancel_mid_frame() {
     // Bounded: a `close` that never sends the peer anything and never drops the socket leaves this
     // read parked on a peer that will never write again, which must fail fast rather than hang the
     // suite.
-    match tokio::time::timeout(std::time::Duration::from_secs(3), frames.next())
-        .await
-        .expect("a closed connection's peer must see the close promptly")
-    {
+    match bounded("frames.next()", frames.next()).await {
         None => {}
         Some(Err(_)) => {}
         Some(Ok(_)) => panic!("no further data should arrive after the client closed"),
     }
 
     // Cancel mid-frame on a fresh connection: dropping a pending read must not poison the conn.
-    let (server2, listener2, client2) = bound_pair().await;
+    let (server2, listener2, client2) = bounded("bound_pair()", bound_pair()).await;
     let addr2 = listener2.local_addr();
     let accept2 = tokio::spawn({
         let server2 = server2.clone();
-        async move { server2.accept(&listener2).await.unwrap() }
+        async move {
+            bounded("server2.accept(&listener2)", server2.accept(&listener2))
+                .await
+                .unwrap()
+        }
     });
-    let client_conn2 = client2
-        .dial(&upstream_dest(&addr2), &fixture_key(0))
-        .await
-        .unwrap();
-    let server_conn2 = accept2.await.unwrap();
+    let client_conn2 = bounded(
+        "client2.dial(&upstream_dest(&addr2), &fixture_key(0))",
+        client2.dial(&upstream_dest(&addr2), &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let server_conn2 = bounded("accept2", accept2).await.unwrap();
     {
         let mut frames = server2.frames(server_conn2.clone());
         let fut = frames.next();
         tokio::pin!(fut);
         let _ = futures::poll!(fut.as_mut());
     }
-    client2
-        .write(&client_conn2, StreamId(0), ArenaBytes::new(b"still alive"))
-        .await
-        .unwrap();
+    bounded(
+        "client2.write(&client_conn2, StreamId(0), ArenaBytes::ne...",
+        client2.write(&client_conn2, StreamId(0), ArenaBytes::new(b"still alive")),
+    )
+    .await
+    .unwrap();
     let mut frames2 = server2.frames(server_conn2);
-    let (_s, frame) = frames2.next().await.unwrap().unwrap();
+    let (_s, frame) = bounded("frames2.next()", frames2.next())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(frame.bytes.as_slice(), b"still alive");
 }
 
@@ -321,24 +396,35 @@ async fn half_close_and_cancel_mid_frame() {
 /// treat every close as suspect. This transport knows which one this is, so it says so.
 #[tokio::test]
 async fn a_close_sends_the_alert_the_peer_is_owed() {
-    let (server, listener, client) = bound_pair().await;
+    let (server, listener, client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &fixture_key(0))
-        .await
-        .unwrap();
-    let server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &fixture_key(0))",
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
-    server
-        .write(&server_conn, StreamId(0), ArenaBytes::new(b"last word"))
-        .await
-        .unwrap();
+    bounded(
+        "server.write(&server_conn, StreamId(0), ArenaBytes::new(...",
+        server.write(&server_conn, StreamId(0), ArenaBytes::new(b"last word")),
+    )
+    .await
+    .unwrap();
     let mut client_frames = client.frames(client_conn);
-    let (_s, frame) = client_frames.next().await.unwrap().unwrap();
+    let (_s, frame) = bounded("client_frames.next()", client_frames.next())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(frame.bytes.as_slice(), b"last word");
 
     server.close(server_conn, CloseReason::Normal);
@@ -354,35 +440,48 @@ async fn a_close_sends_the_alert_the_peer_is_owed() {
 
 #[tokio::test]
 async fn close_ends_a_live_frame_stream() {
-    let (server, listener, client) = bound_pair().await;
+    let (server, listener, client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &fixture_key(0))
-        .await
-        .unwrap();
-    let server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &fixture_key(0))",
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
     let mut frames = server.frames(server_conn.clone());
-    client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+    bounded(
+        "client.write(&client_conn, StreamId(0), ArenaBytes::new(...",
+        client.write(&client_conn, StreamId(0), ArenaBytes::new(b"first")),
+    )
+    .await
+    .unwrap();
+    let (_s, frame) = bounded("frames.next()", frames.next())
         .await
+        .unwrap()
         .unwrap();
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), b"first");
 
     // The kernel finalises the connection. A stream still pumping it must end, and the TLS
     // stream must drop: bytes the peer writes afterwards are never yielded.
     server.close(server_conn, CloseReason::Normal);
-    client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after close"))
-        .await
-        .unwrap();
+    bounded(
+        "client.write(&client_conn, StreamId(0), ArenaBytes::new(...",
+        client.write(&client_conn, StreamId(0), ArenaBytes::new(b"after close")),
+    )
+    .await
+    .unwrap();
     assert!(
-        frames.next().await.is_none(),
+        bounded("frames.next()", frames.next()).await.is_none(),
         "a closed connection's frame stream must end, not keep yielding inbound frames"
     );
 }
@@ -393,21 +492,27 @@ async fn close_ends_a_live_frame_stream() {
 /// socket stay alive with it. So the close is a wakeup, not just a flag.
 #[tokio::test]
 async fn close_ends_a_read_parked_on_a_silent_peer() {
-    let (server, listener, client) = bound_pair().await;
+    let (server, listener, client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &fixture_key(0))
-        .await
-        .unwrap();
-    let server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &fixture_key(0))",
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
     let mut frames = server.frames(server_conn.clone());
     // Park the pump: the handshake is done, but no application byte has been written.
-    let parked = tokio::spawn(async move { frames.next().await });
+    let parked = tokio::spawn(async move { bounded("frames.next()", frames.next()).await });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     server.close(server_conn, CloseReason::Normal);
@@ -436,17 +541,25 @@ async fn close_ends_a_read_parked_on_a_silent_peer() {
 async fn handshake_failure_maps_to_its_own_error() {
     // The server expects a TLS handshake; a plain-TCP dial into it fails the handshake, not the
     // connect.
-    let (server, listener, _client) = bound_pair().await;
+    let (server, listener, _client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await }
+        async move { bounded("server.accept(&listener)", server.accept(&listener)).await }
     });
-    let mut plain = tokio::net::TcpStream::connect(&addr).await.unwrap();
-    tokio::io::AsyncWriteExt::write_all(&mut plain, b"not a tls handshake at all, just bytes")
-        .await
-        .ok();
-    let result = accept_fut.await.unwrap();
+    let mut plain = bounded(
+        "tokio::net::TcpStream::connect(&addr)",
+        tokio::net::TcpStream::connect(&addr),
+    )
+    .await
+    .unwrap();
+    bounded(
+        "tokio::io::AsyncWriteExt::write_all(&mut plain, b\"not a t...",
+        tokio::io::AsyncWriteExt::write_all(&mut plain, b"not a tls handshake at all, just bytes"),
+    )
+    .await
+    .ok();
+    let result = bounded("accept_fut", accept_fut).await.unwrap();
     assert_eq!(result.unwrap_err(), TransportError::HandshakeFailed);
 }
 
@@ -508,21 +621,41 @@ async fn an_in_band_upgrade_adopts_the_lower_layers_stream() {
         }
     }
     let key0 = fixture_key(0);
-    let listener = tcp.listen(&TcpCfg, &key0).await.unwrap();
+    let listener = bounded("tcp.listen(&TcpCfg, &key0)", tcp.listen(&TcpCfg, &key0))
+        .await
+        .unwrap();
     let addr = listener.local_addr();
 
-    let accept_fut = tokio::spawn(async move { tcp.accept(&listener).await.map(|c| (tcp, c)) });
+    let accept_fut = tokio::spawn(async move {
+        bounded("tcp.accept(&listener)", tcp.accept(&listener))
+            .await
+            .map(|c| (tcp, c))
+    });
 
-    let client_plain = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let client_plain = bounded(
+        "tokio::net::TcpStream::connect(&addr)",
+        tokio::net::TcpStream::connect(&addr),
+    )
+    .await
+    .unwrap();
     let client_task = tokio::spawn(async move {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let connector = TlsConnector::from(client_cfg);
         let name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
-        connector.connect(name, client_plain).await
+        bounded(
+            "connector.connect(name, client_plain)",
+            connector.connect(name, client_plain),
+        )
+        .await
     });
 
-    let (tcp, tcp_conn) = accept_fut.await.unwrap().unwrap();
-    let upgraded = tls.adopt(&tcp, tcp_conn.clone(), &key0).await.unwrap();
+    let (tcp, tcp_conn) = bounded("accept_fut", accept_fut).await.unwrap().unwrap();
+    let upgraded = bounded(
+        "tls.adopt(&tcp, tcp_conn.clone(), &key0)",
+        tls.adopt(&tcp, tcp_conn.clone(), &key0),
+    )
+    .await
+    .unwrap();
     // The facts of the pre-upgrade layer do not survive it: `tcp` has given the stream up and no
     // longer knows the connection, and the record the upgraded layer reports is its own, naming
     // the composed stack rather than either half of it.
@@ -537,17 +670,23 @@ async fn an_in_band_upgrade_adopts_the_lower_layers_stream() {
     // Keep the client's TLS stream alive across the write below: dropping it right after the
     // handshake closes the socket (FIN/RST) and races the server's write, which is exactly the
     // flake this ordering avoids.
-    let mut client_tls = client_task.await.unwrap().unwrap();
+    let mut client_tls = bounded("client_task", client_task).await.unwrap().unwrap();
 
     let payload = b"upgraded mid-life";
-    tls.write(&upgraded, StreamId(0), ArenaBytes::new(payload))
-        .await
-        .unwrap();
+    bounded(
+        "tls.write(&upgraded, StreamId(0), ArenaBytes::new(payload))",
+        tls.write(&upgraded, StreamId(0), ArenaBytes::new(payload)),
+    )
+    .await
+    .unwrap();
 
     let mut buf = vec![0_u8; payload.len()];
-    tokio::io::AsyncReadExt::read_exact(&mut client_tls, &mut buf)
-        .await
-        .unwrap();
+    bounded(
+        "tokio::io::AsyncReadExt::read_exact(&mut client_tls, &mut...",
+        tokio::io::AsyncReadExt::read_exact(&mut client_tls, &mut buf),
+    )
+    .await
+    .unwrap();
     assert_eq!(&buf, payload);
 }
 
@@ -561,23 +700,31 @@ async fn a_handoff_from_an_undeclared_layer_is_a_mismatch() {
     tls.register_server_config(0, server_cfg);
     let other = TlsTransport::new();
 
-    let (server, listener, client) = bound_pair().await;
+    let (server, listener, client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &fixture_key(0))
-        .await
-        .unwrap();
-    let server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &fixture_key(0))",
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
     // `tls` composes over `tcp` and nothing else; a `tls` source names no declared handoff.
-    let err = tls
-        .adopt(&other, server_conn.clone(), &fixture_key(0))
-        .await
-        .unwrap_err();
+    let err = bounded(
+        "tls.adopt(&other, server_conn.clone(), &fixture_key(0))",
+        tls.adopt(&other, server_conn.clone(), &fixture_key(0)),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err, TransportError::HandoffMismatch);
     client.close(client_conn, CloseReason::Normal);
     server.close(server_conn, CloseReason::Normal);
@@ -665,14 +812,17 @@ async fn the_transport_key_unit_is_what_gives_a_listener_its_key() {
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
-    let listener = server
-        .listen(&cfg, &keys)
+    let listener = bounded("server.listen(&cfg, &keys)", server.listen(&cfg, &keys))
         .await
         .expect("the slot the handle names now resolves to a config");
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
 
     // A real client, trusting exactly the certificate the unit resolved.
@@ -698,19 +848,26 @@ async fn the_transport_key_unit_is_what_gives_a_listener_its_key() {
         },
         client_cfg,
     );
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &client_keys)
-        .await
-        .expect("the handshake completes against the unit's material");
-    let server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &client_keys)",
+        client.dial(&upstream_dest(&addr), &client_keys),
+    )
+    .await
+    .expect("the handshake completes against the unit's material");
+    let server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
     let payload = b"served under a key the unit resolved";
-    server
-        .write(&server_conn, StreamId(0), ArenaBytes::new(payload))
-        .await
-        .unwrap();
+    bounded(
+        "server.write(&server_conn, StreamId(0), ArenaBytes::new(...",
+        server.write(&server_conn, StreamId(0), ArenaBytes::new(payload)),
+    )
+    .await
+    .unwrap();
     let mut frames = client.frames(client_conn.clone());
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    let (_s, frame) = bounded("frames.next()", frames.next())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(frame.bytes.as_slice(), payload);
     client.close(client_conn, CloseReason::Normal);
 }
@@ -720,11 +877,15 @@ async fn the_transport_key_unit_is_what_gives_a_listener_its_key() {
 /// the connect address's IP, so a certificate issued for a DNS name could never match.
 #[tokio::test]
 async fn a_declared_certificate_name_is_what_the_handshake_offers() {
-    let (server, listener, client) = bound_pair().await;
+    let (server, listener, client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
 
     let leaked: &'static str = Box::leak(addr.into_boxed_str());
@@ -742,8 +903,13 @@ async fn a_declared_certificate_name_is_what_the_handshake_offers() {
         "tls",
         None,
     );
-    let client_conn = client.dial(&dest, &fixture_key(0)).await.unwrap();
-    let server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&dest, &fixture_key(0))",
+        client.dial(&dest, &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
     assert_eq!(
         server.arrival(&server_conn).sni.as_deref(),
@@ -756,18 +922,24 @@ async fn a_declared_certificate_name_is_what_the_handshake_offers() {
 /// name honestly, and right exactly when the upstream is addressed by IP.
 #[tokio::test]
 async fn with_no_declared_name_the_address_itself_stands_in() {
-    let (server, listener, client) = bound_pair().await;
+    let (server, listener, client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
 
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &fixture_key(0))
-        .await
-        .unwrap();
-    let server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &fixture_key(0))",
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
     // A dial to an IP literal offers no SNI at all on the wire, which is the correct reading of
     // "the address is the name": rustls does not send a server_name extension for an IP.
@@ -782,7 +954,7 @@ async fn with_no_declared_name_the_address_itself_stands_in() {
 /// port reads this field. A constant zero is not that fact: it is every listener looking alike.
 #[tokio::test]
 async fn the_arrival_record_names_the_port_the_connection_arrived_on() {
-    let (server, listener, client) = bound_pair().await;
+    let (server, listener, client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let bound_port: u16 = addr
         .parse::<SocketAddr>()
@@ -790,13 +962,19 @@ async fn the_arrival_record_names_the_port_the_connection_arrived_on() {
         .port();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &fixture_key(0))
-        .await
-        .unwrap();
-    let server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &fixture_key(0))",
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
     assert_eq!(
         server.arrival(&server_conn).port,
@@ -838,7 +1016,12 @@ async fn every_reserved_key_this_transport_publishes_is_declared() {
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
-    let listener = server.listen(&cfg, &fixture_key(0)).await.unwrap();
+    let listener = bounded(
+        "server.listen(&cfg, &fixture_key(0))",
+        server.listen(&cfg, &fixture_key(0)),
+    )
+    .await
+    .unwrap();
     let client = StdArc::new(TlsTransport::new());
     client.register_client_config(0, Arc::new(client_cfg));
 
@@ -846,7 +1029,7 @@ async fn every_reserved_key_this_transport_publishes_is_declared() {
     let key0 = fixture_key(0);
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await }
+        async move { bounded("server.accept(&listener)", server.accept(&listener)).await }
     });
     let leaked: &'static str = Box::leak(addr.into_boxed_str());
     let named = busbar_contract::VerifiedDestination::seal(
@@ -863,8 +1046,10 @@ async fn every_reserved_key_this_transport_publishes_is_declared() {
         "tls",
         None,
     );
-    let dialled = client.dial(&named, &key0).await.unwrap();
-    let accepted = accept_fut.await.unwrap().unwrap();
+    let dialled = bounded("client.dial(&named, &key0)", client.dial(&named, &key0))
+        .await
+        .unwrap();
+    let accepted = bounded("accept_fut", accept_fut).await.unwrap().unwrap();
 
     // The premise of the check: all three facts are really present on this pair.
     let served = server.arrival(&accepted);
@@ -966,7 +1151,12 @@ async fn accept_serves_the_slot_the_listener_was_provisioned_with() {
     };
     // Provisioned at slot 7, not 0 — this is the case `A6`/`R-03` exists for: any listener whose
     // key landed in a non-zero slot.
-    let listener = server.listen(&cfg, &fixture_key(7)).await.unwrap();
+    let listener = bounded(
+        "server.listen(&cfg, &fixture_key(7))",
+        server.listen(&cfg, &fixture_key(7)),
+    )
+    .await
+    .unwrap();
     let addr = listener.local_addr();
 
     let client = StdArc::new(TlsTransport::new());
@@ -976,13 +1166,19 @@ async fn accept_serves_the_slot_the_listener_was_provisioned_with() {
 
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &fixture_key(0))
-        .await
-        .expect("handshake against the slot-7 listener must succeed with the slot-7 trust root");
-    let _server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &fixture_key(0))",
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .expect("handshake against the slot-7 listener must succeed with the slot-7 trust root");
+    let _server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
     let record = client.arrival(&client_conn);
     let served_fp = record
@@ -1201,7 +1397,9 @@ mod cg_49_sni {
         let cfg = TestCfg {
             bind: "127.0.0.1:0".to_string(),
         };
-        let listener = server.listen(&cfg, &handle).await.unwrap();
+        let listener = bounded("server.listen(&cfg, &handle)", server.listen(&cfg, &handle))
+            .await
+            .unwrap();
         let addr = listener.local_addr();
 
         Fixture {
@@ -1225,7 +1423,11 @@ mod cg_49_sni {
         let accept_fut = tokio::spawn({
             let server = fx.server.clone();
             let listener = fx.listener.clone();
-            async move { server.accept(&listener).await.unwrap() }
+            async move {
+                bounded("server.accept(&listener)", server.accept(&listener))
+                    .await
+                    .unwrap()
+            }
         });
         let client = StdArc::new(TlsTransport::new());
         client.register_client_config(0, client_cfg);
@@ -1233,11 +1435,13 @@ mod cg_49_sni {
             Some(name) => dial_dest(&fx.addr, name),
             None => upstream_dest(&fx.addr),
         };
-        let client_conn = client
-            .dial(&dest, &fixture_key(0))
-            .await
-            .expect("handshake completes");
-        let _server_conn = accept_fut.await.unwrap();
+        let client_conn = bounded(
+            "client.dial(&dest, &fixture_key(0))",
+            client.dial(&dest, &fixture_key(0)),
+        )
+        .await
+        .expect("handshake completes");
+        let _server_conn = bounded("accept_fut", accept_fut).await.unwrap();
         let record = client.arrival(&client_conn);
         record
             .peer_cert
@@ -1247,14 +1451,22 @@ mod cg_49_sni {
 
     #[tokio::test]
     async fn each_named_client_sees_its_own_names_fingerprint() {
-        let fx = provisioned_listener().await;
+        let fx = bounded("provisioned_listener()", provisioned_listener()).await;
 
-        let served_a = served_fingerprint(&fx, Some("a.example"), fx.client_a.clone()).await;
+        let served_a = bounded(
+            "served_fingerprint(&fx, Some(\"a.example\"), fx.client_a.cl...",
+            served_fingerprint(&fx, Some("a.example"), fx.client_a.clone()),
+        )
+        .await;
         assert_eq!(served_a, fx.fp_a, "a.example got a.example's certificate");
         assert_ne!(served_a, fx.fp_b);
         assert_ne!(served_a, fx.fp_default);
 
-        let served_b = served_fingerprint(&fx, Some("b.example"), fx.client_b.clone()).await;
+        let served_b = bounded(
+            "served_fingerprint(&fx, Some(\"b.example\"), fx.client_b.cl...",
+            served_fingerprint(&fx, Some("b.example"), fx.client_b.clone()),
+        )
+        .await;
         assert_eq!(served_b, fx.fp_b, "b.example got b.example's certificate");
         assert_ne!(served_b, fx.fp_a);
         assert_ne!(served_b, fx.fp_default);
@@ -1275,8 +1487,12 @@ mod cg_49_sni {
 
     #[tokio::test]
     async fn a_client_offering_no_sni_gets_the_default() {
-        let fx = provisioned_listener().await;
-        let served = served_fingerprint(&fx, None, accept_any_client_config()).await;
+        let fx = bounded("provisioned_listener()", provisioned_listener()).await;
+        let served = bounded(
+            "served_fingerprint(&fx, None, accept_any_client_config())",
+            served_fingerprint(&fx, None, accept_any_client_config()),
+        )
+        .await;
         assert_eq!(
             served, fx.fp_default,
             "no SNI offered: the default is served"
@@ -1291,11 +1507,14 @@ mod cg_49_sni {
     /// cert.
     #[tokio::test]
     async fn an_unknown_name_gets_the_default() {
-        let fx = provisioned_listener().await;
-        let served = served_fingerprint(
-            &fx,
-            Some("nobody-provisioned-this.example"),
-            accept_any_client_config(),
+        let fx = bounded("provisioned_listener()", provisioned_listener()).await;
+        let served = bounded(
+            "served_fingerprint( &fx, Some(\"nobody-provisioned-this.ex...",
+            served_fingerprint(
+                &fx,
+                Some("nobody-provisioned-this.example"),
+                accept_any_client_config(),
+            ),
         )
         .await;
         assert_eq!(
@@ -1342,26 +1561,35 @@ async fn an_undelivered_unit0_refusal_is_an_error() {
     let mut w = FlushFailsWriter {
         written: Vec::new(),
     };
-    let err = deliver_refusal(&mut w, b"refused")
-        .await
-        .expect_err("a refusal whose flush failed was never delivered and must not report Ok");
+    let err = bounded(
+        "deliver_refusal(&mut w, b\"refused\")",
+        deliver_refusal(&mut w, b"refused"),
+    )
+    .await
+    .expect_err("a refusal whose flush failed was never delivered and must not report Ok");
     assert_eq!(err, TransportError::Reset);
     assert_eq!(w.written.as_slice(), b"refused");
 }
 
 #[tokio::test]
 async fn a_unit0_refusal_reaches_a_healthy_peer() {
-    let (server, listener, client) = bound_pair().await;
+    let (server, listener, client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &fixture_key(0))
-        .await
-        .unwrap();
-    let server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &fixture_key(0))",
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
     let refusal = busbar_contract::unit::Refusal {
         step: busbar_contract::unit::Step::Arrival,
@@ -1370,13 +1598,18 @@ async fn a_unit0_refusal_reaches_a_healthy_peer() {
         stream: None,
         correlates: None,
     };
-    server
-        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
-        .await
-        .unwrap();
+    bounded(
+        "server.unit0_refusal(server_conn, None, &refusal, ArenaB...",
+        server.unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused")),
+    )
+    .await
+    .unwrap();
 
     let mut frames = client.frames(client_conn);
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    let (_s, frame) = bounded("frames.next()", frames.next())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(frame.bytes.as_slice(), b"refused");
 }
 
@@ -1389,26 +1622,37 @@ async fn a_unit0_refusal_reaches_a_healthy_peer() {
 /// delivery result is reported after it.
 #[tokio::test]
 async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() {
-    let (server, listener, client) = bound_pair().await;
+    let (server, listener, client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &fixture_key(0))
-        .await
-        .unwrap();
-    let server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &fixture_key(0))",
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let server_conn = bounded("accept_fut", accept_fut).await.unwrap();
     let id = server_conn.id();
 
     // A pump that is live before the refusal, holding its own clone of the state.
     let mut frames = server.frames(server_conn.clone());
-    client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+    bounded(
+        "client.write(&client_conn, StreamId(0), ArenaBytes::new(...",
+        client.write(&client_conn, StreamId(0), ArenaBytes::new(b"first")),
+    )
+    .await
+    .unwrap();
+    let (_s, frame) = bounded("frames.next()", frames.next())
         .await
+        .unwrap()
         .unwrap();
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), b"first");
 
     // Make the write leg fail for certain: with this side's write half already shut down, the
@@ -1416,10 +1660,20 @@ async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() 
     // peer never sees it" case without a timing race.
     let captured = server.inner(id).expect("the connection is registered");
     {
-        let mut guard = captured.write.lock().await;
+        let mut guard = bounded("captured.write.lock()", captured.write.lock()).await;
         match &mut *guard {
-            InnerWrite::Server(w) => tokio::io::AsyncWriteExt::shutdown(w).await.ok(),
-            InnerWrite::Client(w) => tokio::io::AsyncWriteExt::shutdown(w).await.ok(),
+            InnerWrite::Server(w) => bounded(
+                "tokio::io::AsyncWriteExt::shutdown(w)",
+                tokio::io::AsyncWriteExt::shutdown(w),
+            )
+            .await
+            .ok(),
+            InnerWrite::Client(w) => bounded(
+                "tokio::io::AsyncWriteExt::shutdown(w)",
+                tokio::io::AsyncWriteExt::shutdown(w),
+            )
+            .await
+            .ok(),
         };
     }
 
@@ -1430,10 +1684,12 @@ async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() 
         stream: None,
         correlates: None,
     };
-    let err = server
-        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
-        .await
-        .expect_err("a refusal that never left this host is not a delivered refusal");
+    let err = bounded(
+        "server.unit0_refusal(server_conn, None, &refusal, ArenaB...",
+        server.unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused")),
+    )
+    .await
+    .expect_err("a refusal that never left this host is not a delivered refusal");
     assert!(
         matches!(
             err,
@@ -1452,10 +1708,12 @@ async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() 
     );
 
     // The pump ends, which is what the flag exists for.
-    client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after refusal"))
-        .await
-        .ok();
+    bounded(
+        "client.write(&client_conn, StreamId(0), ArenaBytes::new(...",
+        client.write(&client_conn, StreamId(0), ArenaBytes::new(b"after refusal")),
+    )
+    .await
+    .ok();
     let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
         .await
         .expect("a refused connection's frame stream must end rather than park on the session");
@@ -1474,17 +1732,23 @@ async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() 
 /// silently instead of failing. The declaration is held to what the transport actually fills.
 #[tokio::test]
 async fn no_selector_form_is_advertised_that_the_certificate_facts_cannot_serve() {
-    let (server, listener, client) = bound_pair().await;
+    let (server, listener, client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &fixture_key(0))
-        .await
-        .unwrap();
-    let _server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &fixture_key(0))",
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let _server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
     let cert = client
         .arrival(&client_conn)
@@ -1527,37 +1791,58 @@ async fn no_selector_form_is_advertised_that_the_certificate_facts_cannot_serve(
 /// `READ_CHUNK_BYTES` one per read.
 #[tokio::test]
 async fn one_read_buffer_per_connection_reused_without_leaking_bytes_between_frames() {
-    let (server, listener, client) = bound_pair().await;
+    let (server, listener, client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &fixture_key(0))
-        .await
-        .unwrap();
-    let server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &fixture_key(0))",
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
     let mut frames = server.frames(server_conn.clone());
     let long = vec![b'L'; 4096];
-    client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(&long))
-        .await
-        .unwrap();
+    bounded(
+        "client.write(&client_conn, StreamId(0), ArenaBytes::new(...",
+        client.write(&client_conn, StreamId(0), ArenaBytes::new(&long)),
+    )
+    .await
+    .unwrap();
     let mut got = Vec::new();
     while got.len() < long.len() {
-        let (_s, frame) = frames.next().await.unwrap().unwrap();
+        let (_s, frame) = bounded("frames.next()", frames.next())
+            .await
+            .unwrap()
+            .unwrap();
         got.extend_from_slice(frame.bytes.as_slice());
     }
     assert_eq!(got, long);
-    let first_buffer = server.scratch_addr(server_conn.id()).await.unwrap();
+    let first_buffer = bounded(
+        "server.scratch_addr(server_conn.id())",
+        server.scratch_addr(server_conn.id()),
+    )
+    .await
+    .unwrap();
 
-    client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"short"))
+    bounded(
+        "client.write(&client_conn, StreamId(0), ArenaBytes::new(...",
+        client.write(&client_conn, StreamId(0), ArenaBytes::new(b"short")),
+    )
+    .await
+    .unwrap();
+    let (_s, frame) = bounded("frames.next()", frames.next())
         .await
+        .unwrap()
         .unwrap();
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(
         frame.bytes.as_slice(),
         b"short",
@@ -1565,7 +1850,12 @@ async fn one_read_buffer_per_connection_reused_without_leaking_bytes_between_fra
     );
     assert_eq!(frame.meta.bytes, 5, "honest frame meta on a reused buffer");
     assert_eq!(
-        server.scratch_addr(server_conn.id()).await.unwrap(),
+        bounded(
+            "server.scratch_addr(server_conn.id())",
+            server.scratch_addr(server_conn.id())
+        )
+        .await
+        .unwrap(),
         first_buffer,
         "one buffer per connection, not one per read"
     );
@@ -1580,25 +1870,36 @@ async fn one_read_buffer_per_connection_reused_without_leaking_bytes_between_fra
 /// the connection really shut.
 #[tokio::test]
 async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_session() {
-    let (server, listener, client) = bound_pair().await;
+    let (server, listener, client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
-        async move { server.accept(&listener).await.unwrap() }
+        async move {
+            bounded("server.accept(&listener)", server.accept(&listener))
+                .await
+                .unwrap()
+        }
     });
-    let client_conn = client
-        .dial(&upstream_dest(&addr), &fixture_key(0))
-        .await
-        .unwrap();
-    let server_conn = accept_fut.await.unwrap();
+    let client_conn = bounded(
+        "client.dial(&upstream_dest(&addr), &fixture_key(0))",
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .unwrap();
+    let server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
     // A pump that is live before the refusal: it already holds the connection state.
     let mut frames = server.frames(server_conn.clone());
-    client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+    bounded(
+        "client.write(&client_conn, StreamId(0), ArenaBytes::new(...",
+        client.write(&client_conn, StreamId(0), ArenaBytes::new(b"first")),
+    )
+    .await
+    .unwrap();
+    let (_s, frame) = bounded("frames.next()", frames.next())
         .await
+        .unwrap()
         .unwrap();
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), b"first");
 
     let refusal = busbar_contract::unit::Refusal {
@@ -1608,16 +1909,20 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_session() {
         stream: None,
         correlates: None,
     };
-    server
-        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
-        .await
-        .unwrap();
+    bounded(
+        "server.unit0_refusal(server_conn, None, &refusal, ArenaB...",
+        server.unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused")),
+    )
+    .await
+    .unwrap();
 
     // The peer keeps writing, as a peer that has not yet read the refusal will.
-    client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after refusal"))
-        .await
-        .unwrap();
+    bounded(
+        "client.write(&client_conn, StreamId(0), ArenaBytes::new(...",
+        client.write(&client_conn, StreamId(0), ArenaBytes::new(b"after refusal")),
+    )
+    .await
+    .unwrap();
     let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
         .await
         .expect("a refused connection's frame stream must end rather than park on the socket");
@@ -1630,7 +1935,10 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_session() {
     // gone, which the peer sees as end-of-stream rather than as a connection still open.
     drop(frames);
     let mut client_frames = client.frames(client_conn);
-    let refused = client_frames.next().await.unwrap().unwrap();
+    let refused = bounded("client_frames.next()", client_frames.next())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(refused.1.bytes.as_slice(), b"refused");
     let eof = tokio::time::timeout(std::time::Duration::from_secs(5), client_frames.next())
         .await
