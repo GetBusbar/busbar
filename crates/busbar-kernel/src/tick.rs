@@ -22,12 +22,12 @@
 //! a node decides whether stopping is even the right thing to do when it cannot reach the store.
 
 use busbar_caps::{
-    Abort, Canary, ExitToken, HoldCell, LedgerToken, Outcome, Posted, PostingFlags, QuantitySource,
+    Abort, Canary, ExitToken, LedgerToken, Outcome, Posted, PostingFlags, QuantitySource,
     ReasonCode, StepName, UnitEnd, Usage, UsageLine, UsageToken,
 };
 
 use crate::inflight::UnitSlot;
-use crate::slice::{ConcurrencyGauge, LeaseSet};
+use crate::slice::ConcurrencyGauge;
 use crate::teller::{settle_amount, Evidence, Kernel, KERNEL_ACCRUAL_CLASS};
 use crate::Millis;
 
@@ -282,24 +282,29 @@ pub fn fleet_action(
 /// function both take by compare-and-set, so whichever arrives second is told the unit is already
 /// settled and does nothing — which is why a lost task costs one tick of delay and never a lost
 /// posting, and why a unit that ends normally a moment later is not settled twice.
+///
+/// The whole SLOT is what the sweep is given, because the slot is what the unit owns: its hold and
+/// its leases, reclaimed together or not at all. A verdict that says the unit is still running
+/// reclaims nothing of either, and an abandoned slot gives back both at its deadline.
 pub fn sweep_settle(
     kernel: &Kernel,
-    cell: &HoldCell,
+    slot: &UnitSlot,
     verdict: Sweep,
     evidence: &Evidence,
     canary: &Canary,
-    leases: &mut LeaseSet,
     gauge: &ConcurrencyGauge,
 ) -> Option<UnitEnd> {
     match sweep_outcome(verdict) {
         None => None,
         Some(outcome) => {
-            let taken = cell.take(&ExitToken::mint(kernel.seal()));
+            let taken = slot.cell().take(&ExitToken::mint(kernel.seal()));
             // A lost task holds its concurrency leases until somebody gives them back, and the
             // exit path it would have used is never going to run. The rule is that leases go back
             // on every end; this is one of the two ends, so they go back here, in the same breath
-            // as the take — including when the take loses, because the unit ended either way.
-            leases.release_all(gauge);
+            // as the take — including when the take loses, because the unit ended either way. They
+            // are the unit's OWN leases: the slot owns them, so the sweep no longer has to be
+            // handed a set that a gone task took with it.
+            slot.leases().release_all(gauge);
             match taken {
                 None => None,
                 Some(hold) => {

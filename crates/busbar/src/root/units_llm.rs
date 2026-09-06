@@ -315,7 +315,6 @@ impl LlmNode {
                     admin_listener: false,
                     kernel_verb_only: false,
                 };
-                let mut leases = busbar_kernel::slice::LeaseSet::new();
                 let meter = AccrualMeter::new();
                 let _ended = busbar_kernel::teller::run_unit_async(
                     &self.kernel,
@@ -324,7 +323,7 @@ impl LlmNode {
                     busbar_kernel::teller::Run {
                         cell: slot.cell(),
                         parent: None,
-                        leases: &mut leases,
+                        leases: slot.leases(),
                         gauge: &self.gauge,
                         canary: &self.canary,
                         meter: &meter,
@@ -1762,7 +1761,6 @@ mod tests {
             admin_listener: false,
             kernel_verb_only: false,
         };
-        let mut leases = busbar_kernel::slice::LeaseSet::new();
         let meter = AccrualMeter::new();
         let ended = busbar_kernel::teller::run_unit_async(
             &node.kernel,
@@ -1771,7 +1769,7 @@ mod tests {
             busbar_kernel::teller::Run {
                 cell: slot.cell(),
                 parent: None,
-                leases: &mut leases,
+                leases: slot.leases(),
                 gauge: &node.gauge,
                 canary: &node.canary,
                 meter: &meter,

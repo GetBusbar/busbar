@@ -1813,7 +1813,7 @@ pub const fn handshake_scope() -> &'static str {
 mod tests {
     use super::*;
     use busbar_caps::Canary;
-    use busbar_kernel::slice::{ConcurrencyGauge, LeaseSet};
+    use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
     use busbar_kernel::teller::{run_unit, Ended, Kernel, Run};
     use busbar_unit_auth::AuthChain;
 
@@ -1936,7 +1936,7 @@ mod tests {
         ));
         let gauge = ConcurrencyGauge::new();
         let canary = Canary::new();
-        let mut leases = LeaseSet::new();
+        let leases = LeaseCell::new();
         let meter = AccrualMeter::new();
         run_unit(
             kernel,
@@ -1945,7 +1945,7 @@ mod tests {
             Run {
                 cell: &cell,
                 parent: None,
-                leases: &mut leases,
+                leases: &leases,
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,

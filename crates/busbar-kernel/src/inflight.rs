@@ -33,6 +33,7 @@ use busbar_caps::{
 use busbar_contract::Framing;
 
 use crate::pump::{Direction, StreamId};
+use crate::slice::LeaseCell;
 use crate::teller::Kernel;
 use crate::Millis;
 
@@ -234,6 +235,7 @@ pub struct UnitSlot {
     origin: OriginKind,
     session: Option<SessionId>,
     cell: HoldCell,
+    leases: LeaseCell,
     step: StepState,
     cancel: CancelToken,
     marked: AtomicBool,
@@ -259,6 +261,15 @@ impl UnitSlot {
     /// The unit's hold cell. Borrowed by the Teller, taken by the exit path or the sweep.
     pub fn cell(&self) -> &HoldCell {
         &self.cell
+    }
+
+    /// The unit's concurrency leases, owned by the slot beside its hold.
+    ///
+    /// They are here rather than in the running task because the sweep is one of the unit's two
+    /// ends and cannot reach a task that has gone. A lease recorded here goes back at whichever
+    /// end arrives first, and a slot the sweep has reclaimed is one that holds nothing.
+    pub fn leases(&self) -> &LeaseCell {
+        &self.leases
     }
 
     /// How far through the steps it is.
@@ -460,6 +471,7 @@ impl InFlight {
             origin: request.origin,
             session: request.session,
             cell: HoldCell::new(request.arrival),
+            leases: LeaseCell::new(),
             step: StepState::new(),
             cancel: CancelToken::new(),
             marked: AtomicBool::new(false),

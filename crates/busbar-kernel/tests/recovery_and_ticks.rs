@@ -5,13 +5,13 @@
 
 mod common;
 
-use busbar_caps::{Canary, HoldCell, OriginKind, PostingFlags, ReasonCode, StepName, UnitKey};
+use busbar_caps::{Canary, OriginKind, PostingFlags, ReasonCode, StepName, UnitKey};
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
 use busbar_kernel::recovery::{
     frame, owed_after, recover_all, truncate_torn_tail, voids_claim, HoldRecord, KillPoint, Owed,
     TailVerdict, RECORD_HEADER_BYTES,
 };
-use busbar_kernel::slice::{bucket_all, ConcurrencyGauge, Epoch, LeaseSet};
+use busbar_kernel::slice::{bucket_all, ConcurrencyGauge, Epoch};
 use busbar_kernel::teller::{Evidence, Kernel};
 use busbar_kernel::tick::{
     drain_outcome, drain_verdict, fleet_action, session_tick, sweep, sweep_settle, DrainVerdict,
@@ -185,26 +185,22 @@ fn a_lost_task_is_settled_within_one_tick() {
         accrued_floor: 42,
         ..Evidence::default()
     };
-    // The unit was holding a concurrency lease when its task disappeared. The sweep is one of the
-    // two ends a unit has, so the lease goes back here or it never goes back at all.
+    // The unit was holding a concurrency lease when its task disappeared. The lease is recorded on
+    // the SLOT, which is the only place the sweep can reach: the task's own frame went with the
+    // task. The sweep is one of the two ends a unit has, so the lease goes back here or never.
     let gauge = ConcurrencyGauge::new();
     let bucket = bucket_all("team");
     gauge.acquire(&bucket, 4).expect("room in the gauge");
-    let mut leases = LeaseSet::new();
-    leases.take(bucket);
+    assert!(
+        slot.leases().take(bucket),
+        "the door records it on the slot"
+    );
+    assert_eq!(slot.leases().held(), 1);
 
-    let end = sweep_settle(
-        &kernel,
-        slot.cell(),
-        verdict,
-        &evidence,
-        &canary,
-        &mut leases,
-        &gauge,
-    )
-    .expect("the sweep is the second key to the cell");
+    let end = sweep_settle(&kernel, &slot, verdict, &evidence, &canary, &gauge)
+        .expect("the sweep is the second key to the cell");
     assert_eq!(gauge.count(&bucket), 0, "the lost task kept its lease");
-    assert!(leases.is_empty());
+    assert!(!slot.leases().is_owned(), "the slot is unowned now");
     assert_eq!(
         end.outcome(),
         busbar_caps::Outcome::Failed(StepName::Route, ReasonCode::TaskLost)
@@ -212,17 +208,69 @@ fn a_lost_task_is_settled_within_one_tick() {
     assert_eq!(end.posted().map(|p| p.settled()), Ok(42));
     assert_eq!(canary.counts().settlements, 1);
 
-    // And there is no third settlement: a second sweep of the same cell does nothing.
+    // And there is no third settlement: a second sweep of the same slot does nothing, and gives
+    // back no lease a second time.
+    assert!(sweep_settle(&kernel, &slot, verdict, &evidence, &canary, &gauge).is_none());
+    assert_eq!(gauge.count(&bucket), 0);
+    assert!(
+        !slot.leases().take(bucket),
+        "a reclaimed slot takes no lease"
+    );
+}
+
+/// A sweep that races a unit which is still running reclaims nothing of it.
+///
+/// The unit's leases live on the slot now, where the sweep can reach them, so this is a rule and
+/// not an accident of the sweep having no way to get at them: a slot whose unit is still there is
+/// left alone — its hold, its leases, all of it.
+#[test]
+fn a_sweep_racing_a_running_unit_reclaims_nothing_of_it() {
+    let kernel = Kernel::new();
+    let table = InFlight::new(4, 0);
+    let canary = Canary::new();
+    let slot = table
+        .insert(Enter {
+            key: UnitKey::new(7),
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: arrival_hold(&kernel, &TestDoor, principal()),
+        })
+        .map_err(|_| ())
+        .expect("under the cap");
+
+    let gauge = ConcurrencyGauge::new();
+    let bucket = bucket_all("team");
+    gauge.acquire(&bucket, 4).expect("room in the gauge");
+    assert!(slot.leases().take(bucket));
+
+    slot.touch(0);
+    let verdict = sweep(&slot, StepName::Route, 100, 30_000, true);
+    assert_eq!(verdict, Sweep::Running);
     assert!(sweep_settle(
         &kernel,
-        slot.cell(),
+        &slot,
         verdict,
-        &evidence,
+        &Evidence::default(),
         &canary,
-        &mut leases,
         &gauge
     )
     .is_none());
+    assert_eq!(gauge.count(&bucket), 1, "the running unit still holds it");
+    assert!(slot.leases().is_owned(), "and the slot is still its own");
+    assert_eq!(canary.counts().settlements, 0);
+
+    // Its own end is the one that gives the lease back, and the sweep that lands a moment later
+    // finds a slot with nothing of the unit's left in it.
+    assert_eq!(slot.leases().release_all(&gauge), Some(1));
+    assert_eq!(gauge.count(&bucket), 0);
+    assert_eq!(
+        slot.leases().release_all(&gauge),
+        None,
+        "one lease, given back once"
+    );
 }
 
 /// A unit is idle from the moment it entered, not from the moment the node booted.
@@ -301,17 +349,14 @@ fn a_slow_unit_is_not_a_lost_one() {
         Sweep::AlarmOnly
     );
 
-    let cell = HoldCell::new(arrival_hold(&kernel, &TestDoor, principal()));
     let canary = Canary::new();
     let gauge = ConcurrencyGauge::new();
-    let mut leases = LeaseSet::new();
     assert!(sweep_settle(
         &kernel,
-        &cell,
+        &slot,
         Sweep::AlarmOnly,
         &Evidence::default(),
         &canary,
-        &mut leases,
         &gauge
     )
     .is_none());

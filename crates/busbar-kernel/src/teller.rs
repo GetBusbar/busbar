@@ -66,7 +66,7 @@ use busbar_caps::{
 };
 
 use crate::registry::Generation;
-use crate::slice::{ConcurrencyGauge, LeaseSet};
+use crate::slice::{ConcurrencyGauge, LeaseCell};
 
 /// The kernel's own authority: the one place the tokens the units are lent are minted.
 ///
@@ -568,8 +568,12 @@ pub struct Run<'r> {
     /// does need the cell, to ask at its own exit whether the parent is still open. A parent that
     /// has exited is what turns the child's posting into a late one.
     pub parent: Option<&'r HoldCell>,
-    /// The concurrency leases the unit took at the door.
-    pub leases: &'r mut LeaseSet,
+    /// The concurrency leases the unit took at the door, as the unit's SLOT owns them.
+    ///
+    /// The cell and not the set, because the exit path is only one of the unit's two ends: the
+    /// sweep is the other, and a set that lived in this task's frame went away with the task.
+    /// Whichever end runs first gives the leases back, and the second finds nothing to give.
+    pub leases: &'r LeaseCell,
     /// The node's gauge, which the leases go back to.
     pub gauge: &'r ConcurrencyGauge,
     /// The counts the node balances.

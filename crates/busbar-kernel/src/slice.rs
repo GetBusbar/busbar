@@ -401,6 +401,79 @@ impl LeaseSet {
     }
 }
 
+/// The one owner of a unit's concurrency leases: the unit's slot in the in-flight table.
+///
+/// A unit has TWO ends — its own exit path and the node's sweep — and the rule is that leases go
+/// back on every end. So they have to live where both ends can reach them, which is the slot and
+/// not the running task's frame: a task that disappeared took its frame, and its `LeaseSet` with
+/// it, leaving the gauge counting a unit that no longer exists. A cap that only ever goes up is a
+/// node that stops admitting anything, and nothing about it is visible until it does.
+///
+/// Whichever end arrives first takes the set out of the cell; the second finds an unowned slot and
+/// does nothing. That is the same shape as the hold cell beside it, for the same reason: one lease,
+/// given back exactly once.
+#[derive(Debug)]
+pub struct LeaseCell {
+    held: std::sync::Mutex<Option<LeaseSet>>,
+}
+
+impl LeaseCell {
+    /// A cell owned by its unit, holding no leases yet.
+    pub fn new() -> Self {
+        LeaseCell {
+            held: std::sync::Mutex::new(Some(LeaseSet::new())),
+        }
+    }
+
+    /// Record a lease taken at the door.
+    ///
+    /// False once the leases have gone back, which is a lease taken against a unit that has already
+    /// ended — the caller is holding a gauge count nothing will ever release, and it is told so
+    /// here rather than finding out from a cap that never recovers.
+    pub fn take(&self, bucket: BucketId) -> bool {
+        match self.held.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            Some(set) => {
+                set.take(bucket);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// How many leases the unit is holding.
+    pub fn held(&self) -> usize {
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map_or(0, LeaseSet::len)
+    }
+
+    /// Whether the leases are still the unit's own. An unowned cell is a slot one of the two ends
+    /// has already reclaimed, and the sweep reclaims nothing else of it.
+    pub fn is_owned(&self) -> bool {
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
+    /// Give every lease back, and say how many. `None` when the other end got there first.
+    pub fn release_all(&self, gauge: &ConcurrencyGauge) -> Option<usize> {
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .map(|mut set| set.release_all(gauge))
+    }
+}
+
+impl Default for LeaseCell {
+    fn default() -> Self {
+        LeaseCell::new()
+    }
+}
+
 /// The live count per capped group.
 ///
 /// One lease per capped group, not per dimension: a group with a concurrency cap and two windows

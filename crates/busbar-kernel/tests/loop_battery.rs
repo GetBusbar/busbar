@@ -15,7 +15,7 @@ use busbar_caps::{
     Abort, Canary, HoldCellState, OriginKind, Outcome, PostingFlags, ReasonCode, StepName, UnitKey,
 };
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
-use busbar_kernel::slice::{ConcurrencyGauge, LeaseSet};
+use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
 use busbar_kernel::teller::{
     exit, run_unit, run_unit_async, AccrualMeter, Ended, Evidence, Kernel, Run,
 };
@@ -38,7 +38,7 @@ const ORDER: [StepName; 10] = [
 
 fn run(units: &TestUnits, kernel: &Kernel, cell: &busbar_caps::HoldCell, canary: &Canary) -> Ended {
     let gauge = ConcurrencyGauge::new();
-    let mut leases = LeaseSet::new();
+    let leases = LeaseCell::new();
     let meter = AccrualMeter::new();
     run_unit(
         kernel,
@@ -47,7 +47,7 @@ fn run(units: &TestUnits, kernel: &Kernel, cell: &busbar_caps::HoldCell, canary:
         Run {
             cell,
             parent: None,
-            leases: &mut leases,
+            leases: &leases,
             gauge: &gauge,
             canary,
             meter: &meter,
@@ -227,7 +227,7 @@ fn every_unit_end_leaves_through_the_one_exit() {
         let cell = cell(&kernel);
         let canary = Canary::new();
         let gauge = ConcurrencyGauge::new();
-        let mut leases = LeaseSet::new();
+        let leases = LeaseCell::new();
         let meter = AccrualMeter::new();
         let ended = exit(
             &kernel,
@@ -236,7 +236,7 @@ fn every_unit_end_leaves_through_the_one_exit() {
             Run {
                 cell: &cell,
                 parent: None,
-                leases: &mut leases,
+                leases: &leases,
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
@@ -261,7 +261,7 @@ fn a_unit_is_settled_exactly_once() {
     assert!(matches!(first, Ended::Settled { .. }));
 
     let gauge = ConcurrencyGauge::new();
-    let mut leases = LeaseSet::new();
+    let leases = LeaseCell::new();
     let meter = AccrualMeter::new();
     let second = exit(
         &kernel,
@@ -270,7 +270,7 @@ fn a_unit_is_settled_exactly_once() {
         Run {
             cell: &cell,
             parent: None,
-            leases: &mut leases,
+            leases: &leases,
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
@@ -316,18 +316,21 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
         door: Door::Accrual(std::sync::Arc::clone(&parent), 250),
         ..TestUnits::default()
     };
-    let child_cell = cell(&kernel);
+    // The child enters the table like every other unit, so its cell and its leases are its slot's.
+    let table = InFlight::new(4, 0);
+    let child_slot = table
+        .insert(client(1))
+        .expect("the empty table takes the child");
     let gauge = ConcurrencyGauge::new();
-    let mut leases = LeaseSet::new();
     let meter = AccrualMeter::new();
     let ended = run_unit(
         &kernel,
         &child,
         &ctx(1),
         Run {
-            cell: &child_cell,
+            cell: child_slot.cell(),
             parent: Some(&parent),
-            leases: &mut leases,
+            leases: child_slot.leases(),
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
@@ -367,16 +370,15 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
     // other unit, and its cell is emptied at its end. Leaving it full would leave the sweep — the
     // other holder of a key to that cell — free to settle a unit that has already finished, and its
     // spend is already inside the parent's posting.
-    assert_eq!(child_cell.state(), busbar_caps::HoldCellState::Taken);
+    assert_eq!(child_slot.cell().state(), busbar_caps::HoldCellState::Taken);
     let swept = busbar_kernel::tick::sweep_settle(
         &kernel,
-        &child_cell,
+        &child_slot,
         busbar_kernel::tick::Sweep::TaskLost {
             at: StepName::Route,
         },
         &Evidence::default(),
         &canary,
-        &mut LeaseSet::new(),
         &ConcurrencyGauge::new(),
     );
     assert!(swept.is_none(), "the child was settled a second time");
@@ -440,8 +442,8 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
     ] {
         gauge.acquire(&bucket, 4).expect("room in the gauge");
         assert_eq!(gauge.count(&bucket), 1);
-        let mut leases = LeaseSet::new();
-        leases.take(bucket);
+        let leases = LeaseCell::new();
+        assert!(leases.take(bucket));
         let units = TestUnits::passing();
         let cell = cell(&kernel);
         let canary = Canary::new();
@@ -453,7 +455,7 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
             Run {
                 cell: &cell,
                 parent: None,
-                leases: &mut leases,
+                leases: &leases,
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
@@ -527,8 +529,8 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
     let gauge = ConcurrencyGauge::new();
     let bucket = busbar_kernel::slice::bucket_all("team");
     gauge.acquire(&bucket, 4).expect("room in the gauge");
-    let mut leases = LeaseSet::new();
-    leases.take(bucket);
+    // The lease is recorded on the unit's SLOT, which is where both of its ends can reach it.
+    assert!(slot.leases().take(bucket));
     let canary = Canary::new();
     let meter = AccrualMeter::new();
 
@@ -541,7 +543,7 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
             Run {
                 cell: slot.cell(),
                 parent: None,
-                leases: &mut leases,
+                leases: slot.leases(),
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
@@ -577,9 +579,14 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
         "the hold came out of the cell at the one exit; the sweep has nothing left to settle"
     );
     assert_eq!(gauge.count(&bucket), 0, "the lease went back to the gauge");
-    assert!(
-        leases.is_empty(),
+    assert_eq!(
+        slot.leases().held(),
+        0,
         "the unit holds no lease it never gave back"
+    );
+    assert!(
+        !slot.leases().is_owned(),
+        "the slot is unowned: its one end has already reclaimed it"
     );
     assert_eq!(
         units.called(),

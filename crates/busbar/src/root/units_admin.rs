@@ -2012,7 +2012,6 @@ impl AdminNode {
                     // saturated cap.
                     kernel_verb_only: true,
                 };
-                let mut leases = busbar_kernel::slice::LeaseSet::new();
                 let meter = busbar_kernel::teller::AccrualMeter::new();
                 let ended = busbar_kernel::teller::run_unit(
                     &self.kernel,
@@ -2021,7 +2020,7 @@ impl AdminNode {
                     busbar_kernel::teller::Run {
                         cell: slot.cell(),
                         parent: None,
-                        leases: &mut leases,
+                        leases: slot.leases(),
                         gauge: &self.gauge,
                         canary: &self.canary,
                         meter: &meter,
