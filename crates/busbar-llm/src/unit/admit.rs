@@ -296,14 +296,32 @@ pub fn admit(
 /// A door refusal: no hold, no charge, no refund, no posted link, and the door's own bytes carried
 /// through to the one step that posts.
 ///
-/// The reason code is the record's closed vocabulary, and the seam this step reaches the door
-/// through hands back a rendered response rather than the blocking bucket, so the code cannot be
-/// narrowed past "a budget in the chain had no headroom" from here. The byte-exact refusal — the
-/// status, the `kind`, the message and the retry hint an SDK reads — is the response itself, which
-/// is why it is carried rather than re-derived. The retry hint is lifted onto the refusal so the
-/// record carries the same number the wire does.
+/// The reason code is the record's closed vocabulary, and it is READ off the answer rather than
+/// assumed: the door stamps which bucket blocked on the refusal it hands back, so an administratively
+/// frozen group and a saturated in-flight cap are filed as what they are rather than both as a spent
+/// budget. Filing all three under one reason makes a record that cannot tell an operator whether a
+/// key was frozen or a caller was simply too fast — and those need different answers.
+///
+/// NOTHING THE CLIENT SEES MOVES. The stamp rides on the response's extensions, which are dropped
+/// when the response is written; the byte-exact refusal — the status, the `kind`, the message and
+/// the retry hint an SDK reads — is the response itself, carried through untouched rather than
+/// re-derived from the code. The retry hint is lifted onto the refusal so the record carries the
+/// same number the wire does.
+///
+/// A refusal carrying no stamp is filed as over-budget, which is what this step filed before there
+/// was a stamp to read and is the honest reading of a door that did not say.
 fn refused(unit_token: &UnitToken<Admit>, resp: Response) -> Admitted {
-    let mut refusal = Refusal::new(ReasonCode::OverBudget);
+    let reason = match resp
+        .extensions()
+        .get::<busbar_substrate::plane_host::AdmissionBlock>()
+    {
+        Some(busbar_substrate::plane_host::AdmissionBlock::GroupFrozen) => ReasonCode::GroupFrozen,
+        Some(busbar_substrate::plane_host::AdmissionBlock::RateLimited) => ReasonCode::RateLimited,
+        Some(busbar_substrate::plane_host::AdmissionBlock::OverBudget) | None => {
+            ReasonCode::OverBudget
+        }
+    };
+    let mut refusal = Refusal::new(reason);
     if let Some(secs) = retry_after_secs(&resp) {
         refusal = refusal.retry_after(secs);
     }

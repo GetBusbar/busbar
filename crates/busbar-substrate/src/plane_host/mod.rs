@@ -504,6 +504,32 @@ pub struct CostHandle(pub Arc<dyn std::any::Any + Send + Sync>);
 #[derive(Clone)]
 pub struct AdmitHandle(pub Arc<dyn std::any::Any + Send + Sync>);
 
+/// WHY THE DOOR SAID NO — for the record, and never for the wire.
+///
+/// The door renders its own refusal, and what it hands a plane back is those bytes: the status, the
+/// dialect's `kind` word, the message and the retry hint. Which BUCKET blocked is not recoverable
+/// from them — an exhausted budget and an exhausted arrival rate can carry the same status, and a
+/// plane that guessed from the status alone would file two different refusals under one reason.
+///
+/// So the door says. This rides on the refusal response's EXTENSIONS, which are a server-side
+/// side-channel: they are dropped when the response is written, so the client's bytes are the same
+/// bytes whether anything reads this or not, and a deployment's `/usage`, its metrics and its
+/// oracle cells cannot move because of it.
+///
+/// Three arms, because three are what the door distinguishes when it chooses a status: an
+/// administrative freeze is a permission answer, a spent budget is a quota answer, and everything
+/// else the group's limits cap — arrival rate, tokens, in-flight concurrency — is a rate answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdmissionBlock {
+    /// A group's arrival-rate, token or in-flight cap had no headroom.
+    RateLimited,
+    /// A budget in the principal's chain had no headroom, or its group is not configured at all —
+    /// which the door answers with the same vendor quota shape, being the same answer to the caller.
+    OverBudget,
+    /// The principal's group is administratively frozen.
+    GroupFrozen,
+}
+
 /// BRAKE (audit D): the BREAKER-family slice of the host seam, split off `EngineHost` as a supertrait
 /// so the circuit-breaker admission/settle/record cluster stays a cohesive, bounded ABI rather than
 /// dissolving into the ~30-method god-trait. Groups the five `(pool, lane)` breaker seams a plane's
