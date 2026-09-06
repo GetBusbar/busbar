@@ -375,6 +375,15 @@ fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
     };
     assert_eq!(quantity("text_tokens_in"), Some(3));
     assert_eq!(quantity("text_tokens_out"), Some(4));
+    // The audio split is the one that moves real money -- audio prices well above text on every
+    // realtime rate card -- so it is asserted the same way: the fixture reports ten audio tokens
+    // consumed and twenty emitted, and swapping the two directions has to be a failure here rather
+    // than a label that still reads as present.
+    assert_eq!(quantity("audio_tokens_in"), Some(10));
+    assert_eq!(quantity("audio_tokens_out"), Some(20));
+    // The cached figure is a DISCOUNT, so a class reported at the wrong figure overcharges a caller
+    // for input it was already billed for.
+    assert_eq!(quantity("cached_tokens"), Some(1));
 }
 
 #[test]
