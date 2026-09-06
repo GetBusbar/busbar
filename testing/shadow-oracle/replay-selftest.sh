@@ -49,8 +49,11 @@ fails=0
 say() { printf '%s  %s\n' "$1" "$2"; [ "$1" = PASS ] || fails=$((fails+1)); }
 # The fixture's meta.json predates harness_rev, so every structural case below (a-g) needs
 # --allow-harness-skew just to get past the provenance check; (l)/(m) test that check itself.
+# It also names no `binary_sha256` — it was made by no released binary — so the cases below say
+# --no-check-golden OUT LOUD. They used to inherit the skip for free, because an absent field and a
+# malformed one both read as "no binary named"; case (aa) is what that silence cost.
 run_args() { local g="$1" c="$2" o="$3"; shift 3; bash "${here}/replay.sh" --golden "$g" --candidate "$c" --out "$o" --cells "$CELLS" "$@" >"$o.log" 2>&1; echo $?; }
-run() { run_args "$1" "$2" "$3" --allow-harness-skew --accepted "$W/no-accept.json" --baseline "$W/no-baseline.txt"; }
+run() { run_args "$1" "$2" "$3" --allow-harness-skew --no-check-golden --accepted "$W/no-accept.json" --baseline "$W/no-baseline.txt"; }
 fails_in() { awk -F'\t' '$2=="FAIL"{n++} END{print n+0}' "$1/ledger.tsv"; }
 classes_of() { awk -F'\t' -v i="$1" '$1==i{print $3}' "$2/ledger.tsv"; }
 
@@ -130,7 +133,7 @@ p=sys.argv[1]; d=json.load(open(p)); d["status"]=418; d.setdefault("headers",{})
 EOF
 # run_args hard-codes --cells "$CELLS"; call replay.sh directly here so the compare-list cells.json is used.
 bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/compare" --out "$W/out-g" --cells "$W/gcells/cells.json" \
-  --allow-harness-skew --accepted "$W/no-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-g.log" 2>&1
+  --allow-harness-skew --no-check-golden --accepted "$W/no-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-g.log" 2>&1
 rc=$?
 cls="$(classes_of 'self|a|ok' "$W/out-g")"
 [ "$rc" != 0 ] && [ "$cls" = "status" ] && say PASS "cell 'compare' list -> only its named classes show (headers dropped)" || say FAIL "compare list rc=$rc classes=$cls (expected status only, headers must not appear)"
@@ -146,7 +149,7 @@ cat >"$W/bad-accept.json" <<'JSON'
 JSON
 cp -R "$FIX" "$W/hsame"
 bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/hsame" --out "$W/out-h" --cells "$CELLS" \
-  --allow-harness-skew --accepted "$W/bad-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-h.log" 2>&1
+  --allow-harness-skew --no-check-golden --accepted "$W/bad-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-h.log" 2>&1
 rc=$?
 grep -q "not kind=breaking" "$W/out-h.log" && msg_ok=1 || msg_ok=0
 [ "$rc" != 0 ] && [ "$msg_ok" = 1 ] && say PASS "improvement accepting 'status' -> loader refuses (not kind=breaking)" || say FAIL "bad accept rc=$rc msg_ok=$msg_ok (see $W/out-h.log)"
@@ -161,7 +164,7 @@ cat >"$W/xform-accept.json" <<'JSON'
 {"accepted":[{"id":"T-1 test token","kind":"improvement","by":"selftest","cells":"^self\\|b\\|stream$","rationale":"selftest transform proof","transform":{"candidate":[[" TOKEN123",""]]}}]}
 JSON
 bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/xform" --out "$W/out-i" --cells "$CELLS" \
-  --allow-harness-skew --accepted "$W/xform-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-i.log" 2>&1
+  --allow-harness-skew --no-check-golden --accepted "$W/xform-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-i.log" 2>&1
 rc=$?
 row="$(awk -F'\t' '$1=="self|b|stream"{print; exit}' "$W/out-i/ledger.tsv")"
 status_col="$(cut -f2 <<<"$row")"; title_col="$(cut -f3 <<<"$row")"
@@ -185,7 +188,7 @@ EOF
 printf 'self|a|ok\nself|b|stream\n' >"$W/baseline-ab.txt"
 cp -R "$FIX" "$W/regress-cand"
 bash "${here}/replay.sh" --golden "$W/regress-golden" --candidate "$W/regress-cand" --out "$W/out-j" --cells "$CELLS" \
-  --allow-harness-skew --accepted "$W/no-accept.json" --baseline "$W/baseline-ab.txt" --accepted-gaps "$W/no-gaps.json" >"$W/out-j.log" 2>&1
+  --allow-harness-skew --no-check-golden --accepted "$W/no-accept.json" --baseline "$W/baseline-ab.txt" --accepted-gaps "$W/no-gaps.json" >"$W/out-j.log" 2>&1
 rc=$?
 row="$(awk -F'\t' '$1=="self|a|ok"{print; exit}' "$W/out-j/ledger.tsv")"
 status_col="$(cut -f2 <<<"$row")"; title_col="$(cut -f3 <<<"$row")"
@@ -196,7 +199,7 @@ cat >"$W/gaps-ab.json" <<'JSON'
 {"accepted":[{"id":"selftest gap self|a|ok","cells":"^self\\|a\\|ok$","owner":"selftest","rationale":"intentionally dropped for this test"}]}
 JSON
 bash "${here}/replay.sh" --golden "$W/regress-golden" --candidate "$W/regress-cand" --out "$W/out-k" --cells "$CELLS" \
-  --allow-harness-skew --accepted "$W/no-accept.json" --baseline "$W/baseline-ab.txt" --accepted-gaps "$W/gaps-ab.json" >"$W/out-k.log" 2>&1
+  --allow-harness-skew --no-check-golden --accepted "$W/no-accept.json" --baseline "$W/baseline-ab.txt" --accepted-gaps "$W/gaps-ab.json" >"$W/out-k.log" 2>&1
 rc=$?
 row="$(awk -F'\t' '$1=="self|a|ok"{print; exit}' "$W/out-k/ledger.tsv")"
 status_col="$(cut -f2 <<<"$row")"; title_col="$(cut -f3 <<<"$row")"
@@ -206,15 +209,17 @@ status_col="$(cut -f2 <<<"$row")"; title_col="$(cut -f3 <<<"$row")"
 cp -R "$FIX" "$W/hrev-g"; cp -R "$FIX" "$W/hrev-c"
 python3 -c "import json,sys; d=json.load(open(sys.argv[1])); d['harness_rev']='a'*64; json.dump(d, open(sys.argv[1],'w'))" "$W/hrev-g/meta.json"
 python3 -c "import json,sys; d=json.load(open(sys.argv[1])); d['harness_rev']='b'*64; json.dump(d, open(sys.argv[1],'w'))" "$W/hrev-c/meta.json"
+# --no-check-golden, so this case reaches the HARNESS guard: the fixture names no binary_sha256 and
+# the provenance guard would otherwise (correctly) refuse first, for a different reason.
 bash "${here}/replay.sh" --golden "$W/hrev-g" --candidate "$W/hrev-c" --out "$W/out-l" --cells "$CELLS" \
-  --accepted "$W/no-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-l.log" 2>&1
+  --no-check-golden --accepted "$W/no-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-l.log" 2>&1
 rc=$?
 grep -qi "harness" "$W/out-l.log" && msg_ok=1 || msg_ok=0
 [ "$rc" = 2 ] && [ "$msg_ok" = 1 ] && say PASS "mismatched harness_rev -> exit 2, named in the message" || say FAIL "harness_rev mismatch rc=$rc msg_ok=$msg_ok"
 
 # (m) --allow-harness-skew on that same mismatched pair -> proceeds to a normal verdict
 bash "${here}/replay.sh" --golden "$W/hrev-g" --candidate "$W/hrev-c" --out "$W/out-m" --cells "$CELLS" \
-  --allow-harness-skew --accepted "$W/no-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-m.log" 2>&1
+  --allow-harness-skew --no-check-golden --accepted "$W/no-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-m.log" 2>&1
 rc=$?
 [ "$rc" = 0 ] && [ "$(fails_in "$W/out-m")" = 0 ] && say PASS "--allow-harness-skew proceeds past the same mismatch" || say FAIL "--allow-harness-skew rc=$rc fails=$(fails_in "$W/out-m")"
 
@@ -235,7 +240,7 @@ c["headers"]["content-length"] = str(len(c["body"]["text"]))
 json.dump(c, open(cp_, "w"), separators=(",", ":"), sort_keys=True)
 EOF
 bash "${here}/replay.sh" --golden "$W/clen-g" --candidate "$W/clen-c" --out "$W/out-n" --cells "$CELLS" \
-  --allow-harness-skew --accepted "$W/xform-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-n.log" 2>&1
+  --allow-harness-skew --no-check-golden --accepted "$W/xform-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-n.log" 2>&1
 rc=$?
 row="$(awk -F'\t' '$1=="self|b|stream"{print; exit}' "$W/out-n/ledger.tsv")"
 status_col="$(cut -f2 <<<"$row")"; title_col="$(cut -f3 <<<"$row")"
@@ -325,7 +330,7 @@ json.dump({"accepted":[{"id":"bad money accept","kind":"improvement","by":"selft
   "cells":"^self\\|a\\|ok$","classes":[sys.argv[2]],"rationale":"should be refused"}]},
   open(sys.argv[1],"w"))' "$W/money-accept.json" "$mc"
   bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/money-same" --out "$W/out-q" --cells "$CELLS" \
-    --allow-harness-skew --accepted "$W/money-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-q.log" 2>&1
+    --allow-harness-skew --no-check-golden --accepted "$W/money-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-q.log" 2>&1
   rc=$?
   grep -q "not kind=breaking" "$W/out-q.log" && msg_ok=1 || msg_ok=0
   [ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
@@ -346,7 +351,7 @@ cat >"$W/blanket-accept.json" <<'JSON'
 {"accepted":[{"id":"classless breaking","kind":"breaking","by":"selftest","cells":"^self\\|a\\|ok$","rationale":"no classes, no changelog"}]}
 JSON
 bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/blanket" --out "$W/out-s" --cells "$CELLS" \
-  --allow-harness-skew --accepted "$W/blanket-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-s.log" 2>&1
+  --allow-harness-skew --no-check-golden --accepted "$W/blanket-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-s.log" 2>&1
 rc=$?
 grep -q "not kind=breaking with a changelog" "$W/out-s.log" && msg_ok=1 || msg_ok=0
 [ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
@@ -360,7 +365,7 @@ cat >"$W/mg-accept.json" <<'JSON'
 {"accepted":[{"id":"waive a recorder bug","kind":"improvement","by":"selftest","cells":".","classes":["missing.golden"],"rationale":"should be refused"}]}
 JSON
 bash "${here}/replay.sh" --golden "$W/mg-golden" --candidate "$W/mg-cand" --out "$W/out-t" --cells "$CELLS" \
-  --allow-harness-skew --accepted "$W/mg-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-t.log" 2>&1
+  --allow-harness-skew --no-check-golden --accepted "$W/mg-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-t.log" 2>&1
 rc=$?
 grep -q "recorder bug" "$W/out-t.log" && msg_ok=1 || msg_ok=0
 [ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
@@ -396,7 +401,7 @@ json.dump({"accepted":[{"id":"widened waiver","kind":"improvement","by":"selftes
   "cells":"^self\\|a\\|ok$|^self\\|b\\|","classes":["body"],"expected_cells":1,
   "rationale":"declares one cell, the regex takes two"}]}, open(sys.argv[1],"w"))' "$W/width-accept.json"
 bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/width" --out "$W/out-w" --cells "$CELLS" \
-  --allow-harness-skew --accepted "$W/width-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-w.log" 2>&1
+  --allow-harness-skew --no-check-golden --accepted "$W/width-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-w.log" 2>&1
 rc=$?
 grep -q "matches 2 cells" "$W/out-w.log" && msg_ok=1 || msg_ok=0
 [ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
@@ -410,7 +415,7 @@ json.dump({"accepted":[{"id":"honest waiver","kind":"improvement","by":"selftest
   "cells":"^self\\|a\\|ok$|^self\\|b\\|","classes":["body"],"expected_cells":2,
   "rationale":"declares what it takes"}]}, open(sys.argv[1],"w"))' "$W/width-ok.json"
 bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/width" --out "$W/out-w2" --cells "$CELLS" \
-  --allow-harness-skew --accepted "$W/width-ok.json" --baseline "$W/no-baseline.txt" >"$W/out-w2.log" 2>&1
+  --allow-harness-skew --no-check-golden --accepted "$W/width-ok.json" --baseline "$W/no-baseline.txt" >"$W/out-w2.log" 2>&1
 rc=$?
 [ "$rc" = 0 ] && [ "$(fails_in "$W/out-w2")" = 0 ] \
   && say PASS "an entry declaring its true width loads (the guard refuses widening, not entries)" \
@@ -421,7 +426,7 @@ python3 -c 'import json,sys
 json.dump({"accepted":[{"id":"undeclared width","kind":"improvement","by":"selftest",
   "cells":"^self\\|a\\|ok$","classes":["body"],"rationale":"no expected_cells"}]}, open(sys.argv[1],"w"))' "$W/width-none.json"
 bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/width" --out "$W/out-w3" --cells "$CELLS" \
-  --allow-harness-skew --accepted "$W/width-none.json" --baseline "$W/no-baseline.txt" >"$W/out-w3.log" 2>&1
+  --allow-harness-skew --no-check-golden --accepted "$W/width-none.json" --baseline "$W/no-baseline.txt" >"$W/out-w3.log" 2>&1
 rc=$?
 grep -q "declares no \`expected_cells\`" "$W/out-w3.log" && msg_ok=1 || msg_ok=0
 [ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
@@ -505,7 +510,7 @@ for c in d["cells"]:
 json.dump(d, open(sys.argv[2], "w"))
 EOF
   bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/same" --out "$W/out-x-$1" --cells "$W/xcells/$1.json" \
-    --allow-harness-skew --accepted "$W/no-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-x-$1.log" 2>&1
+    --allow-harness-skew --no-check-golden --accepted "$W/no-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-x-$1.log" 2>&1
   local rc=$?
   grep -q "$3" "$W/out-x-$1.log" && local msg_ok=1 || local msg_ok=0
   [ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
@@ -586,6 +591,46 @@ if bash "${here}/renormalize.sh" "$rn" >"$W/renorm.log" 2>&1; then
 else
   say FAIL "renormalize.sh failed on a minimal recording: $(tail -3 "$W/renorm.log")"
 fi
+
+# (aa) A GOLDEN THAT DOES NOT SAY WHICH BINARY MADE IT IS NOT COMPARED. The binary-provenance check
+# extracted `binary_sha256` with `python3 -c … 2>/dev/null || true` and then ran only `if [ -n
+# "$gbin" ]`, so EVERY failure of the field — absent, null, a number, a truncated digest, a
+# meta.json that did not parse at all — collapsed to the empty string and took the same branch as
+# the one legitimate case (a fixture recording that names no binary). The check that proves the
+# golden came from the pinned 1.5.5 release was skipped by anything that broke it. Each shape is
+# driven separately, because they failed for different reasons and must now each be named.
+prov_case() {  # <name> <meta.json bytes> <expected-message-fragment> <label>
+  local pg="$W/prov-$1"
+  rm -rf "$pg"; cp -R "$FIX" "$pg"
+  printf '%s' "$2" >"$pg/meta.json"
+  bash "${here}/replay.sh" --golden "$pg" --candidate "$W/same" --out "$W/out-prov-$1" --cells "$CELLS" \
+    --allow-harness-skew --accepted "$W/no-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-prov-$1.log" 2>&1
+  local rc=$?
+  grep -q "$3" "$W/out-prov-$1.log" && local msg_ok=1 || local msg_ok=0
+  [ "$rc" = 2 ] && [ "$msg_ok" = 1 ] \
+    && say PASS "$4" \
+    || say FAIL "$4 — NOT refused (rc=$rc msg_ok=$msg_ok, see $W/out-prov-$1.log)"
+}
+prov_case absent   '{"binary":"fixture","version":"busbar 1.5.5"}' 'carries no .binary_sha256.' \
+  "a golden meta.json with no binary_sha256 -> refuses to compare"
+prov_case null     '{"binary":"fixture","version":"busbar 1.5.5","binary_sha256":null}' 'carries no .binary_sha256.' \
+  "a golden meta.json with a null binary_sha256 -> refuses to compare"
+prov_case short    '{"binary":"fixture","version":"busbar 1.5.5","binary_sha256":"48e2800c"}' 'malformed .binary_sha256.' \
+  "a golden meta.json with a truncated binary_sha256 -> refuses to compare"
+prov_case notjson  '{"binary": "fixture", "version":' 'not readable JSON' \
+  "a golden meta.json that does not parse -> refuses to compare (it used to be swallowed)"
+prov_case noversion '{"binary":"fixture","binary_sha256":"48e2800cc1fbf229104d73c23039ba4d4a703c0a8db9e7872e22fec33f9b1e48"}' 'carries no .version.' \
+  "a golden meta.json with no version -> refuses to compare (nothing to check the digest against)"
+
+# …and --no-check-golden is still the way to say "I know this pair has no released binary": the
+# refusal must be escapable DELIBERATELY, or every fixture-based case above would be unreachable.
+rm -rf "$W/prov-esc"; cp -R "$FIX" "$W/prov-esc"
+printf '%s' '{"binary":"fixture","version":"busbar 1.5.5"}' >"$W/prov-esc/meta.json"
+bash "${here}/replay.sh" --golden "$W/prov-esc" --candidate "$W/same" --out "$W/out-prov-esc" --cells "$CELLS" \
+  --allow-harness-skew --no-check-golden --accepted "$W/no-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-prov-esc.log" 2>&1
+rc=$?
+[ "$rc" = 0 ] && say PASS "--no-check-golden still skips the provenance check, explicitly" \
+  || say FAIL "--no-check-golden did not skip the provenance check (rc=$rc, see $W/out-prov-esc.log)"
 
 echo
 [ "$fails" -eq 0 ] && echo "replay selftest: GREEN" || { echo "replay selftest: RED ($fails)"; exit 1; }
