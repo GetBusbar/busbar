@@ -94,17 +94,52 @@ fn a_response_is_never_a_server_message() {
     }
 }
 
-/// A REQUEST WITH A NULL `id` IS A NOTIFICATION, not a request with a null id.
+/// THE METHOD DECIDES, THEN THE `id` MEMBER'S PRESENCE DOES.
 ///
-/// Answering it would put a response on the stream that nothing can correlate, which the base
-/// protocol reserves for errors about un-parseable requests.
+/// A method the protocol defines as a notification stays one whatever id rode along — clients do
+/// emit `"id": null` on `notifications/message`, and answering it would put a response on the stream
+/// for something defined never to have one.
+///
+/// But a REQUEST method carrying a present `null` id is a REQUEST, and this is the half that was
+/// wrong: `id` was read for legibility rather than presence, so `{"id": null, "method":
+/// "roots/list"}` — the shape any encoder that renders an absent field as an explicit null produces
+/// — was classified as a notification and never answered, and the child blocked for ever on a reply
+/// only busbar could send. JSON-RPC 2.0 §4 defines a notification as a request object WITHOUT an
+/// `id` member; a member that is present and null is present.
 #[test]
-fn a_null_id_is_read_as_a_notification() {
+fn a_notification_method_ignores_a_null_id_and_a_request_method_is_still_answered() {
     assert_eq!(
         classify(&line(
             r#"{"jsonrpc":"2.0","id":null,"method":"notifications/message","params":{}}"#
         )),
-        Some(ServerMessage::Notification(ServerNotification::Message))
+        Some(ServerMessage::Notification(ServerNotification::Message)),
+        "a notification is a notification whatever id the child attached to it"
+    );
+    assert_eq!(
+        classify(&line(
+            r#"{"jsonrpc":"2.0","id":null,"method":"roots/list","params":{}}"#
+        )),
+        Some(ServerMessage::Request {
+            id: serde_json::Value::Null,
+            verb: ServerRequestVerb::RootsList,
+        }),
+        "a REQUEST whose id member is present and null is still waiting for a reply; dropping it \
+         leaves the child blocked on an answer nothing else can send"
+    );
+    assert_eq!(
+        classify(&line(
+            r#"{"jsonrpc":"2.0","id":null,"method":"nope/unheard","params":{}}"#
+        )),
+        Some(ServerMessage::UnknownRequest {
+            id: serde_json::Value::Null,
+            method: "nope/unheard".into(),
+        }),
+        "and an UNKNOWN method with a present id is answered `-32601` rather than dropped"
+    );
+    assert_eq!(
+        classify(&line(r#"{"jsonrpc":"2.0","method":"nope/unheard"}"#)),
+        Some(ServerMessage::UnknownNotification("nope/unheard".into())),
+        "an ABSENT id is the notification the base protocol defines, and is never answered"
     );
 }
 

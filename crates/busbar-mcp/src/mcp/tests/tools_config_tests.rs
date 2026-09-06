@@ -52,6 +52,50 @@ fn the_locked_section_shape_parses_into_the_values_it_declares() {
     );
 }
 
+/// AN ASK LIST LONGER THAN ITS OWN CAP IS A REGISTRATION THAT CANNOT BE SATISFIED, and it used to
+/// boot clean: the caller answers rounds up to the cap and then the round after it refuses, so the
+/// tool is callable only by someone who never finishes the exchange. That is a fact about the file,
+/// and the operator is only present at boot.
+#[test]
+fn an_ask_list_longer_than_its_cap_refuses_boot_and_a_zero_cap_is_exempt() {
+    let err = parse(
+        r#"
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+  max_caller_ask_rounds: 2
+  tools_allow:
+    wipe:
+      ask_caller:
+        - a: { method: "elicitation/create" }
+        - b: { method: "elicitation/create" }
+        - c: { method: "elicitation/create" }
+"#,
+    )
+    .expect_err("three rounds under a cap of two can never complete");
+    assert!(
+        err.contains("max_caller_ask_rounds") && err.contains('3'),
+        "the diagnostic names the cap and the length: {err}"
+    );
+
+    // `0` IS EXEMPT, because it is the documented kill switch: its whole meaning is "these rounds
+    // are not served", which is not a contradiction with a list of any length.
+    parse(
+        r#"
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+  max_caller_ask_rounds: 0
+  tools_allow:
+    wipe:
+      ask_caller:
+        - a: { method: "elicitation/create" }
+        - b: { method: "elicitation/create" }
+"#,
+    )
+    .expect("a zero cap disables the rounds; a list under it is not a contradiction");
+}
+
 /// A MISSPELLED ASK METHOD REFUSES BOOT RATHER THAN REMOVING THE GATE. `elicitation/created` names
 /// no capability a caller can declare, so at dispatch the round is filtered away and the destructive
 /// tool runs with no confirmation at all — the failure mode of a typo must not be "the safety check
