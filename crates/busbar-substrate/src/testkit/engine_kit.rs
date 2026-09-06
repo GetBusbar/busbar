@@ -31,7 +31,7 @@ use super::TestAppSeam;
 use crate::config::groups::GroupCfg;
 use crate::config::sections::RateEntryCfg;
 use crate::governance::signing::TokenSigner;
-use crate::governance::NewKeySpec;
+use crate::governance::{DerivedUsage, NewKeySpec};
 use crate::plane::calllog::CallRecorded;
 use crate::plane::registry::CardIssuer;
 use crate::plane::store::PlaneStore;
@@ -120,6 +120,25 @@ pub trait GovKit: Any + Send + Sync {
     fn hydrate_budgets(&self, cost: &dyn CostKit, now: u64) -> Result<(), String>;
     /// Flush the pending budget deltas to the store, so a test can read the durable ledger row back.
     fn flush_budgets(&self);
+    /// The DERIVED usage view for key `id` at `now`, priced through `cost` — the figures the admin
+    /// read and the dashboards see. `None` when no such key exists.
+    fn usage_for(
+        &self,
+        cost: &dyn CostKit,
+        id: &str,
+        now: u64,
+    ) -> Result<Option<DerivedUsage>, String>;
+    /// The DERIVED usage view for an arbitrary BUCKET (a key's, or a bound group's `@window` one) in
+    /// `budget_period`, priced through `cost` at `now`. `include_request_fee` folds the flat
+    /// per-request fee into the derived spend exactly as the door's own lookahead does.
+    fn derived_bucket_usage(
+        &self,
+        cost: &dyn CostKit,
+        bucket_id: &str,
+        budget_period: &str,
+        include_request_fee: bool,
+        now: u64,
+    ) -> Result<DerivedUsage, String>;
 }
 
 /// THE SWAPPABLE HANDLE over a built App — the engine's live snapshot holder the route adapter, the

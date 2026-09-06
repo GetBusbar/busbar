@@ -766,6 +766,15 @@ fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
 type PlaneContainerHooks =
     std::collections::BTreeMap<&'static str, (Vec<(String, Vec<String>)>, Vec<String>)>;
 
+/// THE BUILT APP this fixture hands back — the type [`TestApp::build`] returns, named here so a
+/// plane's test HELPERS can spell it in a signature (`fn probe(app: &Arc<BuiltApp>)`) without
+/// naming `busbar_core::state::App`. It is part of the fixture's own surface, reached through the
+/// same `test_support` doorway a plane already binds the fixture at, so a helper that only passes
+/// the built handle around stays inside that one binding instead of opening a second reach into the
+/// engine. A helper that needs a VERB rather than the handle should take the neutral port
+/// (`&dyn EngineHost`) or [`busbar_substrate::testkit::BuiltAppSeam`) instead.
+pub type BuiltApp = crate::state::App;
+
 #[allow(dead_code)]
 pub struct TestApp {
     lanes: Vec<LaneSpec>,

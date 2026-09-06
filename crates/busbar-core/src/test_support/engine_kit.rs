@@ -203,6 +203,33 @@ impl GovKit for crate::governance::GovState {
         crate::governance::GovState::hydrate_budgets(self, cost_model_ref(cost), now)
             .map_err(|e| e.to_string())
     }
+    fn usage_for(
+        &self,
+        cost: &dyn CostKit,
+        id: &str,
+        now: u64,
+    ) -> Result<Option<busbar_substrate::governance::DerivedUsage>, String> {
+        crate::governance::GovState::usage_for(self, cost_model_ref(cost), id, now)
+            .map_err(|e| e.to_string())
+    }
+    fn derived_bucket_usage(
+        &self,
+        cost: &dyn CostKit,
+        bucket_id: &str,
+        budget_period: &str,
+        include_request_fee: bool,
+        now: u64,
+    ) -> Result<busbar_substrate::governance::DerivedUsage, String> {
+        crate::governance::GovState::derived_bucket_usage(
+            self,
+            cost_model_ref(cost),
+            bucket_id,
+            budget_period,
+            include_request_fee,
+            now,
+        )
+        .map_err(|e| e.to_string())
+    }
     fn flush_budgets(&self) {
         crate::governance::GovState::flush_budgets(self);
     }
