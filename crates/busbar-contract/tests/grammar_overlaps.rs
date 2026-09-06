@@ -12,6 +12,49 @@
 
 use busbar_contract::grammar::{PathSeg, Selector, SelectorFamily, SelectorForm};
 
+/// Every selector form, for walking the cross-product.
+///
+/// The totality table lives with the proof that walks it rather than on the crate's plugin-visible
+/// surface: nothing in the kernel, the units or the planes reads the list — they match on a form —
+/// so it is evidence about the enum, not a thing the enum offers. `is_listed` below is the
+/// exhaustive match that keeps the two in step.
+const ALL_FORMS: &[SelectorForm] = &[
+    SelectorForm::ExactPath,
+    SelectorForm::PrefixOneLevel,
+    SelectorForm::Sni,
+    SelectorForm::ClientCertSubject,
+    SelectorForm::PathPattern,
+    SelectorForm::HeaderExact,
+    SelectorForm::HeaderPresent,
+    SelectorForm::HeaderPrefix,
+    SelectorForm::PathSuffix,
+    SelectorForm::PathContains,
+    SelectorForm::StreamName,
+    SelectorForm::Alpn,
+    SelectorForm::Port,
+];
+
+/// The table's own totality check: an exhaustive match, so a form added to the enum stops this
+/// proof compiling until it is given a row in the table above and a representative below.
+fn is_listed(form: SelectorForm) -> bool {
+    let listed = match form {
+        SelectorForm::ExactPath
+        | SelectorForm::PrefixOneLevel
+        | SelectorForm::Sni
+        | SelectorForm::ClientCertSubject
+        | SelectorForm::PathPattern
+        | SelectorForm::HeaderExact
+        | SelectorForm::HeaderPresent
+        | SelectorForm::HeaderPrefix
+        | SelectorForm::PathSuffix
+        | SelectorForm::PathContains
+        | SelectorForm::StreamName
+        | SelectorForm::Alpn
+        | SelectorForm::Port => true,
+    };
+    listed && ALL_FORMS.contains(&form)
+}
+
 /// One selector of each form, for walking the cross-product.
 fn one_of_each() -> Vec<Selector> {
     vec![
@@ -35,8 +78,9 @@ fn one_of_each() -> Vec<Selector> {
 #[test]
 fn the_walk_covers_every_form() {
     let forms: Vec<SelectorForm> = one_of_each().iter().map(Selector::form).collect();
-    assert_eq!(forms.len(), SelectorForm::ALL.len());
-    for form in SelectorForm::ALL {
+    assert_eq!(forms.len(), ALL_FORMS.len());
+    for form in ALL_FORMS {
+        assert!(is_listed(*form), "{form} is missing from the table");
         assert!(forms.contains(form), "no representative for {form}");
     }
 }
@@ -53,7 +97,7 @@ fn overlaps_is_total_over_the_cross_product() {
             pairs += 1;
         }
     }
-    assert_eq!(pairs, SelectorForm::ALL.len() * SelectorForm::ALL.len());
+    assert_eq!(pairs, ALL_FORMS.len() * ALL_FORMS.len());
 }
 
 /// Reflexive: a claim overlaps itself, so two identical claims are refused at boot.
@@ -417,7 +461,7 @@ fn a_claim_with_no_scheme_offers_nothing_to_narrow_to() {
 /// The family a form belongs to is fixed, and every form belongs to exactly one.
 #[test]
 fn every_form_has_one_family() {
-    for form in SelectorForm::ALL {
+    for form in ALL_FORMS {
         let family = form.family();
         assert!(matches!(
             family,
