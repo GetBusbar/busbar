@@ -36,6 +36,15 @@
 # FLOORS. A discovery step that finds nothing passes everything. This one refuses to run if it finds
 # fewer than MIN_GATES, and refuses if `ci.yml` is unreadable. Unknown is not green.
 #
+# `ci.yml` IS NOT THE WHOLE OF WHAT A PUSH IS JUDGED BY, and this script behaved as though it were.
+# A push to `qa` also spends `qa-gate.yml`, whose `umbrella` is the second required check. Every one
+# of its tiers is invoked as `./scripts/qa-gate-run.sh <verb>`, so discovery collapsed all of them
+# into one bare script name that SKIP_REASON already excused -- a new tier of the qa gate was
+# therefore neither run here nor named, which is the "absent from both lists" hole, one file over.
+# qa-gate.yml is now discovered PER VERB into QA_ACCOUNTED, with the same fails-closed rule, and
+# `--selftest` additionally refuses a tree whose qa-gate umbrella has lost the `done-oracle` job
+# (proven by planting that exact mutation and requiring `ci-umbrella-lint.py` to go red on it).
+#
 # THE CARGO INVOCATIONS ARE DISCOVERED AND CLASSIFIED THE SAME WAY, and that is a repair, not a
 # feature. This script used to hard-code three cargo lines -- fmt, clippy, test, all on the DEFAULT
 # feature set, on this host. CI runs eleven, across FOUR build configurations, and the three that
@@ -98,6 +107,34 @@ declare -a SKIP_REASON=(
 RELEASE_ORDER=1
 
 MIN_GATES=8
+
+# ── THE qa-gate SIDE OF CI, DISCOVERED THE SAME WAY ───────────────────────────────────────────────
+# `ci.yml` is not the whole of what a push is judged by. Pushing to `qa` also spends `qa-gate.yml`,
+# whose umbrella is the second required check, and this script could not see a single one of its
+# gates: every one is invoked as `./scripts/qa-gate-run.sh <verb>`, and discovery collapsed all of
+# them into the bare script name that SKIP_REASON already covered. So a new verb -- a new tier of the
+# qa gate -- was neither run here nor named as CI-only, which is the exact "absent from both lists"
+# hole the extension and directory sets were widened to close, one file over.
+#
+# It matters now because `done-oracle` is that new tier: `scripts/verify-1.6.0-done.sh` in FULL,
+# including the release build, both `--plane all` recordings and the replay against the pinned 1.5.5
+# golden. It is the longest job in either workflow. It is CI-only for two independent reasons and
+# both are written down below, and it is discovered per-VERB rather than per-script so that adding a
+# verb to the qa gate breaks this script until somebody classifies it.
+QA_YML=".github/workflows/qa-gate.yml"
+MIN_QA_GATES=6
+
+declare -a QA_ACCOUNTED=(
+  "scripts/qa-gate-run.sh matrix|converts qa/segments.toml into a strategy.matrix JSON on \$GITHUB_OUTPUT. Outside a runner it has no job output to write and no matrix to drive."
+  "scripts/qa-gate-run.sh fast|the fast tier plus the reserved-slot report, and it runs the fleet's segments. Same fleet dependency as qa-segments.sh above."
+  "scripts/qa-gate-run.sh build|builds the whole workspace and packs target/ into a tarball for the fan-out. Locally that is just a slow rebuild of what is already here, for an artifact nothing consumes."
+  "scripts/qa-gate-run.sh hydrate|restores that tarball over a fresh checkout and rewrites mtimes. There is no build-once artifact on a laptop, and running it over a real tree is a way to lose one."
+  "scripts/qa-gate-run.sh siblings|clones ten plugin repos plus busbar-admin with a runner token. It measures the network and the org's permissions, not this tree."
+  "scripts/qa-gate-run.sh segment|one live-mock leg: real Postgres/Valkey/MySQL/Vault containers and the published plugin set. Runs on promotion, not on a laptop."
+  "scripts/qa-gate-run.sh loader|the loader-mechanism tests against the SIBLING-built store-sqlite cdylib, which only exists after the sibling checkouts above."
+  "testing/shadow-oracle/harness-rev.sh|NOT a gate here: qa-gate.yml runs it to COMPUTE the golden cache key (it must be the same key ci.yml computes, from the same shared function, or the two jobs restore different goldens). It is hermetic and already runs locally, discovered from ci.yml, in the RUN list above."
+  "scripts/qa-gate-run.sh done-oracle|LONG, and CI-only for two independent reasons. (1) It runs scripts/verify-1.6.0-done.sh in FULL, whose BUILD group is THIS SCRIPT -- running it here is unbounded recursion, not a gate. (2) Its PARITY group needs the published 1.5.5 binary and the pinned plugin set fetched over the network, then a release build and two full --plane all recordings; measured wall clock is ~100-140 min with a warm golden cache. The parts of it that CAN run on a laptop already do, individually, as the gates ci.yml invokes directly. Run 'scripts/verify-1.6.0-done.sh' yourself when you want the whole verdict, and give it two hours."
+)
 
 # ── THE CARGO GATES ───────────────────────────────────────────────────────────────────────────────
 # CI's cargo invocations, normalised (spaces collapsed, `--verbose` dropped -- it changes output, not
@@ -276,6 +313,33 @@ mapfile -t DISCOVERED < <(
 
 [ "${#DISCOVERED[@]}" -ge "$MIN_GATES" ] || die "discovered only ${#DISCOVERED[@]} gate invocation(s) in $CI_YML (floor $MIN_GATES). The parser is broken, and a broken discovery reports a clean tree."
 
+# qa-gate's gates, discovered PER VERB. Only when CI_YML is the real ci.yml -- `--dump-cargo` /
+# `--dump-gates` point discovery at a fixture and must not silently pull a second real file in
+# beside it. The capture allows one bare word after the script name, which is what makes
+# `qa-gate-run.sh done-oracle` a distinct invocation from `qa-gate-run.sh loader` instead of both
+# collapsing into the script name SKIP_REASON already excuses.
+QA_DISCOVERED=(); QA_UNCLASSIFIED=()
+if [ "$CI_YML" = ".github/workflows/ci.yml" ] && [ -f "$QA_YML" ]; then
+  mapfile -t QA_DISCOVERED < <(
+    sed -e 's/^[[:space:]]*#.*$//' -e 's/^[[:space:]]*-\{0,1\}[[:space:]]*name:.*$//' "$QA_YML" \
+      | grep -oE "${GATE_PATH}( [a-z][a-z-]*)?" | sort -u
+  )
+  [ "${#QA_DISCOVERED[@]}" -ge "$MIN_QA_GATES" ] || die "discovered only ${#QA_DISCOVERED[@]} gate invocation(s) in $QA_YML (floor $MIN_QA_GATES). qa-gate's umbrella is a required check; a discovery that cannot see its tiers cannot classify them."
+
+  # FAILS CLOSED, exactly as the ci.yml halves do: a qa-gate verb in neither list breaks this script
+  # until somebody decides which it is. Every one is CI-only today, and each says why in writing.
+  for inv in "${QA_DISCOVERED[@]}"; do
+    known=0
+    for entry in "${QA_ACCOUNTED[@]}"; do [ "${entry%%|*}" = "$inv" ] && { known=1; break; }; done
+    [ "$known" = 1 ] || QA_UNCLASSIFIED+=("$inv")
+  done
+  if [ "${#QA_UNCLASSIFIED[@]}" -gt 0 ] && [ "${1:-}" != "--selftest" ]; then
+    printf 'full-gate: %s\n' "$QA_YML runs gate invocation(s) this script neither runs nor names as CI-only:" >&2
+    printf '  %s\n' "${QA_UNCLASSIFIED[@]}" >&2
+    die "add each to QA_ACCOUNTED with a reason. A tier of the qa gate that is in neither list is a tier nobody is accounting for."
+  fi
+fi
+
 # After the floor, deliberately: `--dump-gates` relaxes nothing.
 if [ "${1:-}" = "--dump-gates" ]; then
   printf '%s\n' "${DISCOVERED[@]}"
@@ -354,6 +418,12 @@ if [ "${1:-}" = "--list" ]; then
     s="$(printf '%s' "$inv" | grep -oE "$GATE_PATH")"
     printf '  %-44s %s\n' "$inv" "$(skip_reason_for "$s")"
   done
+  printf '\n== qa-gate.yml TIERS, ACCOUNTED FOR WITH REASON (%d discovered) ==\n' "${#QA_DISCOVERED[@]}"
+  for inv in "${QA_DISCOVERED[@]}"; do
+    for entry in "${QA_ACCOUNTED[@]}"; do
+      [ "${entry%%|*}" = "$inv" ] && printf '  %-40s %s\n' "$inv" "${entry#*|}"
+    done
+  done
   exit 0
 fi
 
@@ -403,6 +473,66 @@ if [ "${1:-}" = "--selftest" ]; then
       printf '  [FAILED] %s is invoked by ci.yml but was NOT discovered\n' "$must"; bad=1
     fi
   done
+
+  # ── THE qa-gate HALF ──────────────────────────────────────────────────────────────────────────
+  # Discovery must SEE the new tier by name. A `qa-gate-run.sh` invocation that collapses into the
+  # bare script name is the "absent from both lists" hole all over again: the counts below would
+  # walk confidently past a two-hour job nobody had accounted for.
+  n=${#QA_DISCOVERED[@]}
+  [ "$n" -ge "$MIN_QA_GATES" ] && printf '  [ok]     qa-gate discovery found %d tier(s) (floor %d)\n' "$n" "$MIN_QA_GATES" \
+    || { printf '  [FAILED] qa-gate discovery found only %d tier(s)\n' "$n"; bad=1; }
+
+  if printf '%s\n' "${QA_DISCOVERED[@]}" | grep -qx 'scripts/qa-gate-run.sh done-oracle'; then
+    printf '  [ok]     the qa-gate done-oracle tier is discovered as its own invocation\n'
+  else
+    printf '  [FAILED] `scripts/qa-gate-run.sh done-oracle` is in qa-gate.yml but was NOT discovered as a distinct tier\n'; bad=1
+  fi
+  if [ "${#QA_UNCLASSIFIED[@]}" -eq 0 ]; then
+    printf '  [ok]     every qa-gate tier is accounted for with a written reason\n'
+  else
+    printf '  [FAILED] unclassified qa-gate tier(s):\n'
+    printf '           %s\n' "${QA_UNCLASSIFIED[@]}"; bad=1
+  fi
+  # The done-oracle entry must say BOTH why it cannot run here and that it is long -- a reason that
+  # omits the recursion invites somebody to "just run it locally" and hang their terminal.
+  qa_done_reason=""
+  for entry in "${QA_ACCOUNTED[@]}"; do
+    [ "${entry%%|*}" = "scripts/qa-gate-run.sh done-oracle" ] && qa_done_reason="${entry#*|}"
+  done
+  if printf '%s' "$qa_done_reason" | grep -qi 'recursion' && printf '%s' "$qa_done_reason" | grep -qi 'LONG'; then
+    printf '  [ok]     the done-oracle tier is classified CI-only AND long, in writing\n'
+  else
+    printf '  [FAILED] the done-oracle CI-only reason does not name both facts (it is long; it re-enters this script)\n'; bad=1
+  fi
+
+  # ── FAIL CLOSED IF qa-gate LOSES done-oracle FROM ITS UMBRELLA ────────────────────────────────
+  # The classification above accounts for the job; this asserts the job still GATES. Two independent
+  # checks, because they fail in different directions: a direct assertion on this tree's needs list
+  # (which is what a reader of this script wants to know), and the umbrella lint driven over a
+  # MUTATED copy, which proves the enforcement still discriminates rather than merely agreeing.
+  if grep -qE '^\s*needs: \[.*\bdone-oracle\b.*\]' "$QA_YML"; then
+    printf '  [ok]     qa-gate.yml`s umbrella still lists done-oracle in its needs\n'
+  else
+    printf '  [FAILED] qa-gate.yml`s umbrella does NOT list done-oracle in needs -- the FULL done-oracle would not gate qa->main\n'; bad=1
+  fi
+  QA_MUT="target/full-gate/qa-mutation"
+  rm -rf "$QA_MUT"; mkdir -p "$QA_MUT/.github/workflows"
+  sed 's/needs: \[build, fast, slow, loader, done-oracle\]/needs: [build, fast, slow, loader]/' \
+    "$QA_YML" >"$QA_MUT/$QA_YML"
+  if cmp -s "$QA_YML" "$QA_MUT/$QA_YML"; then
+    printf '  [FAILED] could not plant the mutation: qa-gate.yml`s umbrella needs list is not the expected shape\n'; bad=1
+  elif python3 scripts/ci-umbrella-lint.py --root "$QA_MUT" --workflow qa-gate >/dev/null 2>&1; then
+    printf '  [FAILED] removing done-oracle from qa-gate`s umbrella needs was ACCEPTED by ci-umbrella-lint\n'; bad=1
+  else
+    printf '  [ok]     qa-gate.yml with done-oracle removed from the umbrella needs is REFUSED\n'
+  fi
+  if python3 scripts/ci-umbrella-lint.py --workflow qa-gate >/dev/null 2>&1; then
+    printf '  [ok]     the tree`s own qa-gate umbrella passes ci-umbrella-lint\n'
+  else
+    printf '  [FAILED] ci-umbrella-lint refuses this tree`s qa-gate.yml:\n'
+    python3 scripts/ci-umbrella-lint.py --workflow qa-gate 2>&1 | sed 's/^/           /'; bad=1
+  fi
+  rm -rf "$QA_MUT"
 
   # The floor must BITE, not merely exist.
   if (cd "$(mktemp -d)" && mkdir -p .github/workflows && : > .github/workflows/ci.yml \

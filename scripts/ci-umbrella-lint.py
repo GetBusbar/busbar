@@ -30,8 +30,19 @@ DECLARATION SYNTAX, anywhere in ci.yml, as a comment:
     # non-gating: <job-key> -- <reason, at least 30 characters>
     # report-only: <job-key> -- <reason, at least 30 characters>
 
+`qa-gate.yml` HAS THE SAME SHAPE AND THE SAME HAZARD, and it was not covered. Its `umbrella` job is
+the second required check (branch protection requires `ci umbrella` on dev, and `ci umbrella` +
+`qa-gate umbrella` on qa and main), its `needs:` is likewise hand-maintained, and its scoring ledger
+is a run of `check <job> "${{ needs[...].result }}"` lines rather than an env table. The hazard is
+identical: add the `done-oracle` job -- the one that runs `scripts/verify-1.6.0-done.sh` in full,
+including the `--plane all` replay -- forget the `needs:` line, and a red done-oracle reports GREEN
+on the check that gates qa->main. So this lint reads BOTH files, in each one's own dialect, and
+`qa-gate.yml` additionally carries a NAMED, REQUIRED member: `done-oracle` must be in the umbrella's
+needs, by name. A floor catches a needs list that shrank; a named requirement catches the one
+deletion that matters most and would still clear any floor.
+
 Usage:
-    python3 scripts/ci-umbrella-lint.py [--root .]
+    python3 scripts/ci-umbrella-lint.py [--root .] [--workflow ci|qa-gate|both]
     python3 scripts/ci-umbrella-lint.py --selftest
 """
 
@@ -53,6 +64,33 @@ MIN_JOBS = 20
 MIN_NEEDS = 15
 MIN_RESULTS = 15
 MIN_REASON = 30
+
+# ── qa-gate.yml, the OTHER required umbrella ─────────────────────────────────────────────────────
+QA_WORKFLOW = ".github/workflows/qa-gate.yml"
+QA_UMBRELLA = "umbrella"
+# Floors, same purpose as above: well below today's six jobs, there so a parser that matched nothing
+# fails loudly instead of reporting a clean file.
+MIN_QA_JOBS = 5
+MIN_QA_NEEDS = 4
+# NAMED, REQUIRED MEMBERS. A floor only notices a needs list that got SHORTER than some number; it
+# cannot notice that the one job which actually spends the two hours has been swapped out for a
+# cheap one. Each entry is a job that must be in the umbrella's `needs` BY NAME, with the sentence
+# that says what goes unmeasured without it.
+QA_REQUIRED_NEEDS = {
+    "done-oracle": (
+        "it is the only thing anywhere that runs scripts/verify-1.6.0-done.sh in FULL -- the "
+        "PARITY group's `--plane all` replay against the pinned 1.5.5 golden, the AUDIT-LEDGER "
+        "check, STORE-QA, DESIGN and the full-gate battery. Outside the umbrella's needs, its red "
+        "reports GREEN on the check that gates qa->main."
+    ),
+}
+# The qa-gate umbrella scores its dependencies with shell, not with an env table: one
+# `check <job> "${{ needs.<job>.result }}"` line each. Both spellings of the context reference are
+# accepted (`needs.x.result` and `needs['x'].result`) because a hyphenated job key REQUIRES the
+# index form -- `-` inside a property path is parsed as subtraction.
+QA_CHECK_RE = re.compile(
+    r"^\s*check\s+([A-Za-z0-9_.-]+)\s+\"\$\{\{\s*needs(?:\.([A-Za-z0-9_.-]+)|\[\s*'([^']+)'\s*\])\.result\s*\}\}\""
+)
 
 DECL_RE = re.compile(
     r"^\s*#\s*(non-gating|report-only)\s*:\s*([A-Za-z0-9_.-]+)\s*(?:--|—|-|:)\s*(.+?)\s*$"
@@ -179,21 +217,144 @@ def check_text(text: str) -> list[str]:
     return problems
 
 
-def check(root: Path) -> int:
-    path = root / WORKFLOW
+def check_qa_text(text: str) -> list[str]:
+    """Every problem with qa-gate.yml's umbrella wiring. Empty list == the wiring holds."""
+    problems: list[str] = []
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        print(f"ci-umbrella-lint: cannot read {path}: {exc}", file=sys.stderr)
-        return 2
-    problems = check_text(text)
-    if problems:
-        print(f"::error::ci-umbrella-lint: {len(problems)} problem(s) in {WORKFLOW}", file=sys.stderr)
-        for p in problems:
-            print(f"  - {p}", file=sys.stderr)
-        return 1
-    print("ci-umbrella-lint: every job is gated by the umbrella or declared non-gating, with a reason")
-    return 0
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        return [f"qa-gate.yml does not parse as YAML: {exc}"]
+    if not isinstance(doc, dict) or not isinstance(doc.get("jobs"), dict):
+        return ["qa-gate.yml has no `jobs:` mapping -- refusing to report a clean file from an unread one"]
+
+    jobs = doc["jobs"]
+    if len(jobs) < MIN_QA_JOBS:
+        problems.append(
+            f"only {len(jobs)} job(s) parsed in qa-gate.yml (floor {MIN_QA_JOBS}). A reader that "
+            f"sees almost no jobs reports almost no omissions; that is not a pass."
+        )
+    if QA_UMBRELLA not in jobs:
+        return problems + [
+            f"there is no `{QA_UMBRELLA}` job in qa-gate.yml -- `qa-gate umbrella` is a required "
+            f"check on qa and main, and it is gone"
+        ]
+
+    umbrella = jobs[QA_UMBRELLA] or {}
+    needs = umbrella.get("needs") or []
+    if isinstance(needs, str):
+        needs = [needs]
+    needs_set = set(needs)
+    if len(needs_set) < MIN_QA_NEEDS:
+        problems.append(
+            f"`{QA_UMBRELLA}.needs` in qa-gate.yml lists {len(needs_set)} job(s) (floor "
+            f"{MIN_QA_NEEDS}). A short needs list is how a required check stops requiring things."
+        )
+
+    # THE NAMED REQUIREMENT. This is the rule a floor cannot express.
+    for job, why in QA_REQUIRED_NEEDS.items():
+        if job not in jobs:
+            problems.append(
+                f"qa-gate.yml has no `{job}` job at all. It is a REQUIRED member of the umbrella "
+                f"because {why}"
+            )
+        elif job not in needs_set:
+            problems.append(
+                f"job `{job}` is not in `{QA_UMBRELLA}.needs` in qa-gate.yml. It is a REQUIRED "
+                f"member because {why}"
+            )
+
+    decls = declarations(text)
+    non_gating = {job: reason for job, reason in decls["non-gating"]}
+    report_only = {job: reason for job, reason in decls["report-only"]}
+    for kind, table in (("non-gating", non_gating), ("report-only", report_only)):
+        for job, reason in table.items():
+            if job not in jobs:
+                continue  # the declaration belongs to the other workflow; its own pass judges it
+            if len(reason) < MIN_REASON:
+                problems.append(
+                    f"`# {kind}: {job}` in qa-gate.yml carries a {len(reason)}-character reason "
+                    f"(floor {MIN_REASON}). An exemption without a reason becomes permanent."
+                )
+            if job in QA_REQUIRED_NEEDS:
+                problems.append(
+                    f"`# {kind}: {job}` tries to exempt a REQUIRED umbrella member. That is not an "
+                    f"exemption anyone may write: {QA_REQUIRED_NEEDS[job]}"
+                )
+
+    # RULE 1 -- omission is impossible.
+    for job in jobs:
+        if job == QA_UMBRELLA or job in needs_set or job in non_gating:
+            continue
+        problems.append(
+            f"job `{job}` is not in `{QA_UMBRELLA}.needs` in qa-gate.yml and is not declared "
+            f"non-gating. The umbrella does not wait for it and cannot see it fail, so a red in "
+            f"`{job}` reports GREEN on the required check that gates qa->main."
+        )
+
+    # RULE 2 -- a job waited for is a job SCORED. qa-gate's ledger is the `check <job> "..."` lines
+    # in the umbrella's own run script, so it is read from there rather than from an env table.
+    scored: dict[str, str] = {}
+    for step in umbrella.get("steps") or []:
+        for line in str((step or {}).get("run") or "").splitlines():
+            m = QA_CHECK_RE.match(line)
+            if m:
+                scored[m.group(1)] = m.group(2) or m.group(3)
+    for label, ref in scored.items():
+        if label != ref:
+            problems.append(
+                f"qa-gate umbrella scores `check {label}` from `needs.{ref}.result` -- the printed "
+                f"name and the measured job disagree."
+            )
+        if ref not in jobs:
+            problems.append(f"qa-gate umbrella scores `{ref}`, which is not a job in qa-gate.yml.")
+        elif ref not in needs_set:
+            problems.append(
+                f"qa-gate umbrella scores `{ref}`, which is NOT in `{QA_UMBRELLA}.needs`. "
+                f"`needs.{ref}.result` is the empty string there, not a verdict."
+            )
+    for job in sorted(needs_set):
+        if job in scored or job in report_only:
+            continue
+        problems.append(
+            f"job `{job}` is in qa-gate's `{QA_UMBRELLA}.needs` but the umbrella never scores it: "
+            f"it waits for the job and then does not read its result. Add a "
+            f"`check {job} \"${{{{ needs['{job}'].result }}}}\"` line, or write "
+            f"`# report-only: {job} -- <why it is printed and not counted>`."
+        )
+    return problems
+
+
+PASSES = (
+    (WORKFLOW, lambda text: check_text(text),
+     "every job is gated by the umbrella or declared non-gating, with a reason"),
+    (QA_WORKFLOW, lambda text: check_qa_text(text),
+     "every job is inside the umbrella's needs and scored, and done-oracle is in it by name"),
+)
+
+
+def check(root: Path, which: str = "both") -> int:
+    """Judge one or both umbrellas. Unreadable is exit 2 -- unknown is never green."""
+    rc = 0
+    for path_rel, fn, ok_line in PASSES:
+        if which == "ci" and path_rel != WORKFLOW:
+            continue
+        if which == "qa-gate" and path_rel != QA_WORKFLOW:
+            continue
+        path = root / path_rel
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"ci-umbrella-lint: cannot read {path}: {exc}", file=sys.stderr)
+            return 2
+        problems = fn(text)
+        if problems:
+            print(f"::error::ci-umbrella-lint: {len(problems)} problem(s) in {path_rel}", file=sys.stderr)
+            for p in problems:
+                print(f"  - {p}", file=sys.stderr)
+            rc = 1
+        else:
+            print(f"ci-umbrella-lint: {path_rel}: {ok_line}")
+    return rc
 
 
 BASE = """
@@ -330,20 +491,83 @@ def selftest(root: Path) -> int:
     else:
         print("  [ok]     the tree's own ci.yml passes")
 
+    # ── THE qa-gate UMBRELLA: EVERY MUTATION REFUSED, THEN THE REAL FILE ACCEPTED ────────────────
+    # Three mutations, each of which is a way the done-oracle job stops gating without anybody
+    # editing the job itself: dropped from `needs`, dropped from the umbrella's scoring, or deleted
+    # outright. All three must be REFUSED, and then the tree's own file must pass.
+    qa_real = (root / QA_WORKFLOW).read_text(encoding="utf-8")
+    qa_cases: list[tuple[str, str, str]] = []
+
+    dropped_needs = re.sub(r"\n( +)- done-oracle(?=\n)", "", qa_real, count=1)
+    if dropped_needs == qa_real:
+        dropped_needs = qa_real.replace(
+            "needs: [build, fast, slow, loader, done-oracle]", "needs: [build, fast, slow, loader]", 1
+        )
+    qa_cases.append((
+        "done-oracle removed from the umbrella's needs",
+        dropped_needs,
+        "THE DEFECT: the umbrella would not wait for the full done-oracle, so its red reports GREEN",
+    ))
+
+    unscored = re.sub(r"\n *check done-oracle [^\n]*", "", qa_real, count=1)
+    qa_cases.append((
+        "done-oracle waited for but never scored",
+        unscored,
+        "a job the umbrella waits for and does not read is a job it cannot fail on",
+    ))
+
+    deleted = qa_real.replace("\n  done-oracle:\n", "\n  done-oracle-renamed:\n", 1)
+    qa_cases.append((
+        "the done-oracle job renamed out from under needs",
+        deleted,
+        "a required member that no longer exists is not an excused member",
+    ))
+
+    for name, text, why in qa_cases:
+        if text == qa_real:
+            print(f"  [FAILED] could not plant the qa-gate mutation: {name}")
+            failures += 1
+            continue
+        if check_qa_text(text):
+            print(f"  [ok]     qa-gate.yml with '{name}' is REFUSED\n           {why}")
+        else:
+            print(f"  [FAILED] qa-gate.yml with '{name}' was ACCEPTED\n           {why}")
+            failures += 1
+
+    qa_problems = check_qa_text(qa_real)
+    if qa_problems:
+        print(f"  [FAILED] the tree's own qa-gate.yml does not pass: {qa_problems[0]}")
+        failures += 1
+    else:
+        print("  [ok]     the tree's own qa-gate.yml passes")
+
+    # The qa floors must BITE too: the tiny CI stub has no `umbrella` job and far too few jobs.
+    if check_qa_text(BASE):
+        print("  [ok]     under the qa floors a 3-job stub is REFUSED")
+    else:
+        print("  [FAILED] the qa job/needs floors do not bite")
+        failures += 1
+
     if failures:
         print(f"\nSELF-TEST FAILED: {failures} check(s) did not hold", file=sys.stderr)
         return 1
-    print(f"\nself-test: {len(cases) + 3} checks, all hold")
+    print(f"\nself-test: {len(cases) + 3 + len(qa_cases) + 2} checks, all hold")
     return 0
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="assert every ci.yml job is gated or declared non-gating")
+    ap = argparse.ArgumentParser(
+        description="assert every ci.yml and qa-gate.yml job is gated or declared non-gating"
+    )
     ap.add_argument("--selftest", action="store_true", help="prove the lint discriminates, then exit")
     ap.add_argument("--root", default=".", help="repository root to check")
+    ap.add_argument(
+        "--workflow", default="both", choices=("ci", "qa-gate", "both"),
+        help="which umbrella to judge (default: both -- there are two required checks)",
+    )
     args = ap.parse_args()
     root = Path(args.root)
-    return selftest(root) if args.selftest else check(root)
+    return selftest(root) if args.selftest else check(root, args.workflow)
 
 
 if __name__ == "__main__":
