@@ -926,6 +926,39 @@ fn tool_response_maps_to_call_result_and_roundtrips() {
     assert_eq!(back, src, "toolResponse round-trip is byte-stable");
 }
 
+#[test]
+fn a_tool_that_answered_a_non_object_still_answers_an_object_on_this_wire() {
+    // Gemini's `functionResponse.response` is a STRUCT — an object — while the dialect the shared IR
+    // was named from carries a tool's output as a free-form string. So a tool that answered a bare
+    // JSON scalar has to be wrapped, and the literal `null` is the case that matters most: written
+    // straight through it tells the model the tool returned NOTHING, which is a different answer from
+    // the one the tool gave, and it is the confusion this seam's own contract refuses.
+    let codec = GeminiLiveCodec;
+    for (output, expected) in [
+        (&b"null"[..], json!({ "result": Value::Null })),
+        (&b"72"[..], json!({ "result": 72 })),
+        (&b"true"[..], json!({ "result": true })),
+        (&b"[1,2]"[..], json!({ "result": [1, 2] })),
+        (&b"\"ok\""[..], json!({ "result": "ok" })),
+    ] {
+        let w = up(
+            &codec,
+            IrClientEvent::Tool(IrDuplexTool::CallResult {
+                call_ref: CallRef(0),
+                call_id: "fc_1".into(),
+                name: String::new(),
+                output: Bytes::from(output.to_vec()),
+            }),
+        );
+        let response = as_value(&w)["toolResponse"]["functionResponses"][0]["response"].clone();
+        assert!(
+            response.is_object(),
+            "this dialect's response member is an object, got {response}"
+        );
+        assert_eq!(response, expected);
+    }
+}
+
 // ── usageMetadata extraction (`plane4-duplex-session.md`) ──────────────────────────────────────────────────────────────
 
 #[test]

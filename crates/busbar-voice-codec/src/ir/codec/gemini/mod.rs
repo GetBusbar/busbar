@@ -608,12 +608,20 @@ fn atomic_tool_call(call_ref: CallRef, call_id: &str, st: &mut DecodeState) -> O
 /// OBJECT; the shared IR carries the tool's output as OPAQUE BYTES, because the dialect it was named
 /// from (`function_call_output.output`) is a FREE-FORM STRING — a tool that answers `OK` is answering.
 ///
-/// So: JSON rides as the value it is, and anything else is WRAPPED (`{"result": "<the text>"}`) rather
-/// than flattened to `null`. `null` told the model the tool returned nothing, which is a different
-/// answer from the one the tool gave — the same confusion the argument seam above refuses.
+/// So: a JSON OBJECT rides as the value it is, and anything else is WRAPPED under `result` rather
+/// than written where an object is required. The literal `null` is why the wrap covers the JSON
+/// scalars too and not only the unparseable bytes: `response: null` told the model the tool returned
+/// nothing, which is a different answer from the one the tool gave — the same confusion the argument
+/// seam above refuses — and a bare number, string, boolean or array is not a struct this dialect can
+/// carry either. A scalar that IS json is wrapped as the value it is (`{"result": 72}`), because
+/// re-stringifying it would answer with quotes the tool never wrote; only bytes that are not JSON at
+/// all are wrapped as text.
 fn tool_payload(output: &Bytes) -> Value {
-    serde_json::from_slice::<Value>(output)
-        .unwrap_or_else(|_| json!({ "result": String::from_utf8_lossy(output).into_owned() }))
+    match serde_json::from_slice::<Value>(output) {
+        Ok(v) if v.is_object() => v,
+        Ok(v) => json!({ "result": v }),
+        Err(_) => json!({ "result": String::from_utf8_lossy(output).into_owned() }),
+    }
 }
 
 /// Frame one Gemini `toolResponse` around a single tool result. Gemini REQUIRES `name` on a
