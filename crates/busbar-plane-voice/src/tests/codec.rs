@@ -1084,6 +1084,92 @@ mod base64_stdlib {
     }
 }
 
+/// The second turn of a call is a unit of its own.
+///
+/// A session holds one codec state per CONNECTION. The turn is OPENED against the client's half
+/// (`decode_ingress`) and the upstream's usage report — the thing that ends it — arrives on the
+/// upstream's half (`decode_response`), so closing it there set a flag on a half that had never
+/// opened one and left the client's half believing its first turn is still running for the whole
+/// call. Every frame after the first turn then relayed under a correlation whose unit had already
+/// been metered and sealed: a caller's second question, and every one after it, was never admitted,
+/// never priced and never routed.
+#[test]
+fn the_turn_after_the_one_the_upstream_ended_opens_a_unit_of_its_own() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut client = open_client_session(&plane, &c);
+    let mut upstream = SessionPlane::open_upstream(&plane, &dest, &c);
+
+    let opening = client_wire(&session_update_fixture());
+    let frames = [frame(&opening)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(first) = plane
+        .decode_ingress(&mut cursor, Some(&mut client), &c)
+        .expect("the first turn opens")
+    else {
+        panic!("the first client event opens a turn");
+    };
+    let first_correlation = first.correlation_out.expect("a turn correlates");
+    let unit = crate::tests::harness::unit(first.op, first.body_ir, first.facts);
+
+    // The upstream answers and reports usage, which is what ends a turn.
+    let done = serde_json::to_vec(&json!({
+        "type": "response.done",
+        "response": { "usage": { "input_token_details": { "audio_tokens": 1 } } }
+    }))
+    .expect("usage fixture serializes");
+    let frames = [frame(&done)];
+    let mut cursor = FrameCursor::new(&frames);
+    assert!(
+        matches!(
+            plane
+                .decode_response(&mut cursor, &dest, Some(&mut upstream), &c)
+                .expect("the usage report decodes"),
+            Progress::Terminal { .. }
+        ),
+        "a usage report ends the turn"
+    );
+
+    // The kernel seals the unit that turn was; this is the plane's own view of that ending, and the
+    // only one it is handed against the client's half.
+    plane
+        .encode_end(
+            &unit,
+            &busbar_contract::unit::UnitEnd::Completed,
+            Some(&mut client),
+            &c,
+        )
+        .expect("the unit's ending encodes");
+
+    // The caller asks a second question.
+    let second_question = serde_json::to_vec(&json!({
+        "type": "input_audio_buffer.append",
+        "audio": base64_of(&[0u8; 96]),
+    }))
+    .expect("audio fixture serializes");
+    let frames = [frame(&second_question)];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, Some(&mut client), &c)
+        .expect("the next client frame decodes");
+    let Ingress::Open(second) = ingress else {
+        panic!(
+            "the frame after the ended turn must open a unit of its own, got {ingress:?} — it \
+             relayed onto a turn that has already been metered and sealed"
+        );
+    };
+    assert_ne!(
+        second.correlation_out.expect("the second turn correlates").value,
+        first_correlation.value,
+        "the second turn must not answer under the correlation of the one that ended"
+    );
+}
+
 #[test]
 fn ws_frame_with_invalid_utf8_fails_closed_rather_than_hanging_on_need_more() {
     let plane = openai_plane();
