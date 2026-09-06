@@ -388,7 +388,7 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // pass sees the final `module:` of each one.
     super::migrate_export::migrate_export_projection(&mut root, &mut changes, &mut todos);
     migrate_admin_require_mtls(&mut root, &mut changes);
-    migrate_pools_upstream_credentials(&mut root, &mut changes);
+    migrate_pools_upstream_credentials(&mut root, &mut changes, &mut todos);
     migrate_identity_providers(&mut root, &mut changes, &mut todos);
     // 1.5.3: the first-party Valkey store plugin's rename to Valkey. Independent of every
     // migration above (it touches only `store.module`), so its position in this list is free; it runs
@@ -1778,7 +1778,20 @@ fn migrate_unified_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &
         let Some(Value::Mapping(folded)) = take(root, section) else {
             continue;
         };
-        // Ensure a `pools:` mapping exists to merge into.
+        // Ensure a `pools:` mapping exists to merge into — but NEVER by overwriting one the
+        // operator wrote in a shape this migrator cannot merge into (same take-on-match rule as
+        // `migrate_pools_upstream_credentials`). A malformed `pools:` stays as written and the
+        // section being folded is put back verbatim, so neither is lost.
+        if matches!(root.get(Value::from("pools")), Some(v) if !v.is_mapping()) {
+            let shape = one_line(root.get(Value::from("pools")).expect("just matched"));
+            todos.push(format!(
+                "`{section}:` could NOT be folded into `pools:` because `pools:` is not a mapping \
+                 (`{shape}`) — BOTH were left EXACTLY as written. 1.6.0 has ONE neutral `pools:` \
+                 map; fix `pools:` by hand and re-run `--migrate-config`."
+            ));
+            root.insert(section.into(), Value::Mapping(folded));
+            continue;
+        }
         if !matches!(root.get(Value::from("pools")), Some(Value::Mapping(_))) {
             root.insert("pools".into(), Value::Mapping(Mapping::new()));
         }
@@ -2226,19 +2239,39 @@ fn migrate_admin_require_mtls(root: &mut Mapping, changes: &mut Vec<String>) {
 /// default. IDEMPOTENT: no `auth.upstream_credentials` ⇒ nothing to move. An existing
 /// `pools.upstream_credentials` WINS (it is already the new grammar, so it is the operator's most
 /// recent statement of intent) and the retired key is dropped with a named change entry.
-fn migrate_pools_upstream_credentials(root: &mut Mapping, changes: &mut Vec<String>) {
+fn migrate_pools_upstream_credentials(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    todos: &mut Vec<String>,
+) {
     let Some(Value::Mapping(auth)) = root.get_mut(Value::from("auth")) else {
         return;
     };
     let Some(mode) = take(auth, "upstream_credentials") else {
         return;
     };
+    // TAKE-ON-MATCH, on the DESTINATION (see `Taken`). `*pools = Mapping::new()` overwrote a
+    // `pools:` the operator had written in a shape this migrator cannot merge into — deleting the
+    // ENTIRE pools section, the money path, and announcing nothing. Worse, `mode` had already been
+    // taken off `auth:` by then, so the retired key it was moving vanished too and the migrated
+    // document had neither. Leave a malformed `pools:` exactly as written, put `mode` back where it
+    // came from so nothing is half-migrated, and say so.
+    if matches!(root.get(Value::from("pools")), Some(v) if !v.is_mapping()) {
+        let shape = one_line(root.get(Value::from("pools")).expect("just matched"));
+        if let Some(Value::Mapping(auth)) = root.get_mut(Value::from("auth")) {
+            auth.insert("upstream_credentials".into(), mode);
+        }
+        todos.push(format!(
+            "pools: is not a mapping (`{shape}`) — it was left EXACTLY as written, so \
+             `auth.upstream_credentials` could NOT be moved to its 1.5.3 home and was left on \
+             `auth:` too (nothing was half-migrated). Fix `pools:` by hand and re-run \
+             `--migrate-config`."
+        ));
+        return;
+    }
     let pools = root
         .entry("pools".into())
         .or_insert_with(|| Value::Mapping(Mapping::new()));
-    if !matches!(pools, Value::Mapping(_)) {
-        *pools = Value::Mapping(Mapping::new());
-    }
     if let Value::Mapping(pm) = pools {
         if pm.contains_key(Value::from("upstream_credentials")) {
             changes.push(
