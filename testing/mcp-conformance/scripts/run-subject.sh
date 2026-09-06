@@ -139,7 +139,9 @@ if [ ! -f reports/subject.json ]; then
 fi
 EXECUTED=$(node -e '
   const r = require("./reports/subject.json").results;
-  const ran = r.filter(x => x.verdict !== "SKIP").length;
+  // EXCLUDED_TIER is not a SKIP: it is a scenario this tier never selected at all, and it must
+  // not inflate "executed" any more than the SKIPs it sits next to.
+  const ran = r.filter(x => x.verdict !== "SKIP" && x.verdict !== "EXCLUDED_TIER").length;
   process.stdout.write(String(ran));
 ')
 if [ "$EXECUTED" -eq 0 ]; then
