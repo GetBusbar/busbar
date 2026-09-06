@@ -407,6 +407,15 @@ pub(crate) fn translate_request_cross_protocol(
                 busbar_substrate::wire::EgressWire::Json(v) => Ok(Bytes::from(
                     busbar_substrate::json::to_vec(&v).unwrap_or_default(),
                 )),
+                // The handle could not write itself onto the egress dialect. REFUSE, on the same
+                // terminal an unrepresentable request already takes — forwarding an empty body
+                // would send a request the caller never made.
+                busbar_substrate::wire::EgressWire::Unrepresentable { reason } => {
+                    Err(Box::new(map_translate_req_reject(
+                        ingress_protocol,
+                        busbar_substrate::handlers::TranslateReqReject::Unrepresentable(reason),
+                    )))
+                }
             };
         }
         // Same-protocol opaque relay: the retained bytes go upstream verbatim — refcount bump only.
@@ -497,6 +506,15 @@ pub(crate) fn translate_request_cross_protocol(
             // in-band, and the JSON-only post-shaping below (shim strips, model rewrite) does not
             // apply — emit the handler's bytes directly.
             busbar_substrate::wire::EgressWire::Bytes(b) => return Ok(b),
+            // The translate entrypoint already turns an unrepresentable write into its reject, so
+            // this arm is not reachable through it; it refuses rather than forwarding anything,
+            // because the one thing that must never happen here is an empty body going upstream.
+            busbar_substrate::wire::EgressWire::Unrepresentable { reason } => {
+                return Err(Box::new(map_translate_req_reject(
+                    ingress_protocol,
+                    busbar_substrate::handlers::TranslateReqReject::Unrepresentable(reason),
+                )))
+            }
         }
         // The body was fully rebuilt from the IR (read_request → write_request), so it bears no fixed
         // relationship to `hop_bytes` — a cross-protocol hop is NEVER pristine and must serialize the
