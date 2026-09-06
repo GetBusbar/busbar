@@ -1463,37 +1463,32 @@ async fn tools_call(
     // never name an argument the caller already sent. Anything else refuses the call rather than
     // being dropped — a caller whose answer is being ignored has to be told, or the next attacker to
     // try it learns nothing and the next honest client debugs a value that vanished.
+    // THROUGH `answers::merge_guarded`, WHICH IS THE SAME FUNCTION THE TASK PATH CALLS. The screen
+    // below used to live here and only here, so the task path — where the answers arrive later,
+    // through `tasks/update` — merged unscreened keys over arguments the guard set had already
+    // passed. One function, two callers: a rule added here is added to both.
     if let Some(responses) = params
         .and_then(|p| p.get("inputResponses"))
         .and_then(|v| v.as_object())
     {
-        let declared: std::collections::BTreeSet<&str> = selected
-            .ask_caller
-            .iter()
-            .flat_map(|round| round.keys().map(String::as_str))
-            .collect();
-        let sealed: std::collections::BTreeSet<String> = arguments
-            .as_object()
-            .map(|o| o.keys().cloned().collect())
-            .unwrap_or_default();
-        if let Some(offending) = responses
-            .keys()
-            .find(|k| !declared.contains(k.as_str()) || sealed.contains(*k))
-        {
-            let refusal = DispatchRefusal::NotGranted(format!(
-                "the answer named `{offending}`, which is not one of the inputs \
-                 `{}` requested — an answer may only supply what was asked for, and may never \
-                 rewrite an argument the confirmation was shown for.",
-                selected.namespaced
-            ));
-            return log.refused(
-                "caller_ask_answer_undeclared",
-                refuse_catalogue(ctx, name, &refusal, id),
-            );
-        }
-        if let Some(merged) = arguments.as_object_mut() {
-            for (key, value) in responses {
-                merged.insert(key.clone(), value.clone());
+        match super::answers::merge_guarded(
+            &selected.namespaced,
+            selected
+                .ask_caller
+                .iter()
+                .flat_map(|round| round.keys().map(String::as_str)),
+            &arguments,
+            responses,
+            selected.input_schema.as_ref(),
+            super::client::ssrf::SsrfPolicy {
+                allow_private: server.upstream.allow_private,
+            },
+        ) {
+            Ok(merged) => arguments = merged,
+            Err(refusal) => {
+                let audit = refusal.audit_reason();
+                let denied = DispatchRefusal::NotGranted(refusal.to_string());
+                return log.refused(audit, refuse_catalogue(ctx, name, &denied, id));
             }
         }
         // (2b-i) RE-RUN THE SEP-2243 HEADER/BODY MIRROR CHECK on the MERGED arguments. The first
@@ -2189,6 +2184,16 @@ async fn create_task(
             cell,
             authorised,
             arguments,
+            // The approved schema and the operator's declared ask keys travel WITH the task, so
+            // the runner can run `answers::merge_guarded` — the SAME screen the synchronous path
+            // runs — over the answers `tasks/update` delivers after this request was answered.
+            input_schema: selected.input_schema.clone(),
+            declared_ask_keys: selected
+                .ask_caller
+                .iter()
+                .chain(selected.task_ask_caller.iter())
+                .flat_map(|round| round.keys().cloned())
+                .collect(),
             // The ADMITTED member's id, not the caller-named one: the runner's per-round grant and
             // roots lookups must read the deployment the task actually runs against.
             server_id: member_id,
