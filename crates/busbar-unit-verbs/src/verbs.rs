@@ -417,7 +417,14 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
                 .map_err(GovernanceError::into_refusal);
         }
         if NEW_VERBS.contains(&verb) {
-            let ctx = posture.expect("a new verb must be called with a resolved PostureCtx");
+            // A posture-gated verb whose posture the caller did not resolve is REFUSED, not
+            // unwrapped. "A new verb always arrives with one" is a claim about a call site, and a
+            // miswired caller — or a verb added to the gated set on one side only — would otherwise
+            // turn an admin request into a downed process at the point where the gate was supposed
+            // to protect something.
+            let Some(ctx) = posture else {
+                return Err(Refusal::new(RefusalStep::Verify, ReasonCode::Validation));
+            };
             crate::posture::check_new_verb_admission(verb, ctx, approval)?;
             return self
                 .governance

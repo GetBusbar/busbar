@@ -601,6 +601,33 @@ fn a_new_verb_admitted_by_posture_reaches_governance() {
     assert_eq!(out, b"ok");
 }
 
+/// A NEW VERB WITH NO POSTURE IS A REFUSAL, NOT A PANIC.
+///
+/// The posture is resolved by the caller and arrives as an `Option`, so "a new verb always has
+/// one" is a claim about a call site rather than a fact this crate can see. A miswired caller, or a
+/// verb newly added to the posture-gated set on one side only, hands `None` past an `admit` that
+/// legitimately passed — and an unwrap there turns an admin request into a downed process. The
+/// answer is the one every other unresolvable precondition gets: refuse the request.
+#[test]
+fn a_new_verb_with_no_resolved_posture_is_refused_rather_than_panicking() {
+    let verbs = make_verbs(FakeGovernance::new());
+    let admin = admin();
+    let err = verbs
+        .execute(
+            KernelVerb::SetOverdraftCeiling,
+            &admin,
+            "alice",
+            // The scope is granted, so `admit` passes and the posture branch is genuinely reached.
+            VerbScope::Full,
+            0,
+            None,
+            ApprovalState::NotYetApproved,
+            b"{}",
+        )
+        .expect_err("a new verb with no posture must refuse");
+    assert_eq!(err.reason, crate::refusal::ReasonCode::Validation);
+}
+
 /// A governance whose mint parks inside the call, so a second caller can be observed arriving while
 /// the first one's idempotency reservation is genuinely live.
 ///
