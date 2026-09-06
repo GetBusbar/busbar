@@ -17,7 +17,7 @@
 //! counters advance only via `fetch_max`, precisely so history cannot be rewound, and only a process
 //! boundary resets them.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 use tokio::sync::broadcast;
 
@@ -35,9 +35,55 @@ static SHUTDOWN: OnceLock<broadcast::Sender<()>> = OnceLock::new();
 /// waits for the exit path that owns effects outliving the response.
 static DRAIN_AT_EXIT: AtomicBool = AtomicBool::new(false);
 
-/// A drain that has been asked for and not yet released. Process-wide, like the act itself: there
-/// is one process to drain, however many callers ask.
-static DRAIN_ASKED: AtomicBool = AtomicBool::new(false);
+/// The unit whose drain has been asked for and not yet released.
+///
+/// The ACT is process-wide — there is one process to drain — but the ASK belongs to one request, and
+/// conflating the two is a live fault rather than a tidiness point. A single bit is released by the
+/// tail of whichever administrative unit finishes next, so an unrelated request arriving between the
+/// restart's handler and the restart's own exit path takes the ask away with it: the drain then
+/// begins under a response that is not the restart's, and the shutdown races the 202 the restarting
+/// caller is still waiting for. Keying the ask by the unit that made it means only that unit's exit
+/// path can release it, whatever else is in flight beside it.
+static DRAIN_ASKED: AtomicU64 = AtomicU64::new(NO_UNIT);
+
+/// The key of no unit at all — the value the cell holds when nothing is asked.
+///
+/// Zero is safe as that marker because the loop's own keys begin at one, so no unit can ever be
+/// mistaken for the absence of one.
+const NO_UNIT: u64 = 0;
+
+/// The unit an ask belongs to when the composition that made it names no unit.
+///
+/// A composition that answers the operation directly has no unit key to attribute with, and it also
+/// has no second request that could steal the ask — so one reserved value is enough, and it is one
+/// no loop-issued key can collide with.
+pub const UNKEYED_UNIT: u64 = u64::MAX;
+
+tokio::task_local! {
+    /// The unit whose work is executing on this task.
+    ///
+    /// A task-local rather than a thread-local because the operation's body runs on a task the seam
+    /// spawned, not on the blocking worker the loop walks on: a thread-local set by the walker would
+    /// be invisible exactly where the handler that asks for the drain runs.
+    static ASKING_UNIT: u64;
+}
+
+/// Run one unit's work with its key ambient, so a drain that work asks for is attributed to it.
+///
+/// The composition that walks operations through a loop wraps the body's execution in this. Nothing
+/// else has to change: the handler still calls [`begin_drain`] knowing nothing about which
+/// composition it is answering under, and the attribution is read from where it is running.
+pub async fn as_unit<F>(unit: u64, f: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    ASKING_UNIT.scope(unit, f).await
+}
+
+/// The unit whose work is running here, or the unkeyed marker outside any such scope.
+fn asking_unit() -> u64 {
+    ASKING_UNIT.try_with(|unit| *unit).unwrap_or(UNKEYED_UNIT)
+}
 
 pub fn publish_shutdown(tx: broadcast::Sender<()>) {
     let _ = SHUTDOWN.set(tx);
@@ -51,13 +97,18 @@ pub fn drain_released_at_exit() {
     DRAIN_AT_EXIT.store(true, Ordering::Release);
 }
 
-/// Release a drain the request that just answered asked for, if it asked for one.
+/// Release a drain THIS unit asked for, if it asked for one.
 ///
 /// Answers whether one fired. Called from the exit path, once the response is in hand and nothing
 /// left to run can change it, so the drain begins where it would have begun without the steps in
-/// between. A request that asked for no drain releases none, which is every request but one.
-pub fn release_asked_drain() -> bool {
-    if !DRAIN_ASKED.swap(false, Ordering::AcqRel) {
+/// between. A request that asked for no drain releases none, which is every request but one — and a
+/// request that asked for none can no longer release one somebody else asked for, because the cell
+/// is taken only by the unit named in it.
+pub fn release_asked_drain(unit: u64) -> bool {
+    if DRAIN_ASKED
+        .compare_exchange(unit, NO_UNIT, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
         return false;
     }
     send_shutdown();
@@ -81,9 +132,14 @@ pub(crate) fn can_restart() -> bool {
 ///
 /// Where the composition releases drains at its exit path this records the ask and returns; the
 /// drain is the same drain, published from the one place that runs after the answer is written.
-pub(crate) fn begin_drain() {
+/// Visible outside this crate because the ask and the release are two halves of ONE seam and a seam
+/// with one half reachable is a seam nobody outside can prove. The release — the half that actually
+/// stops a process — has always been public; the ask, which only records an intention this crate
+/// still owns the meaning of, was not, so the composition that owns the exit path could describe its
+/// obligation but never exercise it.
+pub fn begin_drain() {
     if DRAIN_AT_EXIT.load(Ordering::Acquire) {
-        DRAIN_ASKED.store(true, Ordering::Release);
+        DRAIN_ASKED.store(asking_unit(), Ordering::Release);
         return;
     }
     send_shutdown();

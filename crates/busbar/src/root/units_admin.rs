@@ -94,6 +94,14 @@ pub struct AdminRequest {
     /// a unit that read the clock twice could be admitted in one window and rate-classed in the
     /// next.
     pub at: u64,
+    /// The key of the unit this request is walked as.
+    ///
+    /// Carried on the request because it has to cross the seam WITH it: the operation's body runs on
+    /// a task the seam spawned, and the one effect a body can ask to outlive its own response — the
+    /// drain — is attributed to the unit that asked for it. Without the key travelling here the
+    /// attribution would have to be re-derived on the far side of a task boundary, which is another
+    /// way of saying it would be guessed.
+    pub unit: u64,
 }
 
 /// One admin answer, exactly as the surface that owns the operation produced it.
@@ -2156,16 +2164,27 @@ impl AdminNode {
         }
     }
 
+    /// Draw the key of the next unit this node will walk.
+    ///
+    /// Drawn by the caller rather than inside the walk because the key is what names this unit on
+    /// BOTH sides of the walk: the steps read it, and the exit path releases against it whatever the
+    /// unit asked to outlive its response.
+    pub fn next_unit(&self) -> u64 {
+        self.next_key
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Walk one admin request through the loop and answer with what it produced.
     ///
     /// The whole of the kernel's ten steps, two audit doors and one exit, for a request that used
     /// to reach its handler directly. What comes back is what the operation's own surface answered:
     /// this function chooses the PATH, never the bytes.
     pub fn answer(&self, request: AdminRequest) -> AdminAnswer {
-        let key = UnitKey::new(
-            self.next_key
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        );
+        // The key the caller already drew for this request. It is drawn OUTSIDE this walk because
+        // the caller has to name the same unit on the way out — the exit path releases what this
+        // unit asked to outlive its response, and a key invented in here would be a key the exit
+        // path could not name.
+        let key = UnitKey::new(request.unit);
         // The arrival clock, read ONCE and read where the request arrived. Every step that asks what
         // time it is for this unit — the auth unit's expiry and revocation window, the verbs unit's
         // rate class, the nonce the one-time secrets bind to — is handed this same number, so a
@@ -2245,6 +2264,28 @@ impl AdminNode {
         // is the leak per request this root may not have.
         drop(occupied);
         answer
+    }
+}
+
+/// ONE UNIT'S EXIT PATH, held rather than written.
+///
+/// The release of an effect that outlives the response used to be the last statement of the
+/// answering future, which is the one place it cannot be: a client that disconnects mid-walk drops
+/// that future, and a statement in a dropped future does not run. What was left behind was a drain
+/// asked for and never released — a restart the caller never got its 202 for, whose shutdown then
+/// waited for whichever unrelated request reached a release next.
+///
+/// As a guard the release is on every way out, including the drop. `unit` is what makes it this
+/// unit's release and nobody else's.
+#[cfg(feature = "root-admin")]
+struct ExitPath {
+    unit: u64,
+}
+
+#[cfg(feature = "root-admin")]
+impl Drop for ExitPath {
+    fn drop(&mut self) {
+        busbar_core::admin::restart::release_asked_drain(self.unit);
     }
 }
 
@@ -2381,7 +2422,14 @@ impl RouterDispatch {
                 // One task per operation, so a slow verb cannot hold up the one behind it — the
                 // surface was concurrent before the switch and stays concurrent through it.
                 tokio::spawn(async move {
-                    let _ = reply.send(call(inner, &request).await);
+                    // THE UNIT'S KEY IS AMBIENT FOR THE LENGTH OF ITS BODY. An operation whose
+                    // effect outlives its own response asks for that effect from inside its own
+                    // handler, which knows nothing about the composition it is answering under —
+                    // so the composition says, here, which unit the handler's ask belongs to.
+                    let unit = request.unit;
+                    let answer =
+                        busbar_core::admin::restart::as_unit(unit, call(inner, &request)).await;
+                    let _ = reply.send(answer);
                 });
             }
         });
@@ -2609,6 +2657,9 @@ pub fn mount(
                 let Ok(bytes) = axum::body::to_bytes(body, request_body_max_bytes).await else {
                     return http_response(error_answer(400, "invalid_request"));
                 };
+                // The unit's key, drawn here because both sides of the walk name it: the steps read
+                // it going in, and the exit path releases against it coming out.
+                let unit = node.next_unit();
                 let request = AdminRequest {
                     method: parts.method.as_str().to_string(),
                     path: parts
@@ -2621,7 +2672,15 @@ pub fn mount(
                     at: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map_or(0, |d| d.as_secs()),
+                    unit,
                 };
+                // AND THE EXIT PATH RUNS EVEN WHERE THERE IS NO EXIT. A client that hangs up while
+                // the walk is running takes this whole future with it, and the line at the bottom
+                // never executes — so a restart that had already asked for its drain left the ask
+                // standing, owned by a unit whose exit path was never going to come. Held by a
+                // guard instead, the release happens on every way out of here, including the one
+                // that is a drop rather than a return.
+                let exit = ExitPath { unit };
                 let answer = tokio::task::spawn_blocking(move || node.answer(request))
                     .await
                     .unwrap_or_else(|_| unavailable_answer());
@@ -2636,7 +2695,7 @@ pub fn mount(
                 // that now sit between the handler and this line, and they no longer sit between
                 // the drain and the write. Every other unit releases nothing, which costs one
                 // atomic read.
-                busbar_core::admin::restart::release_asked_drain();
+                drop(exit);
                 response
             }
         },
@@ -2656,6 +2715,13 @@ mod tests {
         }
     }
 
+    /// A key no other request in this binary is walking. The unit key names one live unit, so two
+    /// fixtures sharing a literal would be two requests claiming one entry in the units table.
+    fn a_fresh_unit() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
     fn a_request() -> AdminRequest {
         AdminRequest {
             method: "GET".to_string(),
@@ -2664,6 +2730,7 @@ mod tests {
             headers: vec![("accept".to_string(), "application/json".to_string())],
             body: Vec::new(),
             at: 1_700_000_000,
+            unit: a_fresh_unit(),
         }
     }
 
@@ -2681,6 +2748,36 @@ mod tests {
         };
         let packed = answer.pack();
         assert_eq!(AdminAnswer::unpack(&packed), Some(answer));
+    }
+
+    /// A DISCONNECT IS STILL AN EXIT. The release of an effect that outlives the response used to be
+    /// the last statement of the answering future, and a client that hangs up mid-walk drops that
+    /// future before the statement runs — leaving a drain asked for and owned by a unit whose exit
+    /// path was never coming, for the next unrelated request to release under its own response.
+    ///
+    /// Driven at the guard rather than through a socket, because what is being pinned is the guard's
+    /// own obligation: dropped without ever reaching the write, it still releases, and it still
+    /// releases only what ITS unit asked for.
+    #[cfg(feature = "root-admin")]
+    #[tokio::test]
+    async fn a_walk_dropped_before_its_answer_still_releases_the_drain_it_asked_for() {
+        busbar_core::admin::restart::drain_released_at_exit();
+        let unit = a_fresh_unit();
+        // The operation's body asks, from inside its own unit, exactly as the restart handler does.
+        busbar_core::admin::restart::as_unit(unit, async {
+            busbar_core::admin::restart::begin_drain();
+        })
+        .await;
+
+        // The future carrying the guard is dropped before anything is written back.
+        let exit = ExitPath { unit };
+        drop(exit);
+
+        assert!(
+            !busbar_core::admin::restart::release_asked_drain(unit),
+            "the drop released the ask, so there is nothing left for a later exit to release — \
+             which is the leak: without the guard this would still be standing"
+        );
     }
 
     /// A body this wrap cannot read is refused, and one too big for the operator's cap is not read
@@ -4221,6 +4318,7 @@ mod tests {
             headers: vec![("accept".to_string(), "application/json".to_string())],
             body: Vec::new(),
             at: 1_700_000_000,
+            unit: a_fresh_unit(),
         }
     }
 
