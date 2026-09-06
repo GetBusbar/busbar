@@ -102,7 +102,52 @@ def check_binding(b: dict, cache: dict[Path, str]) -> list[str]:
     return problems
 
 
-def check(bindings_path: Path = BINDINGS) -> list[str]:
+CELLS = ROOT / "testing" / "shadow-oracle" / "cells.json"
+
+
+def check_cell_inventory_ids(cells_path: Path = CELLS) -> list[str]:
+    """Every id in a CELL's `inventory` array must be a real inventory row id.
+
+    This half of the lint was missing entirely. Everything above validates a BINDING's `inventory`
+    column, which names an inventory FILE; nothing validated the `inventory` ID ARRAYS the oracle
+    cells carry -- and those arrays are what scripts/inventory-coverage.py turns into the `citers`
+    of a coverage row. A cell citing an id that does not exist is therefore worse than a dangling
+    reference: the id it MEANT to cite gets no citer, so its coverage row silently becomes a gap,
+    while the cell goes on claiming to cover something. That is how `CFG-220` -- a spelling left
+    behind when the config inventory family was renamed to `CONF-` -- sat in three
+    `admin.ops|PutHooksName|*` cells while `CONF-220` (`hooks.<h>.module`, REQUIRED) read as
+    uncovered. No gate could see it: inventory-ref-lint reported GREEN, and inventory-coverage only
+    noticed one commit later, as an unexplained id with no cell.
+    """
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        from importlib import import_module
+
+        known = set(import_module("inventory-coverage".replace("-", "_")).parse_inventory_ids())
+    except Exception:  # pragma: no cover - import shape differs
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("_invcov", ROOT / "scripts" / "inventory-coverage.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        known = set(mod.parse_inventory_ids())
+    if not known:
+        return ["inventory id universe parsed to ZERO ids -- nothing could be checked against it"]
+    if not cells_path.exists():
+        return []
+    doc = json.loads(cells_path.read_text(encoding="utf-8"))
+    problems: list[str] = []
+    for cell in doc.get("cells", []):
+        for cid in cell.get("inventory", []) or []:
+            if cid not in known:
+                problems.append(
+                    f"cell {cell.get('id', '<unnamed>')}: inventory id '{cid}' is not an id in "
+                    "docs/design/inventory/ (renamed away, or a typo -- either way it cites nothing)"
+                )
+    return problems
+
+
+def check(bindings_path: Path = BINDINGS, cells_path: Path = CELLS) -> list[str]:
     global BINDINGS
     BINDINGS = bindings_path
     bindings = load_bindings()
@@ -110,6 +155,7 @@ def check(bindings_path: Path = BINDINGS) -> list[str]:
     problems: list[str] = []
     for b in bindings:
         problems.extend(check_binding(b, cache))
+    problems.extend(check_cell_inventory_ids(cells_path))
     return problems
 
 
@@ -164,6 +210,30 @@ def selftest() -> int:
             problems == [],
             f"a bare source-file backtick and a PB-N self-reference name no inventory file, so neither is flagged (got {problems})",
         )
+
+        # A CELL citing an inventory id that does not exist. This is the half of the lint that was
+        # missing; before it, `CFG-220` in three real cells was invisible to every gate.
+        cells_bad = tdp / "cells_bad.json"
+        cells_bad.write_text(json.dumps({"cells": [
+            {"id": "fam|op|slice", "inventory": ["CONF-220", "CFG-220"]},
+        ]}))
+        problems = check_cell_inventory_ids(cells_bad)
+        say(
+            len(problems) == 1 and "CFG-220" in problems[0] and "fam|op|slice" in problems[0],
+            f"a cell citing a renamed-away inventory id is exactly one problem, naming cell and id (got {problems})",
+        )
+
+        cells_ok = tdp / "cells_ok.json"
+        cells_ok.write_text(json.dumps({"cells": [
+            {"id": "fam|op|slice", "inventory": ["CONF-220"]},
+            {"id": "fam|op|other", "inventory": []},
+        ]}))
+        problems = check_cell_inventory_ids(cells_ok)
+        say(problems == [], f"a cell citing only real inventory ids is clean (got {problems})")
+
+        # And the shipped cells.json itself -- the check is worthless if it only ever sees fixtures.
+        problems = check_cell_inventory_ids()
+        say(problems == [], f"every id in the SHIPPED testing/shadow-oracle/cells.json resolves (got {problems})")
 
     print()
     if fails == 0:

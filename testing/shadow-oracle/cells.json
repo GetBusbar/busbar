@@ -9857,7 +9857,7 @@
       },
       "why": "If-Match malformed: [400]",
       "inventory": [
-        "CFG-220"
+        "CONF-220"
       ],
       "config_variant": "hooks",
       "bindings": [
@@ -9883,7 +9883,7 @@
       },
       "why": "If-Match stale: [409]",
       "inventory": [
-        "CFG-220"
+        "CONF-220"
       ],
       "config_variant": "hooks",
       "bindings": [
@@ -9935,7 +9935,7 @@
       },
       "why": "ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (per the config inventory's hook-module row); the compi",
       "inventory": [
-        "CFG-220"
+        "CONF-220"
       ],
       "config_variant": "hooks"
     },
