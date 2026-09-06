@@ -9,7 +9,7 @@ use busbar_caps::{Canary, HoldCell, OriginKind, PostingFlags, ReasonCode, StepNa
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
 use busbar_kernel::recovery::{
     frame, owed_after, recover_all, truncate_torn_tail, voids_claim, HoldRecord, KillPoint, Owed,
-    TailVerdict,
+    TailVerdict, RECORD_HEADER_BYTES,
 };
 use busbar_kernel::slice::{bucket_all, ConcurrencyGauge, Epoch, LeaseSet};
 use busbar_kernel::teller::{Evidence, Kernel};
@@ -95,6 +95,7 @@ fn every_kill_point_has_an_answer_and_none_of_them_guesses_upward() {
 fn a_torn_tail_is_truncated_and_a_whole_journal_is_not() {
     let mut journal = Vec::new();
     journal.extend_from_slice(&frame(b"one"));
+    let good_one = journal.len();
     journal.extend_from_slice(&frame(b"two"));
     let clean = truncate_torn_tail(&journal);
     assert_eq!(clean.records, 2);
@@ -110,13 +111,45 @@ fn a_torn_tail_is_truncated_and_a_whole_journal_is_not() {
     assert_eq!(verdict.verdict, TailVerdict::Torn);
     assert_eq!(verdict.valid_bytes, good);
 
-    // And a record whose bytes were corrupted rather than cut short is refused just the same.
+    // And a record whose bytes were corrupted rather than cut short is a different answer: the
+    // record is all there, so nothing about it says "died mid-write".
     let mut corrupt = journal.clone();
     let last = corrupt.len() - 1;
     corrupt[last] ^= 0xFF;
     let verdict = truncate_torn_tail(&corrupt);
     assert_eq!(verdict.records, 1);
+    assert_eq!(verdict.verdict, TailVerdict::Corrupt { at: good_one });
+}
+
+#[test]
+fn a_checksum_failure_in_the_middle_is_not_the_answer_a_cut_off_tail_gets() {
+    let mut journal = Vec::new();
+    journal.extend_from_slice(&frame(b"one"));
+    let second = journal.len();
+    journal.extend_from_slice(&frame(b"two"));
+    journal.extend_from_slice(&frame(b"three"));
+
+    // The middle record's payload was rewritten by something that was not this node. Every record
+    // after it is whole and readable, and truncating here would throw all of them away for a fault
+    // that says nothing about them.
+    let mut corrupt = journal.clone();
+    corrupt[second + RECORD_HEADER_BYTES] ^= 0xFF;
+    let verdict = truncate_torn_tail(&corrupt);
+    assert_eq!(verdict.records, 1);
+    assert_eq!(verdict.valid_bytes, second);
+    assert_eq!(verdict.verdict, TailVerdict::Corrupt { at: second });
+    assert!(
+        !verdict.verdict.truncates(),
+        "a corrupt record is raised, never quietly cut away"
+    );
+
+    // The cut-off tail keeps the answer it always had, and that one does truncate.
+    let mut torn = journal.clone();
+    torn.truncate(journal.len() - 2);
+    let verdict = truncate_torn_tail(&torn);
+    assert_eq!(verdict.records, 2);
     assert_eq!(verdict.verdict, TailVerdict::Torn);
+    assert!(verdict.verdict.truncates());
 }
 
 #[test]
