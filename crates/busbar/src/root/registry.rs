@@ -937,10 +937,24 @@ mod tests {
     #[test]
     fn every_planes_claims_name_a_registered_transport() {
         let registered = registered_rows();
+        let transports = compose_transports(ClientSettings::default());
+        let registry = register_all(&transports).expect("nothing collides on a key");
         for claim in plane_claims().iter() {
             assert!(
                 registered.iter().any(|r| r.key == claim.claim.transport),
                 "claim of plane `{}` names transport `{}`, which is not registered",
+                claim.plane,
+                claim.claim.transport
+            );
+            // And the same question of the registry itself, which is what a request is served out
+            // of: the rows are the root's own statement about what it built, and a name that
+            // resolves in the statement but not in the registry would be a claim on a transport
+            // nothing can answer with.
+            assert!(
+                registry
+                    .resolve(PluginKind::Transport, claim.claim.transport)
+                    .is_some(),
+                "claim of plane `{}` names transport `{}`, which the registry does not resolve",
                 claim.plane,
                 claim.claim.transport
             );
