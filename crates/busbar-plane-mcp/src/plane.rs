@@ -605,9 +605,32 @@ impl Plane for McpPlane {
                     codec.rounds_asked = codec.rounds_asked.saturating_add(1);
                 }
             }
+            // A message with no identifier is a NOTICE here too, and this leg is the one the SERVER
+            // reaches. Two of the three notices this plane recognises are the server's own, they
+            // decode to a class this plane declares, and that class is routed to a catalogue write —
+            // but this leg used to look the name up in the METHOD table only, find nothing, and drop
+            // it under a comment saying an unrecognised notice is dropped. These are recognised, so
+            // the catalogue invalidation this plane declares a route for never happened.
+            if !envelope.is_request() {
+                if ops::notice_for(method).map(|n| n.sender) != Some(ops::Sender::Provider) {
+                    // A notice this plane does not recognise, and one only a CALLER sends, are both
+                    // dropped on this leg: a notice obliges no answer, and a refusal is an answer.
+                    return Ok(Progress::Discard {
+                        reason: DiscardCode::Unsupported,
+                    });
+                }
+                return Ok(Progress::OneShot(Box::new(UnitDraft {
+                    op: ops::OP_NOTIFICATION,
+                    body_ir: view(body, jsonrpc::REQUEST_PTRS, ctx)?,
+                    // A notice answers nothing and is answered by nothing.
+                    correlates: None,
+                    correlation_out: None,
+                    facts,
+                })));
+            }
             let Some(row) = ops::row_for(method) else {
-                // A notice a server sends is dropped, exactly as an unrecognised one a caller sends
-                // is: a notice obliges no answer, and a refusal is an answer.
+                // A request naming a method this plane does not carry is not one it can open a unit
+                // for. It obliges an answer, and this plane is not the one that gives it.
                 return Ok(Progress::Discard {
                     reason: DiscardCode::Unsupported,
                 });
