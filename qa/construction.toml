@@ -745,3 +745,135 @@ confined_to = "kernel/src"
 # The scope resolved against this tree, matched as path prefixes.
 confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-kernel/src/tick.rs"]
 because = "there are three take sites -- the exit path, the sweep and the tick -- and no fourth"
+
+# ── 28. plane-no-money ───────────────────────────────────────────────────────────────────────────
+[rules.plane-no-money]
+why = """A plane says what HAPPENED; the cost unit says what it COST. A plane crate, the pure codec \
+half it shed, and a plane's own unit modules deal in usage CLASSES and QUANTITIES -- how many \
+tokens, how many frames, how many seconds, which meter class, which lane -- and never in an amount, \
+a rate, a fee or a card. Only busbar-unit-cost (the rate card, the per-request fee, the posting) and \
+the composition root's meter/admission wiring may name a price. This is not a matter of taste: a \
+price named on the plane side is a price the kernel cannot re-derive, cannot seal into a posting and \
+cannot audit, and it is named inside a plugin-shaped crate that a third party may one day write. The \
+near-miss this rule was born from added a fee method to the plane-host cost seam and priced on the \
+plane side, and nothing here stopped it. THE ALLOWED VOCABULARY, deliberately: usage classes and \
+quantities of every kind; `fee_count`, which is EVIDENCE that a billable request happened -- a \
+kernel-derived count of 1 or 0, never an amount, and only the card turns it into money, so a plane \
+may report it without ever knowing what a request costs; the yes/no card predicates \
+(`pricing_enabled`, `is_unpriced`, `cost_model_unpriced`, and the `Unpriced` refusal reason), which \
+answer "does a card cover this lane at all" and carry no figure back across the seam; and the \
+time-sense `_nanos` names (`as_nanos`, `elapsed_nanos`, `monotonic_nanos`, `latency_nanos`), which \
+are nanoseconds, not nano-units of money. The seam verb that turns usage INTO an amount \
+(`cost_price_usage`) is deliberately not in the symbol list below: it is scanned by one-pricing-site, \
+which is the row that can name the home the call belongs in, so one site is never counted twice."""
+# Where a plane's own production source lives: the plugin-side plane crates, the pure codec half of
+# each plane, and the plane-side unit modules. Only the llm plane has a unit module today; the mcp,
+# a2a and voice legs still run their steps from the composition root's wiring (which is the one place
+# allowed to price), so their globs match nothing yet and say so in the row rather than failing.
+scope_globs = [
+  "crates/busbar-plane-*/src/*",
+  "crates/busbar-*-codec/src/*",
+  "crates/busbar-llm/src/unit/*",
+  "crates/busbar-mcp/src/unit/*",
+  "crates/busbar-a2a/src/unit/*",
+  "crates/busbar-voice/src/unit/*",
+]
+# Each is matched as a whole word (an entry starting with `_` as a suffix), and judged against the
+# WHOLE identifier it lands in, so the vocabulary below can excuse a word rather than a substring.
+symbols = ["RateCard", "Pricer", "per_request_fee", "fee_cents", "price_", "priced",
+           "CostHandle", "CostModel", "Nanos", "_nanos"]
+# The words a plane MAY say, each because it carries no amount. See the `why` for the argument.
+allowed_vocabulary = [
+  "fee_count", "pricing_enabled", "cost_pricing_enabled", "is_unpriced", "cost_model_unpriced",
+  "unpriced_message", "unpriced_classes", "Unpriced", "unpriced",
+  "as_nanos", "elapsed_nanos", "monotonic_nanos", "latency_nanos",
+]
+# The cost crate and the cost host modules, named as module paths rather than as words.
+forbidden_module_paths = ["busbar_unit_cost::", "busbar_core::cost::", "busbar_core::plane_host::cost_host"]
+# A manifest dependency is the same reach spelled where no source scan would see it.
+forbidden_deps = ["busbar-unit-cost", "busbar-unit-ledger"]
+max_hits = 0
+# Reviewed per-file exceptions: file -> the symbols accepted there, the reason recorded here.
+#
+#   The llm plane's Verify step holds a `CostHandle` and calls its guard `priced`, and neither
+#   learns a price: the handle is opaque and the two questions asked through it
+#   (`cost_pricing_enabled`, `cost_model_unpriced`) answer yes or no, so the step can refuse a lane
+#   the card does not cover without any figure crossing the seam. Every amount-bearing symbol above
+#   is still held against that file.
+[rules.plane-no-money.allowlist]
+"crates/busbar-llm/src/unit/verify.rs" = ["CostHandle", "priced"]
+
+# ── 29. one-pricing-site ─────────────────────────────────────────────────────────────────────────
+[rules.one-pricing-site]
+why = """There is ONE place a unit is priced. The cost unit owns the card and the arithmetic; the \
+composition root's meter and admission wiring is what calls it, once, with the usage the plane \
+reported; the kernel's settle sites consume the amount that came back and mint a posting from it, \
+and never derive one. Anywhere else that turns usage into money is a second pricing policy growing \
+beside the first -- two answers to "what did this cost", diverging silently, with the ledger unable \
+to say which one it recorded. The homes below are enumerated with a reason each rather than left to \
+a path pattern, so adding a home is a reviewed edit. The second row is the same promise on the \
+input side: a per-request fee read straight off a config or a card, outside the crate that owns the \
+card, is a price derived where nobody can see it. busbar-core is on that reader list because it is \
+the retiring 1.5.5 engine that still carries the legacy fee path; the list shortens as core empties, \
+and never lengthens."""
+scope_note = "production code only; a test may price whatever it likes to prove the arithmetic"
+# The seam verb that turns reported usage into an amount. Definitions and `use` lines are not calls.
+entry_verbs = ["cost_price_usage"]
+# The cost unit's own pricing entry points, named as paths.
+entry_path_patterns = ['busbar_unit_cost::[A-Za-z0-9_:]*price', 'busbar_unit_cost::apply_tier']
+max_extra_sites = 0
+# The fee fields, and the two crates that may read them.
+fee_fields = ["per_request_fee_cents", "fee_cents"]
+fee_reader_crates = ["busbar-unit-cost", "busbar-core"]
+max_fee_readers = 0
+
+[rules.one-pricing-site.allowed.cost-unit]
+path = "crates/busbar-unit-cost/src/"
+because = "the cost unit IS the card; its own source names its own entry points"
+
+[rules.one-pricing-site.allowed.root-wiring]
+path = "crates/busbar/src/root/"
+because = "the composition root's meter and admission wiring: the one place that hands the cost unit a unit's usage and takes an amount back"
+
+[rules.one-pricing-site.allowed.kernel-exit]
+path = "crates/busbar-kernel/src/teller.rs"
+because = "the exit path settles the hold and mints the posting from an amount it was given; it derives none"
+
+[rules.one-pricing-site.allowed.kernel-sweep]
+path = "crates/busbar-kernel/src/tick.rs"
+because = "the tick sweep is the second settle site, for a unit whose exit never ran"
+
+[rules.one-pricing-site.allowed.kernel-recovery]
+path = "crates/busbar-kernel/src/recovery.rs"
+because = "recovery settles a hold a dead incarnation left open, from the journal's own figure"
+
+# ── 30. legacy-reach ─────────────────────────────────────────────────────────────────────────────
+[rules.legacy-reach]
+why = """The composition root is the last place that still reaches into the retiring crates by name. \
+Every distinct symbol it spells there is one more thing the deletion of that crate has to move, and \
+the count is a ratchet: it may go DOWN and never up. Counted as DISTINCT symbols rather than lines, \
+because moving one symbol's five call sites into a unit is real progress and merging two imports is \
+not. Grouped `use` braces are expanded, so a reach does not appear to shrink when an import is \
+folded. The llm engine's own unit modules are excluded from that plane's count: those are the plane \
+step files the rebuild is moving TO, not the engine paths it is moving off. Every red row lists the \
+symbols it counted, so the work has a worklist and not just a number."""
+scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
+
+[rules.legacy-reach.prefixes.busbar_core]
+prefix = "busbar_core::"
+exclude = []
+because = "the 1.5.5 engine being emptied; every symbol here is a piece of it the root still needs"
+ceiling = 49
+
+[rules.legacy-reach.prefixes.busbar_llm]
+prefix = "busbar_llm::"
+# The plane's own unit modules are where the rebuilt steps live; they are not legacy engine reach.
+exclude = ["busbar_llm::unit"]
+because = "the llm engine's non-unit paths: arrival parsing, proto codecs, the stream translator"
+ceiling = 17
+
+[rules.legacy-reach.prefixes.busbar_substrate]
+prefix = "busbar_substrate::"
+exclude = []
+because = "the substrate seams the root installs; each moves onto the ABI as the kernel takes them"
+ceiling = 24
