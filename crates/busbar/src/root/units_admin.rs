@@ -3217,6 +3217,7 @@ mod tests {
             admin_listener: false,
             provider_of_open_session: false,
             zero_hold_tick: false,
+            now: 0,
             arrival: arrival_hold(
                 &node.kernel,
                 &node.units.arrival_door,
@@ -3243,7 +3244,11 @@ mod tests {
             "the admin listener answers while shedding"
         );
         assert_ne!(answer, unavailable_answer());
-        assert_ne!(answer, refused_answer());
+        assert_ne!(
+            answer,
+            answer_for(Outcome::Refused(StepName::Arrival, ReasonCode::InFlightCap)),
+            "the answer is the request's own, not the gate's refusal"
+        );
         assert_eq!(node.inflight.len(), 0, "the unit gave its slot back");
 
         // The step's own answer, for the unit that got through.

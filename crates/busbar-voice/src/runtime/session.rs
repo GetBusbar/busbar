@@ -402,17 +402,21 @@ where
                             // because a turn that stopped for a tool resumes the same way whoever
                             // answered it.
                             g.calls.remove(&call_ref);
-                            out.push_up(self.codec.write_up(IrClientEvent::Tool(
-                                IrDuplexTool::CallResult {
+                            out.push_up(self.codec.write_up(
+                                IrClientEvent::Tool(IrDuplexTool::CallResult {
                                     call_ref,
                                     call_id,
                                     name,
                                     output,
-                                },
-                            )));
-                            out.push_up(self.codec.write_up(IrClientEvent::Control(
-                                IrDuplexControl::ResponseCreate { response: None },
-                            )));
+                                }),
+                                &mut g.decode,
+                            ));
+                            out.push_up(self.codec.write_up(
+                                IrClientEvent::Control(IrDuplexControl::ResponseCreate {
+                                    response: None,
+                                }),
+                                &mut g.decode,
+                            ));
                         }
                         Err(_) => out.refused_reply = true,
                     }

@@ -1459,6 +1459,7 @@ mod tests {
             admin_listener: false,
             provider_of_open_session: false,
             zero_hold_tick: false,
+            now: 0,
             arrival: arrival_hold(&kernel, &door, PrincipalId::new("caller")),
         };
 
