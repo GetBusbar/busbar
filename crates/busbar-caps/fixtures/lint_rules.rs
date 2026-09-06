@@ -88,9 +88,13 @@ pub const SEAL_SITES: &[LintRule] = &[
                   one reviewed exception, and the gate names that exception by file",
     },
     LintRule {
-        // The take is spelled on a `HoldCell` value rather than through the type, so the literal
-        // that finds every take site is the exit token the take demands.
-        symbol: "take(&ExitToken::mint(",
+        // The take is spelled on a `HoldCell` value rather than through the type, so what the scan
+        // can look for is the exit token the take demands -- and it has to be the TOKEN, not one
+        // spelling of a call on it. The scan reads a line at a time, and a take whose token was
+        // minted on the line above is a take no `take(&ExitToken::mint(` ever matches; the node's
+        // sweep is written exactly that way. Nothing can empty a cell without naming this type,
+        // so this is the literal that is total over the spellings.
+        symbol: "ExitToken",
         scope: LintScope::ConfinedTo("kernel/src"),
         because: "there are three take sites -- the exit path, the sweep and the tick -- all in \
                   the kernel, and no fourth anywhere",
