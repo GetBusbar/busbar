@@ -147,6 +147,25 @@ pub fn sign_v4(
         .collect();
     h.sort_by(|a, b| a.0.cmp(&b.0));
 
+    // The SigV4 canonicalisation rule does not sort the values of a header that appears more than
+    // once; it combines them into one comma-separated list under that header's single entry. A
+    // caller CAN hand this function the same name twice (`decorate` builds its header list by
+    // pushing onto whatever the envelope already carries), so merging here rather than assuming the
+    // caller never repeats a name is what keeps `SignedHeaders` and the canonical headers block in
+    // the one-entry-per-name shape AWS's servers expect. The sort above already made same-named
+    // entries adjacent, so a single pass merges them in their original relative order.
+    let mut merged: Vec<(String, String)> = Vec::with_capacity(h.len());
+    for (k, v) in h {
+        match merged.last_mut() {
+            Some((last_k, last_v)) if *last_k == k => {
+                last_v.push(',');
+                last_v.push_str(&v);
+            }
+            _ => merged.push((k, v)),
+        }
+    }
+    let h = merged;
+
     let canonical_headers: String = h.iter().map(|(k, v)| format!("{k}:{v}\n")).collect();
     let signed_headers = h
         .iter()
