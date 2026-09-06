@@ -214,19 +214,27 @@ impl Plane for AdminPlane {
         // crate is out of scope here), the safe default is the ordinary passthrough path below,
         // never the substitution — a byte-identical pass-through is always a safe default; a wrong
         // substitution is not.
+        //
+        // THE PASS-THROUGH DOES NOT GO THROUGH THE ARENA. The arena is 4 KiB per unit and the
+        // response body already lives for the unit — it is the executing verb's own bytes, not
+        // something this plane produced — so borrowing it is both cheaper and the only thing that
+        // WORKS: copying meant every admin response larger than the arena was refused for arena
+        // budget, and `openapi.json` alone is over 350 KB. A borrow has no budget to exhaust.
         let is_openapi_json =
             matches!(r.facts.get(FACT_VERB), Some(FactValue::Str(v)) if v == VERB_OPENAPI_JSON);
         if is_openapi_json {
+            // The one exception is the one case that genuinely produces NEW bytes, so it is the one
+            // case that has to find somewhere to put them. Where the rendered document does not fit
+            // the arena, the safe default the paragraph above states applies — the verbatim
+            // borrow — rather than an arena refusal: a document whose `info.version` still reads
+            // the executing verb's own value is a document; no document at all is not.
             if let Some(rendered) = substitute_info_version(body, env!("CARGO_PKG_VERSION")) {
-                return ctx
-                    .arena()
-                    .alloc_bytes(&rendered)
-                    .map_err(|_| Encode::ArenaExhausted);
+                if let Ok(bytes) = ctx.arena().alloc_bytes(&rendered) {
+                    return Ok(bytes);
+                }
             }
         }
-        ctx.arena()
-            .alloc_bytes(body)
-            .map_err(|_| Encode::ArenaExhausted)
+        Ok(ArenaBytes::new(body))
     }
 
     fn encode_refusal<'u>(
