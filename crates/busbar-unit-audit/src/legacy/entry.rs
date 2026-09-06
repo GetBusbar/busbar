@@ -371,6 +371,11 @@ impl AuditLog {
     /// Whatever this is handed came from OUTSIDE the live append stream by definition, even when the
     /// list was produced by this same process's export. Skipping the provenance flag on the wire only
     /// clears it on an encoded round trip; this path never encodes, so it clears it explicitly.
+    ///
+    /// A snapshot longer than `MAX_AUDIT_ENTRIES` is pruned to the cap, keeping the NEWEST tail —
+    /// the same prune, keeping the same end, that the append path applies. The bound is a property
+    /// of the ring, not of one code path into it: without this a node that restarted from a large
+    /// snapshot would hold more records than a node that never stopped.
     pub fn load(&self, mut entries: Vec<AuditEntry>) {
         for e in &mut entries {
             e.recorded_here = false;
@@ -379,6 +384,9 @@ impl AuditLog {
         let max_seq = entries.iter().map(|e| e.seq).max().unwrap_or(0);
         q.clear();
         q.extend(entries);
+        while q.len() > MAX_AUDIT_ENTRIES {
+            q.pop_front();
+        }
         self.seq
             .fetch_max(max_seq + 1, std::sync::atomic::Ordering::Relaxed);
     }

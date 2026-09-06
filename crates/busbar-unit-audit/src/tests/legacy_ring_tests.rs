@@ -202,6 +202,44 @@ fn the_ring_is_bounded_and_prunes_the_oldest() {
     assert!(log.verify());
 }
 
+/// THE RING IS BOUNDED ON THE WAY IN TOO. A restore seeds the same ring the append path prunes, so
+/// a snapshot larger than the cap must land at the cap — otherwise a node that restarted holds more
+/// records than a node that did not, and the bound is a property of one code path rather than of
+/// the ring. The newest are the ones kept, exactly as an append-time prune keeps them.
+#[test]
+fn a_restore_larger_than_the_cap_is_pruned_to_the_newest_entries() {
+    // A chained snapshot LONGER than the cap. The ring prunes itself as it fills, so the oversized
+    // list is accumulated one newest-entry-at-a-time as the appends happen.
+    let unpruned = AuditLog::new();
+    let mut chained: Vec<AuditEntry> = Vec::new();
+    for i in 0..MAX_AUDIT_ENTRIES + 50 {
+        unpruned.record_by(
+            "hook.register",
+            &format!("hook:{i}"),
+            OUTCOME_APPLIED,
+            "admin",
+        );
+        chained.extend(unpruned.export().last().cloned());
+    }
+    assert_eq!(chained.len(), MAX_AUDIT_ENTRIES + 50);
+
+    let restored = AuditLog::new();
+    restored.load(chained);
+    assert_eq!(
+        restored.export().len(),
+        MAX_AUDIT_ENTRIES,
+        "a restore seeds the same bounded ring the append path prunes"
+    );
+    let newest = restored.list(1);
+    assert_eq!(
+        newest[0].resource,
+        format!("hook:{}", MAX_AUDIT_ENTRIES + 49),
+        "the newest are the ones kept"
+    );
+    // The retained window still verifies: a pruned head is checked as a window, not a whole chain.
+    assert!(restored.verify());
+}
+
 #[test]
 fn the_cap_is_a_thousand() {
     assert_eq!(MAX_AUDIT_ENTRIES, 1000);
