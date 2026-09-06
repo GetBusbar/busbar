@@ -459,8 +459,13 @@ impl NodeLedger {
         // Nano-units accumulate per row and the projection to micro-units happens ONCE over the sum,
         // which is the ledger side's rule and has to be this side's too — projecting each posting
         // first would floor every sub-micro posting to nothing and report a busy row as short.
+        //
+        // Folded rather than copied: the answer is one entry per row the node has settled into,
+        // which is a handful whatever the traffic since boot has been, and the postings themselves
+        // are read where they already live. A view that took a copy of the whole history first paid
+        // for every posting ever made, under the lock every settlement waits on.
         let mut nanos: std::collections::BTreeMap<RowKey, u128> = std::collections::BTreeMap::new();
-        for posting in self.legacy.postings() {
+        self.legacy.fold_postings(&mut |posting| {
             let row = RowKey::new(
                 posting.bucket.as_str(),
                 posting.window_start,
@@ -469,7 +474,7 @@ impl NodeLedger {
             );
             let entry = nanos.entry(row).or_default();
             *entry = entry.saturating_add(u128::from(posting.settled));
-        }
+        });
         nanos
             .into_iter()
             .map(|(row, nanos)| {
@@ -529,12 +534,34 @@ impl LedgerView for NodeLedger {
 /// as a list of what it already took.
 pub trait LegacyRowsRead: Send + Sync {
     /// Every posting the dual write put onto the previous release's rows, in the order it made them.
+    ///
+    /// A COPY of the whole history, which is what makes it the wrong thing for a view to ask for:
+    /// the aggregate a view renders is a handful of rows whatever the node has settled, and the
+    /// copy is the only part of the work that grows with the traffic since boot. Kept for a caller
+    /// that genuinely wants the postings themselves; every view goes through [`fold_postings`].
+    ///
+    /// [`fold_postings`]: Self::fold_postings
     fn postings(&self) -> Vec<busbar_unit_ledger::legacy::LegacyPosting>;
+
+    /// Show each posting to a fold, in the order the dual write made them, without copying any.
+    ///
+    /// The form a view reads through. What a view builds is a per-row sum, so it needs to SEE each
+    /// posting once and to keep none of them — and the default below is the honest fallback for a
+    /// binding that can only hand over a copy, not the shape the production one takes.
+    fn fold_postings(&self, take: &mut dyn FnMut(&busbar_unit_ledger::legacy::LegacyPosting)) {
+        for posting in self.postings() {
+            take(&posting);
+        }
+    }
 }
 
 impl LegacyRowsRead for busbar_unit_ledger::legacy::RecordingRows {
     fn postings(&self) -> Vec<busbar_unit_ledger::legacy::LegacyPosting> {
         self.written()
+    }
+
+    fn fold_postings(&self, take: &mut dyn FnMut(&busbar_unit_ledger::legacy::LegacyPosting)) {
+        self.fold_written(take);
     }
 }
 
@@ -3579,6 +3606,108 @@ mod tests {
 
         let document = body("/api/v1/admin/ledger/openapi.json");
         assert_eq!(document["info"]["version"], "1.6.0");
+    }
+
+    /// The previous release's rows, as a binding that counts what the views ask of it.
+    ///
+    /// Both readings are recorded: how many times the whole history was asked for as a copy, and
+    /// how many postings a fold was shown. The pair is what tells a copy apart from a walk.
+    #[cfg(feature = "root-admin")]
+    #[derive(Default)]
+    struct CountingRows {
+        written: Arc<Mutex<Vec<busbar_unit_ledger::legacy::LegacyPosting>>>,
+        copies: Arc<std::sync::atomic::AtomicUsize>,
+        folded: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[cfg(feature = "root-admin")]
+    impl busbar_unit_ledger::legacy::LegacyRows for CountingRows {
+        fn write(
+            &mut self,
+            posting: &busbar_unit_ledger::legacy::LegacyPosting,
+        ) -> Result<(), busbar_unit_ledger::legacy::LegacyWriteError> {
+            self.written
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(posting.clone());
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "root-admin")]
+    impl LegacyRowsRead for CountingRows {
+        fn postings(&self) -> Vec<busbar_unit_ledger::legacy::LegacyPosting> {
+            self.copies
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.written
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+        }
+
+        fn fold_postings(&self, take: &mut dyn FnMut(&busbar_unit_ledger::legacy::LegacyPosting)) {
+            for posting in self
+                .written
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+            {
+                self.folded
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                take(posting);
+            }
+        }
+    }
+
+    /// THE VIEW WALKS THE HISTORY; IT DOES NOT COPY IT.
+    ///
+    /// The reconciliation views read the previous release's rows under the SAME lock every
+    /// settlement takes, and what they render is one line per row — a handful, whatever the node has
+    /// settled since boot. Asking for a copy of the whole posting history to produce it makes the
+    /// cost of an operator's read grow with the traffic that came before it, and makes every
+    /// settlement wait for the copy. Counted rather than timed: the copy is a call that either
+    /// happened or did not.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn a_ledger_view_reads_the_history_without_copying_it() {
+        let rows = CountingRows::default();
+        let written = Arc::clone(&rows.written);
+        let copies = Arc::clone(&rows.copies);
+        let folded = Arc::clone(&rows.folded);
+        let read: Arc<dyn LegacyRowsRead> = Arc::new(CountingRows {
+            written: Arc::clone(&written),
+            copies: Arc::clone(&copies),
+            folded: Arc::clone(&folded),
+        });
+
+        let units = crate::root::kernel::ProductionUnits::admin_only_over(
+            Arc::new(AnsweringDispatch),
+            Box::new(rows),
+            read,
+        );
+        for _ in 0..8 {
+            settle_on(&units, "vk_view", 1_000);
+        }
+        assert_eq!(
+            written.lock().unwrap_or_else(|p| p.into_inner()).len(),
+            8,
+            "the fixture recorded every settlement"
+        );
+
+        let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+        let answer = node.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
+        assert_eq!(answer.status, 200);
+
+        assert_eq!(
+            copies.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the view took a copy of the whole history to render a handful of rows"
+        );
+        assert_eq!(
+            folded.load(std::sync::atomic::Ordering::Relaxed),
+            8,
+            "and it saw each posting exactly once"
+        );
     }
 
     /// A dispatch that panics where an operation's body would run.
