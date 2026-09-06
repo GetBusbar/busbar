@@ -373,10 +373,34 @@ def main() -> int:
         # owner-accepted differences: the cell reports ACCEPTED (its own column), never a silent pass
         acc = pre_acc if classes and detail.get("accepted.transform") else None
         if classes and acc is None:
+            # A cell can sit at the intersection of TWO separately-named improvements: F-011 names the
+            # additive hook VIEW (body/headers) and F-011r names the readback's `at` -> `fires_at`
+            # (effects.readback), and admin.ops|PostHooks|ok carries both at once. Demanding that ONE
+            # entry cover every class made that cell red with no honest way to express it — the only
+            # escape was to widen a correctly-narrow entry onto classes it does not own, which is
+            # exactly the blanket this register exists to prevent. So the entries that MATCH THIS CELL
+            # are allowed to cover the classes JOINTLY: every class must still be named by some entry
+            # with an owner and a rationale (and the per-entry money guard above is untouched, since a
+            # money class can only ever be taken by a `breaking` entry that names its changelog line).
+            # The row then reports every entry that contributed, never just the first.
+            need, cover = set(classes), []
             for e in accepted:
+                if not e["rx"].search(cid):
+                    continue
                 allowed = e["classes"] or (set(CLASS_ORDER) - MONEY_CLASSES - {"missing.golden"} if e["kind"] != "breaking" else set(CLASS_ORDER))
-                if e["rx"].search(cid) and set(classes) <= allowed:
-                    acc = e; break
+                take = need & allowed
+                if not take:
+                    continue
+                cover.append(e); need -= take
+                if not need:
+                    break
+            if cover and not need:
+                acc = cover[0] if len(cover) == 1 else {
+                    "id": " + ".join(e["id"] for e in cover),
+                    "kind": "breaking" if any(e["kind"] == "breaking" for e in cover) else cover[0]["kind"],
+                    "rationale": " | ".join(e["rationale"] for e in cover),
+                    "by": ", ".join(dict.fromkeys(e["by"] for e in cover)),
+                }
         wt = c.get("weight")
         if wt is None:
             wt = 10 if fam in BODY_IS_CONTRACT else max([CLASS_WEIGHT[k] for k in classes] or [0])
