@@ -25,12 +25,9 @@ use std::sync::Arc;
 mod envelope_boot;
 
 // The engine test-kit binding (`engine()`): the ONE function the plane's tests reach the engine's
-// fixture through, in a `tests/`-path file for the same reason as `envelope_boot` above. Gated on
-// `cfg(test)` because EVERY consumer is: the plane's batteries (including the admin-verb battery)
-// all sit behind `#[cfg(all(test, feature = "test-support"))]`, so in the plain LIBRARY build under
-// `test-support` the binding has no caller and reads as dead code. `envelope_boot` above stays
-// ungated — `install_test_seams` is a plain `pub fn` an external test binary calls.
-#[cfg(test)]
+// fixture through, in a `tests/`-path file for the same reason as `envelope_boot` above. Not gated
+// on `cfg(test)`: the admin-verb battery compiles into the library under `test-support` (the shape
+// core's own test-support build takes) and binds through it there too.
 #[path = "a2a/tests/engine_boot.rs"]
 pub(crate) mod engine_boot;
 
