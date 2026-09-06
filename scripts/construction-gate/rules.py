@@ -243,15 +243,26 @@ class Tree:
         self.test_fragments = cfg["gate"]["test_path_fragments"]
         self.files = {}   # rel path -> [Line]
         self.fns = {}     # rel path -> [Fn]
+        # THE SCAN ORDER IS SORTED, ALL THE WAY DOWN. `os.walk` hands back subdirectories in
+        # filesystem order, and the filesystem is free to change that between two runs over two
+        # freshly extracted copies of the same tree. Names inside a directory were already sorted,
+        # so this looked ordered while the DIRECTORY sequence still wandered -- and everything
+        # downstream reads `self.files` in insertion order: which offender a row names first, which
+        # of two tied files a "top offenders" list picks, which duplicate block wins. A gate whose
+        # report changes when nothing in the tree changed is a gate people stop believing, and a
+        # self-test built on it fails a different rule each run. Sorting the walk and the resulting
+        # map makes the scan a function of the tree alone.
         for pattern in cfg["gate"]["scan_roots"]:
             for d in sorted(glob.glob(os.path.join(root, pattern))):
-                for dirpath, _dirs, names in os.walk(d):
+                for dirpath, dirs, names in os.walk(d):
+                    dirs.sort()
                     for nm in sorted(names):
                         if not nm.endswith(".rs"):
                             continue
                         full = os.path.join(dirpath, nm)
                         rel = os.path.relpath(full, root)
                         self.files[rel] = scan_file(full, self.test_fragments)
+        self.files = {rel: self.files[rel] for rel in sorted(self.files)}
         for rel, lines in self.files.items():
             self.fns[rel] = find_fns(rel, lines)
 

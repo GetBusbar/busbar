@@ -180,7 +180,14 @@ run_selftest() {
   # shellcheck disable=SC2086
   (cd "$ROOT" && tar -cf - $src_dirs $manifests scripts qa testing/fleet-fixtures) | tar -C "$pristine" -xf -
   (cd "$pristine" && tar -cf - .) | tar -C "$tree" -xf -
+  # THE SABOTEUR COMES FROM THE COPY, NOT THE LIVE TREE. plant.py and rules.py are one instrument in
+  # two halves -- the planter forges exactly what the scanner is looking for -- and the scanner under
+  # test is the COPY's. Running the live planter against a copied scanner means an edit landing in
+  # scripts/ while a run is in flight changes the saboteur mid-run but not its subject, and the run
+  # reports a rule "failing" that neither half is wrong about. A run is a snapshot: one tree, one set
+  # of scripts, start to finish.
   local gate="$tree/scripts/construction-gate.sh" fail=0
+  local planter="$tree/scripts/construction-gate/plant.py"
 
   # 1. Calibrate a green baseline: every ceiling equals today's measurement in the pristine copy.
   CONSTRUCTION_OUT="$scratch/out-calibrate" bash "$gate" --calibrate "$scratch/calibrated.toml" >/dev/null 2>&1
@@ -222,7 +229,7 @@ run_selftest() {
               source-denylist:busbar-plane-llm lean-core no-default-bodies sealed-unit-traits \
               hold-discipline:no-early-exit forbid-unsafe:busbar-plane-llm \
               token-sealed:kernel-seal token-sealed:admit-token-mint kernel-seal-impls; do
-    python3 "$HELPERS/plant.py" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
+    python3 "$planter" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
     # exit 3 = the rule's subject is absent from this tree (nothing to plant): noted, not failed
     [ "$rc" -ne 3 ] || { note "SKIP $rule: nothing to plant (subject absent from this tree)"; continue; }
     [ "$rc" -eq 0 ] || { fail=1; note "plant FAILED for $rule"; continue; }
@@ -240,7 +247,7 @@ run_selftest() {
   # 4. The informational rule: planting a shared block raises its duplicated-line count and still
   #    produces no FAIL row (it is a WARN, never a gate).
   rule=duplicate-dispatch
-  python3 "$HELPERS/plant.py" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
+  python3 "$planter" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
   if [ "$rc" -eq 3 ]; then
     note "SKIP $rule: nothing to plant (a twin is absent from this tree)"
   else
