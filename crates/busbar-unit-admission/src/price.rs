@@ -90,13 +90,22 @@ impl RateNanos {
         }
     }
 
-    /// The nano-unit cost of a unit map's reserved four at this rate: four multiply-adds in u128
-    /// (a u64 count times a u64 nano rate cannot overflow a u128).
+    /// The nano-unit cost of a unit map's reserved four at this rate: four multiply-adds in u128.
+    ///
+    /// One product cannot overflow the accumulator — a u64 count times a u64 nano rate is inside a
+    /// u128 by a whole bit — but their SUM can, and four maximal products are past the top of it.
+    /// So the running total saturates. A plain add panics on overflow in a debug build and wraps in
+    /// a release one, and a wrapped total lands back near zero: an over-the-top ledger deriving as
+    /// nearly free and escaping every budget cap. Pinning at the maximum instead gives an
+    /// astronomically over-cap figure, which is what the caller above then pins into cents. This is
+    /// the same saturation posture the cross-model sum and the cent projection already take, applied
+    /// one level lower so no layer of the money fold is the exception.
     #[inline]
     pub fn reserved_nanos(&self, units: &BTreeMap<String, u64>) -> u128 {
         RESERVED_UNITS.iter().fold(0u128, |acc, u| {
             let n = units.get(*u).copied().unwrap_or(0);
-            acc + (n as u128) * (self.reserved_rate(u) as u128)
+            let amount = u128::from(n).saturating_mul(u128::from(self.reserved_rate(u)));
+            acc.saturating_add(amount)
         })
     }
 }

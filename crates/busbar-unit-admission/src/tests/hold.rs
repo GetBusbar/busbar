@@ -9,7 +9,10 @@
 //! path that turns into a refusal. The last case says it directly — the door admits, the slice is
 //! empty, the spend lands anyway.
 
-use busbar_caps::{step::Admit, AdmitToken, Hold, KernelSeal, PrincipalId, UnitToken};
+use busbar_caps::{
+    step::Admit, AccrualRefused, AdmitToken, ExitToken, Hold, HoldCell, KernelSeal, PrincipalId,
+    UnitToken,
+};
 
 use super::*;
 use crate::{Admission as _, AdmissionUnit, ClassEstimate, Estimate};
@@ -245,4 +248,202 @@ fn a_reservation_that_can_grow_grows_instead_of_carrying() {
             .expect("no lines"),
         &busbar_caps::LedgerToken::mint(&seal),
     );
+}
+
+// ── a child spending against its parent's reservation ───────────────────────────────────────────
+
+/// The setup for one child admission: the parent cell it attaches to, and the principal the CHILD
+/// claims.
+///
+/// The child is admitted in every one of the cases below. The decision is the previous release's,
+/// and nothing about a parent's hold may turn a yes into a no. What differs between them is what the
+/// caller is told afterwards.
+struct ParentCase {
+    cell: HoldCell,
+    child: PrincipalId,
+}
+
+/// Settle a hold a test is done with, rather than dropping money on the floor.
+fn settle(hold: Hold, seal: &KernelSeal) {
+    let _ = busbar_caps::Posted::settle(
+        hold,
+        &busbar_caps::Usage::report(&busbar_caps::UsageToken::mint(seal), Vec::new())
+            .expect("an empty report is within the bound"),
+        &busbar_caps::LedgerToken::mint(seal),
+    );
+}
+
+/// A cell already admitted for `parent_who`, with its displaced arrival hold settled.
+fn admitted_cell(
+    parent_who: &PrincipalId,
+    seal: &KernelSeal,
+    admit: &AdmitToken<Admit>,
+) -> HoldCell {
+    let cell = HoldCell::new(crate::arrival_hold(parent_who.clone(), admit));
+    let arrival = cell
+        .admit(Hold::open(admit, parent_who.clone(), 10_000), admit)
+        .expect("a fresh cell takes its admitted hold");
+    settle(arrival, seal);
+    cell
+}
+
+/// A cell whose arrival hold is still in the slot: the parent has not reached the door.
+fn parent_not_admitted(admit: &AdmitToken<Admit>) -> ParentCase {
+    let who = PrincipalId::new("vk_par");
+    ParentCase {
+        cell: HoldCell::new(crate::arrival_hold(who.clone(), admit)),
+        child: who,
+    }
+}
+
+/// A cell admitted for one principal, with the child claiming a different one.
+fn parent_principal_mismatch(seal: &KernelSeal, admit: &AdmitToken<Admit>) -> ParentCase {
+    ParentCase {
+        cell: admitted_cell(&PrincipalId::new("vk_par"), seal, admit),
+        child: PrincipalId::new("vk_other"),
+    }
+}
+
+/// A cell whose hold has already been taken: the parent has exited.
+fn parent_exited(seal: &KernelSeal, admit: &AdmitToken<Admit>) -> ParentCase {
+    let who = PrincipalId::new("vk_par");
+    let cell = admitted_cell(&who, seal, admit);
+    let taken = cell.take(&ExitToken::mint(seal)).expect("the parent exits");
+    settle(taken, seal);
+    ParentCase { cell, child: who }
+}
+
+/// A cell admitted for the same principal the child claims: the accrual succeeds.
+fn parent_ready(seal: &KernelSeal, admit: &AdmitToken<Admit>) -> ParentCase {
+    let who = PrincipalId::new("vk_par");
+    ParentCase {
+        cell: admitted_cell(&who, seal, admit),
+        child: who,
+    }
+}
+
+/// Run one child admission against a parent cell and report both halves of the answer: what the
+/// child was admitted with, and what the diagnostic seam says afterwards.
+fn run_child(case: &ParentCase) -> (busbar_caps::Admission, Option<AccrualRefused>) {
+    let seal = KernelSeal::acquire_for_kernel();
+    let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let d = door();
+    let p = no_card(0);
+    let t = table(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Requests, 100, Some(MINUTE))],
+        ),
+    )]);
+    let c = chain(&t, case.child.as_str(), Some("g"));
+    let mut unit = AdmissionUnit::new(&d, &p, "", 1_700_000_000).with_parent(&case.cell);
+    let decision = unit.admit(
+        &estimate(100, 7, 0),
+        &case.child,
+        &c,
+        &admit,
+        &UnitToken::<Admit>::mint(&seal),
+    );
+    let admission = decision
+        .into_result(&seal)
+        .expect("nothing in this chain refuses a child");
+    (admission, unit.parent_accrual_refused())
+}
+
+/// A PARENT THAT HAS ALREADY EXITED IS THE ORDINARY RACE, AND IS REPORTED AS NOTHING.
+///
+/// This is the case the design plans for: the parent went, the child posts late on its own against a
+/// synchronous draw, and there is no defect to tell anybody about. The child is admitted with a hold
+/// of its own and the diagnostic seam stays empty.
+#[test]
+fn a_parent_that_exited_falls_through_silently() {
+    let seal = KernelSeal::acquire_for_kernel();
+    let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let case = parent_exited(&seal, &admit);
+    let (admission, refused) = run_child(&case);
+    match admission {
+        busbar_caps::Admission::Own(hold) => settle(hold, &seal),
+        other => panic!("the child is admitted and opens its own hold, got {other:?}"),
+    }
+    assert_eq!(
+        refused, None,
+        "an exited parent is the planned race, not a condition to report"
+    );
+}
+
+/// A PARENT THAT HAS NOT PASSED THE DOOR IS AN ORDERING DEFECT, AND IS SURFACED.
+///
+/// The child still runs — the decision admitted it — but the caller ran a child ahead of its
+/// parent's admission, and swallowing that leaves an ordering bug with no symptom anywhere.
+#[test]
+fn a_parent_not_yet_admitted_is_surfaced_and_the_child_still_runs() {
+    let seal = KernelSeal::acquire_for_kernel();
+    let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let case = parent_not_admitted(&admit);
+    let (admission, refused) = run_child(&case);
+    match admission {
+        busbar_caps::Admission::Own(hold) => settle(hold, &seal),
+        other => panic!("the child is admitted regardless, got {other:?}"),
+    }
+    assert_eq!(refused, Some(AccrualRefused::ParentNotAdmitted));
+    let arrival = case
+        .cell
+        .take(&ExitToken::mint(&seal))
+        .expect("the parent's arrival hold is still there");
+    settle(arrival, &seal);
+}
+
+/// A PRINCIPAL MISMATCH IS A MISATTRIBUTION, AND IS SURFACED.
+///
+/// A child attached to somebody else's parent would, had the accrual gone through, have landed one
+/// principal's spend on another's reservation. The runtime seal stops it; this is what makes the
+/// stop visible instead of silent.
+#[test]
+fn a_principal_mismatch_is_surfaced_and_the_child_still_runs() {
+    let seal = KernelSeal::acquire_for_kernel();
+    let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let case = parent_principal_mismatch(&seal, &admit);
+    let (admission, refused) = run_child(&case);
+    match admission {
+        busbar_caps::Admission::Own(hold) => settle(hold, &seal),
+        other => panic!("the child is admitted regardless, got {other:?}"),
+    }
+    assert_eq!(refused, Some(AccrualRefused::PrincipalMismatch));
+    // The parent's reservation is untouched: the mismatch accrued nothing into it.
+    let parent = case
+        .cell
+        .take(&ExitToken::mint(&seal))
+        .expect("the parent still holds");
+    assert_eq!(parent.accrued(), 0, "nothing landed on the wrong parent");
+    settle(parent, &seal);
+}
+
+/// The path that works: a matching, admitted parent takes the accrual, the child carries an accrual
+/// rather than a hold of its own, and there is nothing to report.
+#[test]
+fn a_ready_parent_takes_the_accrual_and_reports_nothing() {
+    let seal = KernelSeal::acquire_for_kernel();
+    let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let case = parent_ready(&seal, &admit);
+    let (admission, refused) = run_child(&case);
+    match admission {
+        busbar_caps::Admission::Accrual(accrual) => {
+            assert_eq!(accrual.principal(), &case.child);
+            assert_eq!(
+                accrual.amount(),
+                700,
+                "quantity x price at the neutral tier"
+            );
+        }
+        other => panic!("a child with a live parent spends against it, got {other:?}"),
+    }
+    assert_eq!(refused, None);
+    let parent = case
+        .cell
+        .take(&ExitToken::mint(&seal))
+        .expect("the parent still holds");
+    assert_eq!(parent.accrued(), 700, "the child's spend landed on it");
+    settle(parent, &seal);
 }

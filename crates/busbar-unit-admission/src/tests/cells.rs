@@ -196,6 +196,89 @@ fn each_token_tier_caps_only_itself() {
     }
 }
 
+/// A CELL ON THE ALL-TIME WINDOW IS BOUNDED IN THE MODEL NAMES IT INTERNS.
+///
+/// The all-time window never rolls, so nothing resets this cell; the model name comes off the
+/// request, so the set of names is the caller's to choose. Without a cap the list grows one entry
+/// per distinct name for the life of the process, which is a caller-driven memory growth on the
+/// hot path. A thousand names go in here and the cell holds the cap.
+///
+/// Eviction takes the coldest entry, and the counts it was carrying move into the cell's evicted
+/// tally rather than vanishing: every token cap still counts every token that was ever accrued.
+/// What is given up is the per-model ATTRIBUTION of the coldest name, which is what the derived
+/// spend reads — and giving that up on the one-thousand-and-first name is the trade the bound costs.
+#[test]
+fn an_all_time_cell_caps_the_models_it_interns_and_keeps_the_token_truth() {
+    let d = door();
+    let p = no_card(0);
+    let t = table(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Requests, 100_000, Some(TOTAL))],
+        ),
+    )]);
+    let c = chain(&t, "vk_many_models", Some("g"));
+    let now = 1_700_000_000;
+    for i in 0..1_000 {
+        d.record_usage(&c, "", &format!("model-{i}"), &toks(1, 0), now);
+    }
+    let cell = d
+        .cells()
+        .snapshot("vk_many_models")
+        .expect("the attribution bucket is an all-time cell");
+    assert_eq!(
+        cell.model_views().count(),
+        crate::cells::MAX_MODELS_PER_CELL,
+        "the model list is held at the cap, not grown to a thousand"
+    );
+    assert_eq!(
+        cell.total_tokens(),
+        1_000,
+        "every accrued token still counts toward the token caps"
+    );
+    assert_eq!(cell.total_input(), 1_000, "and toward the per-tier ones");
+    // The token cap the bucket carries reads the same figure through the ordinary admin path.
+    let (_, tokens, _) = bucket_usage(&d, &p, "vk_many_models", TOTAL, now);
+    assert_eq!(tokens, 1_000, "the cap sees every token that was accrued");
+
+    // The survivors are the most recently used: the last of the thousand is still attributed, and
+    // the first is the one that went.
+    let retained: Vec<&str> = cell.model_views().map(|(m, _)| m).collect();
+    assert!(retained.contains(&"model-999"), "the newest name is held");
+    assert!(
+        !retained.contains(&"model-0"),
+        "the coldest name was evicted"
+    );
+}
+
+/// Re-touching a model keeps it warm: the entry evicted is the least recently USED, not the one
+/// interned first. A steadily-served model outlives a burst of one-shot names around it.
+#[test]
+fn eviction_takes_the_least_recently_used_model_not_the_oldest() {
+    let mut cell = crate::LedgerCell::fresh(0);
+    cell.accrue("steady", &toks(5, 0));
+    for i in 0..crate::cells::MAX_MODELS_PER_CELL {
+        // Keep the steady model warm between each new name.
+        cell.accrue(&format!("burst-{i}"), &toks(1, 0));
+        cell.accrue("steady", &toks(1, 0));
+    }
+    assert_eq!(
+        cell.model_views().count(),
+        crate::cells::MAX_MODELS_PER_CELL
+    );
+    let retained: Vec<&str> = cell.model_views().map(|(m, _)| m).collect();
+    assert!(
+        retained.contains(&"steady"),
+        "the model touched on every pass is never the coldest"
+    );
+    assert!(
+        !retained.contains(&"burst-0"),
+        "the coldest burst name went"
+    );
+}
+
 /// The instantaneous gauge, at every chain depth. It carries no window and no retry hint, and one
 /// lease is taken per concurrent-capped GROUP — not per bucket, so a group with a gauge and two
 /// windowed caps still takes one.
