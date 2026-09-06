@@ -907,6 +907,21 @@ fn vetoed(proto: &str) -> Response {
     )
 }
 
+/// Whether this end is a CALLER THAT LEFT, rather than an answer the caller was given.
+///
+/// One reason code and no other. A node that is draining, a unit a later one superseded and every
+/// failure the loop can name are ends a client either received or would have received; this is the
+/// one end where there is nobody on the other side of the connection to receive anything, which is
+/// what makes it the one end whose rendered status says nothing about what the caller experienced.
+fn went_away(outcome: &Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::Aborted(busbar_caps::Abort::Kernel {
+            reason: busbar_caps::ReasonCode::ClientGone
+        })
+    )
+}
+
 /// What a node that cannot take the unit at all answers with, in the caller's own dialect.
 fn unavailable(proto: &str) -> Response {
     busbar_substrate::proxy::ingress_error(
@@ -1317,15 +1332,29 @@ impl Units for LlmUnit<'_> {
         &self,
         token: &UnitToken<Audit>,
         _ctx: &UnitCtx,
-        _outcome: &Outcome,
+        outcome: &Outcome,
     ) -> Decision<Audit> {
         // THE CHARGED TERMINAL. A unit that passed the door leaves here, whatever it ended on: a
         // delivered answer, a relayed upstream failure, or a destination that resolved to nothing
-        // after the caller was already charged. All three are the same door.
+        // after the caller was already charged. All four are the same door.
         let destination = self.destination();
-        self.walk.audit(token, &self.audit_ctx(&destination), || {
-            self.nothing_rendered()
-        })
+        // AND THE FOURTH END DOES NOT GET THE FLAT FEE BACK. The door's refund arm reverses the fee
+        // on a non-2xx answer, which is the right rule for every end a client was GIVEN: a caller is
+        // not billed for a failure outside its control. A caller that went away was given nothing
+        // and asked for nothing, and the response this terminal renders for it is a placeholder
+        // nobody will read — so reading a refund off its status would take back a fee for a failure
+        // that never happened, and the design says so in as many words: the flat fee is decided at
+        // the relayed frame and is never reversed by a later abort, and a client disconnect KEEPS it.
+        //
+        // The published release gets that right by ARRANGEMENT rather than by rule: its one refund
+        // site sits after the await, so a caller that went away never reaches it. The loop reaches
+        // one terminal from both ends, so what was a consequence of where the code sat has to be
+        // said, and this is where it is said.
+        let reversible = !went_away(outcome);
+        self.walk
+            .audit(token, &self.audit_ctx(&destination), reversible, || {
+                self.nothing_rendered()
+            })
     }
 
     fn audit_refused(
@@ -2643,6 +2672,44 @@ mod tests {
             replayed.len(),
             1,
             "an abandoned unit posts to the root's journal exactly once, like every other unit"
+        );
+    }
+
+    /// **THE FLAT FEE IS NOT REVERSED BY A CLIENT GOING AWAY.**
+    ///
+    /// `docs/design/ARCHITECTURE.md`, PB-27: "a client disconnect bills the partial tokens and
+    /// refunds the LANE max_requests unit; the flat fee (billable_requests) is KEPT, as on every
+    /// exit after 2xx headers were relayed". The settlement table on the same page says it of
+    /// `fee_count` too: "the fee is DECIDED at that frame and NEVER reversed by a later abort".
+    ///
+    /// The published release keeps it by ARRANGEMENT rather than by rule — its one refund site sits
+    /// after the await, so a caller that went away never reaches it. The loop reaches one terminal
+    /// from both ends, so what was a consequence of where the code sat has to be said out loud.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_client_that_goes_away_does_not_get_the_flat_fee_back() {
+        let rig = rig(Fixture::BufferedOk).await;
+        let node = LlmNode::new();
+        node.bind_book(a_book());
+
+        drive_and_go_away(&rig, &node, Fixture::BufferedOk).await;
+        rig.server.shutdown().await;
+
+        let gov = rig
+            .app
+            .governance
+            .clone()
+            .expect("governance is configured");
+        gov.flush_metering();
+        let derived = gov
+            .derived_bucket_usage(&rig.app.cost, &rig.key.id, "total", true, rig.charged_at)
+            .expect("usage read");
+        assert_eq!(
+            derived.requests, 1,
+            "the request slot is drawn at the door and never released"
+        );
+        assert_eq!(
+            derived.spend_cents, FEE_CENTS,
+            "one flat per-request fee, kept: a client that hung up mid-unit is not a refund"
         );
     }
 
