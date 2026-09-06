@@ -6166,6 +6166,79 @@ fn test_streaming_reasoning_round_trip() {
 }
 
 // Stream: a streamed terminal `response.completed` carrying
+/// `usage.input_tokens_details.cache_write_tokens` is "the number of input tokens that were written
+/// to the cache" — a SLICE of the `input_tokens` total, exactly as `cached_tokens` is. The pinned
+/// OpenAI spec's own usage arithmetic says so: the organization usage example reports
+/// `input_tokens: 1000` = `input_cached_tokens: 400` + `input_cache_write_tokens: 100` +
+/// `input_uncached_tokens: 500`. The writer emitted the member but the reader never read it, so a
+/// cache-write turn's tokens stayed inside `input_tokens` and priced at the plain INPUT tier
+/// instead of the cache-write tier — and the count vanished on a cross-protocol hop.
+#[test]
+fn test_cache_write_tokens_mapping() {
+    let body = serde_json::json!({
+        "id": "resp_w",
+        "status": STATUS_COMPLETED,
+        "model": "gpt-4o",
+        "output": [{
+            "type": ITEM_TYPE_MESSAGE,
+            "role": "assistant",
+            "content": [{"type": CONTENT_TYPE_OUTPUT_TEXT, "text": "hi"}]
+        }],
+        "usage": {
+            "input_tokens": 1000,
+            "output_tokens": 10,
+            "input_tokens_details": {"cached_tokens": 400, "cache_write_tokens": 100}
+        }
+    });
+    let reader = ResponsesReader;
+    let ir = reader.read_response(&body).expect("read_response");
+    assert_eq!(
+        ir.usage.cache_creation_input_tokens,
+        Some(100),
+        "cache_write_tokens read into cache_creation_input_tokens"
+    );
+    assert_eq!(ir.usage.cache_read_input_tokens, Some(400));
+    assert_eq!(
+        ir.usage.input_tokens, 500,
+        "input_tokens is the UNCACHED remainder: neither the cache-read nor the cache-write slice"
+    );
+
+    // The write-back reconstructs the wire totals unchanged.
+    let out = ResponsesWriter.write_response(&ir);
+    assert_eq!(out["usage"]["input_tokens"], 1000);
+    assert_eq!(
+        out["usage"]["input_tokens_details"]["cache_write_tokens"],
+        100
+    );
+    assert_eq!(out["usage"]["input_tokens_details"]["cached_tokens"], 400);
+
+    // The STREAM terminal reports the same split its buffered twin does.
+    let mut state = crate::ir::StreamDecodeState::default();
+    let events = reader.read_response_events(
+        EVT_RESPONSE_COMPLETED,
+        &serde_json::json!({
+            "response": {
+                "status": STATUS_COMPLETED,
+                "usage": {
+                    "input_tokens": 1000,
+                    "output_tokens": 10,
+                    "input_tokens_details": {"cached_tokens": 400, "cache_write_tokens": 100}
+                }
+            }
+        }),
+        &mut state,
+    );
+    let usage = events
+        .iter()
+        .find_map(|e| match e {
+            crate::ir::IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
+            _ => None,
+        })
+        .expect("a MessageDelta with usage");
+    assert_eq!(usage.cache_creation_input_tokens, Some(100));
+    assert_eq!(usage.input_tokens, 500);
+}
+
 // usage.input_tokens_details.cached_tokens must surface it on the IR MessageDelta usage, and the
 // writer's MessageDelta must re-emit it on the terminal event.
 #[test]
