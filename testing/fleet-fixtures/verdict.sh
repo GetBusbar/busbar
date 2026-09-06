@@ -49,7 +49,15 @@ if [ -z "$EXPECTED_IDS" ]; then
   exit 1
 fi
 
-fail_ids="" skip_ids="" missing_ids="" pass_n=0 owed_n=0
+# AN ID IS A LINE, NOT A WORD, when the list carries newlines (the oracle owes ids with spaces in
+# them); a one-line list is the space-separated shape. The count below and the split in awk use
+# the same rule, so the reconciliation guard compares like with like.
+case "$EXPECTED_IDS" in
+  *$'\n'*) owed_n="$(printf '%s\n' "$EXPECTED_IDS" | awk 'NF{n++} END{print n+0}')" ;;
+  *) owed_n="$(printf '%s' "$EXPECTED_IDS" | wc -w | tr -d ' ')" ;;
+esac
+
+fail_ids="" skip_ids="" missing_ids="" pass_n=0
 report="$(mktemp)"
 resolved="$(mktemp)"
 trap 'rm -f "$report" "$resolved"' EXIT
@@ -61,8 +69,17 @@ trap 'rm -f "$report" "$resolved"' EXIT
 #
 # One awk pass, not one per id: the previous loop re-read the whole ledger for every expected id,
 # which is O(ids × rows) file reads on a ledger the oracle replay can fill with thousands of cells.
-awk -F'\t' -v ids="$EXPECTED_IDS" '
+#
+# EXPECTED_IDS REACHES awk THROUGH ENVIRON, NEVER THROUGH `-v`. A caller that builds the owed list
+# from a file — `EXPECTED_IDS="$(cat expected-ids)"` — hands over a value containing NEWLINES, and
+# the one-true-awk shipped as /usr/bin/awk on macOS rejects a newline inside a `-v` assignment
+# ("awk: newline in string") and dies before its BEGIN block. A dead awk writes an EMPTY resolved
+# file, the loop below reads nothing, every counter stays zero — and the verdict announced GREEN
+# for a run whose ledger held a hundred rows, seven of them FAIL. ENVIRON carries the value byte
+# for byte on every awk. The exit status is checked too: the resolver dying must never be silence.
+EXPECTED_IDS="$EXPECTED_IDS" awk -F'\t' '
   BEGIN {
+    ids = ENVIRON["EXPECTED_IDS"]
     # AN ID IS A LINE, NOT A WORD: the owed set of the oracle has ids that contain spaces, so a list
     # that carries newlines is split on newlines only; a one-line list is the space-separated shape.
     if (index(ids, "\n") > 0) n = split(ids, want, /\n/); else n = split(ids, want, /[ \t]+/)
@@ -79,6 +96,25 @@ awk -F'\t' -v ids="$EXPECTED_IDS" '
     }
   }
 ' "$LEDGER" > "$resolved"
+resolver_rc=$?
+
+# THE SECOND HALF OF "ZERO ROWS IS RED". The guard at the top counts rows in the LEDGER; this one
+# counts the owed ids the resolver actually accounted for. They are different numbers and only the
+# second one decides anything: if the resolver dies, or is fed a list it cannot split, the ledger
+# is still full while the report is empty, and an empty report has no FAIL and no DID NOT RUN to
+# turn the verdict red. So every owed id must come back resolved — as PASS, FAIL, SKIP or DID NOT
+# RUN — and a count that does not reconcile is RED by construction, exactly like a vacuous run.
+resolved_n="$(awk 'NF{n++} END{print n+0}' "$resolved" 2>/dev/null || echo 0)"
+if [ "$resolver_rc" -ne 0 ] || [ "$resolved_n" -ne "$owed_n" ]; then
+  echo "::error title=${GATE_NAME}::RED — the verdict could not account for what was owed: ${owed_n} ids were owed, ${resolved_n} came back resolved (resolver exit ${resolver_rc}). Nothing was decided, so nothing may be called green. Fix: the ledger is \`${LEDGER}\`; check that EXPECTED_IDS is a well-formed list and that the resolver above ran."
+  {
+    echo "## ${GATE_NAME}: RED — the verdict did not reconcile"
+    echo
+    echo "Owed **${owed_n}** ids, resolved **${resolved_n}** (resolver exit ${resolver_rc}). Ledger: \`${LEDGER}\`."
+  } >> "$SUMMARY"
+  echo; echo "${GATE_UPPER}: RED."
+  exit 1
+fi
 
 while IFS=$'\t' read -r id status detail; do
   [ -n "$id" ] || continue
