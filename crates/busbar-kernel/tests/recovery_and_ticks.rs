@@ -5,9 +5,7 @@
 
 mod common;
 
-use busbar_caps::{
-    Canary, MeterClassId, OriginKind, PostingFlags, ReasonCode, StepName, UnitKey,
-};
+use busbar_caps::{Canary, MeterClassId, OriginKind, PostingFlags, ReasonCode, StepName, UnitKey};
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
 use busbar_kernel::recovery::{
     frame, owed_after, recover_all, truncate_torn_tail, voids_claim, HoldRecord, KillPoint, Owed,
