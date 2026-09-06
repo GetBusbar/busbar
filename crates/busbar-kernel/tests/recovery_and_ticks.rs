@@ -303,6 +303,7 @@ fn the_session_tick_prices_time_it_could_not_price_last_time() {
             elapsed: 1_000,
             late: false,
             clipped: false,
+            checkpoint: None,
         }
     );
     // A tick that could not run: the next one prices the whole gap, marked late.
@@ -312,6 +313,7 @@ fn the_session_tick_prices_time_it_could_not_price_last_time() {
             elapsed: 3_000,
             late: true,
             clipped: false,
+            checkpoint: None,
         }
     );
     // A gap longer than the idle bound is clipped at it rather than posted in full.
@@ -321,8 +323,50 @@ fn the_session_tick_prices_time_it_could_not_price_last_time() {
             elapsed: SESSION_IDLE_MAX_MS,
             late: true,
             clipped: true,
+            checkpoint: None,
         }
     );
+}
+
+/// A priced session checkpoints what it has accrued, exactly as an unpriced one does.
+///
+/// The two jobs of a session tick are not alternatives: pricing an interval of session time and
+/// writing down what has accrued so far are different things, and a session that does the first
+/// still has to do the second. Deciding them as one if/else meant a priced session NEVER
+/// checkpointed, so its journal record carried a checkpoint of zero — and recovery, which posts the
+/// last checkpointed figure, posted nothing for a session that had been billing all along.
+#[test]
+fn a_priced_session_still_checkpoints_what_it_accrued() {
+    let verdict = session_tick(1_000, 1_000, 0, Some(4_200), true, false, false);
+    assert_eq!(
+        verdict,
+        SessionTick::Accrue {
+            elapsed: 1_000,
+            late: false,
+            clipped: false,
+            checkpoint: Some(4_200),
+        },
+        "the priced branch swallowed the checkpoint"
+    );
+
+    // And what the tick checkpointed is what a crash pays out on.
+    let kernel = Kernel::new();
+    let canary = Canary::new();
+    let checkpointed = match verdict {
+        SessionTick::Accrue {
+            checkpoint: Some(accrued),
+            ..
+        } => accrued,
+        other => panic!("the tick answered {other:?}"),
+    };
+    let postings = recover_all(&kernel, &[record(true, checkpointed)], Epoch(2), &canary);
+    assert_eq!(postings.len(), 1);
+    assert_eq!(
+        postings[0].settled(),
+        4_200,
+        "recovery posted a figure the tick never wrote down"
+    );
+    assert!(postings[0].flags().contains(PostingFlags::RECOVERED));
 }
 
 #[test]

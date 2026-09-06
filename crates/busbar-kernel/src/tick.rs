@@ -44,7 +44,8 @@ pub enum SessionTick {
         /// What has accrued so far.
         accrued: u64,
     },
-    /// Open a priced accrual unit for this many milliseconds of session time.
+    /// Open a priced accrual unit for this many milliseconds of session time, and — where the
+    /// accrued figure moved as well — checkpoint it in the same breath.
     Accrue {
         /// How much time to price. Normally one interval; after a tick that could not run, the
         /// elapsed time since the last SETTLED tick, so priced time is never simply dropped.
@@ -54,6 +55,10 @@ pub enum SessionTick {
         /// Whether the catch-up was clipped at the idle bound, which marks it estimated and closes
         /// the session.
         clipped: bool,
+        /// What to write down as accrued, where it changed since the last tick. Pricing an interval
+        /// and recording the running figure are two jobs and not two branches: a session that does
+        /// the first still owes the second, and the checkpoint is what a crash pays out on.
+        checkpoint: Option<u64>,
     },
     /// Close the session.
     Close {
@@ -93,6 +98,7 @@ pub fn session_tick(
             elapsed: since_settled.min(SESSION_IDLE_MAX_MS),
             late: since_settled > interval,
             clipped,
+            checkpoint: accrued_changed,
         }
     } else {
         match accrued_changed {
