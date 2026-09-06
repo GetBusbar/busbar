@@ -4,7 +4,7 @@
     "Answers, for every row id in docs/design/inventory/*.md, whether an oracle cell",
     "(testing/shadow-oracle/cells.json, checked against the golden ledger) covers it."
   ],
-  "generated_at": "2026-09-05",
+  "generated_at": "2026-09-06",
   "family_summary": {
     "ADM": {
       "covered": 66,
@@ -19,9 +19,9 @@
       "total": 227
     },
     "CONF": {
-      "covered": 1,
+      "covered": 0,
       "partial": 0,
-      "none": 204,
+      "none": 205,
       "total": 205
     },
     "LST": {
@@ -1105,12 +1105,8 @@
       "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 369,
-      "status": "covered",
-      "citers": [
-        "admin.ops|PutHooksName|if-match-malformed",
-        "admin.ops|PutHooksName|if-match-stale",
-        "admin.ops|PutHooksName|ok"
-      ]
+      "status": "none",
+      "citers": []
     },
     "CONF-221": {
       "family": "CONF",
@@ -4681,7 +4677,7 @@
       "families": [
         "CONF"
       ],
-      "status": "PARTIAL"
+      "status": "UNMAPPED"
     },
     {
       "row": "C2",
