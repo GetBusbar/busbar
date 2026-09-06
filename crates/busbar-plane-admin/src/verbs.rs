@@ -232,11 +232,17 @@ pub(crate) fn verb_named(verb: &str) -> Option<&'static VerbEntry> {
 
 /// Whether a concrete path segment satisfies a template segment, capturing the template's `{name}`
 /// against the concrete value when it is a variable segment.
+///
+/// An EMPTY concrete segment never satisfies a `{name}`: `/keys/` is not `/keys/{id}` with an empty
+/// id, it is a path the router this surface has always been mounted on does not carry at all.
 fn segment_matches<'p>(
     template: &'static str,
     concrete: &'p str,
 ) -> Option<Option<(&'static str, &'p str)>> {
     if let Some(name) = template.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        if concrete.is_empty() {
+            return None;
+        }
         Some(Some((name, concrete)))
     } else if template == concrete {
         Some(None)
@@ -248,22 +254,29 @@ fn segment_matches<'p>(
 /// Match a concrete path against a `{param}`-templated path, returning the captured parameters in
 /// template order when every segment matches and the segment counts are equal (this plane's paths
 /// never use a trailing wildcard, so a length mismatch is always a non-match).
+///
+/// An empty segment is a SEGMENT, and the split keeps it. Dropping empties normalised
+/// `/api/v1/admin/keys/abc/` and `/api/v1//admin/keys/abc` onto the row for
+/// `/api/v1/admin/keys/{id}` — so a trailing slash decoded as a revoke on a surface whose own
+/// router answers neither path. What the table declares is the only thing it answers.
 fn match_path<'p>(
     template: &'static str,
     concrete: &'p str,
 ) -> Option<Vec<(&'static str, &'p str)>> {
-    let t_segs: Vec<&str> = template.split('/').filter(|s| !s.is_empty()).collect();
-    let c_segs: Vec<&str> = concrete.split('/').filter(|s| !s.is_empty()).collect();
-    if t_segs.len() != c_segs.len() {
-        return None;
-    }
     let mut params = Vec::new();
-    for (t, c) in t_segs.iter().zip(c_segs.iter()) {
-        if let Some(pair) = segment_matches(t, c)? {
-            params.push(pair);
+    let mut t_segs = template.split('/');
+    let mut c_segs = concrete.split('/');
+    loop {
+        match (t_segs.next(), c_segs.next()) {
+            (None, None) => return Some(params),
+            (Some(t), Some(c)) => {
+                if let Some(pair) = segment_matches(t, c)? {
+                    params.push(pair);
+                }
+            }
+            _ => return None,
         }
     }
-    Some(params)
 }
 
 /// The part of a request target that names an operation: everything before the first `?` or `#`.
@@ -450,6 +463,23 @@ mod tests {
     #[test]
     fn rejects_a_wrong_segment_count() {
         assert!(match_path("/api/v1/admin/keys/{id}", "/api/v1/admin/keys").is_none());
+    }
+
+    /// An empty segment is a segment. A trailing slash, a doubled slash and a bare `{id}` position
+    /// with nothing in it are three paths the mounted router does not carry, and the table may not
+    /// normalise any of them onto a row it does — a `DELETE` that revoked on `/keys/abc/` would be
+    /// a mutation on a request the previous release answers with its router's own 404.
+    #[test]
+    fn an_empty_segment_never_normalises_onto_a_row() {
+        assert!(resolve("DELETE", "/api/v1/admin/keys/abc/").is_none());
+        assert!(resolve("DELETE", "/api/v1/admin/keys/").is_none());
+        assert!(resolve("DELETE", "/api/v1//admin/keys/abc").is_none());
+        assert!(resolve("GET", "/api/v1/admin/audit/").is_none());
+        // and the paths the table DOES declare still resolve, so the check above is a filter and
+        // not a wall.
+        assert!(resolve("DELETE", "/api/v1/admin/keys/abc").is_some());
+        assert!(resolve("GET", "/api/v1/admin/audit").is_some());
+        assert!(resolve("GET", "/api/v1/admin/audit?limit=4").is_some());
     }
 
     #[test]
