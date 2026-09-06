@@ -47,6 +47,15 @@ pub(crate) const CLOSE_BUDGET: std::time::Duration = std::time::Duration::from_m
 /// and still bounds it.
 pub(crate) const HANDSHAKE_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How long the Pong answering a peer's Ping may take to reach that peer before this transport gives
+/// the session up.
+///
+/// The frame pump sends it while suspended in its own read, so unlike every other write in this
+/// crate there is no handle anywhere that could cancel it: a peer that pings and then stops reading
+/// would park the pump in the send for as long as it liked. Generous rather than tight — a peer
+/// whose receive window is briefly full is not a peer that has gone away — and still bounded.
+pub(crate) const PONG_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The configuration key naming the largest message this transport will accept.
 ///
 /// It is the deployment's request-body cap, read through the same name the rest of the stack knows
@@ -562,10 +571,30 @@ impl Transport for WsTransport {
                         // Ping/Pong carry no plane data; tungstenite does not auto-answer a Ping
                         // on a raw split stream, so this transport answers it itself and keeps
                         // reading — a protocol-blind, byte-level obligation, not plane meaning.
+                        //
+                        // The answer is still a write, and it is the one write in this crate that
+                        // nothing above it can cancel: the pump is suspended INSIDE it, so a peer
+                        // that pings and then stops reading parks the pump in the send forever,
+                        // holds the connection state the pump carries, and keeps the socket alive
+                        // for the life of the process. The budget is what ends that, and a failure
+                        // is reported rather than swallowed — the layer above is otherwise told the
+                        // session is healthy by a pump that will never yield another frame. The
+                        // fence goes with it, because a send abandoned at the budget is a send
+                        // interrupted mid-frame, which is what every other write here fences for.
                         Some(Ok(Message::Ping(payload))) => {
-                            let mut w = state.writer.lock().await;
-                            let _ = futures::SinkExt::send(&mut *w, Message::Pong(payload)).await;
-                            continue;
+                            let answered = tokio::time::timeout(PONG_BUDGET, async {
+                                let mut w = state.writer.lock().await;
+                                futures::SinkExt::send(&mut *w, Message::Pong(payload)).await
+                            })
+                            .await;
+                            match answered {
+                                Ok(Ok(())) => continue,
+                                Ok(Err(e)) => break Some(Err(read_error(&e))),
+                                Err(_) => {
+                                    state.poisoned.store(true, Ordering::Release);
+                                    break Some(Err(TransportError::Backpressure));
+                                }
+                            }
                         }
                         Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => continue,
                         Some(Err(e)) => break Some(Err(read_error(&e))),

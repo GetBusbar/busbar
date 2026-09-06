@@ -966,6 +966,56 @@ async fn close_gives_up_on_a_peer_that_never_reads() {
     );
 }
 
+/// The Pong this transport owes a Ping is sent from inside the frame pump, which means nothing
+/// above it holds a handle that could cancel it. A peer that pings and then stops reading therefore
+/// parks the pump in that send: no further frame is ever yielded, the layer above is never told the
+/// session is over, and the connection state the pump carries — and the socket under it — outlive
+/// the session. The budget must end the wait, and the end must be reported rather than swallowed.
+#[tokio::test(start_paused = true)]
+async fn a_peer_that_pings_and_then_stops_reading_does_not_park_the_pump_forever() {
+    let t = Arc::new(WsTransport::new());
+    // A duplex with no room left in the a → b direction: nothing drains b's end, so the Pong `a`
+    // owes cannot leave.
+    let (a, b) = pair(&t, 8).await;
+    let stuffing = vec![b'z'; 1_000_000];
+    let t2 = t.clone();
+    let a2 = a.clone();
+    // Left running rather than aborted: a write abandoned mid-send fences the connection, and a
+    // fenced connection ends the pump before it ever reads the Ping. This one stays parked on the
+    // full socket, which is exactly the peer this cell is about.
+    let stuffer =
+        tokio::spawn(async move { t2.write(&a2, StreamId(0), ArenaBytes::new(&stuffing)).await });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!stuffer.is_finished(), "the duplex must be full");
+
+    // A raw Ping, which the public write path cannot express: this is the peer's obligation on `a`,
+    // not plane data.
+    {
+        let peer = t.state_of(b.id()).expect("the peer connection is live");
+        let mut w = peer.writer.lock().await;
+        futures::SinkExt::send(
+            &mut *w,
+            tokio_tungstenite::tungstenite::Message::Ping(Vec::new().into()),
+        )
+        .await
+        .expect("the b → a direction is empty, so the ping goes out");
+    }
+
+    let mut frames = t.frames(a);
+    let ended = tokio::time::timeout(
+        crate::transport::PONG_BUDGET * 4,
+        futures::StreamExt::next(&mut frames),
+    )
+    .await
+    .expect("the pump must give up on the budget rather than park in the Pong forever");
+    assert_eq!(
+        ended,
+        Some(Err(TransportError::Backpressure)),
+        "a peer that cannot take a Pong within the budget is one that stopped reading, and the \
+         pump says so rather than falling silent"
+    );
+}
+
 /// A redial against the same upstream must not allocate a second `'static` address. `dial` needs
 /// both halves for the lifetime of the process, so the allocation is deliberate; what would not be
 /// deliberate is one per dial, which a redial loop against a flapping upstream turns into unbounded
