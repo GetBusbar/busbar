@@ -1730,6 +1730,15 @@ pub(crate) async fn rotate_key(
         resource: &resource,
         actor: &actor,
     };
+    // Bound the path id BEFORE anything retains it, exactly as every sibling `/keys/{id}` handler
+    // does. Rotate is the one that kept the id out of the bound: an unbounded id reached the audit
+    // `resource` string, the store lookup, AND — uniquely to this handler — the idempotency cache
+    // KEY, where a per-request-sized entry is retained for the whole TTL. The guard therefore sits
+    // ahead of the idempotency block rather than beside the governance check, so an overlong id can
+    // never be admitted into that map.
+    if let Some(resp) = reject_overlong_id(who, &id) {
+        return resp;
+    }
     // IDEMPOTENT ROTATE (optional `Idempotency-Key`): rotate is the one other
     // destructive, secret-bearing POST — a network-level retry without this mints TWICE and the
     // first (lost) response's secret is silently dead. Same mechanics as create's idempotent mint

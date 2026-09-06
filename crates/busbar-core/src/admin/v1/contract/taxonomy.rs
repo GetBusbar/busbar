@@ -578,6 +578,7 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             NotFound / GovernanceOff,
         ],
         (Post, "/keys/{id}/rotate") => de![
+            Validation / Overlong,
             NotFound / UnknownResource,
             Conflict / GovernanceOff,
             Conflict / IdempotencyInFlight,

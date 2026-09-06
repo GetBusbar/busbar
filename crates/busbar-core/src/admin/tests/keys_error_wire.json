@@ -159,6 +159,11 @@
     "content_type": "application/json",
     "status": 409
   },
+  "rotate_overlong_id": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"id must be <= 64 characters\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
   "rotate_unknown": {
     "body": "{\"error\":{\"code\":\"not_found\",\"message\":\"key not found\"}}",
     "content_type": "application/json",
