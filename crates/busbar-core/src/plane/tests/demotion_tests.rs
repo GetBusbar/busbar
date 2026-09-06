@@ -223,20 +223,35 @@ fn with_no_durable_sink_a_demotion_is_recorded_nowhere() {
     );
 }
 
-/// AND THE RAM DEFAULT REALLY IS RAM. `busbar-store-memory` implements none of these methods, so
-/// attaching it is indistinguishable from attaching nothing — the documented `store: memory`
-/// contract, asserted rather than assumed. It is also the exact shape of every already-signed store
-/// plugin that predates these three methods.
+/// AND THE RAM DEFAULT REALLY IS RAM — which is a statement about the PROCESS, not about the write.
+/// Within one process `busbar-store-memory` is a real store and reads a demotion back; what it loses
+/// is everything the moment the process ends, and a restart is modelled here the only way a RAM
+/// restart can be, by opening a new one. That is the documented `store: memory` contract.
+///
+/// The "a write that reaches nothing reads back as nothing" control lives in the no-sink case above,
+/// where it belongs: the engine learns durability by READING BACK and never from a write's return
+/// value, and neither of these two stores reports anything different on the way in.
 #[test]
-fn the_memory_store_keeps_no_demotions_which_is_the_documented_contract() {
+fn the_memory_store_keeps_demotions_only_for_the_life_of_the_process() {
     let d = DemotionRecord::new();
     d.set_sink(crate::plane::store::PlaneStoreView::narrow(
         std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
     ));
     d.record("fs", "quarantined", 100);
+    assert_eq!(
+        d.list().len(),
+        1,
+        "within the process the RAM default is a real store and reads the demotion back"
+    );
+
+    // The restart: a new process gets a new map, and the demotion is not in it.
+    let restarted = DemotionRecord::new();
+    restarted.set_sink(crate::plane::store::PlaneStoreView::narrow(
+        std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
+    ));
     assert!(
-        d.list().is_empty(),
-        "the RAM default accepts the write and keeps nothing, which is why the engine learns \
-         durability by READING BACK and never from a write's return value"
+        restarted.list().is_empty(),
+        "nothing the RAM default held survives the process — that is what `store: memory` means, \
+         and why a deployment that needs a demotion to outlive a restart configures a backend"
     );
 }

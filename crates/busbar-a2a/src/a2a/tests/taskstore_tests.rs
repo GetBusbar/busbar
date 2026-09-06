@@ -347,12 +347,15 @@ fn in_flight_tasks_survive_a_restart_over_a_durable_backend() {
 /// be a defect is the engine papering over it, so the assertion is that the read-back is empty.
 #[test]
 fn the_ram_default_loses_every_in_flight_task_and_the_registry_says_so() {
-    let store = ram_default();
     {
-        let h1 = process_one(store.clone());
+        let h1 = process_one(ram_default());
         assert_eq!(h1.reg.len(), 2, "process 1 holds both tasks IN RAM");
     }
-    let (h2, rehydrated) = restart_and_restore(store.clone());
+    // Process 2 opens the RAM default the way a restarted process does: a NEW one. That is what
+    // makes this store ephemeral — the map dies with the process, not with the handle — so a
+    // restart has to be modelled as a fresh store here, exactly as the durable case models it by
+    // reopening the same file.
+    let (h2, rehydrated) = restart_and_restore(ram_default());
     let reg2 = &h2.reg;
     assert_eq!(
         rehydrated,
