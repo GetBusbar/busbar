@@ -1677,8 +1677,16 @@ impl Units for VoiceUnit<'_> {
             // drawn down by the whole report. Nothing located is `None` and not a zero, because the
             // two are different rows of the settlement table.
             located: Some(self.usage.total()).filter(|total| *total > 0),
-            // What the kernel counted while the unit ran. The floor is evidence, never a charge.
-            accrued_floor: self.accrued.load(Ordering::Acquire),
+            // What the kernel counted while the unit ran, IN THE UNIT OF THE CLASS IT IS COUNTED
+            // UNDER. The counter is milliseconds of uplink audio; the class the plane declares for
+            // the audio a turn takes in is denominated in seconds, and the label is what says which
+            // rate a figure is read at. Reported verbatim, the one row of the settlement table that
+            // reads the floor settled a turn of audio at a thousand times its duration — the same
+            // mismatch the metered lines already meet at the plane's own boundary, met here too so
+            // the two readings of one quantity are in one unit.
+            //
+            // The floor is evidence, never a charge.
+            accrued_floor: meta::audio_seconds_in(self.accrued.load(Ordering::Acquire)),
             locator_required: false,
             // DERIVED FROM THE ENDING THE PLANE SEALED, as it is on every other plane, rather than
             // written here as a constant no. This is the row that decides whether a stream that
@@ -1691,7 +1699,17 @@ impl Units for VoiceUnit<'_> {
             variance: None,
             lane_mismatch: None,
             settle_record_lost: false,
-            class: Some(meta::CLASS_AUDIO_TOKENS_OUT),
+            // THE CLASS THE FLOOR ABOVE IS COUNTED UNDER — the plane's one inbound-duration class,
+            // read back off the declaration by the same selector `TurnUsage::figure` uses, so a
+            // rename in the plane leaves this `None` rather than labelling the figure with a class
+            // nobody declares. It used to name the EMITTED-AUDIO class, which was wrong twice over:
+            // wrong direction, because what the kernel counts here is the audio that came IN, and
+            // wrong unit, because that class is tokens and this figure is a duration.
+            //
+            // The located figure beside it spans every class the plane declares, and the exit path
+            // posts it as the settled amount rather than pricing it through this label; what the
+            // label is for is saying what the kernel's own counting was OF.
+            class: declared_class("audio_seconds_in"),
             // A handshake reaches no upstream candidate, which is what makes it draw no request
             // slot. Every other shape of unit on this plane does.
             upstream_candidate: !self.shape.is_handshake(),
@@ -3277,6 +3295,54 @@ mod tests {
             usage.total(),
             "a completed turn posts what it metered, not what it drew the lease at"
         );
+    }
+
+    /// THE KERNEL'S OWN FLOOR IS THE AUDIO THAT CAME IN, IN THE UNIT ITS CLASS IS DENOMINATED IN.
+    ///
+    /// The floor is what the one settlement row that reads it posts, so its unit and its label are
+    /// money. It counts uplink milliseconds and the class the plane declares for uplink audio is in
+    /// seconds: reported verbatim it is a thousand times the duration, and reported under the
+    /// emitted-audio token class it is a duration priced at a token rate, in the wrong direction.
+    #[test]
+    fn the_floor_is_inbound_audio_in_the_declared_classs_own_unit() {
+        use busbar_kernel::teller::settle_amount;
+
+        let node = priced_node(serviceable());
+        let kernel = Kernel::new();
+        // Two and a half seconds of uplink audio, and no report from the upstream at all: the shape
+        // that reaches the floor row.
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
+                audio_ms_in: 2_500,
+                ..TurnUsage::default()
+            });
+        let _ = run(&kernel, &unit);
+        let evidence = unit.evidence(&ctx(1));
+        assert_eq!(
+            evidence.accrued_floor, 3,
+            "2_500 ms is three seconds of billable audio, not 2_500 of anything"
+        );
+        let class = evidence.class.expect("the plane still declares the class");
+        assert_ne!(
+            class,
+            meta::CLASS_AUDIO_TOKENS_OUT,
+            "what the kernel counted is not the audio the turn emitted"
+        );
+        assert!(
+            <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
+                .iter()
+                .any(|decl| decl.key == class
+                    && decl.direction == busbar_contract::ids::ClassDirection::Input),
+            "and the class it is counted under is one the plane declares, on the inbound side"
+        );
+        // The floor row: a live end that is not a completion with nothing located posts the floor.
+        let end = Outcome::Refused(busbar_caps::StepName::Route, ReasonCode::DeadlineExceeded);
+        let floor_only = Evidence {
+            located: None,
+            ..evidence
+        };
+        assert_eq!(settle_amount(&end, &floor_only).0, 3);
     }
 
     /// A STREAM THAT ENDED ON AN ERROR BILLS NOTHING, even with a figure located.
