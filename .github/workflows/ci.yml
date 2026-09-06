@@ -1432,17 +1432,35 @@ jobs:
       # rather than re-recorded there (a second recording would need a second release build and
       # could disagree with the one the oracle diffed). `if: always()` so a replay divergence above
       # does not withhold the recording: "differs from 1.5.5" and "violates the spec" are two
-      # independent facts about the commit. The two busbar/mock logs are left out: the validator
-      # reads only the per-cell bodies, the ledger and the metadata.
+      # independent facts about the commit.
+      #
+      # THE PATH LIST IS AN ALLOW-LIST, and that is a secrets decision, not tidiness. `raw/` is the
+      # PRE-NORMALISATION forensic tree: it holds the bodies exactly as they came off the wire, the
+      # per-cell working directories (config.yaml with the generated signing key, the admin token),
+      # the script-cell logs, and the admin key-mint responses whose `.token` is a live `bbk_…`
+      # virtual key. Uploading that whole tree published minted key material to an artifact any
+      # reader of the run can download, for seven days, on every commit. Normalisation is what
+      # strips those; `cells/` is the post-normalisation view and is safe by construction.
+      #
+      # It cannot simply be dropped, though: testing/llm-conformance/validate.py PREFERS the raw
+      # wire bytes over the normalized cell (Recording.response_bytes -> raw/body, plus raw/headers
+      # and raw/request.body), because judging a normalized body against a vendor schema judges the
+      # normalizer. Excluding raw/ outright would silently downgrade the conformance verdict to the
+      # normalized view rather than the wire. So exactly the three files it reads are carried, and
+      # only for `llm__` cells — the only ones it opens. Everything else in raw/, including every
+      # admin-plane cell, stays on the runner.
       - name: Upload the candidate recording (consumed by llm-conformance)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: shadow-oracle-candidate-recording
           path: |
-            target/oracle/recordings/candidate
-            !target/oracle/recordings/candidate/busbar.log
-            !target/oracle/recordings/candidate/mock.log
+            target/oracle/recordings/candidate/cells
+            target/oracle/recordings/candidate/ledger.tsv
+            target/oracle/recordings/candidate/meta.json
+            target/oracle/recordings/candidate/raw/llm__*/body
+            target/oracle/recordings/candidate/raw/llm__*/headers
+            target/oracle/recordings/candidate/raw/llm__*/request.body
           if-no-files-found: warn
           retention-days: 7
 
