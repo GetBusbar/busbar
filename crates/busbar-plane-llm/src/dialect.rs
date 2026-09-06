@@ -29,6 +29,14 @@ pub struct Dialect {
     /// Four dialects carry it in the body, as a pointer. Two carry it in the request target, as a
     /// segment of the matched path pattern.
     pub model_location: Location,
+    /// What in the request TARGET says the client asked for a streamed answer, if this dialect
+    /// says it there rather than in the body.
+    ///
+    /// Four of the six carry the intent as a body member and the codec's own reader reads it.
+    /// The two that carry it in the target have a distinct action for the streamed form, and a
+    /// reader handed only the body cannot see it: their bodies are identical either way. `None`
+    /// for the four, because for them the body is the whole of the answer.
+    pub stream_marker: Option<&'static str>,
     /// Where the request may carry the client's own response ceiling, in precedence order.
     ///
     /// One place for five of the six. Two for the dialect that accepts the ceiling under either of
@@ -68,6 +76,7 @@ pub const DIALECTS: &[Dialect] = &[
     Dialect {
         name: "anthropic",
         model_location: MODEL,
+        stream_marker: None,
         max_response_pointers: &["/max_tokens"],
         input_pointer: "/messages",
         tokens_in_pointer: "/usage/input_tokens",
@@ -80,6 +89,7 @@ pub const DIALECTS: &[Dialect] = &[
     Dialect {
         name: "openai",
         model_location: MODEL,
+        stream_marker: None,
         // This dialect accepts a newer spelling as well, and both are declared. The reasoning
         // models of this vendor refuse the older key outright, so a client of one of them sends
         // only the newer; naming just the older was a hold sized off a key that never arrived.
@@ -97,6 +107,8 @@ pub const DIALECTS: &[Dialect] = &[
         name: "gemini",
         // The model is in the request target, not the body.
         model_location: MODEL_IN_PATH,
+        // And so is the streaming intent: a distinct action on the same model surface.
+        stream_marker: Some(":streamGenerateContent"),
         max_response_pointers: &["/generationConfig/maxOutputTokens"],
         input_pointer: "/contents",
         tokens_in_pointer: "/usageMetadata/promptTokenCount",
@@ -110,6 +122,8 @@ pub const DIALECTS: &[Dialect] = &[
         name: "bedrock",
         // The model is in the request target, not the body.
         model_location: MODEL_IN_PATH,
+        // And so is the streaming intent: a distinct turn action on the same model surface.
+        stream_marker: Some("/converse-stream"),
         max_response_pointers: &["/inferenceConfig/maxTokens"],
         input_pointer: "/messages",
         tokens_in_pointer: "/usage/inputTokens",
@@ -122,6 +136,7 @@ pub const DIALECTS: &[Dialect] = &[
     Dialect {
         name: "responses",
         model_location: MODEL,
+        stream_marker: None,
         max_response_pointers: &["/max_output_tokens"],
         input_pointer: "/input",
         tokens_in_pointer: "/usage/input_tokens",
@@ -134,6 +149,7 @@ pub const DIALECTS: &[Dialect] = &[
     Dialect {
         name: "cohere",
         model_location: MODEL,
+        stream_marker: None,
         max_response_pointers: &["/max_tokens"],
         input_pointer: "/messages",
         tokens_in_pointer: "/usage/tokens/input_tokens",

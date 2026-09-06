@@ -465,13 +465,16 @@ impl Plane for LlmPlane {
                 let _ = facts.set(meta::FACT_MODEL, FactValue::Str(model));
             }
         }
+        // Whether the client asked for a streamed answer, read where THIS dialect says it. Four of
+        // the six say it in the body and the codec's own reader has already read it; the two that
+        // carry the model in the request target carry the intent there too, as a distinct action,
+        // and their two bodies are identical. Reading only the body reported "no stream" for every
+        // request of those two — and the hop below picks the upstream's non-streaming action off
+        // this fact, so a client that asked to be streamed to was answered with one whole body.
         let _ = facts.set(
             meta::FACT_STREAM,
             FactValue::Bool(
-                value
-                    .get("stream")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false),
+                request.stream || d.stream_marker.is_some_and(|marker| path.contains(marker)),
             ),
         );
         // The response ceiling the client asked for, as evidence. It is a fact, never a decision:
