@@ -28,7 +28,7 @@
 //! them into the unit's own record would mean either rewriting that record — which the whole design
 //! exists to prevent — or waiting to write it until nothing further could happen, which is never.
 
-use crate::record::{OpClassId, Subject};
+use crate::record::{subject_tag, subject_value, OpClassId, Subject};
 
 /// Which class of amendment this is.
 ///
@@ -235,6 +235,14 @@ impl AmendChain {
     /// Length-prefixed, like the fixed audit record and unlike the previous release's chain: nothing
     /// here is already on anybody's disk, so the framing is chosen for the property rather than
     /// inherited for compatibility.
+    ///
+    /// The subject enters as the same two frozen fields the audit record digests — a tag naming the
+    /// kind of subject, then its identifier — rather than as whatever the derived `Debug` prints.
+    /// A derive is not a wire format: renaming a subject variant, or a future compiler rendering an
+    /// enumeration differently, would move every sealed amendment hash, and an amendment is a
+    /// correction to money, so a moved hash makes the correction read as tampered. Two fields rather
+    /// than one for the reason the record gives: a principal whose pseudonym happened to read as
+    /// "node" must not digest as a node.
     pub fn digest_of(amendment: &Amendment) -> String {
         let mut d = crate::legacy::Digest::new(crate::legacy::Framing::LengthPrefixed);
         d.text(&amendment.prev_hash);
@@ -244,7 +252,8 @@ impl AmendChain {
             AmendBody::Access(a) => {
                 d.text(a.reader.as_str());
                 d.text(&a.name);
-                d.text(&format!("{:?}", a.subject));
+                d.text(subject_tag(&a.subject));
+                d.text(&subject_value(&a.subject));
                 d.text(a.op_class.as_str());
                 d.num(a.fields.len() as u64);
                 for field in &a.fields {
@@ -254,7 +263,8 @@ impl AmendChain {
             }
             AmendBody::Adjust(a) => {
                 d.text(&a.amends_hash);
-                d.text(&format!("{:?}", a.subject));
+                d.text(subject_tag(&a.subject));
+                d.text(&subject_value(&a.subject));
                 d.text(&a.was.to_string());
                 d.text(&a.now.to_string());
                 d.text(&a.authorised_by);

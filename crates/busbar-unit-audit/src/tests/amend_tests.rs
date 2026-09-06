@@ -183,6 +183,86 @@ fn a_chain_resumed_from_a_persisted_tail_continues_it() {
     assert!(AmendChain::verify(&[first, second]).is_ok());
 }
 
+/// EVERY SUBJECT TAG THE AMENDMENT DIGEST SEALS IS SPELLED OUT, not derived.
+///
+/// The digested text for the subject used to be whatever the derived `Debug` printed, which made
+/// every sealed amendment hostage to a rename: an amendment is a correction to money, and a
+/// correction that reports itself tampered because somebody renamed a variant is worse than no
+/// correction at all. The spellings live in the production file now; this pins each one, so a
+/// rename shows up here — as a difference somebody has to look at — instead of in the hash.
+#[test]
+fn the_frozen_subject_tags_are_the_ones_the_amendment_digest_seals() {
+    use crate::record::{subject_tag, subject_value};
+
+    assert_eq!(
+        subject_tag(&Subject::PrincipalId("pseudonym-1".into())),
+        "principal"
+    );
+    assert_eq!(subject_tag(&Subject::Arrival), "arrival");
+    assert_eq!(subject_tag(&Subject::Node(7)), "node");
+    assert_eq!(subject_tag(&Subject::Aggregate), "aggregate");
+
+    // The value is the second half of the pair, and it is what stops a principal whose pseudonym
+    // reads as another subject's tag from digesting as that subject.
+    assert_eq!(
+        subject_value(&Subject::PrincipalId("pseudonym-1".into())),
+        "pseudonym-1"
+    );
+    assert_eq!(subject_value(&Subject::Arrival), "");
+    assert_eq!(subject_value(&Subject::Node(7)), "7");
+    assert_eq!(subject_value(&Subject::Aggregate), "");
+}
+
+/// A PRINCIPAL NAMED AFTER ANOTHER SUBJECT'S TAG STILL DIGESTS AS A PRINCIPAL.
+///
+/// The tag and the value are two digested fields rather than one joined string, which is the whole
+/// reason this cannot collide.
+#[test]
+fn a_principal_pseudonym_that_reads_as_a_node_does_not_digest_as_one() {
+    let mut one = AmendChain::new();
+    let mut other = AmendChain::new();
+    let as_principal = one.append(
+        correction(
+            "e",
+            Subject::PrincipalId("7".into()),
+            10,
+            5,
+            "operator",
+            "why",
+            1,
+        ),
+        &token(),
+    );
+    let as_node = other.append(
+        correction("e", Subject::Node(7), 10, 5, "operator", "why", 1),
+        &token(),
+    );
+    assert_ne!(as_principal.hash, as_node.hash);
+}
+
+/// THE SEALED AMENDMENT DIGEST IS A FROZEN VALUE, not whatever today's encoder happens to produce.
+///
+/// Every amendment a deployment has written is verified by recomputing this digest, so a change
+/// that moves it makes a stored correction report itself TAMPERED. The hex below was produced by an
+/// earlier build over the fixture in this test; it is a value to preserve, never one to re-capture
+/// from a failing run. Moving it needs a migration for anything already on disk, not an edit here.
+#[test]
+fn the_sealed_digest_of_an_amendment_is_the_frozen_hex() {
+    let mut chain = AmendChain::new();
+    let access = chain.append(an_access(), &token());
+    let adjust = chain.append(a_correction(), &token());
+    assert_eq!(
+        access.hash, "2a9ac567b083d3fc25768d98445737fb2aee7a20db291930467a7abbfa83944b",
+        "the amendment digest MOVED. Every stored correction now reports itself tampered. Restore \
+         the encoding; do not re-capture this constant."
+    );
+    assert_eq!(
+        adjust.hash, "56addfe3f65d8c5fa750b61cbec3fc0fb987c6510238246757660b4638d0a2bc",
+        "the amendment digest MOVED. Every stored correction now reports itself tampered. Restore \
+         the encoding; do not re-capture this constant."
+    );
+}
+
 #[test]
 fn the_two_class_names_are_the_two_the_journal_knows() {
     assert_eq!(AmendClass::Access.as_str(), "access");

@@ -676,7 +676,8 @@ pub(crate) fn quantity_source_tag(source: &QuantitySource) -> String {
     }
 }
 
-fn subject_tag(subject: &Subject) -> &'static str {
+/// The frozen text for whose figure or content an entry concerns.
+pub(crate) fn subject_tag(subject: &Subject) -> &'static str {
     match subject {
         Subject::PrincipalId(_) => "principal",
         Subject::Arrival => "arrival",
@@ -690,7 +691,7 @@ fn subject_tag(subject: &Subject) -> &'static str {
 /// Two fields — a tag and a value — rather than one, so that a principal whose pseudonym happened to
 /// read as "node" could not be confused with a node. The node's number is IN the value, because
 /// leaving it out would let two nodes' records digest identically.
-fn subject_value(subject: &Subject) -> String {
+pub(crate) fn subject_value(subject: &Subject) -> String {
     match subject {
         Subject::PrincipalId(p) => p.clone(),
         Subject::Arrival | Subject::Aggregate => String::new(),
