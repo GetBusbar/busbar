@@ -364,12 +364,14 @@
     "crates/busbar-plane-a2a/src"
    ],
    "tree_hash": "6e4248149e6ae8af8c4a6a179ba702b39841ef75bbc19d5144af5bc0e0494760",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1
+   },
+   "report": "pass 2 fresh eyes: public agent card refused at authenticate (fixed 2f16ec85); lib/facts/meta/records and tests unread",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-a2a/src/tests"
@@ -425,13 +427,15 @@
    "paths": [
     "crates/busbar-plane-mcp/src"
    ],
-   "tree_hash": "ddc14d0648c613a231c20de3676035e052a8783650fc1e42f001c9940a62a644",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "6cebc296f647d07fb7ff5737035c29b561d638216be1b83dd2cdeea59f7b7c56",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2
+   },
+   "report": "pass 2 fresh eyes: decode_response had no sender guard (fixed 16055210), claimed metadata route waited forever (fixed 87e49035); records.rs and tests unread; server notices discarded and non-object success discriminator noted",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-mcp/src/tests"
