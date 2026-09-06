@@ -677,6 +677,7 @@ http.crosscut|413|anthropic
 http.crosscut|413|api-prefix
 http.crosscut|413|openai
 http.crosscut|413|openai-unauth
+http.crosscut|413|gemini-path
 http.crosscut|admin-outside-prefix|admin
 http.crosscut|admin-unknown|admin
 http.crosscut|admin-wrong-method|admin
