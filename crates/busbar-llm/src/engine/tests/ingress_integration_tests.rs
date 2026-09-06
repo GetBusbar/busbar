@@ -2118,10 +2118,9 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     let server = MockServer::new(state.clone()).await;
     let store = StdArc::new(MemoryStore::new());
     let gov = StdArc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
-    let auth_cfg =
-        busbar_substrate::config::auth::AuthCfg::with_chain(vec![busbar_substrate::config::auth::AuthChainEntry::bare(
-            "test-groups-module",
-        )]);
+    let auth_cfg = busbar_substrate::config::auth::AuthCfg::with_chain(vec![
+        busbar_substrate::config::auth::AuthChainEntry::bare("test-groups-module"),
+    ]);
     let mut app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -5915,8 +5914,8 @@ async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
 async fn governed_limit_router(
     over: &'static str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use busbar_substrate::config::groups::{LimitCfg, LimitMetric, LimitWindow};
     use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_substrate::config::groups::{LimitCfg, LimitMetric, LimitWindow};
     let store = StdArc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],

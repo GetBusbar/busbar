@@ -918,10 +918,9 @@ async fn test_metrics_requires_auth_in_chain_mode() {
     metrics::counter!(busbar_core::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
 
     let token = "grp:metrics-scrapers";
-    let auth_cfg =
-        busbar_substrate::config::auth::AuthCfg::with_chain(vec![busbar_substrate::config::auth::AuthChainEntry::bare(
-            "test-groups-module",
-        )]);
+    let auth_cfg = busbar_substrate::config::auth::AuthCfg::with_chain(vec![
+        busbar_substrate::config::auth::AuthChainEntry::bare("test-groups-module"),
+    ]);
     let app = TestApp::new()
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
@@ -2382,7 +2381,9 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
     });
 
     let auth_cfg_token =
-        AuthCfg::with_chain(vec![busbar_substrate::config::auth::AuthChainEntry::bare("keys")]);
+        AuthCfg::with_chain(vec![busbar_substrate::config::auth::AuthChainEntry::bare(
+            "keys",
+        )]);
     let app_token = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -3581,7 +3582,8 @@ mod disposition_matrix_tests {
                 listen: "0.0.0.0:8080".into(),
                 public_url: None,
                 tls: None,
-                admin_listen: busbar_substrate::config::sections::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
+                admin_listen: busbar_substrate::config::sections::DEFAULT_ADMIN_LISTEN_ADDR
+                    .to_string(),
                 admin_tls: None,
                 auth: None,
                 admin_auth: vec!["admin-tokens".to_string()],
@@ -3936,7 +3938,10 @@ async fn test_exhaustion_least_bad_selects_soonest() {
             .err(5),
         )
         .pool("leastbad", &[(0, 1), (1, 1)])
-        .on_exhausted("leastbad", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted(
+            "leastbad",
+            busbar_substrate::config::pools::OnExhausted::LeastBad,
+        )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -4023,7 +4028,10 @@ async fn test_forward_once_records_success_and_spends_budget() {
             .budget(2), // limited lane: 2 lifetime requests remaining
         )
         .pool("leastbad", &[(0, 1)])
-        .on_exhausted("leastbad", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted(
+            "leastbad",
+            busbar_substrate::config::pools::OnExhausted::LeastBad,
+        )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -4175,7 +4183,10 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
                 .err(5),
             )
             .pool("leastbad", &[(0, 1)])
-            .on_exhausted("leastbad", busbar_substrate::config::pools::OnExhausted::LeastBad)
+            .on_exhausted(
+                "leastbad",
+                busbar_substrate::config::pools::OnExhausted::LeastBad,
+            )
             .build();
         let (_host, _rt) = crate::engine::test_host_rt(&app);
 

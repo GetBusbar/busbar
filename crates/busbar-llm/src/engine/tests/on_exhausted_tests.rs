@@ -129,7 +129,9 @@ fn chat_body(pool: &str) -> Vec<u8> {
 // Pool-hook facade (money-path Phase 3-4 C): the per-pool `failover:` override is a NEUTRAL pool spec
 // now (the fixture lowers it through `PlaneBuildInput` → `build_runtime`), so this returns the config the
 // `.pool_failover(...)` setter takes instead of a hand-built `PoolRuntime`.
-fn pool_runtime_with_exclusions(excl: Option<Vec<String>>) -> busbar_substrate::config::pools::FailoverCfg {
+fn pool_runtime_with_exclusions(
+    excl: Option<Vec<String>>,
+) -> busbar_substrate::config::pools::FailoverCfg {
     busbar_substrate::config::pools::FailoverCfg {
         timeout_secs: 120,
         exclusions: excl,
@@ -1493,7 +1495,10 @@ async fn queue_times_out_to_503_when_capacity_never_frees() {
         .lane(saturated_lane("busy", &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 300 })
+        .on_exhausted(
+            "p",
+            busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 300 },
+        )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -1614,7 +1619,10 @@ async fn queue_no_lost_wakeup_when_permit_freed_in_the_window() {
         .pool("p", &[(0, 1)])
         .failover(long_failover())
         // SHORT bound: if the freed-permit wake were lost, this would time out to 503 within 400ms.
-        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 400 })
+        .on_exhausted(
+            "p",
+            busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 400 },
+        )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 

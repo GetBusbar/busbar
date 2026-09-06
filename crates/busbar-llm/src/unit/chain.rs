@@ -342,7 +342,8 @@ mod rehearsal {
             // RELAY, not retry-until-exhausted: `least_bad` is the disposition that hands the client
             // the upstream's own answer when every lane is unhealthy, which is what makes this fixture
             // a FAILED TRANSFER (the destination answered, badly) rather than a pool-empty 503.
-            builder = builder.on_exhausted(POOL, busbar_substrate::config::pools::OnExhausted::LeastBad);
+            builder =
+                builder.on_exhausted(POOL, busbar_substrate::config::pools::OnExhausted::LeastBad);
         }
         let app = builder.build();
 

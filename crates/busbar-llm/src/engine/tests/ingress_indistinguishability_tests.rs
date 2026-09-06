@@ -1195,8 +1195,12 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
     let toggler = std::thread::spawn(move || {
-        let hi = busbar_substrate::config::limits::LimitsResolved::with_request_body_max_bytes(CHUNK1_LEN * 10);
-        let lo = busbar_substrate::config::limits::LimitsResolved::with_request_body_max_bytes(CHUNK1_LEN / 2);
+        let hi = busbar_substrate::config::limits::LimitsResolved::with_request_body_max_bytes(
+            CHUNK1_LEN * 10,
+        );
+        let lo = busbar_substrate::config::limits::LimitsResolved::with_request_body_max_bytes(
+            CHUNK1_LEN / 2,
+        );
         while !stop2.load(Ordering::Relaxed) {
             busbar_core::limits::install(&hi);
             busbar_core::limits::install(&lo);
@@ -2126,7 +2130,10 @@ async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
             .err(5),
         )
         .pool("leastbad", &[(0, 1)])
-        .on_exhausted("leastbad", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted(
+            "leastbad",
+            busbar_substrate::config::pools::OnExhausted::LeastBad,
+        )
         .build();
 
     // `n: 1` (NOT >1) on purpose: this test is about EXTRA-KEY STRIPPING on the degraded path, not
@@ -2236,7 +2243,10 @@ async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
             .err(5),
         )
         .pool("leastbad", &[(0, 1)])
-        .on_exhausted("leastbad", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted(
+            "leastbad",
+            busbar_substrate::config::pools::OnExhausted::LeastBad,
+        )
         .build();
 
     let req_body = serde_json::to_vec(&json!({
@@ -2329,7 +2339,10 @@ async fn test_forward_once_bedrock_error_relays_amzn_headers() {
             .err(5),
         )
         .pool("leastbad", &[(0, 1)])
-        .on_exhausted("leastbad", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted(
+            "leastbad",
+            busbar_substrate::config::pools::OnExhausted::LeastBad,
+        )
         .build();
 
     let resp = forward_with_pool(
@@ -2875,7 +2888,10 @@ async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
             .err(5),
         )
         .pool("leastbad-g", &[(0, 1)])
-        .on_exhausted("leastbad-g", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted(
+            "leastbad-g",
+            busbar_substrate::config::pools::OnExhausted::LeastBad,
+        )
         .build();
     let body = serde_json::to_vec(&json!({
         "model": "leastbad-g",
