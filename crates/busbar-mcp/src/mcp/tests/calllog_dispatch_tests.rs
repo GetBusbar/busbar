@@ -40,14 +40,19 @@
 //! position from a sibling cannot make a green.
 
 use super::upstream_support::{
-    call_as, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer,
+    call_as, exchanging_server, gov_with_scopes, key_with_scopes, mcp_cfg, Behaviour, Peer,
 };
+use crate::mcp::client::catalogue::LiveSightings;
+use crate::mcp::client::issue::issue;
+use crate::mcp::client::verb::UpstreamVerb;
 use crate::mcp::test_engine::*;
+use crate::mcp::upstream::authorise_verb;
 use crate::record::{McpCallRecord, KIND_CALL};
 use crate::testkit::TestAppMcpExt;
 use busbar_api::{PlaneSelector, Store};
 use busbar_substrate::audit::vocab::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
 use busbar_substrate::plane::calllog::CallRecorded;
+use busbar_substrate::trust::validate::Generations;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -439,6 +444,103 @@ async fn a_refused_tools_call_lands_a_durable_record_carrying_the_refusal_reason
     assert!(
         !records[0].reason.is_empty(),
         "the refusal must carry a stable, greppable reason token: {:?}",
+        records[0]
+    );
+    engine()
+        .verify_call_rows(&as_call_rows(&records))
+        .expect("the persisted chain must verify");
+}
+
+/// A CALL THE SSRF GUARD STOPPED NEVER WENT OUT, AND THE ROW MUST SAY SO.
+///
+/// `outcome` has exactly one meaning — `dispatched` means THE CALL WENT OUT, `refused` means it did
+/// not (`busbar_substrate::audit::vocab`) — and that meaning is the whole forensic value of the
+/// field. The client leg's send arm recorded EVERY `TransportError` as `dispatched` /
+/// `upstream_failed`, including the two that mean nothing left busbar: `Refused` (the dispatch-time
+/// SSRF guard) and `Supervision` (a supervised child's breaker refusing before any I/O). An
+/// investigator reading the chain for "what did busbar send to this address" was told busbar sent
+/// something to a cloud-metadata endpoint it had in fact blocked.
+///
+/// Driven at the VERB leg because that is where the send arm lives, and with a destination the
+/// guard refuses before a socket is opened — so `peer.mcp_hits()` is the independent witness that
+/// the row's own word is wrong rather than the test's.
+#[tokio::test]
+async fn a_call_the_ssrf_guard_blocked_is_recorded_as_refused_and_not_as_dispatched() {
+    let _serial = CALLS_GLOBAL.lock().await;
+    metrics_init();
+    let (_file, cfg) = durable_cfg("ssrf-refused");
+    let principal = "calllog-ssrf-refused-principal";
+
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&peer, SUBJECT))
+        .build();
+    let caller = key_with_scopes(principal, &[("mcp_server", "fs")]);
+
+    let entry = crate::mcp::runtime(&app)
+        .catalogue
+        .server("fs")
+        .expect("the registration under test is in the built snapshot")
+        .clone();
+    let sightings = crate::mcp::runtime(&app).sightings.load();
+    let sighting = LiveSightings::of(&sightings).sighting_for("fs");
+    let mut auth = authorise_verb(
+        &entry,
+        &sighting,
+        Some(&Arc::new(caller)),
+        Generations::at_admission(crate::mcp::runtime(&app).catalogue.generation()),
+        busbar_substrate::store::now(),
+    )
+    .expect("a caller granted the server is admitted");
+    // THE DESTINATION IS MOVED AFTER THE GATE, which is the one thing this test needs and the only
+    // way to reach the guard's refusal from the send arm: the gate does not judge the URL, the
+    // dispatch does. `169.254.169.254` is refused whatever `allow_private` says.
+    auth.url = "http://169.254.169.254/mcp".to_string();
+
+    {
+        let store = open_plugin(&cfg);
+        engine().aim_call_sink(Some(
+            busbar_substrate::plane::store::PlaneStoreView::narrow(store),
+        ));
+    }
+
+    let err = issue(
+        &crate::mcp::runtime(&app).pool,
+        &auth,
+        &UpstreamVerb::PromptsList,
+        11,
+        &engine_host(&app),
+    )
+    .await
+    .expect_err("a cloud-metadata destination is refused by the dispatch-time guard");
+    assert!(
+        err.contains("169.254.169.254"),
+        "the refusal names the address it refused: {err}"
+    );
+    assert_eq!(
+        peer.mcp_hits(),
+        0,
+        "the guard refuses BEFORE a socket is opened, so nothing left busbar"
+    );
+
+    engine().aim_call_sink(None);
+
+    let reopened = open_plugin(&cfg);
+    let records = list_mcp_calls(&reopened, principal);
+    assert_eq!(
+        records.len(),
+        1,
+        "a blocked call is evidence and must be recorded; got {records:?}"
+    );
+    assert_eq!(
+        records[0].outcome, OUTCOME_REFUSED,
+        "nothing left busbar, so the row may not say `dispatched`: {:?}",
+        records[0]
+    );
+    assert_ne!(
+        records[0].reason, REASON_UPSTREAM_FAILED,
+        "there was no upstream failure — there was no upstream contact: {:?}",
         records[0]
     );
     engine()

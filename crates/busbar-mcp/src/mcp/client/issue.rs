@@ -53,6 +53,42 @@ use super::wire::WireLeg;
 use crate::mcp::upstream::Authorised;
 use busbar_substrate::audit::vocab::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
 
+/// WHICH CALL-LOG OUTCOME A FAILED SEND IS, and it is decided from the transport's OWN
+/// classification rather than from which arm of `issue` the failure arrived at.
+///
+/// `outcome` has exactly one meaning — `dispatched` means THE CALL WENT OUT and `refused` means it
+/// did not (`busbar_substrate::audit::vocab`), which is the whole forensic value of the field. The
+/// two arms below used to answer this by position: the request arm called every failure
+/// `dispatched`/`upstream_failed`, so a destination the SSRF guard blocked and a child the breaker
+/// refused to start were both recorded as calls busbar sent to an upstream, and the notification arm
+/// called every failure `refused`, so a write that may well have landed was recorded as one that
+/// never left. Two arms of one function disagreeing about the same error type is how a chain an
+/// investigator reads stops meaning anything.
+///
+/// [`super::wire::TransportError`] already draws the line this needs, and draws it for the breaker's
+/// sake: three of its four variants say NOTHING LEFT BUSBAR in their own documentation, and only
+/// `Io` is the ambiguous one where the peer may have received and acted on the request.
+fn classify_send_failure(
+    error: &super::wire::TransportError,
+    reason: &str,
+) -> (&'static str, String) {
+    use super::wire::TransportError;
+    match error {
+        // The dispatch-time SSRF guard, busbar's own supervision policy, and a peer that was never
+        // reached: no byte of the request left busbar, so there is no upstream to have failed. The
+        // refusal's own sentence is kept, because a refused row whose reason is a stable vocab word
+        // tells an operator nothing about WHICH refusal it was.
+        TransportError::Refused(_)
+        | TransportError::Supervision(_)
+        | TransportError::Unreachable(_) => (OUTCOME_REFUSED, reason.to_string()),
+        // AMBIGUOUS, AND RECORDED AS THE WORSE CASE. A timeout after connect or a reset mid-response
+        // means the request may have been received and acted on, which is a dispatch whatever came
+        // back — the same reading the failover seam's `Stage` rule takes when it refuses to reroute
+        // one.
+        TransportError::Io(_) => (OUTCOME_DISPATCHED, REASON_UPSTREAM_FAILED.to_string()),
+    }
+}
+
 /// WHAT ONE ISSUED VERB PRODUCED.
 ///
 /// A notification has no answer and says so with its own arm rather than with an empty `Value`,
@@ -201,7 +237,8 @@ pub(crate) async fn issue(
             }
             Err(e) => {
                 let reason = e.to_string();
-                record(OUTCOME_REFUSED, reason.clone());
+                let (outcome, logged) = classify_send_failure(&e, &reason);
+                record(outcome, logged);
                 Err(reason)
             }
         };
@@ -211,7 +248,8 @@ pub(crate) async fn issue(
         Ok(r) => r,
         Err(e) => {
             let reason = e.to_string();
-            record(OUTCOME_DISPATCHED, REASON_UPSTREAM_FAILED.to_string());
+            let (outcome, logged) = classify_send_failure(&e, &reason);
+            record(outcome, logged);
             return Err(reason);
         }
     };
