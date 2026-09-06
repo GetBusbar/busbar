@@ -30,7 +30,7 @@ use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, Tra
 
 use crate::facts as f;
 use crate::jsonrpc;
-use crate::meta::{CLASS_BYTES, CLASS_TOOL_CALLS};
+use crate::meta::{self, CLASS_BYTES, CLASS_TOOL_CALLS};
 use crate::ops;
 use crate::records as rec;
 use crate::McpPlane;
@@ -266,6 +266,18 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
             jsonrpc::CODE_INTERNAL,
             "the request could not be served at this time",
         ),
+    }
+}
+
+/// THE nested destination a sampling request reaches, named ONCE.
+///
+/// `verify` seals a destination and `route` then dials one, and a unit routed somewhere it was not
+/// verified for is the failure this seam exists to make impossible. Two hand-written copies of the
+/// same pair are two things that can drift; one expression cannot.
+const fn sampling_destination() -> DestinationFacts {
+    DestinationFacts::NestedPlane {
+        plane: meta::SAMPLING_PLANE,
+        op: meta::SAMPLING_OP,
     }
 }
 
@@ -631,12 +643,9 @@ impl Plane for McpPlane {
                 op: rec::OP_PUT,
             },
             // A server asking for a completion is answered by the OTHER plane, one level down. This
-            // is the one nested destination this plane names, and it names it by a key its claim
-            // configuration declares rather than by reaching for that plane directly.
-            ops::OP_SAMPLING => DestinationFacts::NestedPlane {
-                plane: "llm",
-                op: busbar_contract::ids::OpClassId::new("chat"),
-            },
+            // is the one nested destination this plane names, and it is written once so that what
+            // this step seals and what `route` dials are the same expression, not two agreeing ones.
+            ops::OP_SAMPLING => sampling_destination(),
             // A server asking which roots it may work under is answered from configuration, which
             // this plane reads through its own settings records.
             ops::OP_ROOTS_LIST => DestinationFacts::PlaneRecord {
@@ -743,10 +752,7 @@ impl Plane for McpPlane {
             ops::OP_SAMPLING => {
                 leg(Self::record_leg(rec::SCHEMA_APPROVAL, rec::OP_REDEEM));
                 leg(Leg {
-                    destination: DestinationFacts::NestedPlane {
-                        plane: "llm",
-                        op: busbar_contract::ids::OpClassId::new("chat"),
-                    },
+                    destination: sampling_destination(),
                 });
             }
             ops::OP_ROOTS_LIST => leg(Self::record_leg(rec::SCHEMA_SETTINGS, rec::OP_GET)),
@@ -890,8 +896,28 @@ impl SessionPlane for McpPlane {
 
 #[cfg(test)]
 mod tests {
-    use super::{finish_of, member_of, refusal_render, Codec};
+    use super::{finish_of, member_of, refusal_render, sampling_destination, Codec};
+    use busbar_contract::dest::DestinationFacts;
     use busbar_contract::unit::{AbortBy, FailureReason, RefusalReason, Step, UnitEnd};
+
+    /// The nested destination a sampling request reaches is the declared pair, and it is the SAME
+    /// value on both steps -- `verify` seals it and `route` dials it out of one expression, so a
+    /// change to either constant moves both or neither.
+    #[test]
+    fn verify_and_route_reach_one_declared_sampling_destination() {
+        assert_eq!(
+            sampling_destination(),
+            DestinationFacts::NestedPlane {
+                plane: crate::meta::SAMPLING_PLANE,
+                op: crate::meta::SAMPLING_OP,
+            }
+        );
+        let DestinationFacts::NestedPlane { plane, op } = sampling_destination() else {
+            panic!("a sampling request is answered by another plane, not by anything else");
+        };
+        assert_eq!(plane, "llm");
+        assert_eq!(op.as_str(), "chat");
+    }
 
     /// Every closed refusal reason has an answer, and every answer is a code this plane may write.
     ///
