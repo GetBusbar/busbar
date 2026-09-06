@@ -224,8 +224,12 @@ impl ConfigView for ListenerView {
         None
     }
 
-    fn get_int(&self, _key: &str) -> Option<i64> {
-        None
+    fn get_int(&self, key: &str) -> Option<i64> {
+        // The one key answered, and it is answered because a transport that assembles a message
+        // before anything above it sees a byte has no other place to learn the ceiling. Every other
+        // key is still `None`: this is a limit the node states, not an opening onto configuration.
+        (key == MESSAGE_MAX_BYTES_KEY)
+            .then(|| i64::try_from(self.request_body_max_bytes).unwrap_or(i64::MAX))
     }
 
     fn get_bool(&self, _key: &str) -> Option<bool> {
