@@ -50,18 +50,45 @@ fn foreign_vendor_image_ref_never_corrupts_any_writer() {
 }
 
 /// A neutral base64 image projects to a real inline-image shape on every writer that supports
-/// images (no writer corrupts it).
+/// images, and no writer corrupts it.
+///
+/// The doc has always claimed EVERY writer; only the OpenAI one was ever read, so a writer that
+/// truncated or mangled the payload was caught for one dialect out of five. The same five writers
+/// the foreign-vendor test above sweeps are swept here: each must carry the payload verbatim (a
+/// neutral base64 image is native to all five), and none may leave a half-written block behind.
 #[test]
-fn base64_image_projects_or_drops_cleanly() {
+fn base64_image_projects_intact_on_every_writer() {
     let req = req_with_image(IrImageSource::Base64 {
         media_type: "image/png".to_string(),
         data: "QUJD".to_string(),
     });
-    // OpenAI emits a data URI carrying the base64 payload.
-    let o = OpenAiWriter.write_request(&req);
-    let s = serde_json::to_string(&o).unwrap();
-    assert!(
-        s.contains("QUJD"),
-        "base64 payload must survive to the OpenAI wire: {s}"
-    );
+    // Each dialect names the media type in its OWN wire word — Bedrock's Converse shape carries a
+    // bare `format` token where the others carry the MIME string — so the expected token is stated
+    // per writer rather than assumed uniform.
+    let gemini = GeminiWriter;
+    let bedrock = BedrockWriter;
+    let cohere = CohereWriter;
+    for (name, media_token, wire) in [
+        ("openai", "image/png", OpenAiWriter.write_request(&req)),
+        (
+            "anthropic",
+            "image/png",
+            anthropic_writer().write_request(&req),
+        ),
+        ("gemini", "image/png", gemini.write_request(&req)),
+        ("bedrock", "\"png\"", bedrock.write_request(&req)),
+        ("cohere", "image/png", cohere.write_request(&req)),
+    ] {
+        let s = serde_json::to_string(&wire).unwrap();
+        assert!(
+            s.contains("QUJD"),
+            "{name} writer must carry the base64 payload to the wire intact: {s}"
+        );
+        // The media type rides with the payload; a writer that kept the bytes but lost the type
+        // emits a block the far side cannot decode.
+        assert!(
+            s.contains(media_token),
+            "{name} writer must carry the image media type beside the payload: {s}"
+        );
+    }
 }
