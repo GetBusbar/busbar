@@ -99,6 +99,26 @@ pub trait SecretModule: Send + Sync + 'static {
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
     ) -> SecretResult<Vec<u8>>;
+
+    /// Resolve with the caller's ADVISORY deadline, in milliseconds from now (`None` = the caller
+    /// set no bound). The wire request has always carried this field and the dispatcher has always
+    /// dropped it on the floor, so a module that CAN bound its own upstream call — an HTTP vault
+    /// client, a socket to an agent — had no way to learn what bound to apply, and the engine's
+    /// deadline was enforced only by whatever timeout the engine itself wrapped the call in.
+    ///
+    /// Defaulted to [`resolve`](Self::resolve) so it is purely additive: a module that cannot bound
+    /// itself, or does not care, implements nothing and behaves exactly as before. The deadline is
+    /// ADVISORY — honoring it is a courtesy that lets the module fail fast with its own error rather
+    /// than be abandoned mid-call; it is never the only thing standing between the engine and a hung
+    /// module.
+    fn resolve_with_deadline(
+        &self,
+        settings: &serde_json::Map<String, serde_json::Value>,
+        deadline_ms: Option<u64>,
+    ) -> SecretResult<Vec<u8>> {
+        let _ = deadline_ms;
+        self.resolve(settings)
+    }
 }
 
 use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};

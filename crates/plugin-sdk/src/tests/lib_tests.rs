@@ -112,6 +112,64 @@ impl busbar_api::SecretModule for EchoSecret {
     }
 }
 
+/// A secret module that RECORDS the advisory deadline it was handed, so the test can prove the
+/// field survives the dispatch instead of being dropped there.
+#[derive(Default)]
+struct RecordingSecret(std::sync::Mutex<Option<Option<u64>>>);
+impl busbar_api::SecretModule for RecordingSecret {
+    fn resolve(
+        &self,
+        _settings: &serde_json::Map<String, serde_json::Value>,
+    ) -> busbar_api::SecretResult<Vec<u8>> {
+        Ok(b"no-deadline".to_vec())
+    }
+
+    fn resolve_with_deadline(
+        &self,
+        _settings: &serde_json::Map<String, serde_json::Value>,
+        deadline_ms: Option<u64>,
+    ) -> busbar_api::SecretResult<Vec<u8>> {
+        *self.0.lock().unwrap() = Some(deadline_ms);
+        Ok(b"observed".to_vec())
+    }
+}
+
+/// The wire request has always carried `deadline_ms`; the dispatcher dropped it, so a module that
+/// could bound its own upstream call was never told what bound to apply. It now reaches the module.
+#[test]
+fn secret_dispatch_hands_the_advisory_deadline_to_the_module() {
+    let module = RecordingSecret::default();
+    let resp = dispatch_secret(
+        &module,
+        busbar_plugin::cold::SecretRequest::Resolve {
+            settings: serde_json::Map::new(),
+            deadline_ms: Some(500),
+        },
+    )
+    .expect("resolves");
+    match resp {
+        busbar_plugin::cold::SecretResponse::Bytes(b) => assert_eq!(b, b"observed"),
+        other => panic!("expected Bytes, got {other:?}"),
+    }
+    assert_eq!(
+        *module.0.lock().unwrap(),
+        Some(Some(500)),
+        "the module must observe the caller's advisory deadline"
+    );
+
+    // A caller that set NO bound is still distinguishable from one that set zero.
+    let module = RecordingSecret::default();
+    dispatch_secret(
+        &module,
+        busbar_plugin::cold::SecretRequest::Resolve {
+            settings: serde_json::Map::new(),
+            deadline_ms: None,
+        },
+    )
+    .expect("resolves");
+    assert_eq!(*module.0.lock().unwrap(), Some(None));
+}
+
 fn secret_ctor(_cfg: &str) -> Result<BoxedSecret, String> {
     Ok(Box::new(EchoSecret))
 }

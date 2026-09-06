@@ -599,11 +599,18 @@ pub fn dispatch_secret(
     req: busbar_plugin::cold::SecretRequest,
 ) -> Result<busbar_plugin::cold::SecretResponse, busbar_api::SecretError> {
     match req {
-        // `deadline_ms` is advisory-only at this layer — no enforcement here; a module
-        // that can bound its own call reads it from the request before this dispatch runs.
-        busbar_plugin::cold::SecretRequest::Resolve { settings, .. } => Ok(
-            busbar_plugin::cold::SecretResponse::Bytes(module.resolve(&settings)?),
-        ),
+        // `deadline_ms` is advisory — nothing at THIS layer enforces it — but it is handed to the
+        // module, which is the only party that could act on it. The old comment described a seam
+        // where the module "reads it from the request before this dispatch runs": there is no such
+        // seam. `secret_dispatch` decodes the request and calls straight into here, so this match
+        // was the field's first and last stop, and dropping it meant a module that CAN bound its own
+        // upstream call was never told what bound to apply.
+        busbar_plugin::cold::SecretRequest::Resolve {
+            settings,
+            deadline_ms,
+        } => Ok(busbar_plugin::cold::SecretResponse::Bytes(
+            module.resolve_with_deadline(&settings, deadline_ms)?,
+        )),
     }
 }
 
