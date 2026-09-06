@@ -194,3 +194,73 @@ fn cloud_metadata_is_judged_separately_and_covers_every_vendor() {
         &"10.0.0.1".parse::<IpAddr>().unwrap()
     ));
 }
+
+/// A NAT64 TRANSLATION IS AN EMBEDDED-V4 SPELLING, and the connecting stack routes it to the v4
+/// target exactly as the mapped and compatible forms do. `Ipv6Addr::to_ipv4()` models only the
+/// `::ffff:a.b.c.d` and `::a.b.c.d` forms, so `64:ff9b::a9fe:a9fe` — the RFC 6052 well-known
+/// prefix wrapping `169.254.169.254` — matched no v6 range, unwrapped to nothing, and was PINNED
+/// and dialled on any IPv6-only deployment behind a NAT64 gateway (the default shape of an
+/// IPv6-only cloud subnet, where DNS64 synthesises exactly these answers for a v4-only name). The
+/// RFC 8215 local-use prefix `64:ff9b:1::/96` is the same translation with an operator-run gateway.
+#[test]
+fn nat64_translated_metadata_and_internal_addresses_are_refused() {
+    use std::net::IpAddr;
+    for (what, spelling) in [
+        ("NAT64 well-known IMDS", "64:ff9b::a9fe:a9fe"),
+        ("NAT64 well-known ECS task creds", "64:ff9b::a9fe:aa02"),
+        ("NAT64 well-known Azure WireServer", "64:ff9b::a83f:8110"),
+        ("NAT64 well-known OCI IMDS", "64:ff9b::c000:c0"),
+        ("NAT64 local-use IMDS", "64:ff9b:1::a9fe:a9fe"),
+    ] {
+        let ip: IpAddr = spelling.parse().expect(what);
+        assert!(
+            ip_is_cloud_metadata(&ip),
+            "{what} ({spelling}) translates to a cloud-metadata v4 target and must be refused \
+             unconditionally, exactly as the mapped and compatible spellings are"
+        );
+        assert!(
+            ip_is_internal(&ip),
+            "{what} ({spelling}) must also be internal to the shared predicate"
+        );
+    }
+    for (what, spelling) in [
+        ("NAT64 well-known loopback", "64:ff9b::7f00:1"),
+        ("NAT64 well-known RFC1918", "64:ff9b::a00:1"),
+        ("NAT64 local-use loopback", "64:ff9b:1::7f00:1"),
+    ] {
+        let ip: IpAddr = spelling.parse().expect(what);
+        assert!(
+            ip_is_internal(&ip),
+            "{what} ({spelling}) translates to an internal v4 target and must be refused without \
+             `allow_private`"
+        );
+    }
+    // THE CONTROL: a NAT64 translation of ordinary public space stays reachable, and an address
+    // that merely LOOKS like the prefix (a different second group) is untouched public v6.
+    let public_via_nat64: IpAddr = "64:ff9b::5db8:d822".parse().unwrap();
+    assert!(!ip_is_internal(&public_via_nat64));
+    assert!(!ip_is_cloud_metadata(&public_via_nat64));
+    let not_the_prefix: IpAddr = "64:ff9c::a9fe:a9fe".parse().unwrap();
+    assert!(!ip_is_internal(&not_the_prefix));
+    assert!(!ip_is_cloud_metadata(&not_the_prefix));
+}
+
+/// The operator-facing metadata denylist reads the SAME embedded-v4 answer: a `base_url` written
+/// with a NAT64 spelling of IMDS is the same credential-leaking destination as the dotted-quad one.
+#[test]
+fn ssrf_blocked_host_reads_the_nat64_spelling_of_metadata() {
+    assert_eq!(
+        ssrf_blocked_host(
+            "https://[64:ff9b::a9fe:a9fe]/latest/meta-data/",
+            &[],
+            false,
+            &[]
+        ),
+        Some("64:ff9b::a9fe:a9fe".to_string())
+    );
+    // A NAT64 translation of ordinary public space is a legitimate upstream and stays allowed.
+    assert_eq!(
+        ssrf_blocked_host("https://[64:ff9b::5db8:d822]/v1", &[], false, &[]),
+        None
+    );
+}

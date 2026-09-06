@@ -136,20 +136,50 @@ pub fn ipv4_is_internal(v4: &Ipv4Addr) -> bool {
         || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
 }
 
+/// THE IPv4 TARGET AN IPv6 LITERAL ACTUALLY REACHES, across every embedding a connecting stack
+/// translates rather than routes.
+///
+/// `Ipv6Addr::to_ipv4()` models exactly two of them — the IPv4-MAPPED `::ffff:a.b.c.d` and the
+/// IPv4-COMPATIBLE `::a.b.c.d`. It does NOT model NAT64 (RFC 6052), which is the third, and which
+/// is not exotic: an IPv6-only cloud subnet resolves a v4-only name through DNS64, and DNS64
+/// synthesises exactly a `64:ff9b::<v4>` answer for it. A guard that unwrapped only the two std
+/// forms saw `64:ff9b::a9fe:a9fe` match no v6 range, unwrap to nothing, and be pinned and dialled —
+/// and the gateway on the other side of the pin translated it straight to `169.254.169.254`.
+///
+/// Both /96 prefixes are covered: the RFC 6052 WELL-KNOWN `64:ff9b::/96`, which is fixed at /96 by
+/// the RFC so the address is always the last 32 bits, and the RFC 8215 LOCAL-USE `64:ff9b:1::/96`,
+/// which is the same translation behind an operator's own gateway. A longer local-use embedding
+/// (/48, /56, /64) scatters the v4 octets around the `u` byte and is deliberately not unwrapped
+/// here: it is site-specific, and a wrong unwrap would refuse legitimate public v6 space.
+///
+/// This is the ONE embedded-v4 answer, so [`ipv6_is_internal`] and [`ip_is_cloud_metadata`] cannot
+/// disagree about which spellings reach a v4 target.
+pub fn embedded_ipv4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
+    if let Some(v4) = v6.to_ipv4() {
+        return Some(v4);
+    }
+    let s = v6.segments();
+    // `64:ff9b::/96` (well-known) and `64:ff9b:1::/96` (local-use), both with the v4 in the low 32
+    // bits: the leading six groups pin the prefix, the trailing two carry the address.
+    let nat64_96 =
+        s[0] == 0x0064 && s[1] == 0xff9b && (s[2] == 0 || s[2] == 1) && s[3..6] == [0, 0, 0];
+    nat64_96.then(|| Ipv4Addr::from((u32::from(s[6]) << 16) | u32::from(s[7])))
+}
+
 /// TRUE for an IPv6 literal no busbar guard may connect to.
 ///
 /// The ORDER is load-bearing and is the reason this is one function rather than three call sites.
-/// `::1` must be caught by `is_loopback()` FIRST: under `to_ipv4()` it canonicalizes to `0.0.0.1`,
-/// which is not a v4 loopback, so an embedded-v4 arm placed first would let it through. Then the
-/// embedded-v4 arm runs BEFORE the v6 range masks, because `[::ffff:127.0.0.1]` and
-/// `[::169.254.169.254]` match no v6 mask at all yet a connecting stack still routes them to the
-/// embedded v4 target. `to_ipv4()` rather than `to_ipv4_mapped()`: it is the superset that also
-/// covers the IPv4-COMPATIBLE form.
+/// `::1` must be caught by `is_loopback()` FIRST: under the embedded-v4 unwrap it canonicalizes to
+/// `0.0.0.1`, which is not a v4 loopback, so an embedded-v4 arm placed first would let it through.
+/// Then the embedded-v4 arm runs BEFORE the v6 range masks, because `[::ffff:127.0.0.1]`,
+/// `[::169.254.169.254]` and `[64:ff9b::a9fe:a9fe]` match no v6 mask at all yet a connecting stack
+/// still routes (or translates) them to the embedded v4 target. [`embedded_ipv4`] rather than
+/// `to_ipv4_mapped()`: it is the superset that also covers the IPv4-COMPATIBLE and NAT64 forms.
 pub fn ipv6_is_internal(v6: &Ipv6Addr) -> bool {
     if v6.is_loopback() {
         return true;
     }
-    if let Some(v4) = v6.to_ipv4() {
+    if let Some(v4) = embedded_ipv4(v6) {
         return ipv4_is_internal(&v4);
     }
     v6.is_unspecified() || v6.is_multicast() || is_unique_local_v6(v6) || is_link_local_v6(v6)
@@ -171,10 +201,11 @@ pub fn ipv6_is_internal(v6: &Ipv6Addr) -> bool {
 /// upstream is on the internal network" would then pin and dial an unlisted IMDS. This is the same
 /// predicate the config-side metadata check applies, deliberately.
 ///
-/// The v6 arm unwraps with `to_ipv4()`, not `to_ipv4_mapped()`, for the reason [`ipv6_is_internal`]
-/// gives: `to_ipv4()` is the superset that also covers the IPv4-COMPATIBLE form, so
-/// `[::169.254.169.254]` is caught. A guard that only unwrapped the MAPPED form let exactly that
-/// literal through — it matched no v6 range, unwrapped to nothing, and was connected to.
+/// The v6 arm unwraps with [`embedded_ipv4`], not `to_ipv4_mapped()`, for the reason
+/// [`ipv6_is_internal`] gives: it is the superset that also covers the IPv4-COMPATIBLE and NAT64
+/// forms, so `[::169.254.169.254]` and `[64:ff9b::a9fe:a9fe]` are both caught. A guard that only
+/// unwrapped the MAPPED form let exactly those literals through — they matched no v6 range,
+/// unwrapped to nothing, and were connected to.
 pub fn ip_is_cloud_metadata(addr: &IpAddr) -> bool {
     /// The metadata endpoints OUTSIDE link-local: Alibaba Cloud ECS (inside the otherwise-allowed
     /// CGNAT /10), Azure WireServer, and Oracle Cloud's globally-routable-shaped IMDS.
@@ -189,7 +220,7 @@ pub fn ip_is_cloud_metadata(addr: &IpAddr) -> bool {
     match addr {
         IpAddr::V4(v4) => is_metadata_v4(v4),
         IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4() {
+            if let Some(v4) = embedded_ipv4(v6) {
                 return is_metadata_v4(&v4);
             }
             // IMDSv6.
@@ -1299,8 +1330,9 @@ pub fn ssrf_blocked_host(
         Ok(IpAddr::V6(v6)) => {
             // An IPv6 literal embedding an IPv4 address reaches the same v4 target as the bare form,
             // so apply the IDENTICAL metadata predicate to the embedded v4 (covers `[::ffff:a.b.c.d]`
-            // mapped AND `[::a.b.c.d]` compatible via `to_ipv4()`).
-            let embedded = v6.to_ipv4();
+            // mapped, `[::a.b.c.d]` compatible AND the NAT64 `[64:ff9b::a.b.c.d]` translation, via
+            // the one `embedded_ipv4` answer the resolve-then-pin guard above reads).
+            let embedded = embedded_ipv4(&v6);
             v6 == imds_v6 || embedded.is_some_and(|m| is_metadata_v4(&m))
         }
         Err(_) => false,
