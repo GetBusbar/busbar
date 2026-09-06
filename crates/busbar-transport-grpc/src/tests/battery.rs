@@ -479,13 +479,15 @@ async fn the_destinations_method_is_the_path_the_call_opens_against() {
         .unwrap();
     assert_eq!(frame.bytes.as_slice(), b"ping");
 
-    let served = server_t
+    let served: Vec<String> = server_t
         .state_of(server_conn.id())
         .unwrap()
         .served_paths
         .lock()
         .unwrap()
-        .clone();
+        .iter()
+        .cloned()
+        .collect();
     assert_eq!(served, vec!["/vendor.Inference/Chat".to_string()]);
 
     // And the chain both ends report is the stack they actually stand on.
@@ -689,6 +691,82 @@ async fn a_finished_call_leaves_no_entry_behind() {
         left.is_ok(),
         "the dial side kept a sender per finished call: {} left after {CALLS}",
         client_state.outbound.lock().unwrap().len()
+    );
+}
+
+/// `served_paths` is a diagnostic record, not a log: a connection open across many RPCs must not
+/// grow it forever. Past [`crate::conn::SERVED_PATHS_CAP`] calls it keeps only the most recent.
+#[tokio::test]
+async fn served_paths_stays_bounded_across_many_calls() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+
+    let calls: u64 = crate::conn::SERVED_PATHS_CAP as u64 + 1;
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let mut client_frames = client_t.frames(client_conn.clone());
+    for n in 1..=calls {
+        client_t
+            .write(&client_conn, StreamId(n), ArenaBytes::new(b"ping"))
+            .await
+            .unwrap();
+        let (server_stream, _f) =
+            tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+                .await
+                .expect("the call arrives")
+                .unwrap()
+                .unwrap();
+        server_t
+            .unit0_refusal(
+                server_conn.clone(),
+                Some(server_stream),
+                &refusal,
+                ArenaBytes::new(b"pong"),
+            )
+            .await
+            .unwrap();
+        loop {
+            let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), client_frames.next())
+                .await
+                .expect("the answer arrives")
+                .unwrap()
+                .unwrap();
+            if frame.meta.status.is_some() {
+                break;
+            }
+        }
+    }
+
+    let served = server_t
+        .state_of(server_conn.id())
+        .unwrap()
+        .served_paths
+        .lock()
+        .unwrap()
+        .len();
+    assert!(
+        served <= crate::conn::SERVED_PATHS_CAP,
+        "{calls} RPCs over one connection must not grow served_paths past the cap: {served}"
     );
 }
 

@@ -5,7 +5,7 @@
 //! carry many concurrent gRPC calls ("multiplexed streams" in the architecture's ws row) — each
 //! call is one [`busbar_contract::StreamId`], keyed in `outbound` below.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex as SyncMutex};
@@ -44,6 +44,11 @@ pub(crate) type LowerIo = Box<dyn Lower>;
 /// How many inbound frames one connection may hold for a `frames()` consumer that is not keeping
 /// up — the per-unit frame buffer the architecture's backpressure rule names.
 pub(crate) const INBOUND_FRAME_BUFFER: usize = 64;
+
+/// How many served `:path`s one connection remembers. A long-lived connection serves calls
+/// forever; this diagnostic record is for the last handful, not a leak-shaped unbounded log of
+/// every RPC an HTTP/2 connection has ever carried.
+pub(crate) const SERVED_PATHS_CAP: usize = 32;
 
 /// One inbound item: a stream-tagged frame, or a transport failure on that stream.
 pub(crate) type InboundItem = Result<(StreamId, Frame), TransportError>;
@@ -88,7 +93,7 @@ pub(crate) struct ConnState {
     /// by a path, so this is what the transport actually answered on — recorded rather than
     /// assumed, because "the method a destination named is the method dialled" is otherwise a
     /// claim nothing checks.
-    pub(crate) served_paths: SyncMutex<Vec<String>>,
+    pub(crate) served_paths: SyncMutex<VecDeque<String>>,
     /// The composed stack this connection stands on, bottom layer first, ending in `grpc`. It is
     /// the layer below's chain plus this one, carried across the handoff — a connection that named
     /// only itself was one a location could not resolve against.
@@ -107,7 +112,7 @@ impl ConnState {
             outbound: SyncMutex::new(HashMap::new()),
             dialer,
             next_local_stream: std::sync::atomic::AtomicU64::new(1),
-            served_paths: SyncMutex::new(Vec::new()),
+            served_paths: SyncMutex::new(VecDeque::new()),
             chain,
         })
     }
@@ -123,5 +128,15 @@ impl ConnState {
     /// and this connection carries every multiplexed call's inbound messages on this one channel.
     pub(crate) async fn send_inbound(&self, item: InboundItem) -> Result<(), ()> {
         self.inbound_tx.send(item).await.map_err(|_| ())
+    }
+
+    /// Record one more served `:path`, evicting the oldest once [`SERVED_PATHS_CAP`] is reached —
+    /// a connection open for a million calls remembers the last handful, not all of them.
+    pub(crate) fn record_served_path(&self, path: String) {
+        let mut served = self.served_paths.lock().unwrap();
+        if served.len() >= SERVED_PATHS_CAP {
+            served.pop_front();
+        }
+        served.push_back(path);
     }
 }
