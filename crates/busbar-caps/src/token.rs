@@ -84,7 +84,8 @@ impl std::fmt::Debug for KernelSeal {
 }
 
 macro_rules! plain_token {
-    ($(#[$doc:meta])* $name:ident) => {
+    ($($(#[$doc:meta])* $name:ident;)*) => {
+        $(
         $(#[$doc])*
         ///
         /// Neither `Clone` nor `Copy`; minted fresh by the kernel and dropped when the call it was
@@ -113,11 +114,13 @@ macro_rules! plain_token {
                 stringify!($name)
             }
         }
+        )*
     };
 }
 
 macro_rules! step_token {
-    ($(#[$doc:meta])* $name:ident) => {
+    ($($(#[$doc:meta])* $name:ident;)*) => {
+        $(
         $(#[$doc])*
         pub struct $name<S: Step>(PhantomData<fn() -> S>);
 
@@ -139,66 +142,49 @@ macro_rules! step_token {
                 stringify!($name)
             }
         }
+        )*
     };
 }
 
-step_token!(
+step_token! {
     /// The proof that the loop is running step `S` for the current unit right now.
     ///
     /// Handed by reference to the unit that owns step `S`, and to no one else. It is the only
     /// thing that can build a [`crate::Decision`] for `S`, so a unit cannot answer a question it
     /// was not asked, and it is the only thing that can read one back, so a unit cannot open its
     /// own answer.
-    UnitToken
-);
-step_token!(
+    UnitToken;
     /// The admission unit's own token for step `S`: the one thing that can open a [`crate::Hold`].
     ///
     /// Separate from [`UnitToken`] on purpose — every unit is lent a `UnitToken` for its step, and
     /// if that were enough to open a hold then every unit could open one. Only the admission unit
     /// is lent an `AdmitToken`, and only at the door.
-    AdmitToken
-);
+    AdmitToken;
+}
 
-plain_token!(
+plain_token! {
     /// The trust unit's token: seals a destination the unit is allowed to reach.
-    TrustToken
-);
-plain_token!(
+    TrustToken;
     /// The usage unit's token: reports what a unit actually consumed.
-    UsageToken
-);
-plain_token!(
+    UsageToken;
     /// The ledger unit's token: turns a hold plus a usage report into a posting.
-    LedgerToken
-);
-plain_token!(
+    LedgerToken;
     /// The write-ahead-log unit's token: records that a durable write was observed to fail.
-    DurabilityToken
-);
-plain_token!(
+    DurabilityToken;
     /// The egress-auth unit's token: decorates an outbound request and names its secret slots.
-    EgressAuthToken
-);
-plain_token!(
+    EgressAuthToken;
     /// The transport-key unit's token: hands out an opaque handle to resolved key material.
-    TransportKeyToken
-);
-plain_token!(
+    TransportKeyToken;
     /// The verbs unit's token: mints a one-shot secret placeholder for an administrative verb.
-    AdminToken
-);
-plain_token!(
+    AdminToken;
     /// The recovery module's token: materialises a hold from a journal record after a crash.
     ///
     /// Nothing else in the system can bring a hold into being without passing the door. CI's symbol
     /// scan confines every use of this type to the kernel's recovery module.
-    RecoveryToken
-);
-plain_token!(
+    RecoveryToken;
     /// The exit path's token: takes the hold out of its cell and seals the unit's end.
     ///
     /// There are exactly two holders — the exit path and the node's sweep — and a fixture asserts
     /// there is no third.
-    ExitToken
-);
+    ExitToken;
+}
