@@ -1179,6 +1179,44 @@ fn provider_ws_url(base_url: &str, dialect: &str, api_key: &str) -> String {
     }
 }
 
+/// SCRUB a credential carried in a dial target's QUERY STRING out of a message before it is logged.
+///
+/// One dialect's native provider scheme puts the API key in the URL itself ([`provider_ws_url`]'s
+/// `?key=` form), and the neutral dialer's URL-shaped refusals quote the target back verbatim — so a
+/// `base_url` the dialer cannot use would otherwise write the deployment's resolved provider
+/// credential into the process log at WARN, where it is exactly as readable as the config file it was
+/// resolved from. The substrate's own hygiene covers URL userinfo and stops there; the query half is
+/// this plane's to cover, because this plane is the one that puts a secret there.
+///
+/// Everything from `key=` to the next delimiter is replaced. Deliberately blunt: this runs only on an
+/// error path about to be logged, and a message that over-redacts costs an operator nothing while one
+/// that under-redacts costs them the credential.
+fn redact_url_credentials(msg: &str) -> String {
+    let mut out = String::with_capacity(msg.len());
+    let mut rest = msg;
+    while let Some(at) = rest.find("key=") {
+        // Only a query/fragment parameter — `key=` inside an ordinary word is not a credential.
+        let is_param = at == 0
+            || matches!(
+                rest.as_bytes()[at - 1],
+                b'?' | b'&' | b';' | b'#' | b' ' | b'"'
+            );
+        let (head, tail) = rest.split_at(at + "key=".len());
+        out.push_str(head);
+        if is_param {
+            let end = tail.find(['&', '#', '"', ' ', '\'']).unwrap_or(tail.len());
+            if end > 0 {
+                out.push_str("<redacted>");
+            }
+            rest = &tail[end..];
+        } else {
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// THE INBOUND WS-ACCEPT FN for the browser-sideband / telephony / Gemini-Live media legs — what
 /// replaces the `501` stub, moving the WS legs onto the neutral inbound WS-accept seam. Generic over
 /// the dialect `codec` (the second-dialect route): [`voice_ws_arrivals`] instantiates it once per dialect
@@ -1375,7 +1413,7 @@ where
                                     // durable handle's own drop path applies) rather than serve a
                                     // client socket with no upstream — fail closed, no orphaned row.
                                     tracing::warn!(
-                                        error = %e,
+                                        error = %redact_url_credentials(&e.to_string()),
                                         dialect,
                                         "voice: provider dial failed; the just-admitted session is \
                                          dropped rather than served with no upstream"
