@@ -332,7 +332,23 @@ pub fn audit(
 /// bytes agreed and the record did not. A caller that genuinely has no destination yet — a refusal
 /// taken before the model was ever read — passes [`crate::engine::POOL_LABEL_UNRESOLVED`], which
 /// the bound maps to itself because no deployment may configure a pool by that name.
-pub fn audit_refused(unit_token: &UnitToken<Audit>, ctx: &AuditCtx<'_>, resp: Served) -> Audited {
+///
+/// `charged` is the door's own answer, and this door's whole premise is that it is FALSE. It is
+/// taken as an argument rather than assumed so the premise can be checked: a charged unit arriving
+/// here would be one whose fee landed and whose only refund site is the other door, so it would be
+/// billed for an answer nobody was given — and it would do that silently, because a record written
+/// here looks exactly like a record written for a unit that was never charged at all. The assertion
+/// is what makes that a stop rather than a quiet overcharge.
+pub fn audit_refused(
+    unit_token: &UnitToken<Audit>,
+    ctx: &AuditCtx<'_>,
+    resp: Served,
+    charged: bool,
+) -> Audited {
+    debug_assert!(
+        !charged,
+        "a charged unit leaves through the charged door: this one refunds nothing"
+    );
     // A refusal is never a completion, whatever status it wears.
     let facts = AuditFacts {
         op_class: ctx.op_class,
@@ -576,6 +592,8 @@ mod tests {
             &token,
             &ctx(&host, &unit_gov, POOL_LABEL_UNRESOLVED, at),
             Served::of(refusal()),
+            // Nothing was charged: that is this door's premise and the door asserts it.
+            false,
         )
         .response
         .into_response();
@@ -619,6 +637,7 @@ mod tests {
             &token,
             &ctx(&host, &refused_gov, POOL_LABEL_UNRESOLVED, at),
             Served::of((StatusCode::NOT_FOUND, "no such model").into_response()),
+            false,
         );
 
         let admitted = one_record(&keys[0].id);
@@ -659,6 +678,7 @@ mod tests {
             &token,
             &ctx(&host, &refused, POOL_LABEL_UNRESOLVED, at),
             Served::of((StatusCode::FORBIDDEN, "no").into_response()),
+            false,
         );
         assert_eq!(REQUESTS.records_for(&keys[0].id).len(), 3);
         assert!(REQUESTS.verify_principal_chain(&keys[0].id).is_ok());
@@ -701,6 +721,7 @@ mod tests {
             &token,
             &ctx(&host, &unit_gov, "p", at),
             Served::of((StatusCode::FORBIDDEN, "not permitted").into_response()),
+            false,
         );
 
         let live_record = one_record(&keys[0].id);
