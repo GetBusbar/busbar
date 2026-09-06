@@ -131,10 +131,25 @@ use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
 pub fn resolve_builtin(secret: &SecretRef) -> Result<Vec<u8>, String> {
     if let Some(var) = self_env_var_checked(secret)? {
         return match std::env::var(&var) {
-            Ok(v) if !v.is_empty() => Ok(v.into_bytes()),
+            // BLANK is EMPTY. The reference type already trims the NAME and the PATH before
+            // accepting either, and the value earns the same reading: `"   "` is what an operator
+            // gets from a templating step that produced nothing, an indented here-doc, or a mount
+            // that wrote a placeholder. Taking it as a credential means booting with a blank one
+            // and learning at the first upstream call, which is exactly the discovery the
+            // non-empty check exists to pull forward to boot.
+            Ok(v) if !v.trim().is_empty() => Ok(v.into_bytes()),
             Ok(_) => Err(format!(
                 "secret env:{var} resolved to an EMPTY value; a secret must be non-empty \
                  (fail-closed)"
+            )),
+            // A variable that IS set but holds bytes that are not Unicode is a DIFFERENT operator
+            // action from one that was never set, so it must not be reported as the same thing.
+            // "Unset" sends them to go and set it; this one is already set, and the value arrived
+            // mangled — a wrong encoding, a truncated mount, a copy through a tool that mishandled
+            // it. Collapsing the two sends them to look in the one place the answer is not.
+            Err(std::env::VarError::NotUnicode(_)) => Err(format!(
+                "secret env:{var} cannot resolve: environment variable '{var}' IS set, but its \
+                 value is not valid Unicode (fail-closed — a value problem, not a missing variable)"
             )),
             Err(_) => Err(format!(
                 "secret env:{var} cannot resolve: environment variable '{var}' is unset"
@@ -142,20 +157,76 @@ pub fn resolve_builtin(secret: &SecretRef) -> Result<Vec<u8>, String> {
         };
     }
     if let Some(path) = self_file_path_checked(secret)? {
-        return match std::fs::read(&path) {
-            Ok(bytes) if !bytes.is_empty() => Ok(bytes),
-            Ok(_) => Err(format!(
-                "secret file:{path} resolved to an EMPTY file; a secret must be non-empty \
-                 (fail-closed)"
-            )),
-            Err(e) => Err(format!("secret file:{path} cannot resolve: {e}")),
-        };
+        return read_file_secret(&path);
     }
     Err(format!(
         "secret module '{}' is not a built-in (`env` / `file`) and no secret plugin provides it; \
          a secret that cannot resolve is a hard error (fail-closed)",
         secret.module
     ))
+}
+
+/// The largest a `file:` secret may be. A credential is not a payload: an RSA-4096 PKCS#8 PEM, the
+/// longest thing anyone legitimately puts here, is a couple of kilobytes, so this is far above every
+/// real secret and still far below anything that can hurt the process holding it.
+const MAX_FILE_SECRET_BYTES: u64 = 64 * 1024;
+
+/// Read a `file:` secret, bounded in both of the ways this path is otherwise unbounded.
+///
+/// What the config names is read at BOOT, into memory, by a node that has not started serving yet,
+/// and neither limit here is hypothetical for a path an operator controls by string. `/dev/zero` is
+/// an unbounded read that ends as an out-of-memory kill of the whole node; a FIFO with no writer is
+/// an open that blocks forever, so the node never finishes booting and never says why. Neither
+/// looks like a config error to the operator watching it, which is the real cost: the failure
+/// arrives disguised as an infrastructure one.
+///
+/// So the type is checked BEFORE the open — a device or a pipe is never where a credential lives,
+/// and refusing on the stat is what keeps the FIFO case from hanging on `open` itself — and the read
+/// is bounded by the cap rather than by the size the metadata claimed, so a file that grows between
+/// the two calls cannot widen it.
+fn read_file_secret(path: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+
+    // `metadata` (not `symlink_metadata`): a secret mount is very often a symlink to the real file
+    // — Kubernetes projects every one that way — so what matters is what the path RESOLVES to.
+    let md =
+        std::fs::metadata(path).map_err(|e| format!("secret file:{path} cannot resolve: {e}"))?;
+    if !md.is_file() {
+        return Err(format!(
+            "secret file:{path} is not a regular file; a secret is read from a file, never from a \
+             device, a pipe or a directory (fail-closed)"
+        ));
+    }
+    if md.len() > MAX_FILE_SECRET_BYTES {
+        return Err(format!(
+            "secret file:{path} is too large ({} bytes; the limit is {MAX_FILE_SECRET_BYTES}); a \
+             credential is not a payload (fail-closed)",
+            md.len()
+        ));
+    }
+
+    let f =
+        std::fs::File::open(path).map_err(|e| format!("secret file:{path} cannot resolve: {e}"))?;
+    let mut bytes = Vec::new();
+    // Read the cap PLUS ONE: a file that grew past the limit between the stat and the open is then
+    // still caught below, rather than being read to whatever it has become.
+    f.take(MAX_FILE_SECRET_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("secret file:{path} cannot resolve: {e}"))?;
+    if bytes.len() as u64 > MAX_FILE_SECRET_BYTES {
+        return Err(format!(
+            "secret file:{path} is too large (over {MAX_FILE_SECRET_BYTES} bytes); a credential is \
+             not a payload (fail-closed)"
+        ));
+    }
+    // Blank is empty, for the reason the `env` branch gives. Tested on the BYTES rather than
+    // through a UTF-8 decode so a binary key is never judged by whether it happens to be text.
+    if bytes.iter().all(|b| b.is_ascii_whitespace()) {
+        return Err(format!(
+            "secret file:{path} resolved to an EMPTY file; a secret must be non-empty (fail-closed)"
+        ));
+    }
+    Ok(bytes)
 }
 
 /// The `env` module's variable name, validating the settings shape (a malformed built-in ref must
