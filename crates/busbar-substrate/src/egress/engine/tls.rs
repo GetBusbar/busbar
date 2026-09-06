@@ -97,4 +97,20 @@ impl ClientIdentity {
     pub fn leaf_der(&self) -> &[u8] {
         self.chain[0].as_ref()
     }
+
+    /// WIPE THE PRIVATE KEY, if this is the last handle to it. Called when a host-side registry
+    /// retires the identity (see `plane_host::identity`): a retired key should not be left legible in
+    /// the process's heap for the rest of its life.
+    ///
+    /// Best effort BY CONSTRUCTION, and the construction is the point: the key is shared by refcount,
+    /// so it can only be wiped where this is the sole owner. Where a hop still holds a clone, the
+    /// bytes go when that last clone drops — wiping them out from under a handshake in flight would be
+    /// the worse failure. `PrivateKeyDer` implements `Zeroize` but NOT `ZeroizeOnDrop`, which is why
+    /// this is an explicit call rather than something the drop glue already did.
+    pub fn zeroize_key(&mut self) {
+        use zeroize::Zeroize;
+        if let Some(key) = Arc::get_mut(&mut self.key) {
+            key.zeroize();
+        }
+    }
 }
