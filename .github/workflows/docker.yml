@@ -526,13 +526,47 @@ jobs:
           # placeholder for a bare `test`-tag dispatch build. There is deliberately no fallback to
           # a git tag: this workflow no longer runs on tag pushes, and inferring a release version
           # from the ref is exactly the coupling the restructure removed.
-          ver="${{ inputs.label_version }}"
-          ver="${ver#v}"
+          raw_ver="${{ inputs.label_version }}"
+          ver="${raw_ver#v}"
           [ -n "$ver" ] || ver="0.0.0-test"
           outdir="plugin-dist"; mkdir -p "$outdir"
+
+          # THE SIGNING KEY IS REQUIRED FOR ANYTHING THAT CLAIMS A VERSION, and the check fails
+          # closed. An unset secret expands to the empty string — `secrets.BUSBAR_SIGN_KEY` on an
+          # env: block is not an error when the secret does not exist — so the only thing standing
+          # between a missing key and a RELEASE that ships an unsigned first-party plugin was a
+          # ::warning:: in a log nobody reads on a green run. An unsigned first-party tarball is
+          # loadable only under `plugins.trust.allow_unsigned`, so the operator-visible outcome is
+          # a plugin that refuses to load on a correctly-configured busbar, discovered at install
+          # time. That is the same class of defect release-key-guard.sh's `require` mode exists to
+          # make impossible, and it is asserted the same way: BEFORE anything is packaged, on the
+          # input, with the reason spelled out rather than inferred from a missing flag.
+          #
+          # `--allow-unsigned` survives for exactly one case: a bare `test`-tag dispatch build with
+          # no `label_version`, which packages 0.0.0-test and is never promoted. A build that was
+          # handed a version is a release build by definition and gets no such door.
           unsigned_flag=""
           if [ -z "${BUSBAR_SIGN_KEY:-}" ]; then
-            echo "::warning::BUSBAR_SIGN_KEY secret is not provisioned — packaging an UNSIGNED headroom plugin tarball (loadable only under plugins.trust.allow_unsigned). See the TODO(release-keys) seam in release.yml."
+            if [ -n "${raw_ver:-}" ]; then
+              cat >&2 <<'EOF'
+          [sign-guard] ##########################################################################
+          [sign-guard] # REFUSING TO PACKAGE AN UNSIGNED FIRST-PARTY PLUGIN FOR A VERSIONED BUILD.
+          [sign-guard] #
+          [sign-guard] # A `label_version` input was supplied, so this is a release build, and the
+          [sign-guard] # BUSBAR_SIGN_KEY secret is unset or empty. An unset secret expands to the
+          [sign-guard] # empty string rather than failing, so without this check the tarball would
+          [sign-guard] # be packaged with --allow-unsigned, uploaded, promoted, and refused by
+          [sign-guard] # every busbar that has not opted into plugins.trust.allow_unsigned.
+          [sign-guard] #
+          [sign-guard] # Fix: provision the BUSBAR_SIGN_KEY secret (the ed25519 PRIVATE half whose
+          [sign-guard] # public half is the org variable BUSBAR_RELEASE_PUBKEY), or run a bare
+          [sign-guard] # `test`-tag dispatch with no label_version if an unsigned build is what
+          [sign-guard] # was actually wanted.
+          [sign-guard] ##########################################################################
+          EOF
+              exit 1
+            fi
+            echo "::warning::BUSBAR_SIGN_KEY is not provisioned and no label_version was supplied — packaging an UNSIGNED ${ver} headroom tarball for this test dispatch only. It is loadable only under plugins.trust.allow_unsigned and must never be promoted."
             unsigned_flag="--allow-unsigned"
           fi
           target/release/busbar-plugin-pack pack \
