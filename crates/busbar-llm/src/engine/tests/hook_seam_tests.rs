@@ -501,7 +501,7 @@ async fn base_policy_restrict_persists_across_fallback_pool_hop() {
         .pool_runtime("fb", pool_runtime_with(&[(1, &[])], Vec::new()))
         .on_exhausted(
             "p",
-            busbar_core::config::OnExhausted::FallbackPool("fb".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
 
@@ -665,7 +665,7 @@ async fn wait_for_tap_body(cap: &CaptureTap) -> serde_json::Value {
 /// taps.
 #[tokio::test]
 async fn substrate_fire_stage_taps_honors_group_scope_via_host_seam() {
-    use busbar_core::config::GroupCfg;
+    use busbar_substrate::config::groups::GroupCfg;
     crate::testkit::install_test_seams();
     // engineering / sales branches, one caller leaf each (parent is the only field the scope walk
     // reads). `user:bob` ∈ engineering; `user:sue` ∈ sales.
@@ -793,8 +793,8 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
         ))
         .pool("p", &[(0, 1)])
         .auth(Arc::new(busbar_core::auth::AuthMiddleware::new_builtin(
-            &busbar_core::config::AuthCfg::with_chain(vec![
-                busbar_core::config::AuthChainEntry::bare("test-groups-module"),
+            &busbar_substrate::config::auth::AuthCfg::with_chain(vec![
+                busbar_substrate::config::auth::AuthChainEntry::bare("test-groups-module"),
             ]),
         )))
         .build();
@@ -831,8 +831,8 @@ async fn completion_tap_status_is_protocol_native_gemini_400() {
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .auth(Arc::new(busbar_core::auth::AuthMiddleware::new_builtin(
-            &busbar_core::config::AuthCfg::with_chain(vec![
-                busbar_core::config::AuthChainEntry::bare("test-groups-module"),
+            &busbar_substrate::config::auth::AuthCfg::with_chain(vec![
+                busbar_substrate::config::auth::AuthChainEntry::bare("test-groups-module"),
             ]),
         )))
         .build();

@@ -252,7 +252,7 @@ mod tests {
 
     /// A governed app with one key, a one-cent flat fee, and whatever groups the caller declares.
     fn governed(
-        groups: BTreeMap<String, busbar_core::config::GroupCfg>,
+        groups: BTreeMap<String, busbar_substrate::config::groups::GroupCfg>,
         group: Option<&str>,
         seed: Option<(&str, u64)>,
     ) -> (
@@ -471,13 +471,13 @@ mod tests {
     async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
         let groups = BTreeMap::from([(
             "bgrp".to_string(),
-            busbar_core::config::GroupCfg {
+            busbar_substrate::config::groups::GroupCfg {
                 parent: None,
                 enabled: true,
-                limits: vec![busbar_core::config::groups::LimitCfg {
-                    metric: busbar_core::config::groups::LimitMetric::Budget,
+                limits: vec![busbar_substrate::config::groups::LimitCfg {
+                    metric: busbar_substrate::config::groups::LimitMetric::Budget,
                     amount: 100,
-                    per: Some(busbar_core::config::groups::LimitWindow::Total),
+                    per: Some(busbar_substrate::config::groups::LimitWindow::Total),
                     scope: None,
                     on_exhaust: None,
                     downgrade_to: None,

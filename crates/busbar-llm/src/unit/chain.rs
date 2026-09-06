@@ -278,13 +278,13 @@ mod rehearsal {
         if fixture.seeded_group_requests().is_some() {
             groups.insert(
                 group.clone(),
-                busbar_core::config::GroupCfg {
+                busbar_substrate::config::groups::GroupCfg {
                     parent: None,
                     enabled: true,
-                    limits: vec![busbar_core::config::groups::LimitCfg {
-                        metric: busbar_core::config::groups::LimitMetric::Budget,
+                    limits: vec![busbar_substrate::config::groups::LimitCfg {
+                        metric: busbar_substrate::config::groups::LimitMetric::Budget,
                         amount: 100,
-                        per: Some(busbar_core::config::groups::LimitWindow::Total),
+                        per: Some(busbar_substrate::config::groups::LimitWindow::Total),
                         scope: None,
                         on_exhaust: None,
                         downgrade_to: None,
@@ -342,7 +342,7 @@ mod rehearsal {
             // RELAY, not retry-until-exhausted: `least_bad` is the disposition that hands the client
             // the upstream's own answer when every lane is unhealthy, which is what makes this fixture
             // a FAILED TRANSFER (the destination answered, badly) rather than a pool-empty 503.
-            builder = builder.on_exhausted(POOL, busbar_core::config::OnExhausted::LeastBad);
+            builder = builder.on_exhausted(POOL, busbar_substrate::config::pools::OnExhausted::LeastBad);
         }
         let app = builder.build();
 

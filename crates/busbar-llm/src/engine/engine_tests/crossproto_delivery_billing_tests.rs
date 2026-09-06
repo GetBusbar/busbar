@@ -34,13 +34,13 @@ fn fixture() -> (
     let gov = Arc::new(GovState::new(store, None).expect("gov"));
     let groups = std::collections::BTreeMap::from([(
         "g".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_core::config::groups::LimitCfg {
-                metric: busbar_core::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_substrate::config::groups::LimitCfg {
+                metric: busbar_substrate::config::groups::LimitMetric::Budget,
                 amount: 1_000_000_000,
-                per: Some(busbar_core::config::groups::LimitWindow::Day),
+                per: Some(busbar_substrate::config::groups::LimitWindow::Day),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,

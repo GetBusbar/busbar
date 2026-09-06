@@ -2,7 +2,7 @@ use crate::engine::forward_with_pool;
 use crate::engine::AppEngineExt as _;
 use crate::test_support::*;
 use busbar_core::auth::AuthMiddleware;
-use busbar_core::config::AuthCfg;
+use busbar_substrate::config::auth::AuthCfg;
 use busbar_substrate::store::now;
 // The common vocabulary the former `use super::*` (busbar-core `test_support`) re-exported into this
 // integration suite, now that it lives in the plane crate and globs the plane's `test_support`.
@@ -433,13 +433,13 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     let secret = token.as_str();
     let groups = std::collections::BTreeMap::from([(
         "tpmgrp".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_core::config::groups::LimitCfg {
-                metric: busbar_core::config::groups::LimitMetric::Tokens,
+            limits: vec![busbar_substrate::config::groups::LimitCfg {
+                metric: busbar_substrate::config::groups::LimitMetric::Tokens,
                 amount: 30,
-                per: Some(busbar_core::config::groups::LimitWindow::Minute),
+                per: Some(busbar_substrate::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -570,13 +570,13 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     let secret = token.as_str();
     let groups = std::collections::BTreeMap::from([(
         "tpmsgrp".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_core::config::groups::LimitCfg {
-                metric: busbar_core::config::groups::LimitMetric::Tokens,
+            limits: vec![busbar_substrate::config::groups::LimitCfg {
+                metric: busbar_substrate::config::groups::LimitMetric::Tokens,
                 amount: 30,
-                per: Some(busbar_core::config::groups::LimitWindow::Minute),
+                per: Some(busbar_substrate::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -797,7 +797,7 @@ async fn test_failover_exclusions_remove_member_from_pool() {
         .pool("pe", &[(0, 1), (1, 1)])
         .pool_failover(
             "pe",
-            busbar_core::config::FailoverCfg {
+            busbar_substrate::config::pools::FailoverCfg {
                 timeout_secs: 120,
                 exclusions: Some(vec!["beta".to_string()]),
                 max_hops: 3,
@@ -919,7 +919,7 @@ async fn test_metrics_requires_auth_in_chain_mode() {
 
     let token = "grp:metrics-scrapers";
     let auth_cfg =
-        busbar_core::config::AuthCfg::with_chain(vec![busbar_core::config::AuthChainEntry::bare(
+        busbar_substrate::config::auth::AuthCfg::with_chain(vec![busbar_substrate::config::auth::AuthChainEntry::bare(
             "test-groups-module",
         )]);
     let app = TestApp::new()
@@ -1096,13 +1096,13 @@ async fn test_governance_budget_over_quota() {
         .unwrap();
     let groups = std::collections::BTreeMap::from([(
         "bgrp".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_core::config::groups::LimitCfg {
-                metric: busbar_core::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_substrate::config::groups::LimitCfg {
+                metric: busbar_substrate::config::groups::LimitMetric::Budget,
                 amount: 100,
-                per: Some(busbar_core::config::groups::LimitWindow::Total),
+                per: Some(busbar_substrate::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -1219,13 +1219,13 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
         .unwrap();
     let groups = std::collections::BTreeMap::from([(
         "bgrpm".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_core::config::groups::LimitCfg {
-                metric: busbar_core::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_substrate::config::groups::LimitCfg {
+                metric: busbar_substrate::config::groups::LimitMetric::Budget,
                 amount: 100,
-                per: Some(busbar_core::config::groups::LimitWindow::Total),
+                per: Some(busbar_substrate::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -1458,13 +1458,13 @@ async fn test_governance_rate_limit_429() {
 
     let groups = std::collections::BTreeMap::from([(
         "rl2".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_core::config::groups::LimitCfg {
-                metric: busbar_core::config::groups::LimitMetric::Requests,
+            limits: vec![busbar_substrate::config::groups::LimitCfg {
+                metric: busbar_substrate::config::groups::LimitMetric::Requests,
                 amount: 2,
-                per: Some(busbar_core::config::groups::LimitWindow::Minute),
+                per: Some(busbar_substrate::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -1571,13 +1571,13 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
 
     let groups = std::collections::BTreeMap::from([(
         "rl0".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_core::config::groups::LimitCfg {
-                metric: busbar_core::config::groups::LimitMetric::Requests,
+            limits: vec![busbar_substrate::config::groups::LimitCfg {
+                metric: busbar_substrate::config::groups::LimitMetric::Requests,
                 amount: 0,
-                per: Some(busbar_core::config::groups::LimitWindow::Minute),
+                per: Some(busbar_substrate::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -2383,7 +2383,7 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
     });
 
     let auth_cfg_token =
-        AuthCfg::with_chain(vec![busbar_core::config::AuthChainEntry::bare("keys")]);
+        AuthCfg::with_chain(vec![busbar_substrate::config::auth::AuthChainEntry::bare("keys")]);
     let app_token = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -2746,7 +2746,7 @@ async fn test_failover_deadline() {
             &server.base_url(),
         ))
         .pool("default", &[(0, 1), (1, 1)])
-        .failover(busbar_core::config::FailoverCfg {
+        .failover(busbar_substrate::config::pools::FailoverCfg {
             timeout_secs: 120,
             exclusions: None,
             max_hops: 3,
@@ -3517,7 +3517,7 @@ mod disposition_matrix_tests {
         // with an unknown StatusClass value must still fail.
         use busbar_core::config::RootCfg;
 
-        let model = busbar_core::config::ModelCfg {
+        let model = busbar_substrate::config::providers::ModelCfg {
             reasoning: None,
             prompt_caching: None,
             max_requests: -1,
@@ -3527,9 +3527,9 @@ mod disposition_matrix_tests {
             upstream_model: None,
             attempt_timeout_ms: None,
         };
-        let pool = busbar_core::config::PoolCfg {
+        let pool = busbar_substrate::config::pools::PoolCfg {
             upstream_credentials: None,
-            members: vec![busbar_core::config::PoolMember {
+            members: vec![busbar_substrate::config::pools::PoolMember {
                 reasoning: None,
                 model: "m".into(),
                 weight: 1,
@@ -3542,7 +3542,7 @@ mod disposition_matrix_tests {
             failover: None,
             on_exhausted: None,
             affinity: None,
-            policy: busbar_core::config::PoolPolicy::default(),
+            policy: busbar_substrate::config::pools::PoolPolicy::default(),
             gates: Vec::new(),
             base_named: false,
             ..Default::default()
@@ -3551,7 +3551,7 @@ mod disposition_matrix_tests {
             let mut providers = HashMap::new();
             providers.insert(
                 "p".to_string(),
-                busbar_core::config::ProviderCfg {
+                busbar_substrate::config::providers::ProviderCfg {
                     protocol: "anthropic".into(),
                     base_url: "https://api.example.com".into(),
                     api_key: busbar_api::SecretRef::env("API_KEY"),
@@ -3582,7 +3582,7 @@ mod disposition_matrix_tests {
                 listen: "0.0.0.0:8080".into(),
                 public_url: None,
                 tls: None,
-                admin_listen: busbar_core::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
+                admin_listen: busbar_substrate::config::sections::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
                 admin_tls: None,
                 auth: None,
                 admin_auth: vec!["admin-tokens".to_string()],
@@ -3599,7 +3599,7 @@ mod disposition_matrix_tests {
                 blocked_metadata_hosts: Vec::new(),
                 allow_metadata_hosts: Vec::new(),
                 allow_all_metadata: false,
-                limits: busbar_core::config::LimitsResolved::default(),
+                limits: busbar_substrate::config::limits::LimitsResolved::default(),
                 export: Default::default(),
                 identity_providers: Default::default(),
                 export_defs: Default::default(),
@@ -3937,7 +3937,7 @@ async fn test_exhaustion_least_bad_selects_soonest() {
             .err(5),
         )
         .pool("leastbad", &[(0, 1), (1, 1)])
-        .on_exhausted("leastbad", busbar_core::config::OnExhausted::LeastBad)
+        .on_exhausted("leastbad", busbar_substrate::config::pools::OnExhausted::LeastBad)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -4024,7 +4024,7 @@ async fn test_forward_once_records_success_and_spends_budget() {
             .budget(2), // limited lane: 2 lifetime requests remaining
         )
         .pool("leastbad", &[(0, 1)])
-        .on_exhausted("leastbad", busbar_core::config::OnExhausted::LeastBad)
+        .on_exhausted("leastbad", busbar_substrate::config::pools::OnExhausted::LeastBad)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -4176,7 +4176,7 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
                 .err(5),
             )
             .pool("leastbad", &[(0, 1)])
-            .on_exhausted("leastbad", busbar_core::config::OnExhausted::LeastBad)
+            .on_exhausted("leastbad", busbar_substrate::config::pools::OnExhausted::LeastBad)
             .build();
         let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -4272,11 +4272,11 @@ async fn test_fallback_pool_loop_guard() {
         .fallback_pool("pool_b", &[(2, 1), (3, 1)])
         .on_exhausted(
             "pool_a",
-            busbar_core::config::OnExhausted::FallbackPool("pool_b".to_string()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("pool_b".to_string()),
         )
         .on_exhausted(
             "pool_b",
-            busbar_core::config::OnExhausted::FallbackPool("pool_a".to_string()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("pool_a".to_string()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -4365,7 +4365,7 @@ async fn test_fallback_pool_routes_to_backup() {
         .fallback_pool("backup", &[(2, 1)])
         .on_exhausted(
             "primary",
-            busbar_core::config::OnExhausted::FallbackPool("backup".to_string()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("backup".to_string()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -4739,8 +4739,8 @@ async fn test_health_probe_recovers_tripped_lane() {
             )
             .provider("p")
             .api_key("test-key")
-            .health(busbar_core::config::HealthCfg {
-                mode: busbar_core::config::HealthMode::Dead,
+            .health(busbar_substrate::config::providers::HealthCfg {
+                mode: busbar_substrate::config::providers::HealthMode::Dead,
                 interval_secs: None,
                 timeout_secs: None,
             }),
@@ -4791,8 +4791,8 @@ async fn test_health_probe_failure_records_transient() {
             )
             .provider("p")
             .api_key("test-key")
-            .health(busbar_core::config::HealthCfg {
-                mode: busbar_core::config::HealthMode::Active,
+            .health(busbar_substrate::config::providers::HealthCfg {
+                mode: busbar_substrate::config::providers::HealthMode::Active,
                 interval_secs: None,
                 timeout_secs: None,
             }),
@@ -6095,7 +6095,7 @@ async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
         )
         .pool("default", &[(0, 1)])
         // 1s failover deadline so the test is fast but still exercises the bounded wait.
-        .failover(busbar_core::config::FailoverCfg {
+        .failover(busbar_substrate::config::pools::FailoverCfg {
             timeout_secs: 1,
             max_hops: 0,
             exclusions: None,

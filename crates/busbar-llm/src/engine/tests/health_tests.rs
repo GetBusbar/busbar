@@ -9,7 +9,7 @@ use crate::test_support::{
     build_once, LaneSpec, MockResponse, MockServer, MockServerState, TestApp,
 };
 use axum::http::StatusCode;
-use busbar_core::config::{HealthCfg, HealthMode};
+use busbar_substrate::config::providers::{HealthCfg, HealthMode};
 use busbar_substrate::store::BreakerState;
 use std::sync::Arc;
 
@@ -599,7 +599,7 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
         });
         c.models.insert(
             "m0".to_string(),
-            busbar_core::config::ModelCfg {
+            busbar_substrate::config::providers::ModelCfg {
                 reasoning: None,
                 prompt_caching: None,
                 max_requests: -1,

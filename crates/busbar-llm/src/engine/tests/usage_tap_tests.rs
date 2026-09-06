@@ -242,13 +242,13 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     // day bucket (a loose day budget materialises it without ever blocking).
     let groups = std::collections::BTreeMap::from([(
         "daygrp".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_core::config::groups::LimitCfg {
-                metric: busbar_core::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_substrate::config::groups::LimitCfg {
+                metric: busbar_substrate::config::groups::LimitMetric::Budget,
                 amount: 1_000_000,
-                per: Some(busbar_core::config::groups::LimitWindow::Day),
+                per: Some(busbar_substrate::config::groups::LimitWindow::Day),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -445,7 +445,7 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
     // 1000 micro-units per token on input and output (a micro-unit is 1e-4 cents), nothing else.
     let card = std::collections::BTreeMap::from([(
         "gpt-4o".to_string(),
-        busbar_core::config::RateEntryCfg {
+        busbar_substrate::config::sections::RateEntryCfg {
             input_utok: 1000.0,
             output_utok: 1000.0,
             cache_read_utok: 0.0,
@@ -454,13 +454,13 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
     )]);
     let groups = std::collections::BTreeMap::from([(
         "g".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_core::config::groups::LimitCfg {
-                metric: busbar_core::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_substrate::config::groups::LimitCfg {
+                metric: busbar_substrate::config::groups::LimitMetric::Budget,
                 amount: 1_000_000_000,
-                per: Some(busbar_core::config::groups::LimitWindow::Day),
+                per: Some(busbar_substrate::config::groups::LimitWindow::Day),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,

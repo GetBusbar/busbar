@@ -44,7 +44,7 @@ async fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(
             "primary",
-            busbar_core::config::OnExhausted::FallbackPool("fb".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -129,7 +129,7 @@ async fn test_forward_once_fallback_transport_error_opens_pool_cell() {
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(
             "primary",
-            busbar_core::config::OnExhausted::FallbackPool("fb".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -217,7 +217,7 @@ async fn test_forward_once_fallback_5xx_fault_trips_and_releases_probe() {
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(
             "primary",
-            busbar_core::config::OnExhausted::FallbackPool("fb".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -328,7 +328,7 @@ async fn test_forward_once_fallback_client_4xx_does_not_trip_breaker() {
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(
             "primary",
-            busbar_core::config::OnExhausted::FallbackPool("fb".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -444,11 +444,11 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
         // A -> B -> A cycle.
         .on_exhausted(
             "A",
-            busbar_core::config::OnExhausted::FallbackPool("B".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("B".into()),
         )
         .on_exhausted(
             "B",
-            busbar_core::config::OnExhausted::FallbackPool("A".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("A".into()),
         )
         .build();
 
@@ -532,7 +532,7 @@ async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker()
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(
             "primary",
-            busbar_core::config::OnExhausted::FallbackPool("fb".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("fb".into()),
         )
         // The 2xx headers optimistically record a SUCCESS before the untranslatable check runs,
         // which closes the probe-won HalfOpen cell immediately — so the default ErrorRate config

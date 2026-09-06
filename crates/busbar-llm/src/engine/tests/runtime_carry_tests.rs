@@ -26,7 +26,7 @@ fn a_rebuild_carries_the_probe_schedule() {
         let mut cfg = no_lane_cfg();
         cfg.models.insert(
             "m0".to_string(),
-            busbar_core::config::ModelCfg {
+            busbar_substrate::config::providers::ModelCfg {
                 reasoning: None,
                 prompt_caching: None,
                 max_requests: -1,

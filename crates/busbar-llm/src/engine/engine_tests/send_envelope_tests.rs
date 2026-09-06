@@ -125,7 +125,7 @@ async fn a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling
             &format!("http://{addr}"),
         ))
         .pool("p", &[(0, 1)])
-        .on_exhausted("p", busbar_core::config::OnExhausted::LeastBad)
+        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::LeastBad)
         .build();
     // The only member's breaker is Open → the pool is exhausted → least_bad degrades onto it.
     app.store

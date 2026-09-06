@@ -35,7 +35,7 @@
 use crate::engine::forward_with_pool;
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-use busbar_core::config::{FailoverCfg, OnExhausted};
+use busbar_substrate::config::pools::{FailoverCfg, OnExhausted};
 use busbar_substrate::store::now;
 use proptest::prelude::*;
 use serde_json::json;
