@@ -90,14 +90,19 @@
    "paths": [
     "crates/busbar/src/root"
    ],
-   "tree_hash": "6dbfb1435ea9a62fc0da368a830679009b53c4404374f1f0b5d5051337cbaecb",
-   "audited_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d",
-   "round": 4,
+   "tree_hash": "a2972d75f0f1be6a29b2a1533e7347fbbe7d38860d36220b40bde8c23a32c6fa",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 5,
    "result": "findings",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J-series round 4 (fix commits on the tip; per-finding counts not carried in the tree)",
-   "auditor": "round-4 finder fleet",
-   "fixed_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d"
+   "counts": {
+    "HIGH": 8,
+    "MEDIUM": 15,
+    "LOW": 6,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 busbar/src/root (per-leg fixes queued: admin, voice, mcp, a2a, llm)",
+   "auditor": "opus",
+   "fixed_at": null
   },
   {
    "id": "crates/busbar/src/main.rs",
@@ -154,12 +159,17 @@
     "crates/busbar-a2a-codec/src"
    ],
    "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 11,
+    "LOW": 8,
+    "NIT": 8
+   },
+   "report": "hand-back 2026-09-06 transports+codecs+substrate-values",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-a2a-codec/src/tests"
@@ -171,13 +181,18 @@
    "paths": [
     "crates/busbar-caps/src"
    ],
-   "tree_hash": "efbe4b1d4dbcf788dbb04282c1028a34e37c7c7903a15d0ac48c99547a33b928",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "tree_hash": "23e131ce5510c6d853bfbb964a039a2d4e02778db4bdb9bfa28992fb0b6df159",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-caps/src/tests"
@@ -190,12 +205,17 @@
     "crates/busbar-contract/src"
    ],
    "tree_hash": "1399ebd150cd1f1813018cc72a60710bb7424d408711079becde52e827e43c3f",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-contract/src/tests"
@@ -208,12 +228,17 @@
     "crates/busbar-contract-transport/src"
    ],
    "tree_hash": "cb61b9c060ad4ad9906a2191be7207c65716cd7f61ea4da139a636fa4b8a06ec",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 11,
+    "LOW": 8,
+    "NIT": 8
+   },
+   "report": "hand-back 2026-09-06 transports+codecs+substrate-values",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-contract-transport/src/tests"
@@ -225,13 +250,16 @@
    "paths": [
     "crates/busbar-core/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "0a1eef10e66a725f644483e54a281e4a74a2aa26c9770516151131f75d8ddc9b",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 5,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 2
+   },
+   "report": "hand-back 2026-09-06 legacy runtime (busbar-voice, busbar-mcp stdio, busbar-core plane_host/governance/admin) -- HIGH=1 MEDIUM=2 fix queued, plus ~10 further MEDIUM/LOW reported in retiring core paths",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core/src/tests"
@@ -243,14 +271,17 @@
    "paths": [
     "crates/busbar-grammar/src"
    ],
-   "tree_hash": "c3ab5d71b260e8ba3cc59b4090a0ce8f05fe2ba22d0359afc287e0396af988be",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "tree_hash": "06ad1f4a9ba3733455b7ac4f679b19c27389590baf88a694913ece948a3a7eff",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
-   "fixed_at": null,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 3,
+    "LOW": 1
+   },
+   "report": "hand-back 2026-09-06 grammar (adversarial pass)",
+   "auditor": "opus",
+   "fixed_at": "588b072617b046e0262d0f4725606630babcb01b",
    "exclude": [
     "crates/busbar-grammar/src/tests"
    ]
@@ -261,14 +292,17 @@
    "paths": [
     "crates/busbar-kernel/src"
    ],
-   "tree_hash": "96563642b190bb07bf700496613a76f46b980195fa646bb4819e4286591ae688",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "tree_hash": "46d22124c992709e046a8b7cd23cdc7c1dd0ff62afd7bf8b59ef8096d97b39ca",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
-   "fixed_at": null,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 2,
+    "LOW": 1
+   },
+   "report": "hand-back 2026-09-06 kernel",
+   "auditor": "opus",
+   "fixed_at": "588b072617b046e0262d0f4725606630babcb01b",
    "exclude": [
     "crates/busbar-kernel/src/tests"
    ]
@@ -297,13 +331,18 @@
    "paths": [
     "crates/busbar-llm-codec/src"
    ],
-   "tree_hash": "55eb84b7f88d7b3444bcbd1ee76a5571ec7645896c4d3f8417c2e12f7fda8327",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "tree_hash": "0a6238586d970b53cf4a42c5e3735b8b8eb1b2085d8b3a36695d67b97ab68654",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 11,
+    "LOW": 8,
+    "NIT": 8
+   },
+   "report": "hand-back 2026-09-06 transports+codecs+substrate-values",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-llm-codec/src/tests"
@@ -315,13 +354,16 @@
    "paths": [
     "crates/busbar-mcp/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "f8c881fa8bfd1d941c8ed6cfc79d23438279dd4fbd323b14d414abb6b81dd9b4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 5,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 2
+   },
+   "report": "hand-back 2026-09-06 legacy runtime (busbar-voice, busbar-mcp stdio, busbar-core plane_host/governance/admin) -- HIGH=1 MEDIUM=2 fix queued, plus ~10 further MEDIUM/LOW reported in retiring core paths",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-mcp/src/tests"
@@ -334,12 +376,17 @@
     "crates/busbar-mcp-codec/src"
    ],
    "tree_hash": "3227006399753afb78c1fa1074caf987af0d220e89024cd6155edc08a57dae87",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 11,
+    "LOW": 8,
+    "NIT": 8
+   },
+   "report": "hand-back 2026-09-06 transports+codecs+substrate-values",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-mcp-codec/src/tests"
@@ -352,12 +399,15 @@
     "crates/busbar-plane-a2a/src"
    ],
    "tree_hash": "6e4248149e6ae8af8c4a6a179ba702b39841ef75bbc19d5144af5bc0e0494760",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 4
+   },
+   "report": "hand-back 2026-09-06 plane-mcp+plane-a2a",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-a2a/src/tests"
@@ -369,13 +419,16 @@
    "paths": [
     "crates/busbar-plane-admin/src"
    ],
-   "tree_hash": "c13aa2c2aa56cb545a849661328ae2eed61304db77de3760ab1712373146a846",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "tree_hash": "09c3cbc0fa2eeb3814bd3c1beeca58c4e194a79f57438b800b79c242f596ec42",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 4
+   },
+   "report": "hand-back 2026-09-06 plane-admin (2 findings rejected, rest queued)",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-admin/src/tests"
@@ -388,12 +441,15 @@
     "crates/busbar-plane-llm/src"
    ],
    "tree_hash": "634319c73b7061e6440df653e8c65358bc245a59fba76b08c8f5a56a4c1acccd",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 1
+   },
+   "report": "hand-back 2026-09-06 plane-llm",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-llm/src/tests"
@@ -405,13 +461,16 @@
    "paths": [
     "crates/busbar-plane-mcp/src"
    ],
-   "tree_hash": "ddc14d0648c613a231c20de3676035e052a8783650fc1e42f001c9940a62a644",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "tree_hash": "6cebc296f647d07fb7ff5737035c29b561d638216be1b83dd2cdeea59f7b7c56",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 4
+   },
+   "report": "hand-back 2026-09-06 plane-mcp+plane-a2a",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-mcp/src/tests"
@@ -423,13 +482,16 @@
    "paths": [
     "crates/busbar-plane-voice/src"
    ],
-   "tree_hash": "e770cb46b434dc34c1b196a0af0f9f62c89e196fe7258283fc333e4b5ebb2dbf",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "tree_hash": "93b607552cefb66d2d4c2cf84bc416680235f0f9d251998cac13e7b7035c5ccd",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 4
+   },
+   "report": "hand-back 2026-09-06 plane-voice",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-voice/src/tests"
@@ -459,13 +521,18 @@
    "paths": [
     "crates/busbar-substrate/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "d3d217f048326eeafb049f4b0d23a1341bee1b3d26a18de7be1b8cfd985194a4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 5,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 9,
+    "LOW": 6,
+    "NIT": 5
+   },
+   "report": "hand-back 2026-09-06 substrate+plugin-loader+plugin-sdk+timing",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-substrate/src/tests"
@@ -477,13 +544,18 @@
    "paths": [
     "crates/busbar-substrate-values/src"
    ],
-   "tree_hash": "9715e3ddbfe163465ec6aa46e89521810ae4174fdf6b7d8a65a08f0d58a61ac5",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "tree_hash": "0449b35a8bbdceb6edf23b05514d4dae78e28f6bd2ecccf12f83058d91d03fc5",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 11,
+    "LOW": 8,
+    "NIT": 8
+   },
+   "report": "hand-back 2026-09-06 transports+codecs+substrate-values",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-substrate-values/src/tests"
@@ -495,13 +567,18 @@
    "paths": [
     "crates/busbar-timing/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "38540ba8e3c850c8aff62e29a2d5e1d3a0a7686edea7ccfd79a627c7290a7ab1",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 5,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 9,
+    "LOW": 6,
+    "NIT": 5
+   },
+   "report": "hand-back 2026-09-06 substrate+plugin-loader+plugin-sdk+timing",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-timing/src/tests"
@@ -514,12 +591,16 @@
     "crates/busbar-transport-grpc/src"
    ],
    "tree_hash": "579deab203474686b70a6c3d9e21e395ec09606417a40d01a2877c536f57a334",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 8,
+    "LOW": 6
+   },
+   "report": "hand-back 2026-09-06 transports-http-grpc-stdio-sse round6",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-grpc/src/tests"
@@ -532,12 +613,16 @@
     "crates/busbar-transport-http/src"
    ],
    "tree_hash": "4caf970b031cc3baf67ab7da53a42d45e3df6460406757b6ba1c63320e8db234",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 8,
+    "LOW": 6
+   },
+   "report": "hand-back 2026-09-06 transports-http-grpc-stdio-sse round6",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-http/src/tests"
@@ -550,12 +635,16 @@
     "crates/busbar-transport-sse/src"
    ],
    "tree_hash": "1462d66a1b2d0a49ce5a3c8fab02f05dd03f6a6531c1eae1bb447e39f2e560cb",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 8,
+    "LOW": 6
+   },
+   "report": "hand-back 2026-09-06 transports-http-grpc-stdio-sse round6",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-sse/src/tests"
@@ -568,12 +657,16 @@
     "crates/busbar-transport-stdio/src"
    ],
    "tree_hash": "e96aece50fe48052d573e84de5e332e9fbf51e9b330cee354fffd941a8ad72ed",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 8,
+    "LOW": 6
+   },
+   "report": "hand-back 2026-09-06 transports-http-grpc-stdio-sse round6",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-stdio/src/tests"
@@ -586,12 +679,17 @@
     "crates/busbar-transport-tcp/src"
    ],
    "tree_hash": "be0d789b31b1255e3cdc4a5b19b25e9dbc611ea3e581066b884aedbe434cfea5",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 11,
+    "LOW": 8,
+    "NIT": 8
+   },
+   "report": "hand-back 2026-09-06 transports+codecs+substrate-values",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-tcp/src/tests"
@@ -604,12 +702,17 @@
     "crates/busbar-transport-tls/src"
    ],
    "tree_hash": "a7fb61acd27ccf613801ac306acd4f875ae5bc2998fa462bc13c828cdcbe6d3c",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 11,
+    "LOW": 8,
+    "NIT": 8
+   },
+   "report": "hand-back 2026-09-06 transports+codecs+substrate-values",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-tls/src/tests"
@@ -621,13 +724,18 @@
    "paths": [
     "crates/busbar-transport-ws/src"
    ],
-   "tree_hash": "71368d6a741566357991dacc1e28a81efaeb66aa92a68fde84f78df654c1e3f8",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "tree_hash": "649bdd985be53eb7297cca1a9ef95aa931e8c8c72c945cf0e2ebdbcf25e22b37",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 11,
+    "LOW": 8,
+    "NIT": 8
+   },
+   "report": "hand-back 2026-09-06 transports+codecs+substrate-values",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-ws/src/tests"
@@ -640,12 +748,17 @@
     "crates/busbar-unit-admission/src"
    ],
    "tree_hash": "25b62d6ce1971c5bdb35f18ba713cd991905faedcc19954b98df2f8b47644c74",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-admission/src/tests"
@@ -657,13 +770,18 @@
    "paths": [
     "crates/busbar-unit-audit/src"
    ],
-   "tree_hash": "56898114b3898bdd4a617f6c0fe4c6a97dbf7fdf52d9ac21cdb5d3c78d424daa",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "tree_hash": "26343255f8865554112494380c77058905872e5c89c8a5fc882d5675ed2d6031",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-audit/src/tests"
@@ -676,12 +794,17 @@
     "crates/busbar-unit-auth/src"
    ],
    "tree_hash": "d5246052c644844fcff51d38033fd0f02a856e4fa8cf8ba9b7bc9b39e6901abf",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-auth/src/tests"
@@ -693,13 +816,18 @@
    "paths": [
     "crates/busbar-unit-breaker/src"
    ],
-   "tree_hash": "8dc4d147509a13ef5d6a7508e32f84fd1eb6e978d60b8ed7ccacebcfbb70555f",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "tree_hash": "20943150acee37b8c425838159dfd0aa6555d1225c29a4c5e0f2538bb8422f64",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-breaker/src/tests"
@@ -712,12 +840,17 @@
     "crates/busbar-unit-cost/src"
    ],
    "tree_hash": "a34511199b8fd92006b36882d871cefba80f2ad486e00f72d6ce4039017bee4d",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-cost/src/tests"
@@ -730,12 +863,17 @@
     "crates/busbar-unit-egress/src"
    ],
    "tree_hash": "86a991d015258ffe1339be444aa1393157078bb63c647cb7b2735e97947cc2e3",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-egress/src/tests"
@@ -748,12 +886,17 @@
     "crates/busbar-unit-egress-auth/src"
    ],
    "tree_hash": "addcd8b3ab04abc5881a86237b9f2a607d7c4ae53628bd771886360074cb2f0c",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-egress-auth/src/tests"
@@ -766,12 +909,17 @@
     "crates/busbar-unit-ledger/src"
    ],
    "tree_hash": "0f299a4a22bdd156b00a550c39179a3830a9b2bb7e2e61f02deff3778c92a99d",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-ledger/src/tests"
@@ -784,12 +932,17 @@
     "crates/busbar-unit-scope/src"
    ],
    "tree_hash": "db92b3b96fee84a7073df0c4393177ec7ac4a1ee29e04e9c141bf873475076ed",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-scope/src/tests"
@@ -802,12 +955,17 @@
     "crates/busbar-unit-transport-key/src"
    ],
    "tree_hash": "5a44a932d4b525fef9d58f2619a3b6d95595a12e358d01aa060b6ec4727b8538",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-transport-key/src/tests"
@@ -819,13 +977,18 @@
    "paths": [
     "crates/busbar-unit-trust/src"
    ],
-   "tree_hash": "fbc6a4c033bc2c5d5fde6ca2cef59ea5910f9548b48ac54bd8201b3f3ce4dc94",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "tree_hash": "5f9035866d73ea82d1971346a9f2f90575b017059118a3549014695e19656e42",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-trust/src/tests"
@@ -837,13 +1000,18 @@
    "paths": [
     "crates/busbar-unit-usage/src"
    ],
-   "tree_hash": "47d129e75c87118d11b74c9d5bf02bd366ea71fc4e54a2739e50ff025232d655",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "tree_hash": "873b9bdaa424db58b73adaedd22214841b2813ee0aa530b5ee345db7bf764303",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-usage/src/tests"
@@ -856,12 +1024,17 @@
     "crates/busbar-unit-verbs/src"
    ],
    "tree_hash": "ca18cc5a88485ef196fdbfed5f753d370d6ab7b2098694e30f8a01f0df85d28b",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-verbs/src/tests"
@@ -873,13 +1046,18 @@
    "paths": [
     "crates/busbar-unit-wal/src"
    ],
-   "tree_hash": "72d1220f81cba5c4dd951f45e84d5deab14866709b7b6882405cb01a859bb9d7",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "tree_hash": "71b9271705405e0c00b42dc75e9ebdb2194786bda79bc847e3a6cbdef9896a7f",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 6,
+    "LOW": 5,
+    "NIT": 3
+   },
+   "report": "hand-back 2026-09-06 units+caps+contract",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-wal/src/tests"
@@ -891,13 +1069,16 @@
    "paths": [
     "crates/busbar-voice/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "e1e2d22f99559ae6bd166c53c0d5598b2c9570a6c0321d54489465fdb390a69e",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 5,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 2
+   },
+   "report": "hand-back 2026-09-06 legacy runtime (busbar-voice, busbar-mcp stdio, busbar-core plane_host/governance/admin) -- HIGH=1 MEDIUM=2 fix queued, plus ~10 further MEDIUM/LOW reported in retiring core paths",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-voice/src/tests"
@@ -909,13 +1090,18 @@
    "paths": [
     "crates/busbar-voice-codec/src"
    ],
-   "tree_hash": "babcacc4cdc0324943ff8814da8b78e4e23f4e81d38f2e4348252ad83fc45c22",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "tree_hash": "a2fa8be7163c6ba98bdbb7fdfb99f15680d3977511267c856d222ea1a3fd761b",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
    "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 11,
+    "LOW": 8,
+    "NIT": 8
+   },
+   "report": "hand-back 2026-09-06 transports+codecs+substrate-values",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-voice-codec/src/tests"
@@ -1017,13 +1203,18 @@
    "paths": [
     "crates/plugin-loader/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "9e546c3a6f86423d5914b6fc030e74d08621813fd0b343a457e9a73199979933",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 5,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 9,
+    "LOW": 6,
+    "NIT": 5
+   },
+   "report": "hand-back 2026-09-06 substrate+plugin-loader+plugin-sdk+timing",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-loader/src/tests"
@@ -1053,13 +1244,18 @@
    "paths": [
     "crates/plugin-sdk/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "b46ac9eb8ddd63ce8f4bebbcfa2ee9cda71acc84ae97c2b570818c915e674bdd",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 5,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 9,
+    "LOW": 6,
+    "NIT": 5
+   },
+   "report": "hand-back 2026-09-06 substrate+plugin-loader+plugin-sdk+timing",
+   "auditor": "opus",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-sdk/src/tests"
@@ -2112,13 +2308,17 @@
    "paths": [
     "scripts"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "28b07e617c36f3ef7ba87bc8539c5bc17187180e20b6f570d491539189845560",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 5,
+   "result": "findings",
+   "counts": {
+    "HIGH": 9,
+    "MEDIUM": 15,
+    "LOW": 6
+   },
+   "report": "hand-back 2026-09-06 scripts+shadow-oracle+workflows",
+   "auditor": "opus",
    "fixed_at": null
   },
   {
@@ -2142,13 +2342,17 @@
    "paths": [
     ".github/workflows"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "1e1819448046ce94337fa723954f6063b84e123050d9f56cf3f4795f655da973",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 5,
+   "result": "findings",
+   "counts": {
+    "HIGH": 9,
+    "MEDIUM": 15,
+    "LOW": 6
+   },
+   "report": "hand-back 2026-09-06 scripts+shadow-oracle+workflows",
+   "auditor": "opus",
    "fixed_at": null
   },
   {
@@ -2262,14 +2466,18 @@
    "paths": [
     "testing/shadow-oracle"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "4ba0e5a18eb53e54547ca66e478513b27eb63ea0e89a6be0aa176f8da3865dcc",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 2,
+    "LOW": 4
+   },
+   "report": "hand-back 2026-09-06 shadow-oracle normalizer/capture/mock round6",
+   "auditor": "opus",
+   "fixed_at": "588b072617b046e0262d0f4725606630babcb01b"
   },
   {
    "id": "testing/voice-conformance",

@@ -6,18 +6,18 @@ An audit result describes one tree. When a scope's tree hash moves, its result e
 the scope reads `stale` -- the code must be looked at again. Nothing here is a wall clock;
 `age` is commits between the audited commit and HEAD.
 
-HEAD at generation: `2c43ca29dce141b6347144a2e8f07f9ef3b355ac`
+HEAD at generation: `588b072617b046e0262d0f4725606630babcb01b`
 
 ## Totals over production LOC
 
 | status | LOC | share |
 | --- | ---: | ---: |
 | clean | 0 | 0.0% |
-| fixed | 24628 | 4.2% |
-| in_progress | 169576 | 28.8% |
+| fixed | 5813 | 1.0% |
+| in_progress | 0 | 0.0% |
 | stale | 0 | 0.0% |
-| open | 0 | 0.0% |
-| unaudited | 393940 | 67.0% |
+| open | 458867 | 77.8% |
+| unaudited | 124988 | 21.2% |
 
 ## production scopes (65)
 
@@ -26,61 +26,61 @@ HEAD at generation: `2c43ca29dce141b6347144a2e8f07f9ef3b355ac`
 | `crates/api/src` | unaudited | - | - | 3538 | unaudited | - | - |
 | `crates/auth-admin-tokens/src` | unaudited | - | - | 63 | unaudited | - | - |
 | `crates/auth-static-plugin/src` | unaudited | - | - | 127 | unaudited | - | - |
-| `crates/busbar-a2a-codec/src` | in_progress | 5 | 1 | 1439 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
+| `crates/busbar-a2a-codec/src` | open | 5 | 0 | 1439 | findings (HIGH=3, MEDIUM=11, LOW=8, NIT=8) | opus | `hand-back 2026-09-06 transports+codecs+substrate-values` |
 | `crates/busbar-a2a/src` | unaudited | - | - | 46456 | unaudited | - | - |
-| `crates/busbar-caps/src` | in_progress | 5 | 1 | 3487 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-contract-transport/src` | in_progress | 5 | 1 | 865 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-contract/src` | in_progress | 5 | 1 | 4558 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-core/src` | unaudited | - | - | 167502 | unaudited | - | - |
-| `crates/busbar-grammar/src` | in_progress | 5 | 1 | 544 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-kernel/src` | in_progress | 5 | 1 | 5172 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-llm-codec/src` | in_progress | 5 | 1 | 84150 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-llm/src` | unaudited | - | - | 57655 | unaudited | - | - |
-| `crates/busbar-mcp-codec/src` | in_progress | 5 | 1 | 2422 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-mcp/src` | unaudited | - | - | 46943 | unaudited | - | - |
-| `crates/busbar-plane-a2a/src` | in_progress | 5 | 1 | 2946 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-plane-admin/src` | in_progress | 5 | 1 | 2297 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-plane-llm/src` | in_progress | 5 | 1 | 1827 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-plane-mcp/src` | in_progress | 5 | 1 | 3233 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-plane-voice/src` | in_progress | 5 | 1 | 2290 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
+| `crates/busbar-caps/src` | open | 5 | 0 | 3512 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-contract-transport/src` | open | 5 | 0 | 865 | findings (HIGH=3, MEDIUM=11, LOW=8, NIT=8) | opus | `hand-back 2026-09-06 transports+codecs+substrate-values` |
+| `crates/busbar-contract/src` | open | 5 | 0 | 4558 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-core/src` | open | 5 | 0 | 167502 | findings (HIGH=1, MEDIUM=2) | opus | `hand-back 2026-09-06 legacy runtime (busbar-voice, busbar-mcp stdio, busbar-core plane_host/governance/admin) -- HIGH=1 MEDIUM=2 fix queued, plus ~10 further MEDIUM/LOW reported in retiring core paths` |
+| `crates/busbar-grammar/src` | fixed | 5 | 0 | 568 | findings (MEDIUM=3, LOW=1) | opus | `hand-back 2026-09-06 grammar (adversarial pass)` |
+| `crates/busbar-kernel/src` | fixed | 5 | 0 | 5245 | findings (MEDIUM=2, LOW=1) | opus | `hand-back 2026-09-06 kernel` |
+| `crates/busbar-llm-codec/src` | open | 5 | 0 | 84214 | findings (HIGH=3, MEDIUM=11, LOW=8, NIT=8) | opus | `hand-back 2026-09-06 transports+codecs+substrate-values` |
+| `crates/busbar-llm/src` | unaudited | - | - | 57761 | unaudited | - | - |
+| `crates/busbar-mcp-codec/src` | open | 5 | 0 | 2422 | findings (HIGH=3, MEDIUM=11, LOW=8, NIT=8) | opus | `hand-back 2026-09-06 transports+codecs+substrate-values` |
+| `crates/busbar-mcp/src` | open | 5 | 0 | 46943 | findings (HIGH=1, MEDIUM=2) | opus | `hand-back 2026-09-06 legacy runtime (busbar-voice, busbar-mcp stdio, busbar-core plane_host/governance/admin) -- HIGH=1 MEDIUM=2 fix queued, plus ~10 further MEDIUM/LOW reported in retiring core paths` |
+| `crates/busbar-plane-a2a/src` | open | 5 | 0 | 2946 | findings (HIGH=3, MEDIUM=4) | opus | `hand-back 2026-09-06 plane-mcp+plane-a2a` |
+| `crates/busbar-plane-admin/src` | open | 5 | 0 | 2321 | findings (HIGH=3, MEDIUM=4) | opus | `hand-back 2026-09-06 plane-admin (2 findings rejected, rest queued)` |
+| `crates/busbar-plane-llm/src` | open | 5 | 0 | 1827 | findings (HIGH=1, MEDIUM=1) | opus | `hand-back 2026-09-06 plane-llm` |
+| `crates/busbar-plane-mcp/src` | open | 5 | 0 | 3276 | findings (HIGH=3, MEDIUM=4) | opus | `hand-back 2026-09-06 plane-mcp+plane-a2a` |
+| `crates/busbar-plane-voice/src` | open | 5 | 0 | 2436 | findings (HIGH=1, MEDIUM=4) | opus | `hand-back 2026-09-06 plane-voice` |
 | `crates/busbar-plugin/src` | unaudited | - | - | 7327 | unaudited | - | - |
-| `crates/busbar-substrate-values/src` | in_progress | 5 | 1 | 10891 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-substrate/src` | unaudited | - | - | 38171 | unaudited | - | - |
-| `crates/busbar-timing/src` | unaudited | - | - | 611 | unaudited | - | - |
-| `crates/busbar-transport-grpc/src` | in_progress | 5 | 1 | 1457 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-transport-http/src` | in_progress | 5 | 1 | 3554 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-transport-sse/src` | in_progress | 5 | 1 | 1244 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-transport-stdio/src` | in_progress | 5 | 1 | 732 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-transport-tcp/src` | in_progress | 5 | 1 | 1277 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-transport-tls/src` | in_progress | 5 | 1 | 2472 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-transport-ws/src` | in_progress | 5 | 1 | 1006 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-unit-admission/src` | in_progress | 5 | 1 | 2073 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-unit-audit/src` | in_progress | 5 | 1 | 2059 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-unit-auth/src` | in_progress | 5 | 1 | 1400 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-unit-breaker/src` | in_progress | 5 | 1 | 3397 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-unit-cost/src` | in_progress | 5 | 1 | 579 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-unit-egress-auth/src` | in_progress | 5 | 1 | 973 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-unit-egress/src` | in_progress | 5 | 1 | 3138 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-unit-ledger/src` | in_progress | 5 | 1 | 2504 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-unit-scope/src` | in_progress | 5 | 1 | 616 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-unit-transport-key/src` | in_progress | 5 | 1 | 947 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-unit-trust/src` | in_progress | 5 | 1 | 2668 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-unit-usage/src` | in_progress | 5 | 1 | 1007 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-unit-verbs/src` | in_progress | 5 | 1 | 2342 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-unit-wal/src` | in_progress | 5 | 1 | 2748 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-voice-codec/src` | in_progress | 5 | 1 | 5262 | in_progress | round-5 finder fleet | `docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)` |
-| `crates/busbar-voice/src` | unaudited | - | - | 9163 | unaudited | - | - |
+| `crates/busbar-substrate-values/src` | open | 5 | 0 | 10923 | findings (HIGH=3, MEDIUM=11, LOW=8, NIT=8) | opus | `hand-back 2026-09-06 transports+codecs+substrate-values` |
+| `crates/busbar-substrate/src` | open | 5 | 0 | 38171 | findings (HIGH=2, MEDIUM=9, LOW=6, NIT=5) | opus | `hand-back 2026-09-06 substrate+plugin-loader+plugin-sdk+timing` |
+| `crates/busbar-timing/src` | open | 5 | 0 | 665 | findings (HIGH=2, MEDIUM=9, LOW=6, NIT=5) | opus | `hand-back 2026-09-06 substrate+plugin-loader+plugin-sdk+timing` |
+| `crates/busbar-transport-grpc/src` | open | 6 | 0 | 1457 | findings (HIGH=2, MEDIUM=8, LOW=6) | opus | `hand-back 2026-09-06 transports-http-grpc-stdio-sse round6` |
+| `crates/busbar-transport-http/src` | open | 6 | 0 | 3554 | findings (HIGH=2, MEDIUM=8, LOW=6) | opus | `hand-back 2026-09-06 transports-http-grpc-stdio-sse round6` |
+| `crates/busbar-transport-sse/src` | open | 6 | 0 | 1244 | findings (HIGH=2, MEDIUM=8, LOW=6) | opus | `hand-back 2026-09-06 transports-http-grpc-stdio-sse round6` |
+| `crates/busbar-transport-stdio/src` | open | 6 | 0 | 732 | findings (HIGH=2, MEDIUM=8, LOW=6) | opus | `hand-back 2026-09-06 transports-http-grpc-stdio-sse round6` |
+| `crates/busbar-transport-tcp/src` | open | 5 | 0 | 1277 | findings (HIGH=3, MEDIUM=11, LOW=8, NIT=8) | opus | `hand-back 2026-09-06 transports+codecs+substrate-values` |
+| `crates/busbar-transport-tls/src` | open | 5 | 0 | 2472 | findings (HIGH=3, MEDIUM=11, LOW=8, NIT=8) | opus | `hand-back 2026-09-06 transports+codecs+substrate-values` |
+| `crates/busbar-transport-ws/src` | open | 5 | 0 | 1035 | findings (HIGH=3, MEDIUM=11, LOW=8, NIT=8) | opus | `hand-back 2026-09-06 transports+codecs+substrate-values` |
+| `crates/busbar-unit-admission/src` | open | 5 | 0 | 2073 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-unit-audit/src` | open | 5 | 0 | 2126 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-unit-auth/src` | open | 5 | 0 | 1400 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-unit-breaker/src` | open | 5 | 0 | 3449 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-unit-cost/src` | open | 5 | 0 | 579 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-unit-egress-auth/src` | open | 5 | 0 | 973 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-unit-egress/src` | open | 5 | 0 | 3138 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-unit-ledger/src` | open | 5 | 0 | 2504 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-unit-scope/src` | open | 5 | 0 | 616 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-unit-transport-key/src` | open | 5 | 0 | 947 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-unit-trust/src` | open | 5 | 0 | 2676 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-unit-usage/src` | open | 5 | 0 | 934 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-unit-verbs/src` | open | 5 | 0 | 2342 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-unit-wal/src` | open | 5 | 0 | 2863 | findings (HIGH=1, MEDIUM=6, LOW=5, NIT=3) | opus | `hand-back 2026-09-06 units+caps+contract` |
+| `crates/busbar-voice-codec/src` | open | 5 | 0 | 5331 | findings (HIGH=3, MEDIUM=11, LOW=8, NIT=8) | opus | `hand-back 2026-09-06 transports+codecs+substrate-values` |
+| `crates/busbar-voice/src` | open | 5 | 0 | 9163 | findings (HIGH=1, MEDIUM=2) | opus | `hand-back 2026-09-06 legacy runtime (busbar-voice, busbar-mcp stdio, busbar-core plane_host/governance/admin) -- HIGH=1 MEDIUM=2 fix queued, plus ~10 further MEDIUM/LOW reported in retiring core paths` |
 | `crates/busbar/build.rs` | unaudited | - | - | 94 | unaudited | - | - |
-| `crates/busbar/src/main.rs` | unaudited | - | - | 2237 | unaudited | - | - |
-| `crates/busbar/src/root` | fixed | 4 | 4 | 24628 | findings (severities unrecorded) | round-4 finder fleet | `docs/design/1.6.0-TRACKER.md J-series round 4 (fix commits on the tip; per-finding counts not carried in the tree)` |
+| `crates/busbar/src/main.rs` | unaudited | - | - | 2281 | unaudited | - | - |
+| `crates/busbar/src/root` | open | 5 | 0 | 25216 | findings (HIGH=8, MEDIUM=15, LOW=6, NIT=3) | opus | `hand-back 2026-09-06 busbar/src/root (per-leg fixes queued: admin, voice, mcp, a2a, llm)` |
 | `crates/export-example-plugin/src` | unaudited | - | - | 33 | unaudited | - | - |
 | `crates/hook-test-plugin/src` | unaudited | - | - | 284 | unaudited | - | - |
 | `crates/hooks-ranking/src` | unaudited | - | - | 258 | unaudited | - | - |
 | `crates/plane-abi-spike-plugin/src` | unaudited | - | - | 72 | unaudited | - | - |
 | `crates/plane-abi-spike/src` | unaudited | - | - | 362 | unaudited | - | - |
-| `crates/plugin-loader/src` | unaudited | - | - | 5314 | unaudited | - | - |
+| `crates/plugin-loader/src` | open | 5 | 0 | 5348 | findings (HIGH=2, MEDIUM=9, LOW=6, NIT=5) | opus | `hand-back 2026-09-06 substrate+plugin-loader+plugin-sdk+timing` |
 | `crates/plugin-pack/src` | unaudited | - | - | 603 | unaudited | - | - |
-| `crates/plugin-sdk/src` | unaudited | - | - | 1398 | unaudited | - | - |
+| `crates/plugin-sdk/src` | open | 5 | 0 | 1398 | findings (HIGH=2, MEDIUM=9, LOW=6, NIT=5) | opus | `hand-back 2026-09-06 substrate+plugin-loader+plugin-sdk+timing` |
 | `crates/plugin-sign/src` | unaudited | - | - | 824 | unaudited | - | - |
 | `crates/plugin-testkit/src` | unaudited | - | - | 806 | unaudited | - | - |
 | `crates/secret-example-plugin/src` | unaudited | - | - | 68 | unaudited | - | - |
@@ -102,49 +102,49 @@ HEAD at generation: `2c43ca29dce141b6347144a2e8f07f9ef3b355ac`
 | `crates/busbar-core/benches` | unaudited | - | - | 115 | unaudited | - | - |
 | `crates/busbar-core/src/tests` | unaudited | - | - | 11065 | unaudited | - | - |
 | `crates/busbar-core/tests` | unaudited | - | - | 898 | unaudited | - | - |
-| `crates/busbar-grammar/tests` | unaudited | - | - | 296 | unaudited | - | - |
-| `crates/busbar-kernel/tests` | unaudited | - | - | 4593 | unaudited | - | - |
-| `crates/busbar-llm-codec/src/tests` | unaudited | - | - | 16428 | unaudited | - | - |
+| `crates/busbar-grammar/tests` | unaudited | - | - | 717 | unaudited | - | - |
+| `crates/busbar-kernel/tests` | unaudited | - | - | 5226 | unaudited | - | - |
+| `crates/busbar-llm-codec/src/tests` | unaudited | - | - | 16468 | unaudited | - | - |
 | `crates/busbar-llm/src/tests` | unaudited | - | - | 660 | unaudited | - | - |
 | `crates/busbar-mcp-codec/src/tests` | unaudited | - | - | 704 | unaudited | - | - |
 | `crates/busbar-mcp/src/tests` | unaudited | - | - | 73 | unaudited | - | - |
 | `crates/busbar-plane-a2a/tests` | unaudited | - | - | 1652 | unaudited | - | - |
 | `crates/busbar-plane-llm/tests` | unaudited | - | - | 2270 | unaudited | - | - |
 | `crates/busbar-plane-mcp/tests` | unaudited | - | - | 1745 | unaudited | - | - |
-| `crates/busbar-plane-voice/src/tests` | unaudited | - | - | 1429 | unaudited | - | - |
-| `crates/busbar-plane-voice/tests` | unaudited | - | - | 179 | unaudited | - | - |
+| `crates/busbar-plane-voice/src/tests` | unaudited | - | - | 1666 | unaudited | - | - |
+| `crates/busbar-plane-voice/tests` | unaudited | - | - | 186 | unaudited | - | - |
 | `crates/busbar-plugin/src/tests` | unaudited | - | - | 166 | unaudited | - | - |
 | `crates/busbar-plugin/tests` | unaudited | - | - | 1104 | unaudited | - | - |
-| `crates/busbar-substrate-values/src/tests` | unaudited | - | - | 2905 | unaudited | - | - |
+| `crates/busbar-substrate-values/src/tests` | unaudited | - | - | 2949 | unaudited | - | - |
 | `crates/busbar-substrate/src/tests` | unaudited | - | - | 915 | unaudited | - | - |
 | `crates/busbar-substrate/tests` | unaudited | - | - | 334 | unaudited | - | - |
 | `crates/busbar-timing/src/tests` | unaudited | - | - | 66 | unaudited | - | - |
 | `crates/busbar-timing/tests` | unaudited | - | - | 37 | unaudited | - | - |
 | `crates/busbar-transport-grpc/src/tests` | unaudited | - | - | 1483 | unaudited | - | - |
 | `crates/busbar-transport-stdio/src/tests` | unaudited | - | - | 603 | unaudited | - | - |
-| `crates/busbar-transport-ws/src/tests` | unaudited | - | - | 1029 | unaudited | - | - |
+| `crates/busbar-transport-ws/src/tests` | unaudited | - | - | 1079 | unaudited | - | - |
 | `crates/busbar-unit-admission/src/tests` | unaudited | - | - | 2773 | unaudited | - | - |
-| `crates/busbar-unit-audit/src/tests` | unaudited | - | - | 1567 | unaudited | - | - |
+| `crates/busbar-unit-audit/src/tests` | unaudited | - | - | 1745 | unaudited | - | - |
 | `crates/busbar-unit-auth/src/tests` | unaudited | - | - | 1608 | unaudited | - | - |
 | `crates/busbar-unit-cost/src/tests` | unaudited | - | - | 1077 | unaudited | - | - |
 | `crates/busbar-unit-cost/tests` | unaudited | - | - | 243 | unaudited | - | - |
 | `crates/busbar-unit-egress/src/tests` | unaudited | - | - | 3400 | unaudited | - | - |
 | `crates/busbar-unit-egress/tests` | unaudited | - | - | 487 | unaudited | - | - |
 | `crates/busbar-unit-ledger/src/tests` | unaudited | - | - | 2031 | unaudited | - | - |
-| `crates/busbar-unit-trust/src/tests` | unaudited | - | - | 3001 | unaudited | - | - |
+| `crates/busbar-unit-trust/src/tests` | unaudited | - | - | 3044 | unaudited | - | - |
 | `crates/busbar-unit-trust/tests` | unaudited | - | - | 113 | unaudited | - | - |
-| `crates/busbar-unit-usage/src/tests` | unaudited | - | - | 1215 | unaudited | - | - |
+| `crates/busbar-unit-usage/src/tests` | unaudited | - | - | 1072 | unaudited | - | - |
 | `crates/busbar-unit-verbs/src/tests` | unaudited | - | - | 2396 | unaudited | - | - |
-| `crates/busbar-unit-wal/src/tests` | unaudited | - | - | 1694 | unaudited | - | - |
+| `crates/busbar-unit-wal/src/tests` | unaudited | - | - | 1947 | unaudited | - | - |
 | `crates/busbar-voice-codec/tests` | unaudited | - | - | 108 | unaudited | - | - |
 | `crates/busbar-voice/src/tests` | unaudited | - | - | 2400 | unaudited | - | - |
 | `crates/busbar/benches` | unaudited | - | - | 522 | unaudited | - | - |
 | `crates/busbar/src/tests` | unaudited | - | - | 366 | unaudited | - | - |
-| `crates/busbar/tests` | unaudited | - | - | 9858 | unaudited | - | - |
+| `crates/busbar/tests` | unaudited | - | - | 9983 | unaudited | - | - |
 | `crates/hooks-ranking/src/tests` | unaudited | - | - | 390 | unaudited | - | - |
 | `crates/plane-abi-spike/benches` | unaudited | - | - | 234 | unaudited | - | - |
 | `crates/plane-abi-spike/src/tests` | unaudited | - | - | 83 | unaudited | - | - |
-| `crates/plugin-loader/src/tests` | unaudited | - | - | 7946 | unaudited | - | - |
+| `crates/plugin-loader/src/tests` | unaudited | - | - | 7976 | unaudited | - | - |
 | `crates/plugin-loader/tests` | unaudited | - | - | 175 | unaudited | - | - |
 | `crates/plugin-pack/src/tests` | unaudited | - | - | 877 | unaudited | - | - |
 | `crates/plugin-sdk/src/tests` | unaudited | - | - | 1144 | unaudited | - | - |
@@ -159,18 +159,18 @@ HEAD at generation: `2c43ca29dce141b6347144a2e8f07f9ef3b355ac`
 
 | scope | status | round | age (commits) | LOC | result | auditor | report |
 | --- | --- | ---: | ---: | ---: | --- | --- | --- |
-| `.github/workflows` | unaudited | - | - | 11900 | unaudited | - | - |
-| `qa` | unaudited | - | - | 22739 | unaudited | - | - |
-| `scripts` | unaudited | - | - | 42481 | unaudited | - | - |
+| `.github/workflows` | open | 5 | 0 | 11940 | findings (HIGH=9, MEDIUM=15, LOW=6) | opus | `hand-back 2026-09-06 scripts+shadow-oracle+workflows` |
+| `qa` | unaudited | - | - | 25215 | unaudited | - | - |
+| `scripts` | open | 5 | 0 | 43204 | findings (HIGH=9, MEDIUM=15, LOW=6) | opus | `hand-back 2026-09-06 scripts+shadow-oracle+workflows` |
 | `testing` | unaudited | - | - | 320 | unaudited | - | - |
 | `testing/a2a-governance` | unaudited | - | - | 305 | unaudited | - | - |
 | `testing/a2a-harness` | unaudited | - | - | 11167 | unaudited | - | - |
 | `testing/a2a-supplement` | unaudited | - | - | 3979 | unaudited | - | - |
 | `testing/a2a-tck` | unaudited | - | - | 1921 | unaudited | - | - |
-| `testing/fleet-fixtures` | unaudited | - | - | 1471 | unaudited | - | - |
+| `testing/fleet-fixtures` | unaudited | - | - | 1994 | unaudited | - | - |
 | `testing/llm-conformance` | unaudited | - | - | 1890 | unaudited | - | - |
 | `testing/mcp-conformance` | unaudited | - | - | 5365 | unaudited | - | - |
-| `testing/shadow-oracle` | unaudited | - | - | 63682 | unaudited | - | - |
+| `testing/shadow-oracle` | fixed | 6 | 0 | 64039 | findings (HIGH=2, MEDIUM=2, LOW=4) | opus | `hand-back 2026-09-06 shadow-oracle normalizer/capture/mock round6` |
 | `testing/voice-conformance` | unaudited | - | - | 1645 | unaudited | - | - |
 
 ## Statuses
