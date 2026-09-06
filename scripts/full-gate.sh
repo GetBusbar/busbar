@@ -90,8 +90,72 @@ declare -a SKIP_REASON=(
   "testing/shadow-oracle/record.sh|drives a built binary through every recorded cell and writes a recording tree. Needs the release build and the fetched golden binary, exactly as selftest.sh does — CI runs it twice, once per side."
   "testing/shadow-oracle/replay.sh|compares the two recording trees record.sh produces. With no recordings there is nothing to replay; the harness's own logic IS proven here by testing/shadow-oracle/replay-selftest.sh, which runs."
   "testing/llm-conformance/run.sh|replays the candidate recording against the vendor specs pinned in spec-digests.tsv, which are fetched over the network and are not in the repository. Its harness logic is proven here by testing/llm-conformance/selftest.sh, which runs."
-  "scripts/construction-gate.sh|RED BY DESIGN on HEAD (three rows over their qa/construction.toml ceilings) while the construction work it measures is in flight; ci.yml runs its --check report-only (continue-on-error, verdict printed by the umbrella, not counted). Running it here would red the whole local gate on a fact CI does not score. Its --selftest DOES run here (the rule above). Run 'scripts/construction-gate.sh --check' directly for the report; DELETE this entry when the CI job is flipped to blocking."
+  "scripts/construction-gate.sh|its bare --check is not run as a pass/fail gate here: it is RED on HEAD while the construction work it measures is in flight, and ci.yml runs it report-only (continue-on-error). It is NOT waived, though — the CONSTRUCTION_EXPECTED_RED block below names the exact red rows the waiver covers and runs --check against that list, so a tenth red row fails this gate and a row that goes green must be struck from the list. Its --selftest also runs here (the rule above)."
 )
+
+# ── THE CONSTRUCTION WAIVER, NAMED ROW BY ROW ─────────────────────────────────────────────────────
+# The entry above used to say "RED BY DESIGN (three rows)" and skip the gate outright. HEAD had NINE
+# red rows, and would have passed this file with ninety: a waiver whose subject is a COUNT in a
+# sentence is a waiver for whatever happens to be red, forever, and the sentence had already been
+# wrong for six rows without anybody noticing. So the waiver names its rows.
+#
+# The list below is the exact set of `construction-gate.sh --check` FAIL row ids this umbrella
+# accepts today. Any id not on it is a NEW regression and reds this gate. Any id on it that has gone
+# green must be DELETED from the list in the same commit that fixed it — a waiver for a row that no
+# longer needs one is how the list stops being read. When it is empty, delete this block and the skip
+# entry above and let the gate run as itself.
+declare -a CONSTRUCTION_EXPECTED_RED=(
+  hold-escapes
+  legacy-reach:busbar_substrate
+  one-pick-site
+  one-pricing-site
+  one-pricing-site:fee-fields
+  plane-no-money
+  ports-only-tests:busbar-llm
+  request-path-fn-size
+  terminal-doors-in-audit-step
+)
+
+# $1 (optional) = a ledger tsv to judge instead of running the gate; the selftest passes fixtures.
+construction_waiver() {
+  local ledger="${1:-}"
+  if [ -z "$ledger" ]; then
+    ledger="${CONSTRUCTION_OUT:-target/construction}/ledger.tsv"
+    scripts/construction-gate.sh --check >/dev/null 2>&1 || true
+  fi
+  if [ ! -s "$ledger" ]; then
+    printf 'the construction gate wrote no ledger at %s, so there is no row set to judge.\n' "$ledger"
+    printf 'A waiver over an unread gate waives everything. RED.\n'
+    return 1
+  fi
+  local actual expected new gone rows
+  rows="$(awk 'NF{n++} END{print n+0}' "$ledger")"
+  if [ "$rows" -eq 0 ]; then
+    printf 'the construction ledger is empty (0 rows). RED — a gate that measured nothing is not a\n'
+    printf 'gate whose red rows are the expected ones.\n'
+    return 1
+  fi
+  actual="$(awk -F'\t' '$2=="FAIL"{print $1}' "$ledger" | sort -u)"
+  expected="$(printf '%s\n' "${CONSTRUCTION_EXPECTED_RED[@]}" | sort -u)"
+  new="$(comm -23 <(printf '%s\n' "$actual" | grep . || true) <(printf '%s\n' "$expected"))"
+  gone="$(comm -13 <(printf '%s\n' "$actual" | grep . || true) <(printf '%s\n' "$expected"))"
+  local rc=0
+  if [ -n "$new" ]; then
+    printf 'NEW red row(s) the waiver does not cover:\n'; printf '%s\n' "$new" | sed 's/^/    /'
+    printf '  Fix the row, or add it to CONSTRUCTION_EXPECTED_RED in scripts/full-gate.sh with a\n'
+    printf '  commit message that says why it is owed.\n'
+    rc=1
+  fi
+  if [ -n "$gone" ]; then
+    printf 'waived row(s) that are now GREEN and must be struck from the list:\n'
+    printf '%s\n' "$gone" | sed 's/^/    /'
+    printf '  A waiver for a row that no longer needs one is how the list stops being read.\n'
+    rc=1
+  fi
+  [ "$rc" -eq 0 ] && printf 'construction: %d row(s), the %d expected red row(s) and no others.\n' \
+    "$rows" "$(printf '%s\n' "$expected" | grep -c .)"
+  return "$rc"
+}
 
 # `release-order-lint.py` IS locally runnable and IS included -- named here only so the skip loop
 # above does not swallow it by prefix.
@@ -497,6 +561,42 @@ if [ "${1:-}" = "--selftest" ]; then
     printf '  [FAILED] ci.yml RUSTFLAGS is "%s" but this script exports "%s" -- a local green would not enforce what CI enforces\n' "$ci_rustflags" "$RUSTFLAGS"; bad=1
   fi
 
+  # ── THE CONSTRUCTION WAIVER NAMES ITS ROWS ──────────────────────────────────────────────────────
+  # Red-before-green: the entry this replaced was a sentence ("RED BY DESIGN (three rows)") that
+  # nothing compared against anything, so all four cases below passed silently while HEAD carried
+  # nine red rows. Driven over fixture ledgers, against the real `construction_waiver`.
+  WAIVER_TMP="$(mktemp -d)"
+  waiver_ledger() {   # $1 = out file ; rest = row ids to write as FAIL
+    local out="$1"; shift
+    printf 'some-green-row\tPASS\ttitle\tdetail\n' >"$out"
+    local id; for id in "$@"; do printf '%s\tFAIL\ttitle\tdetail\n' "$id" >>"$out"; done
+  }
+  waiver_ledger "$WAIVER_TMP/exact.tsv" "${CONSTRUCTION_EXPECTED_RED[@]}"
+  if construction_waiver "$WAIVER_TMP/exact.tsv" >/dev/null 2>&1; then
+    printf '  [ok]     the waiver accepts exactly the %d row(s) it names\n' "${#CONSTRUCTION_EXPECTED_RED[@]}"
+  else
+    printf '  [FAILED] the waiver rejected the exact row set it declares\n'; bad=1
+  fi
+  waiver_ledger "$WAIVER_TMP/tenth.tsv" "${CONSTRUCTION_EXPECTED_RED[@]}" a-brand-new-red-row
+  if construction_waiver "$WAIVER_TMP/tenth.tsv" >/dev/null 2>&1; then
+    printf '  [FAILED] a red row the waiver does not name was accepted -- the waiver covers anything\n'; bad=1
+  else
+    printf '  [ok]     one more red row than the waiver names is RED\n'
+  fi
+  waiver_ledger "$WAIVER_TMP/fixed.tsv" "${CONSTRUCTION_EXPECTED_RED[@]:1}"
+  if construction_waiver "$WAIVER_TMP/fixed.tsv" >/dev/null 2>&1; then
+    printf '  [FAILED] a waived row that went green was still accepted -- the list can rot\n'; bad=1
+  else
+    printf '  [ok]     a waived row that has gone green must be struck from the list\n'
+  fi
+  : >"$WAIVER_TMP/empty.tsv"
+  if construction_waiver "$WAIVER_TMP/empty.tsv" >/dev/null 2>&1; then
+    printf '  [FAILED] an empty construction ledger passed the waiver -- an unread gate waives all\n'; bad=1
+  else
+    printf '  [ok]     an empty construction ledger is RED, not a waiver over nothing\n'
+  fi
+  rm -rf "$WAIVER_TMP"
+
   [ "$bad" = 0 ] && { printf '\nfull-gate selftest: discovery, floors and skip-reasons all hold\n'; exit 0; }
   printf '\nSELFTEST FAILED\n'; exit 1
 fi
@@ -566,6 +666,10 @@ for inv in "${RUN[@]}"; do
   # shellcheck disable=SC2086
   run_one "$inv" ${inv}
 done
+
+# The construction gate's --check is skipped as a pass/fail gate (see SKIP_REASON) but its ROW SET is
+# not waived: this asserts the red rows are exactly the ones CONSTRUCTION_EXPECTED_RED names.
+run_one "construction-gate --check == CONSTRUCTION_EXPECTED_RED" construction_waiver
 
 # ── THE EQUALITY LEDGER ───────────────────────────────────────────────────────────────────────────
 # Owner: "LLM == MCP == A2A -- just different protocols not different pathway through engine at

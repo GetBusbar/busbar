@@ -358,8 +358,14 @@ tier   = "fast"
 # function size, ports-only plane→kernel reaches, no uninstalled seam, neutral-no-dialect, single
 # terminal). RUNS REPORT-ONLY here (`--summary`: prints STATUS rule current/ceiling per row plus the
 # verdict line, exits 0), the same posture as plane-grep/secret-hygiene above, because `--check` is RED
-# by design on HEAD (three rows over their ceilings) while the construction work it measures is in
-# flight; ci.yml runs the real `--check` in its own job with continue-on-error for the same reason.
+# on HEAD while the construction work it measures is in flight; ci.yml runs the real `--check` in its
+# own job with continue-on-error for the same reason.
+#
+# THE COUNT THAT USED TO BE HERE WAS WRONG AND NOTHING COULD TELL. This comment said "three rows over
+# their ceilings" while HEAD carried NINE; a reason written as a number in prose is a number nobody
+# recomputes. The row set is now named, once, in scripts/full-gate.sh's CONSTRUCTION_EXPECTED_RED, and
+# that umbrella asserts `--check`'s FAIL rows are exactly that set — a tenth red row fails, and a row
+# that goes green must be struck from the list. Read the list there rather than a count here.
 # Arming is a one-token change (`--summary` -> `--check`) once every row is within its ceiling — no code
 # edit. The --selftest (each rule proves it sees its own planted violation; zero rows is red) runs FIRST.
 run    = "scripts/construction-gate.sh --selftest && scripts/construction-gate.sh --summary"
