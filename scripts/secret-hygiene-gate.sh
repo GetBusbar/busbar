@@ -200,6 +200,37 @@ prod_files() {
   find $* -name '*.rs' 2>/dev/null | grep -v '/tests/' | grep -Ev '_tests?\.rs$' | grep -v '^$' | sort
 }
 
+# ── THE ROOT GUARD — a missing root is RED, never silence ─────────────────────────────────────────
+# Copied, deliberately, from scripts/plane-grep-gate.sh: `find $ROOTS … 2>/dev/null` swallows the
+# diagnostic for a root that was renamed, split or drained, and the pipe loses find's status. The
+# result is an EMPTY file list, zero hits, and a report that says "no bare secret fields" about a
+# tree this gate never opened. Renaming `crates/` printed a clean PASS. Exits the PROCESS, so it is
+# called from run_report directly, never inside a `$(…)` where the exit would kill a subshell only.
+require_roots() {
+  local r missing=""
+  for r in "$@"; do
+    [ -d "$r" ] || missing="${missing:+$missing }$r"
+  done
+  [ -z "$missing" ] && return 0
+  red "secret-hygiene gate: FAIL — scan root(s) listed but not present on disk: $missing"
+  note "A listed root that does not exist is scanned as ZERO files, and zero files carry no secrets."
+  note "If the layout moved, point ROOTS at the new home in a reviewed diff that says so."
+  exit 1
+}
+
+# ── THE ZERO-FILE GUARD — the other way the list comes back empty ─────────────────────────────────
+# The root exists but holds no production .rs (a layout move that left the sources one level down, an
+# exclusion rule that swallowed the tree). A zero-file scan and a clean scan report the IDENTICAL
+# number, so they are separated here before the number means anything. A blind scan is an instrument
+# failure, not debt: it is RED even in report-only mode.
+require_files() {
+  local n="$1"
+  [ "$n" -gt 0 ] && return 0
+  red "secret-hygiene gate: FAIL — the scan covered $n production .rs file(s); zero is RED"
+  note "A scan of zero files reports zero findings, which is indistinguishable from a clean tree."
+  exit 1
+}
+
 # ── SELF-TEST — the scanner cannot be lied to ─────────────────────────────────────────────────────
 run_selftest() {
   hdr "secret-hygiene-gate SELF-TEST (the field/sink scanner cannot be lied to)"
@@ -268,6 +299,30 @@ GREEN2
     fail=1; note "GREEN c2 FAILED: expected 0, got:"; printf '%s\n' "$out" | sed 's/^/    /'
   fi
 
+  # ── RED (instrument): the two ways this gate can scan NOTHING and report a clean tree. ──────────
+  # Neither is a hypothetical: `ROOTS="crates"` is a bare relative path, and renaming or moving that
+  # directory made `find` print its complaint into /dev/null, the file list come back empty, both
+  # checks report 0, and the gate print PASS about a tree it never opened.
+  if ( require_roots "$tmp/no-such-root" ) >/dev/null 2>&1; then
+    fail=1; note "RED root-guard FAILED: a scan root that does not exist was accepted"
+  else
+    note "RED root-guard: a listed scan root that is not on disk is refused, not scanned as zero files"
+  fi
+  mkdir -p "$tmp/empty-root"
+  if ( require_files "$(prod_files "$tmp/empty-root" | grep -c . || true)" ) >/dev/null 2>&1; then
+    fail=1; note "RED zero-file FAILED: a root holding no production .rs was accepted"
+  else
+    note "RED zero-file: a root that exists but holds no production .rs is refused"
+  fi
+  # GREEN (instrument): and both guards pass on the real roots, so the reds above are not a gate
+  # that refuses everything.
+  # shellcheck disable=SC2086
+  if ( require_roots $ROOTS && require_files "$(prod_files $ROOTS | grep -c . || true)" ) >/dev/null 2>&1; then
+    note "GREEN instrument: the real roots exist and carry $(prod_files $ROOTS | grep -c . || true) production .rs file(s)"
+  else
+    fail=1; note "GREEN instrument FAILED: the guards refuse this tree's own roots"
+  fi
+
   if [ "$fail" -ne 0 ]; then
     red "secret-hygiene-gate SELF-TEST FAILED — the scanner would let a bare secret / a logged secret through"
     return 1
@@ -281,11 +336,15 @@ REPORT_TOTAL=0
 run_report() {
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   : >"$tmp/c1"; : >"$tmp/c2"
-  local files; files="$(prod_files $ROOTS)"
   # shellcheck disable=SC2086
-  [ -n "$files" ] && scan_fields "$STRONG_NEEDLES" "$CONTEXT_NEEDLES" "$CONTEXT_STRUCT_RE" $files >>"$tmp/c1"
+  require_roots $ROOTS
+  local files nfiles; files="$(prod_files $ROOTS)"
+  nfiles="$(printf '%s\n' "$files" | grep -c . || true)"
+  require_files "$nfiles"
   # shellcheck disable=SC2086
-  [ -n "$files" ] && scan_sinks "$SINKS" $files >>"$tmp/c2"
+  scan_fields "$STRONG_NEEDLES" "$CONTEXT_NEEDLES" "$CONTEXT_STRUCT_RE" $files >>"$tmp/c1"
+  # shellcheck disable=SC2086
+  scan_sinks "$SINKS" $files >>"$tmp/c2"
 
   local n1 n2 total
   n1="$(awk 'END{print NR+0}' "$tmp/c1")"
