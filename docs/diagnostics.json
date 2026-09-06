@@ -1961,9 +1961,9 @@
     "class": "governance",
     "slug": "accrual-group-missing",
     "title": "Group missing at accrual (tokens ledgered to the key bucket only)",
-    "severity": "benign_recurring",
-    "summary": "A group referenced by a key was gone by the time usage was accrued (the group was deleted between admission and accrual), so busbar degrades to ledgering the tokens on the key's own bucket only rather than lose them. The request was already admitted and served; nothing is lost. This is a per-request, self-degrading path, so it is emitted at debug.",
-    "action": "None — self-heals; tokens are preserved on the key bucket. Frequent occurrence for one key means a group is being deleted out from under active keys; reconcile the key's group assignment.",
+    "severity": "actionable",
+    "summary": "A group referenced by a key was gone by the time usage was accrued (the group was deleted between admission and accrual), so busbar degrades to ledgering the tokens on the key's own bucket only rather than lose them. The KEY's bucket keeps every token, but the GROUP's does not: that group's ledger under-counts by this request, and the budget cap derived from it reads low for the rest of the window, so a caller already over its group budget can be admitted. That is a money signal, not a footnote, which is why this is a warning and not a debug line. Admission and accrual read ONE pinned cost-model snapshot per request, so this cannot fire for a config apply that merely rebuilt the model — it means the group is genuinely gone.",
+    "action": "Reconcile the key's group assignment: a group is being deleted out from under active keys. The tokens themselves are preserved on the key bucket, but the named group's derived spend is low by this request until its window rolls.",
     "since": "1.6.0",
     "retired": false
   },

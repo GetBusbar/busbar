@@ -366,3 +366,37 @@ fn dispatch_scope_reclaims_a_registered_handle_on_scope_end() {
     // The dispatch scope ended → the registered handle was reclaimed exactly once.
     assert_eq!(reclaimed.load(Ordering::SeqCst), 1);
 }
+
+/// THE COST-MODEL SNAPSHOT IS PINNED FOR THE REQUEST'S LIFETIME.
+///
+/// A request charges its budget chain at ADMISSION and lands its tokens at ACCRUAL, and the two
+/// resolve the chain through a `CostModel`. If those were two different snapshots — one from before
+/// a config apply, one from after — the group could be in the admitting model and gone from the
+/// accruing one, `record_usage` would degrade to the key bucket, and the GROUP's ledger would be
+/// short by that request while its derived budget cap read low for the rest of the window. A money
+/// under-count, visible only at a log line.
+///
+/// It cannot happen through this host, and this is why: `EngineHostImpl` binds ONE `Arc<App>` at
+/// mint, `admission_check` charges against that snapshot's `cost`, and `cost()` — the handle the
+/// request's usage sink pins and hands to `meter_ledger` — hands back the SAME `Arc`. Asserted by
+/// POINTER, because equality of contents would pass for two rebuilt-but-identical models and is not
+/// the property that matters. A future `cost()` that re-read a live handle (as `plane_slot_live`
+/// does) would turn this red, which is the point.
+#[test]
+fn the_cost_model_a_request_admits_against_is_the_one_it_accrues_against() {
+    let app = crate::test_support::TestApp::new().build();
+    use busbar_substrate::plane_host::BudgetHost;
+    let host = EngineHostImpl::new(app.clone());
+
+    let admitting = app.cost.clone();
+    let accruing = host
+        .cost()
+        .0
+        .downcast::<crate::cost::CostModel>()
+        .expect("the host's cost handle carries the engine CostModel");
+
+    assert!(
+        Arc::ptr_eq(&admitting, &accruing),
+        "admission and accrual must read ONE pinned cost-model snapshot per request"
+    );
+}
