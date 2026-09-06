@@ -21,11 +21,25 @@
 //! never distinguished a scope and its persisted records were sealed WITHOUT one in the digest input.
 //! The MCP call chain digests the principal and the A2A task chain digests the task id; this stream
 //! registers with `digests_scope = FALSE`. The prelude the host frames is then exactly
-//! `frame_prelude(PipeSeparated, prev_hash, None, seq)` = `prev_hash|seq`, and the plane's suffix
-//! `|ts|action|resource|outcome|principal` byte-concatenates onto it to reproduce the legacy
-//! [`crate::admin::audit::AuditEntry`] digest input byte-for-byte. Registering with `digests_scope = 1`
-//! would fold the scope into the prelude and make EVERY already-persisted admin record report
-//! `DigestMismatch` at the next boot.
+//! `frame_prelude(PipeSeparated, prev_hash, None, seq)` = `prev_hash|seq`. Registering with
+//! `digests_scope = 1` would fold the scope into the prelude and make EVERY already-persisted admin
+//! record report `DigestMismatch` at the next boot.
+//!
+//! ## THE CONTENT SUFFIX IS VERSIONED, PER RECORD — and 1.6.0 is where it moves
+//!
+//! The suffix used to be `|ts|action|resource|outcome|principal`, a join on a character two of those
+//! fields may legitimately CONTAIN. `resource` and `principal` are free text a caller hands to
+//! `record_by` and neither is validated, so two different things that happened produced one digest and
+//! a record saying a mutation was REJECTED could be presented as one saying it was APPLIED, with the
+//! chain still verifying. An audit log whose digest can be made to agree with a lie is not evidence.
+//!
+//! So [`audit_suffix`] now frames every caller-supplied field behind its own big-endian eight-byte
+//! length, under a scheme tag that is itself digested, and [`audit_suffix_legacy`] is retained for one
+//! reason only: records sealed under it are already on disk, cannot be re-sealed, and must keep
+//! verifying. The scheme is carried PER RECORD — derived from the stored bytes, so no new persisted
+//! field is needed — which is what lets a chain that spans the upgrade be legitimately mixed and
+//! verify end to end. The PRELUDE does not move and does not need to: both of its fields are allocated
+//! by the chain, never by a caller.
 //!
 //! ## The claim, and the RAM default
 //!
