@@ -378,6 +378,30 @@
       ],
       "rationale": "1.5.5 answers the group's own BUDGET-total exhaustion (metric: budget, not the requests-cap `over_budget` arm) with error.type \"insufficient_quota\" — OpenAI's vocabulary, outside the nine types the published Anthropic error envelope declares. 1.6.0 answers the identical 429 with error.type \"billing_error\", the Anthropic-native member for a billing/quota refusal. Status (429), message text, and every other field are byte-identical on both sides; only /error/type differs: \"insufficient_quota\" (1.5.5) -> \"billing_error\" (1.6.0).",
       "changelog": "An Anthropic-dialect error names an Anthropic error type. Busbar's quota and context-overflow refusals reached an Anthropic client as `insufficient_quota` and `context_length_exceeded` — OpenAI's vocabulary, and outside the nine types the published error envelope declares, so the official SDK raised a generic `APIError`. They are now `billing_error` and `invalid_request_error`. The status, message and every other error type are unchanged."
+    },
+    {
+      "id": "S-9 responses url citations survive the hop",
+      "kind": "improvement",
+      "changelog": "**A Responses URL citation survives the hop.**",
+      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
+      "cells": "^llm\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|responses\\|request\\|ok(_stream)?$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: the Responses API's published UrlCitationBody FLATTENS url/title/start_index/end_index onto the annotation, while Chat nests them under a url_citation object. 1.5.5 wrote the flat shape but read only the nested one, so every URL citation on a Responses-shaped upstream response was dropped -- including Responses->Responses, where the reader consumed bytes the writer had just produced. 1.6.0 reads both published shapes, so a citation the upstream sent reaches the client. Additive: a response that carried no citation is byte-identical. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "S-10 a cachePoint before a bedrock document does not double the document",
+      "kind": "improvement",
+      "changelog": "**A Bedrock `cachePoint` before a document no longer sends the document twice.**",
+      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
+      "cells": "^llm\\|[a-z]+\\|bedrock\\|request\\|ok(_stream)?$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: the Converse reader parks a native document/video block at its WIRE index and also pushes a modelled block into the IR; the writer suppresses the modelled copy when it recognizes the parked one. A cachePoint or guardContent occupies a wire slot but yields no IR block, so past it the wire and IR indices disagree and the suppression missed -- the document was emitted twice, once modelled and once spliced. AWS reads the attachment twice and the caller pays its input tokens twice. 1.6.0 records the two index spaces separately so the block is emitted exactly once. Request-body only; no usage or billing class is waived here -- the double charge is the defect being removed, not an accepted difference."
     }
   ]
 }

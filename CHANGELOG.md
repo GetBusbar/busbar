@@ -116,6 +116,17 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   the `response.function_call_arguments.delta` events that follow — as real OpenAI does. 1.5.5
   omitted it, so the opening item failed the item schema and an SDK seeding its accumulator from it
   concatenated onto `undefined`. See [Spec fidelity](#spec-fidelity).
+- **A Responses URL citation survives the hop.** The Responses API's published `UrlCitationBody`
+  flattens `url`, `title`, `start_index` and `end_index` onto the annotation, while Chat nests them
+  under a `url_citation` object. Busbar wrote the flat shape correctly but read only the nested one,
+  so every URL citation on a Responses-shaped upstream response was dropped — including on a
+  Responses→Responses passthrough, where it re-read bytes it had just written. Both published shapes
+  are now read. See [Spec fidelity](#spec-fidelity).
+- **A Bedrock `cachePoint` before a document no longer sends the document twice.** The reader parks a
+  native `document`/`video` block at its wire position and the writer suppresses its own modelled
+  copy; a `cachePoint` or `guardContent` earlier in the same message shifted the two apart, so the
+  suppression missed and the attachment went upstream twice — read twice by the model and billed
+  twice. The two index spaces are now tracked separately. See [Spec fidelity](#spec-fidelity).
 - **A Bedrock `Converse` response always carries `metrics`.** The published Converse output shape
   requires the member; 1.5.5's same-dialect passthrough dropped it when the upstream's own response
   did not carry one. 1.6.0 always emits it, with the normalized `latencyMs` for the call.
