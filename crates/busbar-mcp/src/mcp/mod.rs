@@ -778,6 +778,9 @@ pub(crate) fn mcp_openapi_fragment() -> serde_json::Value {
 /// (`changes`, `health`) that contact nothing. `connect` itself is
 /// [`busbar_substrate::admin_verbs::connect_reply`], written once for every plane.
 pub mod admin_view;
+/// THE ONE PLACE GATHERED ANSWERS BECOME TOOL ARGUMENTS — the screen the synchronous retry and the
+/// task runner both call, so the payload that is inspected is the payload that travels.
+pub(crate) mod answers;
 /// THE SEALED `requestState` busbar mints for its OWN asks: HMAC over a payload binding the
 /// authenticated principal, the request, the catalogue generation, a round index and a TTL.
 /// BUSBAR'S OWN ask of its caller, composed from operator configuration alone.
