@@ -194,6 +194,22 @@ fn for_verb_matches_1_5_5s_classify_mutation_row_for_row() {
     );
 }
 
+/// The eight named surfaces have no legacy row (see the module doc on `NAMED_SURFACES`), so the
+/// legacy-scope lookup in `for_verb` cannot see them and they would otherwise fall through to
+/// `Crud` — a read like `GET /healthz` or a model listing spending a mutation slot per hit, exactly
+/// the bug the ledger views are already guarded against a few lines above. `required_scope` already
+/// calls every one of these `ReadOnly`; the rate limiter must agree.
+#[test]
+fn every_named_surface_is_never_rate_limited_as_a_mutation() {
+    for verb in crate::verb::NAMED_SURFACES {
+        assert_eq!(
+            MutationClass::for_verb(*verb, CONFIG_CLASS_RULES),
+            MutationClass::Forbidden,
+            "{verb:?} is a named surface and must never be rate-limited as a mutation"
+        );
+    }
+}
+
 /// The two budgets that matter most for parity: a CONFIG-class verb is denied at the 11th
 /// attempt in a window, never the 61st (i.e. it must not be silently sharing CRUD's budget).
 #[test]
