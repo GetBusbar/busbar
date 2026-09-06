@@ -301,15 +301,40 @@ pub const METHODS: &[MethodRow] = &[
 /// a journal row for the discovery fetch is not a row with the method fact missing.
 pub const METHOD_METADATA: &str = "well-known/protected-resource-metadata";
 
-/// The notification names this plane recognises.
+/// One notice this plane recognises, and which side of the exchange sends it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoticeRow {
+    /// The notice name exactly as it appears on the wire.
+    pub method: &'static str,
+    /// Who sends it. A notice is neither answered nor refused, but it is still SENT by one side, and
+    /// which side that is decides which leg may admit it.
+    pub sender: Sender,
+}
+
+/// The notices this plane recognises, and who sends each.
 ///
 /// A notification obliges no answer, so recognising one is only about knowing whether to act on it.
 /// One this plane does not recognise is DROPPED rather than refused, which is what the specification
 /// requires and what the codec already does.
-pub const NOTIFICATIONS: &[&str] = &[
-    "notifications/roots/list_changed",
-    "notifications/tools/list_changed",
-    "notifications/resources/updated",
+///
+/// The SENDER column is not decoration. Two of these three are server-originated — the codec's own
+/// notification half says so in as many words — and acting on one opens a unit whose plan writes the
+/// catalogue. A list with no sender let either side send either notice, so a CALLER could tell this
+/// node that the server it fronts had changed its tools, and the party being catalogued was no longer
+/// the party deciding when its catalogue is stale.
+pub const NOTICES: &[NoticeRow] = &[
+    NoticeRow {
+        method: "notifications/roots/list_changed",
+        sender: Sender::Client,
+    },
+    NoticeRow {
+        method: "notifications/tools/list_changed",
+        sender: Sender::Provider,
+    },
+    NoticeRow {
+        method: "notifications/resources/updated",
+        sender: Sender::Provider,
+    },
 ];
 
 /// The row for one method name, if this plane carries that method at all.
@@ -318,10 +343,16 @@ pub fn row_for(method: &str) -> Option<&'static MethodRow> {
     METHODS.iter().find(|r| r.method == method)
 }
 
-/// Whether a name is a notification this plane recognises.
+/// The row for one notice name, if this plane recognises that notice at all.
+#[must_use]
+pub fn notice_for(method: &str) -> Option<&'static NoticeRow> {
+    NOTICES.iter().find(|r| r.method == method)
+}
+
+/// Whether a name is a notification this plane recognises, whoever sends it.
 #[must_use]
 pub fn is_known_notification(method: &str) -> bool {
-    NOTIFICATIONS.contains(&method)
+    notice_for(method).is_some()
 }
 
 #[cfg(test)]
