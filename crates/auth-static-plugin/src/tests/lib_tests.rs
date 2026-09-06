@@ -71,3 +71,22 @@ fn credential_is_compared_under_a_digest() {
     assert!(matches!(m.authenticate(Some("x")), AuthOutcome::Pass)); // different length
     assert!(matches!(m.authenticate(None), AuthOutcome::Pass));
 }
+
+/// The check above builds `StaticModule` by hand, which means it proves the COMPARISON is done under
+/// a digest without ever proving `open` puts a digest there. Nothing in this file connected the
+/// config the engine passes to the outcome the chain sees, so a build that stored the raw token in
+/// `token_hash` still went green here — and then failed for real, because the candidate is hashed
+/// before the compare and a raw configured token can never equal a digest. Same seam the engine
+/// drives: config in, outcome out.
+#[test]
+fn a_module_opened_from_config_identifies_its_configured_token() {
+    let m = open(r#"{"token":"sekret","id":"alice"}"#).expect("a well-formed config loads");
+    match m.authenticate(Some("sekret")) {
+        AuthOutcome::Identify(p) => assert_eq!(p.id, "alice"),
+        other => panic!("the configured token must identify as the configured id, got {other:?}"),
+    }
+    assert!(
+        matches!(m.authenticate(Some("nope")), AuthOutcome::Pass),
+        "a wrong credential defers to the next module in the chain, never rejects"
+    );
+}
