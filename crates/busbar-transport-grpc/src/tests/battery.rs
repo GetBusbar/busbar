@@ -802,12 +802,8 @@ async fn served_paths_stays_bounded_across_many_calls() {
 async fn dropping_a_served_calls_outbound_stream_prunes_its_entry() {
     let state = crate::conn::ConnState::new(None, vec!["grpc"]);
     let (tx, rx) = crate::conn::outbound_channel();
-    state
-        .outbound
-        .lock()
-        .unwrap()
-        .insert(3, crate::conn::opened(tx));
-    let out = crate::server::OutStream::new(rx, state.clone(), StreamId(3));
+    let serial = state.register(3, crate::conn::opened(tx));
+    let out = crate::server::OutStream::new(rx, state.clone(), StreamId(3), serial);
     assert_eq!(state.outbound.lock().unwrap().len(), 1);
     drop(out);
     assert_eq!(
@@ -1221,4 +1217,40 @@ async fn a_refusal_that_reaches_no_call_is_an_error() {
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::Closed);
+}
+
+/// A finished call takes its OWN entry out of the outbound map, not whatever the id holds now.
+///
+/// Cleanup runs when a call ends — from the dial side's forwarding task, from the served call's
+/// outbound stream being dropped, from a failed open. All of them ran by `StreamId` alone, and a
+/// `StreamId` is reused: a call ending just as the next one takes its id would remove the live
+/// call's sender, ending a second unit's answer for the first one's death.
+#[test]
+fn a_finished_call_cannot_end_the_one_that_reused_its_id() {
+    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let (first_tx, _first_rx) = crate::conn::outbound_channel();
+    let first = state.register(7, crate::conn::opened(first_tx));
+    assert!(
+        state.end_call(7, first).is_some(),
+        "its own entry is its own"
+    );
+
+    // The id comes round again, and the call now holding it is a different call.
+    let (second_tx, _second_rx) = crate::conn::outbound_channel();
+    let second = state.register(7, crate::conn::opened(second_tx));
+    assert_ne!(first, second, "two calls on one id are two calls");
+
+    // The first call's cleanup, arriving late.
+    assert!(
+        state.end_call(7, first).is_none(),
+        "a finished call took the entry of the live one that reused its id"
+    );
+    assert!(
+        state.call(7).is_some(),
+        "the live call's sender is gone: nothing will ever drain its answer"
+    );
+
+    // And the live one still ends when IT ends.
+    assert!(state.end_call(7, second).is_some());
+    assert!(state.call(7).is_none());
 }

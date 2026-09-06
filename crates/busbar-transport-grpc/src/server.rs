@@ -85,16 +85,13 @@ async fn handle_one_rpc(
     let local = state.next_local_stream.fetch_add(1, Ordering::Relaxed);
     let stream_id = StreamId(local);
     let (out_tx, out_rx) = crate::conn::outbound_channel();
-    state
-        .outbound
-        .lock()
-        .unwrap()
-        .insert(local, crate::conn::opened(out_tx));
+    let serial = state.register(local, crate::conn::opened(out_tx));
 
     let mut grpc = tonic::server::Grpc::new(RawCodec);
     let handler = RpcHandler {
         state: state.clone(),
         stream_id,
+        serial,
         out_rx: Some(out_rx),
     };
     grpc.streaming(handler, req).await
@@ -106,6 +103,8 @@ async fn handle_one_rpc(
 struct RpcHandler {
     state: Arc<ConnState>,
     stream_id: StreamId,
+    /// Which call this is, told apart from the next one to carry the same `StreamId`.
+    serial: u64,
     out_rx: Option<crate::conn::OutboundRx>,
 }
 
@@ -121,6 +120,7 @@ impl tower::Service<Request<tonic::Streaming<Vec<u8>>>> for RpcHandler {
     fn call(&mut self, request: Request<tonic::Streaming<Vec<u8>>>) -> Self::Future {
         let state = self.state.clone();
         let stream_id = self.stream_id;
+        let serial = self.serial;
         let out_rx = self.out_rx.take().expect("called at most once per RPC");
         Box::pin(async move {
             // `is_response = false`: this is the REQUEST body, which carries no `grpc-status`
@@ -131,7 +131,9 @@ impl tower::Service<Request<tonic::Streaming<Vec<u8>>>> for RpcHandler {
                 request.into_inner(),
                 false,
             ));
-            Ok(Response::new(OutStream::new(out_rx, state, stream_id)))
+            Ok(Response::new(OutStream::new(
+                out_rx, state, stream_id, serial,
+            )))
         })
     }
 }
@@ -228,6 +230,7 @@ pub(crate) struct OutStream {
     rx: crate::conn::OutboundRx,
     state: Arc<ConnState>,
     stream_id: StreamId,
+    serial: u64,
 }
 
 impl OutStream {
@@ -235,11 +238,13 @@ impl OutStream {
         rx: crate::conn::OutboundRx,
         state: Arc<ConnState>,
         stream_id: StreamId,
+        serial: u64,
     ) -> Self {
         Self {
             rx,
             state,
             stream_id,
+            serial,
         }
     }
 }
@@ -247,13 +252,12 @@ impl OutStream {
 /// The call is over when its outbound stream is: the entry the connection registered for it goes
 /// with it, so a connection serving many short calls holds senders for the ones still open and no
 /// others.
+///
+/// The entry it takes is its OWN — by serial, not by id alone. A drop that runs after the id has
+/// been reused would otherwise end a second call for the first one's death.
 impl Drop for OutStream {
     fn drop(&mut self) {
-        self.state
-            .outbound
-            .lock()
-            .unwrap()
-            .remove(&self.stream_id.0);
+        self.state.end_call(self.stream_id.0, self.serial);
     }
 }
 

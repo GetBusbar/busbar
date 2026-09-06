@@ -85,6 +85,7 @@ pub(crate) async fn open_stream(
     origin: http::Uri,
     method: &'static str,
     stream_id: StreamId,
+    serial: u64,
 ) -> Result<crate::conn::OutboundTx, TransportError> {
     let (out_tx, out_rx) = crate::conn::outbound_channel();
     // `with_origin`, not `new`: an HTTP/2 request needs a scheme and an authority (`:authority`
@@ -102,8 +103,9 @@ pub(crate) async fn open_stream(
     tokio::spawn(async move {
         crate::server::forward_inbound(state.clone(), stream_id, stream, true).await;
         // The upstream's answer has ended, trailer and all: this call is over, and the sender the
-        // connection registered for it is one nothing will drain again.
-        state.outbound.lock().unwrap().remove(&stream_id.0);
+        // connection registered for it is one nothing will drain again. By serial, because by the
+        // time this runs the id may already have been reused — and THAT call is still live.
+        state.end_call(stream_id.0, serial);
     });
     Ok(out_tx)
 }

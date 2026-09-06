@@ -264,10 +264,10 @@ impl Transport for GrpcTransport {
             // Open-or-get, decided under ONE hold of the lock: what goes into the map is the
             // OPENING of the call, so a second writer racing on the same fresh id finds the first
             // writer's future and awaits it instead of opening a call of its own.
-            let call = {
+            let (serial, call) = {
                 let mut open = state.outbound.lock().unwrap();
                 match open.get(&stream.0) {
-                    Some(call) => call.clone(),
+                    Some(call) => (call.serial(), call.open()),
                     None => {
                         // A fresh `StreamId` this connection has not seen: on the DIAL side, that
                         // OPENS a new gRPC call. An accepted (server) connection cannot originate a
@@ -277,6 +277,10 @@ impl Transport for GrpcTransport {
                             return Err(TransportError::Framing);
                         };
                         let opening = state.clone();
+                        // The serial is taken BEFORE the future is built, because the task that
+                        // cleans up after this call, when it ends, has to be told which call it is
+                        // cleaning up after — by then the id may belong to another one.
+                        let serial = state.next_call_serial();
                         let fut: std::pin::Pin<
                             Box<
                                 dyn std::future::Future<
@@ -284,12 +288,19 @@ impl Transport for GrpcTransport {
                                     > + Send,
                             >,
                         > = Box::pin(async move {
-                            client::open_stream(opening, (*dialer).clone(), origin, method, stream)
-                                .await
+                            client::open_stream(
+                                opening,
+                                (*dialer).clone(),
+                                origin,
+                                method,
+                                stream,
+                                serial,
+                            )
+                            .await
                         });
                         let call = futures::FutureExt::shared(fut);
-                        open.insert(stream.0, call.clone());
-                        call
+                        open.insert(stream.0, crate::conn::Call::new(serial, call.clone()));
+                        (serial, call)
                     }
                 }
             };
@@ -297,8 +308,9 @@ impl Transport for GrpcTransport {
                 Ok(tx) => tx,
                 Err(e) => {
                     // A call that failed to open is not a call: leaving its future in the map would
-                    // make every later write to this id replay the same failure forever.
-                    state.outbound.lock().unwrap().remove(&stream.0);
+                    // make every later write to this id replay the same failure forever. By serial,
+                    // so a write that has since opened a real call on this id keeps it.
+                    state.end_call(stream.0, serial);
                     return Err(e);
                 }
             };
@@ -392,7 +404,7 @@ impl Transport for GrpcTransport {
                     // Remove the sender as well as writing to it: dropping it is what ends this
                     // call's response stream (and so emits its `grpc-status` trailer), which is the
                     // difference between refusing one call and leaving it half-served.
-                    let call = state.outbound.lock().unwrap().remove(&stream.0);
+                    let call = state.take_call(stream.0);
                     // A refusal nothing carried is not a refusal. Every leg below is reported
                     // rather than swallowed: the caller is being told a unit was refused, and that
                     // is only true if the refusal actually went somewhere.
@@ -403,7 +415,7 @@ impl Transport for GrpcTransport {
                     tx.send(payload).await.map_err(|_| TransportError::Reset)?;
                 }
                 None => {
-                    let calls: Vec<_> = state.outbound.lock().unwrap().values().cloned().collect();
+                    let calls = state.all_calls();
                     // A refusal that names no stream is about the connection, so the connection is
                     // finalised whatever any one call did — and the first failure among them is
                     // still what the caller is told.

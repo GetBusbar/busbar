@@ -89,6 +89,32 @@ pub(crate) fn opened(tx: OutboundTx) -> OpenCall {
         .shared()
 }
 
+/// One entry in the outbound map: the call, and the serial that says WHICH call it is.
+///
+/// A `StreamId` is not an identity over time. The dial side takes them from whatever writes, the
+/// accept side counts them up per connection, and a call's cleanup runs when that call ends — which
+/// may be after the id has been used again. Removing by id alone let a finished call take the entry
+/// of the live one that had reused it, ending a second unit's answer for the first one's death.
+#[derive(Clone)]
+pub(crate) struct Call {
+    serial: u64,
+    open: OpenCall,
+}
+
+impl Call {
+    pub(crate) fn new(serial: u64, open: OpenCall) -> Self {
+        Self { serial, open }
+    }
+
+    pub(crate) fn serial(&self) -> u64 {
+        self.serial
+    }
+
+    pub(crate) fn open(&self) -> OpenCall {
+        self.open.clone()
+    }
+}
+
 /// One connection's real state.
 pub(crate) struct ConnState {
     /// Every stream's inbound frames land on this ONE channel, tagged with their `StreamId` — the
@@ -103,7 +129,10 @@ pub(crate) struct ConnState {
     /// One outbound channel per open stream (gRPC call). `write()` looks a stream up here; the
     /// task driving that RPC (accepted inbound, or opened by a dial-side `write` to a fresh
     /// `StreamId`) owns the receiving half and forwards each message onto the wire.
-    pub(crate) outbound: SyncMutex<HashMap<u64, OpenCall>>,
+    pub(crate) outbound: SyncMutex<HashMap<u64, Call>>,
+    /// Counts every call this connection has registered, so each one can be told from the next one
+    /// to use its id. Never reused, unlike the ids themselves.
+    next_call_serial: std::sync::atomic::AtomicU64,
     /// The dial-side connection, the origin URI, and the gRPC method every call it opens is
     /// dialled against — the method the destination named, so two destinations on one transport
     /// can name two different upstream methods.
@@ -135,6 +164,7 @@ impl ConnState {
             inbound_tx: SyncMutex::new(Some(inbound_tx)),
             inbound_rx: AsyncMutex::new(Some(inbound_rx)),
             outbound: SyncMutex::new(HashMap::new()),
+            next_call_serial: std::sync::atomic::AtomicU64::new(1),
             dialer,
             next_local_stream: std::sync::atomic::AtomicU64::new(1),
             served_paths: SyncMutex::new(VecDeque::new()),
@@ -164,6 +194,67 @@ impl ConnState {
     /// by `close`.
     pub(crate) fn end_inbound(&self) {
         self.inbound_tx.lock().unwrap().take();
+    }
+
+    /// The serial the next call registered on this connection will carry.
+    pub(crate) fn next_call_serial(&self) -> u64 {
+        self.next_call_serial
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Put one call in the map under `id`, taking a fresh serial for it.
+    pub(crate) fn register(&self, id: u64, open: OpenCall) -> u64 {
+        let serial = self.next_call_serial();
+        self.insert(id, serial, open);
+        serial
+    }
+
+    /// Put one call in the map under `id` with a serial already taken — the dial side takes it
+    /// before building the opening future, because the task that will later clean up after that
+    /// call has to be handed the serial it is cleaning up.
+    pub(crate) fn insert(&self, id: u64, serial: u64, open: OpenCall) {
+        self.outbound
+            .lock()
+            .unwrap()
+            .insert(id, Call { serial, open });
+    }
+
+    /// The call registered under `id`, whichever one it is now. Reading without removing is
+    /// something only the battery does: every path in the crate that looks a call up either opens
+    /// one under the same lock or is ending it.
+    #[cfg(test)]
+    pub(crate) fn call(&self, id: u64) -> Option<OpenCall> {
+        self.outbound
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|c| c.open.clone())
+    }
+
+    /// End the call `serial` names, and only that one: an id whose entry now belongs to a later
+    /// call is left alone. Returns the call, where the entry was still this one's.
+    pub(crate) fn end_call(&self, id: u64, serial: u64) -> Option<OpenCall> {
+        let mut open = self.outbound.lock().unwrap();
+        match open.get(&id) {
+            Some(call) if call.serial == serial => open.remove(&id).map(|c| c.open),
+            _ => None,
+        }
+    }
+
+    /// Take whatever call `id` holds now — what refusing one call does, since a refusal names the
+    /// call the kernel is looking at, not one it holds a serial for.
+    pub(crate) fn take_call(&self, id: u64) -> Option<OpenCall> {
+        self.outbound.lock().unwrap().remove(&id).map(|c| c.open)
+    }
+
+    /// Every call open on this connection right now.
+    pub(crate) fn all_calls(&self) -> Vec<OpenCall> {
+        self.outbound
+            .lock()
+            .unwrap()
+            .values()
+            .map(|c| c.open.clone())
+            .collect()
     }
 
     /// Remember how to stop the task driving this connection.
