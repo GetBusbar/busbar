@@ -200,6 +200,52 @@ impl Drop for BudgetGuard<'_> {
     }
 }
 
+/// The dispatch record's own exit, for the attempt that never reaches one of its own.
+///
+/// The record is durable before the dial and the design asks for its abandonment to be EXPLICIT
+/// rather than inferred from a missing settle. Every exit the attempt returns through says so
+/// itself; a future dropped part-way through the send returns through none of them, and the record
+/// it strands is what recovery later settles as a crash — a dispatch that never happened, counted
+/// against the destination as one that did. Armed the instant the record is durable, this makes
+/// the cancelled exit say exactly what the returned ones say.
+struct JournalGuard<'a> {
+    journal: &'a dyn Journal,
+    record: &'a Dispatched,
+    armed: bool,
+}
+
+impl<'a> JournalGuard<'a> {
+    /// Arm on a record that is now durable.
+    fn arm(journal: &'a dyn Journal, record: &'a Dispatched) -> Self {
+        Self {
+            journal,
+            record,
+            armed: true,
+        }
+    }
+
+    /// Say it now, at the point in the exit the attempt has always said it.
+    fn abandon(&mut self) {
+        if self.armed {
+            self.armed = false;
+            self.journal.abandoned(self.record);
+        }
+    }
+
+    /// An answer arrived: this record settles on the answer and not as an abandonment.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for JournalGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.journal.abandoned(self.record);
+        }
+    }
+}
+
 /// The one attempt.
 pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
     let AttemptInput {
@@ -232,6 +278,10 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
         drop(permit);
         return AttemptOutcome::Bail(Shed::internal());
     }
+    // From here the record exists and something must settle it. The guard is what settles it on
+    // the one exit that runs none of this function's own code — a caller that drops this future
+    // mid-send.
+    let mut journal = JournalGuard::arm(hop.journal, &record);
 
     // 2-5. Assemble: the plane's egress encode, the egress-auth decoration, and the lane
     //      cross-check on the bytes that decoration produced. A failure at any of the three is an
@@ -239,7 +289,7 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
     let wire = match assemble(&hop, unit, ctx) {
         Ok(bytes) => bytes,
         Err(shed) => {
-            hop.journal.abandoned(&record);
+            journal.abandon();
             drop(permit);
             return AttemptOutcome::Bail(shed);
         }
@@ -261,17 +311,17 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
 
     let first = match outcome {
         SendOutcome::AttemptTimeout(ms) => {
-            hop.journal.abandoned(&record);
+            journal.abandon();
             drop(permit);
             return attempt_timeout(&hop, ms, now);
         }
         SendOutcome::BudgetTimeout => {
-            hop.journal.abandoned(&record);
+            journal.abandon();
             drop(permit);
             return transport_failure(&hop, net::TIMEOUT, now);
         }
         SendOutcome::Sent(Err(e)) => {
-            hop.journal.abandoned(&record);
+            journal.abandon();
             drop(permit);
             let label = if matches!(e, busbar_contract_transport::wire::TransportError::Timeout) {
                 net::TIMEOUT
@@ -292,6 +342,9 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
         retry_after: None,
     };
     let succeeded = matches!(first.frame.meta.status, Some(StatusClass::Success) | None);
+    // An upstream answered, which is the one thing an abandonment says did not happen. From here
+    // the record settles on that answer however the rest of it goes.
+    journal.disarm();
     if !succeeded {
         return classify_failure(&hop, status, permit, now);
     }

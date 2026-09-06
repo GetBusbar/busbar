@@ -306,6 +306,29 @@ fn every_attempt_is_recorded_before_its_dial() {
 }
 
 #[test]
+fn an_attempt_whose_caller_goes_away_mid_send_abandons_its_record() {
+    let mut node = two_lane_pool();
+    node.preference = Some(vec![DestinationId::new(0)]);
+    // The member accepts the dial and then says nothing, so the attempt is parked on the send when
+    // the caller drops it.
+    node.transport.script("a", Script::Hang);
+
+    node.route_cancelled("primary", 1);
+
+    assert_eq!(
+        node.journal.dispatched.lock().unwrap().len(),
+        1,
+        "the record was made durable before the dial"
+    );
+    assert_eq!(
+        node.journal.abandoned.lock().unwrap().len(),
+        1,
+        "a record left behind by a cancelled attempt is settled by recovery as a crash unless the \
+         attempt says it was abandoned"
+    );
+}
+
+#[test]
 fn an_answer_that_could_not_be_assembled_records_nothing_against_the_member() {
     let mut node = two_lane_pool();
     node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
