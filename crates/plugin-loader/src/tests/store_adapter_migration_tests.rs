@@ -455,7 +455,9 @@ fn the_opening_figures_equal_the_seeded_legacy_rows() {
     // The metering rows: the same day, one balance per lane and provider, and the cache-write
     // column is its own dimension rather than being folded into the input one.
     for provider in ["openai", "azure"] {
-        let pool = BucketScope::Pool(format!("meter:gpt-4/{provider}"));
+        // The metering key LENGTH-FRAMES its lane, so a lane or a provider holding the
+        // separator cannot shift the boundary and fold two balances into one.
+        let pool = BucketScope::Pool(format!("meter:5:gpt-4:{provider}"));
         assert_eq!(
             opened(
                 totals,
@@ -868,7 +870,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
             &opening.checkpoint.totals,
             "vk_sqlite",
             CapDimension::Class("input".into()),
-            BucketScope::Pool("meter:gpt-4/openai".into())
+            BucketScope::Pool("meter:5:gpt-4:openai".into())
         )
         .settled,
         1_234

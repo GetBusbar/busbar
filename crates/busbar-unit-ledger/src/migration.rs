@@ -111,12 +111,21 @@ impl LegacyFigure {
     /// happens to be empty would otherwise land on the same key as a window row for the same lane,
     /// and the two would silently add — which is the one arithmetic error a migration cannot be
     /// allowed to make, because there is nothing left to compare the result against.
+    ///
+    /// THE METERING KEY LENGTH-FRAMES ITS LANE, for the same reason and against a subtler version of
+    /// it. `lane` and `provider` are both names read out of somebody else's rows, and joining them
+    /// on a character either may contain is not a key, it is a coincidence waiting: a lane `a/b` with
+    /// provider `c` and a lane `a` with provider `b/c` produce the same joined string, so two
+    /// balances that must never meet would be added together and the sum would look like an ordinary
+    /// figure. Writing the lane's length ahead of it fixes the boundary in a way no lane's CONTENT
+    /// can move, so distinct pairs get distinct keys whatever the rows are called.
     pub fn key(&self) -> TotalsKey {
         let scope = match (self.family, self.lane.as_str()) {
             (LegacyFamily::Window, "") => BucketScope::All,
+            // One variable field, at the end: nothing follows it that its content could be read as.
             (LegacyFamily::Window, lane) => BucketScope::Pool(format!("lane:{lane}")),
             (LegacyFamily::Meter, lane) => {
-                BucketScope::Pool(format!("meter:{lane}/{}", self.provider))
+                BucketScope::Pool(format!("meter:{}:{lane}:{}", lane.len(), self.provider))
             }
         };
         TotalsKey::new(
