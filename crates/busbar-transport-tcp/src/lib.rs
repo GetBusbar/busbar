@@ -458,10 +458,18 @@ impl Transport for TcpTransport {
                 let mut guard = inner.write.lock().await;
                 deliver_refusal(&mut *guard, bytes.as_slice()).await?;
             }
-            self.conns
+            // A refusal finalises the connection, so it ends it the way `close` does: dropping the
+            // registry's clone is not enough, because a frame stream that started before the
+            // refusal holds its own clone and would stay parked on the socket forever. The flag is
+            // what ends that stream, after which the last clone goes and the socket really closes.
+            let removed = self
+                .conns
                 .lock()
                 .expect("conn registry poisoned")
                 .remove(&conn.id());
+            if let Some(removed) = removed {
+                removed.closed.store(true, Ordering::Release);
+            }
             Ok(())
         })
     }
