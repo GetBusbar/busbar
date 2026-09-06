@@ -439,13 +439,15 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
         ApprovalState::NotYetApproved,
     )));
     // The gate is what this cell is about, so the assertion is that the unit got PAST it. It no
-    // longer ends `Ok`, and that is the point of the verb reaching the store: the fixture's
-    // store refuses everything, so a chain break admitted by the ceremony now ends on the
-    // store's own answer rather than on the gate's. What must not appear here is the gate's
-    // refusal — that would be a fleet that ran the ceremony being told it had not.
+    // longer ends `Ok`, and that is the point of the verb reaching the store: the fixture wires
+    // no store at all, so a chain break admitted by the ceremony now ends on the store seam's own
+    // answer rather than on the gate's — and an UNCONFIGURED store is "there is nothing here"
+    // (`NoDestination`), never the unavailability that would tell an operator to retry a ceremony
+    // this composition can never run. What must not appear here is the gate's refusal — that would
+    // be a fleet that ran the ceremony being told it had not.
     assert_eq!(
         under("/api/v1/admin/chain-break", ceremony_run),
-        Err(ReasonCode::DurabilityUnavailable),
+        Err(ReasonCode::NoDestination),
         "a fleet that ran the ceremony was still refused for not having run it"
     );
 
@@ -453,6 +455,38 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
         under("/api/v1/admin/adjust", Sealed(None)),
         Err(ReasonCode::DecodeFailed),
         "a verb whose posture the node cannot read was admitted under a guessed one"
+    );
+}
+
+/// A NODE WITH NO STORE SAYS SO, and it does not tell the operator to retry.
+///
+/// `StoreError::Unconfigured` is a separate variant from `Failed` because the two are opposite
+/// advice. A store that EXISTS and did not answer is unavailability — 503, retry, page someone.
+/// A composition that wired no store has nothing that could have succeeded and no retry that
+/// would change it, so the honest answer is that the operation is not available here: 404.
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_unconfigured_store_is_not_found_and_a_failed_one_is_unavailable() {
+    let unconfigured = busbar_unit_verbs::StoreError::Unconfigured.into_refusal();
+    assert_eq!(
+        answer_for(Outcome::Failed(
+            busbar_caps::StepName::Route,
+            verbs_reason(unconfigured.reason)
+        ))
+        .status,
+        404,
+        "a node with no store told the operator to retry a ceremony it can never run"
+    );
+    // Stated beside it, because the two answers are the whole distinction: a store that EXISTS
+    // and did not answer is unavailability, and retrying that one is the right advice.
+    let failed = busbar_unit_verbs::StoreError::Failed.into_refusal();
+    assert_eq!(
+        answer_for(Outcome::Failed(
+            busbar_caps::StepName::Route,
+            verbs_reason(failed.reason)
+        ))
+        .status,
+        503
     );
 }
 
