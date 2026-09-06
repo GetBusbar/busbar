@@ -375,6 +375,59 @@ rc=$?
 grep -q "no owed cells matched" "$W/out-v.log" && msg_ok=1 || msg_ok=0
 [ "$rc" = 1 ] && [ "$msg_ok" = 1 ] && say PASS "--strict with a filter matching nothing -> exit 1 (nothing was compared)" || say FAIL "strict empty filter rc=$rc msg_ok=$msg_ok (see $W/out-v.log)"
 
+# (w) AN ENTRY MAY NOT MATCH MORE CELLS THAN IT SAYS IT DOES. The money guard asks WHICH classes an
+# entry forgives and never over HOW MANY cells, so a live entry could be widened by gluing one more
+# alternation onto its `cells` regex — the reviewable prose (id, rationale, changelog line) stays
+# word-for-word what it was and the scope quietly doubles. That is exactly what M-3 did: an entry
+# about Cohere `billed_units` carried effects.usage over every `billing|*` cell in the corpus.
+# `expected_cells` is the count the author saw; matching more is refused.
+cp -R "$FIX" "$W/width"
+python3 -c 'import json,sys
+json.dump({"accepted":[{"id":"widened waiver","kind":"improvement","by":"selftest",
+  "cells":"^self\\|a\\|ok$|^self\\|b\\|","classes":["body"],"expected_cells":1,
+  "rationale":"declares one cell, the regex takes two"}]}, open(sys.argv[1],"w"))' "$W/width-accept.json"
+bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/width" --out "$W/out-w" --cells "$CELLS" \
+  --allow-harness-skew --accepted "$W/width-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-w.log" 2>&1
+rc=$?
+grep -q "matches 2 cells" "$W/out-w.log" && msg_ok=1 || msg_ok=0
+[ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
+  && say PASS "an entry matching more cells than expected_cells -> loader refuses (silent widening)" \
+  || say FAIL "widened entry was NOT refused (rc=$rc msg_ok=$msg_ok) — a waiver can grow without its prose changing (see $W/out-w.log)"
+
+# …and the same entry, declaring the truth, loads and runs. Without this arm the guard could be a
+# blanket refusal and case (w) would still pass.
+python3 -c 'import json,sys
+json.dump({"accepted":[{"id":"honest waiver","kind":"improvement","by":"selftest",
+  "cells":"^self\\|a\\|ok$|^self\\|b\\|","classes":["body"],"expected_cells":2,
+  "rationale":"declares what it takes"}]}, open(sys.argv[1],"w"))' "$W/width-ok.json"
+bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/width" --out "$W/out-w2" --cells "$CELLS" \
+  --allow-harness-skew --accepted "$W/width-ok.json" --baseline "$W/no-baseline.txt" >"$W/out-w2.log" 2>&1
+rc=$?
+[ "$rc" = 0 ] && [ "$(fails_in "$W/out-w2")" = 0 ] \
+  && say PASS "an entry declaring its true width loads (the guard refuses widening, not entries)" \
+  || say FAIL "an honest expected_cells was refused (rc=$rc fails=$(fails_in "$W/out-w2")) (see $W/out-w2.log)"
+
+# …and an entry that declares NO width at all is refused: an optional field is one nobody fills in.
+python3 -c 'import json,sys
+json.dump({"accepted":[{"id":"undeclared width","kind":"improvement","by":"selftest",
+  "cells":"^self\\|a\\|ok$","classes":["body"],"rationale":"no expected_cells"}]}, open(sys.argv[1],"w"))' "$W/width-none.json"
+bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/width" --out "$W/out-w3" --cells "$CELLS" \
+  --allow-harness-skew --accepted "$W/width-none.json" --baseline "$W/no-baseline.txt" >"$W/out-w3.log" 2>&1
+rc=$?
+grep -q "declares no \`expected_cells\`" "$W/out-w3.log" && msg_ok=1 || msg_ok=0
+[ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
+  && say PASS "an entry with no expected_cells -> loader refuses (the width must be declared)" \
+  || say FAIL "an entry with no expected_cells was accepted (rc=$rc msg_ok=$msg_ok) (see $W/out-w3.log)"
+
+# …and the SHIPPED register is loaded against the SHIPPED corpus, so the guard is proven against the
+# real file rather than only against fixtures: a widened live entry fails HERE, not in CI.
+if python3 "${here}/diff-cells.py" --golden "$FIX" --candidate "$W/width" --out "$W/out-w4" \
+     --cells "${here}/cells.json" --accepted "${here}/accepted-differences.json" \
+     --allow-harness-skew >"$W/out-w4.log" 2>&1; then
+  say PASS "the shipped accepted-differences.json loads against the shipped cells.json"
+else
+  say FAIL "the shipped accepted-differences.json was REFUSED against the shipped cells.json: $(tail -3 "$W/out-w4.log")"
+fi
 
 # (w) EVERY script driver's give-up path must be distinguishable from a recorded outcome. record.sh
 # reads a script cell's `status` alone: -1 is a named gap (SKIP), and EVERY other status is recorded
