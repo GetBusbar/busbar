@@ -271,6 +271,9 @@ where
                     .write_up(IrClientEvent::Tool(IrDuplexTool::CallResult {
                         call_ref,
                         call_id,
+                        // The tool the plane just ran — a dialect whose result frame requires a name
+                        // (Gemini) gets the one the model actually called for.
+                        name,
                         output: Bytes::from(output),
                     })),
             );

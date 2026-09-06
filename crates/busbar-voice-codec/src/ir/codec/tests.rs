@@ -689,6 +689,7 @@ fn function_call_output_authoring_roundtrips() {
     let result = IrClientEvent::Tool(IrDuplexTool::CallResult {
         call_ref: CallRef(0),
         call_id: "call_abc".into(),
+        name: "get_weather".into(),
         output: Bytes::from_static(b"{\"temp\":72}"),
     });
     let w = up(&codec, result);

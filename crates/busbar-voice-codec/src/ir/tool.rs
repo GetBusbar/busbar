@@ -65,6 +65,12 @@ pub enum IrDuplexTool {
         call_ref: CallRef,
         /// The raw wire id the dialect correlates on.
         call_id: String,
+        /// The tool NAME the result answers for, remembered from the call that opened it. Gemini's
+        /// `functionResponse` REQUIRES a name and OpenAI's `function_call_output` carries none, so the
+        /// name rides the IR rather than being looked up by a writer that is deliberately stateless.
+        /// EMPTY when the result answers a call this session never saw announced — a name nobody told
+        /// us is not a name to invent, so it is simply omitted from the wire.
+        name: String,
         /// The tool's opaque output payload.
         output: Bytes,
     },

@@ -396,9 +396,13 @@ impl DuplexReader for OpenAiRealtimeCodec {
                     let call_id = str_at(&item, "call_id");
                     let call_ref = st.ref_for_call_id(call_id);
                     let output = Bytes::from(str_at(&item, "output").to_owned().into_bytes());
+                    // The dialect's own result item carries no tool name; the one the model announced
+                    // is remembered per call id, for the dialects that require it.
+                    let name = st.call_name(call_id).to_string();
                     vec![IrClientEvent::Tool(IrDuplexTool::CallResult {
                         call_ref,
                         call_id: call_id.to_string(),
+                        name,
                         output,
                     })]
                 } else {

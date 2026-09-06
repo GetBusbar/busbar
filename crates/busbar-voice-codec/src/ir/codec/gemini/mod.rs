@@ -395,8 +395,16 @@ impl DuplexReader for GeminiLiveCodec {
                     let call_id = str_at(r, "id");
                     let call_ref = st.ref_for_call_id(call_id);
                     // The `response` object is the tool's opaque output payload (the moat normalizes
-                    // correlation, not the bytes). `functionResponse.name` is redundant with `id`
-                    // and has no CallResult slot (dropped).
+                    // correlation, not the bytes). `functionResponse.name` is REQUIRED by this dialect,
+                    // so it is carried on the IR; a response that omits it falls back to the name the
+                    // originating call announced.
+                    let wire_name = str_at(r, "name");
+                    let name = if wire_name.is_empty() {
+                        st.call_name(call_id).to_string()
+                    } else {
+                        st.remember_call_name(call_id, wire_name);
+                        wire_name.to_string()
+                    };
                     let output = Bytes::from(
                         serde_json::to_vec(r.get("response").unwrap_or(&Value::Null))
                             .unwrap_or_default(),
@@ -404,6 +412,7 @@ impl DuplexReader for GeminiLiveCodec {
                     out.push(IrClientEvent::Tool(IrDuplexTool::CallResult {
                         call_ref,
                         call_id: call_id.to_string(),
+                        name,
                         output,
                     }));
                 }
@@ -476,12 +485,15 @@ impl DuplexReader for GeminiLiveCodec {
                 for c in calls {
                     let call_id = str_at(c, "id");
                     let call_ref = st.ref_for_call_id(call_id);
+                    let name = str_at(c, "name").to_string();
+                    // Remember the name for the RESULT leg — this dialect requires it back.
+                    st.remember_call_name(call_id, &name);
                     // Gemini delivers the call ATOMICALLY; expand it into the shared STREAMED triple
                     // (open → args → close) so the correlation moat matches the OpenAI codec exactly.
                     out.push(IrServerEvent::Tool(IrDuplexTool::CallOpen {
                         call_ref,
                         call_id: call_id.to_string(),
-                        name: str_at(c, "name").to_string(),
+                        name,
                     }));
                     let json_delta = Bytes::from(
                         serde_json::to_vec(c.get("args").unwrap_or(&Value::Null))
@@ -517,6 +529,22 @@ impl DuplexReader for GeminiLiveCodec {
 /// Frame one Gemini `toolCall` around a single `functionCall` object.
 fn tool_call_frame(fc: Value) -> Value {
     json!({ wire::TOOL_CALL: { "functionCalls": [fc] } })
+}
+
+/// Frame one Gemini `toolResponse` around a single tool result. Gemini REQUIRES `name` on a
+/// `functionResponse`; it is emitted whenever the plane knows it (remembered from the originating
+/// call) and omitted when it does not — an invented name would answer for a tool nobody called.
+fn tool_response_frame(call_id: &str, name: &str, output: &Bytes) -> Value {
+    let mut fr = serde_json::Map::new();
+    fr.insert("id".into(), json!(call_id));
+    if !name.is_empty() {
+        fr.insert("name".into(), json!(name));
+    }
+    fr.insert(
+        "response".into(),
+        serde_json::from_slice::<Value>(output).unwrap_or(Value::Null),
+    );
+    json!({ wire::TOOL_RESPONSE: { "functionResponses": [Value::Object(fr)] } })
 }
 
 impl DuplexWriter for GeminiLiveCodec {
@@ -557,15 +585,11 @@ impl DuplexWriter for GeminiLiveCodec {
             },
             IrClientEvent::Tool(t) => match t {
                 IrDuplexTool::CallResult {
-                    call_id, output, ..
-                } => json!({
-                    wire::TOOL_RESPONSE: {
-                        "functionResponses": [ {
-                            "id": call_id,
-                            "response": serde_json::from_slice::<Value>(&output).unwrap_or(Value::Null),
-                        } ]
-                    }
-                }),
+                    call_id,
+                    name,
+                    output,
+                    ..
+                } => tool_response_frame(&call_id, &name, &output),
                 // The other tool variants are server→client; a client-side writer never authors them,
                 // but frame them symmetrically rather than panic.
                 IrDuplexTool::CallOpen { call_id, name, .. } => {
@@ -606,15 +630,11 @@ impl DuplexWriter for GeminiLiveCodec {
                     tool_call_frame(json!({ "id": call_id }))
                 }
                 IrDuplexTool::CallResult {
-                    call_id, output, ..
-                } => json!({
-                    wire::TOOL_RESPONSE: {
-                        "functionResponses": [ {
-                            "id": call_id,
-                            "response": serde_json::from_slice::<Value>(&output).unwrap_or(Value::Null),
-                        } ]
-                    }
-                }),
+                    call_id,
+                    name,
+                    output,
+                    ..
+                } => tool_response_frame(&call_id, &name, &output),
             },
             // Gemini's barge-in signal is `serverContent.interrupted`; the shared SpeechStarted maps
             // onto it. SpeechStopped has no Gemini wire event → an empty serverContent (dropped).
