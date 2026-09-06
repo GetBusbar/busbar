@@ -399,9 +399,24 @@ fn decode_ingress_is_deterministic_over_repeated_calls() {
             Ingress::OneShot(d) => d,
             other => panic!("expected OneShot, got {other:?}"),
         };
-        let verb = draft.facts.get("verb");
-        results.push(format!("{verb:?}|{:?}", draft.op));
+        // EVERY fact the draft carries, not just the verb: the path parameters this target names
+        // are facts too, and a call that agreed about the verb while disagreeing about which key it
+        // was for would have passed a test that only read the verb.
+        let mut facts: Vec<String> = draft
+            .facts
+            .iter()
+            .map(|(key, value)| format!("{key}={value:?}"))
+            .collect();
+        facts.sort();
+        results.push(format!("{facts:?}|{:?}", draft.op));
     }
+    // The path parameter is one of the facts being compared, so the target above has to name one or
+    // this test is back to comparing the verb alone.
+    assert!(
+        results[0].contains("abc"),
+        "the target names a path parameter and the draft did not carry it: {}",
+        results[0]
+    );
     assert!(
         results.windows(2).all(|w| w[0] == w[1]),
         "decode_ingress disagreed across identical calls: {results:?}"
