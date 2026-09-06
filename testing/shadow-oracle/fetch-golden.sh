@@ -92,6 +92,17 @@ verify_cached() {
     echo "fetch-golden: no pinned digest for busbar-${TRIPLE} and no cached ${ASSET} to re-hash — the cached binary cannot be verified" >&2
     return 3
   fi
+  # AN ABSENT PIN IS NOT PERMISSION TO SKIP THE CHECK. Both openapi arms used to be wrapped in
+  # `if [ -n "$WANT_OPENAPI" ]`, so deleting the openapi row from golden-digests.tsv (or mistyping
+  # its asset name, which is the same thing to `pinned`) turned the verification OFF rather than
+  # RED — and the whole point of a pin file is that the thing it pins cannot be substituted. A
+  # missing pin is a broken pin file, and this gate fails closed on it like everything else here.
+  if [ -z "$WANT_OPENAPI" ]; then
+    echo "fetch-golden: NO PINNED DIGEST for ${OPENAPI} in golden-digests.tsv." >&2
+    echo "  The published openapi.json would then be accepted unverified, which is exactly what the" >&2
+    echo "  pin file exists to prevent. Add the row, do not run without it." >&2
+    return 3
+  fi
   if [ -n "$WANT_OPENAPI" ]; then
     [ -s "${CACHE}/openapi.json" ] || { echo "fetch-golden: cached openapi.json absent" >&2; return 3; }
     have="$(sha256_of "${CACHE}/openapi.json")"
@@ -162,6 +173,12 @@ if [ "$got" != "$WANT" ]; then
   exit 3
 fi
 
+# Same refusal on the download path: no pin, no fetch, no run. See the --check arm above.
+if [ -z "$WANT_OPENAPI" ]; then
+  echo "fetch-golden: NO PINNED DIGEST for ${OPENAPI} in golden-digests.tsv — refusing to fetch it" >&2
+  echo "  unverified. A missing pin row silently disabled this verification; it is RED instead." >&2
+  exit 3
+fi
 if [ -n "$WANT_OPENAPI" ]; then
   fetch "$OPENAPI" "${DL}/${OPENAPI}" || { echo "fetch-golden: download failed for ${OPENAPI}" >&2; exit 4; }
   got_o="$(sha256_of "${DL}/${OPENAPI}")"

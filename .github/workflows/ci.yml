@@ -145,6 +145,17 @@ jobs:
         run: python3 scripts/release-order-lint.py --selftest
       - name: Release-order lint
         run: python3 scripts/release-order-lint.py --root .
+      # DUPLEX-WS DEFAULT-EDGE gate: `tokio-tungstenite` must not be in the DEFAULT money-path
+      # build's dependency closure — the WebSocket edge belongs to `plane-voice` and nowhere else.
+      # It was a fully-written, self-testing gate that NOTHING invoked: it lived in `scripts/`,
+      # named itself a gate in its own header, passed on every commit, and no workflow, no script
+      # and no gate runner ever executed it. A gate nothing runs is not a gate — it is a file that
+      # would have caught the regression. Wired here (it is a `cargo tree` read, seconds, no build),
+      # self-test first as everywhere else.
+      - name: duplex-ws default-edge self-test
+        run: scripts/duplex-ws-default-edge.sh --selftest
+      - name: duplex-ws default-edge gate (no WS in the default money-path closure)
+        run: scripts/duplex-ws-default-edge.sh
       # CI-UMBRELLA MEMBERSHIP lint: `ci-umbrella` is the ONE required check, and its `needs:` list
       # is the whole of what "CI is green" means. That list is hand-maintained, and a job added
       # without its `needs:` line is invisible to it: the job goes red and the required check reports

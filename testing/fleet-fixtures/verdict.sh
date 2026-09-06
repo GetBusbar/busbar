@@ -44,7 +44,18 @@ if [ "$rows" -eq 0 ]; then
   exit 1
 fi
 
-if [ -z "$EXPECTED_IDS" ]; then
+# EMPTINESS IS MEASURED AFTER WHITESPACE, and it was not. Callers build this list by concatenating
+# two lists with a newline between them — testing/shadow-oracle/replay.sh does exactly that:
+#
+#     EXPECTED_IDS="${OWED}
+#     ${baseline_ids}"
+#
+# When BOTH halves are empty the value is a single newline character, which is not `-z`. The guard
+# below — the one whose own message says "a probe that silently failed to fire would read as green"
+# — was therefore skipped precisely when there was nothing owed at all, which is the case it exists
+# for. An oracle run that owed zero cells then passed this check and went on to report green.
+EXPECTED_IDS_TRIMMED="$(printf '%s' "$EXPECTED_IDS" | tr -d '[:space:]')"
+if [ -z "$EXPECTED_IDS_TRIMMED" ]; then
   echo "::error title=${GATE_NAME}::no EXPECTED_IDS were declared, so 'did not run' cannot be detected and a probe that silently failed to fire would read as green. RED. Fix: the workflow must pass EXPECTED_IDS derived from the plugin kind."
   exit 1
 fi
