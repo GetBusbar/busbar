@@ -47,17 +47,25 @@ impl tower::Service<http::Request<tonic::body::Body>> for Dialer {
 /// No name is resolved here and no socket is opened: the connection arrives as a stream the lower
 /// transport gave up, which is what lets the resolve-then-pin network guard sit in front of the
 /// dial, once for the whole stack, instead of inside every carrier.
+///
+/// The third value fires when the connection itself is over — the upstream gone, the socket shut,
+/// the task finished. The dial side has no connection state to hang that on yet (this handshake is
+/// what the state is built from), so the completion is handed back for the caller to wire, and what
+/// it wires it to is the end of the inbound side: a reader whose upstream has gone must see
+/// end-of-stream, not a wait with no end.
 pub(crate) async fn handshake_h2(
     stream: crate::conn::LowerIo,
     authority: &str,
-) -> Result<(Dialer, http::Uri), TransportError> {
+) -> Result<(Dialer, http::Uri, tokio::sync::oneshot::Receiver<()>), TransportError> {
     let io = TokioIo::new(stream);
     let (send_request, connection) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
         .handshake::<_, tonic::body::Body>(io)
         .await
         .map_err(|_| TransportError::HandshakeFailed)?;
+    let (over_tx, over_rx) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(async move {
         let _ = connection.await;
+        let _ = over_tx.send(());
     });
     let origin = http::Uri::builder()
         .scheme("http")
@@ -65,7 +73,7 @@ pub(crate) async fn handshake_h2(
         .path_and_query("/")
         .build()
         .map_err(|_| TransportError::AddressRefused)?;
-    Ok((Dialer(send_request), origin))
+    Ok((Dialer(send_request), origin, over_rx))
 }
 
 /// Open a fresh gRPC call for `stream_id` over `dialer` against `method`, registering its outbound

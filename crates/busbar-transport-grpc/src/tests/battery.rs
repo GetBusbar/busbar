@@ -1035,3 +1035,66 @@ async fn closing_a_connection_stops_serving_new_calls_on_it() {
         "a closed connection went on serving fresh calls from the peer"
     );
 }
+
+/// `frames()` ends when the connection does, on both sides.
+///
+/// The connection state owned the inbound sender, so the receiver `frames()` drains could never see
+/// end-of-stream: with the peer gone, or after `close`, the stream stayed pending forever instead
+/// of finishing. A reader above it cannot tell "the answer is complete" from "the next frame has
+/// not arrived yet", so it waits out its whole deadline on a call that already ended whole — and
+/// then compensates for a failure that never happened.
+#[tokio::test]
+async fn frames_end_when_the_connection_does() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .await
+        .unwrap();
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let mut client_frames = client_t.frames(client_conn.clone());
+    tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the call arrives")
+        .unwrap()
+        .unwrap();
+
+    // The peer is finished with this connection and gone.
+    server_t.close(
+        server_conn,
+        busbar_contract_transport::wire::CloseReason::Normal,
+    );
+
+    // The closing side's own reader ends: nothing more will ever arrive on a connection this
+    // transport has closed.
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while server_frames.next().await.is_some() {}
+    })
+    .await;
+    assert!(ended.is_ok(), "the closed side's frames() never ended");
+
+    // And the peer's reader ends once the connection under it is gone — after whatever the calls
+    // still in flight have left to say, terminal status included.
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while client_frames.next().await.is_some() {}
+    })
+    .await;
+    assert!(
+        ended.is_ok(),
+        "the peer's frames() stayed pending with the connection gone"
+    );
+}

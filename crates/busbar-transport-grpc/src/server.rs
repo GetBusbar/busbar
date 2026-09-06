@@ -50,6 +50,7 @@ pub(crate) const RPC_PATH: &str = "/busbar.raw/Frames";
 pub(crate) fn serve_connection(stream: crate::conn::LowerIo, state: Arc<ConnState>) {
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     state.arm_shutdown(stop_tx);
+    let ending = state.clone();
     tokio::spawn(async move {
         let io = TokioIo::new(stream);
         let svc = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
@@ -66,6 +67,10 @@ pub(crate) fn serve_connection(stream: crate::conn::LowerIo, state: Arc<ConnStat
                 let _ = conn.await;
             }
         }
+        // The connection is over, so nothing will ever arrive on it again: end the inbound side so
+        // a reader on `frames()` finishes rather than waiting out a deadline for a frame that
+        // cannot come.
+        ending.end_inbound();
     });
 }
 

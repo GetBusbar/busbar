@@ -78,7 +78,12 @@ pub(crate) fn opened(tx: OutboundTx) -> OpenCall {
 pub(crate) struct ConnState {
     /// Every stream's inbound frames land on this ONE channel, tagged with their `StreamId` — the
     /// multiplexing is the tag, not a separate channel per stream, so `frames()` can just drain it.
-    pub(crate) inbound_tx: mpsc::Sender<InboundItem>,
+    ///
+    /// Held as an option so it can be ENDED. A sender this state owned outright was one that
+    /// outlived the connection: the receiver could never reach end-of-stream, and `frames()` stayed
+    /// pending forever on a connection whose peer had gone. What ends it is the connection's own
+    /// completion — and `close`.
+    inbound_tx: SyncMutex<Option<mpsc::Sender<InboundItem>>>,
     pub(crate) inbound_rx: AsyncMutex<Option<mpsc::Receiver<InboundItem>>>,
     /// One outbound channel per open stream (gRPC call). `write()` looks a stream up here; the
     /// task driving that RPC (accepted inbound, or opened by a dial-side `write` to a fresh
@@ -112,7 +117,7 @@ impl ConnState {
     ) -> Arc<Self> {
         let (inbound_tx, inbound_rx) = mpsc::channel(INBOUND_FRAME_BUFFER);
         Arc::new(Self {
-            inbound_tx,
+            inbound_tx: SyncMutex::new(Some(inbound_tx)),
             inbound_rx: AsyncMutex::new(Some(inbound_rx)),
             outbound: SyncMutex::new(HashMap::new()),
             dialer,
@@ -133,7 +138,17 @@ impl ConnState {
     /// the HTTP/2 flow-control window, not queue on this process's heap. Peer bytes are untrusted,
     /// and this connection carries every multiplexed call's inbound messages on this one channel.
     pub(crate) async fn send_inbound(&self, item: InboundItem) -> Result<(), ()> {
-        self.inbound_tx.send(item).await.map_err(|_| ())
+        // Cloned out from under the lock and awaited outside it: the wait is on the reader, which
+        // may be a long one, and it must not hold every other call's sender hostage.
+        let tx = self.inbound_tx.lock().unwrap().clone().ok_or(())?;
+        tx.send(item).await.map_err(|_| ())
+    }
+
+    /// End the inbound side: no frame will ever arrive on this connection again, so `frames()`
+    /// finishes rather than waiting for one. Called when the connection's own task completes, and
+    /// by `close`.
+    pub(crate) fn end_inbound(&self) {
+        self.inbound_tx.lock().unwrap().take();
     }
 
     /// Remember how to stop the task driving this connection.

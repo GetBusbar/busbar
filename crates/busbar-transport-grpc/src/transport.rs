@@ -214,10 +214,17 @@ impl Transport for GrpcTransport {
                 .ok_or(TransportError::AddressRefused)?;
             let conn = lower.dial(&beneath, keys).await?;
             let (stream, chain) = self.take(lower, &conn)?;
-            let (dialer, origin) = client::handshake_h2(stream, authority).await?;
+            let (dialer, origin, over) = client::handshake_h2(stream, authority).await?;
             let id = self.mint_id();
             let state = ConnState::new(Some((Arc::new(dialer), origin, method)), chain);
-            self.conns.lock().unwrap().insert(id, state);
+            self.conns.lock().unwrap().insert(id, state.clone());
+            // When the HTTP/2 connection under this dial is over, so is anything that could arrive
+            // on it: end the inbound side so a reader sees end-of-stream instead of waiting out its
+            // deadline for a frame the upstream can no longer send.
+            tokio::spawn(async move {
+                let _ = over.await;
+                state.end_inbound();
+            });
             Ok(Conn::new(Arc::new(GrpcConnHandle {
                 id,
                 peer: authority.to_string(),
@@ -351,6 +358,9 @@ impl Transport for GrpcTransport {
             // never reached it: it holds the socket, so a connection closed here would otherwise go
             // on serving the peer's next call on a connection the kernel believes is gone.
             state.stop();
+            // And end the inbound side here too, rather than waiting for that task to notice: a
+            // reader on this connection is reading something the kernel has already let go of.
+            state.end_inbound();
         }
     }
 
