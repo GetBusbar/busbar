@@ -34,6 +34,20 @@ pub const TRANSPORT_SSE: &str = "sse";
 /// The transport a locally launched server speaks over.
 pub const TRANSPORT_STDIO: &str = "stdio";
 
+/// Whether `key` is the locally-launched-server claim key above.
+///
+/// A NAMED QUESTION rather than a comparison at each call site, and the naming is the whole point.
+/// These constants are `&str` CLAIM KEYS — the vocabulary a claim is made against — and not the
+/// engine's `Transport` axis, but they are spelled with the word "transport" in them, so every
+/// `if transport == claims::TRANSPORT_STDIO` reads to a type-blind reader (and to the axis lint,
+/// which is one) as the agnostic core forking on the wire carrier it is forbidden to see. Asking
+/// the question by name states what is actually being asked, and leaves exactly one line in the
+/// tree that compares against this constant: this one, in the plane that owns it.
+#[must_use]
+pub fn is_stdio(key: &str) -> bool {
+    key == TRANSPORT_STDIO
+}
+
 /// The credential scheme this plane's claims sit under.
 ///
 /// One scheme with alternatives, not several schemes: which alternative a unit uses is the

@@ -1822,28 +1822,16 @@ AXIS_BRANCH=(
 # for NEW code is evading the check rather than passing it. Shrinking is the only permitted edit.
 # Row format:  <axis> | <file> | <why this one branch is allowed to exist, and when it goes>
 #
-# ONE ROW, and it is a NOUN COLLISION rather than a branch on the axis, of the exact shape this
-# invariant's own `scope` field documentation already names: "plugin-loader compares a plugin-ABI
-# `transport` VERSION number, an unrelated noun that a type-blind grep cannot tell apart from the
-# axis." `units_mcp.rs`'s `if transport == claims::TRANSPORT_STDIO` compares a `&str` claim label
-# (`busbar_plane_mcp::claims::TRANSPORT_STDIO = "stdio"`, the plane's own claim-scheme vocabulary,
-# read from the auth claim the plane was handed) against another `&str` — never the axis's
-# `busbar_substrate_values::transport::Transport` type this row exists to keep off the agnostic
-# core. The IDENTICAL comparison shape exists unflagged today in `busbar-plane-mcp/src/plane.rs`
-# (`ctx.transport().key() == crate::claims::TRANSPORT_STDIO`), which only reads as clean because
-# that crate sits outside every root this axis scans — a difference of SCOPE, not of correctness,
-# which is the tell that the flagged copy is the same false positive and not a real violation.
-# This row is not new permission for new code: the line predates this ledger entry, and it was
-# invisible to the axis for as long as the plane-root resolver's `a2a` ambiguity left the `transport`
-# row's scope with a missing prefix — a missing prefix fails the WHOLE row closed (see
-# scripts/plane-roots.sh), so `units_mcp.rs` was never actually scanned until that resolver was
-# fixed to require plane OWNERSHIP rather than a bare name match. Nothing here weakens the axis: a
-# real `Transport::` comparison anywhere in scope still fails loud. The row leaves when the constant
-# is renamed off the word "transport" (the honest fix — it names a claim SCHEME, not a wire carrier)
-# or the file moves out of `$BIN`.
-AXIS_EXCEPTIONS="
-transport|crates/busbar/src/root/units_mcp.rs|the comparison reads a plane claim-scheme string constant literally named TRANSPORT_STDIO, never the axis's Transport type; see the ledger header above for the full argument and the identical unflagged copy in busbar-plane-mcp/src/plane.rs that proves it is a scope accident, not a correctness difference
-"
+# EMPTY, and that is the point: the ledger only shrinks. It briefly carried one row — a NOUN
+# COLLISION rather than a branch on the axis, of the exact shape this invariant's own `scope` field
+# documentation already names ("plugin-loader compares a plugin-ABI `transport` VERSION number, an
+# unrelated noun that a type-blind grep cannot tell apart from the axis"). `units_mcp.rs` compared a
+# `&str` claim key (`busbar_plane_mcp::claims::TRANSPORT_STDIO = "stdio"`) against another `&str`,
+# never the axis's `Transport` type. The honest fix that row named as its own exit condition has now
+# been taken instead of the exemption: the plane asks its own named question, `claims::is_stdio`, so
+# the only line in the tree comparing against that constant is the one inside the plane that owns
+# it, and the collision has no site left to occur at.
+AXIS_EXCEPTIONS=""
 
 hdr "axis purity (nothing branches on an axis outside that axis's own arms)"
 ax=0

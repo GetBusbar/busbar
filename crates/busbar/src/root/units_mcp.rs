@@ -167,15 +167,22 @@ pub fn declared_schemes() -> Vec<&'static str> {
     out
 }
 
-/// The alternative the plane narrows a unit on this transport to.
+/// The alternative the plane narrows a unit on this claim key to.
 ///
 /// A locally launched server has no request to carry a header on: its credential was handed to it
 /// when it started. Everything on the document transport presents a bearer credential. This is the
-/// plane's own answer, restated over the transport key because the root reaches the plane's
+/// plane's own answer, restated over the claim key because the root reaches the plane's
 /// `authenticate` only with a live unit in hand and the narrowing depends on nothing else.
+///
+/// The question is asked by NAME (`claims::is_stdio`) rather than compared here. What arrives is a
+/// `&str` claim key out of the plane's own claim vocabulary, never the engine's `Transport` axis —
+/// but a bare `if transport == claims::TRANSPORT_STDIO` is indistinguishable, to a reader and to the
+/// axis lint alike, from the agnostic root forking on the wire carrier it may not see. Asking the
+/// plane its own named question says what is meant and leaves the comparison in the plane that owns
+/// the constant.
 #[must_use]
-pub fn narrowed_scheme(transport: &str) -> &'static str {
-    if transport == claims::TRANSPORT_STDIO {
+pub fn narrowed_scheme(claim_key: &str) -> &'static str {
+    if claims::is_stdio(claim_key) {
         "environment"
     } else {
         "bearer"
