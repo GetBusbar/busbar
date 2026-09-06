@@ -536,12 +536,18 @@ impl ProtocolWriter for AnthropicWriter {
                     // NO thinking seed and NO delta), so the writer emits that full start — WITH the
                     // bytes — from the `RedactedReasoningDelta` that follows (which is where the data
                     // is). Emitting a plaintext `thinking` seed here would both MIS-TYPE the block and
-                    // duplicate the start. The paired `BlockStop` still emits content_block_stop, so the
-                    // wire is content_block_start{redacted_thinking,data}+content_block_stop = native.
-                    IrBlockMeta::RedactedThinking => {
-                        self.mark_block_open(*index);
-                        return None;
-                    }
+                    // duplicate the start.
+                    //
+                    // The index is NOT marked open here, for the same reason `Image` below is not:
+                    // the open set is what the paired `BlockStop` consults, and marking an index
+                    // whose `content_block_start` has not been written yet makes the guard answer
+                    // for a frame that may never go out. A stream that ends between this BlockStart
+                    // and its delta — a truncation, an upstream error, or `close_open_blocks`
+                    // draining the translator's own open set — would then close a block the client
+                    // never saw opened, which is precisely what the guard exists to prevent. The
+                    // delta that writes the start is the event that marks it open, so start and
+                    // stop are decided by the same fact.
+                    IrBlockMeta::RedactedThinking => return None,
                     IrBlockMeta::ToolUse { id, name } => {
                         serde_json::json!({
                             "type": STOP_TOOL_USE,
@@ -601,6 +607,14 @@ impl ProtocolWriter for AnthropicWriter {
                     // end-to-end on a cross-protocol stream (e.g. Bedrock-backend→Anthropic-client), the
                     // blob a later turn must replay for extended-thinking continuity.
                     IrDelta::RedactedReasoningDelta(bytes) => {
+                        // Writing the start and marking the index open are the SAME decision: this
+                        // is the frame the paired `content_block_stop` closes. `mark_block_open`
+                        // reports whether the index was newly opened, so a second redacted delta on
+                        // an already-open index adds no duplicate, unpaired start — the published
+                        // union carries a redacted block's bytes on one start and no delta at all.
+                        if !self.mark_block_open(*index) {
+                            return None;
+                        }
                         let mut data_obj = serde_json::Map::new();
                         data_obj.insert(
                             "type".to_string(),

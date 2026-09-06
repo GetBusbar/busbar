@@ -414,6 +414,18 @@
         "headers"
       ],
       "rationale": "Spec fidelity: the Responses stream writer bounds the number of concurrently open function-call items (MAX_OPEN_TOOLS) so a pathological backend cannot grow per-stream state without limit. The cap refused the open but the frame went out anyway: the sibling text and reasoning arms ask their open helper for a verdict and emit nothing when it refuses, while the function-call arm called the helper for its side effect and discarded the answer. Past the cap the wire therefore carried a response.output_item.added for an item that was never tracked -- so its BlockStop found nothing to close, no response.output_item.done ever followed, and the item was absent from the terminal output[] too: a lifecycle open, on the published item union, for an item that never opened and never ends. 1.6.0 decides the frame and the open together. Additive below the cap: a stream with at most MAX_OPEN_TOOLS function-call items is byte-identical. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "S-12 a deferred anthropic redacted_thinking start no longer orphans its stop",
+      "kind": "improvement",
+      "changelog": "**An Anthropic `redacted_thinking` block closes only if it opened.**",
+      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
+      "cells": "^llm\\|anthropic\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: the published ContentBlockStartEvent carries a redacted_thinking block's opaque `data` INLINE on the start and declares no delta member for it, so busbar defers that start to the RedactedReasoningDelta that carries the bytes. 1.5.5 marked the index OPEN at the BlockStart -- before the frame existed -- which is the one thing the writer's own orphan-stop guard must not do: the guard's whole job is to suppress a content_block_stop for a block the client never saw opened, and the deferral made it answer for a frame that had not been written. A stream ending between the BlockStart and its delta (a truncation, an upstream error, or the translator draining its own open set) therefore sent a bare content_block_stop -- exactly the orphan close the guard exists to prevent, and outside the spec's 1:1 start/stop pairing. 1.6.0 marks the index open in the code path that WRITES the start, so start and stop are decided by the same fact; the same boolean stops a second redacted delta from writing a duplicate, unpaired start. Byte-identical whenever the delta arrives, which is every non-truncated redacted stream. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
     }
   ]
 }

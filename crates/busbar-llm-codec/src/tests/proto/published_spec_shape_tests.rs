@@ -214,10 +214,13 @@ fn anthropic_text_block_start_stop_pair_survives_the_guard() {
     );
 }
 
-/// A REDACTED thinking block emits its start LATE (from the delta that carries the opaque bytes),
-/// so its `BlockStop` must still close — the open-index guard must treat it as opened.
+/// A REDACTED thinking block emits its start LATE — from the delta that carries the opaque bytes,
+/// because the published `ContentBlockStartEvent` carries a redacted block's `data` inline and
+/// declares no delta for it. The close follows the START, not the intent to start: once the delta
+/// has written `content_block_start`, the `BlockStop` must emit `content_block_stop`; when the
+/// stream ends before that delta, nothing opened on the wire and nothing may close.
 #[test]
-fn anthropic_redacted_thinking_block_stop_still_closes() {
+fn anthropic_redacted_thinking_block_stop_follows_the_written_start() {
     let writer = AnthropicWriter;
     assert!(
         writer
@@ -230,9 +233,37 @@ fn anthropic_redacted_thinking_block_stop_still_closes() {
     );
     assert!(
         writer
+            .write_response_event(&crate::ir::IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: crate::ir::IrDelta::RedactedReasoningDelta("opaque".to_string()),
+            })
+            .is_some(),
+        "the delta writes the block's content_block_start"
+    );
+    assert!(
+        writer
             .write_response_event(&crate::ir::IrStreamEvent::BlockStop { index: 0 })
             .is_some(),
-        "the deferred-start redacted block still owes its content_block_stop"
+        "the written start owes its content_block_stop"
+    );
+
+    // The truncated sequence: the stream ended before the delta, so no start was written and the
+    // close must stay silent rather than orphan one.
+    let truncated = AnthropicWriter;
+    assert!(
+        truncated
+            .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
+                index: 0,
+                block: crate::ir::IrBlockMeta::RedactedThinking,
+            })
+            .is_none(),
+        "the redacted start is deferred to its delta"
+    );
+    assert!(
+        truncated
+            .write_response_event(&crate::ir::IrStreamEvent::BlockStop { index: 0 })
+            .is_none(),
+        "no content_block_start was written, so its close must not orphan one"
     );
 }
 

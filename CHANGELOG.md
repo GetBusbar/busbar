@@ -127,6 +127,14 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   copy; a `cachePoint` or `guardContent` earlier in the same message shifted the two apart, so the
   suppression missed and the attachment went upstream twice — read twice by the model and billed
   twice. The two index spaces are now tracked separately. See [Spec fidelity](#spec-fidelity).
+- **An Anthropic `redacted_thinking` block closes only if it opened.** The published
+  `content_block_start` carries a redacted block's opaque `data` inline and declares no delta for
+  it, so Busbar defers that start to the event carrying the bytes. 1.5.5 recorded the block as open
+  at the *preceding* event instead — before the frame existed — which defeated the writer's own
+  guard against closing a block the client never saw opened: a stream that ended in between sent a
+  bare `content_block_stop`. The start is now recorded where it is written, so the two are decided
+  by the same fact, and a repeated redacted event no longer writes a second, unpaired start. Every
+  non-truncated redacted stream is unchanged. See [Spec fidelity](#spec-fidelity).
 - **A Responses function-call item the writer refused to open no longer announces itself.** The
   Responses stream writer bounds how many function-call items may be open at once so a pathological
   backend cannot grow per-stream state without limit. Past that bound 1.5.5 still wrote

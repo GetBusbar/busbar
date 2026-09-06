@@ -1956,10 +1956,12 @@ fn write_tool(tool: &crate::ir::IrTool) -> serde_json::Value {
 
 /// Anthropic writer implementation.
 ///
-/// `open_block_indices` is the per-stream set of IR block indices this writer OPENED and therefore
-/// owes a closing `content_block_stop`. Being tracked does NOT mean a `content_block_start` was
-/// already emitted: a `redacted_thinking` block defers its start to the delta that carries the
-/// opaque bytes, and is tracked from its `BlockStart` all the same. What is NOT tracked is
+/// `open_block_indices` is the per-stream set of IR block indices whose `content_block_start` this
+/// writer actually WROTE, and which therefore owe a closing `content_block_stop`. Tracked means
+/// emitted: an index is added by the code path that writes the frame, never by the intent to write
+/// one later. That matters for `redacted_thinking`, whose start is DEFERRED to the delta carrying
+/// the opaque bytes — marking it at its `BlockStart` would let a stream that ends before that delta
+/// close a block the client never saw opened. What is NOT tracked at all is
 /// `IrBlockMeta::Image` — the published `ContentBlockStartEvent.content_block` discriminator has no
 /// `image` member (an assistant content block on the Anthropic response wire is never an image), so
 /// that block projects to NO frame at all, exactly as every sibling writer already does. The
@@ -2013,13 +2015,16 @@ impl Clone for AnthropicWriter {
 }
 
 impl AnthropicWriter {
-    /// Record that IR block `index` was OPENED and so owes a closing `content_block_stop` (whether
-    /// or not its `content_block_start` has been emitted yet — a redacted-thinking block's start is
-    /// deferred to its delta). Lock poisoning degrades to a no-op rather than panicking.
-    fn mark_block_open(&self, index: usize) {
-        if let Ok(mut set) = self.open_block_indices.lock() {
-            set.insert(index);
-        }
+    /// Record that a `content_block_start` was WRITTEN for IR block `index`, so it owes a closing
+    /// `content_block_stop`. Returns true when the index was newly opened, false when it was
+    /// already open — a redacted-thinking block's start is deferred to its delta, and the boolean
+    /// is what keeps a second delta from writing a duplicate start for a block already open on the
+    /// wire. Lock poisoning degrades to `false` rather than panicking.
+    fn mark_block_open(&self, index: usize) -> bool {
+        self.open_block_indices
+            .lock()
+            .map(|mut set| set.insert(index))
+            .unwrap_or(false)
     }
 
     /// Consume the open record for `index`, returning whether this writer opened it (and so owes

@@ -2569,23 +2569,25 @@ fn every_writer_that_suppresses_a_block_start_suppresses_its_stop() {
                 .is_some();
 
             // The declared exceptions (suppressed start, REQUIRED stop): gemini's ToolUse
-            // (buffered-flush-on-stop idiom); bedrock's Text / Thinking / RedactedThinking (open
+            // (buffered-flush-on-stop idiom); and bedrock's Text / Thinking / RedactedThinking (open
             // IMPLICITLY on the first `contentBlockDelta` — the ConverseStream
             // `ContentBlockStart$start` union has no text/reasoning member — but MUST still emit
-            // `contentBlockStop`); and anthropic's RedactedThinking (its `BlockStart` is suppressed
-            // because native Anthropic streams a `redacted_thinking` block's opaque `data` INLINE on a
-            // content_block_start the writer emits from the FOLLOWING `RedactedReasoningDelta`, not from
-            // the BlockStart — so the block DOES open on the wire, just at the delta, and its
-            // content_block_stop close is mandatory). Every other (writer, meta) pair must agree:
-            // suppressed start implies suppressed stop.
+            // `contentBlockStop`).
+            //
+            // Anthropic's RedactedThinking is NOT one of them. Its start is deferred, not implicit:
+            // native Anthropic carries a redacted block's opaque `data` INLINE on a
+            // `content_block_start`, which the writer emits from the FOLLOWING
+            // `RedactedReasoningDelta`. This sequence has no delta, so no start was ever written —
+            // and a stop for it would be exactly the orphan close this test exists to forbid. It
+            // therefore obeys the general rule below: no start, no stop. The pairing when the delta
+            // DOES arrive is pinned separately.
             let is_declared_exception = (name == PROTO_GEMINI
                 && matches!(meta, IrBlockMeta::ToolUse { .. }))
                 || (name == PROTO_BEDROCK
                     && matches!(
                         meta,
                         IrBlockMeta::Text | IrBlockMeta::Thinking | IrBlockMeta::RedactedThinking
-                    ))
-                || (name == PROTO_ANTHROPIC && matches!(meta, IrBlockMeta::RedactedThinking));
+                    ));
 
             if is_declared_exception {
                 assert!(
@@ -2603,6 +2605,57 @@ fn every_writer_that_suppresses_a_block_start_suppresses_its_stop() {
             }
         }
     }
+}
+
+/// The deferred `redacted_thinking` start and its `content_block_stop` are decided by the SAME
+/// fact — that a start was written. Native Anthropic carries a redacted block's opaque `data`
+/// inline on a `content_block_start` and streams no delta for it, so busbar defers that start to
+/// the `RedactedReasoningDelta` that carries the bytes. Marking the index open at the `BlockStart`
+/// instead made the writer's own orphan-stop guard answer for a frame that had not been written:
+/// a stream that ended between the two — a truncation, an upstream error, or the translator
+/// draining its open set — closed a block the client never saw opened.
+///
+/// This pins both halves: with the delta, one start and one stop, paired; a second delta on the
+/// same index adds no duplicate start.
+#[test]
+fn anthropic_deferred_redacted_start_pairs_with_its_stop_exactly_once() {
+    let protocol = protocol_for(PROTO_ANTHROPIC).expect("anthropic protocol");
+    let writer = protocol.writer();
+
+    assert!(
+        writer
+            .write_response_event(&IrStreamEvent::BlockStart {
+                index: 0,
+                block: IrBlockMeta::RedactedThinking,
+            })
+            .is_none(),
+        "the redacted BlockStart is deferred: it writes no frame"
+    );
+    let start = writer
+        .write_response_event(&IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::ir::IrDelta::RedactedReasoningDelta("opaque-bytes".to_string()),
+        })
+        .expect("the delta writes the block's sole content_block_start");
+    assert_eq!(start.0, "content_block_start", "start event: {start:?}");
+    assert_eq!(
+        start.1["content_block"]["type"], "redacted_thinking",
+        "the deferred start carries the redacted block: {:?}",
+        start.1
+    );
+    assert!(
+        writer
+            .write_response_event(&IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: crate::ir::IrDelta::RedactedReasoningDelta("more-bytes".to_string()),
+            })
+            .is_none(),
+        "a second redacted delta must not write a duplicate, unpaired content_block_start"
+    );
+    let stop = writer
+        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+        .expect("the written start owes its content_block_stop");
+    assert_eq!(stop.0, "content_block_stop", "stop event: {stop:?}");
 }
 
 /// An Anthropic `content_block_start{type:"image"}` streamed block has no Bedrock ConverseStream
