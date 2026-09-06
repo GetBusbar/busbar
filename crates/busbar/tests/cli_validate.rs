@@ -1207,3 +1207,91 @@ fn busbar_providers_env_is_deprecated_but_honored() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `--validate` must run the BLANK-ADMIN-TOKEN guard, not merely prove the reference RESOLVES.
+///
+/// `BUSBAR_ADMIN_TOKEN=""` is SET, so every resolvability check is satisfied and `--validate`
+/// printed `ok: config valid`; boot then refused the same file, because `resolve_admin_token`
+/// rejects an empty/whitespace-only value (the digest would be taken over the blank string, so an
+/// `Authorization: Bearer ` carrying nothing would authenticate as the operator). A `--validate`
+/// that green-lights a config boot dies on breaks the one promise the flag makes.
+///
+/// The refusal TEXT is boot's, verbatim: both paths call the same guard, so the operator reads the
+/// same sentence from CI as from the failed start.
+#[cfg(feature = "auth-admin-tokens")]
+#[test]
+fn validate_rejects_a_set_but_empty_admin_token() {
+    let dir = fixture_dir("blank-admin-token");
+    write_configs(
+        &dir,
+        "identity-providers:\n\
+         \x20 admin-tokens:\n\
+         \x20   module: admin-tokens\n\
+         \x20   token: { env: BUSBAR_TEST_BLANK_ADMIN_TOKEN }\n\
+         auth:\n\
+         \x20 admin_auth: [admin-tokens]\n",
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .arg("--validate")
+        .env("MOCK_KEY", "test-key-value")
+        .env("BUSBAR_TEST_BLANK_ADMIN_TOKEN", "   ")
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .output()
+        .expect("run busbar");
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(
+        code, 1,
+        "a set-but-blank admin token must fail --validate exactly as it fails boot: \
+         stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !stdout.contains("ok: config valid"),
+        "--validate must not green-light a config boot refuses: {stdout}"
+    );
+    assert!(
+        stderr.contains("EMPTY/whitespace-only value"),
+        "the refusal must be boot's own sentence, verbatim: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--validate` must run the SIGNING-KEY FORMAT check (32 raw bytes / 64 hex chars), not merely
+/// prove the reference resolves. A key of the wrong length resolves fine, so `--validate` said
+/// `ok: config valid` and boot then refused it in `parse_signing_secret`. Same guard, same text.
+#[test]
+fn validate_rejects_a_malformed_signing_key() {
+    let dir = fixture_dir("bad-signing-key");
+    write_configs(
+        &dir,
+        "auth:\n\
+         \x20 signing_key: { env: BUSBAR_TEST_BAD_SIGNING_KEY }\n",
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .arg("--validate")
+        .env("MOCK_KEY", "test-key-value")
+        .env("BUSBAR_TEST_BAD_SIGNING_KEY", "not-a-key")
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .output()
+        .expect("run busbar");
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(
+        code, 1,
+        "a malformed signing key must fail --validate exactly as it fails boot: \
+         stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !stdout.contains("ok: config valid"),
+        "--validate must not green-light a config boot refuses: {stdout}"
+    );
+    assert!(
+        stderr.contains("32-byte ed25519 secret key (raw 32 bytes or 64 hex characters)"),
+        "the refusal must be boot's own sentence, verbatim: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
