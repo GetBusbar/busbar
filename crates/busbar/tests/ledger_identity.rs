@@ -186,9 +186,12 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         let r = rig.chat(&rig.key_ok);
         assert!(
             (500..600).contains(&r.status),
-            "a request whose transfer failed must not be answered 2xx, got {}: {}",
+            "a request whose transfer failed must not be answered 2xx, got {}: {}\n\
+             the mock answers {} to a direct probe, so the outage WAS in force\nlog:\n{}",
             r.status,
-            r.body
+            r.body,
+            rig.probe_mock(),
+            rig.log()
         );
     }
     rig.upstream_down(false);
@@ -471,10 +474,20 @@ impl Rig {
             .stderr(mock_log)
             .spawn()
             .expect("python3 is needed to run the oracle's mock upstream");
-        wait_until(Duration::from_secs(15), || {
-            TcpStream::connect(("127.0.0.1", PORTS.mock)).is_ok()
+        // Ready means ANSWERING, not merely bound: the readiness route is served by the same
+        // handler every later request goes through, so a mock that has a socket but has not reached
+        // its serve loop is not yet mistaken for one that has. The budget is generous because a
+        // python interpreter starting on a saturated machine is slow, not broken.
+        wait_until(Duration::from_secs(60), || {
+            get(PORTS.mock, "/", None).status == 200
         })
-        .expect("the mock upstream did not come up");
+        .unwrap_or_else(|| {
+            panic!(
+                "the mock upstream did not come up on port {}; log:\n{}",
+                PORTS.mock,
+                read_to_string(&dir.join("mock.log"))
+            )
+        });
 
         write_configs(&dir);
 
@@ -559,13 +572,57 @@ impl Rig {
         )
     }
 
-    /// Flip the mock's control file. busbar sees a plain 503 from the upstream and nothing else.
+    /// Flip the mock's control file AND WAIT until the mock is answering that way. busbar sees a
+    /// plain 503 from the upstream and nothing else.
+    ///
+    /// Two rig hazards live here, and both of them arrive dressed as a product failure — a request
+    /// sent after the outage was ordered, answered 200.
+    ///
+    /// The first is the write itself. `fs::write` opens the file truncating, so between the
+    /// truncate and the bytes there is a window in which the mock reads the control file and finds
+    /// it EMPTY; an empty verb is no verb, and the mock serves a healthy 200. The file is therefore
+    /// written beside its own name and RENAMED over it, which is atomic: every read sees either the
+    /// old contents or the new ones, never nothing.
+    ///
+    /// The second is that the mock is a separate process. A write that has landed on disk is not
+    /// yet a state the mock has READ, and a fire-and-forget flip followed immediately by a request
+    /// is a race the test cannot see it lost. So the flip is followed by a READ-BACK: a probe sent
+    /// STRAIGHT AT THE MOCK, never through busbar, polled until the new state is the one being
+    /// served. Nothing about that probe reaches busbar, so it writes no metering row and posts
+    /// nothing to the ledger — every figure this cell reconciles is unmoved by it. If the mock never
+    /// acknowledges (it died, or the port is somebody else's), the rig says so in those words rather
+    /// than letting the next assertion blame the product for an outage that never started.
     fn upstream_down(&self, down: bool) {
         if down {
-            std::fs::write(&self.control, b"down").unwrap();
+            let next = self.control.with_file_name("mock.control.next");
+            std::fs::write(&next, b"down").unwrap();
+            std::fs::rename(&next, &self.control).unwrap();
         } else {
             let _ = std::fs::remove_file(&self.control);
         }
+        let want = if down { 503 } else { 200 };
+        let acknowledged = wait_until(Duration::from_secs(30), || self.probe_mock() == want);
+        assert!(
+            acknowledged.is_some(),
+            "the mock upstream never acknowledged `down = {down}`: it still answers {} on port {}, \
+             so the outage this cell is about had not started when the request was sent",
+            self.probe_mock(),
+            PORTS.mock
+        );
+    }
+
+    /// One request straight at the mock upstream, bypassing busbar entirely — the read-back
+    /// `upstream_down` polls on. It is the mock's OWN answer, so it reports the mock's state and
+    /// not busbar's opinion of it, and it moves nothing this cell counts.
+    fn probe_mock(&self) -> u16 {
+        request(
+            PORTS.mock,
+            "POST",
+            "/v1/chat/completions",
+            None,
+            Some(r#"{"model":"control-readback","messages":[]}"#),
+        )
+        .status
     }
 
     /// The legacy usage projection, as bytes. Bytes rather than a parsed value because PB-16's
@@ -587,7 +644,7 @@ impl Rig {
     /// a timeout.
     fn settled_usage(&self, expected_requests: usize) -> Vec<u8> {
         let mut last = self.usage_bytes();
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(150));
             let next = self.usage_bytes();
@@ -728,7 +785,12 @@ fn request(
             body: String::new(),
         };
     };
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    // A read timeout here does not report a slow answer — it reports NO answer, because the
+    // half-read bytes parse as status 0 and the assertion that follows blames the product for a
+    // response the machine simply had not finished handing over. So the budget is one no healthy
+    // exchange can reach even on a host with every core pinned; the thing being bounded is a hang,
+    // and a hang is still bounded.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(120)));
     let mut head = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
     if let Some(t) = bearer {
         head.push_str(&format!("Authorization: Bearer {t}\r\n"));
