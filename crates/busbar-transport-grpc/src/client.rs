@@ -86,7 +86,7 @@ pub(crate) async fn open_stream(
     // this fix.
     let mut grpc = tonic::client::Grpc::with_origin(dialer, origin);
     grpc.ready().await.map_err(|_| TransportError::Refused)?;
-    let path = PathAndQuery::from_static(method);
+    let path = PathAndQuery::try_from(method).map_err(|_| TransportError::AddressRefused)?;
     let response = grpc
         .streaming(tonic::Request::new(InStream(out_rx)), path, RawCodec)
         .await

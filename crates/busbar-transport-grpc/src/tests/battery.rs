@@ -751,3 +751,51 @@ async fn the_inbound_channel_backpressures_a_peer_that_outruns_frames() {
         "an undrained inbound channel must backpressure once the per-unit frame buffer is full"
     );
 }
+
+/// A destination is sealed by whatever named the method; nothing validates that string is a legal
+/// HTTP/2 `:path` before it gets here. A malformed method must refuse the dial's first write, not
+/// panic the process building the request.
+#[tokio::test]
+async fn a_malformed_sealed_method_refuses_instead_of_panicking() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    struct Seal;
+    impl busbar_contract::plugin::KernelSeal for Seal {
+        fn seal_origin(&self) -> &'static str {
+            "test"
+        }
+    }
+    let dest = busbar_contract::VerifiedDestination::seal(
+        &Seal,
+        busbar_contract::DestinationFacts::Upstream {
+            transport: "grpc",
+            address: busbar_contract_transport::dest::UpstreamAddress::Grpc {
+                authority: host,
+                sni: None,
+                method: "/pkg.Svc/My Method",
+            },
+            lane: busbar_contract::LaneId::new("test-lane"),
+        },
+        "grpc",
+        None,
+    );
+
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let _server_conn = accept_task.await.unwrap().unwrap();
+    let err = client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransportError::AddressRefused);
+}
