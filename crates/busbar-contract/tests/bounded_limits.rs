@@ -467,6 +467,8 @@ fn the_frame_cursor_stops_at_the_per_connection_ceiling() {
                 bytes: 8 * 1024,
                 transport_units: None,
                 status: None,
+                status_code: None,
+                retry_after_secs: None,
             },
         })
         .collect();

@@ -235,6 +235,8 @@ pub fn frame(bytes: &[u8]) -> Frame {
             bytes: bytes.len() as u64,
             transport_units: None,
             status: None,
+            status_code: None,
+            retry_after_secs: None,
         },
     }
 }
