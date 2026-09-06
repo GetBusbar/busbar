@@ -1409,6 +1409,7 @@ fn test_write_response_event_error_names_real_exception() {
         class: StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
+        ..Default::default()
     });
     let (et, payload) = writer
         .write_response_event(&throttle)
@@ -1428,6 +1429,7 @@ fn test_write_response_event_error_names_real_exception() {
         class: StatusClass::ServerError,
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     });
     let (et2, payload2) = writer
         .write_response_event(&server)
@@ -2745,6 +2747,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
             class,
             provider_signal: Some("upstream detail".to_string()),
             retry_after: None,
+            ..Default::default()
         };
         // Exception-frame path.
         let (exc, msg) = writer
@@ -2765,6 +2768,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
             class,
             provider_signal: None,
             retry_after: None,
+            ..Default::default()
         });
         let (et, payload) = writer
             .write_response_event(&ev)
@@ -2794,6 +2798,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
             class,
             provider_signal: None,
             retry_after: None,
+            ..Default::default()
         };
         let (exc, _) = writer.write_response_exception(&err).unwrap();
         assert_ne!(exc, "ModelTimeoutException");
@@ -6185,6 +6190,7 @@ fn write_response_exception_folds_to_stream_union_members() {
         class,
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     };
     let cases = [
         (StatusClass::RateLimit, "ThrottlingException"),
@@ -6209,6 +6215,7 @@ fn write_response_exception_folds_to_stream_union_members() {
         class: StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
+        ..Default::default()
     };
     let writer = BedrockWriter;
     let (name, msg) = writer.write_response_exception(&err).unwrap();

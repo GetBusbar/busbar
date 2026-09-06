@@ -302,21 +302,55 @@ fn attach_bedrock_error_headers(headers: &mut http::HeaderMap, kind: &str) {
 fn bedrock_stream_exception_for(
     err: &busbar_substrate_values::proto::IrError,
 ) -> (&'static str, String) {
-    let exception_name = match err.class {
+    let class_name = match err.class {
         StatusClass::RateLimit => EXC_THROTTLING,
         StatusClass::Overloaded => EXC_SERVICE_UNAVAILABLE,
         StatusClass::ClientError | StatusClass::ContextLength => EXC_VALIDATION,
-        StatusClass::Timeout => "ModelStreamErrorException",
+        StatusClass::Timeout => EXC_MODEL_STREAM_ERROR,
         StatusClass::Auth
         | StatusClass::Billing
         | StatusClass::ServerError
         | StatusClass::Network => EXC_INTERNAL_SERVER,
     };
+    // The class-derived name is the FALLBACK. When the upstream NAMED its own exception, that name
+    // is the answer — `StatusClass` is a lossy projection built for the breaker's dispositions, and
+    // deriving the name from it turned a `ModelStreamErrorException` (the stream-internal failure
+    // Converse declares) into a generic `InternalServerException`. Only a name the ConverseStream
+    // output union actually declares may be framed: a name from a foreign dialect would produce a
+    // frame no Bedrock SDK can decode, so anything unrecognized falls back to the class-derived one.
+    let exception_name = err
+        .detail
+        .status_name
+        .as_deref()
+        .and_then(bedrock_stream_exception_member)
+        .unwrap_or(class_name);
     let message = err
-        .provider_signal
+        .detail
+        .message
         .clone()
+        .or_else(|| err.provider_signal.clone())
         .unwrap_or_else(|| exception_name.to_string());
     (exception_name, message)
+}
+
+/// Bedrock's `ModelStreamErrorException` — the stream-internal failure member of the
+/// `ConverseStreamOutput` union.
+const EXC_MODEL_STREAM_ERROR: &str = "ModelStreamErrorException";
+
+/// Resolve an upstream-reported exception name to the `'static` member of the `ConverseStreamOutput`
+/// union that spells it, or `None` when the union declares no such member. A frame naming anything
+/// the union does not declare is one no Bedrock SDK can decode, so an unrecognized name is refused
+/// here rather than written onto the wire.
+fn bedrock_stream_exception_member(name: &str) -> Option<&'static str> {
+    [
+        EXC_THROTTLING,
+        EXC_SERVICE_UNAVAILABLE,
+        EXC_VALIDATION,
+        EXC_MODEL_STREAM_ERROR,
+        EXC_INTERNAL_SERVER,
+    ]
+    .into_iter()
+    .find(|m| *m == name)
 }
 
 /// `extra` key under which the Bedrock reader stashes the positions of native Converse `cachePoint`
