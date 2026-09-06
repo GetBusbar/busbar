@@ -65,10 +65,38 @@ use ledger_identity::{
 // Every number below is fixed by the fixture, not observed from the run, so a change in any of them
 // fails here rather than quietly re-deriving itself on both sides of the identity.
 
-/// The oracle's own ports for this cell.
-const DATA_PORT: u16 = 49951;
-const ADMIN_PORT: u16 = 49952;
-const MOCK_PORT: u16 = 49961;
+/// The three ports this cell needs, asked for once and kept for the run.
+///
+/// Asked for rather than fixed, and that is the whole of it: the numbers this cell used to name sit
+/// inside the range the operating system hands out to anything that asks for a port, so a sibling
+/// test asking for a free one could be given this cell's and the collision would arrive disguised
+/// as a boot that never listened. Held in one place for the process so the mock, the config and
+/// every request agree on which three they are.
+static PORTS: std::sync::LazyLock<Ports> = std::sync::LazyLock::new(|| Ports {
+    data: free_port(),
+    admin: free_port(),
+    mock: free_port(),
+});
+
+/// The ports one run of this cell listens on.
+struct Ports {
+    data: u16,
+    admin: u16,
+    mock: u16,
+}
+
+/// One port nothing else holds.
+///
+/// The bind is dropped before the number is returned, which is the same small race every test in
+/// this directory takes; the alternative is a fixed number, and a fixed number races everything on
+/// the machine rather than the moment between two calls.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("a free port")
+        .local_addr()
+        .expect("the bound address")
+        .port()
+}
 
 /// The one lane and its provider — the oracle's `m-<dialect>` naming.
 const LANE: &str = "m-openai-chat";
@@ -436,7 +464,7 @@ impl Rig {
         let mock_log = std::fs::File::create(dir.join("mock.log")).unwrap();
         let mock = Command::new("python3")
             .arg(&mock_py)
-            .arg(MOCK_PORT.to_string())
+            .arg(PORTS.mock.to_string())
             .arg("oracle-marker")
             .arg(&control)
             .stdout(mock_log.try_clone().unwrap())
@@ -444,7 +472,7 @@ impl Rig {
             .spawn()
             .expect("python3 is needed to run the oracle's mock upstream");
         wait_until(Duration::from_secs(15), || {
-            TcpStream::connect(("127.0.0.1", MOCK_PORT)).is_ok()
+            TcpStream::connect(("127.0.0.1", PORTS.mock)).is_ok()
         })
         .expect("the mock upstream did not come up");
 
@@ -482,11 +510,12 @@ impl Rig {
                     read_to_string(&rig.log_path)
                 );
             }
-            get(DATA_PORT, "/healthz", None).status == 200
+            get(PORTS.data, "/healthz", None).status == 200
         });
         assert!(
             booted.is_some(),
-            "busbar did not answer on {DATA_PORT}; log:\n{}",
+            "busbar did not answer on {}; log:\n{}",
+            PORTS.data,
             read_to_string(&rig.log_path)
         );
 
@@ -500,7 +529,7 @@ impl Rig {
 
     fn mint(&self, body: &str) -> String {
         let r = request(
-            ADMIN_PORT,
+            PORTS.admin,
             "POST",
             "/api/v1/admin/keys",
             Some(ADMIN_TOKEN),
@@ -522,7 +551,7 @@ impl Rig {
         let body =
             format!(r#"{{"model":"{LANE}","messages":[{{"role":"user","content":"ping"}}]}}"#);
         request(
-            DATA_PORT,
+            PORTS.data,
             "POST",
             "/v1/chat/completions",
             Some(token),
@@ -542,7 +571,7 @@ impl Rig {
     /// The legacy usage projection, as bytes. Bytes rather than a parsed value because PB-16's
     /// claim is about the response and not about what a lenient parser makes of it.
     fn usage_bytes(&self) -> Vec<u8> {
-        let r = get(ADMIN_PORT, "/api/v1/admin/usage", Some(ADMIN_TOKEN));
+        let r = get(PORTS.admin, "/api/v1/admin/usage", Some(ADMIN_TOKEN));
         assert_eq!(r.status, 200, "reading /usage failed: {}", r.body);
         r.body.into_bytes()
     }
@@ -593,9 +622,13 @@ fn repo_root() -> PathBuf {
 /// the same two budget groups, the same priced card, and the same unused pool the out-of-scope key
 /// is confined to. A flat fee is added, for the reason `FEE_CENTS` gives.
 fn write_configs(dir: &Path) {
+    let (data_port, admin_port) = (PORTS.data, PORTS.admin);
     std::fs::write(
         dir.join("providers.yaml"),
-        format!("{PROVIDER}:\n  protocol: openai\n  base_url: \"http://127.0.0.1:{MOCK_PORT}\"\n"),
+        format!(
+            "{PROVIDER}:\n  protocol: openai\n  base_url: \"http://127.0.0.1:{}\"\n",
+            PORTS.mock
+        ),
     )
     .unwrap();
 
@@ -612,8 +645,8 @@ fn write_configs(dir: &Path) {
     std::fs::write(
         dir.join("config.yaml"),
         format!(
-            r#"listen: "127.0.0.1:{DATA_PORT}"
-admin_listen: "127.0.0.1:{ADMIN_PORT}"
+            r#"listen: "127.0.0.1:{data_port}"
+admin_listen: "127.0.0.1:{admin_port}"
 admin_require_mtls: false
 identity-providers:
   admin-tokens:
