@@ -11,6 +11,10 @@ target/
 **/*.rs.bk
 *.pdb
 
+# scripts/audit-ledger.py --selftest builds a scratch git repo here; it is a test fixture, never
+# a working tree the workspace is judged from.
+/.ledger-work/
+
 # NOTE: Cargo.lock IS committed for binaries (busbar is a bin) — do not ignore it.
 
 # Local runtime config & secrets (real config is mounted; keys come from env)
