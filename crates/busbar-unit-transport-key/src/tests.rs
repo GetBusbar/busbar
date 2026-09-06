@@ -191,6 +191,62 @@ fn provisioning_carries_the_caller_declared_alpn_list() {
     }
 }
 
+/// DNS names are case-insensitive, and the two sides of this lookup do not agree on a spelling by
+/// themselves: rustls lower-cases the name a `ClientHello` carried before a resolver ever sees it,
+/// while an operator writes the name in the config however they please. An entry provisioned as
+/// `Example.COM` that no client can ever select is a listener quietly serving the default
+/// certificate on a name it was explicitly given one for.
+#[test]
+fn a_named_entry_is_selected_whatever_case_either_side_spelled_it() {
+    install_crypto_provider();
+    let named = a_certified_key();
+    let default = a_certified_key();
+    let resolver = SniCertResolver::build(
+        vec![("Example.COM", Arc::clone(&named))],
+        Arc::clone(&default),
+    )
+    .unwrap();
+
+    for offered in ["example.com", "EXAMPLE.com", "Example.COM"] {
+        assert!(
+            Arc::ptr_eq(&resolver.pick(Some(offered)), &named),
+            "the name's own certificate, not the default, for {offered}"
+        );
+    }
+    // An unrelated name and an absent one both still fall through to the default.
+    assert!(Arc::ptr_eq(&resolver.pick(Some("other.test")), &default));
+    assert!(Arc::ptr_eq(&resolver.pick(None), &default));
+}
+
+/// Two entries that differ only in case are one name, and the deployment has said two different
+/// things about which certificate it carries. Silently keeping whichever was inserted last picks
+/// one of them at random from the operator's point of view.
+#[test]
+fn two_names_that_differ_only_in_case_are_refused() {
+    install_crypto_provider();
+    let err = SniCertResolver::build(
+        vec![
+            ("example.com", a_certified_key()),
+            ("EXAMPLE.com", a_certified_key()),
+        ],
+        a_certified_key(),
+    )
+    .unwrap_err();
+    assert!(err.to_lowercase().contains("example.com"), "{err}");
+}
+
+/// A parsed certificate and key, for the resolver cells — which care only about which `Arc` comes
+/// back, never what is in it.
+fn a_certified_key() -> Arc<CertifiedKey> {
+    let (cert_pem, key_pem) = gen_self_signed();
+    certified_key(&TlsMaterial {
+        cert_pem: cert_pem.into_bytes(),
+        key_pem: key_pem.into_bytes(),
+        client_ca_pem: None,
+    })
+    .unwrap()
+}
+
 /// A cert/key pair that do not belong together is refused at `with_single_cert`, never silently
 /// paired.
 #[test]
