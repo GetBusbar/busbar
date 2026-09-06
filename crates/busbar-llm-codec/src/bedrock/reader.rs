@@ -513,6 +513,16 @@ impl ProtocolReader for BedrockReader {
                             message_doc_video.push(serde_json::json!({
                                 "m": msg_idx,
                                 "i": block_idx,
+                                // The IR ordinal this block's MODELLED twin (pushed just below) will
+                                // occupy — which is NOT `block_idx`. `i` indexes the WIRE array and is
+                                // what the splice re-inserts against; the writer's double-emit
+                                // suppression walks the IR vector instead, and the two diverge as soon
+                                // as any earlier wire block models nothing (a `cachePoint`, a
+                                // `guardContent`, an undecodable block). Keyed on `i`, the suppression
+                                // missed and the attachment went upstream TWICE — the caller paying
+                                // input tokens for the whole document twice, with the cache breakpoint
+                                // now sitting before a prefix that no longer matches.
+                                "b": msg_content.len(),
                                 "block": { "document": document.clone() },
                             }));
                             // ALSO model it (cross-protocol), the same additive pattern
@@ -534,6 +544,9 @@ impl ProtocolReader for BedrockReader {
                             message_doc_video.push(serde_json::json!({
                                 "m": msg_idx,
                                 "i": block_idx,
+                                // The modelled twin's IR ordinal — see the `document` arm above for
+                                // why the WIRE index cannot serve the writer's suppression gate.
+                                "b": msg_content.len(),
                                 "block": { "video": video.clone() },
                             }));
                             // Modelled for the cross-protocol hop as well — see the `document` arm.

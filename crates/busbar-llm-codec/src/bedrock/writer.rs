@@ -318,16 +318,31 @@ impl ProtocolWriter for BedrockWriter {
             let mut content_arr: Vec<serde_json::Value> = Vec::new();
             for (block_idx, block) in msg.content.iter().enumerate() {
                 // A `document` / `video` block the READER also parked verbatim under
-                // `DOC_VIDEO_SENTINEL` at this exact (message, block) position. The stash is spliced
-                // back below, so writing the modelled `Media` projection here TOO would emit the
-                // attachment twice. Suppress the modelled emit and let the verbatim raw block win —
-                // that is what keeps a Bedrock->Bedrock round-trip byte-identical (every document
-                // sub-field, `citations`/`context` included, survives) while a CROSS-protocol IR,
-                // whose `extra` the seam cleared, has no stash and so takes the modelled path.
+                // `DOC_VIDEO_SENTINEL`. The stash is spliced back below, so writing the modelled
+                // `Media` projection here TOO would emit the attachment twice. Suppress the modelled
+                // emit and let the verbatim raw block win — that is what keeps a Bedrock->Bedrock
+                // round-trip byte-identical (every document sub-field, `citations`/`context`
+                // included, survives) while a CROSS-protocol IR, whose `extra` the seam cleared, has
+                // no stash and so takes the modelled path.
+                //
+                // The match is on the stash's `b` — the IR ordinal of the modelled twin — NOT on `i`,
+                // which indexes the ORIGINAL WIRE array and is what the splice below re-inserts
+                // against. The two are equal only while every wire block models an IR block; a
+                // `cachePoint`, a `guardContent` or any block the reader leaves undecoded occupies a
+                // wire slot and no IR slot, and from there on `i` runs ahead. Keyed on `i` this gate
+                // silently stopped matching, so the document was emitted BOTH modelled and verbatim:
+                // the whole attachment sent upstream twice (its input tokens billed twice) with the
+                // cache breakpoint now preceding a prefix that no longer matches, so the next turn
+                // cache-missed and re-billed the prefix too. A stash minted before `b` existed (an
+                // `extra` that crossed a version boundary) falls back to `i`, which is the previous
+                // behaviour for the shapes where the two agree.
                 let raw_doc_video_stashed =
                     message_doc_video.iter().flat_map(|v| v.iter()).any(|e| {
                         e.get("m").and_then(|v| v.as_u64()) == Some(msg_idx as u64)
-                            && e.get("i").and_then(|v| v.as_u64()) == Some(block_idx as u64)
+                            && e.get("b")
+                                .or_else(|| e.get("i"))
+                                .and_then(|v| v.as_u64())
+                                == Some(block_idx as u64)
                     });
                 // The prompt-cache boundary carried on this block, if any. Emitted as a
                 // `cachePoint` block IMMEDIATELY AFTER the block below (the position Bedrock expects).
