@@ -11,6 +11,13 @@ use std::ffi::c_void;
 /// well, so a load that fails can only have failed on the routes query.
 static ROUTES_STATUS: std::sync::Mutex<i32> = std::sync::Mutex::new(STATUS_OK);
 
+/// Serializes each "set the status, run the load, restore the status" window end to end. Setting
+/// `ROUTES_STATUS` and reading it back are each atomic on their own, but the window between a
+/// test's set and its own load is not covered by any lock — a second test's `set` (or restoring
+/// reset) landing in that gap changes the status the FIRST test's load sees. Callers must hold this
+/// for the whole set/load/reset sequence, not just the individual assignments.
+static ROUTES_STATUS_IN_USE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// A fake `busbar_call` that answers `Streams` with the empty stream list and `Routes` with
 /// whatever status the test chose. Mimics the plugin side of the allocation contract: the plugin
 /// allocates, the engine frees through `busbar_free`.
@@ -100,9 +107,13 @@ fn a_panic_on_the_routes_query_fails_the_load() {
         crate::fixture_guard::note_skip("export example plugin");
         return;
     };
+    let _guard = ROUTES_STATUS_IN_USE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     *ROUTES_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_PANIC;
     let loaded = export_from_raw(raw, "fake-call-export");
     *ROUTES_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_OK;
+    drop(_guard);
     let Err(message) = loaded else {
         panic!("a panicking routes query must not load as a healthy sink with no routes");
     };
@@ -121,9 +132,13 @@ fn an_unsupported_routes_query_loads_with_no_routes() {
         crate::fixture_guard::note_skip("export example plugin");
         return;
     };
+    let _guard = ROUTES_STATUS_IN_USE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     *ROUTES_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_UNSUPPORTED;
     let loaded = export_from_raw(raw, "fake-call-export");
     *ROUTES_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_OK;
+    drop(_guard);
     let sink = loaded.expect("a sink that predates the routes op still loads");
     assert!(
         sink.routes().is_empty(),
