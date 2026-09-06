@@ -30,7 +30,7 @@ pub struct ModerationReq {
 /// input is EXACTLY the content to classify, so it is exactly what a screening gate must see: a
 /// `ModerationInput::Text` is caller free-text → [`busbar_substrate_values::ir::facts::ContentItem::Text`]; a
 /// `ModerationInput::ImageUrl` is an image reference busbar does not fetch or render →
-/// [`busbar_substrate_values::ir::facts::ContentItem::Opaque`] (MAJOR-5; chat-parity, present-but-unscreenable).
+/// [`busbar_substrate_values::ir::facts::ContentItem::Opaque`] (chat-parity, present-but-unscreenable).
 impl busbar_substrate_values::ir::facts::IrFacts for ModerationReq {
     fn verb(&self) -> busbar_api::operation::Operation {
         busbar_api::operation::Operation::MODERATION

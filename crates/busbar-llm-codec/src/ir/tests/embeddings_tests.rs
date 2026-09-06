@@ -67,7 +67,7 @@ fn embeddings_projects_input_strings_and_title_as_screenable_text() {
     };
     assert_eq!(IrFacts::verb(&req), Operation::EMBEDDINGS);
     assert!(!IrFacts::wants_stream(&req));
-    // input strings AND the Gemini retrieval title are all screenable (FATAL-3).
+    // input strings AND the Gemini retrieval title are all screenable.
     assert_eq!(
         screened(&req.content()),
         vec!["first input", "second input", "doc title"]
@@ -85,7 +85,7 @@ fn embeddings_projects_input_strings_and_title_as_screenable_text() {
 
 #[test]
 fn embeddings_title_is_screened_when_present() {
-    // The forcing-function witness for the `title` field (FATAL-3): a request carrying ONLY a title
+    // The forcing-function witness for the `title` field: a request carrying ONLY a title
     // still surfaces it to a gate — a projection that dropped the field would fail here.
     let req = EmbeddingsReq {
         title: Some("SECRET-TITLE".into()),
@@ -96,7 +96,7 @@ fn embeddings_title_is_screened_when_present() {
 
 #[test]
 fn embeddings_image_and_token_inputs_are_opaque_not_empty() {
-    // MINOR-7: image references embed as opaque (present-but-unscreenable), never silently nothing.
+    // Image references embed as opaque (present-but-unscreenable), never silently nothing.
     let img = EmbeddingsReq {
         input: EmbInput::Images(vec!["data:image/png;base64,AAAA".into()]),
         ..Default::default()

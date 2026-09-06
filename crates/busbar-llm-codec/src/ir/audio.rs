@@ -71,7 +71,7 @@ pub struct TranscriptionReq {
 /// blob is BINARY and unscreenable → one [`busbar_substrate_values::ir::facts::ContentItem::Opaque`]
 /// (present-but-unscreenable, never silently empty). The `prompt` is caller free-text forwarded
 /// upstream — reachable ONLY through the byte-aware hook seam (a multipart body never reaches the
-/// `&Value` path; FATAL-1) → [`busbar_substrate_values::ir::facts::ContentItem::Text`]. `source_language`/
+/// `&Value` path) → [`busbar_substrate_values::ir::facts::ContentItem::Text`]. `source_language`/
 /// `target_language`/`response_format` are enum roles, not content.
 impl busbar_substrate_values::ir::facts::IrFacts for TranscriptionReq {
     fn verb(&self) -> busbar_api::operation::Operation {
@@ -181,7 +181,7 @@ impl SpeechReq {
 
 /// THE SPEECH FAMILY'S WALK — this IR's answer to [`busbar_substrate_values::ir::facts::IrFacts`]. Every caller
 /// free-text field is projected to [`busbar_substrate_values::ir::facts::ContentItem::Text`]: the `input` to
-/// synthesize, the `instructions` style prompt when present (FATAL-2 — forwarded verbatim by both
+/// synthesize, the `instructions` style prompt when present (forwarded verbatim by both
 /// writers), and each multi-speaker NAME. The speaker VOICE and `response_format`/`speed` are
 /// provider knobs (voice ids, format enums), not caller free-text, and stay out.
 impl busbar_substrate_values::ir::facts::IrFacts for SpeechReq {
