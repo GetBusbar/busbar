@@ -240,6 +240,35 @@ async fn handshake_failure_maps_to_its_own_error() {
     assert_eq!(result.unwrap_err(), TransportError::HandshakeFailed);
 }
 
+/// One synthetic `io::Error` per `map_io_err` arm, so swapping two arms is caught here rather than
+/// only by whichever live-dial cell happens to provoke that kind. Ported from `busbar-transport-
+/// http`'s identical table cell, with this crate's own extra arm: a handshake that fails on
+/// malformed TLS bytes surfaces as `io::ErrorKind::InvalidData`, which this crate — alone among
+/// its `tcp`/`http` siblings — maps to `HandshakeFailed` rather than `Closed`.
+#[test]
+fn every_io_error_kind_maps_through_the_table() {
+    for (kind, expected) in [
+        (io::ErrorKind::ConnectionRefused, TransportError::Refused),
+        (io::ErrorKind::TimedOut, TransportError::Timeout),
+        (io::ErrorKind::ConnectionReset, TransportError::Reset),
+        (io::ErrorKind::ConnectionAborted, TransportError::Reset),
+        (io::ErrorKind::InvalidData, TransportError::HandshakeFailed),
+        (
+            io::ErrorKind::AddrNotAvailable,
+            TransportError::AddressRefused,
+        ),
+        (io::ErrorKind::InvalidInput, TransportError::AddressRefused),
+        (io::ErrorKind::BrokenPipe, TransportError::Closed),
+        (io::ErrorKind::NotFound, TransportError::Closed),
+    ] {
+        let mapped = TlsTransport::map_io_err(&io::Error::new(kind, "fixture"));
+        assert_eq!(
+            mapped, expected,
+            "io::ErrorKind::{kind:?} maps to {expected:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn an_in_band_upgrade_adopts_the_lower_layers_stream() {
     // The in-band upgrade cell: a `tcp`-owned connection is handed off, mid-life, and becomes a

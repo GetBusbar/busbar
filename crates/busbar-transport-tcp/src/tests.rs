@@ -254,6 +254,32 @@ async fn every_transport_error_is_mapped() {
     assert_eq!(err, TransportError::Closed);
 }
 
+/// One synthetic `io::Error` per `map_io_err` arm, so swapping two arms is caught here rather than
+/// only by whichever live-dial cell happens to provoke that kind. Ported from `busbar-transport-
+/// http`'s identical table cell, minus the arm `http` alone carries.
+#[test]
+fn every_io_error_kind_maps_through_the_table() {
+    for (kind, expected) in [
+        (io::ErrorKind::ConnectionRefused, TransportError::Refused),
+        (io::ErrorKind::TimedOut, TransportError::Timeout),
+        (io::ErrorKind::ConnectionReset, TransportError::Reset),
+        (io::ErrorKind::ConnectionAborted, TransportError::Reset),
+        (
+            io::ErrorKind::AddrNotAvailable,
+            TransportError::AddressRefused,
+        ),
+        (io::ErrorKind::InvalidInput, TransportError::AddressRefused),
+        (io::ErrorKind::BrokenPipe, TransportError::Closed),
+        (io::ErrorKind::NotFound, TransportError::Closed),
+    ] {
+        let mapped = TcpTransport::map_io_err(&io::Error::new(kind, "fixture"));
+        assert_eq!(
+            mapped, expected,
+            "io::ErrorKind::{kind:?} maps to {expected:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn backpressure_bounds_the_per_unit_frame_buffer() {
     let (server, listener, client) = bound_pair().await;
