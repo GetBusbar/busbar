@@ -168,12 +168,12 @@
     "crates/busbar-a2a-codec/src"
    ],
    "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 6,
+   "result": "zero",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "report": "pass 2 fresh eyes: zero; every production file read fully",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-a2a-codec/src/tests"
@@ -369,12 +369,12 @@
     "crates/busbar-mcp-codec/src"
    ],
    "tree_hash": "3227006399753afb78c1fa1074caf987af0d220e89024cd6155edc08a57dae87",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 6,
+   "result": "zero",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "report": "pass 2 fresh eyes: zero; every production file read fully",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-mcp-codec/src/tests"
@@ -997,13 +997,17 @@
    "paths": [
     "crates/busbar-voice-codec/src"
    ],
-   "tree_hash": "babcacc4cdc0324943ff8814da8b78e4e23f4e81d38f2e4348252ad83fc45c22",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "a2fa8be7163c6ba98bdbb7fdfb99f15680d3977511267c856d222ea1a3fd761b",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 5,
+    "LOW": 4,
+    "NIT": 2
+   },
+   "report": "pass 2 fresh eyes: mulaw admitted as pcm (fixed 127b00a4), null tool result (fixed dc64c1b6), totals without breakdown metered free (fixed 52d3e873), nested argument lost the call (fixed de225dad); gemini uplink labelled with the output format reported (DecodeState seam); every production file read fully",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-voice-codec/src/tests"
