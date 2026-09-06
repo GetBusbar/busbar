@@ -790,13 +790,23 @@ fn register_ws_arrivals() {
 fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
     match root::registry::seal(root::policy::client_settings(limits)) {
         Ok(sealed) => {
-            debug_assert!(
-                sealed
-                    .registry
-                    .resolve(busbar_kernel::registry::PluginKind::Plane, "voice")
-                    .is_some(),
-                "the voice plane is registered or the seal is not the composition it claims to be"
-            );
+            // A BOOT REFUSAL for the same reason the seal's own `Err` arm is one, and it was a
+            // `debug_assert!`: a seal that reported success without the plane this function exists
+            // to mount is a composition that did not do what it says, and the shipped build was the
+            // one that never looked. Serving on it would bind a listener for a plane no registry can
+            // resolve — every voice session refused at the first frame, from a node that booted
+            // clean.
+            if sealed
+                .registry
+                .resolve(busbar_kernel::registry::PluginKind::Plane, "voice")
+                .is_none()
+            {
+                eprintln!(
+                    "busbar: the composition root did not seal: it reported success without the \
+                     voice plane, so the seal is not the composition it claims to be"
+                );
+                std::process::exit(2);
+            }
         }
         Err(refusal) => {
             eprintln!("busbar: the composition root did not seal: {refusal}");
@@ -936,11 +946,22 @@ fn main() {
     #[cfg(feature = "root-a2a")]
     {
         let policy = root::units_a2a::scope_policy(root::policy::ScopePolicy::new());
-        debug_assert_eq!(
-            policy.len(),
-            busbar_plane_a2a::ops::OP_CLASSES.len(),
-            "every A2A operation class needs a scope entry before the plane is switched over"
-        );
+        // A BOOT REFUSAL, not a debug assertion. The scope unit reads silence as a denial, so a
+        // policy that is short by an entry is a plane whose remaining operations answer 403 for the
+        // life of the process — and a `debug_assert_eq!` compiled the check out of the only build
+        // that ever serves anybody. The MCP seal a few lines above already answers this way, and
+        // this is the same class of fact: a composition that disagrees with itself must not bind a
+        // listener, because the alternative is finding out from a customer.
+        if policy.len() != busbar_plane_a2a::ops::OP_CLASSES.len() {
+            eprintln!(
+                "busbar: the composition root did not seal: the A2A scope policy declares {} of the \
+                 plane's {} operation classes, and the scope unit reads an undeclared class as a \
+                 refusal",
+                policy.len(),
+                busbar_plane_a2a::ops::OP_CLASSES.len()
+            );
+            std::process::exit(2);
+        }
     }
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
