@@ -244,7 +244,7 @@ mod rehearsal {
     /// One deployment: a governed key, a one-lane pool, and a scripted upstream. Each LEG builds its
     /// own, so the two legs' counters are compared rather than summed.
     struct Rig {
-        app: Arc<busbar_core::state::App>,
+        app: Arc<crate::test_support::BuiltApp>,
         key: Arc<busbar_api::VirtualKey>,
         server: MockServer,
         charged_at: u64,

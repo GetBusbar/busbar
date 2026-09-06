@@ -1,5 +1,5 @@
 use crate::engine::AppEngineExt as _;
-use busbar_core::config;
+use busbar_substrate::config::pools as config;
 
 #[test]
 fn test_config_parsing_status_503() {

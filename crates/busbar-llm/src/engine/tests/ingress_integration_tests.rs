@@ -5,6 +5,7 @@
 use crate::engine::AppEngineExt as _;
 use crate::engine::WeightedLane;
 use crate::native_ingress::{affinity_header_for, operation_ingress_inner};
+use crate::test_support::BuiltApp as App;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
@@ -12,7 +13,6 @@ use busbar_core::ingress::{
     admit_check, finish, finish_admitted, finish_rejected, governance_guard, ingress_error,
     not_found_message, percent_decode, pool_authorized, pool_label,
 };
-use busbar_core::state::App;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;

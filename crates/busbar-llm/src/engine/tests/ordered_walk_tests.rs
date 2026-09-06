@@ -6,7 +6,7 @@ use super::{pick_among, RequestCtx};
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
 
-fn three_lane_app() -> std::sync::Arc<busbar_core::state::App> {
+fn three_lane_app() -> std::sync::Arc<crate::test_support::BuiltApp> {
     TestApp::new()
         .lane(LaneSpec::new(
             "m0",

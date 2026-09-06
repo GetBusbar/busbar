@@ -400,7 +400,12 @@ mod tests {
 
     /// A governed deployment with one key per leg, so each leg's terminal writes to a chain nothing
     /// else in this process is writing to.
-    fn governed(names: [&str; 2]) -> (Arc<busbar_core::state::App>, [busbar_api::VirtualKey; 2]) {
+    fn governed(
+        names: [&str; 2],
+    ) -> (
+        Arc<crate::test_support::BuiltApp>,
+        [busbar_api::VirtualKey; 2],
+    ) {
         let store = Arc::new(MemoryStore::new());
         let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
             &[7u8; 32],

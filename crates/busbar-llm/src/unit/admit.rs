@@ -225,9 +225,9 @@ fn retry_after_secs(resp: &Response) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TestApp;
     use busbar_api::Store as _;
     use busbar_caps::{KernelSeal, LedgerToken, Posted, StepName, Usage, UsageToken};
-    use busbar_core::test_support::TestApp;
     use busbar_store_memory::MemoryStore;
     use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use std::collections::BTreeMap;
@@ -257,7 +257,7 @@ mod tests {
         group: Option<&str>,
         seed: Option<(&str, u64)>,
     ) -> (
-        std::sync::Arc<busbar_core::state::App>,
+        std::sync::Arc<crate::test_support::BuiltApp>,
         std::sync::Arc<busbar_api::VirtualKey>,
     ) {
         busbar_substrate::metrics::init();
@@ -301,7 +301,11 @@ mod tests {
     }
 
     /// Read one bucket's three figures off the same surfaces the enforcer and the dashboards read.
-    fn ledger(app: &std::sync::Arc<busbar_core::state::App>, bucket: &str, now: u64) -> Ledger {
+    fn ledger(
+        app: &std::sync::Arc<crate::test_support::BuiltApp>,
+        bucket: &str,
+        now: u64,
+    ) -> Ledger {
         let gov = app.governance.clone().expect("governance is configured");
         let derived = gov
             .derived_bucket_usage(&app.cost, bucket, "total", true, now)
@@ -314,7 +318,7 @@ mod tests {
     }
 
     /// The fee base apart from the admission count, off the durable row the flush writes.
-    fn durable(app: &std::sync::Arc<busbar_core::state::App>, bucket: &str) -> (u64, u64) {
+    fn durable(app: &std::sync::Arc<crate::test_support::BuiltApp>, bucket: &str) -> (u64, u64) {
         let gov = app.governance.clone().expect("governance is configured");
         gov.flush_budgets();
         let row = gov.store().get_usage(bucket, 0).expect("ledger row");

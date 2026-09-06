@@ -23,7 +23,7 @@ fn health_active() -> HealthCfg {
 
 /// Stand up a mock upstream that returns `resp`, build a one-lane App (anthropic, in pool `p`)
 /// pointed at it, run a single probe, and hand back the App so the test can inspect the breaker.
-async fn probe_once(resp: MockResponse) -> (Arc<busbar_core::state::App>, MockServer) {
+async fn probe_once(resp: MockResponse) -> (Arc<crate::test_support::BuiltApp>, MockServer) {
     let state = Arc::new(MockServerState::new());
     state.push(resp);
     let server = MockServer::new(state).await;

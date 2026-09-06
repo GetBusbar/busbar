@@ -522,7 +522,7 @@ mod tests {
     /// upstream response. Each leg of an identity gets its own, so the two accruals are compared
     /// rather than summed.
     async fn rig() -> (
-        std::sync::Arc<busbar_core::state::App>,
+        std::sync::Arc<crate::test_support::BuiltApp>,
         std::sync::Arc<busbar_api::VirtualKey>,
         MockServer,
     ) {
@@ -575,7 +575,7 @@ mod tests {
 
     /// Read both accrual surfaces for one key.
     fn accrued(
-        app: &std::sync::Arc<busbar_core::state::App>,
+        app: &std::sync::Arc<crate::test_support::BuiltApp>,
         key_id: &str,
         charged_at: u64,
     ) -> Accrued {
@@ -762,9 +762,8 @@ mod tests {
     /// status that decides it, never the refund.
     #[test]
     fn the_fee_and_the_refund_are_decided_by_the_status_and_the_charge() {
-        let host: Arc<dyn EngineHost> = busbar_substrate::testkit::engine_host(
-            &busbar_core::test_support::TestApp::new().build(),
-        );
+        let host: Arc<dyn EngineHost> =
+            busbar_substrate::testkit::engine_host(&crate::test_support::TestApp::new().build());
         let (_seal, unit_token, usage_token) = tokens();
         for (status, charged, upstream_leg, fee, refund, why) in [
             (200u16, true, true, 1u32, false, "delivered and charged"),
@@ -829,9 +828,8 @@ mod tests {
     /// relayed to the client, which a later abort does not reverse.
     #[test]
     fn a_stream_that_died_bills_zero_tokens_and_keeps_the_fee_it_earned() {
-        let host: Arc<dyn EngineHost> = busbar_substrate::testkit::engine_host(
-            &busbar_core::test_support::TestApp::new().build(),
-        );
+        let host: Arc<dyn EngineHost> =
+            busbar_substrate::testkit::engine_host(&crate::test_support::TestApp::new().build());
         let (seal, unit_token, usage_token) = tokens();
         let reported = busbar_substrate::billing::TokenUsage {
             input: INPUT,
