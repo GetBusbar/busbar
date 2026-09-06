@@ -1030,6 +1030,11 @@ fn an_unanswered_tool_call_ends_at_the_deadline_its_leg_declared() {
 ///
 /// A wait with no identity matches the first reply that arrives, whoever it was for. Refusing
 /// the unit says so where it happens rather than at the first reply that goes to the wrong call.
+///
+/// The ending is a failure rather than a door refusal because the answer is given at Route —
+/// the step that hands the call over, and the only step at which a wait is a fact about a call
+/// somebody was actually asked to answer. Past the door the unit ran, so its ending says it ran
+/// and did not get there; nothing is charged either way.
 #[test]
 fn a_tool_call_that_minted_no_identifier_is_refused_rather_than_entered() {
     let kernel = Kernel::new();
@@ -1042,7 +1047,7 @@ fn a_tool_call_that_minted_no_identifier_is_refused_rather_than_entered() {
     assert!(
         matches!(
             end.outcome(),
-            Outcome::Refused(_, ReasonCode::NoDestination)
+            Outcome::Failed(busbar_caps::StepName::Route, ReasonCode::NoDestination)
         ),
         "got {:?}",
         end.outcome()
@@ -2674,4 +2679,43 @@ fn a_session_that_ends_closes_once_and_takes_its_open_calls_with_it() {
         0,
         "and the calls the conversation had open ended with it"
     );
+}
+
+/// **A call the client never received leaves nothing behind.**
+///
+/// The wait used to go in at Verify, which is three steps before anything hands the call over.
+/// A unit refused after that — a scope the deployment did not grant, a door that said no —
+/// therefore left a wait in the table that no client had been asked to answer and that the unit
+/// itself was already past taking back out. The node's tick then swept it at its deadline into
+/// an ending, and the ending sat in the table for the life of the process because the only
+/// reader of an ending is a unit that is long gone. One denied scope, one row, forever.
+#[test]
+fn a_tool_call_refused_before_it_is_delivered_leaves_no_wait_and_no_ending() {
+    let kernel = Kernel::new();
+    // A caller holding less than the class requires: the tool call is refused at Approve, which
+    // is after the step the wait used to be entered in and before the one that delivers it.
+    let node = node(serviceable());
+    let unit = VoiceUnit::new(&node, UnitShape::ToolCall, 7, 1_700_000_000)
+        .charging_through(ungoverned())
+        .calling("call_aaa")
+        .holding(Grants::of(Scope::ReadOnly));
+    let Ended::Settled { end, .. } = run(&kernel, &unit) else {
+        panic!("the exit settles it");
+    };
+    assert!(
+        matches!(end.outcome(), Outcome::Refused(_, ReasonCode::ScopeDenied)),
+        "got {:?}",
+        end.outcome()
+    );
+    assert_eq!(
+        node.tool_calls.open(),
+        0,
+        "nothing is waiting on an answer for a call no client was handed"
+    );
+    // And the sweep has nothing to turn into an ending, which is the row that used to leak: an
+    // ending is read exactly once, by the unit whose exit path it belongs to, and this unit's
+    // exit path has already run.
+    let deadline = u64::from(busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000;
+    assert!(node.tool_calls.expired(deadline + 1).is_empty());
+    assert_eq!(node.tool_calls.ending(7, UnitKey::new(1)), None);
 }
