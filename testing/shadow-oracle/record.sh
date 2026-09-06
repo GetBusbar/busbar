@@ -166,12 +166,27 @@ boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three key
     -H "Authorization: Bearer ${ORACLE_TOKEN_BROKE}" -H "Content-Type: application/json" \
     -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"prime"}]}' || true
 }
-stop_busbar() {  # stop the current busbar and wait until the listen port is free again
+stop_busbar() {  # stop the current busbar and wait until BOTH its ports are free again
   [ -n "$BUSBAR_PID" ] || return 0
-  kill "$BUSBAR_PID" 2>/dev/null || true; wait "$BUSBAR_PID" 2>/dev/null || true; BUSBAR_PID=""
-  local i=0; while [ $i -lt 50 ] && ! assert_port_free "$LISTEN_PORT"; do sleep 0.1; i=$((i+1)); done
+  local dead="$BUSBAR_PID"
+  kill "$dead" 2>/dev/null || true; wait "$dead" 2>/dev/null || true; BUSBAR_PID=""
+  # THE CONFIG THIS BUSBAR WAS BOOTED UNDER IS NO LONGER RUNNING ANYWHERE. Leaving CUR_VARIANT set
+  # tells the next boot_busbar "the config on disk already matches", and under --shared-state the
+  # next cells then run against a variant nothing is serving — a dead port read as that variant.
+  CUR_VARIANT=""
+  # Wait for the PID to be reaped AND for both listeners to go: handing only the data port to a
+  # script cell (which takes LISTEN_PORT *and* ADMIN_PORT) leaves it racing the admin socket's close,
+  # and its own assert_port_free then reports "port busy" for a process that is already exiting.
+  local i=0
+  while [ $i -lt 100 ]; do
+    kill -0 "$dead" 2>/dev/null || { assert_port_free "$LISTEN_PORT" && assert_port_free "$ADMIN_PORT" && break; }
+    sleep 0.1; i=$((i+1))
+  done
   # a port still answering after the kill means the OLD process survived: refuse to continue on it
-  assert_port_free "$LISTEN_PORT" || { echo "record.sh: port ${LISTEN_PORT} still answers after stopping busbar ${BUSBAR_PID:-?}; refusing to record against a stale process" >&2; exit 1; }
+  local p
+  for p in "$LISTEN_PORT" "$ADMIN_PORT"; do
+    assert_port_free "$p" || { echo "record.sh: port ${p} still answers after stopping busbar ${dead}; refusing to record against a stale process" >&2; exit 1; }
+  done
 }
 boot_busbar; rc=$?
 case "$rc" in
@@ -508,7 +523,10 @@ while IFS= read -r cell; do
     # A named script owns the whole cell (its own processes on spare ports) and writes captured.json.
     sname="$(jq -r .script.name <<<"$cell")"
     local_args=(); while IFS= read -r a; do [ -n "$a" ] && local_args+=("$a"); done < <(jq -r '.script.args[]? // empty' <<<"$cell")
-    stop_busbar   # a script cell never needs the recording busbar; free its ports and CPU
+    # a script cell never needs the recording busbar; free its ports and CPU. stop_busbar clears
+    # CUR_VARIANT as well, so the next cell reboots instead of assuming the variant it wanted is
+    # still being served here — under --shared-state that assumption was a dead port.
+    stop_busbar
     # the script reuses this recording's own (now free) listen/admin ports so two recordings never
     # collide; the recording's mock upstream is still up on MOCK_PORT, so the script's mock takes
     # the port after the admin one (inside this recording's own block)
@@ -525,7 +543,10 @@ while IFS= read -r cell; do
 
   # `fresh: true` — this cell must not see state (breaker, budgets) left by earlier cells.
   variant="$(jq -r '.config_variant // empty' <<<"$cell")"
-  if [ "$FRESH_ALL" = 1 ] || [ "$(jq -r '.fresh // false' <<<"$cell")" = true ] || [ "$variant" != "$CUR_VARIANT" ]; then
+  # `-z "$BUSBAR_PID"` is not redundant: a script cell just before this one stopped the recording
+  # busbar, and with --shared-state a following cell whose variant equals CUR_VARIANT would
+  # otherwise skip the boot and drive every request at a port nothing is listening on.
+  if [ -z "$BUSBAR_PID" ] || [ "$FRESH_ALL" = 1 ] || [ "$(jq -r '.fresh // false' <<<"$cell")" = true ] || [ "$variant" != "$CUR_VARIANT" ]; then
     stop_busbar
     boot_busbar "$variant" || { record "$id" FAIL "fresh boot before cell failed (variant '${variant}')" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 300)"; continue; }
   fi
