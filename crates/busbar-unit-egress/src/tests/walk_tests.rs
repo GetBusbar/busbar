@@ -12,6 +12,7 @@
 
 use busbar_contract_transport::wire::StatusClass;
 use busbar_contract_transport::wire::TransportError;
+use busbar_contract_transport::wire::WireStatus;
 
 use super::harness::{frame, frame_with_upstream, ok_frames, Health, Script};
 use super::{member, Node};
@@ -228,7 +229,7 @@ fn a_403_reaches_the_classifier_as_a_403_and_the_destination_goes_hard_down() {
     let mut node = two_lane_pool();
     node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
     node.breaker.set_verdict(
-        403,
+        WireStatus::Http(403),
         crate::ports::Classified {
             disposition: crate::ports::Disposition::HardDown,
             outcome: Outcome::HardDown,
@@ -239,7 +240,7 @@ fn a_403_reaches_the_classifier_as_a_403_and_the_destination_goes_hard_down() {
         "a",
         Script::Frames(vec![frame_with_upstream(
             Some(StatusClass::ClientError),
-            Some(403),
+            Some(WireStatus::Http(403)),
             None,
             "forbidden",
         )]),
@@ -254,7 +255,7 @@ fn a_403_reaches_the_classifier_as_a_403_and_the_destination_goes_hard_down() {
             .unwrap()
             .first()
             .map(|s| s.code),
-        Some(Some(403)),
+        Some(Some(WireStatus::Http(403))),
         "the upstream's own number crossed the seam, not just the 4xx class"
     );
     assert_eq!(
@@ -279,7 +280,7 @@ fn a_429_carries_the_upstreams_own_retry_after_through_to_the_breaker() {
         "a",
         Script::Frames(vec![frame_with_upstream(
             Some(StatusClass::ClientError),
-            Some(429),
+            Some(WireStatus::Http(429)),
             Some(7),
             "slow down",
         )]),
@@ -288,7 +289,7 @@ fn a_429_carries_the_upstreams_own_retry_after_through_to_the_breaker() {
 
     assert!(node.route("primary").is_delivered());
     let seen = node.breaker.classified.lock().unwrap().first().copied();
-    assert_eq!(seen.map(|s| s.code), Some(Some(429)));
+    assert_eq!(seen.map(|s| s.code), Some(Some(WireStatus::Http(429))));
     assert_eq!(
         seen.map(|s| s.retry_after),
         Some(Some(7)),
@@ -313,7 +314,7 @@ fn a_server_error_with_no_retry_after_leaves_the_cooldown_to_the_ladder() {
         "a",
         Script::Frames(vec![frame_with_upstream(
             Some(StatusClass::ServerError),
-            Some(503),
+            Some(WireStatus::Http(503)),
             None,
             "boom",
         )]),
@@ -322,11 +323,50 @@ fn a_server_error_with_no_retry_after_leaves_the_cooldown_to_the_ladder() {
 
     assert!(node.route("primary").is_delivered());
     let seen = node.breaker.classified.lock().unwrap().first().copied();
-    assert_eq!(seen.map(|s| s.code), Some(Some(503)));
+    assert_eq!(seen.map(|s| s.code), Some(Some(WireStatus::Http(503))));
     assert_eq!(seen.map(|s| s.retry_after), Some(None));
     assert_eq!(
         node.breaker.outcomes("primary", DestinationId::new(0)),
         vec![Outcome::Transient { retry_after: None }],
+    );
+}
+
+/// A gRPC upstream that refuses with a trailers-only `UNAVAILABLE`. The frame the grpc transport
+/// hands up carries `Grpc(14)` — gRPC's number, named as gRPC's — and the walk must do with it
+/// exactly what it does with an HTTP 503: record a transient failure against the destination and
+/// fail over to the sibling.
+///
+/// The number alone did neither. `14` matched no HTTP band, classified as the caller's fault, and
+/// the walk relayed a dead upstream's refusal without recording anything or trying the next member.
+#[test]
+fn a_grpc_unavailable_records_a_failure_and_fails_over() {
+    let mut node = two_lane_pool();
+    node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
+    node.transport.script(
+        "a",
+        Script::Frames(vec![frame_with_upstream(
+            Some(StatusClass::ServerError),
+            Some(WireStatus::Grpc(14)),
+            None,
+            "",
+        )]),
+    );
+    node.transport.script("b", Script::Frames(ok_frames()));
+
+    assert!(
+        node.route("primary").is_delivered(),
+        "the walk failed over to the sibling rather than relaying the refusal"
+    );
+    let seen = node.breaker.classified.lock().unwrap().first().copied();
+    assert_eq!(
+        seen.map(|s| s.code),
+        Some(Some(WireStatus::Grpc(14))),
+        "the number crossed the seam WITH the numbering that spelled it"
+    );
+    assert_eq!(
+        node.breaker.outcomes("primary", DestinationId::new(0)),
+        vec![Outcome::Transient { retry_after: None }],
+        "and the destination that said UNAVAILABLE was recorded against"
     );
 }
 
@@ -349,7 +389,7 @@ fn a_request_too_large_excludes_every_member_with_the_same_or_a_smaller_window()
     ]);
     // The classifier says this answer means the request was too big for the member's window.
     node.breaker.set_verdict(
-        0,
+        WireStatus::Http(0),
         crate::ports::Classified {
             disposition: crate::ports::Disposition::ContextLength,
             outcome: Outcome::RecordNothing,

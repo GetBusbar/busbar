@@ -31,6 +31,7 @@ use busbar_contract::{SlabBytes, StreamId};
 use busbar_contract_transport::wire::Direction;
 use busbar_contract_transport::wire::FrameMeta;
 use busbar_contract_transport::wire::TransportError;
+use busbar_contract_transport::wire::WireStatus;
 
 use crate::codec::RawCodec;
 use crate::conn::ConnState;
@@ -217,7 +218,14 @@ pub(crate) fn terminal_frame(stream_id: StreamId, status: Option<&Status>) -> Fr
         )),
         // `as i32` is `grpc-status`'s own wire spelling, and every code it names is small and
         // non-negative, so the narrowing below loses nothing.
-        status_code: u16::try_from(code as i32).ok(),
+        //
+        // Named as gRPC's number, not left bare. The HTTP exchange under a gRPC answer succeeded
+        // (a trailers-only refusal is still a `200` on the HEADERS frame), so the HTTP status says
+        // nothing about what happened and the trailer says everything — but only a reader told
+        // WHICH numbering this is can read it. Handing `14` up unnamed had it matched against
+        // HTTP's bands, where it falls in none, so an `UNAVAILABLE` upstream was read as the
+        // caller's fault: no breaker record, no failover.
+        status_code: u8::try_from(code as i32).ok().map(WireStatus::Grpc),
         retry_after_secs: None,
     };
     Frame {

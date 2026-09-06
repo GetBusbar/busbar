@@ -10,7 +10,7 @@ use std::time::Duration;
 use futures::StreamExt;
 
 use busbar_contract::{ArenaBytes, StreamId, Transport};
-use busbar_contract_transport::wire::{StatusClass, TransportError};
+use busbar_contract_transport::wire::{StatusClass, TransportError, WireStatus};
 
 use crate::GrpcTransport;
 
@@ -196,7 +196,7 @@ async fn terminal_status_is_read_from_the_grpc_status_trailer() {
     );
     assert_eq!(
         terminal.meta.status_code,
-        Some(tonic::Code::PermissionDenied as i32 as u16),
+        Some(WireStatus::Grpc(tonic::Code::PermissionDenied as i32 as u8)),
         "the exact grpc-status number the upstream sent, not just its class"
     );
 }
@@ -249,7 +249,7 @@ async fn an_ok_grpc_status_trailer_terminates_the_call_as_success() {
     );
     assert_eq!(
         terminal.meta.status_code,
-        Some(tonic::Code::Ok as i32 as u16),
+        Some(WireStatus::Grpc(tonic::Code::Ok as i32 as u8)),
         "the number the upstream sent, which for an untroubled call is zero"
     );
 }
@@ -295,6 +295,54 @@ fn map_status_reads_the_grpc_status_trailer_honestly() {
             "tonic::Code::{code:?} maps to {expected:?}"
         );
     }
+}
+
+/// The terminal frame names gRPC's NUMBERING alongside gRPC's number, for every code the protocol
+/// defines.
+///
+/// The trailers-only `UNAVAILABLE` row is the one that cost money. Handed up bare, `14` reached the
+/// breaker's classifier as if it were an HTTP status, matched no HTTP band, and came back as the
+/// caller's fault — so a destination that had just declared itself unavailable got no breaker
+/// record and the walk never failed over, even though the class on the very same frame said
+/// `ServerError`.
+#[test]
+fn the_terminal_frame_names_grpcs_numbering_with_grpcs_number() {
+    for code in [
+        tonic::Code::Ok,
+        tonic::Code::Cancelled,
+        tonic::Code::Unknown,
+        tonic::Code::InvalidArgument,
+        tonic::Code::DeadlineExceeded,
+        tonic::Code::NotFound,
+        tonic::Code::AlreadyExists,
+        tonic::Code::PermissionDenied,
+        tonic::Code::ResourceExhausted,
+        tonic::Code::FailedPrecondition,
+        tonic::Code::Aborted,
+        tonic::Code::OutOfRange,
+        tonic::Code::Unimplemented,
+        tonic::Code::Internal,
+        tonic::Code::Unavailable,
+        tonic::Code::DataLoss,
+        tonic::Code::Unauthenticated,
+    ] {
+        let status = tonic::Status::new(code, "fixture");
+        let frame = crate::server::terminal_frame(StreamId(1), Some(&status));
+        assert_eq!(
+            frame.meta.status_code,
+            Some(WireStatus::Grpc(code as i32 as u8)),
+            "tonic::Code::{code:?} rides the frame as gRPC's own number, never as a bare one"
+        );
+    }
+    let unavailable = tonic::Status::new(tonic::Code::Unavailable, "gone");
+    let frame = crate::server::terminal_frame(StreamId(1), Some(&unavailable));
+    assert_eq!(frame.meta.status, Some(StatusClass::ServerError));
+    assert_eq!(frame.meta.status_code, Some(WireStatus::Grpc(14)));
+    assert_eq!(
+        frame.meta.status_code.and_then(WireStatus::http),
+        None,
+        "and nothing can read it as an HTTP status, which is what made 14 mean nothing"
+    );
 }
 
 /// The HTTP/2 driver under a dialled connection FAILING is not the peer finishing.

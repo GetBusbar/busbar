@@ -5,6 +5,7 @@
 use super::*;
 use busbar_contract::plugin::KernelSeal;
 use busbar_contract::ConfigView;
+use busbar_contract_transport::wire::WireStatus;
 use futures::StreamExt;
 use std::sync::Arc as StdArc;
 
@@ -255,7 +256,7 @@ async fn egress_reports_the_exact_upstream_status_on_the_first_frame() {
             .unwrap();
         let mut frames = transport.frames(conn);
         let (_s, head) = frames.next().await.unwrap().unwrap();
-        assert_eq!(head.meta.status_code, Some(status));
+        assert_eq!(head.meta.status_code, Some(WireStatus::Http(status)));
     }
 }
 
@@ -281,7 +282,7 @@ async fn egress_carries_the_upstreams_retry_after_on_the_first_frame() {
         .unwrap();
     let mut frames = transport.frames(conn);
     let (_s, head) = frames.next().await.unwrap().unwrap();
-    assert_eq!(head.meta.status_code, Some(429));
+    assert_eq!(head.meta.status_code, Some(WireStatus::Http(429)));
     assert_eq!(head.meta.retry_after_secs, Some(7));
 }
 
@@ -303,7 +304,7 @@ async fn egress_reports_no_retry_after_when_the_upstream_asked_for_none() {
         .unwrap();
     let mut frames = transport.frames(conn);
     let (_s, head) = frames.next().await.unwrap().unwrap();
-    assert_eq!(head.meta.status_code, Some(503));
+    assert_eq!(head.meta.status_code, Some(WireStatus::Http(503)));
     assert_eq!(head.meta.retry_after_secs, None);
 }
 
