@@ -447,7 +447,7 @@ fn two_mints_with_a_real_nonce_source_produce_different_nonces() {
     let admin = admin();
     // Two calls with DISTINCT idempotency keys (or none), each therefore minting fresh, and each
     // therefore calling the nonce source exactly once.
-    verbs
+    let first = verbs
         .create_key(
             &admin,
             "alice",
@@ -459,7 +459,7 @@ fn two_mints_with_a_real_nonce_source_produce_different_nonces() {
             None,
         )
         .unwrap();
-    verbs
+    let second = verbs
         .create_key(
             &admin,
             "alice",
@@ -471,16 +471,88 @@ fn two_mints_with_a_real_nonce_source_produce_different_nonces() {
             None,
         )
         .unwrap();
-    let seen = seen.lock().unwrap();
+    let drawn = seen.lock().unwrap().clone();
     assert_eq!(
-        seen.len(),
+        drawn.len(),
         2,
         "each fresh mint calls the nonce source exactly once"
     );
     assert_ne!(
-        seen[0], seen[1],
-        "two mints with a real source must not share a nonce"
+        drawn[0], drawn[1],
+        "two draws from a real source must not be equal"
     );
+
+    // The draws differing is the SOURCE's property. What has to be proven here is that the secret
+    // the unit actually minted carries the nonce that was drawn for it: a unit that drew from the
+    // source and then bound something else — a counter, a hash of the unit key — would satisfy
+    // every assertion above and still hand out a predictable secret.
+    let first_secret = &first.minted_outcome().expect("the first call mints").secret;
+    let second_secret = &second
+        .minted_outcome()
+        .expect("the second call mints too")
+        .secret;
+    assert!(
+        first_secret.matches(u128::from_be_bytes(drawn[0])),
+        "the first secret is bound to the nonce drawn for it"
+    );
+    assert!(
+        second_secret.matches(u128::from_be_bytes(drawn[1])),
+        "and the second to its own"
+    );
+    assert!(
+        !first_secret.matches(u128::from_be_bytes(drawn[1])),
+        "so the two minted secrets do not share a nonce"
+    );
+}
+
+/// The nonce is a function of the SOURCE and of nothing else.
+///
+/// The companion test above shows a varying source yields varying nonces, which on its own is also
+/// what a unit that ignored the source and hashed the call would produce. This one pins the other
+/// direction: hold the source constant and the minted nonce is constant too, across a different
+/// unit key, a different actor and a second mint. Any term the unit mixed in of its own — a
+/// counter, the unit key, the target string — would show up here as a difference.
+#[test]
+fn the_minted_nonce_is_whatever_the_source_gave_and_nothing_else() {
+    struct ConstantNonceSource;
+    impl NonceSource for ConstantNonceSource {
+        fn fill(&self, buf: &mut [u8; 16]) {
+            *buf = [7u8; 16];
+        }
+    }
+
+    let verbs = Verbs::new(
+        FakeGovernance::new(),
+        FakeStore,
+        ConstantNonceSource,
+        FakeReplayEncoder,
+        CONFIG_CLASS_RULES,
+    );
+    let admin = admin();
+    let expected = u128::from_be_bytes([7u8; 16]);
+
+    for (actor, unit) in [("alice", UnitKey::new(1)), ("bob", UnitKey::new(2))] {
+        let minted = verbs
+            .create_key(
+                &admin,
+                actor,
+                VerbScope::Full,
+                1_000,
+                unit,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(
+            minted
+                .minted_outcome()
+                .expect("a fresh mint")
+                .secret
+                .matches(expected),
+            "the nonce came from the source alone, not from the actor or the unit key"
+        );
+    }
 }
 
 #[test]
