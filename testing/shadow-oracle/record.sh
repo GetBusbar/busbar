@@ -454,10 +454,21 @@ run_readback() {  # <request-json {path,headers,auth,listener}> <write-response-
   [ -z "$tok" ] || h+=(-H "Authorization: Bearer ${tok}")
   rbody="$(mktemp "$raw/readback.XXXXXX")"
   rstatus="$(curl -sS -m 10 -X GET "http://127.0.0.1:${port}${pth}" "${h[@]}" -o "$rbody" -w '%{http_code}' 2>/dev/null)"
-  [[ "$rstatus" =~ ^[0-9]+$ ]] || rstatus=0
-  cap="$(jq -n --argjson s "$rstatus" --rawfile b "$rbody" '{status: $s, headers: {}, body: $b, effects: {}}')"
-  normd="$(printf '%s' "$cap" | python3 "${here}/normalize.py" --key-id "$kid" 2>/dev/null)"
-  [ -n "$normd" ] || normd='{"status":0,"body":{"text":""}}'
+  # curl's own "no HTTP response" placeholder is the 3-digit literal "000": it PASSES a [0-9]+ test
+  # but is not a valid JSON number (leading zero), so `--argjson` below rejected it, normalize.py
+  # then read an empty document and died, and the old fallback wrote a synthetic
+  # {"status":0,"body":{"text":""}} into effects.readback as though the readback had answered it.
+  # Golden and candidate produce the SAME placeholder, so a readback that never happened compares
+  # clean on a weight-10 class. Base-10 it, exactly as the concurrent driver does with its own
+  # %{http_code}, and let a real failure be a FAIL row rather than a value nobody measured.
+  if [[ "$rstatus" =~ ^[0-9]+$ ]]; then rstatus=$((10#$rstatus)); else rstatus=0; fi
+  if ! cap="$(jq -n --argjson s "$rstatus" --rawfile b "$rbody" '{status: $s, headers: {}, body: $b, effects: {}}' 2>"$raw/readback.err")"; then
+    rm -f "$rbody"; printf 'could not build the readback capture for %s: %s\n' "$pth" "$(tr '\n' ' ' <"$raw/readback.err" | tail -c 200)"; return 1
+  fi
+  normd="$(printf '%s' "$cap" | python3 "${here}/normalize.py" --key-id "$kid" 2>"$raw/readback.err")"
+  if [ -z "$normd" ]; then
+    rm -f "$rbody"; printf 'normalize.py failed on the readback of %s: %s\n' "$pth" "$(tr '\n' ' ' <"$raw/readback.err" | tail -c 200)"; return 1
+  fi
   rm -f "$rbody"
   # the path names the minted key by id, which differs per boot: normalize it as bodies are
   pth="$(sed -E 's/vk_[0-9a-f]+/vk_<KEY>/g' <<<"$pth")"
@@ -706,12 +717,21 @@ PY
   # normalized {path,status,body} triples into this cell's own effects, so a write that answered 200
   # but touched nothing is a byte diff on THIS cell, not a silent pass.
   if [ "$driver" = http ]; then
-    readback="[]"
+    readback="[]"; rb_err=""
     while IFS= read -r rb; do
       [ -n "$rb" ] || continue
-      item="$(run_readback "$rb" "$raw/body" "$kid")"
+      if ! item="$(run_readback "$rb" "$raw/body" "$kid")"; then rb_err="$item"; break; fi
       readback="$(jq -c --argjson it "$item" '. + [$it]' <<<"$readback")"
     done < <(jq -c '.request.post[]? // empty' <<<"$cell")
+    # A readback that could not be captured is not a readback that returned nothing. Recording the
+    # placeholder here was a PASS on a cell whose whole point is "the write actually touched the
+    # resource" — so it is a FAIL row, with what went wrong, and this cell is not counted.
+    if [ -n "$rb_err" ]; then
+      # and drop the half-made cell: a cells/ file with no ledger PASS behind it is exactly the
+      # silence-read-as-green the ledger exists to refuse.
+      rm -f "$OUT/cells/$safe.json"
+      record "$id" FAIL "readback capture failed" "$rb_err"; continue
+    fi
     if [ "$readback" != "[]" ]; then
       jq --argjson rb "$readback" '.effects.readback = $rb' "$OUT/cells/$safe.json" >"$raw/with-readback.json" \
         && mv "$raw/with-readback.json" "$OUT/cells/$safe.json"
