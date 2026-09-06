@@ -548,8 +548,13 @@ impl Transport for TlsTransport {
                 .get(&keys.slot())
                 .cloned()
                 .ok_or(TransportError::KeyUnavailable)?;
-            let stream = TcpStream::connect(addr)
+            // The same budget the handshake below runs under, on the leg BEFORE it. The doc on
+            // `HANDSHAKE_TIMEOUT` said the two ends of this crate's tolerance for a peer that will
+            // not talk were one number; the connect was outside it, so an upstream that never
+            // answered the SYN held the unit for as long as the operating system did.
+            let stream = tokio::time::timeout(self.handshake_timeout, TcpStream::connect(addr))
                 .await
+                .map_err(|_| TransportError::Timeout)?
                 .map_err(|e| Self::map_io_err(&e))?;
             stream.set_nodelay(true).ok();
             let local_port = stream.local_addr().map_or(0, |a| a.port());

@@ -57,6 +57,17 @@ use tokio_util::compat::TokioAsyncReadCompatExt;
 /// does not start until the previous frame has been consumed by whatever is polling the stream.
 pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 
+/// How long a dial's connect has to be answered before the transport gives up on it.
+///
+/// The design gives ONE budget for a peer that will not talk, and not answering the connect is the
+/// earliest and cheapest way of not talking. Awaited bare, `TcpStream::connect` on a black-holed
+/// address parks until the operating system's own connect timeout — a number this node did not
+/// choose, measured in minutes on the platforms it runs on. The dial happens inside the route step,
+/// under the unit's hold, so that is an in-flight slot and a concurrency lease held for minutes by a
+/// peer that has not sent a byte. Ten seconds is the same figure the `tls` transport's
+/// `HANDSHAKE_TIMEOUT` carries, which is what makes it one budget rather than two.
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// One connection's live state. Never reachable from the opaque [`Conn`] handle directly; only
 /// through this transport's own registry, keyed by [`ConnHandle::id`].
 /// A connection's read half and the buffer every read on it fills.
@@ -134,6 +145,9 @@ pub struct TcpTransport {
     next_id: AtomicU64,
     conns: Mutex<HashMap<u64, Arc<Inner>>>,
     listeners: Mutex<HashMap<String, Arc<TcpListener>>>,
+    /// How long a dial's connect has to be answered; [`CONNECT_TIMEOUT`] unless a caller said
+    /// otherwise.
+    connect_timeout: std::time::Duration,
 }
 
 impl Default for TcpTransport {
@@ -156,7 +170,16 @@ impl TcpTransport {
             next_id: AtomicU64::new(1),
             conns: Mutex::new(HashMap::new()),
             listeners: Mutex::new(HashMap::new()),
+            connect_timeout: CONNECT_TIMEOUT,
         }
+    }
+
+    /// Set the budget a dial's connect has to be answered in, for a deployment — or a battery cell
+    /// — whose tolerance is not the default ten seconds.
+    #[must_use]
+    pub fn with_connect_timeout(mut self, budget: std::time::Duration) -> Self {
+        self.connect_timeout = budget;
+        self
     }
 
     fn register(&self, stream: TcpStream, peer: SocketAddr) -> io::Result<Conn> {
@@ -352,8 +375,11 @@ impl Transport for TcpTransport {
             let addr: SocketAddr = authority
                 .parse()
                 .map_err(|_| TransportError::AddressRefused)?;
-            let stream = TcpStream::connect(addr)
+            // Under the budget, not bare: the design's one tolerance for a peer that will not talk
+            // covers the connect too, and this is the end of it that holds a unit's slot.
+            let stream = tokio::time::timeout(self.connect_timeout, TcpStream::connect(addr))
                 .await
+                .map_err(|_| TransportError::Timeout)?
                 .map_err(|e| Self::map_io_err(&e))?;
             self.register(stream, addr)
                 .map_err(|e| Self::map_io_err(&e))
