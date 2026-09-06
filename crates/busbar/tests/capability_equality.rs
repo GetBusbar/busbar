@@ -66,8 +66,14 @@
 //!
 //! So: the structural half of the root column (every cell carries one; a `proven` root cell names a
 //! fn that exists in its leg's own file; a `none` carries a real argument; `not-applicable` moves
-//! with the cell's own state) is checked on EVERY build, and the leg-by-leg half
-//! ([`the_root_leg_matrix_runs_once_per_leg`]) is cfg-gated on all five features.
+//! with the cell's own state) is checked on EVERY build, and so is the leg-by-leg half
+//! ([`the_root_leg_matrix_runs_once_per_leg`]) — its tallies are computed from the ledger, so "the
+//! matrix ran once per leg" is answerable whatever features are on. What the five features decide is
+//! WHICH legs a build carries, and [`compiled_legs`] reflects exactly that: each leg the build
+//! carries gets the extra, feature-dependent questions. The previous shape cfg-gated the whole
+//! leg-by-leg half on all five features AT ONCE, which meant every ordinary build — default, and the
+//! partially-switched-over builds this release actually ships through — ran none of it and reported a
+//! green that had asked nothing.
 //!
 //! What a Rust test cannot do is RUN another crate's tests, so "the evidence passes over the loop"
 //! is closed one level up: `scripts/capability-equality-summary.py --root-legs` builds the binary
@@ -647,28 +653,54 @@ fn every_cell_carries_a_root_leg_verdict_and_every_root_proof_exists() {
     );
 }
 
-/// THE MATRIX, ONCE PER LEG, WITH THE FEATURES ON.
+/// THE LEGS THIS BUILD ACTUALLY CARRIES.
 ///
-/// cfg-gated on all five `root-*` features rather than written as a boot test, for the reason in
-/// this file's header: the legs carry no config key, no environment variable and no boot line, so a
-/// booted binary cannot be asked which legs it has. A build without the features does not run this
-/// -- it is absent, which is honest -- and the command the tracker pins turns all five on.
-#[cfg(all(
-    feature = "root-llm",
-    feature = "root-mcp",
-    feature = "root-a2a",
-    feature = "root-voice",
-    feature = "root-admin"
-))]
+/// The Teller-path half of this gate used to be cfg-gated on all five `root-*` features AT ONCE.
+/// That conjunction is the wrong shape for the switch-over it is supposed to judge: the planes are
+/// moved onto the composition root ONE AT A TIME, so the ordinary build has SOME legs on — and under
+/// any such build (including the default one, and including `--features root-a2a,root-voice,root-llm`)
+/// the whole Teller-path check simply did not exist. A gate that is absent reports a green that
+/// asked nothing, which is the exact failure mode the rest of this file is built to refuse.
+///
+/// So it is reflected PER LEG instead. Each `root-*` feature contributes its own leg here, the
+/// per-leg matrix below runs over every leg the ledger declares (data, therefore checkable on every
+/// build), and each leg the build carries gets the extra, feature-dependent questions asked of it.
+fn compiled_legs() -> BTreeSet<&'static str> {
+    #[allow(unused_mut)]
+    let mut legs: BTreeSet<&'static str> = BTreeSet::new();
+    #[cfg(feature = "root-a2a")]
+    legs.insert("root-a2a");
+    #[cfg(feature = "root-admin")]
+    legs.insert("root-admin");
+    #[cfg(feature = "root-llm")]
+    legs.insert("root-llm");
+    #[cfg(feature = "root-mcp")]
+    legs.insert("root-mcp");
+    #[cfg(feature = "root-voice")]
+    legs.insert("root-voice");
+    legs
+}
+
+/// THE MATRIX, ONCE PER LEG — on EVERY build, and with the extra questions on the legs this build
+/// carries.
+///
+/// The per-leg tally is computed from the ledger, so "the matrix ran once per leg" is answerable
+/// whatever features are on; it is asserted unconditionally now rather than only in the all-five
+/// build. What the features add is which legs' modules this binary compiles, and for each of those
+/// the leg's own evidence file must be one the composition root actually declares — a leg whose
+/// feature is on and whose module the root does not carry would be a leg proving cells that this
+/// build cannot run.
 #[test]
 fn the_root_leg_matrix_runs_once_per_leg() {
     let doc = real_doc();
-    let s = verify_root(&doc, &repo_root(), &ROOT_LEGS, MIN_ROOT_PROVEN)
+    let root = repo_root();
+    let s = verify_root(&doc, &root, &ROOT_LEGS, MIN_ROOT_PROVEN)
         .unwrap_or_else(|e| panic!("qa/capability-equality.json root column: {e}"));
 
     // Once per leg: every declared leg is tallied, and the tallies sum to the whole matrix.
     let cells = doc["cells"].as_array().expect("`cells` is an array").len();
     let mut total = 0;
+    let compiled = compiled_legs();
     for leg in ROOT_LEGS {
         let (proven, none, na) = s
             .per_leg
@@ -676,12 +708,52 @@ fn the_root_leg_matrix_runs_once_per_leg() {
             .copied()
             .unwrap_or_else(|| panic!("leg `{leg}` was not run over the matrix"));
         total += proven + none + na;
-        println!("  leg {leg:<11} {proven} proven, {none} none, {na} n/a");
+        let mark = if compiled.contains(leg) {
+            "compiled"
+        } else {
+            "off"
+        };
+        println!("  leg {leg:<11} [{mark:>8}] {proven} proven, {none} none, {na} n/a");
     }
     assert_eq!(
         total, cells,
         "the per-leg tallies must account for every cell exactly once; a cell counted by no leg is \
          a cell no leg is judging"
+    );
+
+    // THE FEATURE-DEPENDENT HALF, asked once per leg THIS BUILD CARRIES. The composition root must
+    // declare the module the leg's evidence lives in, or the leg is on and its cells are not there.
+    let mod_rs = std::fs::read_to_string(root.join("crates/busbar/src/root/mod.rs"))
+        .expect("the composition root's mod.rs must be readable");
+    let legs_obj = doc["root_legs"].as_object().expect("`root_legs` is an object");
+    for leg in &compiled {
+        let file = legs_obj[*leg]["file"]
+            .as_str()
+            .expect("a leg names a file");
+        let module = Path::new(file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_else(|| panic!("leg `{leg}`'s file {file} has no module name"));
+        assert!(
+            mod_rs.contains(&format!("pub mod {module};")),
+            "leg `{leg}` is COMPILED INTO this build, but crates/busbar/src/root/mod.rs declares no \
+             `pub mod {module};`. A leg whose feature is on and whose module the root does not carry \
+             proves cells this binary cannot run."
+        );
+        assert!(
+            s.per_leg[*leg].0 > 0
+                || legs_obj[*leg]["columns"]
+                    .as_array()
+                    .is_some_and(Vec::is_empty),
+            "leg `{leg}` is compiled into this build, answers to ledger columns, and proves ZERO \
+             cells over the loop. A leg nobody drove is not a leg."
+        );
+    }
+    println!(
+        "ROOT-LEG MATRIX: {} of {} legs compiled into this build ({:?})",
+        compiled.len(),
+        ROOT_LEGS.len(),
+        compiled
     );
 }
 
