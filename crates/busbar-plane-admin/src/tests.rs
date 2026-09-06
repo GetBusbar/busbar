@@ -417,6 +417,65 @@ fn a_request_still_arriving_asks_for_the_next_frame() {
     ));
 }
 
+/// Every byte that has arrived is read, even when it arrived as more than one frame.
+///
+/// `NeedMore` means "hand me the next frame", and the frames the cursor already holds ARE the next
+/// ones. A decode that looked at the first frame alone answered `NeedMore` with the completing
+/// bytes sitting unread in the same cursor — and because a cursor is rebuilt from position zero
+/// over the connection's grown frame slice, the next call read that same first frame again and
+/// answered the same way. An admin request that arrived in two frames was never going to decode,
+/// on a transport whose one-shot pump has no consecutive-`NeedMore` ceiling to end the wait.
+#[test]
+fn an_envelope_split_across_frames_is_read_whole() {
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TestArena;
+    let ctx = test_ctx(&config, &transport, &labels, &arena);
+
+    let whole = envelope("GET", "/api/v1/admin/keys/abc", "{}");
+    let cut = whole.len() - 9;
+    let frames: Vec<Frame> = [&whole[..cut], &whole[cut..]]
+        .iter()
+        .map(|part| {
+            let bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(part.as_bytes());
+            Frame {
+                direction: Direction::Inbound,
+                stream: busbar_contract::ids::StreamId(0),
+                bytes: SlabBytes::new(bytes),
+                meta: FrameMeta::default(),
+            }
+        })
+        .collect();
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("the bytes are all here");
+    let draft = match ingress {
+        Ingress::OneShot(d) => d,
+        other => panic!("two frames carry one whole envelope, got {other:?}"),
+    };
+    assert_eq!(
+        draft.facts.get("verb"),
+        Some(busbar_contract::bounded::FactValue::Str("get_keys_id"))
+    );
+    assert_eq!(
+        draft.facts.get("id"),
+        Some(busbar_contract::bounded::FactValue::Str("abc"))
+    );
+
+    // and a body that is still genuinely short is still `NeedMore`, so the join is a filter and
+    // not a wall.
+    let short = &whole[..cut];
+    let (frames, ()) = frame_cursor_for(short);
+    let mut cursor = FrameCursor::new(&frames);
+    assert_eq!(
+        plane.decode_ingress(&mut cursor, None, &ctx),
+        Ok(Ingress::NeedMore)
+    );
+}
+
 /// Calling `decode_ingress` twice on the same bytes yields the same verb, the same op class and the
 /// same path-parameter facts: the plane keeps no interior state that could make the second call
 /// disagree with the first.
