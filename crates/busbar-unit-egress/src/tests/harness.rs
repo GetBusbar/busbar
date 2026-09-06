@@ -677,6 +677,11 @@ pub struct TestTransport {
     scripts: Mutex<HashMap<String, Script>>,
     pub dialled: Mutex<Vec<String>>,
     pub written: Mutex<Vec<Vec<u8>>>,
+    /// Where each envelope this transport rendered was put, as an address into the arena.
+    pub encoded_at: Mutex<Vec<usize>>,
+    /// Where each buffer handed to `write` began. Comparing the two lists is how a test tells the
+    /// arena's own bytes from a copy of them: the same address is the same allocation.
+    pub written_at: Mutex<Vec<usize>>,
     pub closed: Mutex<usize>,
 }
 
@@ -809,6 +814,10 @@ impl busbar_contract::Transport for TestTransport {
     ) -> busbar_contract::Fut<'a, usize> {
         let len = bytes.len();
         Box::pin(async move {
+            self.written_at
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(bytes.as_slice().as_ptr() as usize);
             self.written
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -835,9 +844,14 @@ impl busbar_contract::Transport for TestTransport {
         }
         out.push(b'\n');
         out.extend_from_slice(body);
-        arena
+        let encoded = arena
             .alloc_bytes(&out)
-            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)?;
+        self.encoded_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(encoded.as_slice().as_ptr() as usize);
+        Ok(encoded)
     }
 
     fn adopt<'a>(

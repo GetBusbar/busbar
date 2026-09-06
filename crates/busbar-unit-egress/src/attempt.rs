@@ -355,8 +355,13 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
 // ── assemble ────────────────────────────────────────────────────────────────────────────────────
 
 /// The wire request: the envelope the plane built with the decoration applied, then the body.
-struct Wire {
-    bytes: Vec<u8>,
+///
+/// The bytes BORROW the arena the transport rendered them into. Owning a copy of them instead would
+/// pay for the whole request a second time on the money path, and would hand `write` a buffer the
+/// arena never saw — the arena is where the hot path allocates, so these bytes go out from where
+/// they were built.
+struct Wire<'a> {
+    bytes: busbar_contract::ArenaBytes<'a>,
 }
 
 /// Build the outbound request, decorate it, and check the lane on what came out.
@@ -365,7 +370,7 @@ struct Wire {
 /// destination but never holds a credential; the egress-auth unit decorates and substitutes every
 /// secret itself; and the lane cross-check runs on the RESULT, so a decoration cannot quietly move
 /// the request onto a cheaper or a different lane.
-fn assemble(hop: &Hop<'_>, unit: &Unit<'_>, ctx: &Ctx<'_>) -> Result<Wire, Shed> {
+fn assemble<'a>(hop: &Hop<'_>, unit: &Unit<'a>, ctx: &Ctx<'a>) -> Result<Wire<'a>, Shed> {
     let encoded: EgressBody<'_> = hop
         .plane
         .encode_egress(unit, hop.dest, None, ctx)
@@ -406,9 +411,7 @@ fn assemble(hop: &Hop<'_>, unit: &Unit<'_>, ctx: &Ctx<'_>) -> Result<Wire, Shed>
     let bytes = hop
         .transport
         .encode_envelope(&fields, request.body, ctx.arena())
-        .map_err(|_| Shed::internal())?
-        .as_slice()
-        .to_vec();
+        .map_err(|_| Shed::internal())?;
 
     lane_cross_check(hop, &request)?;
     Ok(Wire { bytes })
@@ -467,7 +470,12 @@ pub(crate) fn lane_matches_seal(
 // ── send ────────────────────────────────────────────────────────────────────────────────────────
 
 /// Dial, write and wait for the first answering frame, under both deadlines.
-async fn send(hop: &Hop<'_>, wire: &Wire, deadline_ms: u64, cap_ms: Option<u64>) -> SendOutcome {
+async fn send(
+    hop: &Hop<'_>,
+    wire: &Wire<'_>,
+    deadline_ms: u64,
+    cap_ms: Option<u64>,
+) -> SendOutcome {
     let work = async {
         let conn = match race::with_deadline(
             hop.transport.dial(hop.dest, hop.keys),
@@ -479,9 +487,8 @@ async fn send(hop: &Hop<'_>, wire: &Wire, deadline_ms: u64, cap_ms: Option<u64>)
             Ok(Err(e)) => return SendOutcome::Sent(Err(e)),
             Err(race::Elapsed) => return SendOutcome::BudgetTimeout,
         };
-        let bytes = busbar_contract::ArenaBytes::new(&wire.bytes);
         if let Ok(Err(e)) = race::with_deadline(
-            hop.transport.write(&conn, hop.stream, bytes),
+            hop.transport.write(&conn, hop.stream, wire.bytes),
             hop.clock.sleep(deadline_ms),
         )
         .await

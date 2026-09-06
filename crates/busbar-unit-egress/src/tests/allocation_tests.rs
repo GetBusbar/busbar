@@ -9,6 +9,8 @@
 //! member. This crate forbids unsafe, so the count cannot be taken with a counting allocator; what
 //! is measured instead is the shape that decides it — how many keys carry a pool name at all.
 
+use super::harness::{ok_frames, Script};
+use super::{member, Node};
 use crate::ports::DestinationId;
 use crate::select::WeightedFloor;
 
@@ -70,6 +72,30 @@ fn the_rotation_order_is_byte_identical_across_the_restructure() {
     let expected_other: Vec<DestinationId> =
         [0, 1, 0].into_iter().map(DestinationId::new).collect();
     assert_eq!(other, expected_other);
+}
+
+/// The request's own bytes are rendered once and handed to the wire where they lie.
+///
+/// The transport renders the envelope into the arena — that is what the arena is for, and it is the
+/// only allocation the hot path is meant to make for these bytes. Copying them straight back out
+/// into an owned buffer pays for the whole request body a second time on the money path and gives
+/// the wire a buffer the arena never saw. The address is the proof: the same allocation is the same
+/// address, and a copy is somewhere else.
+#[test]
+fn the_bytes_that_go_on_the_wire_are_the_arenas_own_and_not_a_copy_of_them() {
+    let mut node = Node::with_lanes(&["a"]);
+    node.pool("primary", vec![member(DestinationId::new(0), "a")]);
+    node.transport.script("a", Script::Frames(ok_frames()));
+
+    assert!(node.route("primary").is_delivered());
+
+    let encoded = node.transport.encoded_at.lock().unwrap().clone();
+    let written = node.transport.written_at.lock().unwrap().clone();
+    assert_eq!(encoded.len(), 1, "one envelope was rendered");
+    assert_eq!(
+        written, encoded,
+        "the wire was handed the arena's own bytes rather than a second copy of them"
+    );
 }
 
 /// A pool the floor has never seen still rotates from a clean slate, and seeing it does not disturb
