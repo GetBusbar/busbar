@@ -1595,11 +1595,15 @@ fn blank_admin_token_refuses_to_start() {
             "the refusal names the admin credential: {err}"
         );
         if !blank.is_empty() {
-            // A WHITESPACE-only value passes the resolver's own non-empty check (the bytes are
-            // there) — this is exactly the case only the trim guard catches.
+            // A WHITESPACE-only value is now refused TWICE, and the test accepts either guard
+            // saying so. It used to reach the trim guard alone, because the resolver's own
+            // non-empty check only looked at whether there were bytes at all and a blank file has
+            // some; the resolver now reads blank as empty, so it refuses first. The trim guard
+            // stays, and stays load-bearing: it is what catches a blank arriving from a secret
+            // PLUGIN, which never passes through the built-in resolver.
             assert!(
-                err.contains("EMPTY/whitespace-only"),
-                "a whitespace-only token must hit the trim guard: {err}"
+                err.contains("EMPTY/whitespace-only") || err.contains("EMPTY"),
+                "a whitespace-only token must be refused by one of the two guards: {err}"
             );
         }
     }
