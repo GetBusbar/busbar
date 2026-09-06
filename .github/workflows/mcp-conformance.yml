@@ -400,6 +400,17 @@ jobs:
           MCP_SUBJECT_BUSBAR_BIN: target/debug/busbar
           MCP_SUBJECT_SERVER_CMD: ${{ vars.MCP_SUBJECT_SERVER_CMD }}
           MCP_SUBJECT_CLIENT_CMD: ${{ vars.MCP_SUBJECT_CLIENT_CMD }}
+          # THE SEAM LAUNCHER. On the release path scripts/mcp-conformance.sh sets this itself (it
+          # points the subject at the HTTP-facing hostile peer), so an unset repository variable
+          # expanding to "" here is inert. It is passed anyway so an operator judging something that
+          # is NOT this build can override it, exactly like the two commands above.
+          #
+          # It used to be the one variable in this step with neither an `if:` guard nor a part in the
+          # arm state. Setting either command above skips the block that arms this one, and an empty
+          # seam launcher then reached the battery unremarked: MCP_NO_SKIPS turned the six SEAM.*
+          # scenarios red, but red ACCUSING BUSBAR of a defect it was never tested for. It is now
+          # covered by `require_armed "battery subject seam"` in the script and by the battery's own
+          # arm audit (`Target.hasSeamRole`), so an empty value refuses by name before boot.
           MCP_SUBJECT_UPSTREAM_CONFIG_CMD: ${{ vars.MCP_SUBJECT_UPSTREAM_CONFIG_CMD }}
         run: ./scripts/mcp-conformance.sh --battery-subject
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
