@@ -95,12 +95,36 @@ wait_for_http() {  # wait_for_http <url> <max-seconds> — returns 0 the moment 
 # answers on returns a cheerful 200 from the wrong process while the thing under test is dead. This
 # happened while consumer-verify was being written and briefly reported a bundle healthy that had
 # exited 1. Refuse to proceed rather than risk a false PASS.
+#
+# THE QUESTION IS BINDABILITY, NOT HTTP, and asking it in HTTP got the wrong answer for the cases
+# that matter. An HTTP GET calls a port free whenever no 2xx/3xx comes back within the timeout, and
+# three different things produce that: nothing is listening (free — correct), something is bound and
+# does not speak HTTP or does not answer at all (NOT free — a gRPC or voice listener, or a process
+# wedged mid-shutdown), and something is bound and still starting (NOT free — the previous probe's
+# busbar, which is exactly the process this guard exists to notice). The last two are the ones the
+# guard was written for, and it read both as FREE, after which the probe bound nothing, talked to the
+# stale process, and reported on it. The teardown waits in the oracle's script cells have the same
+# dependence in reverse: they spin until the port reads free, and an HTTP probe let them stop
+# spinning while the old busbar still held the socket.
+#
+# A TCP connect answers the question that was actually being asked. Connection refused means nothing
+# is accepting, which is the only thing that makes the port bindable; a completed connect means
+# something is, whatever protocol it goes on to speak or fail to speak.
+#
+# Return contract unchanged: 0 = free, non-zero = in use.
 assert_port_free() {  # assert_port_free <port>
   local port="$1"
-  if curl -s -m 2 -o /dev/null "http://127.0.0.1:${port}/" 2>/dev/null; then
-    return 1
-  fi
-  return 0
+  python3 - "$port" <<'PY'
+import errno, socket, sys
+s = socket.socket()
+s.settimeout(1.0)
+# connect_ex returns 0 on success and an errno otherwise. A refusal is the free case; a timeout is
+# NOT (a filtered or wedged listener is still holding the port), so only "refused" is treated as
+# free and everything else, including 0, is in-use — unknown is not free.
+rc = s.connect_ex(("127.0.0.1", int(sys.argv[1])))
+s.close()
+sys.exit(0 if rc == errno.ECONNREFUSED else 1)
+PY
 }
 
 # ── Binary / plugin resolution ──────────────────────────────────────────────────────────────────
