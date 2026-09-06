@@ -658,8 +658,18 @@ def rule_token_sealed(tree, cfg):
     line spells one of the constructor patterns (`Decision::proceed(`, `Hold::`, …)."""
     c = cfg["rules"]["token-sealed"]
     root = c["allowed_root"].rstrip("/") + os.sep
+    # EACH ROW OWNS A DISJOINT SET OF SITES. `AdmitToken::mint(` appears both in this rule's
+    # `patterns` list and as the dedicated `token-sealed:admit-token-mint` row below, measured
+    # against the same root with the same ceiling of zero -- so a single forged mint was counted
+    # twice and reported as two failures. Two rows for one fact is not two proofs: it says the tree
+    # broke two promises when it broke one, and it makes the self-test's "exactly one FAIL row
+    # naming the planted rule" unprovable for either of them. The specific row wins, because it is
+    # the one that can name the seam (`Kernel::admit_token()`) the site should have used.
+    delegated = {c[k].replace("\\", "") for k in ("kernel_seal_pattern", "admit_token_mint_pattern")}
     offenders = []
     for pat in c["patterns"]:
+        if pat in delegated:
+            continue
         for rel, l in tree.grep(_word(pat)):
             if rel.startswith(root):
                 continue

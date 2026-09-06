@@ -115,9 +115,21 @@ def plant(rule, pristine, scratch, cfg, baseline):
         append(scratch, "crates/busbar-core/src/router.rs",
                "fn planted_terminal() { crate::ingress::finish_inner(); }")
     elif rule == "token-sealed":
-        # A hold opened outside the Teller: a forged token.
+        # A token MINTED outside the kernel: a forged token.
+        #
+        # This used to forge `Hold::open(`, and it stopped planting anything the rule could see.
+        # The rule's own `why` now says so: opening a hold with a token you were handed is the
+        # design working, and only MINTING is forgery, so `patterns` narrowed to the `*::mint(`
+        # constructors and this plant was left spelling a call nothing matches. It planted a
+        # violation of a promise the gate no longer makes, the gate stayed green, and a green
+        # self-test row read as "the rule sees its violation" when the rule saw nothing at all.
+        # A saboteur that cannot sabotage is the one failure a self-test cannot report about itself.
+        #
+        # `LedgerToken::mint(` is deliberately not one of the two patterns delegated to their own
+        # rows below, so this plant trips exactly the aggregate row.
         append(scratch, "crates/busbar-substrate/src/plane_host/mod.rs",
-               "fn planted_forge() { let _ = crate::teller::Hold::open(None, None, false); }")
+               "fn planted_forge(seal: &busbar_caps::KernelSeal) { "
+               "let _ = busbar_caps::LedgerToken::mint(seal); }")
     elif rule == "teller-step-order":
         rel = cfg["rules"]["teller-step-order"]["file"]
         path = os.path.join(scratch, rel)
