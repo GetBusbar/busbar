@@ -25,20 +25,32 @@ name: release-fleet
 #   3. FLAKE IS NEITHER A FALSE RED NOR A FALSE GREEN — bounded retries; the ONLY allowlisted skip
 #      is the Cloudflare-blocked getbusbar.com set, counted and named, never folded into pass.
 #
-# THE TERMINAL JOB NAME IS `release gate` — that is the required status check main's branch
-# protection carries. A skipped required check reads as PASSING on GitHub, which is why the gate job
-# is `if: always()` and `needs:` everything: a skipped/failed/cancelled leg reaches aggregation as
-# `did not run` rather than disappearing.
+# THE TERMINAL JOB NAME IS `release gate`. It is NOT a branch-protection required status check, and
+# .github/required-status-checks.md says the same thing — the two files agree. It cannot be one: this
+# workflow asserts the bytes of a PUBLISHED release, never the code in the PR under review, so
+# requiring it on a PR would gate merges on a fact about a different commit. Its teeth come from
+# release.yml instead, whose FINAL job calls this workflow against the version it just promoted; a
+# red `release gate` therefore turns the RELEASE RUN red, on the release's own status page.
+#
+# `if: always()` on the gate job is still load-bearing for that call: a skipped/failed/cancelled leg
+# must reach aggregation as `did not run` rather than disappearing into a skipped gate.
 
+# NO `push:`, NO `pull_request:`, NO `schedule:`. Every one of those fired this fan-out against
+# whatever release happened to be latest, on commits that had nothing to do with it, and produced a
+# `release gate` status that looked like a PR gate without being one. The only entries are the three
+# that name a specific version on purpose.
 on:
-  # release.yml's FINAL job calls this so a failing consumer check turns the RELEASE RUN red on the
-  # release's own status page, not in a separate run nobody is watching.
+  # release.yml's FINAL job (`release-fleet`) calls this with the version it just promoted, so a
+  # failing consumer check turns the RELEASE RUN red on the release's own status page, not in a
+  # separate run nobody is watching. This is the primary entry point.
   workflow_call:
     inputs:
       version:
         required: true
         type: string
-  # On demand, without re-tagging: a release must be re-verifiable after a downstream is fixed.
+  # On demand, without re-tagging: a release must be re-verifiable after a downstream is fixed, and
+  # a human must be able to re-run the rot check between releases (install.sh rots via
+  # api.github.com rate limiting) now that no cron does it unasked.
   workflow_dispatch:
     inputs:
       version:
@@ -48,17 +60,6 @@ on:
   # The moment a release becomes visible to users.
   release:
     types: [published]
-  # push/pull_request on main so `release gate` EXISTS as a status on main and can be REQUIRED — a
-  # gate that is not required is one people learn to ignore, which was the root cause of the six days.
-  # On a non-release run it verifies the CURRENT latest release, which is a real assertion (install.sh
-  # rots between releases via api.github.com rate limiting; a release-only trigger cannot catch that).
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  # Rot cover between releases, off the top of the hour (contended cron slots).
-  schedule:
-    - cron: "41 6 * * *"
 
 permissions:
   contents: read
