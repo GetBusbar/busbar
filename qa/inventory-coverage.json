@@ -4,7 +4,7 @@
     "Answers, for every row id in docs/design/inventory/*.md, whether an oracle cell",
     "(testing/shadow-oracle/cells.json, checked against the golden ledger) covers it."
   ],
-  "generated_at": "2026-09-04",
+  "generated_at": "2026-09-05",
   "family_summary": {
     "ADM": {
       "covered": 66,
@@ -13,8 +13,8 @@
       "total": 66
     },
     "BOOT": {
-      "covered": 193,
-      "partial": 34,
+      "covered": 217,
+      "partial": 10,
       "none": 0,
       "total": 227
     },
@@ -1766,7 +1766,9 @@
       "line": 547,
       "status": "covered",
       "citers": [
-        "boot.refusal|BOOT-P41|validate"
+        "boot.refusal|BOOT-P41|validate",
+        "documented|changelog|legacy-config-refused",
+        "documented|readme|migrate-config-freeze"
       ]
     },
     "BOOT-001": {
@@ -2313,7 +2315,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 615,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-055|validate"
       ]
@@ -2331,7 +2333,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 617,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-057|validate"
       ]
@@ -2540,7 +2542,8 @@
       "line": 640,
       "status": "covered",
       "citers": [
-        "boot.refusal|BOOT-075|validate"
+        "boot.refusal|BOOT-075|validate",
+        "documented|changelog|no-keygen-at-boot"
       ]
     },
     "BOOT-076": {
@@ -2907,7 +2910,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 689,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-123|validate"
       ]
@@ -2979,7 +2982,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 697,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-135|boot"
       ]
@@ -2988,7 +2991,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 698,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-136|boot"
       ]
@@ -2997,7 +3000,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 699,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-137a|boot"
       ]
@@ -3006,7 +3009,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 700,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-137b|boot"
       ]
@@ -3024,7 +3027,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 702,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-138a|boot"
       ]
@@ -3033,7 +3036,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 703,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-138b|boot"
       ]
@@ -3051,7 +3054,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 705,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-139a|boot"
       ]
@@ -3060,7 +3063,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 706,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-139b|boot"
       ]
@@ -3087,7 +3090,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 709,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-150|validate"
       ]
@@ -3141,7 +3144,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 715,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-162|boot"
       ]
@@ -3150,7 +3153,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 716,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-170|boot"
       ]
@@ -3159,7 +3162,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 717,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-171|boot"
       ]
@@ -3168,7 +3171,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 718,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-172|boot"
       ]
@@ -3186,7 +3189,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 720,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-174|boot"
       ]
@@ -3195,7 +3198,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 721,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.refusal|BOOT-175|boot"
       ]
@@ -3312,7 +3315,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 739,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.warning|BOOT-W13|boot"
       ]
@@ -3384,7 +3387,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 747,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.warning|BOOT-W21|boot"
       ]
@@ -3393,7 +3396,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 748,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.warning|BOOT-W22|boot"
       ]
@@ -3402,7 +3405,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 749,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.warning|BOOT-W23|boot"
       ]
@@ -3411,7 +3414,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 750,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.warning|BOOT-W24|boot"
       ]
@@ -3429,7 +3432,7 @@
       "family": "BOOT",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 752,
-      "status": "partial",
+      "status": "covered",
       "citers": [
         "boot.warning|BOOT-W26|boot"
       ]
@@ -3476,7 +3479,8 @@
       "line": 757,
       "status": "covered",
       "citers": [
-        "boot.warning|BOOT-W34|boot"
+        "boot.warning|BOOT-W34|boot",
+        "documented|changelog|worker-threads-zero"
       ]
     },
     "BOOT-W35": {
@@ -4000,6 +4004,7 @@
       "status": "covered",
       "citers": [
         "admin.ops|PostConfigReload|ok",
+        "admin.ops|PostConfigReload|rate-limit",
         "admin.ops|PostConfigReload|unauth"
       ]
     },
@@ -4661,6 +4666,7 @@
       "line": 423,
       "status": "covered",
       "citers": [
+        "admin.ops|GetUsage|no-usage-after-mutation",
         "admin.ops|GetUsage|ok",
         "admin.ops|GetUsage|unauth"
       ]

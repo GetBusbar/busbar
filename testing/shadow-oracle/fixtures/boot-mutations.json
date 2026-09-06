@@ -2132,7 +2132,7 @@
         "stderr_contains": "is a tap with `default: true`, but a tap cannot be a pool's base ordering",
         "stdout_contains": null
       },
-      "notes": "\u00a73.2 BOOT-055 (:936). needs overlay/admin-API hook fixture: `default:` is a runtime HookCfg key (CFG-234), NOT a HookDefCfg key \u2014 writing it under config.yaml `hooks.<h>` trips BOOT-P01 (unknown field) instead. A10 (2026-09-05): fixture added via apply-mutation.py's `overlay` / `plugin_dir_unsigned` ops (see apply-mutation.py docstring)."
+      "notes": "\u00a73.2 BOOT-055 (:936). needs overlay/admin-API hook fixture: `default:` is a runtime HookCfg key (per the config inventory's hook-default row), NOT a HookDefCfg key \u2014 writing it under config.yaml `hooks.<h>` trips BOOT-P01 (unknown field) instead. A10 (2026-09-05): fixture added via apply-mutation.py's `overlay` / `plugin_dir_unsigned` ops (see apply-mutation.py docstring)."
     },
     {
       "id": "BOOT-056",
