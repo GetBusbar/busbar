@@ -67,7 +67,8 @@ pub use rate::ConfigClassRule;
 pub use refusal::{ReasonCode, Refusal, RefusalStep};
 pub use store::{Store, StoreError};
 pub use verb::{
-    KernelVerb, VerbScope, IRREDUCIBLE_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS,
+    KernelVerb, VerbScope, IRREDUCIBLE_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
+    NEW_VERBS, READ_ONLY_NEW_VERBS,
 };
 pub use verbs::{required_scope, MintOutcome, MintedKeyOutcome, NonceSource, Verbs};
 
