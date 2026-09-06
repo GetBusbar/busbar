@@ -547,33 +547,49 @@ fn the_declared_abi_is_the_registrys_own_constant() {
     );
 }
 
-/// The predicate the re-segmenter admits carved frames on answers exactly what a full parse would.
+/// The predicate the re-segmenter admits carved frames on, one row per shape.
 ///
-/// `frames` asks one question of every frame it carves — does this frame carry a payload — and
-/// asking it by parsing the frame and dropping the result costs a `String`, a `Vec` and a join per
-/// frame on the streaming path, all of it thrown away before the frame is handed on untouched. The
-/// predicate is only worth having if it admits exactly the same frames, invalid UTF-8 and the
-/// spec's three line terminators included, so that is what is asserted rather than the saving.
+/// It is broader than the parse next to it, deliberately. The parse answers "would decoding this
+/// yield a payload"; the transport's question is "is this an event the upstream sent", and this
+/// transport declares `DECODES_PAYLOAD = false` — it never reads the payload, so it is in no
+/// position to decide that a field it does not itself read is uninteresting. `id:` is the client's
+/// resume point and `retry:` is the upstream's reconnection floor: a reader that never sees them
+/// cannot resume where the stream stopped nor wait as long as it was asked to. Invalid UTF-8 is the
+/// same reading from the other side — the bytes go up exactly as they arrived, so a frame that does
+/// not decode is still the frame that was sent, and dropping it silently loses an event nothing
+/// else reports.
+///
+/// What stays out is a frame carrying no field at all: a comment (`: ping`, the ordinary keepalive)
+/// says nothing, and there is nothing to hand up for it.
 #[test]
-fn the_data_line_predicate_admits_exactly_what_a_full_parse_does() {
+fn the_field_predicate_admits_every_event_and_only_events() {
     let invalid_utf8: &[u8] = &[b'd', b'a', b't', b'a', b':', b' ', 0xff];
-    for frame in [
-        b"event: message\ndata: {\"a\":1}".as_slice(),
-        b"data: {\"a\":1}",
-        b"event: ping",
-        b"data: line1\ndata: line2",
-        b"event: message\rdata: {\"a\":1}\r\r",
-        b"data: a\rdata: b\n",
-        b"id: 1\nretry: 5",
-        b"data",
-        b"\n\n",
-        b"",
-        invalid_utf8,
+    for (frame, carries) in [
+        (b"event: message\ndata: {\"a\":1}".as_slice(), true),
+        (b"data: {\"a\":1}", true),
+        (b"event: ping", true),
+        (b"data: line1\ndata: line2", true),
+        (b"event: message\rdata: {\"a\":1}\r\r", true),
+        (b"data: a\rdata: b\n", true),
+        // The two the old predicate dropped on the floor: a resume point and a reconnection floor.
+        (b"id: 1\nretry: 5", true),
+        (b"id: 42", true),
+        (b"retry: 3000", true),
+        // Bytes that do not decode are still bytes the upstream sent.
+        (invalid_utf8, true),
+        // A field name is a name up to its colon; without one there is no field.
+        (b"data", false),
+        // A comment, which is what a keepalive is.
+        (b": ping", false),
+        (b"\n\n", false),
+        (b"", false),
+        // A header block — what the layer below hands up for a trailer section — is not an event.
+        (b"x-checksum: abc123\r\n", false),
     ] {
         assert_eq!(
-            proto::frame_carries_data(frame),
-            proto::parse_sse_frame(frame).is_some(),
-            "the predicate and the parse disagree on {frame:?}"
+            proto::frame_carries_a_field(frame),
+            carries,
+            "the predicate reads {frame:?} wrong"
         );
     }
 }
@@ -654,6 +670,66 @@ async fn no_frame_is_emitted_after_the_terminal_framing_error() {
         }
     }
     assert!(saw_error, "the unterminated tail is answered with an error");
+}
+
+/// A 2xx event stream whose body ends PART-WAY THROUGH an event is an error, not a short answer.
+///
+/// The upstream began an event and the body ended before it did. Handing the caller a clean end of
+/// stream there says the answer arrived and was simply short, which is the one thing it was not —
+/// and the fee was already decided on the 2xx head, so "it ended fine" is a billed lie. 1.5.5
+/// surfaced exactly this to the caller as an error rather than delivering the partial
+/// (`docs/design/inventory/1.5.5-proxy-hooks.md:406-407`: the mid-stream row ends the body in an
+/// error frame, the pre-first-byte/mid-body row terminates the body stream with an `io::Error`).
+/// The events that DID complete are still events, and go out ahead of it.
+#[tokio::test]
+async fn an_event_stream_that_ends_mid_event_is_a_framing_error() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0_u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+        // One whole event, then an event with no terminator — and a body that ends anyway.
+        let body: &[u8] = b"data: {\"a\":1}\n\ndata: {\"a\":2}";
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, head.as_bytes()).await;
+        let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, body).await;
+    });
+    let uri = format!("http://{addr}/");
+
+    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let sse = SseTransport::new(http);
+    let conn = sse
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    sse.write(
+        &conn,
+        StreamId(0),
+        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+    )
+    .await
+    .unwrap();
+
+    let mut frames = sse.frames(conn);
+    let (_s, first) = frames.next().await.unwrap().unwrap();
+    assert_eq!(
+        first.bytes.as_slice(),
+        b"data: {\"a\":1}\n\n",
+        "the event that completed is still an event"
+    );
+    let err = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the stream answers")
+        .expect("a body that stopped mid-event is not a clean end of stream")
+        .expect_err("it is a framing failure");
+    assert_eq!(
+        err,
+        busbar_contract_transport::wire::TransportError::Framing
+    );
 }
 
 /// An upstream that ends its chunked event stream with a TRAILER section. `http` now hands that

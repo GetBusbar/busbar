@@ -105,17 +105,27 @@ fn split_frame_lines(buf: &[u8]) -> impl Iterator<Item = &[u8]> {
     })
 }
 
-/// Whether this frame carries anything a full parse would return a payload for — a `data:` line,
-/// in a frame that is valid UTF-8.
+/// The four field names the SSE grammar defines. Anything else on a line — a leading `:`, which is
+/// a comment, or a name this list does not hold — is not a field.
+const SSE_FIELDS: [&[u8]; 4] = [b"data:", b"event:", b"id:", b"retry:"];
+
+/// Whether this frame carries an SSE FIELD at all.
 ///
 /// The re-segmenter asks exactly this of every frame it carves, and asking it by parsing the frame
 /// and throwing the answer away costs a `String`, a `Vec` and a join per frame on the streaming
-/// path, all of it dropped before the frame is handed on untouched. The UTF-8 check is the one the
-/// parse makes, kept here so a frame this admits is a frame that parser can read.
+/// path, all of it dropped before the frame is handed on untouched.
+///
+/// All four fields, not just `data:`. `id:` is the client's resume point and `retry:` is the
+/// upstream's reconnection floor — a reader that never sees them cannot resume where the stream
+/// stopped or wait as long as it was asked to, and this transport declares `DECODES_PAYLOAD =
+/// false`, so deciding that a field it does not itself read is uninteresting is not its call. Nor
+/// is UTF-8 its business: the bytes are handed on exactly as they arrived, so a frame that is not
+/// valid UTF-8 is still the frame the upstream sent, and dropping it silently loses an event
+/// nothing else will report. What stays out is what carries no field at all: a comment (`: ping`,
+/// the ordinary keepalive) says nothing, and there is nothing to hand up for it.
 #[must_use]
-pub fn frame_carries_data(frame: &[u8]) -> bool {
-    std::str::from_utf8(frame).is_ok()
-        && split_frame_lines(frame).any(|line| line.starts_with(b"data:"))
+pub fn frame_carries_a_field(frame: &[u8]) -> bool {
+    split_frame_lines(frame).any(|line| SSE_FIELDS.iter().any(|field| line.starts_with(field)))
 }
 
 /// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
