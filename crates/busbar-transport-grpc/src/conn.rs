@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The per-connection side table. One [`ConnState`] stands for one HTTP/2 connection, which may
-//! carry many concurrent gRPC calls ("multiplexed streams" in the architecture's ws row) — each
+//! carry many concurrent gRPC calls ("multiplexed streams" in the architecture's grpc row) — each
 //! call is one [`busbar_contract::StreamId`], keyed in `outbound` below.
 
 use std::collections::{HashMap, VecDeque};

@@ -5,15 +5,15 @@
 //! per-RPC handler that forwards inbound gRPC messages into the connection's shared inbound
 //! channel and drains an outbound channel `write()` feeds, back onto the wire.
 //!
-//! ## The fixed RPC path — a placeholder this crate's report calls out
+//! ## The RPC path: the destination's, with this crate's own as the fallback
 //!
 //! gRPC's own wire format names every call by an HTTP/2 `:path` of the shape
-//! `/package.Service/Method`. A byte-blind transport has no plane-supplied value for it — the
-//! plane never reaches this layer. Every RPC this crate serves or dials therefore answers to (and
-//! is opened against) the SAME fixed path, [`RPC_PATH`]. A real deployment cannot yet route
-//! different plane operations to different upstream gRPC methods purely through this transport;
-//! that would need a way for `DestinationFacts`/claims to carry a method name through to here,
-//! which the contract does not have today.
+//! `/package.Service/Method`. A dialled call uses the method the destination named —
+//! `UpstreamAddress::Grpc` carries it, and `GrpcTransport::dial` reads it — so two plane operations
+//! on one transport can reach two upstream methods. Only a destination naming none falls back to
+//! [`RPC_PATH`], which is also the path this byte-blind server answers on: served calls are
+//! answered whatever `:path` they arrive with, since the transport reads no meaning from it beyond
+//! recording it.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -36,7 +36,8 @@ use busbar_contract_transport::wire::TransportError;
 use crate::codec::RawCodec;
 use crate::conn::ConnState;
 
-/// The fixed path every RPC this crate serves or dials answers to. See the module header.
+/// The path a dial falls back to when the destination names no method — this crate's own frame
+/// method, the only one a byte-blind transport can name for itself. See the module header.
 pub(crate) const RPC_PATH: &str = "/busbar.raw/Frames";
 
 /// Serve one stream the layer below handed up as an HTTP/2 gRPC connection until it closes.
@@ -121,7 +122,7 @@ impl tower::Service<Request<tonic::Streaming<Vec<u8>>>> for RpcHandler {
 /// concurrent RPCs share one channel, told apart only by the tag.
 ///
 /// `is_response` is true only on the CLIENT side, reading the upstream's ANSWER: that stream ends
-/// bearing the `grpc-status` trailer (`StatusAt::Terminal` in the architecture's ws row), which
+/// bearing the `grpc-status` trailer (`StatusAt::Terminal` in the architecture's grpc row), which
 /// this function reports as a final, zero-length, status-bearing frame — the transport's own
 /// honest reading of the trailer, never a decode of what the messages themselves meant. A gRPC
 /// REQUEST body carries no such trailer, so the server side never appends one.
