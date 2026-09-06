@@ -333,12 +333,34 @@ case "$rc" in
 esac
 
 # ── effect snapshots ────────────────────────────────────────────────────────────────────────────
+# A SNAPSHOT THAT FAILED IS RECORDED AS {"unavailable": true} — AND {"unavailable": true} COMPARES
+# EQUAL TO ITSELF. capture.py writes that marker for a usage/audit/metrics snapshot it could not
+# read, which is right for the cells whose OWN behaviour makes the snapshot impossible (`PostRestart`
+# restarts busbar out from under it; `PostKeysIdRotate` rotates the key the metrics scrape presents),
+# and those cells' goldens carry the marker deliberately. What is NOT right is the harness's own
+# failure wearing the same mask: if the admin API was up and answering and the usage/audit read still
+# failed, the delta this cell is about — the money — never got measured, and BOTH sides record the
+# same marker, so the differ sees a match. That is a green built out of two blind spots.
+#
+# So the recorder asks the question it can actually answer: is the admin API answering RIGHT NOW? If
+# it is, a failed usage/audit snapshot is the harness's fault and the cell is refused. If it is not,
+# the unavailability belongs to the cell and is recorded exactly as before. (metrics is deliberately
+# NOT judged here: it is scraped off the DATA listener with the client key, and a cell that revokes,
+# rotates or expires that key makes its own scrape fail on purpose.)
+SNAPSHOT_FAIL=""
+_admin_api_answering() {
+  curl -fsS -m 5 -o /dev/null -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" \
+    "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys" 2>/dev/null
+}
 snapshot() {  # snapshot <dir> <key-id>
   local d="$1" kid="$2"; mkdir -p "$d"
   curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" \
     "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${kid}/usage" -o "$d/usage.json" 2>/dev/null || rm -f "$d/usage.json"
   curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" \
     "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/audit?limit=1000" -o "$d/audit.json" 2>/dev/null || rm -f "$d/audit.json"
+  if { [ ! -s "$d/usage.json" ] || [ ! -s "$d/audit.json" ]; } && _admin_api_answering; then
+    SNAPSHOT_FAIL="the ${d##*/} usage/audit snapshot failed while the admin API was still answering"
+  fi
   # /metrics on the data listener is key-authed in 1.5.5 (RouteAuth::Key): present the OK client key.
   oracle_scrape_metrics "$LISTEN_PORT" "$ORACLE_TOKEN_OK" "$d/metrics.txt" || true
 }
@@ -501,6 +523,9 @@ _digest() {  # stdin -> one hex digest line
 }
 settle_then_snapshot() {  # <dir> <key-id>
   local d="$1" kid="$2" i=0 prev="" cur=""
+  # the `before` snapshot opens a cell: clear the previous cell's verdict here, so SNAPSHOT_FAIL is
+  # always a statement about THIS cell (both snapshots of it) and never a leak from the last one
+  case "${d##*/}" in before) SNAPSHOT_FAIL="" ;; esac
   while [ $i -lt 20 ]; do
     cur="$(curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${kid}/usage" 2>/dev/null | jq -c 'del(.as_of)' 2>/dev/null)$(curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_TOKEN_OK}" "http://127.0.0.1:${LISTEN_PORT}/metrics" 2>/dev/null | grep -v '^#' | grep -v '_seconds' | sort | _digest)"
     [ -n "$prev" ] && [ "$cur" = "$prev" ] && [ $i -ge 2 ] && break
@@ -676,6 +701,11 @@ record_concurrent_cell() {  # <id> <cell-json> <raw-dir> <safe>
   if [ "$no_answer" -gt 0 ]; then
     record "$id" FAIL "${no_answer} of ${cn} concurrent requests got no HTTP response (curl)" \
       "$(cat "$raw/par/1.err" 2>/dev/null | tr '\n' ' ' | tail -c 200)"
+    return
+  fi
+  if [ -n "$SNAPSHOT_FAIL" ]; then
+    record "$id" FAIL "$SNAPSHOT_FAIL" \
+      "the usage/audit delta this cell is about was never measured; recorded as {\"unavailable\":true} it would compare equal on both sides"
     return
   fi
   statuses="$(printf '%s\n' "${codes[@]}" | sort -n | paste -sd, - | sed 's/^/[/; s/$/]/')"
@@ -909,6 +939,11 @@ PY
   if [ "$status" = "000" ]; then
     record "$id" FAIL "no HTTP response (curl)" "$(tr '\n' ' ' <"$raw/curl.err" | tail -c 300)"; continue
   fi
+  if [ -n "$SNAPSHOT_FAIL" ]; then
+    record "$id" FAIL "$SNAPSHOT_FAIL" \
+      "the usage/audit delta this cell is about was never measured; recorded as {\"unavailable\":true} it would compare equal on both sides"
+    continue
+  fi
   if ! python3 "${here}/capture.py" "$raw/headers" "$status" "$raw/body" "$raw/before" "$raw/after" "${egress_files[@]}" >"$raw/captured.json" 2>"$raw/capture.err"; then
     record "$id" FAIL "capture.py failed" "$(tail -c 300 "$raw/capture.err")"; continue
   fi
@@ -936,8 +971,19 @@ PY
       record "$id" FAIL "readback capture failed" "$rb_err"; continue
     fi
     if [ "$readback" != "[]" ]; then
-      jq --argjson rb "$readback" '.effects.readback = $rb' "$OUT/cells/$safe.json" >"$raw/with-readback.json" \
-        && mv "$raw/with-readback.json" "$OUT/cells/$safe.json"
+      # A READBACK THAT WAS CAPTURED AND THEN LOST IS WORSE THAN ONE NEVER ASKED FOR. The `&& mv`
+      # was the only thing standing between a failed fold and a cell recorded WITHOUT its readback —
+      # and the row below still said PASS. The class this cell exists for (`effects.readback`: the
+      # write answered 200 but touched nothing) would then be absent from the golden, so it could
+      # never diverge, and the money-weighted class would be silently unarmed for that cell.
+      if jq --argjson rb "$readback" '.effects.readback = $rb' "$OUT/cells/$safe.json" >"$raw/with-readback.json"; then
+        mv "$raw/with-readback.json" "$OUT/cells/$safe.json"
+      else
+        rm -f "$raw/with-readback.json" "$OUT/cells/$safe.json"
+        record "$id" FAIL "the captured readback could not be folded into the cell" \
+          "$(printf '%s' "$readback" | cut -c1-160); recording this cell without its readback would drop the class it exists for"
+        continue
+      fi
     fi
   fi
   usage_note="$(jq -c '.effects.usage' "$OUT/cells/$safe.json")"
