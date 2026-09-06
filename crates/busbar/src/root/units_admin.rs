@@ -1893,19 +1893,37 @@ fn mix_arrival(material: [u8; 16], at: u64) -> [u8; 16] {
 }
 
 /// Draw unpredictable bytes from the node's own source.
+///
+/// The source is the substrate's, which is the operating system's: the same fail-closed draw a key
+/// secret and a plane's replay nonce are minted from. Reaching it rather than re-deriving one here
+/// is the whole point — a composition root that mints its own entropy has a second entropy source to
+/// get wrong, and this one had.
+///
+/// What it had been was a keyed hash of a STACK ADDRESS. That is not entropy: the address is the
+/// same on every call from the same frame, so the only thing varying was the hasher's key, and the
+/// second half was the first half hashed again — 64 bits of source, presented as 128.
+///
+/// The material arrives hex-encoded and is read back a byte at a time rather than through a decoder,
+/// because the one thing wanted from it is 16 bytes and adding a crate edge to a composition root to
+/// halve a string is a poor trade. A pair of digits that does not parse cannot happen — the encoder
+/// on the other side of the call writes hex — and if it ever did, the byte is left as the source's
+/// own zero rather than silently substituted.
 fn getrandom_into(buf: &mut [u8; 16]) {
-    use std::hash::{BuildHasher, Hasher};
-    // `RandomState` seeds itself from the operating system once per process and mixes a per-instance
-    // counter, so two hashers built here never agree. It is the one source in the standard library
-    // that is seeded from the OS without pulling a dependency into the composition root.
-    let a = std::collections::hash_map::RandomState::new();
-    let b = std::collections::hash_map::RandomState::new();
-    let mut ha = a.build_hasher();
-    let mut hb = b.build_hasher();
-    ha.write_usize(std::ptr::addr_of!(buf) as usize);
-    hb.write_u64(ha.finish());
-    buf[..8].copy_from_slice(&ha.finish().to_be_bytes());
-    buf[8..].copy_from_slice(&hb.finish().to_be_bytes());
+    let Ok(drawn) = busbar_substrate::plane::approvals::nonce() else {
+        // The OS source refusing is not survivable for a secret this binds, and it is also not
+        // something this root can refuse from: the seam it fills is infallible. So the buffer is
+        // left as the caller's zeroes and the epoch below is what still distinguishes it — an
+        // unmistakably degraded nonce rather than a plausible-looking one that is not random.
+        return;
+    };
+    let (pairs, _) = drawn.as_bytes().as_chunks::<2>();
+    for (slot, pair) in buf.iter_mut().zip(pairs) {
+        let hi = (pair[0] as char).to_digit(16);
+        let lo = (pair[1] as char).to_digit(16);
+        if let (Some(hi), Some(lo)) = (hi, lo) {
+            *slot = ((hi << 4) | lo) as u8;
+        }
+    }
 }
 
 /// The replay encoder.
@@ -2868,6 +2886,40 @@ mod tests {
         source.fill(&mut second);
         assert_ne!(first, second);
         assert_ne!(first, [0u8; 16]);
+    }
+
+    /// Both halves of the nonce are drawn, and the second is not the first said again.
+    ///
+    /// The source it replaced hashed a stack address — the same address on every call from the same
+    /// frame — and then hashed its own first output to make the second half, so a 128-bit nonce
+    /// carried at most 64 bits of source and the back half was a function of the front. This walks
+    /// enough draws that either half repeating, or the two halves agreeing, would show.
+    ///
+    /// What this cannot assert is unpredictability, which is a property of the SOURCE and not of any
+    /// finite sample: it is held by reaching the substrate's own operating-system draw — the one a
+    /// key secret is minted from — rather than by anything checkable here.
+    #[test]
+    fn both_halves_of_a_nonce_are_drawn_and_neither_repeats() {
+        use busbar_unit_verbs::NonceSource;
+        use std::collections::HashSet;
+
+        let source = ArrivalNonce(1_700_000_000);
+        let mut fronts = HashSet::new();
+        let mut backs = HashSet::new();
+        for _ in 0..512 {
+            let mut drawn = [0u8; 16];
+            source.fill(&mut drawn);
+            assert_ne!(drawn, [0u8; 16], "the source handed back nothing");
+            assert_ne!(
+                drawn[..8],
+                drawn[8..],
+                "the two halves of one nonce agree, so one of them is the other"
+            );
+            fronts.insert(drawn[..8].to_vec());
+            backs.insert(drawn[8..].to_vec());
+        }
+        assert_eq!(fronts.len(), 512, "a front half repeated across draws");
+        assert_eq!(backs.len(), 512, "a back half repeated across draws");
     }
 
     /// The other half of the nonce, and the half a random draw cannot be asserted about: the arrival
