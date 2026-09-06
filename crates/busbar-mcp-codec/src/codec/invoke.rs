@@ -51,11 +51,15 @@ impl OperationHandler for InvokeOperation {
 /// dissolved `(mcp, Invoke)` round-trip test can recover the concrete IR without a downcast. Used in
 /// production by the trait `read_request` above.
 pub(crate) fn read_invoke_request(body: &[u8]) -> Result<InvokeReq, IngressReject> {
-    let v: serde_json::Value =
+    // MUTABLE because the document is this function's OWN and is dropped on the way out: every
+    // member the IR keeps is MOVED out of it with `Value::take` rather than deep-cloned. Arguments
+    // are caller-authored and arbitrarily large, so cloning them copied a whole tree only to free
+    // the original a line later.
+    let mut v: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
     // The envelope's own validity is `ingress::jsonrpc`'s business and has already been decided
     // before a body reaches a codec; what this reader owns is the `params` shape.
-    let params = v.get("params").ok_or_else(|| {
+    let params = v.get_mut("params").ok_or_else(|| {
         IngressReject::BadRequest("a tools/call carries a `params` member".to_string())
     })?;
     let tool = params
@@ -70,8 +74,8 @@ pub(crate) fn read_invoke_request(body: &[u8]) -> Result<InvokeReq, IngressRejec
         // ABSENT ARGUMENTS ARE AN EMPTY OBJECT, not an error: a tool that takes none is called
         // with none, and rejecting that would refuse a legal call.
         arguments: params
-            .get("arguments")
-            .cloned()
+            .get_mut("arguments")
+            .map(serde_json::Value::take)
             .unwrap_or_else(|| serde_json::json!({})),
         extra: Default::default(),
     })
@@ -79,14 +83,16 @@ pub(crate) fn read_invoke_request(body: &[u8]) -> Result<InvokeReq, IngressRejec
 
 /// Wire -> concrete `InvokeResp` parse (see [`read_invoke_request`]).
 pub(crate) fn read_invoke_response(wire: &[u8]) -> Result<InvokeResp, CodecError> {
-    let v: serde_json::Value =
+    // MOVED, never cloned — see [`read_invoke_request`]. Tool output is the larger of the two
+    // documents on this operation.
+    let mut v: serde_json::Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     let result = v
-        .get("result")
+        .get_mut("result")
         .ok_or_else(|| CodecError::Malformed("no `result` member".to_string()))?;
     let content = result
-        .get("content")
-        .cloned()
+        .get_mut("content")
+        .map(serde_json::Value::take)
         .unwrap_or_else(|| serde_json::json!([]));
     // THE TOOL'S OWN VERDICT, and it is not the protocol's. `isError` on a successful
     // exchange means the tool ran and failed; a call that could not be made at all is a
@@ -106,7 +112,9 @@ pub(crate) fn read_invoke_response(wire: &[u8]) -> Result<InvokeResp, CodecError
             )))
         }
     };
-    let structured = result.get("structuredContent").cloned();
+    let structured = result
+        .get_mut("structuredContent")
+        .map(serde_json::Value::take);
 
     // AN EXCHANGE THAT IS NOT OVER SAYS SO IN THESE THREE MEMBERS, and busbar models none of them
     // first-class — so they are kept under the source protocol's own namespace rather than dropped.
@@ -114,8 +122,8 @@ pub(crate) fn read_invoke_response(wire: &[u8]) -> Result<InvokeResp, CodecError
     // ends a conversation the peer believes is still open.
     let mut carried = serde_json::Map::new();
     for key in INTERIM_MEMBERS {
-        if let Some(v) = result.get(key) {
-            carried.insert((*key).to_string(), v.clone());
+        if let Some(v) = result.get_mut(key).map(serde_json::Value::take) {
+            carried.insert((*key).to_string(), v);
         }
     }
     let unfinished = carried
