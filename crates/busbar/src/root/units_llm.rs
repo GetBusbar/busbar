@@ -476,6 +476,7 @@ impl LlmNode {
             // here, so the epoch this unit is billed in and the stamp the table enters it under
             // cannot be two different instants.
             charged_at: arrived.secs(),
+            card: card.clone(),
             deferred: Mutex::new(None),
             model: Mutex::new(String::new()),
             walk: Walk::open(arrival),
@@ -941,6 +942,13 @@ pub struct LlmUnit<'n> {
     started: Instant,
     /// The pinned header-arrival epoch every charge and every refund lands in.
     charged_at: u64,
+    /// THE CARD THIS UNIT WAS ADMITTED UNDER, pinned beside `charged_at` and for the same reason.
+    ///
+    /// The live Meter step prices against this rather than against whatever the root's card happens
+    /// to be when the step runs, so a unit and the late accrual that lands after its body are priced
+    /// through one card — the one the request agreed to at the door. A build with no card bound
+    /// holds `None`, which is the honest figure for a node that can price nothing.
+    card: Option<Arc<busbar_unit_cost::RateCard>>,
     /// The handler-lookup refusal the arrival arm performed and the decode arm raises. See this
     /// module's header for why the two are apart.
     deferred: Mutex<Option<decode::DecodeRefusal>>,
@@ -1286,15 +1294,14 @@ impl Units for LlmUnit<'_> {
         // accruing a zero it could not tell from a free request.
         //
         // WHAT THIS LINE ADDS IS THE PRICING, and it is here because the card is here. The step
-        // assembles what the unit consumed and asks; this closure answers, against the card the node
-        // was bound at boot — the same card the late reading is priced against, through the same one
-        // expression — and the step spends the answer against the hold it was handed. A build with
-        // no card bound answers nothing, which is the honest figure for a node that can price
-        // nothing rather than a rate it invented for itself.
+        // assembles what the unit consumed and asks; this closure answers, against the card THIS
+        // UNIT WAS ADMITTED UNDER — the same card the late reading is priced against, through the
+        // same one expression — and the step spends the answer against the hold it was handed. A
+        // build with no card pinned answers nothing, which is the honest figure for a node that can
+        // price nothing rather than a rate it invented for itself.
         self.walk.meter(token, usage, &|report| {
-            self.node
-                .card
-                .get()
+            self.card
+                .as_deref()
                 .map(|card| priced_amount(card, usage, report))
                 .unwrap_or(0)
         })
