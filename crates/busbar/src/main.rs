@@ -876,6 +876,86 @@ fn compose_voice_governed_calls() {
     busbar_voice::mount::install_governed_calls(std::sync::Arc::new(NodeCalls::new(node)));
 }
 
+/// THE ROOT'S BOOT CHECKS, in one place and with one caller, before any listener is bound.
+///
+/// Four documented boot steps lived in the root with nothing calling them, which is the same defect
+/// four times over: a check that is never run is a comment about a check. Each is answered the way
+/// its own documentation says it should be, and the two answers are deliberately different.
+///
+/// A DRIFTED LABEL BANK IS A REFUSAL. The breaker unit and the egress unit keep the same three
+/// metric labels as duplicate literals — they share no dependency that could hold a constant — and
+/// the labels reach the scrape as label VALUES, so a change on one side is a wire change that looks
+/// like an ordinary edit in a diff. Two spellings of one label is a node whose dashboards silently
+/// split one series in half, and that is a defect in this binary rather than anything an operator
+/// wrote, so it stops here rather than serving.
+///
+/// A POOL WITH NO EXPANSION IS REPORTED. That one IS something an operator wrote, and the previous
+/// release served it, so refusing would be a configuration that worked yesterday failing today. What
+/// the report buys is the pool's NAME while the pool is still in scope: the symptom otherwise is a
+/// disputed posting that names nothing, arriving days later.
+///
+/// AND THE VOCABULARY IS FILLED AND SEALED HERE. Every config-derived open-vocabulary key becomes a
+/// `&'static str` exactly once, at boot, and the seal is what makes "once" a property of the type
+/// rather than a convention: after it, an intern is a per-call leak and the vocabulary says so in
+/// every build. Sealing at the end of this function is the ordering the module asks for — after
+/// configuration has resolved, before anything registers a key, and long before a listener binds.
+///
+/// Nothing is emitted on the success path, which is the property the neutrality cells read: a
+/// deployment cannot tell from its boot log that this function ran.
+fn boot_checks(cfg: &config::RootCfg) {
+    if let Err(drift) = root::adapters::check_label_banks() {
+        eprintln!(
+            "busbar: the composition root did not seal: {drift} — one label with two spellings \
+             splits a metric series in half on every dashboard reading it"
+        );
+        std::process::exit(2);
+    }
+
+    // The expansions as configuration wrote them: one entry per pool, naming the lanes its members
+    // are. A pool that expands to nothing turns the usage unit's set-membership test into an
+    // equality test for that pool, which is what the check below is looking for.
+    let meter_cfg = root::policy::MeterPolicyConfig {
+        pools: cfg
+            .pools
+            .iter()
+            .map(|(name, pool)| root::policy::PoolExpansion {
+                pool: name.clone(),
+                lanes: pool.members.iter().map(|m| m.model.clone()).collect(),
+            })
+            .collect(),
+        ..root::policy::MeterPolicyConfig::default()
+    };
+    let unexpanded =
+        root::policy::pools_without_expansion(&meter_cfg, &root::policy::build(&meter_cfg));
+    if !unexpanded.is_empty() {
+        tracing::warn!(
+            "these configured pools expand to no lane, so a posting against one is measured as an \
+             equality rather than a membership: {}",
+            unexpanded.join(", ")
+        );
+    }
+
+    // THE NODE'S ONE VOCABULARY. Built here, filled from the resolved configuration, and sealed —
+    // and then dropped, because what it produces is `&'static str` and the interner itself is not
+    // read again. Dropping it is what makes the seal final: nothing holds a handle that could
+    // intern afterwards.
+    let mut vocabulary = root::vocabulary::Vocabulary::new();
+    vocabulary.intern_all(&root::vocabulary::ConfigKeys {
+        lanes: cfg.models.keys().cloned().collect(),
+        pools: cfg.pools.keys().cloned().collect(),
+        models: cfg.models.keys().cloned().collect(),
+        hosts: cfg.providers.values().map(|p| p.base_url.clone()).collect(),
+        groups: cfg.groups.keys().cloned().collect(),
+        // The remaining lists are filled by the steps that first read them: a dialect name is the
+        // protocol registry's, a plugin key is leaked at load, a slot fingerprint is the transport
+        // provisioning's, and the meter classes are the migration's. Each joins this call on the
+        // commit that reads it, and an empty list interns nothing — which is what makes a
+        // zero-config boot's fixed memory term zero.
+        ..root::vocabulary::ConfigKeys::default()
+    });
+    vocabulary.seal();
+}
+
 fn main() {
     // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
     // set. This is the composition root's whole knowledge of the protocol crates: one line per
@@ -1305,6 +1385,9 @@ async fn run(data_workers: usize) {
     // line is not compiled and the binary is what it was, which is what the neutrality cells read.
     #[cfg(feature = "root-voice")]
     mount_root_voice(&cfg.limits);
+    // THE ROOT'S OWN BOOT CHECKS, in the same slot and for the same reason: everything they read is
+    // resolved by here, and nothing has bound an address yet.
+    boot_checks(&cfg);
     // THE VOICE PLANE'S EGRESS CREDENTIAL, read off the deployment's ORDINARY provider catalog.
     // The voice plane's `streams:` grammar carries no credential field, so its realtime provider is
     // the one already serving the model that section targets: `streams.session.model` names a model,
