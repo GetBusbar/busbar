@@ -969,8 +969,11 @@ impl Journal {
         let wanted = held.saturating_add(incoming).saturating_add(1);
         let excess = wanted.saturating_sub(self.capacity);
         let dropped = self.log.forget_owed(excess);
-        let first = dropped.first()?.identity();
-        let last = dropped.last()?.identity();
+        // The bound was reached even when nothing was sitting in the buffer to evict — a single
+        // batch larger than the capacity does that on its own. The break still has to be sealed, so
+        // an empty `dropped` names no identities rather than skipping the seal.
+        let first = dropped.first().map_or((0, 0), Record::identity);
+        let last = dropped.last().map_or((0, 0), Record::identity);
         let overflow = Overflow {
             dropped: dropped.len(),
             first,

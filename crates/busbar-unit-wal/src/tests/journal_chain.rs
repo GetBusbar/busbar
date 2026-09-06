@@ -404,6 +404,47 @@ fn a_full_buffer_seals_a_chain_break_rather_than_dropping_silently() {
     assert_eq!(breaks[0].node_seq, overflows[0].chain_break_seq);
 }
 
+/// A single batch bigger than the whole capacity has nothing already buffered to evict, but the
+/// bound was still reached and still has to seal a break — not silently accept a buffer left over
+/// the bound for as long as the outage lasts.
+#[test]
+fn a_batch_bigger_than_the_capacity_still_seals_a_chain_break() {
+    let mut journal = Journal::memory_buffered_to(4, Box::new(RefusingShipper)).with_capacity(4);
+    let token = durability_token();
+
+    journal
+        .append(
+            &token,
+            StepName::Meter,
+            &entries(RecordClass::Transaction, 6, 9),
+        )
+        .expect_err("the store refuses");
+
+    let overflows = journal.overflows();
+    assert_eq!(
+        overflows.len(),
+        1,
+        "an oversized batch reaches the bound on its own"
+    );
+    assert_eq!(
+        overflows[0].dropped, 0,
+        "nothing was buffered yet to evict"
+    );
+
+    let on_the_medium =
+        decode_run(&journal.log().read_back().expect("readable").records).expect("journal records");
+    let breaks: Vec<&JournalRecord> = on_the_medium
+        .iter()
+        .filter(|r| r.class == RecordClass::ChainBreak)
+        .collect();
+    assert_eq!(
+        breaks.len(),
+        1,
+        "the oversized batch still seals a break, not none"
+    );
+    assert_eq!(breaks[0].body, overflows[0].body());
+}
+
 /// The overflow history is a window plus a running total, not one entry per overflowing append.
 ///
 /// Once the buffer is full EVERY append overflows, so an unbounded history is a per-request memory
