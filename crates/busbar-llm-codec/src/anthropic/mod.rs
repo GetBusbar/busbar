@@ -612,6 +612,49 @@ fn stream_error_class(error_type: Option<&str>) -> StatusClass {
     }
 }
 
+/// The nine tokens `ErrorResponse.error` is discriminated on. A value outside this set is not a
+/// valid error object, so it can never be written to `error.type` — however plausible it looks.
+const ANTHROPIC_ERROR_TYPES: [&str; 9] = [
+    ERR_TYPE_INVALID_REQUEST,
+    ERR_TYPE_AUTHENTICATION,
+    "billing_error",
+    ERR_TYPE_PERMISSION,
+    ERR_TYPE_NOT_FOUND,
+    ERR_TYPE_RATE_LIMIT,
+    ERR_TYPE_TIMEOUT,
+    ERR_TYPE_OVERLOADED,
+    ERR_TYPE_API_ERROR,
+];
+
+/// Choose the `error.type` token for an outgoing error — the inverse of [`stream_error_class`].
+///
+/// A signal that is ALREADY one of the nine is kept verbatim, so a token read off a native upstream
+/// stream round-trips exactly (`permission_error` does not come back as `authentication_error`,
+/// though both read as `Auth`). Anything else is free text — an upstream sentence, a foreign
+/// dialect's code — and cannot go in a discriminator field, so the class supplies the token and the
+/// text is carried as `message` instead, which is where prose belongs.
+///
+/// `Auth` and `ClientError` are many-to-one in the forward map, so the inverse picks the general
+/// member of each (`authentication_error`, `invalid_request_error`). `Network` has no Anthropic
+/// token at all and takes the `api_error` catch-all, as does an absent signal: `null` is not a
+/// member of the set, and an SDK dispatching on the type gets no arm for it.
+fn stream_error_type(err: &IrError) -> &'static str {
+    if let Some(signal) = err.provider_signal.as_deref() {
+        if let Some(known) = ANTHROPIC_ERROR_TYPES.iter().find(|t| **t == signal) {
+            return known;
+        }
+    }
+    match err.class {
+        StatusClass::Overloaded => ERR_TYPE_OVERLOADED,
+        StatusClass::RateLimit => ERR_TYPE_RATE_LIMIT,
+        StatusClass::Timeout => ERR_TYPE_TIMEOUT,
+        StatusClass::Auth => ERR_TYPE_AUTHENTICATION,
+        StatusClass::Billing => "billing_error",
+        StatusClass::ClientError | StatusClass::ContextLength => ERR_TYPE_INVALID_REQUEST,
+        StatusClass::ServerError | StatusClass::Network => ERR_TYPE_API_ERROR,
+    }
+}
+
 /// Read Anthropic's 5m/1h cache-creation TIER SPLIT off a wire `usage` object into the neutral
 /// [`crate::ir::IrUsageDetail`].
 ///
