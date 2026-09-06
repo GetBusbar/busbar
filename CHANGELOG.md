@@ -58,6 +58,16 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   credential-mode and unknown-pool-member sentences are rephrased; the protocol list is reordered;
   a plugin download failure quotes the HTTP client's current error text. Same refusal, same exit
   code in every case.
+- **An inline literal where a secret reference belongs is refused without echoing it.** Every
+  secret-bearing key takes a reference — `{ env: VAR }`, `{ file: /path }`, or a secret module —
+  and pasting the value inline is the mistake that grammar exists to prevent. 1.5.5 rejected it
+  with serde's default `invalid type: string "sk-…"` / `invalid type: integer 483920175534`, which
+  prints the pasted secret straight into stderr and the boot log; an unquoted one
+  (`api_key: 483920175534`) is the spelling nobody thinks to check. Busbar now answers every
+  inline spelling with one message that names the rule and never echoes the value: *a secret value
+  must be a REFERENCE, never an inline literal (the value is not echoed): use `{ env: <VAR> }`,
+  `{ file: <path> }`, or `{ module: <secret-module>, settings: {…} }`*. Same refusal, same exit
+  code, same config path, line and column.
 - **One new `/metrics` series on a 1.5.5 config:** `busbar_metering_pending_coalesced_total`, the
   write-behind overflow sentinel (see BUSBAR-8019 in the diagnostics reference). No 1.5.5 series
   changed shape.

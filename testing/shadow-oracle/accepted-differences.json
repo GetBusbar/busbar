@@ -97,6 +97,17 @@
       "rationale": "The new token limit metrics appear in a limit's expected-one-of list; reserved-name / credential-mode / unknown-member sentences rephrased; protocol list reordered. Same refusal, same exit code. NARROWED 2026-09-05 (the plane-key-lift fix): the top-level plane-key row dropped — the TOP-LEVEL expected-one-of list no longer includes the plane keys, because the 1.6.0-additive keys are lifted off the document before the frozen 1.5.5-shaped parse. That cell is byte-identical to 1.5.5 now and needs no acceptance."
     },
     {
+      "id": "F-015 an inline secret is refused without echoing it",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-06 oracle-phase0 parity triage",
+      "cells": "^boot\\.refusal\\|BOOT-P32\\|validate$",
+      "classes": [
+        "effects.stderr"
+      ],
+      "rationale": "BOOT-P32 writes an INLINE LITERAL where a secret reference belongs (`providers.gemini.api_key: 7`). 1.5.5 had no scalar visitor on SecretRef, so that value fell through to serde's DEFAULT invalid-type error, which prints the value it was handed: `invalid type: integer `7`, expected a secret reference map: {…}`. The one path this type exists to keep a secret off — stderr and the boot log — is exactly where the rejected secret went, and an unquoted scalar (`api_key: 483920175534`) is the spelling nobody thinks to check. 1.6.0's SecretRef refuses every inline-scalar spelling through one message that states the RULE and never echoes the value: `a secret value must be a REFERENCE, never an inline literal (the value is not echoed): use { env: <VAR> }, { file: <path> }, or { module: <secret-module>, settings: {…} }` (crates/secret-ref/src/lib.rs, RefVisitor::inline_literal). That is the rule the config inventory already documents for every secret-bearing key, so the new sentence tells the operator what to write instead of what serde could not parse. NOT a plane-work side effect: the wording landed in c8780349 (2026-08-08), long before this branch's base, and reverting it would restore a message that prints an operator's pasted API key into the log. SCOPE: the refusal itself is unchanged — exit code 1, empty stdout, the same `config.yaml: invalid YAML: providers.gemini.api_key: … at line 42 column 14` frame around the sentence, and the same preceding BUSBAR_PROVIDERS deprecation warning byte-for-byte. The `BUSBAR-3015:` prefix on the [error] line is D-1's and is already rewritten away before this entry is consulted. Narrowed to the ONE recorded cell that drives an inline-literal secret; if a fixture ever adds another, name it here explicitly rather than widening the regex to the boot.refusal family.",
+      "changelog": "An inline literal where a secret reference belongs is refused without echoing it."
+    },
+    {
       "id": "F-013 download error wording",
       "kind": "improvement",
       "changelog": "a plugin download failure quotes the HTTP client's current error text",
