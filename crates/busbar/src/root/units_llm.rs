@@ -1223,7 +1223,7 @@ impl Units for LlmUnit<'_> {
         )
     }
 
-    fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
+    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
         let status = self.walk.served_status();
         Evidence {
             // WHAT THIS UNIT SPENT IS NOT LOCATED HERE, and the settlement table therefore posts
@@ -1253,7 +1253,14 @@ impl Units for LlmUnit<'_> {
             // and the slot is drawn at the door and never released.
             upstream_candidate: self.walk.upstream_candidate(),
             fee: FeeEvidence {
-                client_open_or_one_shot: true,
+                // READ OFF THE UNIT'S ORIGIN, never asserted. The flat fee is a CLIENT'S fee: it is
+                // what a caller pays for a request the node carried on its behalf, and a unit the
+                // node runs for any other reason is not a caller's request. Hard-coded true, every
+                // origin this loop could ever carry would post one — a provider push, a tick, a
+                // nested unit — and the sibling planes, which read the same field off the same
+                // context, would price the same traffic differently. The origin the kernel sealed is
+                // the one fact that answers this, so it is the one thing read.
+                client_open_or_one_shot: ctx.origin == OriginKind::Client,
                 selected_upstream: self.walk.upstream_candidate(),
                 relayed_first_response_frame: status.is_some(),
                 // This transport reports no status leg of its own: the response IS the status, and
@@ -2201,6 +2208,45 @@ mod tests {
         assert_eq!(replayed.len(), 1, "one posting, one record");
     }
 
+    /// THE FLAT FEE IS A CLIENT'S FEE, and this plane reads which it has off the sealed origin.
+    ///
+    /// One unit, driven once and then asked the same question under two origins. The delivered
+    /// answer, the selected upstream and the relayed first frame are identical in both readings —
+    /// the ONLY thing that differs is the origin the kernel sealed the unit under — so a difference
+    /// in the count is a difference the origin made and nothing else. A client's request pays one
+    /// fee; a unit the node ran for a provider pays none, which is the same answer the sibling plane
+    /// gives to the same question.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_provider_origin_unit_posts_no_flat_fee() {
+        let rig = rig(Fixture::BufferedOk).await;
+        let node = LlmNode::new();
+        let (unit, _ended) =
+            drive_keeping_the_unit(&rig, &node, Fixture::BufferedOk, rig.gov(), NATIVE_SEATS).await;
+        rig.server.shutdown().await;
+
+        let fee = |origin| {
+            let ctx = UnitCtx {
+                key: UnitKey::new(1),
+                origin,
+                session: None,
+                generation: busbar_kernel::registry::Generation::FIRST,
+                admin_listener: false,
+                kernel_verb_only: false,
+            };
+            busbar_kernel::teller::fee_count(&unit.evidence(&ctx).fee).0
+        };
+        assert_eq!(
+            fee(OriginKind::Client),
+            1,
+            "a client's delivered request pays the flat per-request fee"
+        );
+        assert_eq!(
+            fee(OriginKind::Provider),
+            0,
+            "a unit the node ran for a provider is nobody's request and posts no fee"
+        );
+    }
+
     /// One request, driven through the real loop, answering with the END rather than the bytes.
     ///
     /// The same drive [`LlmNode::answer`] performs — the same table, the same slot, the same
@@ -2218,6 +2264,23 @@ mod tests {
         gov: busbar_api::PlaneRequestCtx,
         seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
     ) -> Ended {
+        drive_keeping_the_unit(rig, node, fixture, gov, seats)
+            .await
+            .1
+    }
+
+    /// The same drive, handing the UNIT back beside the end it sealed.
+    ///
+    /// A unit's evidence is a reading OF the unit, so a test that asks what this plane would settle
+    /// has to hold the thing that ran rather than a copy of its answer. Everything below is the
+    /// drive above; the only difference is what is returned.
+    async fn drive_keeping_the_unit<'n>(
+        rig: &Rig,
+        node: &'n LlmNode,
+        fixture: Fixture,
+        gov: busbar_api::PlaneRequestCtx,
+        seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
+    ) -> (LlmUnit<'n>, Ended) {
         let arrival = WalkArrival {
             host: rig.host(),
             gov,
@@ -2281,7 +2344,7 @@ mod tests {
         )
         .await;
         node.inflight.remove(key);
-        ended
+        (unit, ended)
     }
 
     /// THE SWITCH. Same fixture in, same bytes and same counters out — through the shipped entry
