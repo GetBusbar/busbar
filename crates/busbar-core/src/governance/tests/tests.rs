@@ -2192,7 +2192,7 @@ async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
         assert!(gov.try_admit(&cost, &key, "", at).is_ok());
     }
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-    let flusher = crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx);
+    let (flusher, _gate) = crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx);
 
     // Wait until the first flush is paused inside add_usage.
     tokio::task::spawn_blocking(move || entered_rx.recv().unwrap())
@@ -2223,6 +2223,87 @@ async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
         "additive flushes must sum to exactly the accrued requests - no loss, no double count"
     );
     // The completed deltas sum to 5 as well (e.g. [3, 2]) - never a duplicated snapshot.
+    let writes = store.writes.lock().unwrap().clone();
+    assert_eq!(
+        writes.iter().sum::<i64>(),
+        5,
+        "the sum of flushed deltas equals the accrued total: {writes:?}"
+    );
+}
+
+/// THE SHUTDOWN FLUSH IS A THIRD FLUSHER, and it must serialize against the other two.
+///
+/// A graceful stop flushes budgets INLINE on the run task as well (the flusher task's own shutdown
+/// arm is fire-and-forget and can lose the race with process exit). That inline call is a full
+/// `flush_budgets`, so it has exactly the overlap hazard the periodic tick has: it snapshots each
+/// dirty cell's delta against its ACKED baseline, and a tick flush still in flight has not advanced
+/// that baseline yet — so an overlapping inline flush re-sends the in-flight delta and the durable
+/// ledger DOUBLE-COUNTS it. Ledger identity is the invariant that forbids this.
+///
+/// The gate that already serializes the tick and the task's own final flush is therefore published
+/// alongside the flusher, and the inline caller takes it. This drives that exact shape: one flush
+/// pinned mid-`add_usage`, the inline shutdown flush attempted against the published gate while it
+/// is pinned, and the durable total asserted to be the accrued total exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_inline_shutdown_flush_takes_the_flushers_gate() {
+    crate::metrics::init();
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let store = Arc::new(RecordingBarrierStore {
+        inner: MemoryStore::new(),
+        block_first: std::sync::atomic::AtomicBool::new(true),
+        entered: entered_tx,
+        release: std::sync::Mutex::new(release_rx),
+        writes: std::sync::Mutex::new(Vec::new()),
+    });
+    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+    let cost = flat_cost(1);
+    let at = 1_700_000_000u64;
+    let key = sample_key("k1", "h1");
+
+    for _ in 0..3 {
+        assert!(gov.try_admit(&cost, &key, "", at).is_ok());
+    }
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+    let (flusher, gate) = crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx);
+
+    // Wait until the periodic flush is paused inside `add_usage` — its 3-request delta is snapshot
+    // but its baseline is NOT yet advanced.
+    tokio::task::spawn_blocking(move || entered_rx.recv().unwrap())
+        .await
+        .unwrap();
+
+    // Two NEWER requests accrue while that flush is pinned.
+    assert!(gov.try_admit(&cost, &key, "", at).is_ok());
+    assert!(gov.try_admit(&cost, &key, "", at).is_ok());
+
+    // THE INLINE SHUTDOWN FLUSH, in the shape the run task performs it: take the flusher's gate
+    // first, then flush. It cannot proceed while the pinned flush holds the gate.
+    let inline = {
+        let gov = gov.clone();
+        let gate = gate.clone();
+        tokio::spawn(async move {
+            let _guard = gate.lock().await;
+            gov.flush_budgets();
+            gov.flush_metering();
+        })
+    };
+    // Give the inline flush every chance to run early if it is NOT actually gated.
+    for _ in 0..64 {
+        tokio::task::yield_now().await;
+    }
+
+    release_tx.send(()).unwrap();
+    inline.await.unwrap();
+    shutdown_tx.send(()).unwrap();
+    flusher.await.unwrap();
+
+    let durable = store.inner.get_usage("k1", 0).unwrap().requests;
+    assert_eq!(
+        durable, 5,
+        "the inline shutdown flush must not re-send a delta a still-in-flight flush had already \
+         snapshot — the durable ledger holds each accrued request exactly once"
+    );
     let writes = store.writes.lock().unwrap().clone();
     assert_eq!(
         writes.iter().sum::<i64>(),
