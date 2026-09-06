@@ -790,8 +790,10 @@ fn register_ws_arrivals() {
 /// before any reader because `--validate` reads them, and this reads configuration instead. It
 /// still answers before any listener is bound, which is the property the refusal is for.
 #[cfg(feature = "root-voice")]
-fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
-    match root::registry::seal(root::policy::client_settings(limits)) {
+fn mount_root_voice(
+    limits: &busbar_substrate::config::limits::LimitsResolved,
+) -> root::registry::BootRegistry {
+    let sealed = match root::registry::seal(root::policy::client_settings(limits)) {
         Ok(sealed) => {
             // A BOOT REFUSAL for the same reason the seal's own `Err` arm is one, and it was a
             // `debug_assert!`: a seal that reported success without the plane this function exists
@@ -810,17 +812,23 @@ fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
                 );
                 std::process::exit(2);
             }
+            sealed
         }
         Err(refusal) => {
             eprintln!("busbar: the composition root did not seal: {refusal}");
             std::process::exit(2);
         }
-    }
+    };
     // THE OTHER HALF OF THE MOUNT: the node this root serves the plane's units on, and the one seam
     // the half of the plane that owns sockets reaches it through. Without this the seal composed a
     // node nothing on a socket could name — a client-served tool call's wait was entered where the
     // leg was planned, and no frame arriving on any session could wake it and no tick could sweep it.
     compose_voice_governed_calls();
+    // THE COMPOSED TRANSPORTS GO BACK TO THE CALLER, because the transport-key unit provisions into
+    // THESE objects and not into copies of them: a config registered in a slot of a transport the
+    // seal dropped is a config nothing will ever look in. This is the only thing the seal produces
+    // that outlives it.
+    sealed
 }
 
 /// COMPOSE THE VOICE NODE'S OPEN-CALL TABLE onto the served door — the composition root's one write
@@ -842,6 +850,12 @@ fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
 ///
 /// Set-once on the plane's side: a second call is a no-op rather than a silent swap of the table
 /// this node's live sessions are already keyed into.
+///
+/// CALLED ON THE BOOT PATH, by [`mount_root_voice`]. It was `cfg(test)` while the table had no
+/// `planned` caller behind it — an installed-but-empty table refuses every reply a served session
+/// carries — and the switch that gives it units to hold has since landed: a served session is
+/// governed only where the table has something to answer with, so installing it is now the thing
+/// that makes a client's tool answer reach the model rather than the thing that stops it.
 #[cfg(feature = "root-voice")]
 fn compose_voice_governed_calls() {
     use root::units_voice::{NodeCalls, VoiceNode, VoiceNodeParts};
@@ -877,6 +891,118 @@ fn compose_voice_governed_calls() {
         origin: root::kernel::new_kernel().origin(busbar_caps::OriginKind::Client),
     }));
     busbar_voice::mount::install_governed_calls(std::sync::Arc::new(NodeCalls::new(node)));
+}
+
+/// PROVISION EVERY CONFIGURED LISTENER'S TLS MATERIAL THROUGH THE TRANSPORT-KEY UNIT.
+///
+/// The unit resolves the material, journals the access, and registers the config in the slot the
+/// root allocated — data at 0, admin at 1 — and hands back a handle carrying a slot number, a
+/// fingerprint, and no bytes at all. Before this had a caller, the only thing in the tree that ever
+/// registered a listener's TLS config was the transport's own tests, so whatever bound a listener
+/// bypassed the unit entirely and the deployment's private key was resolved somewhere the journal
+/// never saw.
+///
+/// WHY NOTHING IS BOUND HERE, AND WHERE THAT ENDS. `listen_all` is not called from this boot, and it
+/// is not an oversight: the legacy listener path binds these same two addresses and serves the
+/// previous release's bytes over them, so a second bind would refuse the address and take the node
+/// down. What this boot does is everything up to the bind — resolve, journal, register — so that the
+/// commit which moves serving onto the root's transports is a change of who accepts, not a change of
+/// where the key comes from. The bind itself is covered by `listen_all`'s own tests, including the
+/// one that drives two listeners in two slots through a real handshake.
+///
+/// The whole thing is behind the same `root-voice` switch that seals the composition, because the
+/// transports it provisions into are the sealed one's. With the switch off, none of this is compiled
+/// and the binary is the one it was.
+#[cfg(all(
+    feature = "root-voice",
+    any(feature = "root-admin", feature = "root-llm")
+))]
+fn provision_root_listeners(
+    sealed: &root::registry::BootRegistry,
+    resolver: &dyn busbar_api::SecretResolve,
+    book: &std::sync::Mutex<root::durability::Durability>,
+    data: (&str, Option<&config::TlsCfg>),
+    admin: (&str, Option<&config::TlsCfg>),
+) {
+    use root::transports::{ListenerConfig, ListenerRole, TlsMaterialRefs};
+
+    // The location strings are CONFIG PATHS, not renderings of the references: the unit journals
+    // whatever it was handed, and what an auditor wants out of that entry is where the operator
+    // declared the secret.
+    let mut refs = std::collections::BTreeMap::new();
+    let mut listeners = Vec::new();
+    for (role, at, bind, tls, fingerprint) in [
+        (
+            ListenerRole::Data,
+            "tls",
+            data.0,
+            data.1,
+            "data-listener" as &'static str,
+        ),
+        (
+            ListenerRole::Admin,
+            "admin_tls",
+            admin.0,
+            admin.1,
+            "admin-listener",
+        ),
+    ] {
+        let material = tls.map(|cfg| {
+            refs.insert(format!("{at}.cert"), cfg.cert.clone());
+            refs.insert(format!("{at}.key"), cfg.key.clone());
+            if let Some(ca) = cfg.client_ca.as_ref() {
+                refs.insert(format!("{at}.client_ca"), ca.clone());
+            }
+            TlsMaterialRefs {
+                cert: format!("{at}.cert"),
+                key: format!("{at}.key"),
+                client_ca: cfg.client_ca.as_ref().map(|_| format!("{at}.client_ca")),
+            }
+        });
+        listeners.push(ListenerConfig {
+            role,
+            bind: bind.to_string(),
+            tls: material,
+            fingerprint,
+        });
+    }
+
+    let token = root::kernel::new_kernel().transport_key_token();
+    let durability_token = root::kernel::new_kernel().durability_token();
+    let secrets = root::transports::ConfiguredSecrets::new(resolver, refs);
+    let journal = root::transports::BookAccessJournal::new(book, &durability_token);
+    if let Err(e) = root::transports::provision_servers(
+        &listeners,
+        &secrets,
+        &journal,
+        &*sealed.transports.tls,
+        &token,
+    ) {
+        // NOT a boot refusal. Nothing serves through these slots yet, and the path that does serve
+        // resolves the same references for itself and fails on its own terms if they are unusable —
+        // so refusing here would take down a deployment for a slot nobody is reading. It is said out
+        // loud rather than swallowed, because a listener with no key in its slot is exactly what the
+        // switch-over commit must not inherit silently.
+        tracing::warn!("the root's listener slots were not provisioned: {e}");
+    }
+
+    // THE DIAL SIDE OF THE SAME KEY, in the data slot: the trust posture this node reaches an
+    // upstream under. It is the deployment's own — the compiled-in roots the egress engine already
+    // dials under, through one accessor, so the transports and the engine cannot end up accepting
+    // two different sets of authorities. Nothing is read through the secret source for it, so
+    // nothing is journaled: a public root store is not a secret.
+    match busbar_substrate::egress::engine::webpki_client_config() {
+        Ok(cfg) => {
+            root::transports::provision_dial(
+                &*sealed.transports.tls,
+                &token,
+                ListenerRole::Data,
+                "upstream-roots",
+                cfg,
+            );
+        }
+        Err(e) => tracing::warn!("the root's dial-side trust roots were not registered: {e}"),
+    }
 }
 
 /// THE ROOT'S BOOT CHECKS, in one place and with one caller, before any listener is bound.
@@ -1387,7 +1513,7 @@ async fn run(data_workers: usize) {
     // `root-voice`, which the shipped binary carries; the leg stays switchable, and with it off the
     // line is not compiled and the binary is what it was, which is what the neutrality cells read.
     #[cfg(feature = "root-voice")]
-    mount_root_voice(&cfg.limits);
+    let sealed_root = mount_root_voice(&cfg.limits);
     // THE ROOT'S OWN BOOT CHECKS, in the same slot and for the same reason: everything they read is
     // resolved by here, and nothing has bound an address yet.
     boot_checks(&cfg);
@@ -1629,6 +1755,22 @@ async fn run(data_workers: usize) {
             );
         }
     }
+
+    // THE TRANSPORT-KEY UNIT, given the two listeners this deployment configured. After the book,
+    // because the access entry per secret read goes on the node's own chain; before either listener
+    // binds, because a key resolved after a listener is accepting is a listener that accepted
+    // without one.
+    #[cfg(all(
+        feature = "root-voice",
+        any(feature = "root-admin", feature = "root-llm")
+    ))]
+    provision_root_listeners(
+        &sealed_root,
+        &*tls_secret_resolver,
+        &book.durability,
+        (&listen, tls_cfg.as_ref()),
+        (&admin_listen, admin_tls_cfg.as_ref()),
+    );
 
     // THE ROOT-DRIVEN LLM PLANE'S EXIT ARM, bound to that book. The loop already ended every unit
     // and handed back a posting; what this line adds is somewhere for the posting to go. Off, the

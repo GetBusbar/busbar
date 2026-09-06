@@ -351,6 +351,35 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
 /// the process provider and PANICS AT FIRST USE when more than one provider crate is in the
 /// binary's graph — which is exactly the composed busbar binary, and a boot-time panic CI caught.
 /// Explicit therefore, never ambient.
+/// The deployment's dial-side trust posture, as a client config a transport can be handed.
+///
+/// The compiled-in webpki roots and no client identity: the posture every unpinned egress hop in
+/// this binary already dials under. It is public because the composition root registers the same
+/// posture into the transport-key unit's dial slot, and a root that built its own store would be a
+/// node whose transports and whose egress engine disagreed about which authorities it accepts —
+/// which is exactly the class of split this seam exists to prevent.
+///
+/// # Errors
+///
+/// The crypto provider does not support the default protocol versions, which is a build fault
+/// rather than anything a deployment can cause.
+pub fn webpki_client_config() -> Result<std::sync::Arc<rustls::ClientConfig>, String> {
+    // The provider is named rather than auto-detected, for the reason `rustls_client_config` below
+    // gives at length: a bare `builder()` panics at first use when more than one provider crate is
+    // in the graph, which is exactly the composed busbar binary.
+    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+    let roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    Ok(std::sync::Arc::new(
+        rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| format!("the crypto provider refused the default TLS versions: {e}"))?
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    ))
+}
+
 fn rustls_client_config(spec: &EngineSpec) -> Result<rustls::ClientConfig, String> {
     // ONE base root store and ONE crypto provider, shared by refcount across every client shard
     // (`ClientConfig` holds both behind `Arc`s, and both builder seams take `Into<Arc<_>>`).
