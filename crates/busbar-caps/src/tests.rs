@@ -810,7 +810,7 @@ fn a_childs_spend_past_the_parents_reservation_lands_on_the_parents_hold() {
     let arrival = parent
         .admit(Hold::open(&admit, who("acct-1"), 1_000), &admit)
         .expect("the parent passes the door");
-    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
 
     let accrual = parent
         .accrue_child(&who("acct-1"), 5_000, &admit)
@@ -829,7 +829,7 @@ fn a_childs_spend_past_the_parents_reservation_lands_on_the_parents_hold() {
     assert!(child.flags().contains(PostingFlags::OVERDRAFT));
 
     let taken = parent.take(&k.exit_token()).expect("the parent's own exit");
-    let settled = Posted::settle(taken, &usage_of(&k, 5_000), &k.ledger_token());
+    let settled = Posted::settle(taken, 5_000, &usage_of(&k, 5_000), &k.ledger_token());
     assert_eq!(settled.settled(), 5_000, "the settled figure is untouched");
     assert_eq!(settled.overdraft(), 4_000);
     assert!(settled.flags().contains(PostingFlags::OVERDRAFT));
@@ -845,7 +845,7 @@ fn two_children_that_together_run_past_the_reservation_overdraw_once() {
     let arrival = parent
         .admit(Hold::open(&admit, who("acct-1"), 1_000), &admit)
         .expect("the parent passes the door");
-    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
 
     let first = parent
         .accrue_child(&who("acct-1"), 800, &admit)
@@ -862,7 +862,7 @@ fn two_children_that_together_run_past_the_reservation_overdraw_once() {
     assert!(second.flags().contains(PostingFlags::OVERDRAFT));
 
     let taken = parent.take(&k.exit_token()).expect("the parent's own exit");
-    let settled = Posted::settle(taken, &usage_of(&k, 1_600), &k.ledger_token());
+    let settled = Posted::settle(taken, 1_600, &usage_of(&k, 1_600), &k.ledger_token());
     assert_eq!(settled.settled(), 1_600);
     assert_eq!(settled.overdraft(), 600, "carried once, not twice");
     assert!(settled.flags().contains(PostingFlags::OVERDRAFT));

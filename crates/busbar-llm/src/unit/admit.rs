@@ -445,6 +445,9 @@ mod tests {
         let usage_token = UsageToken::mint(&seal);
         let posted = Posted::settle(
             hold,
+            // Nothing was routed, so the priced total is zero — and it is passed as money rather
+            // than derived from the report, which carries no lines to derive one from.
+            0,
             &Usage::report(&usage_token, Vec::new()).expect("no lines is a legal report"),
             &LedgerToken::mint(&seal),
         );
