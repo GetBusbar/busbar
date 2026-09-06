@@ -113,13 +113,17 @@ impl Plane for AdminPlane {
         // which is the answer the loop knows how to act on. Reported as `Malformed` and
         // `UnsupportedOperation`, a request that had merely not finished arriving was ended as a
         // caller's error, and an operator saw a bad-request answer for a verb they spelled right.
-        let Some(frame) = frames.next_frame() else {
-            return Ok(Ingress::NeedMore);
+        //
+        // AND THE FRAMES ALREADY IN THE CURSOR ARE THE NEXT ONES. Answering `NeedMore` off the
+        // first frame alone left the completing bytes unread in the very same cursor; and because
+        // a cursor is rebuilt from position zero over the connection's grown frame slice, the next
+        // call read that same first frame again and answered the same way. A one-shot transport
+        // has no session, so the pump's consecutive-`NeedMore` ceiling never applies to it and
+        // nothing ended the wait: an admin request that arrived in two frames waited forever.
+        let bytes = match join_envelope(frames, ctx)? {
+            Some(bytes) => bytes,
+            None => return Ok(Ingress::NeedMore),
         };
-        let bytes = frame.bytes.as_slice();
-        if !envelope_is_complete(bytes) {
-            return Ok(Ingress::NeedMore);
-        }
         let decoded = identify(bytes).ok_or(Decode::UnsupportedOperation)?;
 
         let mut facts = Facts::new();
@@ -364,6 +368,42 @@ impl Plane for AdminPlane {
             let _ = facts.set(FACT_VERB, FactValue::Str(verb));
         }
         ContentFacts { facts }
+    }
+}
+
+/// The bytes of one whole envelope, drawn from as many of the cursor's frames as it takes.
+///
+/// `None` means the frames that have arrived do not yet close the object — the honest `NeedMore`,
+/// answered only once every byte the cursor holds has been read and still does not finish it.
+///
+/// The single-frame case, which is every admin request the node's own HTTP wrap produces (it
+/// buffers the whole body before framing it), BORROWS: no copy, no arena. Only a genuinely split
+/// envelope pays for a join, and it pays into the unit's arena, so an oversized one is refused for
+/// budget rather than buffered without bound.
+fn join_envelope<'u>(
+    frames: &mut FrameCursor<'u>,
+    ctx: &Ctx<'u>,
+) -> Result<Option<&'u [u8]>, Decode> {
+    let Some(first) = frames.next_frame() else {
+        return Ok(None);
+    };
+    let head = first.bytes.as_slice();
+    if envelope_is_complete(head) {
+        return Ok(Some(head));
+    }
+    let mut joined = head.to_vec();
+    loop {
+        let Some(next) = frames.next_frame() else {
+            return Ok(None);
+        };
+        joined.extend_from_slice(next.bytes.as_slice());
+        if envelope_is_complete(&joined) {
+            let bytes = ctx
+                .arena()
+                .alloc_bytes(&joined)
+                .map_err(|_| Decode::Oversize)?;
+            return Ok(Some(bytes.as_slice()));
+        }
     }
 }
 
