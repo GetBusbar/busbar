@@ -634,7 +634,12 @@ fn cohere_assign_tool_ir_index(
         return None;
     }
     let base = usize::from(state.open_tools.contains(&TEXT_BLOCK_SEEN_SENTINEL));
-    let ir_index = base + tracked;
+    // `next_ir_index` is the per-stream HIGH-WATER MARK of every slot already spent, by either the
+    // tool scheme or a text block. It only ever raises this index (a stream with one text block
+    // assigns exactly what it always did), and it is what keeps a SECOND text block — which the
+    // `base + tracked` arithmetic cannot see — from colliding with a later tool.
+    let ir_index = (base + tracked).max(state.next_ir_index);
+    state.next_ir_index = ir_index + 1;
     state.open_tools.insert(frame_idx);
     state.tool_ir_index.insert(frame_idx, ir_index);
     Some(ir_index)
@@ -659,6 +664,27 @@ fn cohere_text_ir_index(state: &mut crate::ir::StreamDecodeState) -> usize {
         .unwrap_or_else(|| cohere_tracked_tool_count(state));
     state.text_index = Some(ti);
     state.open_tools.insert(TEXT_BLOCK_SEEN_SENTINEL);
+    // Record the slot against the per-stream high-water mark so a tool assigned later — and a
+    // SECOND text block — cannot land on it.
+    state.next_ir_index = state.next_ir_index.max(ti + 1);
+    ti
+}
+
+/// Claim a FRESH IR block index for a text content block that opens AFTER a previous one closed.
+///
+/// A Cohere v2 stream may carry more than one content block: each `content-start` names its own wire
+/// `index`. `cohere_text_ir_index` is deliberately immutable once claimed (so the matching
+/// `BlockStop` closes the index that was actually opened), so a REOPEN needs its own seam. The new
+/// slot comes off the per-stream high-water mark, which both this and `cohere_assign_tool_ir_index`
+/// maintain — so the second text block can never collide with a tool that opens after it.
+fn cohere_reopen_text_ir_index(state: &mut crate::ir::StreamDecodeState) -> usize {
+    let ti = state.next_ir_index.max(
+        cohere_tracked_tool_count(state)
+            + usize::from(state.open_tools.contains(&TEXT_BLOCK_SEEN_SENTINEL)),
+    );
+    state.text_index = Some(ti);
+    state.open_tools.insert(TEXT_BLOCK_SEEN_SENTINEL);
+    state.next_ir_index = ti + 1;
     ti
 }
 

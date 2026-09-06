@@ -244,14 +244,21 @@ pub fn rerank_documents_pub(v: Option<&Value>) -> Vec<String> {
     rerank_documents(v)
 }
 
+/// A rerank answer is a list of POSITIONS: `results[].index` addresses this array by ordinal, and
+/// nothing else in the response identifies which document was ranked. So an element that is neither
+/// a bare string nor a `{text}` object is mapped to the EMPTY string rather than dropped — a
+/// `filter_map` here renumbered every document after the unreadable one, and the upstream's
+/// `index: 2` then named a different document than the client sent. An empty document ranks poorly,
+/// which is the honest answer for one whose text could not be read; a shifted index is a wrong one.
 fn rerank_documents(v: Option<&Value>) -> Vec<String> {
     v.and_then(Value::as_array)
         .map(|a| {
             a.iter()
-                .filter_map(|d| {
+                .map(|d| {
                     d.as_str()
                         .map(str::to_string)
                         .or_else(|| d.get("text").and_then(Value::as_str).map(str::to_string))
+                        .unwrap_or_default()
                 })
                 .collect()
         })
