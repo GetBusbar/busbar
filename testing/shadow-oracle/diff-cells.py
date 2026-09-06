@@ -71,6 +71,28 @@ assert {k for k, w in CLASS_WEIGHT.items() if w == 10} == MONEY_CLASSES | {"miss
 BODY_IS_CONTRACT = {"admin.ops", "boot.refusal", "boot.warning", "config.migrate", "cli", "ops.scrape"}
 
 
+def allowed_classes(kind: str, classes: set) -> set:
+    """The classes an accepted-differences entry may forgive — ONE definition, shared by the
+    loader's money guard and the matcher below.
+
+    They used to be two. The loader tested `e["classes"]` (what the entry SAYS) while the matcher
+    widened an entry that names no classes to a whole default set (what the entry DOES). An entry
+    with `kind: breaking` and no `classes` key therefore had an empty intersection with
+    MONEY_CLASSES — the guard saw nothing to refuse, no changelog line was demanded — and then
+    matched against every class there is. One four-line entry with `cells: "."` silently forgave a
+    200 -> 500 and a changed bill on every cell in the corpus and the oracle reported GREEN.
+    Deriving the effective set here and validating THAT closes it by construction.
+
+    `missing.golden` is excluded from BOTH defaults and refused outright when named: it is the
+    golden's own ledger claiming PASS for a cell it did not write, i.e. a recorder bug, and
+    CLASS_WEIGHT's assertion above already calls it "never acceptable at all"."""
+    if classes:
+        return set(classes)
+    if kind == "breaking":
+        return set(CLASS_ORDER) - {"missing.golden"}
+    return set(CLASS_ORDER) - MONEY_CLASSES - {"missing.golden"}
+
+
 def safe_name(cell_id: str) -> str:
     return cell_id.replace("|", "__")
 
@@ -274,7 +296,14 @@ def main() -> int:
                     "id": e.get("id", e.get("cells", "?")), "rationale": e.get("rationale", ""), "by": e.get("by", "")}
             # The register may never quietly forgive a status or a billing figure: only a `breaking` entry
             # that names its CHANGELOG line may accept those classes, and no entry may be a total blanket.
-            money = base["classes"] & MONEY_CLASSES
+            # Tested on the EFFECTIVE set (what the entry will forgive), never on `classes` alone (what
+            # it says) — an entry that omits `classes` forgives a whole default set, and testing the
+            # empty literal let a `breaking` entry with no `classes` and no changelog take every money
+            # class there is. See allowed_classes().
+            base["allowed"] = allowed_classes(base["kind"], base["classes"])
+            if "missing.golden" in base["classes"]:
+                sys.exit(f"accepted-differences: entry {base['id']!r} accepts 'missing.golden' — a golden ledger row that says PASS for a cell the golden did not write is a recorder bug, never an acceptable difference; re-record the golden")
+            money = base["allowed"] & MONEY_CLASSES
             if money and not (base["kind"] == "breaking" and e.get("changelog")):
                 sys.exit(f"accepted-differences: entry {base['id']!r} accepts {sorted(money)} but is not kind=breaking with a changelog line")
             if "cells" not in e and not base["classes"] and "transform" not in e:
@@ -387,8 +416,7 @@ def main() -> int:
             for e in accepted:
                 if not e["rx"].search(cid):
                     continue
-                allowed = e["classes"] or (set(CLASS_ORDER) - MONEY_CLASSES - {"missing.golden"} if e["kind"] != "breaking" else set(CLASS_ORDER))
-                take = need & allowed
+                take = need & e["allowed"]
                 if not take:
                     continue
                 cover.append(e); need -= take

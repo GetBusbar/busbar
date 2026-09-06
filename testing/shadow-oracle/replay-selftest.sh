@@ -286,6 +286,40 @@ json.dump({"accepted":[{"id":"bad money accept","kind":"improvement","by":"selft
     || say FAIL "improvement accepting '${mc}' was NOT refused (rc=$rc msg_ok=$msg_ok) — is ${mc} still in MONEY_CLASSES?"
 done
 
+# (s) THE MONEY GUARD MUST TEST WHAT AN ENTRY *DOES*, NOT WHAT IT SAYS. An entry that omits
+# `classes` forgives a whole default set, and for kind=breaking that default used to be every class
+# there is — while the loader's guard looked only at the (empty) `classes` literal and so found no
+# money class to refuse and demanded no changelog line. Four lines of JSON with `cells: "."` then
+# forgave a 200 -> 418 and a changed bill on every cell and the oracle reported GREEN.
+cp -R "$FIX" "$W/blanket"
+python3 -c 'import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d["status"]=418; d["effects"]["usage"]["spend_micros"]=999999
+json.dump(d,open(p,"w"),separators=(",",":"),sort_keys=True)' "$W/blanket/cells/self__a__ok.json"
+cat >"$W/blanket-accept.json" <<'JSON'
+{"accepted":[{"id":"classless breaking","kind":"breaking","by":"selftest","cells":"^self\\|a\\|ok$","rationale":"no classes, no changelog"}]}
+JSON
+bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/blanket" --out "$W/out-s" --cells "$CELLS" \
+  --allow-harness-skew --accepted "$W/blanket-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-s.log" 2>&1
+rc=$?
+grep -q "not kind=breaking with a changelog" "$W/out-s.log" && msg_ok=1 || msg_ok=0
+[ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
+  && say PASS "classless 'breaking' entry -> loader refuses (it would forgive every money class)" \
+  || say FAIL "classless 'breaking' entry was NOT refused (rc=$rc msg_ok=$msg_ok) — it forgives status/effects.usage with no changelog line (see $W/out-s.log)"
+
+# (t) `missing.golden` — the golden's ledger saying PASS for a cell it never wrote — is a RECORDER
+# bug, and CLASS_WEIGHT's own assertion calls it never acceptable at all. Naming it in the register
+# must be refused by the loader rather than waiving a golden that recorded nothing.
+cat >"$W/mg-accept.json" <<'JSON'
+{"accepted":[{"id":"waive a recorder bug","kind":"improvement","by":"selftest","cells":".","classes":["missing.golden"],"rationale":"should be refused"}]}
+JSON
+bash "${here}/replay.sh" --golden "$W/mg-golden" --candidate "$W/mg-cand" --out "$W/out-t" --cells "$CELLS" \
+  --allow-harness-skew --accepted "$W/mg-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-t.log" 2>&1
+rc=$?
+grep -q "recorder bug" "$W/out-t.log" && msg_ok=1 || msg_ok=0
+[ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
+  && say PASS "an entry naming 'missing.golden' -> loader refuses (recorder bug, never acceptable)" \
+  || say FAIL "'missing.golden' acceptance was NOT refused (rc=$rc msg_ok=$msg_ok) — a golden that recorded nothing can be waived (see $W/out-t.log)"
+
 # (p) --strict on a filtered subset: the differ is a gate on its own when a caller (land.sh) uses it
 # that way. A filter that selects the mutated cell must exit 1 …
 DC="python3 ${here}/diff-cells.py"
