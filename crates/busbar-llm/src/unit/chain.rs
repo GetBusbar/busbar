@@ -1434,7 +1434,10 @@ mod rehearsal {
             streamed.sealed_row, None,
             "a stream is served on its headers, so no lane is bound yet"
         );
-        assert_eq!(streamed.hold_accrued, 0, "and there is nothing to price yet");
+        assert_eq!(
+            streamed.hold_accrued, 0,
+            "and there is nothing to price yet"
+        );
     }
 
     /// GAP 3, CLOSED — the VERIFY step hands its named refusal back with the decision.
