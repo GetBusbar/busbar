@@ -152,10 +152,18 @@ busbar_contract::claims_from_ladder! {
     13 => "bedrock", Selector::PathPattern(MODEL_INVOKE),
 
     // Rung 14: the loosest rung — the non-chat surfaces of the widely-copied dialect.
+    //
+    // The audio surface is named one path at a time rather than as the whole `/v1/audio/` prefix.
+    // Two of that prefix's three paths — `transcriptions` and `speech` — are the one-shot operations
+    // the architecture's plane inventory gives to the voice plane, and the voice plane claims them
+    // by name. A prefix claim here claimed them too, so the two planes' claims overlapped on the
+    // request rather than dividing it, and which one answered rested on the boot ordering agreeing
+    // with the inventory rather than on either plane saying what it owns. What is left is the path
+    // no other plane claims.
     14 => "openai", Selector::PathSuffix("/v1/embeddings"),
     14 => "openai", Selector::PathSuffix("/v1/moderations"),
     14 => "openai", Selector::PathContains("/v1/images/"),
-    14 => "openai", Selector::PathContains("/v1/audio/"),
+    14 => "openai", Selector::PathSuffix("/v1/audio/translations"),
 }
 
 /// Which dialect a request's path and headers name, by walking the ladder in order.

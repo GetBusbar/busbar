@@ -32,26 +32,28 @@
 //!
 //! ## The declared claim set seals, and this is where that is measured
 //!
-//! **155 of the cross-plane pairs overlap** — 90 across selector families and 65 within the path
+//! **153 of the cross-plane pairs overlap** — 90 across selector families and 63 within the path
 //! family. Both numbers follow from the overlap rule as the design writes it, and neither is a
 //! rounding of the other.
 //!
 //! The 90 are the conservative arm, and they are conservative because a request really does carry
 //! both a path and a header: `HeaderPresent("x-api-key")` and `ExactPath("/mcp")` can be true of one
-//! arrival, so an overlap is the honest answer rather than a limitation. The 65 are what is left
+//! arrival, so an overlap is the honest answer rather than a limitation. The 63 are what is left
 //! inside the path family once the grammar reads a suffix and a substring as the segment
 //! constraints they are: a suffix pins a pattern's last segments, a substring carrying slashes asks
 //! for consecutive whole ones, and a pattern with a literal in the way cannot produce a path that
-//! satisfies either. That reading is what took the path-family count from 119 to 65. Of the 65, 23
-//! involve a pattern ending in a tail (which can supply whatever the fragment asks for), 24 are a
-//! fragment landing inside a pattern's variable segment, and 18 are two fragment forms that can be
-//! satisfied at once by writing a path with both. Every one of them is a real shape, not a gap in
-//! the reasoning.
+//! satisfies either. That reading is what took the path-family count from 119 to 65, and naming the
+//! audio surface one path at a time rather than as a prefix — so that the two one-shot audio
+//! operations belong to the plane the inventory gives them to, instead of being described by two
+//! planes at once — took it from 65 to 63. Of the 63, 23 involve a pattern ending in a tail (which
+//! can supply whatever the fragment asks for), 24 are a fragment landing inside a pattern's
+//! variable segment, and 16 are two fragment forms that can be satisfied at once by writing a path
+//! with both. Every one of them is a real shape, not a gap in the reasoning.
 //!
-//! All 155 are settled by the sealed order, and none of them is a refusal. That is not the check
-//! being softened: every one of the 155 is a pair whose two claims sit at different precedence, so
+//! All 153 are settled by the sealed order, and none of them is a refusal. That is not the check
+//! being softened: every one of the 153 is a pair whose two claims sit at different precedence, so
 //! the order already says which plane takes bytes both describe, and the pair is recorded in
-//! `resolved` with its winner named. The tests below pin the count at 155, the refusal count at
+//! `resolved` with its winner named. The tests below pin the count at 153, the refusal count at
 //! zero and the sealed order itself, so a declaration change that turns a resolved pair into a tie —
 //! the shape nothing can decide — has to say so here. A root that skipped the check to get a node
 //! running would be choosing which plane owns a request by accident of registration order, which is
@@ -472,6 +474,7 @@ mod tests {
         "llm HeaderPresent(\"x-goog-api-key\")",
         "llm HeaderPresent(\"x-api-key\")",
         "voice PathSuffix(\"/v1/audio/transcriptions\")",
+        "llm PathSuffix(\"/v1/audio/translations\")",
         "llm PathContains(\":streamGenerateContent\")",
         "llm PathSuffix(\"/v1/chat/completions\")",
         "llm PathContains(\":batchEmbedContents\")",
@@ -486,7 +489,6 @@ mod tests {
         "llm PathContains(\"/v1/messages\")",
         "llm PathContains(\"/v1/images/\")",
         "llm PathSuffix(\"/v2/rerank\")",
-        "llm PathContains(\"/v1/audio/\")",
         "llm PathSuffix(\"/v2/embed\")",
         "llm PathContains(\"/converse\")",
         "llm PathSuffix(\"/v2/chat\")",
@@ -540,9 +542,10 @@ mod tests {
     /// and a path claim cannot coincide. The same-family pairs are the substantive half, and they
     /// are the half a tighter grammar moves: reading a suffix and a substring as the segment
     /// constraints they are, rather than as fragments that overlap anything, takes them from 119 to
-    /// 65 without ever answering "disjoint" for a pair one arrival satisfies.
+    /// 65 without ever answering "disjoint" for a pair one arrival satisfies, and naming the audio
+    /// surface one path at a time rather than as a prefix took it from 65 to 63.
     #[test]
-    fn one_hundred_and_fifty_five_cross_plane_pairs_overlap() {
+    fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
         use busbar_kernel::grammar::family;
 
         let claims = plane_claims();
@@ -561,10 +564,10 @@ mod tests {
             }
         }
         assert_eq!(cross_family, 90);
-        assert_eq!(same_family, 65);
+        assert_eq!(same_family, 63);
     }
 
-    /// What the 65 path-family overlaps that remain actually ARE, one class at a time.
+    /// What the 63 path-family overlaps that remain actually ARE, one class at a time.
     ///
     /// A count alone cannot say whether an overlap is a real shape or a gap in the reasoning, and
     /// that distinction is the whole reason to tighten a grammar rather than to relax a check. So
@@ -614,10 +617,10 @@ mod tests {
         }
         assert_eq!(tail, 23);
         assert_eq!(variable, 24);
-        assert_eq!(fragments, 18);
+        assert_eq!(fragments, 16);
     }
 
-    /// **The finding, answered.** Every one of those 155 overlaps is settled by the sealed order,
+    /// **The finding, answered.** Every one of those 153 overlaps is settled by the sealed order,
     /// and none of them is a refusal.
     ///
     /// The resolved count is pinned against the overlap count above, so the two cannot drift apart
@@ -629,7 +632,7 @@ mod tests {
         let claims = plane_claims();
         let sealed = seal_claims(&claims);
 
-        assert_eq!(sealed.resolved.len(), 155);
+        assert_eq!(sealed.resolved.len(), 153);
         assert!(
             sealed.refused.is_empty(),
             "the declared claims do not seal: {:?}",
