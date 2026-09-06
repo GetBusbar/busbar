@@ -1254,7 +1254,7 @@ pub fn meter(
 /// door opened it, the metering step accrued against it, and the settlement here releases what was
 /// never used and carries out what nothing could back.
 ///
-/// `epoch` is the unit's pinned arrival time, so a request that straddled a window boundary posts in
+/// `at` carries the unit's two pinned clocks, so a request that straddled a window boundary posts in
 /// the window it was admitted in rather than the one it happened to finish in.
 ///
 /// # Errors
@@ -1264,16 +1264,16 @@ pub fn meter(
 pub fn settle(
     durability: &mut crate::root::durability::Durability,
     principal: &PrincipalId,
-    epoch: u64,
+    at: Clocks,
     token: &busbar_caps::DurabilityToken,
     posted: busbar_caps::Posted,
 ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
     let key = balance(principal);
-    let at = crate::root::durability::Settling {
+    let settling = crate::root::durability::Settling {
         key: &key,
         window: busbar_unit_admission::budget_window(
             busbar_unit_admission::window::WINDOW_DAY,
-            epoch,
+            at.wall,
         ),
         durability: token,
         // The loop has no exit step of its own; the figure this posting is OF is the metering
@@ -1281,11 +1281,54 @@ pub fn settle(
         step: busbar_caps::StepName::Meter,
         stamp: crate::root::durability::PostingStamp {
             rate_card_version: 0,
-            wall: epoch,
-            mono: epoch,
+            wall: at.wall,
+            mono: at.mono,
         },
     };
-    durability.settle_posted(&at, posted)
+    durability.settle_posted(&settling, posted)
+}
+
+/// The two clocks one unit's posting is stamped with, both read once, where the unit arrived.
+///
+/// Two readings and not one. The wall clock says which window the money belongs to and is the figure
+/// an operator recognises; the monotonic reading is what ORDERS one unit's events against another's,
+/// and it is a second clock precisely because the first one can move — an operator correcting a
+/// drifting node, an NTP step, a leap second. A stamp whose monotonic field is the wall clock keeps
+/// none of what the second clock was for: two units that arrived in the same second are stamped
+/// identically, and a chain read back after the clock moved backwards has records out of order with
+/// nothing to say so.
+///
+/// Both are PINNED WHERE THE UNIT ARRIVED and carried here, never read again at the exit, for the
+/// reason the door's own epoch is pinned: a unit that straddled a boundary must post in the window
+/// it was admitted in, and its ordering must be its arrival's rather than its ending's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Clocks {
+    /// The wall clock at arrival, in whole seconds.
+    pub wall: u64,
+    /// The node's monotonic reading at arrival.
+    pub mono: u64,
+}
+
+/// The monotonic clock one node's MCP postings are ordered by.
+///
+/// A counter the root holds and this plane's units read, rather than a clock a step could read for
+/// itself: a reading taken at the exit would order units by when they finished, which is not the
+/// order anything about them happened in. It is the same shape the voice leg's node keeps, and for
+/// the same reason.
+#[derive(Debug, Default)]
+pub struct Mono(std::sync::atomic::AtomicU64);
+
+impl Mono {
+    /// A node's clock, starting where every node's does.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The next reading. Taken once, where a unit arrives.
+    pub fn tick(&self) -> u64 {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2827,10 +2870,14 @@ mod tests {
         // kernel's exit path builds, and the same figure passed on both sides.
         let posted = busbar_caps::Posted::settle(hold, 400, &usage, &LedgerToken::mint(&seal));
 
+        let mono = Mono::new();
         let settled = settle(
             &mut durability,
             &who,
-            1_700_000_000,
+            Clocks {
+                wall: 1_700_000_000,
+                mono: mono.tick(),
+            },
             &DurabilityToken::mint(&seal),
             posted,
         )
@@ -2863,6 +2910,62 @@ mod tests {
             .expect("reads back")
             .expect("verifies");
         assert_eq!(replayed.len(), 1, "one posting, one record");
+    }
+
+    /// **Two clocks, and the second one is a clock.** Two units that arrived in the same second are
+    /// stamped with the same wall clock and with DIFFERENT monotonic readings, in the order they
+    /// arrived — which is the whole of what the second stamp is for. Set equal to the wall clock it
+    /// keeps none of that: the chain cannot say which of the two came first, and a node whose clock
+    /// stepped backwards writes records that read as having happened in an order they did not.
+    #[test]
+    fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp_and_not_the_wall_clock() {
+        use busbar_caps::{
+            step::Admit as AdmitStep, AdmitToken, DurabilityToken, Hold, KernelSeal, LedgerToken,
+            Usage, UsageToken,
+        };
+        const SAME_SECOND: u64 = 1_700_000_000;
+        let seal = KernelSeal::acquire_for_kernel();
+        let mut durability = memory_durability();
+        let who = PrincipalId::new("vk_mcp");
+        // One clock for the node, read once per unit — where the unit arrives, as the loop reads it.
+        let clock = Mono::new();
+
+        let mut stamps = Vec::new();
+        for _ in 0..2 {
+            let at = Clocks {
+                wall: SAME_SECOND,
+                mono: clock.tick(),
+            };
+            let hold = Hold::open(&AdmitToken::<AdmitStep>::mint(&seal), who.clone(), 0);
+            let posted = busbar_caps::Posted::settle(
+                hold,
+                0,
+                &Usage::report(&UsageToken::mint(&seal), Vec::new()).expect("empty"),
+                &LedgerToken::mint(&seal),
+            );
+            let settled = settle(
+                &mut durability,
+                &who,
+                at,
+                &DurabilityToken::mint(&seal),
+                posted,
+            )
+            .expect("the memory-buffered journal takes it");
+            stamps.push((settled.posting.wall, settled.posting.mono));
+        }
+
+        assert_eq!(
+            stamps[0].0, stamps[1].0,
+            "the wall clock is the arrival second, and both arrived in it"
+        );
+        assert_ne!(
+            stamps[0].1, stamps[1].1,
+            "and the monotonic stamp is not a second copy of it"
+        );
+        assert!(
+            stamps[0].1 < stamps[1].1,
+            "the reading advances in the order the units arrived"
+        );
     }
 
     /// A unit that outran everything reservable is not refused, not trimmed, and leaves a carry of
@@ -2901,7 +3004,10 @@ mod tests {
         let settled = settle(
             &mut durability,
             &PrincipalId::new("vk_mcp"),
-            1_700_000_000,
+            Clocks {
+                wall: 1_700_000_000,
+                mono: Mono::new().tick(),
+            },
             &DurabilityToken::mint(&seal),
             posted,
         )
