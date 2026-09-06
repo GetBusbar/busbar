@@ -1324,6 +1324,73 @@ async fn a_refusal_that_reaches_no_call_is_an_error() {
     assert_eq!(err, TransportError::Closed);
 }
 
+/// A connection-wide refusal on a DIALLED connection reaches the peer before the connection goes.
+///
+/// A refusal naming no call is about the connection, so it is written and then the connection is
+/// closed — and closing a dialled one now takes the stream out from under the HTTP/2 client. The
+/// bytes have to be on the wire first: a refusal the caller was told was delivered, cut off inside
+/// this process before it left, is exactly the "refusal imagined" the neighbouring cell is about.
+#[tokio::test]
+async fn a_connection_wide_refusal_is_delivered_before_a_dialled_connection_is_cut() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .await
+        .unwrap();
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let (_served, frame) = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the call arrives")
+        .unwrap()
+        .unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"ping");
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+    client_t
+        .unit0_refusal(client_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .await
+        .unwrap();
+
+    // The peer reads the refusal itself, not just the death of the connection that carried it.
+    let refused = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(item) = server_frames.next().await {
+            if let Ok((_s, frame)) = item {
+                if frame.bytes.as_slice() == b"refused" {
+                    return true;
+                }
+            }
+        }
+        false
+    })
+    .await
+    .expect("the peer's reader ends either way");
+    assert!(
+        refused,
+        "the refusal was reported delivered but the connection was cut before it left this process"
+    );
+}
+
 /// A finished call takes its OWN entry out of the outbound map, not whatever the id holds now.
 ///
 /// Cleanup runs when a call ends — from the dial side's forwarding task, from the served call's

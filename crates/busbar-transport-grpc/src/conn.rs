@@ -165,6 +165,16 @@ pub(crate) const INBOUND_FRAME_BUFFER: usize = 64;
 /// peer rather than queueing on this process's heap and calling that "sent".
 pub(crate) const OUTBOUND_FRAME_BUFFER: usize = 64;
 
+/// How long a closed dialled connection has to put what it has ALREADY accepted onto the wire
+/// before its stream is cut.
+///
+/// Closing writes first and closes second — a connection-wide refusal is written to every call on
+/// the connection and then the connection goes — so cutting the moment `close` is called would
+/// destroy, inside this process, bytes the caller has just been told were delivered. The window is
+/// for the flush and nothing else: a peer that has stopped reading is not waited on past it, since
+/// no length of wait makes a descriptor it is holding open come back on its own.
+pub(crate) const CUT_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// How many served `:path`s one connection remembers. A long-lived connection serves calls
 /// forever; this diagnostic record is for the last handful, not a leak-shaped unbounded log of
 /// every RPC an HTTP/2 connection has ever carried.
@@ -313,6 +323,7 @@ impl ConnState {
     /// battery names as a cell: a peer writing faster than `frames()` is polled must stall against
     /// the HTTP/2 flow-control window, not queue on this process's heap. Peer bytes are untrusted,
     /// and this connection carries every multiplexed call's inbound messages on this one channel.
+    ///
     /// The wait has a way out. Dropping the state's own sender does NOT end this one: the task
     /// waiting here holds its own clone of the connection state, which is what keeps the receiving
     /// half — and so the send — alive. Without a leg for the end of the connection, a forwarder
@@ -440,7 +451,18 @@ impl ConnState {
         }
         let cut = self.cut.lock().unwrap().take();
         if let Some(cut) = cut {
-            cut.cut();
+            // After the flush window, not during it — see [`CUT_GRACE`]. Where there is no runtime
+            // to wait on, the cut is immediate: a stream that cannot be cut later is one that is
+            // never cut at all.
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    handle.spawn(async move {
+                        tokio::time::sleep(CUT_GRACE).await;
+                        cut.cut();
+                    });
+                }
+                Err(_) => cut.cut(),
+            }
         }
     }
 
