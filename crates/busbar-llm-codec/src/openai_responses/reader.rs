@@ -100,6 +100,7 @@ impl ProtocolReader for ResponsesReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         if obj.is_empty() {
@@ -107,6 +108,7 @@ impl ProtocolReader for ResponsesReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             });
         }
 
@@ -133,6 +135,7 @@ impl ProtocolReader for ResponsesReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             });
         }
         if obj
@@ -143,6 +146,7 @@ impl ProtocolReader for ResponsesReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             });
         }
 
@@ -179,6 +183,7 @@ impl ProtocolReader for ResponsesReader {
                         busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                     ),
                     retry_after: None,
+                    ..Default::default()
                 });
             }
             if input_val.is_string() {
@@ -262,6 +267,7 @@ impl ProtocolReader for ResponsesReader {
                                         busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                                     ),
                                     retry_after: None,
+                                    ..Default::default()
                                 })?
                                 .to_string();
                             let name = item
@@ -339,6 +345,7 @@ impl ProtocolReader for ResponsesReader {
                                                 .to_string(),
                                         ),
                                         retry_after: None,
+                                        ..Default::default()
                                     });
                                 }
                             }
@@ -460,6 +467,7 @@ impl ProtocolReader for ResponsesReader {
                                         busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                                     ),
                                     retry_after: None,
+                                    ..Default::default()
                                 });
                             }
                         }
@@ -507,6 +515,7 @@ impl ProtocolReader for ResponsesReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             });
         }
 
@@ -519,6 +528,7 @@ impl ProtocolReader for ResponsesReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             })?;
             for tool_val in tools_arr {
                 // HOSTED-TOOL PASSTHROUGH. The Responses `tools` array mixes CUSTOM
@@ -1092,6 +1102,7 @@ impl ProtocolReader for ResponsesReader {
                             class,
                             provider_signal,
                             retry_after: None,
+                            ..Default::default()
                         }));
                         close_open_blocks(&mut out, state);
                         out.push(IrStreamEvent::MessageStop);
@@ -1270,6 +1281,7 @@ impl ProtocolReader for ResponsesReader {
                         class: class_for_response_failed(provider_signal),
                         provider_signal: Some(provider_signal.to_string()),
                         retry_after: None,
+                        ..Default::default()
                     }));
                     close_open_blocks(&mut out, state);
                     out.push(IrStreamEvent::MessageStop);
@@ -1321,6 +1333,7 @@ impl ProtocolReader for ResponsesReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         let status = obj.get("status").and_then(|s| s.as_str()).unwrap_or("");
@@ -1357,6 +1370,7 @@ impl ProtocolReader for ResponsesReader {
                 class,
                 provider_signal,
                 retry_after: None,
+                ..Default::default()
             });
         }
 
@@ -1525,6 +1539,7 @@ impl ProtocolReader for ResponsesReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             });
         }
 
