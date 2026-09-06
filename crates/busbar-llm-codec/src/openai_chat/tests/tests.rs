@@ -63,20 +63,79 @@ fn test_split_openai_trailing_usage_noop_without_usage() {
         "no usage → no split"
     );
 
-    // A mid-stream content chunk that somehow carries usage but no terminal finish_reason is also
-    // left alone (defensive: the writer only folds onto the finish chunk).
-    let mut mid = serde_json::json!({
-        "object": OBJ_CHUNK,
-        "choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": null}],
+    // A chunk that is not a chat.completion.chunk at all (an in-band error envelope) is left alone.
+    let mut other = serde_json::json!({
+        "object": "error",
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
     });
     assert!(
-        split_openai_trailing_usage(&mut mid).is_none(),
-        "usage on a non-finish chunk is not split (defensive)"
+        split_openai_trailing_usage(&mut other).is_none(),
+        "a non-chunk body is not split"
+    );
+    assert!(other.get("usage").is_some(), "non-chunk left untouched");
+}
+
+/// The writer folds usage onto the terminal `MessageDelta` whenever the counts are nonzero — NOT
+/// only when that delta carries a stop reason. A backend that ends a stream without one (an
+/// `incomplete` Responses stream whose `incomplete_details.reason` the spec does not name) yields
+/// a terminal chunk with `finish_reason: null` carrying the whole stream's usage.
+///
+/// Both un-fold seams used to require a non-null `finish_reason` beside the folded usage, so this
+/// chunk matched neither: the client that ASKED for usage never received it (it stayed welded to a
+/// chunk that looks like a mid-stream delta instead of arriving as the spec's own trailing
+/// `{choices: [], usage}` chunk), and the client that opted OUT was sent usage anyway. The tell is
+/// the folded object itself.
+#[test]
+fn test_folded_usage_without_a_finish_reason_still_unfolds() {
+    let writer = OpenAiWriter;
+    let (_, mut chunk) = writer
+        .write_response_event(&IrStreamEvent::MessageDelta {
+            stop_reason: None,
+            stop_sequence: None,
+            usage: IrUsage {
+                input_tokens: 7,
+                output_tokens: 3,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail::default(),
+            },
+        })
+        .expect("a terminal MessageDelta with counts writes a chunk");
+    assert!(
+        chunk.get("usage").is_some(),
+        "the writer folds usage onto this chunk even with no stop reason: {chunk}"
     );
     assert!(
-        mid.get("usage").is_some(),
-        "non-finish chunk left untouched"
+        chunk
+            .pointer("/choices/0/finish_reason")
+            .is_some_and(serde_json::Value::is_null),
+        "and its finish_reason is null: {chunk}"
+    );
+
+    // Opted IN: the usage is re-homed onto the spec's trailing usage-only chunk.
+    let mut opted_in = chunk.clone();
+    let trailing = split_openai_trailing_usage(&mut opted_in)
+        .expect("a folded usage un-folds whether or not the chunk carries a finish_reason");
+    assert!(
+        opted_in.get("usage").is_none(),
+        "usage is lifted OFF the source chunk: {opted_in}"
+    );
+    assert_eq!(
+        trailing.get("choices"),
+        Some(&serde_json::json!([])),
+        "the trailing chunk carries an EMPTY choices array, as the spec declares: {trailing}"
+    );
+    assert_eq!(
+        trailing.pointer("/usage/prompt_tokens"),
+        Some(&serde_json::json!(7)),
+        "the counts survive the hop: {trailing}"
+    );
+
+    // Opted OUT: no usage reaches the client at all.
+    strip_folded_usage(&mut chunk);
+    assert!(
+        chunk.get("usage").is_none(),
+        "a client that did not ask for usage is not sent it: {chunk}"
     );
 }
 

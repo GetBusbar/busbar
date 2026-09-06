@@ -1227,21 +1227,20 @@ fn split_openai_trailing_usage(chunk: &mut serde_json::Value) -> Option<serde_js
     if obj.get("object").and_then(|v| v.as_str()) != Some(OBJ_CHUNK) {
         return None;
     }
-    // A native include_usage trailer carries usage ONLY on a chunk with no active choice; the
-    // writer folds it onto the FINISH chunk, which has a non-null `finish_reason`. Require both a
-    // present `usage` object and a terminal finish_reason so a non-finish chunk that somehow
-    // carried usage is left alone (defensive — the writer only folds onto the finish chunk).
+    // A native include_usage trailer carries usage ONLY on a chunk with no active choice, so the
+    // presence of a folded top-level `usage` object IS the tell: it is there because the writer put
+    // it there, having no way to emit two events for one IR MessageDelta.
+    //
+    // The test used to be "usage AND a terminal finish_reason", on the assumption that the writer
+    // folds only onto the finish chunk. It does not: it folds whenever the terminal MessageDelta
+    // carries nonzero counts, and a backend that ends a stream without a stop reason — an
+    // `incomplete` Responses stream whose `incomplete_details.reason` the spec does not name —
+    // produces a terminal MessageDelta with `stop_reason: None`, hence `finish_reason: null`. That
+    // chunk carried the whole stream's usage and neither this seam nor its opt-out twin looked at
+    // it, so the usage was lost on the way to a Chat-Completions client. Keying on the fold itself
+    // covers both shapes and matches what the spec actually discriminates on: usage rides its own
+    // chunk, not a chunk with a choice on it.
     if !obj.contains_key("usage") {
-        return None;
-    }
-    let has_finish = obj
-        .get("choices")
-        .and_then(|c| c.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|c0| c0.get("finish_reason"))
-        .map(|fr| !fr.is_null())
-        .unwrap_or(false);
-    if !has_finish {
         return None;
     }
     let usage = obj.remove("usage")?;
@@ -1270,10 +1269,12 @@ fn split_openai_trailing_usage(chunk: &mut serde_json::Value) -> Option<serde_js
 /// Remove a folded top-level `usage` object from a `chat.completion.chunk` in place, WITHOUT emitting
 /// any replacement trailing chunk. This is the opt-OUT twin of `split_openai_trailing_usage`:
 /// a client that did not send `stream_options.include_usage` must see a stream that carries NO usage at
-/// all, exactly like a native OpenAI stream without include_usage. Only strips when both a folded `usage`
-/// and a terminal `finish_reason` are present (the shape the writer folds onto), so a non-finish chunk is
-/// never touched. The removed usage was only ever a client-facing echo — billing sources the IR-side
-/// `last_usage` A-tap, which is captured upstream of this seam and is unaffected.
+/// all, exactly like a native OpenAI stream without include_usage. It strips on the same tell its twin
+/// splits on — a folded top-level `usage` object on a `chat.completion.chunk` — because that object is
+/// only ever there because the writer folded it. Requiring a terminal `finish_reason` beside it let the
+/// one shape the writer folds without a stop reason through, so a client that opted OUT was sent usage
+/// it had not asked for. The removed usage was only ever a client-facing echo — billing sources the
+/// IR-side `last_usage` A-tap, which is captured upstream of this seam and is unaffected.
 fn strip_folded_usage(chunk: &mut serde_json::Value) {
     let Some(obj) = chunk.as_object_mut() else {
         return;
@@ -1281,19 +1282,7 @@ fn strip_folded_usage(chunk: &mut serde_json::Value) {
     if obj.get("object").and_then(|v| v.as_str()) != Some(OBJ_CHUNK) {
         return;
     }
-    if !obj.contains_key("usage") {
-        return;
-    }
-    let has_finish = obj
-        .get("choices")
-        .and_then(|c| c.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|c0| c0.get("finish_reason"))
-        .map(|fr| !fr.is_null())
-        .unwrap_or(false);
-    if has_finish {
-        obj.remove("usage");
-    }
+    obj.remove("usage");
 }
 
 /// OpenAI writer implementation.

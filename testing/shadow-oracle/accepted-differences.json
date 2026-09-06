@@ -426,6 +426,18 @@
         "headers"
       ],
       "rationale": "Spec fidelity: the published ContentBlockStartEvent carries a redacted_thinking block's opaque `data` INLINE on the start and declares no delta member for it, so busbar defers that start to the RedactedReasoningDelta that carries the bytes. 1.5.5 marked the index OPEN at the BlockStart -- before the frame existed -- which is the one thing the writer's own orphan-stop guard must not do: the guard's whole job is to suppress a content_block_stop for a block the client never saw opened, and the deferral made it answer for a frame that had not been written. A stream ending between the BlockStart and its delta (a truncation, an upstream error, or the translator draining its own open set) therefore sent a bare content_block_stop -- exactly the orphan close the guard exists to prevent, and outside the spec's 1:1 start/stop pairing. 1.6.0 marks the index open in the code path that WRITES the start, so start and stop are decided by the same fact; the same boolean stops a second redacted delta from writing a duplicate, unpaired start. Byte-identical whenever the delta arrives, which is every non-truncated redacted stream. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "S-13 folded chat usage un-folds without a finish_reason beside it",
+      "kind": "improvement",
+      "changelog": "**A streamed chat `usage` trailer arrives even when the stream ended without a stop reason.**",
+      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
+      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: published include_usage says the token counts ride an ADDITIONAL final chunk whose choices array is always EMPTY. The Chat writer cannot emit two frames for one IR MessageDelta, so it folds the counts onto the chunk it does write and a downstream seam un-folds them into that trailing chunk. The writer folds whenever the terminal counts are nonzero -- NOT only when the delta carries a stop reason -- but both un-fold seams additionally required a non-null finish_reason beside the folded object. A backend that ends a stream with no stop reason (an incomplete Responses stream whose incomplete_details.reason the published spec does not name) produces exactly the chunk neither seam looked at: a client that asked for usage never received it, and a client that opted OUT was sent usage it had not asked for. Both seams now key on the folded object itself, which is only ever present because the writer put it there. Cross-dialect stream bodies only; the same-dialect byte-exact passthrough never reaches these seams, and no usage or billing class is waived -- busbar's own metering reads the IR-side tap upstream of this seam and never moved. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
     }
   ]
 }

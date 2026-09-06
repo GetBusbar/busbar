@@ -127,6 +127,14 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   copy; a `cachePoint` or `guardContent` earlier in the same message shifted the two apart, so the
   suppression missed and the attachment went upstream twice — read twice by the model and billed
   twice. The two index spaces are now tracked separately. See [Spec fidelity](#spec-fidelity).
+- **A streamed chat `usage` trailer arrives even when the stream ended without a stop reason.** The
+  published `include_usage` contract puts the token counts on an additional final chunk whose
+  `choices` array is empty. Busbar's chat writer folds them onto the chunk it can write and a
+  downstream seam re-homes them onto that trailer — but the seam also insisted on a `finish_reason`
+  beside them, which a backend ending a stream with no stop reason does not provide. The counts
+  were then lost on the way to a Chat Completions client, and a client that opted out of usage was
+  sent it anyway. The seam now keys on the folded object itself. Busbar's own metering reads an
+  earlier tap and is unchanged. See [Spec fidelity](#spec-fidelity).
 - **An Anthropic `redacted_thinking` block closes only if it opened.** The published
   `content_block_start` carries a redacted block's opaque `data` inline and declares no delta for
   it, so Busbar defers that start to the event carrying the bytes. 1.5.5 recorded the block as open
