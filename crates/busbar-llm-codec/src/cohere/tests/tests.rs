@@ -711,8 +711,13 @@ fn test_read_request_tool_calls_only_processed_for_assistant_role() {
 }
 
 /// Once a text block is closed (`ET_CONTENT_END`), `state.text_block_closed` latches — a LATER
-/// `ET_CONTENT_START` for a text block must be dropped (falls through to the no-op `other` arm),
-/// never reopening the already-stopped index with a second `BlockStart`.
+/// text frame with NO `content-start` of its own must be dropped (falls through to the no-op `other`
+/// arm), never reopening the already-stopped index.
+///
+/// The latch used to swallow an explicit `content-start` too, which discarded every content block
+/// after the first (a Cohere v2 stream may carry several, each at its own wire `index`). An explicit
+/// `content-start` is the upstream declaring a NEW block and now opens one at a FRESH IR index — the
+/// stopped one is still never reopened, which is what this pins.
 #[test]
 fn test_stream_content_start_after_close_does_not_reopen_the_text_block() {
     let mut state = crate::ir::StreamDecodeState::default();
@@ -737,16 +742,30 @@ fn test_stream_content_start_after_close_does_not_reopen_the_text_block() {
     assert_eq!(evs.len(), 1);
     assert!(matches!(evs[0], crate::ir::IrStreamEvent::BlockStop { .. }));
 
-    // A second content-start after the close must be dropped entirely: no BlockStart, no event.
+    // A stray text frame after the close — no `content-start` of its own — is dropped entirely.
+    let evs = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": ET_CONTENT_DELTA, "index": 0, "delta": {"message": {"content": "stray"}}}),
+        &mut state,
+    );
+    assert!(
+        evs.is_empty(),
+        "a stray delta after close must be dropped, not reopen the stopped index: {evs:?}"
+    );
+
+    // An EXPLICIT `content-start` opens a NEW block, at an index the stopped one does not hold.
     let evs = reader.read_response_events(
         "",
         &serde_json::json!({"type": ET_CONTENT_START, "index": 1, "delta": {"message": {"content": {"type": "text", "text": ""}}}}),
         &mut state,
     );
-    assert!(
-        evs.is_empty(),
-        "a text block reopened after close must be dropped, not re-emit BlockStart: {evs:?}"
-    );
+    match evs.as_slice() {
+        [crate::ir::IrStreamEvent::BlockStart { index, .. }] => assert_ne!(
+            *index, 0,
+            "the second content block must not reuse the stopped index"
+        ),
+        other => panic!("an explicit content-start must open a new block: {other:?}"),
+    }
 }
 
 /// The array-form `read_response_events` content-delta path only emits a `TextDelta` for a block
@@ -5317,6 +5336,107 @@ fn recover_truncated_usage_bills_the_billed_units_bucket() {
         usage.output, 3,
         "the BILLED output count must win over the raw `tokens` total"
     );
+}
+
+/// A Cohere v2 stream can carry MORE THAN ONE content block — each `content-start` names its own
+/// wire `index` — and `text_block_closed` was a ONE-WAY latch: the first `content-end` set it and
+/// every later `content-start`/`content-delta` fell through to the no-op arm. Everything the model
+/// said after its first content block was silently discarded. The latch's real job is to stop a
+/// STRAY delta from reopening a stopped index; an explicit `content-start` is the upstream saying a
+/// new block begins, and it must open one at a fresh IR index.
+#[test]
+fn a_second_content_block_is_not_discarded_by_the_close_latch() {
+    let reader = CohereReader;
+    let mut state = crate::ir::StreamDecodeState::default();
+    let mut events: Vec<IrStreamEvent> = Vec::new();
+    for frame in [
+        serde_json::json!({"type": ET_MESSAGE_START, "id": "c-1"}),
+        serde_json::json!({"type": ET_CONTENT_START, "index": 0, "delta": {"message": {"content": {"type": "text", "text": ""}}}}),
+        serde_json::json!({"type": ET_CONTENT_DELTA, "index": 0, "delta": {"message": {"content": "first"}}}),
+        serde_json::json!({"type": ET_CONTENT_END, "index": 0}),
+        serde_json::json!({"type": ET_CONTENT_START, "index": 1, "delta": {"message": {"content": {"type": "text", "text": ""}}}}),
+        serde_json::json!({"type": ET_CONTENT_DELTA, "index": 1, "delta": {"message": {"content": "second"}}}),
+        serde_json::json!({"type": ET_CONTENT_END, "index": 1}),
+    ] {
+        events.extend(reader.read_response_events("", &frame, &mut state));
+    }
+
+    let starts: Vec<usize> = events
+        .iter()
+        .filter_map(|e| match e {
+            IrStreamEvent::BlockStart { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts.len(),
+        2,
+        "both content blocks must open, at distinct IR indices: {events:?}"
+    );
+    assert_ne!(starts[0], starts[1], "a reopened block needs a fresh index");
+
+    let text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            IrStreamEvent::BlockDelta {
+                delta: crate::ir::IrDelta::TextDelta(t),
+                ..
+            } => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        text, "firstsecond",
+        "the second block's text must not be discarded"
+    );
+
+    // Every opened block is closed — the stream stays balanced.
+    let stops: Vec<usize> = events
+        .iter()
+        .filter_map(|e| match e {
+            IrStreamEvent::BlockStop { index } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(stops, starts, "each block stops at the index it started");
+
+    // A STRAY delta with no `content-start` after the close is still dropped — the latch's
+    // original job — rather than reopening a stopped index.
+    let stray = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": ET_CONTENT_DELTA, "index": 9, "delta": {"message": {"content": "stray"}}}),
+        &mut state,
+    );
+    assert!(
+        stray.is_empty(),
+        "a stray delta must not reopen a block: {stray:?}"
+    );
+}
+
+/// A rerank answer is a list of POSITIONS: `results[].index` addresses the request's `documents[]`
+/// by ordinal, and nothing else in the response identifies which document was ranked. Reading the
+/// documents with a `filter_map` DROPPED any element that was neither a bare string nor a `{text}`
+/// object — and dropping element 1 of four renumbers every document after it, so the upstream's
+/// `index: 2` now names a different document than the client sent. The client silently reranks the
+/// wrong corpus. Position must be preserved even when an element cannot be read.
+#[test]
+fn rerank_documents_keep_their_positions_when_one_cannot_be_read() {
+    let docs = serde_json::json!([
+        "alpha",
+        {"not_text": "unreadable"},
+        {"text": "gamma"},
+        "delta"
+    ]);
+    let read = crate::cohere::handler::rerank_documents_pub(Some(&docs));
+    assert_eq!(
+        read.len(),
+        4,
+        "every element keeps its ordinal, or `results[].index` addresses the wrong document: \
+         {read:?}"
+    );
+    assert_eq!(read[0], "alpha");
+    assert_eq!(read[2], "gamma");
+    assert_eq!(read[3], "delta");
 }
 
 /// Cohere's published OpenAPI types EVERY count in `Usage` — `tokens.input_tokens`,
