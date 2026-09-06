@@ -944,13 +944,47 @@ fn an_entry_is_canonicalized_the_same_way_however_it_was_written() {
     );
 }
 
-/// The base and the path are re-checked TOGETHER, because a path can move the host boundary.
+/// An authority itself carrying the WHATWG backslash/userinfo trick is denied.
 ///
-/// A backslash terminates the authority in a WHATWG-normalizing stack exactly as a slash does. A
-/// guard that only ever looked at the configured base saw the host `metadata.example`; the socket
-/// saw `169.254.169.254`. This is the re-check that closes the difference.
+/// A backslash terminates the authority in a WHATWG-normalizing stack exactly as a slash does, so
+/// `169.254.169.254\@metadata.example` is read the same way a connecting stack reads it: host
+/// `169.254.169.254`, with `@metadata.example` dropped as the (fake) tail of an authority that
+/// already ended. This is a property of the AUTHORITY itself, exercised here with an empty `paths`
+/// so nothing about `join_path` is in play — see
+/// [`a_denylisted_path_is_not_smuggled_past_the_check_by_the_base_it_is_joined_to`] below for the
+/// base-plus-path re-check the name of that test used to (wrongly) claim this one covered.
 #[test]
-fn the_base_and_path_are_re_checked_together() {
+fn an_authority_carrying_the_backslash_trick_is_denied() {
+    assert_eq!(
+        check_destination(
+            &dest("https://169.254.169.254\\@metadata.example"),
+            &[],
+            &NeverAsked,
+            strict(),
+            &Denylist::default()
+        ),
+        Err(NetworkRefusal::MetadataDenied(
+            "169.254.169.254".to_string()
+        ))
+    );
+}
+
+/// `join_path` and the re-check loop over `paths` (`net.rs:1531`) are only exercised when `paths` is
+/// non-empty. A prior version of this test passed `paths: &[]` and put the entire attack string
+/// directly into the destination's OWN authority — which is caught by the bare-authority candidate
+/// alone (see the test above) and never reaches `join_path` at all, despite the test's name claiming
+/// to cover the base-plus-path case.
+///
+/// `join_path` always inserts a real `/` (or uses the one `path` already opens with) between the
+/// base and the path it is given, so nothing a path carries — the backslash trick included — can
+/// ever land BEFORE that separator and re-open the authority the base already closed: the
+/// backslash-folded authority segment `split(['/', '?', '#']).next()` reads stops at the join's own
+/// separator every time. So the provable claim about the base-plus-path re-check is the opposite of
+/// an attack succeeding: the joined candidate resolves to the SAME host the base alone does, and the
+/// declared path cannot smuggle a different one past it — while still genuinely exercising
+/// `join_path` and the loop, unlike the version of this test that never called them.
+#[test]
+fn a_denylisted_path_is_not_smuggled_past_the_check_by_the_base_it_is_joined_to() {
     let base = "https://metadata.example";
     let none = Denylist::default();
 
@@ -966,19 +1000,19 @@ fn the_base_and_path_are_re_checked_together() {
         Ok(Some(_))
     ));
 
-    // Joined with a path whose first byte re-opens the authority, it is.
-    assert_eq!(
-        check_destination(
-            &dest("https://169.254.169.254\\@metadata.example"),
-            &[],
-            &NeverAsked,
-            strict(),
-            &none
-        ),
-        Err(NetworkRefusal::MetadataDenied(
-            "169.254.169.254".to_string()
-        ))
-    );
+    // The SAME backslash/userinfo trick, now carried in a declared PATH rather than the authority,
+    // still resolves the joined candidate to the base's own host — `join_path` and the denylist loop
+    // both ran (a non-empty `paths` slice is what makes that true), and neither was fooled.
+    let pinned = check_destination(
+        &dest(base),
+        &["\\@169.254.169.254"],
+        &ScriptedResolver::new(vec![Ok(vec![ip(PUBLIC)])]),
+        strict(),
+        &none,
+    )
+    .expect("the base's own host, unaffected by the path")
+    .expect("a socket target is pinned");
+    assert_eq!(pinned.host(), "metadata.example");
 }
 
 /// A bare `host:port` authority reaches the same judgement a URL does, and fails closed on the
