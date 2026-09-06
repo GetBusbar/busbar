@@ -723,15 +723,39 @@ where
         let id = row["id"].as_str().unwrap_or("?");
         let dialect = row["dialect"].as_str().unwrap_or("?");
         let fixture = row["fixture"].as_str().unwrap_or("");
-        // A row is EXERCISED as a drop only when we bridge OUT of its origin dialect to the other one.
-        // Diagonal pairs (oo/gg) and the mismatched-origin cross pair record it as covered-elsewhere.
-        if from_d != dialect || from_d == to_d {
-            println!("RESULT {slice} PASS asym:{id} — not this pair's drop direction (origin={dialect}); exercised in the {dialect}→other pair");
-            continue;
-        }
         let name = fixture
             .strip_prefix(&format!("{dialect}/"))
             .unwrap_or(fixture);
+        // A row is EXERCISED as a drop only when we bridge OUT of its origin dialect to the other one.
+        // Diagonal pairs (oo/gg) and the mismatched-origin cross pair record it as covered-elsewhere.
+        if from_d != dialect || from_d == to_d {
+            // AND THE DEFERRAL IS ITSELF AN ASSERTION, WHICH IT WAS NOT. This branch used to be a
+            // bare `println!(… PASS …); continue;` — fifteen rows printing PASS in `oo` and fifteen
+            // more in `gg` before a single fixture was opened, plus the other dialect's rows in each
+            // cross pair: forty-five of the sixty asymmetry results in a full run were structurally
+            // incapable of saying anything else. That is tolerable ONLY while the sentence they
+            // print is true, and the sentence is a CLAIM: "exercised in the {dialect}→other pair".
+            //
+            // The claim is false in exactly the way nobody would notice. A row whose `dialect` is
+            // not one of the two this battery bridges — a typo, a third dialect added to the map
+            // ahead of its codec — matches `from_d != dialect` in ALL FOUR pairs, so it is deferred
+            // by every pair to a pair that does not exist and is exercised NOWHERE, while reading
+            // green four times over. The same holds for a row that names a fixture no longer on
+            // disk: the pair that would have judged it goes red, but only in that one pair, and the
+            // three green deferrals are three assertions that the missing thing is fine.
+            //
+            // So the deferral now proves the deferred-to pair CAN exist: the origin dialect is one
+            // this battery bridges, and the fixture the row names is on disk. Nothing is weakened —
+            // the row is still judged for real in its own direction, below.
+            match deferral_is_real(dialect, fixture, dir_for(dialect).join(name).exists()) {
+                Ok(()) => println!("RESULT {slice} PASS asym:{id} — not this pair's drop direction (origin={dialect}, fixture present); exercised in the {dialect}→other pair"),
+                Err(why) => {
+                    fails += 1;
+                    println!("RESULT {slice} FAIL asym:{id} — {why}");
+                }
+            }
+            continue;
+        }
         let path = dir_for(dialect).join(name);
         if !path.exists() {
             fails += 1;
@@ -752,6 +776,33 @@ where
     } else {
         0
     }
+}
+
+/// The two facts a DEFERRED asymmetry row's PASS rests on, checked instead of assumed.
+///
+/// Three of the four ordered pairs do not bridge OUT of a given row's origin dialect, so they cannot
+/// exercise it and say so — "exercised in the {dialect}→other pair". That sentence is a claim about
+/// a run that happens elsewhere, and a claim that nothing checked: a row whose origin dialect is not
+/// one this battery bridges is deferred by ALL FOUR pairs to a pair that never runs, and a row whose
+/// fixture has left the tree is deferred by three pairs to a pair that cannot open it. Both read as
+/// four green rows and zero exercised assertions.
+///
+/// `Ok(())` means the deferred-to pair exists and has the file it needs. `Err` names which half of
+/// the claim is false, in the words the RESULT line prints.
+fn deferral_is_real(dialect: &str, fixture: &str, fixture_exists: bool) -> Result<(), String> {
+    if dialect != "openai" && dialect != "gemini" {
+        return Err(format!(
+            "origin dialect '{dialect}' is not one this battery bridges, so NO pair exercises this \
+             row; it is deferred by all four and judged by none"
+        ));
+    }
+    if !fixture_exists {
+        return Err(format!(
+            "deferred to the {dialect}→other pair, but its fixture {fixture} is not on disk for \
+             that pair to open"
+        ));
+    }
+    Ok(())
 }
 
 /// Precise reason a concept has no decoding FROM-side fixture, so the report separates the ONE genuine
@@ -2359,6 +2410,61 @@ fn probe_exit_terminal() -> (&'static str, String) {
          down before it ever runs a frame"
             .into(),
     )
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+// THE HARNESS'S OWN SELF-TEST — the checks that decide a RESULT line, driven in both directions.
+//
+// Same discipline the shell batteries use in their `--selftest`: a check nobody has watched refuse
+// anything is indistinguishable from no check at all, and the cross-parity leg is where that matters
+// most, because three of its four pairs DEFER most of their asymmetry rows and a deferral used to be
+// an unconditional PASS.
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod selftest {
+    use super::*;
+
+    /// GREEN. A deferral whose deferred-to pair exists and has its fixture is the honest case, and
+    /// it must still pass — otherwise the REDs below would prove only that deferrals are refused.
+    #[test]
+    fn an_honest_deferral_is_accepted() {
+        assert_eq!(
+            deferral_is_real("openai", "openai/error.json", true),
+            Ok(())
+        );
+        assert_eq!(
+            deferral_is_real("gemini", "gemini/goAway.json", true),
+            Ok(())
+        );
+    }
+
+    /// RED. A row whose origin dialect is not one this battery bridges is deferred by every pair to
+    /// a pair that does not exist: exercised nowhere, green four times. Before this check the branch
+    /// printed PASS unconditionally, so this row's assertion was never made in any run.
+    #[test]
+    fn a_row_no_pair_can_exercise_is_refused() {
+        let err = deferral_is_real("gemeni", "gemeni/typo.json", true)
+            .expect_err("a dialect no pair bridges must not be deferred away");
+        assert!(err.contains("judged by none"), "unexpected reason: {err}");
+    }
+
+    /// RED. A row deferred to a pair that cannot open its fixture. The pair that WOULD judge it goes
+    /// red on its own, but the three deferrals are three separate assertions that the missing file
+    /// is fine, and a reader counting green rows sees three of them.
+    #[test]
+    fn a_deferral_to_a_missing_fixture_is_refused() {
+        let err = deferral_is_real("openai", "openai/gone.json", false)
+            .expect_err("a deferral to a fixture that is not on disk must not pass");
+        assert!(err.contains("not on disk"), "unexpected reason: {err}");
+    }
+
+    /// An id the map grew and the harness never learned is a FAIL, not a silent pass. Already true;
+    /// pinned here so the catch-all cannot be turned into a default-accept by a later edit.
+    #[test]
+    fn an_unhandled_asymmetry_id_is_refused() {
+        assert_eq!(asym_drop("something_nobody_wrote_a_handler_for", &[], &[]).0, "FAIL");
+    }
 }
 
 // ── entry point ─────────────────────────────────────────────────────────────────────────────────────
