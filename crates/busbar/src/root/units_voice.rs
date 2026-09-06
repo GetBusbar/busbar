@@ -3310,4 +3310,103 @@ mod tests {
             Err(busbar_contract::wire::Decode::Malformed)
         );
     }
+    /// A credential is resolved through the node's own signed-key seam, and the audience is this
+    /// plane's own name.
+    ///
+    /// Three answers on one session, because the third is the one an open front door hides. A good
+    /// credential resolves to the key's identity. A credential the directory does not hold resolves
+    /// to nothing and the unit is refused before it can reach a destination. And a credential that
+    /// IS valid — genuinely minted, genuinely unexpired — but was minted for another plane's
+    /// audience is refused HERE, at this plane's ingress, rather than at the upstream it was going
+    /// to reach: an audience that is declared and never checked is not an audience.
+    #[test]
+    fn a_credential_is_resolved_against_this_planes_own_audience() {
+        use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
+        use busbar_caps::{Authenticated, KernelSeal};
+
+        /// One key, minted for one audience.
+        struct Directory;
+
+        impl VirtualKeyDirectory for Directory {
+            fn verify(
+                &self,
+                credential: &str,
+                _now: u64,
+                expected_aud: Option<&str>,
+            ) -> Option<KeyFacts> {
+                // The audience is the plane boundary and the verifier is where it is enforced. Both
+                // credentials below are real keys; only one of them was minted for this plane.
+                let minted_for = match credential {
+                    "voice-tok" => "voice",
+                    "mcp-tok" => "mcp",
+                    _ => return None,
+                };
+                (expected_aud == Some(minted_for)).then(|| KeyFacts {
+                    id: "key-voice-1".to_string(),
+                    name: "an approved key".to_string(),
+                })
+            }
+
+            fn revoked(&self, _credential: &str) -> bool {
+                false
+            }
+        }
+
+        // A closed chain naming the signed-key arm and no boxed module, so the arm is the only
+        // thing that can open the door and this cell is about that arm.
+        let durability = crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open");
+        let node = VoiceNode::new(VoiceNodeParts {
+            plane: VoicePlane::new(UPSTREAMS),
+            pricer: Pricer::flat(0),
+            auth: Auth::new(AuthChain::new(Vec::new(), true)),
+            auth_bindings: AuthBindings::new(std::sync::Arc::new(Directory)),
+            scope: scope_policy(),
+            meter_policy: crate::root::policy::build(
+                &crate::root::policy::MeterPolicyConfig::default(),
+            ),
+            durability,
+            io: serviceable(),
+            origin: Kernel::new().origin(busbar_caps::OriginKind::Client),
+        });
+
+        let seal = KernelSeal::acquire_for_kernel();
+        let answer = |credential: Option<&str>| {
+            let mut unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
+            if let Some(credential) = credential {
+                unit = unit.with_credential(credential);
+            }
+            unit.authenticate(&UnitToken::mint(&seal), &ctx(1))
+                .into_result(&seal)
+        };
+
+        // Minted for this plane: admitted, carrying the key's own id, which is what the audit row
+        // and the settlement are attributed to.
+        match answer(Some("voice-tok")) {
+            Ok(Authenticated::Principal(who)) => assert_eq!(who.as_str(), "key-voice-1"),
+            other => panic!("a key minted for this plane opens the session: {other:?}"),
+        }
+
+        // A credential the directory does not hold, and no credential at all. The chain is closed,
+        // so neither is the anonymous principal — both are refusals, and both are raised before the
+        // unit reaches a destination.
+        for absent in [Some("forged"), None] {
+            let refusal = answer(absent)
+                .err()
+                .unwrap_or_else(|| panic!("{absent:?} must not open a session"));
+            assert_eq!(refusal.reason(), ReasonCode::Unauthenticated);
+            assert_eq!(refusal.step(), busbar_caps::StepName::Authenticate);
+        }
+
+        // The one that matters: a real key, for the wrong plane. Refused here rather than carried
+        // to an upstream that would have honoured it.
+        let refusal = answer(Some("mcp-tok"))
+            .err()
+            .expect("another plane's audience does not open this one");
+        assert_eq!(refusal.reason(), ReasonCode::Unauthenticated);
+    }
 }

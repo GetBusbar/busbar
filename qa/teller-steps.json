@@ -460,9 +460,10 @@
         "status": "mapped",
         "note": "testing/voice-conformance/legs/provider-credential.sh; K1 -- credential threaded from the composition root before a session opens",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-voice",
-          "note": "the handshake runs before anybody is authenticated -- that is what it is for -- and no root-voice cell refuses a credential at the authenticate step; the rig's provider-credential leg is the evidence"
+          "test": "crates/busbar/src/root/units_voice.rs::a_credential_is_resolved_against_this_planes_own_audience",
+          "note": "the session-opening unit's credential, through a closed chain whose only arm is the node's own signed-key directory, so the arm is the one thing that can open the door. Three answers: a key minted for this plane admits and carries the key's own id (which is what the audit row and the settlement attribute to); a credential the directory does not hold, and no credential at all, are both refused unauthenticated at the authenticate step before the unit reaches a destination; and a REAL, unexpired key minted for another plane's audience is refused here at this plane's ingress rather than carried to an upstream that would have honoured it -- an audience declared and never checked is not an audience. The rig's provider-credential leg stays the outside evidence"
         }
       },
       "verify": {
