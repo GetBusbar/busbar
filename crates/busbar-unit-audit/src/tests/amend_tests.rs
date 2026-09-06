@@ -172,6 +172,56 @@ fn removing_an_amendment_from_the_middle_is_caught() {
     assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
 }
 
+/// CUTTING THE HEAD OFF A CORRECTION HISTORY IS CAUGHT.
+///
+/// The survivors link perfectly to each other — every one still names the amendment before it — so
+/// the only thing that says entries are missing is that the run does not begin where the chain
+/// does. The earliest amendments are the ones somebody covering a correction would drop first.
+#[test]
+fn truncating_the_head_of_an_amendment_run_is_caught() {
+    let mut chain = AmendChain::new();
+    let mut run = vec![
+        chain.append(an_access(), &token()),
+        chain.append(a_correction(), &token()),
+        chain.append(an_access(), &token()),
+    ];
+    assert!(AmendChain::verify(&run).is_ok());
+
+    run.remove(0);
+    let brk = AmendChain::verify(&run).unwrap_err();
+    assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
+    assert_eq!(brk.at_index, 1, "the cut is reported at the run's start");
+}
+
+/// CUTTING THE TAIL OFF takes the chain's own head to notice, exactly as it does for records.
+#[test]
+fn truncating_the_tail_of_an_amendment_run_is_caught_against_the_chain_head() {
+    let mut chain = AmendChain::new();
+    let mut run = vec![
+        chain.append(an_access(), &token()),
+        chain.append(a_correction(), &token()),
+        chain.append(an_access(), &token()),
+    ];
+    assert!(chain.verify_to_head(&run).is_ok());
+
+    run.pop();
+    // The survivors still walk from the genesis, which is precisely why the walk alone cannot see
+    // this and the head check must.
+    assert!(AmendChain::verify(&run).is_ok());
+    let brk = chain.verify_to_head(&run).unwrap_err();
+    assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
+}
+
+/// An EMPTY run verifies against itself and fails against a chain that sealed something: the two
+/// readings of "no amendments" are only distinguishable with the chain on hand.
+#[test]
+fn an_empty_run_verifies_alone_and_fails_against_a_chain_that_sealed_one() {
+    assert!(AmendChain::verify(&[]).is_ok());
+    let mut chain = AmendChain::new();
+    let _ = chain.append(a_correction(), &token());
+    assert!(chain.verify_to_head(&[]).is_err());
+}
+
 #[test]
 fn a_chain_resumed_from_a_persisted_tail_continues_it() {
     let mut chain = AmendChain::new();
