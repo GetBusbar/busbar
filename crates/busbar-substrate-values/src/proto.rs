@@ -165,9 +165,16 @@ pub fn openai_classify(status: http::StatusCode, body: &[u8]) -> crate::breaker:
     // gate a 401/429/5xx whose prose happens to contain "maximum context length" would reclassify as
     // ContextLength — letting a genuine auth/rate-limit/server failure escape fault attribution. The
     // structured `code: "context_length_exceeded"` path is NOT gated (it is unambiguous).
+    //
+    // The scan itself is the shared one and not a clause of its own: production runs all four
+    // phrasings through `openai_context_length_prose_scan`, and a copy here that carried only the
+    // first was a mirror that showed a different picture. Every test proving oversized-request
+    // failover through this function was then proving behaviour production does not have, for three
+    // of the four phrasings the providers actually send.
     let oversized = status == StatusCode::BAD_REQUEST || status == StatusCode::PAYLOAD_TOO_LARGE;
-    let body_lower = String::from_utf8_lossy(body).to_lowercase();
-    if code_is_context || (oversized && body_lower.contains("maximum context length")) {
+    let prose_is_context = oversized
+        && openai_context_length_prose_scan(&String::from_utf8_lossy(body).to_lowercase());
+    if code_is_context || prose_is_context {
         return crate::breaker::CanonicalSignal {
             class: StatusClass::ContextLength,
             provider_signal: Some(PROVIDER_SIGNAL_CONTEXT_LENGTH.to_string()),

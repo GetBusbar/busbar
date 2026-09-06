@@ -28,6 +28,46 @@ fn test_openai_classify() {
     assert_eq!(signal.class, StatusClass::Auth);
 }
 
+/// The classifier must run the SHARED prose scan, not a clause of its own.
+///
+/// It is documented as mirroring production `extract_error`, and production runs all four phrasings
+/// through `openai_context_length_prose_scan`. A copy carrying only the first phrasing classified
+/// `"please reduce the length of the messages"` — an ordinary oversized-request body — as a
+/// `ClientError`, so every test proving oversized-request failover through `classify` was proving
+/// behaviour production does not have: the lane takes a breaker penalty for a healthy lane instead
+/// of failing over to a larger-context model.
+#[test]
+fn every_context_length_phrasing_the_shared_scan_knows_classifies_as_context_length() {
+    let protocol = crate::proto_codec::protocol_for("openai").expect("openai should exist");
+    let reader = protocol.reader();
+    for prose in [
+        "This model's maximum context length is 8192 tokens",
+        "Context length exceeded for this request",
+        "Please reduce the length of the messages",
+        "Your input exceeds the context window",
+    ] {
+        let body = format!(r#"{{"error":{{"message":"{prose}"}}}}"#);
+        assert_eq!(
+            reader
+                .classify(StatusCode::BAD_REQUEST, body.as_bytes())
+                .class,
+            StatusClass::ContextLength,
+            "an oversized request saying `{prose}` must fail over rather than penalize the lane"
+        );
+    }
+    // The gate the shared scan does not carry is still this caller's: the same prose on a status an
+    // oversized request never uses stays what its status says it is.
+    assert_eq!(
+        reader
+            .classify(
+                StatusCode::TOO_MANY_REQUESTS,
+                br#"{"error":{"message":"Please reduce the length of the messages"}}"#
+            )
+            .class,
+        StatusClass::RateLimit,
+    );
+}
+
 /// The shared context-length prose scan must fire on the canonical self-contained phrases and on
 /// the `exceeds`+`context`/`token limit` pairing — this is what lets a genuine oversized-request
 /// body fail over (to a larger-context model) instead of penalizing the lane's breaker.
