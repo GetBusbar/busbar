@@ -301,7 +301,12 @@ pub fn sweep_settle(
                 // the destination reported, unflagged, exactly as the table says.
                 let estimated = flags.contains(PostingFlags::ESTIMATED);
                 let lines = vec![UsageLine {
-                    class: KERNEL_ACCRUAL_CLASS,
+                    // The unit's own meter, and the kernel's only when nothing named one — the
+                    // same reading the exit path makes from the same evidence. The sweep posted the
+                    // fallback unconditionally, so which meter a unit landed on depended on which
+                    // of its two ends ran, which is the one thing the two ends are not allowed to
+                    // disagree about.
+                    class: evidence.class.unwrap_or(KERNEL_ACCRUAL_CLASS),
                     quantity: amount,
                     source: QuantitySource::Count,
                     estimated,
