@@ -37,7 +37,14 @@ use crate::conn::{ConnState, ReaderSlot, StdioConnHandle};
 /// the buffer until memory runs out. The peer here is an operator-launched child rather than a
 /// client, but it is still a process this transport does not control, and nothing above it caps
 /// what a line may be.
-pub(crate) const MAX_LINE_BYTES: usize = 1024 * 1024;
+///
+/// The bound IS the design's per-connection reading budget, not a number of this crate's own: one
+/// line is one frame on this wire, and a frame is what the budget measures. A larger bound here
+/// only bought the right to read a line no reader above would accept — the megabyte this used to
+/// allow was sixteen times a budget the layer above enforces anyway, so the extra was memory spent
+/// to arrive at the same refusal later. The sibling `sse` crate holds its own re-segmentation
+/// buffer to exactly this figure and says the same.
+pub(crate) const MAX_LINE_BYTES: usize = busbar_contract::MAX_CURSOR_BYTES;
 
 /// How a call to [`read_line`] stopped.
 enum LineEnd {
@@ -311,14 +318,19 @@ impl Transport for StdioTransport {
                 if done || state.is_poisoned() || state.is_closed() {
                     return None;
                 }
-                let mut lock = state.reader.lock().await;
-                let Some(taken) = lock.take() else {
-                    // Another `frames()` call already consumed this connection's reader — a
-                    // transport connection is read by exactly one pump, matching every other
-                    // in-tree transport's `frames` contract.
-                    return None;
+                let taken = {
+                    let mut lock = state.reader.lock().await;
+                    lock.take()
                 };
-                drop(lock);
+                let Some(taken) = taken else {
+                    // Another `frames()` call already holds this connection's reader — a transport
+                    // connection is read by exactly one pump, matching every other in-tree
+                    // transport's `frames` contract. Reported, not answered with a bare `None`: on
+                    // a session transport an empty stream is what the PEER CLOSING looks like, so
+                    // handing that back told a second caller its peer had gone when what actually
+                    // happened is that it asked for a reader it may not have.
+                    return Some((Err(TransportError::Closed), (state, true)));
+                };
                 // The reader belongs to the connection, not to this future. Holding it in a guard
                 // is what makes a cancelled read the same non-event a cancelled poll of any other
                 // stream is: the guard's `Drop` runs whether this future completes or is dropped
@@ -348,9 +360,14 @@ impl Transport for StdioTransport {
                             break Some(Err(TransportError::Framing))
                         }
                         Ok((_, LineEnd::Terminated)) => {
-                            if slot.partial.iter().all(u8::is_ascii_whitespace) {
-                                slot.partial.clear();
-                                continue; // a blank line carries no frame
+                            // A BLANK line — nothing at all between two delimiters — carries no
+                            // frame. A line of spaces is not blank: it is a payload, and this
+                            // transport declares it decodes none, so which payloads are worth
+                            // delivering is not its judgement to make. Dropping them also broke the
+                            // round trip in one direction only, since `write` puts a line of spaces
+                            // on the wire quite happily.
+                            if slot.partial.is_empty() {
+                                continue;
                             }
                             // Taken, not cloned: the line is finished with, so copying it into a
                             // second buffer only to drop the first is one allocation and one copy
@@ -504,11 +521,26 @@ impl Transport for StdioTransport {
             // flag and wake together, since a pump parked on a silent peer never reaches a flag —
             // so the read side goes quiet at the same moment `write` starts answering `Closed`.
             state.begin_close();
-            tokio::spawn(async move {
-                if let Some(mut child) = state.child.lock().await.take() {
-                    let _ = child.start_kill();
+            // The child goes with the connection. On a runtime, asynchronously — the lock the
+            // child sits behind is an async one. Off one, `tokio::spawn` PANICS, so a close from
+            // an operator tool or a shutdown path took the process down instead of killing a
+            // child; there the blocking lock on a detached thread does the same job.
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    handle.spawn(async move {
+                        if let Some(mut child) = state.child.lock().await.take() {
+                            let _ = child.start_kill();
+                        }
+                    });
                 }
-            });
+                Err(_) => {
+                    std::thread::spawn(move || {
+                        if let Some(mut child) = state.child.blocking_lock().take() {
+                            let _ = child.start_kill();
+                        }
+                    });
+                }
+            }
         }
     }
 

@@ -135,7 +135,7 @@ pub fn frame_carries_a_field(frame: &[u8]) -> bool {
 ///
 /// TEST ONLY, and compiled out of a production build entirely. `sse` declares `DECODES_PAYLOAD =
 /// false`: it hands each frame's bytes on exactly as they arrived and never reads the payload, so
-/// the only question its re-segmenter asks of a frame is [`frame_carries_data`]'s. What this is
+/// the only question its re-segmenter asks of a frame is [`frame_carries_a_field`]'s. What this is
 /// still for is the reading those tests check that predicate and their own payload assertions
 /// against — the parse the transport would have to agree with if it ever did decode one.
 #[cfg(test)]

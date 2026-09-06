@@ -943,9 +943,25 @@ async fn served_paths_stays_bounded_across_many_calls() {
         .lock()
         .unwrap()
         .len();
-    assert!(
-        served <= crate::conn::SERVED_PATHS_CAP,
-        "{calls} RPCs over one connection must not grow served_paths past the cap: {served}"
+    assert_eq!(
+        served,
+        crate::conn::SERVED_PATHS_CAP,
+        "{calls} RPCs over one connection fill the record to exactly the cap and no further"
+    );
+    // And it is the LAST handful, not the first: a record that kept the oldest entries and dropped
+    // the newest would be bounded and useless, and `<=` alone could not tell the two apart.
+    let oldest = server_t
+        .state_of(server_conn.id())
+        .unwrap()
+        .served_paths
+        .lock()
+        .unwrap()
+        .front()
+        .cloned();
+    assert_eq!(
+        oldest.as_deref(),
+        Some(crate::server::RPC_PATH),
+        "every call in this fixture is on the same path, so the record's contents are checkable"
     );
 }
 

@@ -35,7 +35,14 @@
 //! therefore carries no body. The reader is the mirror of that: it reads a `Content-Length` body or
 //! decodes a chunked one across as many reads as it arrives in, emits one body frame per chunk the
 //! sender wrote, and hands the trailer section up as its own final frame rather than folding it
-//! into the body.
+//! into the body. The answer side does the same with an upstream's response trailers, for the same
+//! reason: a header that arrived late is still a header.
+//!
+//! A request that asks to be told before it uploads is told. `Expect: 100-continue` is what a
+//! client sets when it would rather be refused than send a body — `curl` sets it itself past about
+//! a kibibyte — and it then waits for the interim answer before writing a byte, so a reader that
+//! only parks on the body leaves both sides waiting on each other. The interim answer goes out once
+//! the head has passed its framing checks and before the body is waited for.
 //!
 //! ## The response leaves as it arrives
 //!
@@ -1319,6 +1326,9 @@ struct EgressHead {
 /// own framing, kept rather than flattened, so a megabyte body arrives as the chunks it was sent as
 /// however the reads happened to fall. A trailer section becomes one final frame carrying it in
 /// wire form, which is where a reader that folded it into the body would have lost it.
+///
+/// Between the head and the body sits the one thing this reader WRITES: the interim answer a
+/// request carrying `Expect: 100-continue` is waiting for. See the crate doc.
 async fn read_ingress_message(
     inner: &Inner,
     max_body_bytes: usize,
