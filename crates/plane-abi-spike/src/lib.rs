@@ -18,8 +18,17 @@
 //!                                  struct, as a compiled-in plugin would be reached.
 //!   (c) [`govern_admit_vec`]     — the shipped anti-pattern: parse `&[u8]`, alloc a `Vec<u8>` out.
 //!
-//! A counting global allocator ([`ALLOC`]) proves (a) and (b) allocate ZERO on the call path, while
+//! A counting global allocator ([`CountingAlloc`], installed by the bench and by this crate's own
+//! tests — never imposed on a dependent) proves (a) and (b) allocate ZERO on the call path, while
 //! (c) allocates per call.
+//!
+//! WHICH SHAPE IS MEASURED: the frozen one this crate spells out itself — [`Facts`] v[`ABI_VERSION`],
+//! a `#[repr(C)]` sized/versioned preamble (`size: u32`, `version: u16`, `_reserved: u16`) followed
+//! by `tokens`/`budget_remaining`/`tenant_id` as `u64`, `priority`/`flags` as `u32`, and a BORROWED
+//! `(ptr, len)` pool name, returning [`Decision`] by value. The serialized form (c) parses is that
+//! same struct field-for-field in little-endian order with the name length-prefixed at byte 40. The
+//! numbers here describe THAT layout and no other: change the struct and the measurement is a
+//! measurement of something else, so bump [`ABI_VERSION`] rather than quietly reshaping it.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 
@@ -240,7 +249,11 @@ pub fn encode_facts(f: &Facts) -> Vec<u8> {
 // is beside the point being measured (the per-call heap alloc).
 #[allow(clippy::result_unit_err)]
 pub fn govern_admit_vec(req: &[u8]) -> Result<Vec<u8>, ()> {
-    if req.len() < 40 {
+    // 44, not 40: the fixed preamble this parser indexes runs through the name-length field at
+    // `[40..44]`, so a 40..=43-byte request passed the guard and then panicked on the slice — the
+    // measured shape has to survive a short request the same as the POD ones do, or the comparison
+    // is between a parser and a crash.
+    if req.len() < 44 {
         return Err(());
     }
     let g = |o: usize| -> [u8; 8] { req[o..o + 8].try_into().unwrap() };
@@ -331,9 +344,14 @@ unsafe impl GlobalAlloc for CountingAlloc {
     }
 }
 
-/// The active global allocator — public so the bench can call [`CountingAlloc::count`]/`reset`.
+/// The counting allocator is installed for THIS CRATE'S OWN TESTS only. A `#[global_allocator]` in a
+/// LIBRARY is inherited by every binary that links it, so declaring it unconditionally here would
+/// hand the spike's measurement instrument to any future dependent — one that never asked to have
+/// every allocation in its process counted, and cannot opt out short of dropping the dependency.
+/// The bench declares its own (see `benches/abi_bench.rs`); measuring is the measurer's job.
+#[cfg(test)]
 #[global_allocator]
-pub static ALLOC: CountingAlloc = CountingAlloc;
+static ALLOC: CountingAlloc = CountingAlloc;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Tests: correctness (all shapes agree) + the alloc-gate proof.

@@ -22,6 +22,12 @@ use plane_abi_spike::{
     PlaneHostVtable,
 };
 
+/// The ALLOC-GATE instrument, installed HERE rather than in the library. A `#[global_allocator]`
+/// declared in a library is inherited by every binary linking it; this bench is the thing doing the
+/// measuring, so it is the thing that carries the counter.
+#[global_allocator]
+static ALLOC: CountingAlloc = CountingAlloc;
+
 /// The govern_admit signature exported by the cdylib, as reached across the dlopen boundary.
 type DlGovernAdmit = extern "C-unwind" fn(*const Facts) -> Decision;
 
