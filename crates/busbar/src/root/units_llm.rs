@@ -511,6 +511,7 @@ impl LlmNode {
             // across two windows. Spelled out of the ONE arrival reading below rather than read
             // here, so the epoch this unit is billed in and the stamp the table enters it under
             // cannot be two different instants.
+            arrived,
             charged_at: arrived.secs(),
             deferred: Mutex::new(None),
             model: Mutex::new(String::new()),
@@ -1019,7 +1020,16 @@ pub struct LlmUnit<'n> {
     model_hint: Option<String>,
     /// When the request started, for the terminal's finish-stage latency observation.
     started: Instant,
-    /// The pinned header-arrival epoch every charge and every refund lands in.
+    /// THE UNIT'S PINNED ARRIVAL, as the drive read it once at the top.
+    ///
+    /// The epoch every charge and every refund lands in is spelled out of it, and so is the pair the
+    /// posting a client that went away leaves behind is dated and ordered by. Held whole rather than
+    /// as the seconds alone, because the unit is the one thing that outlives the await: an abandoned
+    /// end is settled from here, and a settlement that had to re-read a clock would land in whatever
+    /// window the unwind happened to reach.
+    arrived: Arrived,
+    /// The pinned header-arrival epoch every charge and every refund lands in. Spelled out of
+    /// `arrived` above, so the two readings of one arrival cannot disagree.
     charged_at: u64,
     /// THE HISTORY SNAPSHOT THIS UNIT WAS ADMITTED UNDER, pinned at the door with `charged_at`: the
     /// metering step resolves what the unit consumed through it, and the late accrual resolves
@@ -1079,7 +1089,7 @@ impl LlmUnit<'_> {
             op_class: self.op_class,
             destination,
             started: self.started,
-            charged_at: self.charged_at,
+            charged_at: self.arrived.secs(),
         }
     }
 
@@ -1339,7 +1349,7 @@ impl Units for LlmUnit<'_> {
                 gov: self.walk.gov(),
                 proto: self.walk.proto(),
                 destination: &model,
-                charged_at: self.charged_at,
+                charged_at: self.arrived.secs(),
             },
             principal,
             destinations,
@@ -1501,6 +1511,35 @@ impl Units for LlmUnit<'_> {
                 }),
             },
         }
+    }
+
+    /// THE ABANDONED UNIT'S EXIT ARM, which is the exit arm the drive runs written where the drive
+    /// cannot reach.
+    ///
+    /// A client that hangs up drops the drive's future inside its one await, so the line that
+    /// settles what the terminal posted never runs — and the posting the guard's terminal handed
+    /// back went nowhere. The legacy book, which the plane's own shell wrote before the loop ever
+    /// awaited, still has the unit's row; the root's journal has none, and the two books disagree on
+    /// every abort. This is the same settlement, from the one value that survives the unwind.
+    ///
+    /// Once per unit: a unit that reached its own end is settled by the drive and never arrives
+    /// here, because the guard whose terminal was taken does nothing when it is dropped.
+    fn abandoned(
+        &self,
+        _token: &UnitToken<Audit>,
+        _ctx: &UnitCtx,
+        ended: busbar_kernel::teller::Ended,
+    ) {
+        self.node.settle_end(
+            &authenticate::principal_id(self.walk.gov()),
+            // THE PINNED ARRIVAL, not a clock read on the unwind. The abandoned unit's row lands on
+            // the same balance and in the same window every other charge this unit made landed in.
+            self.arrived,
+            // And under the card this unit was ADMITTED under, for the same reason: a settlement
+            // written on the unwind still names the rates the request agreed to at the door.
+            self.card.as_ref().map_or(0, |in_force| in_force.generation),
+            ended,
+        );
     }
 }
 
