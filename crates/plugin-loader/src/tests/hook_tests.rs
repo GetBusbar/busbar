@@ -533,7 +533,7 @@ fn a_plugin_log_reaches_the_host() {
     let mine: Vec<_> = records
         .iter()
         .skip(before)
-        .filter(|(_, _, text)| text.contains("host log bridge check"))
+        .filter(|(_, _, text, _)| text.contains("host log bridge check"))
         .collect();
     assert!(
         !mine.is_empty(),
@@ -557,7 +557,7 @@ fn a_plugin_log_reaches_the_host() {
     let traced: Vec<_> = records
         .iter()
         .skip(before)
-        .filter(|(_, _, text)| text.contains("test-hook tracing call"))
+        .filter(|(_, _, text, _)| text.contains("test-hook tracing call"))
         .collect();
     assert!(
         !traced.is_empty(),
@@ -583,7 +583,7 @@ fn a_plugin_log_reaches_the_host() {
     let noisy: Vec<_> = records
         .iter()
         .skip(before)
-        .filter(|(_, lvl, _)| {
+        .filter(|(_, lvl, _, _)| {
             *lvl == busbar_plugin::cold::log_level::DEBUG
                 || *lvl == busbar_plugin::cold::log_level::TRACE
         })
@@ -601,6 +601,13 @@ fn a_plugin_log_reaches_the_host() {
 /// poll. A per-load allocation is therefore per-CALL and unbounded, driven by routine external
 /// scraping: the exact leak `intern_name` exists to close, and the first version of the log
 /// bridge reintroduced it. Loading the same plugin repeatedly must hand out ONE pointer.
+///
+/// Asserted on the `ctx` POINTER `host_log_sink` was actually called with on every load, round
+/// tripped through the real ABI — not on the cloned `name` `String`s alone. Two distinct
+/// allocations holding the same bytes ("test-hook" == "test-hook") compare equal as strings
+/// regardless of whether `intern_log_ctx` reused one pointer or leaked a fresh one per load, so a
+/// content-only comparison can never fail on the defect this test exists to catch; `RECORDS` now
+/// carries that pointer (as `usize`) precisely so this test can.
 #[test]
 fn the_log_ctx_is_interned_not_allocated_per_load() {
     let Some(_) = hook_plugin_path() else {
@@ -613,17 +620,26 @@ fn the_log_ctx_is_interned_not_allocated_per_load() {
     for _ in 0..5 {
         let _ = load("{}");
     }
-    let names: Vec<String> = crate::hostlog::log_tap::RECORDS
+    let records: Vec<(String, usize)> = crate::hostlog::log_tap::RECORDS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
         .skip(before)
-        .map(|(n, _, _)| n.clone())
+        .map(|(n, _, _, ctx)| (n.clone(), *ctx))
         .collect();
-    assert!(!names.is_empty(), "the loads should have produced records");
     assert!(
-        names.iter().all(|n| n == "test-hook"),
-        "every load must report the same interned name: {names:?}"
+        !records.is_empty(),
+        "the loads should have produced records"
+    );
+    assert!(
+        records.iter().all(|(n, _)| n == "test-hook"),
+        "every load must report the same interned name: {records:?}"
+    );
+    let first_ctx = records[0].1;
+    assert!(
+        records.iter().all(|(_, ctx)| *ctx == first_ctx),
+        "every load of the same plugin name must hand `host_log_sink` the SAME interned `ctx` \
+         pointer, not a fresh allocation per load: {records:?}"
     );
 }
 

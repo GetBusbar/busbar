@@ -91,7 +91,7 @@ pub(crate) unsafe extern "C" fn host_log_sink(
             unsafe { &*(ctx as *const String) }
         };
         #[cfg(test)]
-        log_tap::record(name, level, &text);
+        log_tap::record(name, level, &text, ctx);
         match level {
             busbar_plugin::cold::log_level::ERROR => {
                 tracing::error!(plugin = %name, "{text}")
@@ -118,17 +118,25 @@ pub(crate) unsafe extern "C" fn host_log_sink(
 /// crossed the ABI and arrived attributed to the right plugin.
 #[cfg(test)]
 pub(crate) mod log_tap {
+    use std::ffi::c_void;
     use std::sync::Mutex;
 
-    pub(crate) static RECORDS: Mutex<Vec<(String, u32, String)>> = Mutex::new(Vec::new());
+    /// `(name, level, text, ctx)` — `ctx` is the raw pointer `host_log_sink` was called with, i.e.
+    /// exactly the value [`intern_log_ctx`](super::intern_log_ctx) handed back for this name. Two
+    /// records with the same name but a DIFFERENT `ctx` would mean a fresh `ctx` was leaked for a
+    /// load that should have reused the interned one — the one thing a comparison of the cloned
+    /// `name` strings alone can never see, since two distinct allocations holding identical bytes
+    /// compare equal as strings.
+    pub(crate) static RECORDS: Mutex<Vec<(String, u32, String, usize)>> = Mutex::new(Vec::new());
 
     /// Called from `host_log_sink` for every record that crosses the ABI. Inside the module rather
     /// than beside it so clippy's `items_after_test_module` stays satisfied.
-    pub(crate) fn record(name: &str, level: u32, text: &str) {
+    pub(crate) fn record(name: &str, level: u32, text: &str, ctx: *const c_void) {
         RECORDS.lock().unwrap_or_else(|e| e.into_inner()).push((
             name.to_string(),
             level,
             text.to_string(),
+            ctx as usize,
         ));
     }
 }
