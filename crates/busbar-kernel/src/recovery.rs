@@ -23,12 +23,12 @@
 //! truncated there. A torn tail is normal. A torn record in the MIDDLE is not, and says so.
 
 use busbar_caps::{
-    Canary, Hold, LedgerToken, MeterClassId, Outcome, Posted, PrincipalId, QuantitySource,
-    ReasonCode, RecoveryToken, StepName, UnitKey, Usage, UsageLine, UsageToken,
+    Canary, Hold, LedgerToken, Outcome, Posted, PrincipalId, QuantitySource, ReasonCode,
+    RecoveryToken, StepName, UnitKey, Usage, UsageLine, UsageToken,
 };
 
 use crate::slice::Epoch;
-use crate::teller::{settle_amount, Evidence, Kernel};
+use crate::teller::{settle_amount, Evidence, Kernel, KERNEL_ACCRUAL_CLASS};
 
 /// A hold as the journal wrote it.
 ///
@@ -83,7 +83,7 @@ pub fn settle(kernel: &Kernel, record: &HoldRecord, canary: &Canary) -> Posted {
     let usage = Usage::estimate(
         &UsageToken::mint(kernel.seal()),
         vec![UsageLine {
-            class: MeterClassId::new("nano_units"),
+            class: KERNEL_ACCRUAL_CLASS,
             quantity: amount,
             // The sweep never saw a destination report anything: this figure is the accrual the
             // journal recorded, which is the kernel's own count, and the whole report is an

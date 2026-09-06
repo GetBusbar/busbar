@@ -22,13 +22,13 @@
 //! a node decides whether stopping is even the right thing to do when it cannot reach the store.
 
 use busbar_caps::{
-    Abort, Canary, ExitToken, HoldCell, LedgerToken, MeterClassId, Outcome, Posted, PostingFlags,
-    QuantitySource, ReasonCode, StepName, UnitEnd, Usage, UsageLine, UsageToken,
+    Abort, Canary, ExitToken, HoldCell, LedgerToken, Outcome, Posted, PostingFlags, QuantitySource,
+    ReasonCode, StepName, UnitEnd, Usage, UsageLine, UsageToken,
 };
 
 use crate::inflight::UnitSlot;
 use crate::slice::{ConcurrencyGauge, LeaseSet};
-use crate::teller::{settle_amount, Evidence, Kernel};
+use crate::teller::{settle_amount, Evidence, Kernel, KERNEL_ACCRUAL_CLASS};
 use crate::Millis;
 
 /// How long a session may go without a non-tick unit before it is closed.
@@ -292,7 +292,7 @@ pub fn sweep_settle(
                 Some(hold) => {
                     let (amount, flags) = settle_amount(&outcome, evidence);
                     let lines = vec![UsageLine {
-                        class: MeterClassId::new("nano_units"),
+                        class: KERNEL_ACCRUAL_CLASS,
                         quantity: amount,
                         source: QuantitySource::Count,
                         estimated: flags.contains(PostingFlags::ESTIMATED),

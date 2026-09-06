@@ -260,6 +260,13 @@ pub struct Evidence {
     pub fee: FeeEvidence,
 }
 
+/// The class the kernel's own accrual is reported against when nothing else named one.
+///
+/// Spelled ONCE. The exit path, the sweep and the recovery path all post the same figure against
+/// the same class, and three string literals for one class is three places a typo can put a
+/// settled unit on a meter nobody prices.
+pub const KERNEL_ACCRUAL_CLASS: MeterClassId = MeterClassId::new("nano_units");
+
 /// The settlement table, as one pure function.
 ///
 /// Every row of it says the same thing in a different situation: **post the lower evidence, mark
@@ -989,9 +996,7 @@ pub fn exit<U: Units>(
             // carried out as an overdraft. There is no arm on this path that refuses — value was
             // delivered, so the only question left is which column it lands in.
             let _spend = hold.spend(run.meter.total(), run.meter.headroom());
-            let class = evidence
-                .class
-                .unwrap_or_else(|| MeterClassId::new("nano_units"));
+            let class = evidence.class.unwrap_or(KERNEL_ACCRUAL_CLASS);
             let lines = vec![UsageLine {
                 class,
                 quantity: amount,
