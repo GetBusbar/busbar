@@ -463,6 +463,38 @@ impl Wire {
         }
     }
 
+    /// THE SAME THREE FACTS, FOR A BINDING WHOSE ABSENT-HEADER DEFAULT IS NOT `0.3`.
+    ///
+    /// `0.3` for an absent or empty `A2A-Version` is the JSON-RPC binding's rule, and it is right
+    /// there: every client written before the header existed sends none, and they are 0.3 clients.
+    /// It is NOT right for a binding that did not exist at 0.3. The HTTP+JSON binding was introduced
+    /// with v1.0 — `super::rest::method` composes the v1.0 operation spellings for exactly that
+    /// reason — so a REST request that names no version is a 1.0 request, and stamping `0.3` on the
+    /// relayed envelope tells the backend "0.3" by omission and then sends it `SendMessage`. A
+    /// backend that reads the header answers `VERSION_NOT_SUPPORTED` to a method busbar had itself
+    /// just accepted, which is the failure [`Wire::negotiated_version`] already records for the
+    /// version-less hop and which the gRPC binding already avoids through
+    /// [`Wire::for_grpc`]/`GRPC_A2A_VERSION`. This is that same fix, one binding over.
+    ///
+    /// A version the caller DID send is left exactly as sent, so [`Wire::refuse`] still judges it and
+    /// a REST caller that explicitly asks for `0.3` still gets `0.3` relayed.
+    pub(crate) fn from_headers_defaulting(
+        headers: &axum::http::HeaderMap,
+        default_version: &str,
+    ) -> Self {
+        let mut wire = Self::from_headers(headers);
+        if wire
+            .version
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            wire.version = Some(default_version.to_string());
+        }
+        wire
+    }
+
     /// THE SAME TWO FACTS, AS THE gRPC BINDING SUPPLIES THEM.
     ///
     /// [`Wire`]'s fields are private because the extractor is the security property — an extractor
