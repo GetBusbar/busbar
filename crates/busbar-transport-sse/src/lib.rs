@@ -103,7 +103,7 @@ impl Plugin for SseTransport {
         Kind::Transport
     }
     fn abi(&self) -> busbar_contract_transport::AbiVersion {
-        busbar_contract_transport::AbiVersion(1)
+        busbar_contract_transport::registry::TRANSPORT_ABI
     }
 }
 

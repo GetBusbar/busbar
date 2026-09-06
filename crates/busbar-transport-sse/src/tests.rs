@@ -533,6 +533,20 @@ async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
     );
 }
 
+/// The ABI this transport declares is the registry's own constant, not a number copied out of it.
+///
+/// A hand-written version is right only until the registry's moves, and the day it does the loader
+/// is told this transport speaks an ABI it does not — by a plugin that looks, from the outside,
+/// exactly like the six siblings that all name the constant.
+#[test]
+fn the_declared_abi_is_the_registrys_own_constant() {
+    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    assert_eq!(
+        SseTransport::new(http).abi(),
+        busbar_contract_transport::registry::TRANSPORT_ABI
+    );
+}
+
 /// The predicate the re-segmenter admits carved frames on answers exactly what a full parse would.
 ///
 /// `frames` asks one question of every frame it carves — does this frame carry a payload — and
