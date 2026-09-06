@@ -188,25 +188,37 @@ fn substitute_applies_each_slot_exactly_once() {
     assert_eq!(twice, once);
 }
 
-/// A slot's substitution never reaches anything other than the envelope it is handed: passing a
-/// separate "content" vector alongside proves the substitution touches only the envelope, never a
-/// content-facts-shaped structure a plane might hold — a `SecretSlot` is substituted into the wire
-/// envelope and nowhere else.
+/// A slot's substitution reaches the slot's own field and NOTHING ELSE in the envelope it is
+/// handed. Checked against an envelope that already carries the fields encoding wrote — the host,
+/// the content type, a forwarded client header — every one of which stays byte-identical while
+/// exactly one `authorization` entry appears.
 #[test]
-fn substitute_never_touches_anything_but_the_envelope_it_is_given() {
+fn substitute_touches_only_the_field_the_slot_names() {
     let t = token();
     let decoration = decorate(&t, &Scheme::Bearer, "key-b", &empty_body());
-    let content_facts: Vec<(String, String)> =
-        vec![("unrelated".to_string(), "untouched".to_string())];
-    let envelope = substitute(&decoration, "key-b", Vec::new());
-    // The content-shaped vector was never passed to `substitute` and is unchanged by definition —
-    // asserted here so the test fails loudly if a future edit widens `substitute`'s signature to
-    // accept (and so risk touching) anything beyond the envelope.
-    assert_eq!(
-        content_facts,
-        vec![("unrelated".to_string(), "untouched".to_string())]
-    );
-    assert!(!envelope.iter().any(|(k, _)| k == "unrelated"));
+    let before: Vec<(String, String)> = vec![
+        ("host".to_string(), "api.openai.com".to_string()),
+        ("content-type".to_string(), "application/json".to_string()),
+        ("openai-beta".to_string(), "responses=v1".to_string()),
+    ];
+    let after = substitute(&decoration, "key-b", before.clone());
+
+    let authorization: Vec<_> = after
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+        .collect();
+    assert_eq!(authorization.len(), 1, "exactly one credential header");
+    assert_eq!(authorization[0].1, "Bearer key-b");
+
+    // Every pair that was already there is the same pair, in the same order: substitution never
+    // rewrites, reorders or drops what encoding put on the wire.
+    let untouched: Vec<_> = after
+        .iter()
+        .filter(|(k, _)| !k.eq_ignore_ascii_case("authorization"))
+        .cloned()
+        .collect();
+    assert_eq!(untouched, before);
+    assert_eq!(after.len(), before.len() + 1);
 }
 
 /// The lane cross-check: the decorated envelope's `host` must still equal what the trust unit
