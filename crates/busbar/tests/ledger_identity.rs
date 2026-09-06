@@ -25,17 +25,21 @@
 //! disagreed about which requests are billable, the residual would name the row; if BOTH sides made
 //! the same mistake the request counts below would not add up. So the test pins both.
 //!
-//! ## What is NOT proven here, and why
+//! ## The two ledger sides, and why there are two
 //!
-//! The composition root's `Ledger` is built dual-writing (`root::durability::build`) but no plane is
-//! switched onto the root yet at this revision — `crates/busbar/src/root/mod.rs` says so in its own
-//! words, and carries the `allow(dead_code)` that says it. There is consequently NO root-side ledger
-//! readout to query, and mounting one would report an empty book however much traffic ran through
-//! the binary: it would assert nothing. So the ledger side here is reconstructed from the figures
-//! the run actually produced, priced through the real `busbar_unit_cost::price`, and the check is
-//! the one that has content today — that the ledger's pricing and the legacy projection agree
-//! exactly on the binary's own traffic. When a plane is switched onto the root, this test's ledger
-//! snapshot is the thing that gets replaced by a readout, and nothing else about it changes.
+//! The first is RECONSTRUCTED: the figures the run actually produced, priced through the real
+//! `busbar_unit_cost::price`, checked against the legacy projection. That is the full-width identity
+//! — bucket, day, lane and provider, with the flat fee as a line of its own — and it is the check
+//! that says the ledger's arithmetic and the legacy projection's agree on the binary's own traffic.
+//!
+//! The second is SERVED: the rows the composition root settled into while that traffic ran, read
+//! back off `/api/v1/admin/ledger/totals` and `/api/v1/admin/ledger/reconciliation`. It exists
+//! because the first one cannot fail for a node that settled nothing at all — an empty ledger
+//! reconciles, and a node whose postings never reach a book looks exactly like a node with no
+//! traffic. So the served side asserts the row count FIRST and every figure after it. The two sides
+//! are read at different widths and the section says which: the node's books retain no lane and no
+//! provider, and the plane's own pricing seam returns token classes only, so the flat per-request
+//! fee is named there as its own term rather than folded into an expected figure.
 #![cfg(unix)]
 // Needs a bootable server with an LLM route: the money path is what is being reconciled.
 #![cfg(feature = "proto-llm")]
@@ -115,6 +119,8 @@ const OUTPUT_UTOK: f64 = 200_000.0;
 /// `Σ fee_count == billable_requests` half of the identity is `0 == 0` on every row and would pass
 /// with the fee line unimplemented on either side.
 const FEE_CENTS: i64 = 3;
+/// Micro-units in one cent — the scale the flat fee is lifted by in the micro projection.
+const MICROS_PER_CENT: i64 = 10_000;
 
 /// One delivered response, in nano-units: `11 × 100_000_000 + 7 × 200_000_000` for the tokens, plus
 /// `3 × 10_000_000` for the fee line.
@@ -385,6 +391,112 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
     assert_eq!(by_key_spend, expected_micros);
     assert_eq!(by_key_requests, total_requests);
     assert_eq!(usage["by_key_truncated"], serde_json::Value::Bool(false));
+
+    // ── THE NODE'S OWN BOOKS ─────────────────────────────────────────────────────────────────────
+    //
+    // Everything above is the identity proven over a ledger side this test computed. This is the
+    // identity proven over the ledger side the BINARY served: the rows the composition root settled
+    // into while the traffic above ran, read back off the administrative surface.
+    //
+    // It is the half that can be vacuous, and the release before this one was exactly that. Every
+    // settlement posted zero — the money on this plane is in a cell the response body fills after the
+    // unit's terminal, so the metering step priced nothing — and a settlement of zero is not a row,
+    // so `/ledger/totals` answered `{"rows":[]}` and `/ledger/reconciliation` reported `holds: true`
+    // over two empty tables. Both of those are what a HEALTHY node looks like from outside, which is
+    // why the row count is asserted here and asserted first.
+    let totals: serde_json::Value = serde_json::from_slice(&get_bytes(
+        PORTS.admin,
+        "/api/v1/admin/ledger/totals",
+        ADMIN_TOKEN,
+    ))
+    .expect("the totals response is JSON");
+    let rows = totals["rows"].as_array().expect("a rows array");
+    assert!(
+        !rows.is_empty(),
+        "the node settled {delivered} delivered responses and its own books carry no row: \
+         an empty ledger reconciles, so this is what makes every check below a claim\n{totals}\nlog:\n{}",
+        rig.log()
+    );
+
+    // THE FLAT FEE IS NOT ON THIS SIDE, and the term is written rather than folded into an expected
+    // figure. The legacy projection reprices a row's token counts AND adds the flat per-request fee
+    // at read time, because it holds the deployment's card. What the node's books carry is what the
+    // plane's own pricing seam returns for the usage the tap reported — token classes only; there is
+    // no seam on the plane host that exposes the fee, so a fee component in these rows would be a
+    // number invented on this side of the comparison. Naming it as its own term is what keeps the
+    // check exact: `Σ priced == spend − fee`, with both halves pinned as absolutes below, fails on a
+    // change to either side rather than absorbing it.
+    let fee_micros = FEE_CENTS * MICROS_PER_CENT * i64::try_from(delivered).expect("small");
+    let tokens_micros = expected_micros - fee_micros;
+    // `priced_micros` is served as a STRING, which is the view's own decision about a money figure
+    // wider than a JSON number holds. Parsed rather than read as one, so a change to that decision
+    // fails here rather than being absorbed.
+    let served_micros: i64 = rows
+        .iter()
+        .map(|r| {
+            r["priced_micros"]
+                .as_str()
+                .expect("priced_micros is a string")
+                .parse::<i64>()
+                .expect("priced_micros is a number")
+        })
+        .sum();
+    assert_eq!(
+        served_micros, tokens_micros,
+        "the node's own books carry {served_micros} micro-units for {delivered} delivered \
+         responses; the legacy rows carry {expected_micros}, of which {fee_micros} is the flat \
+         per-request fee the plane cannot price\n{totals}"
+    );
+    assert_eq!(
+        tokens_micros,
+        2_500_000 * i64::try_from(delivered).expect("small"),
+        "one delivered response's TOKEN spend is a pinned figure, stated as an absolute so a change \
+         that moved both sides of the comparison identically still fails here"
+    );
+
+    // The fee count, at the width the node keeps. Zero on BOTH sides and never on one: neither the
+    // books nor the legacy posting retain a count at this width, so the count half of the identity
+    // compares two absences. A view that put a count on one side and a zero on the other would
+    // report every row on a healthy node as out — which is why this is asserted rather than skipped.
+    let served_fees: u64 = rows
+        .iter()
+        .map(|r| r["fee_count"].as_u64().expect("fee_count"))
+        .sum();
+    assert_eq!(served_fees, 0);
+    for row in rows {
+        assert_eq!(row["day"].as_u64(), Some(day), "every row is the run's own day");
+    }
+
+    // THE RECONCILIATION, and it holds over a table with rows in it. Both sides of it come out of one
+    // settlement under one lock, so what this proves is not that two numbers were computed the same
+    // way — it is that the dual write reached both books for every posting the run made, which is a
+    // claim only a NON-EMPTY table can carry.
+    let reconciliation: serde_json::Value = serde_json::from_slice(&get_bytes(
+        PORTS.admin,
+        "/api/v1/admin/ledger/reconciliation",
+        ADMIN_TOKEN,
+    ))
+    .expect("the reconciliation response is JSON");
+    assert_eq!(
+        reconciliation["holds"],
+        serde_json::Value::Bool(true),
+        "the node's own identity does not hold: {reconciliation}"
+    );
+    assert_eq!(
+        reconciliation["discrepancies"]
+            .as_array()
+            .expect("a discrepancies array")
+            .len(),
+        0,
+        "the identity is reported as holding and names discrepancies: {reconciliation}"
+    );
+}
+
+/// One administrative read, as bytes.
+fn get_bytes(port: u16, path: &str, bearer: &str) -> Vec<u8> {
+    let r = get(port, path, Some(bearer));
+    assert_eq!(r.status, 200, "GET {path} answered {}: {}", r.status, r.body);
+    r.body.into_bytes()
 }
 
 // ── the ledger side's inputs ─────────────────────────────────────────────────────────────────────
