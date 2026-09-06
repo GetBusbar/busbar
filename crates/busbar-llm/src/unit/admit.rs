@@ -259,7 +259,7 @@ mod tests {
         std::sync::Arc<busbar_core::state::App>,
         std::sync::Arc<busbar_api::VirtualKey>,
     ) {
-        busbar_core::metrics::init();
+        busbar_substrate::metrics::init();
         let store = std::sync::Arc::new(MemoryStore::new());
         if let Some((bucket, requests)) = seed {
             store

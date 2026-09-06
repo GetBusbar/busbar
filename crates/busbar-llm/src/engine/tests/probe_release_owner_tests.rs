@@ -25,7 +25,7 @@ use std::sync::Arc;
 #[tokio::test]
 async fn a_stale_resume_does_not_revert_a_newer_probe() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     let started = Arc::new(tokio::sync::Notify::new());
@@ -143,7 +143,7 @@ async fn a_stale_resume_does_not_revert_a_newer_probe() {
 #[tokio::test]
 async fn a_dropped_main_path_future_releases_its_won_probe() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     let started = Arc::new(tokio::sync::Notify::new());

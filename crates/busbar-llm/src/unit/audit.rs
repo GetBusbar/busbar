@@ -481,7 +481,7 @@ mod tests {
     #[tokio::test]
     async fn audit_matches_the_live_admitted_terminal_and_posts_once() {
         crate::testkit::install_test_seams();
-        busbar_core::metrics::init();
+        busbar_substrate::metrics::init();
         let (app, keys) = governed([&unique("audit-live"), &unique("audit-unit")]);
         let (host, _rt) = crate::engine::test_host_rt(&app);
         let at = busbar_substrate::store::now();
@@ -535,7 +535,7 @@ mod tests {
     #[tokio::test]
     async fn audit_refused_matches_the_live_rejected_terminal_and_posts_once() {
         crate::testkit::install_test_seams();
-        busbar_core::metrics::init();
+        busbar_substrate::metrics::init();
         let (app, keys) = governed([&unique("refused-live"), &unique("refused-unit")]);
         let (host, _rt) = crate::engine::test_host_rt(&app);
         let at = busbar_substrate::store::now();
@@ -589,7 +589,7 @@ mod tests {
     #[tokio::test]
     async fn the_two_doors_post_different_evidence_for_the_same_bytes() {
         crate::testkit::install_test_seams();
-        busbar_core::metrics::init();
+        busbar_substrate::metrics::init();
         let (app, keys) = governed([&unique("doors-admitted"), &unique("doors-refused")]);
         let (host, _rt) = crate::engine::test_host_rt(&app);
         let at = busbar_substrate::store::now();
@@ -628,7 +628,7 @@ mod tests {
     #[tokio::test]
     async fn the_chains_this_step_writes_verify() {
         crate::testkit::install_test_seams();
-        busbar_core::metrics::init();
+        busbar_substrate::metrics::init();
         let (app, keys) = governed([&unique("verify-a"), &unique("verify-b")]);
         let (host, _rt) = crate::engine::test_host_rt(&app);
         let at = busbar_substrate::store::now();
@@ -668,7 +668,7 @@ mod tests {
     #[tokio::test]
     async fn the_refused_door_labels_a_configured_pool_with_its_own_name() {
         crate::testkit::install_test_seams();
-        busbar_core::metrics::init();
+        busbar_substrate::metrics::init();
         let (app, keys) = governed([&unique("label-live"), &unique("label-unit")]);
         let (host, _rt) = crate::engine::test_host_rt(&app);
         let at = busbar_substrate::store::now();
@@ -719,7 +719,7 @@ mod tests {
     #[tokio::test]
     async fn the_sealed_end_is_the_taps_where_there_is_one_and_the_status_where_there_is_not() {
         crate::testkit::install_test_seams();
-        busbar_core::metrics::init();
+        busbar_substrate::metrics::init();
         let (app, keys) = governed([&unique("finish-a"), &unique("finish-b")]);
         let (host, _rt) = crate::engine::test_host_rt(&app);
         let at = busbar_substrate::store::now();

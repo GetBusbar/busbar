@@ -928,6 +928,8 @@ dependencies = [
  "hyper-util",
  "indexmap",
  "metrics",
+ "metrics-exporter-prometheus",
+ "metrics-util",
  "rcgen",
  "reqwest 0.12.28",
  "ring",

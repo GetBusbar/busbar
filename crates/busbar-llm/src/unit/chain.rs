@@ -264,7 +264,7 @@ mod rehearsal {
 
     async fn rig(fixture: Fixture) -> Rig {
         crate::testkit::install_test_seams();
-        busbar_core::metrics::init();
+        busbar_substrate::metrics::init();
 
         let state = Arc::new(MockServerState::new());
         // Enough for every failover hop the walk may take; a delivered fixture consumes one.

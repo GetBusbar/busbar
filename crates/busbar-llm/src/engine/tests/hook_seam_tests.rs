@@ -783,7 +783,7 @@ async fn substrate_fire_stage_taps_honors_group_scope_via_host_seam() {
 #[tokio::test]
 async fn completion_tap_fires_synthetic_rejected_by_auth() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
@@ -827,7 +827,7 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
 #[tokio::test]
 async fn completion_tap_status_is_protocol_native_gemini_400() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .auth(Arc::new(busbar_core::auth::AuthMiddleware::new_builtin(

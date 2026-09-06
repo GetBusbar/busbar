@@ -144,6 +144,14 @@ url = { workspace = true }
 # `metrics::counter!` writes over bounded, operator-configured labels — no `App`, no engine reach — so
 # they relocate here for the plane crates to name directly. This is the family's only `metrics` edge.
 metrics = { workspace = true }
+# THE RECORDER ITSELF. The process-global Prometheus recorder install, its retention window and the
+# text exposition `render()` produces moved down here with the telemetry bank they drain: both are
+# `App`-free, and a plane's tests must be able to install the SAME single registry and read the SAME
+# bytes without naming `busbar-core`. `metrics-util`'s `MetricKindMask` is the gauge idle-timeout
+# axis on the builder. Both were already in the composed binary's graph via core, which now
+# re-exports instead of owning — net zero for the shipped build.
+metrics-exporter-prometheus = { workspace = true }
+metrics-util = { workspace = true }
 # The relocated admin named-definition read view (`api::NamedDefView`) derives `schemars::JsonSchema`
 # under `openapi-schema`, and the relocated response-schema attach helper (`api::set_response_schema`)
 # is compiled only under it — the same CI-only OpenAPI derive core and the plane crates gate on.

@@ -65,7 +65,7 @@ async fn a_governed_deployment(
     String,
 ) {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     for _ in 0..answers {
         state.push(MockResponse::Ok {
@@ -210,7 +210,7 @@ async fn every_model_request_lands_on_the_presenting_keys_hash_chain_dispatch_an
 /// go unrecorded.
 #[tokio::test]
 async fn a_request_with_no_resolved_key_is_chained_under_the_sentinel_rather_than_dropped() {
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let before = REQUESTS.records_for(PRINCIPAL_UNGOVERNED).len();
 
     // No `governance(..)`: nothing resolves a key, and the request is refused for want of a route.

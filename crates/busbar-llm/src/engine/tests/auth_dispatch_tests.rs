@@ -161,7 +161,7 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let token = "grp:carrier";
 
@@ -307,7 +307,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     // Mock upstream that returns a valid Anthropic-shaped body, so an ADMITTED request reaches
     // 200 rather than failing for an unrelated reason.
@@ -437,7 +437,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     // Two admitted requests (x-goog-api-key, x-api-key) reach the upstream; queue two bodies.
@@ -579,7 +579,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
@@ -681,7 +681,7 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -777,7 +777,7 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -845,7 +845,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -968,7 +968,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     for _ in 0..2 {
@@ -1098,7 +1098,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     // No upstream body queued — enforcement must reject before any upstream call.
     let state = Arc::new(MockServerState::new());
@@ -1183,7 +1183,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
 async fn test_1_5_2_open_chain_admin_token_no_credential_admits_anon() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, _secret) = dp_gov_with_key();
     // Default auth = empty chain (open front door). Admin token present (governance active).
@@ -1219,7 +1219,7 @@ async fn test_1_5_2_open_chain_admin_token_no_credential_admits_anon() {
 async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, _secret) = dp_gov_with_key();
     let app = TestApp::new()
@@ -1255,7 +1255,7 @@ async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
 async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, secret) = dp_gov_with_key();
     let key_id = gov.all_keys().unwrap()[0].id.clone();
@@ -1301,7 +1301,7 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
 async fn test_1_5_2_keys_chain_valid_vkey_admits() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, secret) = dp_gov_with_key();
     let app = TestApp::new()
@@ -1337,7 +1337,7 @@ async fn test_1_5_2_keys_chain_valid_vkey_admits() {
 async fn test_1_5_2_role_bound_principal_synthesized() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, _secret) = dp_gov_with_key();
     let rb = bindings_for(
@@ -1388,7 +1388,7 @@ async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use busbar_core::governance::{GovState, MemoryStore};
     use busbar_substrate::governance::NewKeySpec;
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = std::sync::Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: axum::http::StatusCode::OK,
