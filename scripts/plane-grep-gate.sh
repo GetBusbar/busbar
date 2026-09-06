@@ -72,6 +72,9 @@
 # No external deps beyond bash 3.2 + POSIX awk (macOS/Linux) — same bare-runner posture as the sibling
 # gates (plane-purity-lint.sh, config-stability-gate.sh).
 set -uo pipefail
+# Resolved BEFORE the cd, so the self-test can re-invoke this exact file as a child process (the root
+# guard below exits the process, which a `$(…)` subshell would swallow).
+SELF="$(cd "$(dirname "$0")" >/dev/null && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
 
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
@@ -98,7 +101,11 @@ DIALECTS="openai gemini anthropic bedrock cohere responses"
 # A plane added to plane-keys.sh flows into every needle set here with no edit below.
 # shellcheck source=scripts/plane-keys.sh
 . "$(dirname "$0")/plane-keys.sh"
-NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/busbar-substrate-values/src crates/api/src"
+# The NEUTRAL roots come from the same file, for the same reason: the ABI side is one list, shared with
+# plane-purity-lint.sh / plane-transport-neutrality.sh / plane-noun-gate.sh, and a drained crate leaves
+# the set by ONE named deletion there. The env override exists for the self-test's blind-scan cases
+# below and nothing else; CI never sets it.
+NEUTRAL_ROOTS="${PLANE_GREP_NEUTRAL_ROOTS:-$(neutral_src_roots)}"
 NEUTRAL_NEEDLES="$DIALECTS $PLANE_KEYS_PROTOCOL"
 # TWO ROOTS PER PLANE since the codec split: each protocol plugin kept its I/O half under the
 # historical crate name and shed its pure half into a `-codec` crate a PURE kind may name. The gate
@@ -171,8 +178,49 @@ compute_mod_excludes() {
 
 # Production .rs under a set of roots, minus test files, the excluded Operation enum, and any file that
 # lives under (or is) a test-support module dropped by the prepass.
+# ── THE ROOT GUARD — a missing root is RED, never silence ──────────────────────────────────────────
+# `find $ROOTS … 2>/dev/null` swallows the diagnostic for a root that has been renamed, split or
+# drained, and the pipe loses find's status. The result is an EMPTY file list for that group, 0 hits
+# from it, and a report whose per-needle table reads clean for a crate the gate never opened. Every
+# root of every group is proven to be a directory first, and a missing one aborts. Exits the PROCESS,
+# so it is called from run_report directly, never inside a `$(…)`.
+require_roots() {
+  local label="$1"; shift
+  local r missing=""
+  for r in "$@"; do
+    [ -d "$r" ] || missing="${missing:+$missing }$r"
+  done
+  [ -z "$missing" ] && return 0
+  red "plane-grep gate: FAIL — $label root(s) listed but not present on disk: $missing"
+  note "A listed root that does not exist is scanned as ZERO files, and zero passes every needle."
+  note "If the crate is legitimately gone, DELETE its entry from scripts/plane-keys.sh (neutral roots)"
+  note "or from the group above (plane roots) in a reviewed diff that says so. Never leave a stale root"
+  note "in a list: the gate must not be able to go quiet by accident."
+  exit 1
+}
+
+# count_files — the number of paths in a newline-separated listing. PURE (safe inside `$(…)`).
+count_files() { [ -n "$1" ] || { printf '0'; return 0; }; printf '%s\n' "$1" | wc -l | tr -d ' '; }
+
+# require_files LABEL COUNT — the companion guard on the COUNT. require_roots has ruled out a missing
+# directory; this catches every OTHER way a group's list comes back empty (a root that exists but holds
+# no production .rs, a layout move that left the sources one level down, an exclusion rule that
+# swallowed the whole tree). A zero-file group and a clean group report the IDENTICAL number, so the
+# two are separated here, before the total means anything. Unlike the dialect debt this gate meters, a
+# blind scan is an instrument failure: it exits non-zero even in report-only mode. Takes the count
+# already computed by the caller, never a listing, so it is never called from inside a `$(…)` where its
+# `exit` would kill only a subshell.
+require_files() {
+  local label="$1" n="$2"
+  [ "$n" -gt 0 ] && return 0
+  red "plane-grep gate: FAIL — the $label group scanned $n production .rs file(s); zero is RED"
+  note "A scan of zero files reports zero substrings, which is indistinguishable from a clean group."
+  note "Fix that group's roots (scripts/plane-keys.sh for neutral) rather than metering an empty list."
+  exit 1
+}
+
 prod_files() {
-  local out; out="$(find $* -name '*.rs' 2>/dev/null \
+  local out; out="$(find $* -name '*.rs' \
     | grep -v '/tests/' \
     | grep -Ev '_tests?\.rs$' \
     | grep -vxF "$OPERATION_EXCLUDE")"
@@ -357,6 +405,23 @@ VOICE
   if [ "$voice_hit_mcp"   -ge 1 ]; then note "SYMMETRIC voice: flagged the foreign \`mcp\` plane key"; else fail=1; note "SYMMETRIC voice FAILED: foreign mcp not flagged"; fi
   if [ "$voice_hit_a2a"   -ge 1 ]; then note "SYMMETRIC voice: flagged the foreign \`a2a\` plane key SUBSTRING in a2a_bridge"; else fail=1; note "SYMMETRIC voice FAILED: foreign a2a not flagged"; fi
 
+  # ── THE BLIND-SCAN CASES: the gate must not be able to report clean by scanning NOTHING ─────────
+  # Every fixture above proves what the scanner SEES. These prove what happens when a group is handed
+  # nothing to look at — the failure mode where the per-needle table reads 0 for a crate the gate
+  # never opened. Both run this script as a CHILD process, because the guards exit by design.
+  if PLANE_GREP_NEUTRAL_ROOTS="crates/busbar-core-does-not-exist/src" \
+     bash "$SELF" --report >"$tmp/missing.log" 2>&1; then
+    fail=1; note "BLIND-SCAN FAILED: a non-existent neutral root still exited 0 (the gate scanned nothing and reported)"
+  else
+    note "BLIND-SCAN: a non-existent neutral root exits non-zero (a missing root is RED, not silence)"
+  fi
+  mkdir -p "$tmp/emptyroot"
+  if PLANE_GREP_NEUTRAL_ROOTS="$tmp/emptyroot" bash "$SELF" --report >"$tmp/empty.log" 2>&1; then
+    fail=1; note "BLIND-SCAN FAILED: a zero-file neutral group still exited 0 (0 hits over 0 files read as clean)"
+  else
+    note "BLIND-SCAN: a real-but-empty neutral root exits non-zero (zero files scanned is RED)"
+  fi
+
   if [ "$fail" -ne 0 ]; then
     red "plane-grep-gate SELF-TEST FAILED — the scanner would let a dialect substring through"
     return 1
@@ -369,6 +434,16 @@ VOICE
 # Scans every group, prints the categorized report, and returns the total via $REPORT_TOTAL.
 REPORT_TOTAL=0
 run_report() {
+  # Every group's roots, before anything reads a file list. shellcheck: the split is the point.
+  # shellcheck disable=SC2086
+  require_roots neutral $NEUTRAL_ROOTS
+  # shellcheck disable=SC2086
+  require_roots mcp     $MCP_ROOT
+  # shellcheck disable=SC2086
+  require_roots a2a     $A2A_ROOT
+  # shellcheck disable=SC2086
+  require_roots voice   $VOICE_ROOT
+
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   : >"$tmp/hits"
 
@@ -377,23 +452,31 @@ run_report() {
 
   local nf mf af vf
   nf="$(prod_files $NEUTRAL_ROOTS)"; mf="$(prod_files $MCP_ROOT)"; af="$(prod_files $A2A_ROOT)"; vf="$(prod_files $VOICE_ROOT)"
+  local n_nf n_mf n_af n_vf
+  n_nf="$(count_files "$nf")"; n_mf="$(count_files "$mf")"
+  n_af="$(count_files "$af")"; n_vf="$(count_files "$vf")"
+  require_files neutral "$n_nf"
+  require_files mcp     "$n_mf"
+  require_files a2a     "$n_af"
+  require_files voice   "$n_vf"
+
   # shellcheck disable=SC2086
-  [ -n "$nf" ] && scan "$NEUTRAL_NEEDLES" $nf >>"$tmp/hits"
+  scan "$NEUTRAL_NEEDLES" $nf >>"$tmp/hits"
   # shellcheck disable=SC2086
-  [ -n "$mf" ] && scan "$MCP_NEEDLES"     $mf >>"$tmp/hits"
+  scan "$MCP_NEEDLES"     $mf >>"$tmp/hits"
   # shellcheck disable=SC2086
-  [ -n "$af" ] && scan "$A2A_NEEDLES"     $af >>"$tmp/hits"
+  scan "$A2A_NEEDLES"     $af >>"$tmp/hits"
   # shellcheck disable=SC2086
-  [ -n "$vf" ] && scan "$VOICE_NEEDLES"   $vf >>"$tmp/hits"
+  scan "$VOICE_NEEDLES"   $vf >>"$tmp/hits"
 
   local total; total="$(wc -l <"$tmp/hits" | tr -d ' ')"
   REPORT_TOTAL="$total"
 
   hdr "PLANE-GREP report — dialect-name SUBSTRINGS outside busbar-llm (production .rs, comments/tests/Operation excluded)"
-  note "neutral roots: $NEUTRAL_ROOTS   (bans: $NEUTRAL_NEEDLES)"
-  note "mcp root:      $MCP_ROOT   (bans: $MCP_NEEDLES)"
-  note "a2a root:      $A2A_ROOT   (bans: $A2A_NEEDLES)"
-  note "voice root:    $VOICE_ROOT   (bans: $VOICE_NEEDLES)"
+  note "neutral roots: $NEUTRAL_ROOTS   ($n_nf file(s); bans: $NEUTRAL_NEEDLES)"
+  note "mcp root:      $MCP_ROOT   ($n_mf file(s); bans: $MCP_NEEDLES)"
+  note "a2a root:      $A2A_ROOT   ($n_af file(s); bans: $A2A_NEEDLES)"
+  note "voice root:    $VOICE_ROOT   ($n_vf file(s); bans: $VOICE_NEEDLES)"
   note "excluded:      $OPERATION_EXCLUDE (neutral Operation enum), */tests/*, *_test(s).rs, #[cfg(test)]"
 
   hdr "by needle (a clean tree reports zero)"
