@@ -158,10 +158,7 @@ pub struct Arrived<'a> {
 pub fn arrival(arrived: &Arrived<'_>, token: &UnitToken<Arrival>) -> Decision<Arrival> {
     // A claim is the ONLY way this plane names a transport, so a transport no claim names is one no
     // unit of this plane may arrive on — whatever else the node has registered.
-    if !claims::CLAIMS
-        .iter()
-        .any(|claim| claim.transport == arrived.claim_transport)
-    {
+    if !claims::declares(arrived.claim_transport) {
         return Decision::refuse(token, Refusal::new(ReasonCode::HandoffMismatch));
     }
     // And the claim's transport is the TOP of the composed chain, not merely somewhere in it. The
