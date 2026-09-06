@@ -33,6 +33,50 @@ pub fn nano_rate(micro_per_unit: f64) -> u64 {
     }
 }
 
+/// The uncached-input meter class, as a card entry is keyed.
+pub const CLASS_INPUT: &str = "input";
+/// The response meter class.
+pub const CLASS_OUTPUT: &str = "output";
+/// The cache-read meter class — a prompt read back from cache, priced apart from uncached input.
+pub const CLASS_CACHE_READ: &str = "cache_read";
+/// The cache-write (cache creation) meter class.
+pub const CLASS_CACHE_WRITE: &str = "cache_write";
+
+/// ONE LANE'S CONFIGURED RATES, in micro-units per unit of quantity — the neutral raw-value view a
+/// card is built from.
+///
+/// A small record of the section's raw scalars in a canonical order, and deliberately nothing more:
+/// the deployment's config GRAMMAR — the field spellings, the validation, which section they live in
+/// — belongs to whoever parses it, and only these four numbers cross into the crate that prices
+/// them. That is what lets this crate own card construction without owning a config parser, and it
+/// is why its dependency closure is still the capability crate and nothing else.
+///
+/// FLOATS LIVE ONLY HERE. [`RateCard::from_config`] converts each one to an integer nano-unit rate
+/// exactly once, and no decimal touches money after that.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TierRates {
+    /// Micro-units per uncached input unit.
+    pub input: f64,
+    /// Micro-units per response unit.
+    pub output: f64,
+    /// Micro-units per cache-read unit.
+    pub cache_read: f64,
+    /// Micro-units per cache-write unit.
+    pub cache_write: f64,
+}
+
+impl TierRates {
+    /// The four rates paired with the class each one prices, in the canonical order.
+    fn by_class(self) -> [(&'static str, f64); 4] {
+        [
+            (CLASS_INPUT, self.input),
+            (CLASS_OUTPUT, self.output),
+            (CLASS_CACHE_READ, self.cache_read),
+            (CLASS_CACHE_WRITE, self.cache_write),
+        ]
+    }
+}
+
 /// A price is looked up by the pair (lane, meter class): the same class costs different amounts on
 /// different lanes, and a lane prices several classes.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -128,6 +172,42 @@ impl RateCard {
             prices,
             per_request_fee_cents: per_request_fee_cents.max(0),
         }
+    }
+
+    /// **THE CARD A DEPLOYMENT CONFIGURED**, built here and nowhere else.
+    ///
+    /// The two configured figures a card is made of — the per-lane tier rates and the flat
+    /// per-request fee — are read by their owner and handed straight over; what is DONE with them is
+    /// this crate's, because a fee or a rate turned into a card outside the crate that owns the card
+    /// is a price derived where nobody can see it. So the class fan-out, the absent/present branch
+    /// and the fee's clamp all live on this one constructor, and the composition root's binding is a
+    /// relay with no arithmetic in it.
+    ///
+    /// `lanes` is `None` for a deployment that configured no rate card at all. That is an ABSENT
+    /// card rather than no card: every class prices at nothing and the flat fee still posts, which is
+    /// exactly what such a deployment is billed. Building nothing instead would post nothing for a
+    /// node that charges a fee.
+    ///
+    /// THE CLASS NAMES ARE THIS CRATE'S. A card entry is keyed by the neutral reserved-unit spelling
+    /// ([`CLASS_INPUT`] and its three siblings), and the usage report priced against it carries the
+    /// same spellings, so no name is translated between the line and the entry that prices it. The
+    /// two agreeing is not left to inspection: a card keyed by names a report does not use prices
+    /// every line at zero, which the ledger identity reads as a node that delivered value for free.
+    pub fn from_config<'a>(
+        version: RateCardVersion,
+        lanes: Option<impl IntoIterator<Item = (&'a str, TierRates)>>,
+        per_request_fee_cents: i64,
+    ) -> Self {
+        let Some(lanes) = lanes else {
+            return RateCard::absent(version, per_request_fee_cents);
+        };
+        let entries = lanes.into_iter().flat_map(|(lane, tiers)| {
+            tiers
+                .by_class()
+                .into_iter()
+                .map(move |(class, micro)| (LaneClass::new(lane, class), micro))
+        });
+        RateCard::from_micro_rates(version, entries, per_request_fee_cents)
     }
 
     /// Which card this is.
