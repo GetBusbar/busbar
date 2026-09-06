@@ -394,12 +394,28 @@ golden whose `meta.json` stamps an older rev can be traced to the exact change t
 | `6c243f42abc2bf4a…` | the rev the checked-in `golden/1.5.5` was recorded under (`meta.json.harness_rev`). |
 | `d238d8d8b6088612…` | `integration/oracle-phase0` tip. The golden was ALREADY skewed against the tree at this point — the differ's `--allow-harness-skew` was carrying it. |
 | `3ddac3c2b6930702…` | three differ fixes cherry-picked off `keep-oracle-p2`: a script cell's own `effects` keys compared by no class, an empty after-scrape written as a negated absolute, and the golden ledger read at its first row where the verdict reads its last. Two of the three are `*.py` beside `harness-rev.sh`, so they are in the hash. |
-| `bbbbd0c138617cb7…` | `normalize.py`'s `eventstream.frames` rule (and `diff-cells.py` learning its representation). This is trigger 1 above, verbatim — "the harness changes (`cells.json`, `normalize.py`, …)" — and it is the rev the re-recorded `golden/1.5.5` is stamped with. |
+| `bbbbd0c138617cb7…` | `normalize.py`'s `eventstream.frames` rule (and `diff-cells.py` learning its representation). This is trigger 1 above, verbatim — "the harness changes (`cells.json`, `normalize.py`, …)". |
+| `b72dd9e667bfa61c…` | `record.sh`'s `script_mock_port()`: a script cell's mock port may not be one this recording already holds. **This is the rev `golden/1.5.5` must be re-recorded at.** |
 
-The last row is the one that forces the full re-record: a normalizer rule changes what every cell's
-`applied` set and body look like, so a golden recorded before it cannot be compared against a
-candidate recorded after it. There is no partial path — `merge-recordings.py` refuses parts whose
+The last two rows force the full re-record. A normalizer rule changes what every cell's `applied`
+set and body look like, so a golden recorded before it cannot be compared against a candidate
+recorded after it. There is no partial path — `merge-recordings.py` refuses parts whose
 `harness_rev` differs, by design.
+
+**The re-record at `b72dd9e6` is still owed.** The golden checked in here is still the one stamped
+`6c243f42`, so until it is re-recorded the five `llm|bedrock|*|ok_stream` cells will diverge on
+`norm.rules` (`eventstream.frames` fires on the candidate side only) and on `body` (decoded frame
+list vs the old lossy text). That is expected and is the whole reason the rotation is owed — it is
+not a regression in busbar. Record it with:
+
+```
+ORACLE_LISTEN_PORT=50701 ORACLE_ADMIN_PORT=50702 ORACLE_MOCK_PORT=50703 \
+  record.sh --bin ~/.cache/busbar-oracle/1.5.5/busbar --plane all \
+            --out target/oracle/recordings/golden-new
+```
+
+on an otherwise-idle machine: a full pass takes ~50 minutes and its boot-bound cells
+(`ORACLE_BOOT_BOUND_SECS`, default 60) time out under heavy concurrent load.
 
 ### 3.2 (b) Candidate recording per stage
 
