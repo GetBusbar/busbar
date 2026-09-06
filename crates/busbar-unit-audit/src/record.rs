@@ -341,21 +341,15 @@ impl AuditChain {
         d.text(&subject_value(&record.subject));
         d.num(record.what.unit_key.get());
         d.text(record.what.op_class.as_str());
-        d.text(record.what.destination.as_deref().unwrap_or(""));
-        d.num(record.what.parent.map(|p| p.get()).unwrap_or(0));
-        d.text(record.what.pre_hook_head.as_deref().unwrap_or(""));
-        d.text(record.what.post_hook_head.as_deref().unwrap_or(""));
+        opt_text(&mut d, record.what.destination.as_deref());
+        opt_num(&mut d, record.what.parent.map(|p| p.get()));
+        opt_text(&mut d, record.what.pre_hook_head.as_deref());
+        opt_text(&mut d, record.what.post_hook_head.as_deref());
         d.num(record.wall);
         d.num(record.mono);
         d.text(record.origin_kind);
         d.text(&outcome_tag(record.outcome.unit_end));
-        d.text(
-            &record
-                .outcome
-                .step
-                .map(|s| s.as_str().to_string())
-                .unwrap_or_default(),
-        );
+        opt_text(&mut d, record.outcome.step.map(|s| s.as_str()));
         d.text(finish_tag(record.outcome.finish));
         d.num(u64::from(record.outcome.hook_failed));
         d.text(&record.outcome.emission_delta.to_string());
@@ -374,10 +368,10 @@ impl AuditChain {
         d.text(&record.amount.currency);
         d.num(record.amount.rate_card_version);
         d.text(&record.amount.bucket_chain_ref);
-        d.text(record.controls.hold_ref.as_deref().unwrap_or(""));
-        d.text(record.controls.settle_ref.as_deref().unwrap_or(""));
-        d.text(record.controls.slice_ref.as_deref().unwrap_or(""));
-        d.text(record.controls.lease_ref.as_deref().unwrap_or(""));
+        opt_text(&mut d, record.controls.hold_ref.as_deref());
+        opt_text(&mut d, record.controls.settle_ref.as_deref());
+        opt_text(&mut d, record.controls.slice_ref.as_deref());
+        opt_text(&mut d, record.controls.lease_ref.as_deref());
         d.num(record.controls.lease_epoch);
         d.num(record.controls.policy_epoch);
         d.num(record.controls.hooks_applied.len() as u64);
@@ -390,7 +384,7 @@ impl AuditChain {
         for child in &record.controls.children {
             d.num(child.get());
         }
-        d.text(record.correlation_hash.as_deref().unwrap_or(""));
+        opt_text(&mut d, record.correlation_hash.as_deref());
         d.finish()
     }
 
@@ -616,6 +610,31 @@ pub(crate) fn abort_tag(abort: Abort) -> String {
         Abort::Kernel { reason } => format!("Kernel {{ reason: {} }}", reason_tag(reason)),
         Abort::Superseded { by } => format!("Superseded {{ by: UnitKey({}) }}", by.get()),
     }
+}
+
+/// FEED ONE OPTIONAL STRING FIELD: a presence marker, then the value.
+///
+/// The marker is not decoration. Folding `None` to the empty string makes ABSENT and EMPTY the same
+/// bytes, so a record that names no destination and a record whose destination is the empty string
+/// digest identically — and every one of these fields is a claim about what a unit did. A record
+/// that carried a hold reference can be rewritten to one that carried none, or the other way, and
+/// the chain verifies, because the digest never saw the difference. Length prefixes fix the boundary
+/// between fields; they cannot invent a distinction the encoder threw away before framing.
+///
+/// Feeding the marker as its own field, ahead of the value, makes the encoding injective over
+/// `Option<&str>`: nothing an absent field encodes to can be produced by a present one.
+fn opt_text(d: &mut crate::legacy::Digest, value: Option<&str>) {
+    d.num(u64::from(value.is_some()));
+    d.text(value.unwrap_or(""));
+}
+
+/// FEED ONE OPTIONAL INTEGER FIELD: a presence marker, then the value. See [`opt_text`] — the same
+/// hazard, with zero standing in for the empty string. A unit with no parent and a unit whose parent
+/// is key zero are different facts, and a digest that cannot tell them apart is not evidence of
+/// either.
+fn opt_num(d: &mut crate::legacy::Digest, value: Option<u64>) {
+    d.num(u64::from(value.is_some()));
+    d.num(value.unwrap_or(0));
 }
 
 /// The frozen text for how a unit ended.
