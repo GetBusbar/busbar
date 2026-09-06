@@ -211,12 +211,38 @@ probe_healthz() {  # probe_healthz <port>
 }
 container_state() { docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' "$1" 2>/dev/null || echo unknown; }
 
+# THE `docker run` STATUS IS NOT NOISE, AND DISCARDING IT MADE A FOREIGN LISTENER LOOK LIKE A PASS.
+#
+# Both boot rows were `docker run -d ... >/dev/null 2>&1` with no `||` and no captured status, and
+# the verdict was `probe_healthz <host-port>`. So when `docker run` FAILED -- the commonest cause
+# being "Bind for 0.0.0.0:18080 failed: port is already allocated", i.e. a leftover container from
+# an earlier leg, another job on a self-hosted runner, or anything at all listening there -- the
+# check went on to curl http://127.0.0.1:18080/healthz, and whatever answered `ok` PASSED the row.
+# The image under test was never started. This is #50's own row: the one that exists because a
+# `latest` that exited 1 on `docker run` sat in production for six days, reading green.
+#
+# So: the status is captured and a failed start is its own named failure; and a probe that succeeds
+# is only believed once the container WE started is confirmed RUNNING, which no foreign listener on
+# the host port can make true.
+start_container() {  # start_container <name> <host-port> [docker run args...] <image>
+  local name="$1" port="$2"; shift 2
+  docker rm -f "$name" >/dev/null 2>&1
+  START_ERR=""
+  START_ERR="$(docker run -d --name "$name" -p "${port}:8080" \
+    -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN "$@" 2>&1)" || return 1
+  return 0
+}
+
+is_running() {  # is_running <name>
+  [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]
+}
+
 # --- form 1: the bare `docker run` from the Dockerfile header / README, on the image's own baked
 # --- /etc/busbar/config.yaml. This is the exact form that exited 1 on 1.5.3.
-docker rm -f busbar-gate-bare >/dev/null 2>&1
-docker run -d --name busbar-gate-bare -p 18080:8080 \
-  -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN "${DOCKERHUB_IMAGE}:${V}" >/dev/null 2>&1
-if probe_healthz 18080; then
+if ! start_container busbar-gate-bare 18080 "${DOCKERHUB_IMAGE}:${V}"; then
+  record "docker:boot-bare" FAIL "\`docker run ${DOCKERHUB_IMAGE}:${V}\` did not START on this runner" \
+    "docker said: $(printf '%s' "$START_ERR" | tr '\n' '|' | tail -c 400). NOT a pass and NOT a skip: the image under test was never launched, so nothing about it was verified. If this says 'port is already allocated', something else holds 18080 -- and the old code went on to curl that port and PASSED on whatever answered. Fix: free port 18080 on the runner, or remove a container leaked by an earlier leg."
+elif probe_healthz 18080 && is_running busbar-gate-bare; then
   record "docker:boot-bare" PASS "the bare documented \`docker run\` boots and answers ok on /healthz" ""
 else
   st="$(container_state busbar-gate-bare)"
@@ -249,12 +275,11 @@ pools:
     members:
       - model: claude-sonnet
 YAML
-docker rm -f busbar-gate-ro >/dev/null 2>&1
-docker run -d --name busbar-gate-ro -p 18081:8080 \
-  -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN \
-  -v "${work}/config.yaml:/etc/busbar/config.yaml:ro" \
-  "${DOCKERHUB_IMAGE}:${V}" >/dev/null 2>&1
-if probe_healthz 18081; then
+if ! start_container busbar-gate-ro 18081 \
+     -v "${work}/config.yaml:/etc/busbar/config.yaml:ro" "${DOCKERHUB_IMAGE}:${V}"; then
+  record "docker:boot-ro-mount" FAIL "the documented read-only-mount \`docker run\` did not START on this runner" \
+    "docker said: $(printf '%s' "$START_ERR" | tr '\n' '|' | tail -c 400). The image under test was never launched, so this row verified nothing. See docker:boot-bare for the port-collision case."
+elif probe_healthz 18081 && is_running busbar-gate-ro; then
   record "docker:boot-ro-mount" PASS "the documented read-only config mount boots and answers ok on /healthz" ""
 else
   st="$(container_state busbar-gate-ro)"
