@@ -271,6 +271,69 @@ digest is unreachable by construction. Two consequences named rather than discov
 * **The draft's assets always describe the latest staged iteration**, and `resolve-staged` proves
   it (target-commitish check) rather than assuming it.
 
+## Rotating the oracle golden — the step that follows every `vX.Y.Z` tag on main
+
+**The golden is always the last shipped binary; the register is always this release's named
+differences.** Both halves are invariants, and neither is self-maintaining.
+
+The shadow oracle's entire claim is "this build behaves like the last *shipped* one". That claim
+decays at the instant `promote-release` succeeds: from then on every ci.yml `shadow-oracle` run and
+every qa-gate `done-oracle` run is still measuring the distance to the release *before* the one
+users are now pulling. The second half decays with it, and more quietly:
+`testing/shadow-oracle/accepted-differences.json` is cumulative, every entry is a permanent
+blindfold over the surface it names, and nobody ever removes one — removing an entry *looks* like
+weakening a gate, when in fact the difference has shipped and is no longer a difference at all. Left
+alone, a 1.6.0→1.6.1 regression hides behind a register written about 1.5.5.
+
+So, immediately after the tag is pushed and the draft is published:
+
+```
+testing/shadow-oracle/rotate-golden.sh <version> --dry-run   # read the plan; changes nothing
+testing/shadow-oracle/rotate-golden.sh <version>             # land it as one commit on dev
+```
+
+What it does, and the order is load-bearing:
+
+1. Reads the published release assets' sha256 digests from the GitHub release **by tag**, read-only
+   (`gh release view <tag> --json assets,isDraft`). The digests are GitHub's own record of the
+   uploaded bytes — never a hash of a local download, which would pin whatever the network handed
+   this machine.
+2. **Refuses** if any required digest is missing (the four platform archives plus the openapi
+   document), and refuses a **draft** outright. A draft's assets are re-uploadable in place, so a
+   digest read from one pins a *name*, not the bytes — and under this split the draft is full of
+   every asset for the whole qa soak before it is published. An absent pin is RED, never permission
+   to pin fewer assets: that is `fetch-golden.sh`'s own rule, one level up.
+3. Appends the rows to `golden-digests.tsv` **before** recording, because that file is inside the
+   `harness_rev` set (`harness-rev.sh`): recording first would stamp the golden with a revision that
+   stops existing one line later, and `diff-cells.py` would refuse the very recording just made.
+4. Fetches the new golden by that pin and records it with the existing `record.sh --plane all`,
+   landing it through `merge-recordings.py` — the merge/replace path — so provenance is asserted by
+   **sha** (version + `binary_sha256` + `host_triple`), not by the path someone typed.
+5. Archives the outgoing register at
+   `testing/shadow-oracle/golden/<old-version>/accepted-differences.json` and resets
+   `accepted-differences.json` to an empty register (rules kept, entries cleared). The archive is
+   what makes the reset a rotation rather than a loss.
+6. Re-stamps `harness_rev` over the final tree and asserts the new golden carries exactly it.
+
+It deliberately does **not** rewrite the version literals in `ci.yml`, `qa-gate.yml` or
+`verify-1.6.0-done.sh` — those are the workflow graph and the done claim, and a `sed` across them
+from inside a data-rotation script is how a release procedure silently becomes a workflow edit. It
+greps and prints them as the remaining one-line, reviewable changes.
+
+`--selftest` drives every refusal over fake release JSON (missing archive, digest-less asset, empty
+release, a complete set on a draft, an already-pinned version, a malformed version, and a proof that
+`--dry-run` leaves `golden-digests.tsv` byte-identical), so the rules are proven to fire on a laptop
+with no release in existence.
+
+**The reminder is a run summary, not an issue.** `promote-release` ends with a post-release
+checklist step that renders this chore into `$GITHUB_STEP_SUMMARY` on the promote run that created
+the obligation — with the exact two commands — and does nothing else. It does not run the rotation
+(that re-records ~885 cells and resets a register: owner judgements that land as a reviewable
+commit, not side effects of a promote that has already made everything public), and it is not an
+issue, because `scripts/no-self-filed-issues-lint.sh` forbids this repository from writing into its
+own tracker. A candidate promote prints nothing: an rc moves no floating pointer and is not what
+users pull, so it is not "the last shipped binary".
+
 ## Exactly which files change
 
 | file | change |

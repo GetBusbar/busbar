@@ -950,6 +950,72 @@ jobs:
           [ "$fail" = 0 ] || exit 1
           echo "::notice::${TAG} is fully public: git tag, published release, latest pointer, and both container registries."
 
+      # ── THE STANDING POST-RELEASE CHORE: ROTATE THE SHADOW-ORACLE GOLDEN ─────────────────────────
+      #
+      # The oracle compares HEAD against the LAST SHIPPED binary. The moment this job succeeds, that
+      # binary is no longer 1.5.5, and every subsequent run is measuring the wrong distance: a
+      # regression introduced after this release hides behind the differences the register already
+      # forgives about the release before it. The register is cumulative and nobody prunes it,
+      # because pruning an entry looks like weakening a gate rather than what it is — the difference
+      # has SHIPPED, so it is no longer a difference.
+      #
+      # THIS STEP DOES NOT RUN THE ROTATION, AND THAT IS THE DESIGN. Rotation re-records an ~885-cell
+      # golden from a freshly published binary and RESETS the accepted-differences register; both
+      # are owner judgements that land as a reviewable commit, not side effects of a promote that has
+      # already made everything public. Doing it here would also put a long, network-dependent,
+      # tree-modifying step downstream of an irreversible publish, where its failure means nothing
+      # and its success is unreviewed.
+      #
+      # IT IS ALSO NOT AN ISSUE, and that is not a preference: scripts/no-self-filed-issues-lint.sh
+      # forbids this repository from writing into its own tracker, because a robot's report is
+      # indistinguishable from a user's, leaves the run green, and creates mutable state that goes
+      # stale. The replacement that lint names is a run summary attached to the evidence — which is
+      # exactly what a post-release checklist is. It is rendered on the promote run that created the
+      # obligation, so it is one click from the release it is about.
+      #
+      # A CANDIDATE ROTATES NOTHING: `v1.6.0-rc.1` moves no floating pointer and is not what users
+      # pull, so it is not "the last shipped binary" and printing this after one would be wrong.
+      - name: Post-release checklist — rotate the shadow-oracle golden onto this release
+        if: success()
+        run: |
+          set -u
+          # The job's own TAG/IS_RC, not a re-derivation: the name actually minted by THIS run is
+          # `resolve-staged`'s promote_tag, and computing it a second time from Cargo.toml would
+          # print a chore about a version this run did not publish.
+          if [ "${IS_RC:-}" = "true" ]; then
+            echo "candidate ${TAG}: nothing was published, so the golden does not move. Nothing owed."
+            exit 0
+          fi
+          case "${TAG:-}" in
+            *-rc.*|"")
+              echo "candidate (or no tag resolved): the golden rotates onto releases only. Nothing owed."
+              exit 0
+              ;;
+          esac
+          ver="${TAG#v}"
+          {
+            echo "## Post-release chore: rotate the shadow-oracle golden onto ${TAG}"
+            echo
+            echo "The shadow oracle compares every build against **the last shipped binary**."
+            echo "As of this run that is \`${ver}\`, not the version currently pinned in"
+            echo "\`testing/shadow-oracle/golden-digests.tsv\`. Until this is done, qa-gate's"
+            echo "\`done-oracle\` job and ci.yml's \`shadow-oracle\` job are both measuring the"
+            echo "distance to the release *before* this one."
+            echo
+            echo '```'
+            echo "testing/shadow-oracle/rotate-golden.sh ${ver} --dry-run   # read the plan"
+            echo "testing/shadow-oracle/rotate-golden.sh ${ver}             # then land it as one commit on dev"
+            echo '```'
+            echo
+            echo "It pins the published assets by GitHub's own digests, re-records the golden with"
+            echo "\`record.sh --plane all\`, archives the outgoing \`accepted-differences.json\` under"
+            echo "\`testing/shadow-oracle/golden/<old>/\` and resets the register for this cycle."
+            echo "It refuses a draft, and refuses a release with any digest missing."
+            echo
+            echo "Procedure: \`docs/design/qa-promote-release.md\` → *Rotating the oracle golden*."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::post-release chore recorded in the run summary: rotate the oracle golden onto ${ver}"
+
   # ── Fan out an instant "a real release just happened" signal to every downstream repo that
   #    self-heals off busbar's releases (Homebrew tap, Helm chart, and whatever else gets added to
   #    .github/release-notify-targets.txt). Each target already has its OWN daily-poll workflow
