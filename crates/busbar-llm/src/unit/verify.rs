@@ -643,4 +643,58 @@ mod tests {
         let statuses: Vec<u16> = all.iter().map(VerifyRefusal::status).collect();
         assert_eq!(statuses, vec![403, 400]);
     }
+
+    /// ASKING WHETHER A NAME IS CONFIGURED ALLOCATES NOTHING.
+    ///
+    /// The guard runs on every request, and the question it asks is a membership probe: is this
+    /// name a pool, or a direct model? `model_index` has always answered its half with one hash
+    /// probe. The pool half went through `pools()`, which is the COLD scrape projection — it builds
+    /// a `Vec` of every configured pool AND a `Vec` of member indices per pool, then walks it
+    /// comparing names — so the cost of a per-request yes/no scaled with the size of the
+    /// deployment, on a seam whose own header says it is reached at most once per scrape and is
+    /// free to allocate.
+    ///
+    /// Measured, not timed: a wall-clock assertion on a laptop measures the laptop. Eight pools, so
+    /// a projection that allocates per pool cannot hide inside a slack bound, and both answers are
+    /// exercised — a name that IS a pool and one that is nothing at all — because a probe that
+    /// allocated only on the miss would still be a per-request allocation.
+    ///
+    /// ZERO is the contract, the same one the engine's own alloc gate holds: no malloc on hot
+    /// calls. Do not raise this number to make a change green.
+    #[test]
+    fn asking_whether_a_name_is_configured_allocates_nothing() {
+        use crate::test_support::{LaneSpec, TestApp};
+        use crate::CountingJemalloc;
+
+        crate::testkit::install_test_seams();
+        let mut builder = TestApp::new();
+        for i in 0..8 {
+            builder = builder
+                .lane(LaneSpec::new(
+                    &format!("m{i}"),
+                    crate::proto_codec::PROTO_OPENAI,
+                    "http://127.0.0.1:9",
+                ))
+                .pool(&format!("p{i}"), &[(i, 1)]);
+        }
+        let app = builder.build();
+        let (host, rt) = crate::engine::test_host_rt(&app);
+        let view = HostPoolView::new(host.as_ref(), &*rt, None);
+
+        // WARM once outside the window: a first-touch lazy static is a per-process cost, not a
+        // per-request one.
+        let _ = view.is_configured("p3");
+
+        let _ = CountingJemalloc::reset();
+        let hit = view.is_configured("p3");
+        let miss = view.is_configured("not-a-name");
+        let allocs = CountingJemalloc::count();
+
+        assert!(hit, "p3 is a configured pool");
+        assert!(!miss, "nothing by that name is configured");
+        assert_eq!(
+            allocs, 0,
+            "a membership probe on the request path allocates nothing"
+        );
+    }
 }
