@@ -67,17 +67,27 @@ impl OutcomeWindow {
         self.entries.push_back((ts, is_error));
     }
 
-    fn count_in_window(&self, now: u64, window_s: u64) -> usize {
+    /// How many outcomes fall inside the window, and how many of those were errors — in ONE pass.
+    ///
+    /// The two figures are only ever wanted together (the error rate is their ratio), and asking
+    /// separately walked the same deque twice under the same lock to apply the same `ts >= start`
+    /// cut. Returning the pair also makes it impossible for the two to be read against different
+    /// window starts.
+    ///
+    /// Counted on demand rather than kept as running counters: the window slides, so a counter
+    /// would have to be decremented as entries age out, and an entry ages out at a time nothing
+    /// calls the cell. The deque is bounded by `capacity`.
+    fn outcomes_in_window(&self, now: u64, window_s: u64) -> (usize, usize) {
         let start = now.saturating_sub(window_s);
-        self.entries.iter().filter(|(ts, _)| *ts >= start).count()
-    }
-
-    fn error_count_in_window(&self, now: u64, window_s: u64) -> usize {
-        let start = now.saturating_sub(window_s);
-        self.entries
-            .iter()
-            .filter(|(ts, is_error)| *ts >= start && *is_error)
-            .count()
+        let mut total = 0;
+        let mut errors = 0;
+        for (ts, is_error) in self.entries.iter() {
+            if *ts >= start {
+                total += 1;
+                errors += usize::from(*is_error);
+            }
+        }
+        (total, errors)
     }
 
     fn clear(&mut self) {
@@ -267,11 +277,10 @@ impl BreakerCell {
         let window = lock_recover(&self.outcome_window);
         match cfg.trip.mode {
             TripMode::ErrorRate => {
-                let count = window.count_in_window(now, cfg.trip.window_s);
+                let (count, errors) = window.outcomes_in_window(now, cfg.trip.window_s);
                 if count < cfg.trip.min_requests {
                     return false;
                 }
-                let errors = window.error_count_in_window(now, cfg.trip.window_s);
                 (errors as f64 / count as f64) >= cfg.trip.threshold
             }
             TripMode::Consecutive => self.streak.load(Ordering::Relaxed) >= cfg.trip.consecutive_n,
