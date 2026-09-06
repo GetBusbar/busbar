@@ -112,9 +112,26 @@
 #   Plain `--check` (and `--selftest`/`--baseline`) are BYTE-IDENTICAL to before --strict existed —
 #   they always call `scan()` with testscope=0, which is the untouched, original code path.
 #
+# ── THE GATE CANNOT PASS BY SCANNING NOTHING ───────────────────────────────────────────────────────
+#   Every mode above answers a QUESTION ABOUT A FILE LIST, and every one of those answers is "clean"
+#   when the list is EMPTY. That is not hypothetical: the roots are paths, the tree moves crates
+#   between them, and busbar-core is being deliberately drained. Two guards stand in front of the
+#   verdict, both of them RED rather than quiet:
+#     * a listed root that is not a directory ABORTS the run, naming it. The root lists live in
+#       scripts/plane-keys.sh, and a crate that is legitimately gone leaves the set by being DELETED
+#       there in a reviewed diff — never by its directory quietly ceasing to exist under a stale entry.
+#     * a scan that opened ZERO .rs files ABORTS the run, reporting "N files across M roots", before
+#       the violation total is trusted. Zero hits over zero files is not a clean tree.
+#   The count that survived those guards is written into the hits artefact as a leading `#SCAN` line,
+#   so the downstream consumer of the HIT COUNT (construction-gate's neutral-no-dialect row) can make
+#   the same distinction instead of assuming a denominator. The self-test proves all three.
+#
 # No external deps beyond bash 3.2 + POSIX awk (macOS/Linux) — the same bare-runner posture as the
 # sibling lints (structure-lint.sh, release-script-lint.sh, response-header-lint.sh).
 set -uo pipefail
+# Resolved BEFORE the cd, so the self-test can re-invoke this exact file as a child process no matter
+# how it was called (the two blind-scan cases below need a real subprocess: their guards `exit`).
+SELF="$(cd "$(dirname "$0")" >/dev/null && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
 
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
@@ -123,23 +140,53 @@ ylw()  { printf '\033[33m%s\033[0m\n' "$*"; }
 note() { printf '  %s\n' "$*"; }
 hdr()  { printf '\n== %s ==\n' "$*"; }
 
-# The neutral crates (the ABI side) and the plane crates (the plugin side). Derived once; a plane or
-# neutral crate that appears/disappears is a one-line edit here, never N stale paths scattered below.
-# `busbar-substrate-values` is the PURE HALF of the substrate — the value families the codecs and the
-# planes name, split out so a plane's closure resolves no hyper/reqwest/tokio edge. It is every bit as
-# NEUTRAL as the crate it came out of, and the bulk of the surface a plane talks to (proto, ir,
-# breaker, handlers) now lives there. Omitting it would leave those files scanned by nothing, which is
-# the exact failure mode this file's header describes: a boundary with no instrument watching it.
-NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/busbar-substrate-values/src crates/api/src"
-# The plane src roots are single-sourced (scripts/plane-keys.sh) so a plane added there is scanned
-# here without a human remembering to append its path — a plane this lint never lists is a plane it
-# scans zero files of, and zero is the passing answer to every ban.
+# The neutral crates (the ABI side) and the plane crates (the plugin side). BOTH lists are
+# single-sourced in scripts/plane-keys.sh so a crate added or drained there is scanned here without a
+# human remembering to append its path — a crate this lint never lists is a crate it scans zero files
+# of, and zero is the passing answer to every ban.
 # shellcheck source=scripts/plane-keys.sh
 . "$(dirname "$0")/plane-keys.sh"
-PLANE_ROOTS="$(plane_src_roots)"
+# The two env overrides exist for ONE caller: the self-test below, which must be able to point the
+# scan at a root that does not exist and prove this script exits non-zero. Nothing in CI sets them.
+NEUTRAL_ROOTS="${PLANE_PURITY_NEUTRAL_ROOTS:-$(neutral_src_roots)}"
+PLANE_ROOTS="${PLANE_PURITY_PLANE_ROOTS:-$(plane_src_roots)}"
 
-neutral_files() { find $NEUTRAL_ROOTS -name '*.rs' 2>/dev/null | sort; }
-plane_files()   { find $PLANE_ROOTS   -name '*.rs' 2>/dev/null | sort; }
+# ── THE ROOT GUARD — a missing root is RED, never silence ──────────────────────────────────────────
+# The original listing was `find $ROOTS -name '*.rs' 2>/dev/null | sort`: a root that had been renamed,
+# split or drained produced a diagnostic on stderr that `2>/dev/null` swallowed and a non-zero find
+# status that the pipe to `sort` discarded, leaving an EMPTY file list. The callers then skipped the
+# scan entirely, the total read 0, and `--check` printed PASS having examined nothing — the loudest
+# possible way for this instrument to go blind while still reporting green.
+#
+# So: every root is checked to be a real directory BEFORE any listing, and a missing one aborts the
+# run. This function exits the PROCESS, which is why it is called from the report functions directly
+# and never from inside a `$(…)` substitution (an exit there would only kill the subshell).
+require_roots() {
+  local label="$1"; shift
+  local r missing=""
+  for r in "$@"; do
+    [ -d "$r" ] || missing="${missing:+$missing }$r"
+  done
+  [ -z "$missing" ] && return 0
+  red "plane-purity gate: FAIL — $label root(s) listed but not present on disk: $missing"
+  note "A listed root that does not exist is scanned as ZERO files, and zero passes every ban."
+  note "If the crate is legitimately gone (busbar-core being drained is the case this tree expects),"
+  note "DELETE its entry from scripts/plane-keys.sh in a reviewed diff that says so. Never leave a"
+  note "stale root in the list: the gate must not be able to go quiet by accident."
+  exit 1
+}
+
+# The listings themselves. No `2>/dev/null` — require_roots has already proven every root exists, so
+# any remaining find diagnostic is real and must be seen.
+neutral_files() { find $NEUTRAL_ROOTS -name '*.rs' | sort; }
+plane_files()   { find $PLANE_ROOTS   -name '*.rs' | sort; }
+
+# Counting helpers for the "N files across M roots" accounting the zero-file guard and the hits
+# artefact both report. `set -f` so a root or path containing a glob metacharacter is counted, not
+# expanded; the empty case is answered directly because `wc -l` on an empty string reports 1 line.
+# shellcheck disable=SC2086  # the split is the measurement
+count_roots() { local n; set -f; set -- $1; n=$#; set +f; printf '%d' "$n"; }
+count_files() { [ -n "$1" ] || { printf '0'; return 0; }; printf '%s\n' "$1" | wc -l | tr -d ' '; }
 
 # ── THE SCANNER (one copy; the self-test drives THIS function, never a duplicate) ─────────────────
 # Emits one TSV line per violation:  CATEGORY<TAB>file:line<TAB>trimmed-source
@@ -502,6 +549,38 @@ PRT
     fail=1; note "STRICT decide FAILED: expected RED-then-GREEN, got fail@ceiling0=$red_at_zero fail@ceiling1=$green_at_one"
   fi
 
+  # ── THE BLIND-SCAN CASES: the gate must not be able to pass by scanning NOTHING ──────────────────
+  # Every fixture above proves what the scanner SEES. These two prove what happens when it is given
+  # nothing to look at — the failure mode that made `--check` print PASS over a tree it never opened.
+  # Both run this script as a CHILD process, because the guards exit the process by design (an `exit`
+  # inside a `$(…)` here would only kill a subshell and prove nothing). A non-zero exit is required.
+  #
+  # (1) a root that does not exist: the old `find $ROOTS … 2>/dev/null | sort` swallowed the error and
+  #     lost find's status through the pipe, yielding an empty list and a green verdict.
+  if PLANE_PURITY_NEUTRAL_ROOTS="crates/busbar-core-does-not-exist/src" \
+     bash "$SELF" --check >"$tmp/missing.log" 2>&1; then
+    fail=1; note "BLIND-SCAN FAILED: a non-existent neutral root still exited 0 (the gate scanned nothing and passed)"
+  else
+    note "BLIND-SCAN: a non-existent neutral root exits non-zero (a missing root is RED, not silence)"
+  fi
+  # (2) a root that EXISTS but holds no .rs file: require_roots is satisfied, so this is the guard on
+  #     the file COUNT rather than on the directory, and it must be RED for the same reason.
+  mkdir -p "$tmp/emptyroot"
+  if PLANE_PURITY_NEUTRAL_ROOTS="$tmp/emptyroot" bash "$SELF" --check >"$tmp/empty.log" 2>&1; then
+    fail=1; note "BLIND-SCAN FAILED: a zero-file neutral root still exited 0 (0 hits over 0 files read as clean)"
+  else
+    note "BLIND-SCAN: a real-but-empty neutral root exits non-zero (zero files scanned is RED)"
+  fi
+  # (3) the hits artefact states its own denominator, so a downstream reader of the hit COUNT can tell
+  #     "clean" from "scanned nothing" without re-deriving the file list.
+  local hits_probe; hits_probe="$tmp/hits-probe.tsv"
+  PLANE_PURITY_HITS_OUT="$hits_probe" bash "$SELF" --baseline >"$tmp/baseline.log" 2>&1 || true
+  if awk -F'\t' '$1=="#SCAN" && $2 ~ /^neutral_files=[0-9]+$/ && $4 ~ /^plane_files=[0-9]+$/ {n++} END{exit !n}' "$hits_probe" 2>/dev/null; then
+    note "hits artefact: carries a #SCAN provenance line (files + roots scanned) for the downstream row"
+  else
+    fail=1; note "hits artefact FAILED: no #SCAN provenance line in the emitted hit list"
+  fi
+
   if [ "$fail" -ne 0 ]; then
     red "plane-purity-lint SELF-TEST FAILED — the scanner would let a side channel through"
     return 1
@@ -514,22 +593,46 @@ PRT
 # Scans the tree, prints a categorized report, and returns the total violation count via $REPORT_TOTAL.
 REPORT_TOTAL=0
 run_report() {
+  # shellcheck disable=SC2086  # both are space-separated root lists; splitting is the point
+  require_roots neutral $NEUTRAL_ROOTS
+  # shellcheck disable=SC2086
+  require_roots plane   $PLANE_ROOTS
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   local nf pf
   nf="$(neutral_files)"; pf="$(plane_files)"
 
+  local n_nf n_pf n_nr n_pr
+  n_nf="$(count_files "$nf")"; n_pf="$(count_files "$pf")"
+  n_nr="$(count_roots "$NEUTRAL_ROOTS")"; n_pr="$(count_roots "$PLANE_ROOTS")"
+
+  # ── THE ZERO-FILE GUARD — trusted before REPORT_TOTAL is ────────────────────────────────────────
+  # require_roots has already ruled out a missing directory; this catches every OTHER way the scan can
+  # come back empty (a root that exists but holds no .rs, a layout move that left the sources one level
+  # down, a listing that failed for a reason find reported and nothing acted on). A zero-file scan and
+  # a perfectly clean tree produce the IDENTICAL number — 0 hits — so the count alone can never tell
+  # them apart. It is resolved here, before the total means anything: zero files scanned is RED.
+  if [ "$n_nf" -eq 0 ] || [ "$n_pf" -eq 0 ]; then
+    red "plane-purity gate: FAIL — scanned $n_nf neutral file(s) across $n_nr root(s) and $n_pf plane file(s) across $n_pr root(s); zero is RED"
+    note "A scan of zero files reports zero violations, which is indistinguishable from a clean tree."
+    note "neutral roots: $NEUTRAL_ROOTS"
+    note "plane roots:   $PLANE_ROOTS"
+    note "Fix the root list in scripts/plane-keys.sh (a deliberately-drained crate is DELETED there,"
+    note "as a named change) rather than letting the gate pass on an empty file list."
+    exit 1
+  fi
+
   : >"$tmp/hits"
   # shellcheck disable=SC2086
-  [ -n "$nf" ] && scan forward 0 $nf >>"$tmp/hits"
+  scan forward 0 $nf >>"$tmp/hits"
   # shellcheck disable=SC2086
-  [ -n "$pf" ] && scan reverse 0 $pf >>"$tmp/hits"
+  scan reverse 0 $pf >>"$tmp/hits"
 
   local total; total="$(wc -l <"$tmp/hits" | tr -d ' ')"
   REPORT_TOTAL="$total"
 
   hdr "NEUTRAL-PURITY report — side channels in the neutral crates + backwards reach from the planes"
-  note "neutral roots: $NEUTRAL_ROOTS"
-  note "plane roots:   $PLANE_ROOTS"
+  note "neutral roots: $NEUTRAL_ROOTS ($n_nf .rs file(s) across $n_nr root(s))"
+  note "plane roots:   $PLANE_ROOTS ($n_pf .rs file(s) across $n_pr root(s))"
 
   hdr "by category (side channels by kind — a clean tree reports zero)"
   # Category order fixed so the report is stable; count each even when zero.
@@ -544,8 +647,18 @@ run_report() {
   awk -F'\t' '{split($2,a,":"); f[a[1]]++} END{for(k in f) printf "%6d  %s\n", f[k], k}' "$tmp/hits" \
     | sort -rn | head -15 | sed 's/^/  /'
 
-  # Keep the hit list available for callers that want the full detail.
-  cp "$tmp/hits" "${PLANE_PURITY_HITS_OUT:-/dev/null}" 2>/dev/null || true
+  # Keep the hit list available for callers that want the full detail. It is PREFIXED with a `#SCAN`
+  # provenance line carrying how many files were scanned across how many roots. A downstream consumer
+  # (scripts/construction-gate/rules.py's neutral-no-dialect row) reads hit COUNTS out of this file, and
+  # a count of zero is ambiguous for exactly the reason the guard above exists — so the artefact states
+  # its own denominator instead of making the reader assume one. The line begins with `#SCAN` in the
+  # CATEGORY column, which is not one of the six categories, so every existing awk/py reader that
+  # filters by category skips it unchanged.
+  {
+    printf '#SCAN\tneutral_files=%d\tneutral_roots=%d\tplane_files=%d\tplane_roots=%d\n' \
+      "$n_nf" "$n_nr" "$n_pf" "$n_pr"
+    cat "$tmp/hits"
+  } >"${PLANE_PURITY_HITS_OUT:-/dev/null}" 2>/dev/null || true
 }
 
 # ── STRICT MODE (--strict / --strict --baseline) ────────────────────────────────────────────────────
@@ -579,23 +692,38 @@ ceiling_of() {
 # $tmp/strict-crates.tsv (plane-key<TAB>count) and prints both tables. Uses the same neutral_files /
 # plane_files file lists as run_report, so "which files" is single-sourced with `--check` too.
 run_strict_report() {
+  # Same two guards as run_report, for the same reason: a strict run over zero files reports every
+  # ceiling comfortably met.
+  # shellcheck disable=SC2086
+  require_roots neutral $NEUTRAL_ROOTS
+  # shellcheck disable=SC2086
+  require_roots plane   $PLANE_ROOTS
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   local nf pf
   nf="$(neutral_files)"; pf="$(plane_files)"
 
+  local n_nf n_pf n_nr n_pr
+  n_nf="$(count_files "$nf")"; n_pf="$(count_files "$pf")"
+  n_nr="$(count_roots "$NEUTRAL_ROOTS")"; n_pr="$(count_roots "$PLANE_ROOTS")"
+  if [ "$n_nf" -eq 0 ] || [ "$n_pf" -eq 0 ]; then
+    red "plane-purity strict gate: FAIL — scanned $n_nf neutral file(s) across $n_nr root(s) and $n_pf plane file(s) across $n_pr root(s); zero is RED"
+    note "Every ceiling is met by a scan that examined nothing; fix the roots in scripts/plane-keys.sh."
+    exit 1
+  fi
+
   : >"$tmp/prod_fwd"; : >"$tmp/test_fwd"; : >"$tmp/prod_rev"; : >"$tmp/test_rev"
   # shellcheck disable=SC2086
-  [ -n "$nf" ] && scan forward 0 $nf >"$tmp/prod_fwd"
+  scan forward 0 $nf >"$tmp/prod_fwd"
   # shellcheck disable=SC2086
-  [ -n "$nf" ] && scan forward 1 $nf >"$tmp/test_fwd"
+  scan forward 1 $nf >"$tmp/test_fwd"
   # shellcheck disable=SC2086
-  [ -n "$pf" ] && scan reverse 0 $pf >"$tmp/prod_rev"
+  scan reverse 0 $pf >"$tmp/prod_rev"
   # shellcheck disable=SC2086
-  [ -n "$pf" ] && scan reverse 1 $pf >"$tmp/test_rev"
+  scan reverse 1 $pf >"$tmp/test_rev"
 
   hdr "STRICT NEUTRAL-PURITY report — production + test scope combined"
-  note "neutral roots: $NEUTRAL_ROOTS"
-  note "plane roots:   $PLANE_ROOTS"
+  note "neutral roots: $NEUTRAL_ROOTS ($n_nf .rs file(s) across $n_nr root(s))"
+  note "plane roots:   $PLANE_ROOTS ($n_pf .rs file(s) across $n_pr root(s))"
 
   hdr "by category (production + test scope combined; ceilings in $STRICT_TOML)"
   local c n_prod n_test n total_all=0
