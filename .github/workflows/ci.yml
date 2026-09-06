@@ -1379,8 +1379,44 @@ jobs:
           scripts/build-provenance-gate.sh target/release/busbar release false
 
       # THE DETERMINISTIC ALLOCATION-COUNT PERF GATE, by name (also covered by the workspace test run).
+      #
+      # IT WAS POINTED AT THE WRONG CRATE, AND SAID NOTHING. This step read
+      # `-p busbar-core --lib alloc_gate` long after the money-path move relocated the gate to
+      # `crates/busbar-llm/src/engine/tests/alloc_gate_tests.rs`. A libtest filter that matches ZERO
+      # tests is not an error: the binary prints `test result: ok. 0 passed; 0 failed; N filtered
+      # out` and exits 0. So the named perf gate had been running nothing, greenly, and a real
+      # allocation regression would have reddened nothing here.
+      #
+      # Hence the FLOOR, the same instrument the voice/timing/llm-unit suites carry: the count of
+      # tests the filter actually collected is what proves the gate ran, and `0 passed` is the
+      # failure this step exists to make impossible. Two tests are expected (the surgical
+      # translate-write one and the whole-path openai>openai forward); the floor names both.
       - name: Allocation-count perf gate (openai>openai forward path)
-        run: cargo test -p busbar-core --lib alloc_gate -- --nocapture
+        env:
+          # `alloc_gate_translate_write_stable` + `alloc_gate_openai_passthrough_forward`. RAISE
+          # this when a case is added; a filter matching fewer than this has stopped selecting the
+          # gate, which is exactly the silence above.
+          ALLOC_GATE_MIN_TESTS: "2"
+        run: |
+          set -uo pipefail
+          cargo test -p busbar-llm --lib alloc_gate -- --nocapture 2>&1 | tee "$RUNNER_TEMP/alloc-gate.log"
+          rc=${PIPESTATUS[0]}
+          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/alloc-gate.log" \
+                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          failed=$(grep -oE '[0-9]+ failed' "$RUNNER_TEMP/alloc-gate.log" \
+                  | grep -oE '[0-9]+' | awk '{s+=$1} END {print s+0}')
+          echo "alloc gate: ${total} test(s) passed, ${failed} failed (floor: ${ALLOC_GATE_MIN_TESTS})"
+          if [ "$rc" -ne 0 ] || [ "$failed" -ne 0 ]; then
+            echo "::error::the allocation-count perf gate FAILED (exit ${rc}, ${failed} failing test(s))."
+            exit "${rc:-1}"
+          fi
+          if [ "$total" -lt "$ALLOC_GATE_MIN_TESTS" ]; then
+            echo "::error::the alloc-gate filter collected ${total} test(s), below its floor of ${ALLOC_GATE_MIN_TESTS}."
+            echo "::error::A libtest filter that matches NOTHING prints 'test result: ok' and exits 0."
+            echo "::error::The gate has been renamed or moved crates again — repoint this step, do not lower the floor."
+            exit 1
+          fi
 
   # ── proof-manifest: PRODUCE + TRANSPORT for the Build Proof Dashboard ──────────────────────────────
   # (docs/design/1.6.0-proof-dashboard.md). Runs ONLY on the three stage-mirrored promotion branches
