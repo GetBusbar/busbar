@@ -70,7 +70,7 @@ async fn an_in_band_upgrade_over_http_with_cleared_facts() {
     let ws = Arc::new(WsTransport::new());
     let keys = test_key_handle();
     let listener = http
-        .listen(&HttpCfg("127.0.0.1:0".to_string()), &keys)
+        .listen(&HttpCfg("127.0.0.1:0".to_string(), None), &keys)
         .await
         .unwrap();
     let addr = listener.local_addr();
@@ -127,7 +127,7 @@ async fn a_composed_round_trip_over_the_layers_below() {
     let client_t = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
     let keys = test_key_handle();
     let listener = server_t
-        .listen(&HttpCfg("127.0.0.1:0".to_string()), &keys)
+        .listen(&HttpCfg("127.0.0.1:0".to_string(), None), &keys)
         .await
         .unwrap();
     let addr = listener.local_addr();
@@ -196,7 +196,7 @@ async fn a_transport_with_no_lower_layer_cannot_listen_or_dial() {
     let t = WsTransport::new();
     let keys = test_key_handle();
     assert_eq!(
-        t.listen(&HttpCfg("127.0.0.1:0".to_string()), &keys)
+        t.listen(&HttpCfg("127.0.0.1:0".to_string(), None), &keys)
             .await
             .unwrap_err(),
         TransportError::HandoffMismatch
@@ -245,14 +245,62 @@ async fn a_frame_with_a_reserved_opcode_is_a_framing_error_and_not_a_reset() {
     );
 }
 
-/// A bind address, for the layer below.
-struct HttpCfg(String);
+/// The size of message this connection will accept is the operator's number, not the WebSocket
+/// library's. Left to the default, a listener declaring a 1 KiB body cap would still buffer 64 MiB
+/// per connection before saying no — the deployment's own limit silently widened by four orders of
+/// magnitude, at the one layer where an oversized message is cheapest to refuse.
+#[tokio::test]
+async fn the_message_cap_is_the_operator_s_and_not_the_library_s() {
+    const CAP: usize = 1024;
+    let t = Arc::new(WsTransport::over(Arc::new(
+        busbar_transport_tcp::TcpTransport::new(),
+    )));
+    // The listener is where the operator's configuration reaches this transport at all.
+    let listener = t
+        .listen(
+            &HttpCfg("127.0.0.1:0".to_string(), Some(CAP as i64)),
+            &test_key_handle(),
+        )
+        .await
+        .unwrap();
+    drop(listener);
+
+    // The peer is an uncapped transport, because the cap this test is about is the RECEIVER's: a
+    // limit that only holds when the far side agrees to it is not a limit.
+    let peer = WsTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (accepted, dialled) = tokio::join!(
+        t.handshake_over(end_a, true, "capped-peer"),
+        peer.handshake_over(end_b, false, "uncapped-peer")
+    );
+    let (a, b) = (dialled.unwrap(), accepted.unwrap());
+
+    let oversized = vec![b'w'; 2 * CAP];
+    peer.write(&a, StreamId(0), ArenaBytes::new(&oversized))
+        .await
+        .expect("the uncapped peer puts the oversized message on the wire");
+
+    let mut frames = t.frames(b);
+    let outcome = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("the cap must be enforced rather than waited on")
+        .expect("an over-cap message is an error, not a clean end of session");
+    assert_eq!(
+        outcome.unwrap_err(),
+        TransportError::Framing,
+        "a message past the operator's cap is a framing refusal"
+    );
+}
+
+/// A bind address, for the layer below, and the operator's message cap where one is declared.
+struct HttpCfg(String, Option<i64>);
 impl busbar_contract::ConfigView for HttpCfg {
     fn get_str(&self, _k: &str) -> Option<&str> {
         None
     }
-    fn get_int(&self, _k: &str) -> Option<i64> {
-        None
+    fn get_int(&self, k: &str) -> Option<i64> {
+        self.1
+            .filter(|_| k == crate::transport::MESSAGE_MAX_BYTES_KEY)
     }
     fn get_bool(&self, _k: &str) -> Option<bool> {
         None

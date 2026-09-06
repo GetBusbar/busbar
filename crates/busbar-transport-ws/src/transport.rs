@@ -47,6 +47,14 @@ pub(crate) const CLOSE_BUDGET: std::time::Duration = std::time::Duration::from_m
 /// and still bounds it.
 pub(crate) const HANDSHAKE_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// The configuration key naming the largest message this transport will accept.
+///
+/// It is the deployment's request-body cap, read through the same name the rest of the stack knows
+/// it by: a WebSocket message and an HTTP body are the same thing to an operator sizing a limit,
+/// and a `ws` listener that buffered more than the `http` one beside it would be a hole nobody
+/// declared. Absent, the library's own default stands.
+pub(crate) const MESSAGE_MAX_BYTES_KEY: &str = "limits.request_body_max_bytes";
+
 /// The `'static` view of a dial address, allocated at most once per distinct string.
 ///
 /// The sealed destination's address shape is already `'static`, but a `ws://` dial target is a URL:
@@ -120,6 +128,9 @@ pub(crate) fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), Tra
 pub struct WsTransport {
     next_id: AtomicU64,
     conns: SyncMutex<HashMap<u64, Arc<ConnState>>>,
+    /// The largest message this transport will read, as the operator declared it at `listen`. Zero
+    /// means nothing was declared and the library's default stands.
+    max_message_bytes: std::sync::atomic::AtomicUsize,
     /// The layer this one composes over. `None` for an instance used only through
     /// [`WsTransport::adopt`] or the in-memory handshake seam, which are handed a stream directly.
     lower: Option<Arc<dyn Transport>>,
@@ -139,6 +150,7 @@ impl WsTransport {
         Self {
             next_id: AtomicU64::new(1),
             conns: SyncMutex::new(HashMap::new()),
+            max_message_bytes: std::sync::atomic::AtomicUsize::new(0),
             lower: None,
         }
     }
@@ -154,6 +166,7 @@ impl WsTransport {
         Self {
             next_id: AtomicU64::new(1),
             conns: SyncMutex::new(HashMap::new()),
+            max_message_bytes: std::sync::atomic::AtomicUsize::new(0),
             lower: Some(lower),
         }
     }
@@ -212,6 +225,22 @@ impl WsTransport {
         .await
     }
 
+    /// The WebSocket settings every connection this transport makes is built with.
+    ///
+    /// The only one it sets is the message ceiling, and it sets it only when the deployment named
+    /// one: the alternative was tungstenite's 64 MiB default, which is a number this project never
+    /// chose and four orders of magnitude above a typical body cap. Both the message and the frame
+    /// ceiling are set, because a message ceiling alone still lets a single oversized frame be
+    /// buffered before the message is refused.
+    fn ws_config(&self) -> Option<tokio_tungstenite::tungstenite::protocol::WebSocketConfig> {
+        let cap = self.max_message_bytes.load(Ordering::Relaxed);
+        (cap > 0).then(|| {
+            tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+                .max_message_size(Some(cap))
+                .max_frame_size(Some(cap))
+        })
+    }
+
     /// The one place a WebSocket connection is made, whichever direction it came from.
     async fn handshake(
         &self,
@@ -223,15 +252,17 @@ impl WsTransport {
     ) -> Result<Conn, TransportError> {
         // Both roles are bounded by the same budget: a peer that never answers is the same
         // unbounded wait whichever side opened the stream.
+        let ws_cfg = self.ws_config();
         let upgraded = tokio::time::timeout(HANDSHAKE_BUDGET, async {
             let sock: Sock = if is_server {
-                tokio_tungstenite::accept_async(stream)
+                tokio_tungstenite::accept_async_with_config(stream, ws_cfg)
                     .await
                     .map_err(|_| TransportError::HandshakeFailed)?
             } else {
-                let (sock, _resp) = tokio_tungstenite::client_async(url, stream)
-                    .await
-                    .map_err(|_| TransportError::HandshakeFailed)?;
+                let (sock, _resp) =
+                    tokio_tungstenite::client_async_with_config(url, stream, ws_cfg)
+                        .await
+                        .map_err(|_| TransportError::HandshakeFailed)?;
                 sock
             };
             Ok::<Sock, TransportError>(sock)
@@ -321,7 +352,17 @@ impl Transport for WsTransport {
         cfg: &'a dyn TransportConfigView,
         keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Listener> {
-        Box::pin(async move { self.lower()?.listen(cfg, keys).await })
+        Box::pin(async move {
+            // `listen` is the one call that carries the deployment's configuration into this
+            // transport, so it is where the message cap is read. A dial made from the same instance
+            // reads the same number, which is the intent: the cap is the node's, not the listener's.
+            if let Some(cap) = cfg.get_int(MESSAGE_MAX_BYTES_KEY) {
+                if let Ok(cap) = usize::try_from(cap) {
+                    self.max_message_bytes.store(cap, Ordering::Relaxed);
+                }
+            }
+            self.lower()?.listen(cfg, keys).await
+        })
     }
 
     /// Take the next connection off the layer below, then upgrade it — which is
