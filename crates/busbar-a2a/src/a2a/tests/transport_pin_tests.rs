@@ -380,9 +380,12 @@ fn an_mtls_registration_that_presents_its_client_certificate_verifies() {
     // transport the sweep's `CardTransports` bundle hands out for THIS agent.
     let identity = super::transport_mtls_tests::identity_from_config(&client_leaf, &client_key);
     let policy = loopback_policy();
+    // The identity generation the boot bundle would own, held for as long as the transport it
+    // registered the key for is in use — dropping it here would retire the ref mid-test.
+    let generation = busbar_substrate::plane_host::identity::IdentityGeneration::install();
     let transport = ReqwestTransport::new(&policy)
         .trusting_root(endpoint.ca_pem.as_bytes())
-        .presenting(identity);
+        .presenting(&generation, identity);
 
     let mut registration = an_mtls_registration(addr.port());
     let pass = crate::a2a::verify::reverify_once(
