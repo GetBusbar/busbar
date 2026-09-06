@@ -170,9 +170,21 @@ _process_leg() {
   fi
 
   # READY. Each slice must yield at least one RESULT line, or the leg is vacuous.
-  local s out results
+  local s out results leg_rc
   for s in "${LEG_SLICES[@]}"; do
-    out="$(leg_execute "$s" || true)"
+    # THE HARNESS'S OWN EXIT STATUS IS EVIDENCE, AND IT USED TO BE THROWN AWAY.
+    #
+    # This was `out="$(leg_execute "$s" || true)"`. The `|| true` was there so a leg that reports a
+    # conformance FAIL (and exits 1 saying so) could not take the whole runner down under
+    # `set -e` — a real need. What it ALSO swallowed is the case that has no RESULT line to speak
+    # for it: a harness that prints some PASS lines and then DIES. A panic in the middle of a
+    # dialect's fixture list, an `.expect()` on a fixture that stopped parsing, a slice that aborts
+    # halfway through its assertions — every one of those leaves behind exactly the PASS lines it
+    # reached, and every one of them read GREEN here, because "at least one RESULT line" was
+    # satisfied and no line said FAIL. Half a leg reporting half its assertions is not a leg
+    # passing; it is a leg that stopped, and the only witness to it stopping is the status below.
+    leg_rc=0
+    out="$(leg_execute "$s")" || leg_rc=$?
     results="$(printf '%s\n' "$out" | grep -E '^RESULT ' || true)"
     if [ -z "$results" ]; then
       say "      · $s : NO RESULT — a READY leg that executed nothing is RED"
@@ -195,6 +207,27 @@ _process_leg() {
     done
     if [ "$LEG_KIND" != governance ] && printf '%s\n' "$results" | grep -qE '^RESULT [^ ]+ FAIL'; then
       [ "$rc" -eq 2 ] || rc=1
+    fi
+    # A NON-ZERO EXIT WITH NOTHING THAT SAYS WHY. A leg that found a conformance defect exits
+    # non-zero AND prints the `RESULT … FAIL` line that says so, and that case is already handled
+    # directly above. A leg that exits non-zero having printed NO FAIL is a different animal: it
+    # stopped. Whatever assertions it had left to make were never made, and the PASS lines it did
+    # print are a report on a fraction of the leg nobody can size. That is the vacuous-ready trap
+    # arriving after the first result rather than before it, so it is counted the same way — an
+    # ACCOUNTING problem (rc=2), which no conformance judgement is read past.
+    #
+    # Recorded under its own verdict word rather than as `FAIL`, because the two say different
+    # things to a reader: `FAIL` is a finding about busbar and this is a finding about the run. The
+    # ledger folds any non-`PASS` verdict into a red leg, so nothing downstream has to learn it.
+    if [ "$leg_rc" -ne 0 ] \
+       && ! printf '%s\n' "$results" | grep -qE '^RESULT [^ ]+ FAIL'; then
+      say "      · $s : HARNESS FAULT — the leg exited $leg_rc having reported no FAIL, so it STOPPED"
+      say "                partway; the $(printf '%s\n' "$results" | grep -c .) result(s) above are a fraction of the leg, not the leg"
+      if [ -n "${VOICE_RESULT_LOG:-}" ]; then
+        printf '%s\t%s\tHARNESSFAULT\tleg exited %s with no FAIL line: it stopped partway and its PASS lines cover only what it reached\n' \
+          "$name" "$s" "$leg_rc" >>"$VOICE_RESULT_LOG"
+      fi
+      rc=2
     fi
   done
   say "  leg $name [$kindtag]: $([ "$rc" -eq 0 ] && echo READY/ok || echo READY/RED)"
@@ -307,6 +340,9 @@ selftest() {
   _ready_pass()    { printf 'LEG_KIND=conformance\nLEG_STATUS=ready\nLEG_SLICES=(%s)\nleg_execute(){ echo "RESULT $1 PASS ok"; }\n' "$2" >"$1"; }
   _ready_fail()    { printf 'LEG_KIND=conformance\nLEG_STATUS=ready\nLEG_SLICES=(%s)\nleg_execute(){ echo "RESULT $1 FAIL boom"; }\n' "$2" >"$1"; }
   _ready_vacuous() { printf 'LEG_KIND=conformance\nLEG_STATUS=ready\nLEG_SLICES=(%s)\nleg_execute(){ echo "no result at all"; }\n' "$2" >"$1"; }
+  # A leg that reports some PASSes and then DIES. Not a conformance FAIL — it never got as far as
+  # judging the thing it would have failed on.
+  _ready_crashes() { printf 'LEG_KIND=conformance\nLEG_STATUS=ready\nLEG_SLICES=(%s)\nleg_execute(){ echo "RESULT $1 PASS the part it reached"; return 101; }\n' "$2" >"$1"; }
   _gov_fail()      { printf 'LEG_KIND=governance\nLEG_STATUS=ready\nLEG_SLICES=(%s)\nleg_execute(){ echo "RESULT $1 FAIL observed"; }\n' "$2" >"$1"; }
 
   probe() { ( VOICE_LEGS_DIR="$1" VOICE_MIN_LEGS="${3:-3}" ${VOICE_SELFTEST_DROP:+VOICE_SELFTEST_DROP="$VOICE_SELFTEST_DROP"} emit_verdict ) >/dev/null 2>&1; }
@@ -332,6 +368,48 @@ selftest() {
   _pending "$d2/cross-parity.sh" "oo og go gg"
   _ready_vacuous "$d2/spec-per-dialect.sh" "openai gemini"
   check "a READY leg that executed nothing" "$d2" refuse
+
+  # RED: a READY leg that prints PASS lines and then DIES. The runner used to run `leg_execute`
+  # under `|| true`, so the ONLY witness to a harness that stopped partway — its exit status — was
+  # discarded, and the fraction of the leg it managed to report read as the whole leg passing. This
+  # is the vacuous-ready trap arriving AFTER the first result instead of before it, and it is the
+  # more dangerous half, because a slice with no results at least looks empty.
+  local d2b="$tmp/crashed-ready"; mkdir -p "$d2b"
+  _pending "$d2b/replay.sh" "default"
+  _pending "$d2b/cross-parity.sh" "oo og go gg"
+  _ready_crashes "$d2b/spec-per-dialect.sh" "openai gemini"
+  check "a READY leg that reported PASS and then died" "$d2b" refuse
+
+  # AND THE TWO NON-ZERO EXITS MUST BE TOLD APART, which accept/refuse alone cannot show: both are
+  # red. A leg that finds a real conformance defect ALSO exits non-zero, and reporting THAT as a
+  # harness fault would misattribute a finding about busbar to the rig — the same misdirection
+  # `run-subject.sh`'s exit-2 branch exists to prevent one battery over. The distinguishing fact is
+  # the FAIL LINE, never the exit code, so the two are checked on what the verdict SAYS.
+  local d3b="$tmp/fail-and-exit"; mkdir -p "$d3b"
+  _pending "$d3b/replay.sh" "default"
+  _pending "$d3b/cross-parity.sh" "oo og go gg"
+  printf 'LEG_KIND=conformance\nLEG_STATUS=ready\nLEG_SLICES=(openai)\nleg_execute(){ echo "RESULT $1 FAIL boom"; return 1; }\n' \
+    >"$d3b/spec-per-dialect.sh"
+  # The output is CAPTURED and then searched, never piped into `grep` from the subshell directly:
+  # under `pipefail` the pipeline's status is the emitter's own non-zero exit, so `if (…) | grep -q`
+  # is false whether or not the pattern matched — a check that can only ever report one answer.
+  says_harness_fault() {  # says_harness_fault <legsdir>
+    local out
+    out="$( ( VOICE_LEGS_DIR="$1" VOICE_MIN_LEGS=3 emit_verdict ) 2>&1 || true )"
+    case "$out" in *"HARNESS FAULT"*) return 0 ;; *) return 1 ;; esac
+  }
+  if says_harness_fault "$d3b"; then
+    say "  MISS: a real conformance FAIL that exited non-zero was blamed on the harness"
+    failures=$((failures+1))
+  else
+    say "  ok: a conformance FAIL that exits non-zero is a finding about the subject, not the rig"
+  fi
+  if says_harness_fault "$d2b"; then
+    say "  ok: a leg that died after its PASS lines is named as a harness fault"
+  else
+    say "  MISS: a leg that died after its PASS lines was not named as a harness fault"
+    failures=$((failures+1))
+  fi
 
   # RED: a READY conformance leg with a FAIL slice is a real finding and must fail the verdict.
   local d3="$tmp/ready-fail"; mkdir -p "$d3"
