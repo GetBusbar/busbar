@@ -111,6 +111,10 @@ concurrency:
 env:
   BUILD_ARTIFACT: qa-gate-target-${{ github.run_id }}
   TARBALL: /tmp/busbar-target.tzst
+  # Matches ci.yml's workflow-level RUSTFLAGS. Without this, a build that only ever ran under
+  # qa-gate could pass with a warning ci.yml would have failed on -- a laxer qa green than the ci
+  # green it is supposed to re-check.
+  RUSTFLAGS: "-D warnings"
   # A PHASE THAT DID NOT RUN IS NOT A PHASE THAT PASSED. release-check.sh records `sibling-missing`
   # when a sibling checkout is absent and used to end with an unconditional "RELEASE GATE PASSED"
   # banner anyway, so a green qa-gate did not prove those phases executed. The clone step above
