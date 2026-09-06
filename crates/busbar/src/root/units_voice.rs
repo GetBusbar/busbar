@@ -295,6 +295,11 @@ pub trait ProviderDial: Send + Sync {
 /// [`OpenToolCalls::expired`]. Neither is a method here, because neither is a question about the
 /// pump — they are the node's own table, and a seam that owned them would be the I/O half deciding
 /// which unit an answer belongs to.
+///
+/// What the pump reaches them through is [`NodeCalls`], the one port whose direction is inverted:
+/// `busbar_voice::runtime::GovernedCalls` is declared over there and implemented here, the way that
+/// crate's tool executor already is. Two facts cross it — a reply arrived, sweep the deadlines — and
+/// the runtime learns nothing else about a call.
 pub trait SessionPump: Send + Sync {
     /// Whether the pump is running for this session.
     fn is_pumping(&self, session: u64) -> bool;
@@ -594,6 +599,81 @@ impl OpenToolCalls {
     pub fn closed(&self, session: u64) {
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.remove(&session);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// What the I/O half is allowed to see of that table
+// ---------------------------------------------------------------------------------------------
+
+/// The node's open-call table, as the session runtime reaches it.
+///
+/// The two moments [`OpenToolCalls`] does not own a call site for are the ones that happen on a
+/// socket: a client's reply arriving, and the tick beside the pump. Both live in `busbar-voice`, and
+/// neither can be a method on one of the four seams above — a seam that answered "which unit does
+/// this reply wake" would be the I/O half deciding it.
+///
+/// So the direction inverts here, exactly once, and it inverts the way the plane's tool executor
+/// already does: `busbar-voice` declares the port, the root implements it, and what crosses is two
+/// facts and no more. The runtime never learns which unit a call belongs to, how long its deadline
+/// is, or what a refusal costs.
+///
+/// A node's own calls, held by `Arc` because a session outlives the frame that opened it and the
+/// pump holds this for as long as it is pumping.
+#[cfg(feature = "plane-voice")]
+#[derive(Clone)]
+pub struct NodeCalls {
+    node: std::sync::Arc<VoiceNode>,
+}
+
+#[cfg(feature = "plane-voice")]
+impl std::fmt::Debug for NodeCalls {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeCalls")
+            .field("open", &self.node.tool_calls.open())
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "plane-voice")]
+impl NodeCalls {
+    /// Bind the port to one node's table.
+    #[must_use]
+    pub fn new(node: std::sync::Arc<VoiceNode>) -> Self {
+        NodeCalls { node }
+    }
+}
+
+#[cfg(feature = "plane-voice")]
+impl busbar_voice::runtime::GovernedCalls for NodeCalls {
+    fn replied(
+        &self,
+        session: u64,
+        call_id: &str,
+    ) -> Result<(), busbar_voice::runtime::ReplyRefusal> {
+        // The identifier as itself, under the key the leg named — the same pair the plane's draft
+        // minted the wait under. Spelling either differently here would be a wait entered under one
+        // key and answered under another, with both sides looking correct on their own.
+        let correlates = CorrelationRef {
+            fact_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+            value: CorrelationValue::Str(call_id),
+        };
+        match self.node.tool_calls.replied(session, correlates) {
+            // The unit is named, and naming it is all the runtime needs: what happens to it is the
+            // kernel loop's, read off the ending on its own exit path.
+            Ok(_unit) => Ok(()),
+            Err(ReplyRefused::NoSuchSession) => {
+                Err(busbar_voice::runtime::ReplyRefusal::NoSuchSession)
+            }
+            Err(ReplyRefused::UnknownCall) => Err(busbar_voice::runtime::ReplyRefusal::UnknownCall),
+        }
+    }
+
+    fn expired(&self, now_ms: u64) -> usize {
+        // The sweep leaves the ending behind; the unit's own `route` reads it and ends the call under
+        // the deadline its leg declared. Counting is all that comes back, because a count is all the
+        // pump can honestly do anything with.
+        self.node.tool_calls.expired(now_ms).len()
     }
 }
 
@@ -2504,6 +2584,71 @@ mod tests {
             end.outcome()
         );
         assert_eq!(node.tool_calls.open(), 0, "and nothing is waiting");
+    }
+
+    /// **The port the served path reaches the table through.**
+    ///
+    /// Every assertion above drives [`OpenToolCalls`] directly, which is the right way to judge the
+    /// table but says nothing about whether anything on a socket can get to it. This judges the seam
+    /// the session runtime holds: the same three answers — woken, refused, swept — asked in the
+    /// spelling `busbar-voice` asks them in. Before this port existed the runtime had no way to ask.
+    #[cfg(feature = "plane-voice")]
+    #[test]
+    fn the_runtimes_port_reaches_the_nodes_own_table() {
+        use busbar_voice::runtime::{GovernedCalls, ReplyRefusal};
+
+        let kernel = Kernel::new();
+        let node = std::sync::Arc::new(node(serviceable()));
+        let _ = plan(&kernel, &node, 11, "call_aaa", 0);
+        let _ = plan(&kernel, &node, 22, "call_bbb", 0);
+        let port = NodeCalls::new(std::sync::Arc::clone(&node));
+
+        assert_eq!(
+            port.replied(9, "call_aaa"),
+            Err(ReplyRefusal::NoSuchSession),
+            "a reply on a session this node holds nothing for wakes nothing"
+        );
+        assert_eq!(
+            port.replied(7, "call_zzz"),
+            Err(ReplyRefusal::UnknownCall),
+            "and one naming a call nobody is waiting on is refused, not matched to whichever is open"
+        );
+        assert_eq!(
+            port.replied(7, "call_bbb"),
+            Ok(()),
+            "the answer wakes its own"
+        );
+        assert!(
+            !node.tool_calls.waiting(7, UnitKey::new(22)),
+            "which is the wait leaving the table"
+        );
+        assert!(
+            node.tool_calls.waiting(7, UnitKey::new(11)),
+            "and the call it did not answer is still waiting"
+        );
+
+        // The tick's sweep, through the same port, at the deadline the plane's own leg declared.
+        let deadline = u64::from(busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000;
+        assert_eq!(port.expired(deadline - 1), 0, "not one millisecond early");
+        assert_eq!(
+            port.expired(deadline + 1),
+            1,
+            "the unanswered call is swept"
+        );
+
+        // And what the sweep left behind is what ends the unit — under its own deadline, not as a
+        // settlement that pretends the answer arrived.
+        let Ended::Settled { end, .. } = plan(&kernel, &node, 11, "call_aaa", deadline + 1) else {
+            panic!("the exit path settles an unanswered call like anything else");
+        };
+        assert!(
+            matches!(
+                end.outcome(),
+                Outcome::Failed(busbar_caps::StepName::Route, ReasonCode::DeadlineExceeded)
+            ),
+            "got {:?}",
+            end.outcome()
+        );
     }
 
     /// A conversation that is over cannot answer anything.

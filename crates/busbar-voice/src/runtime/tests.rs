@@ -642,8 +642,10 @@ fn call_frames(call_id: &str, tool: &str) -> [WireEvent; 3] {
     [
         wire(serde_json::json!({"type":"response.output_item.added",
             "item":{"type":"function_call","call_id":call_id,"name":tool}})),
-        wire(serde_json::json!({"type":"response.function_call_arguments.delta",
-            "call_id":call_id,"delta":"{}"})),
+        wire(
+            serde_json::json!({"type":"response.function_call_arguments.delta",
+            "call_id":call_id,"delta":"{}"}),
+        ),
         wire(serde_json::json!({"type":"response.function_call_arguments.done","call_id":call_id})),
     ]
 }
@@ -683,7 +685,11 @@ async fn a_client_served_call_waits_and_its_reply_wakes_the_unit() {
 
     // The root entered the wait where it planned the leg. The runtime is what tells it the answer
     // arrived — and the reply goes on upstream only because the wait was woken.
-    table.sessions.lock().unwrap().insert(7, vec!["cr".to_string()]);
+    table
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(7, vec!["cr".to_string()]);
     let plan = core.on_client_frame(client_reply("cr"));
     assert!(
         !plan.refused_reply,
@@ -713,7 +719,11 @@ async fn a_reply_naming_no_open_call_is_refused_rather_than_carried_upstream() {
         core.on_server_frame(f).await;
     }
     // The session's table holds `cr`; the client answers `cz`.
-    table.sessions.lock().unwrap().insert(7, vec!["cr".to_string()]);
+    table
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(7, vec!["cr".to_string()]);
     let plan = core.on_client_frame(client_reply("cz"));
     assert!(plan.refused_reply, "a reply matching nothing is refused");
     assert!(
@@ -734,7 +744,11 @@ async fn an_unanswered_client_served_call_is_swept_by_the_tick() {
     for f in call_frames("cr", "remote") {
         core.on_server_frame(f).await;
     }
-    table.sessions.lock().unwrap().insert(7, vec!["cr".to_string()]);
+    table
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(7, vec!["cr".to_string()]);
 
     // The tick is what runs beside the pump; without it the wait is never ended and the call's hold
     // is held open by a client that simply never replied.
