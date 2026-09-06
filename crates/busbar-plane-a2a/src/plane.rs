@@ -221,6 +221,120 @@ fn finish_of(end: &UnitEnd, streaming: bool) -> FinishClass {
     )
 }
 
+/// The transport fact key a request target is published under.
+///
+/// The kernel's own reserved key, named rather than guessed at.
+const FACT_PATH: &str = busbar_contract::transport::facts::PATH;
+
+/// The pointer a bare task document carries its own identifier at.
+const PTR_TASK_ID: &str = "/id";
+
+/// The pointer a bare task document carries its conversation at.
+const PTR_CONTEXT_ID: &str = "/contextId";
+
+/// One of this plane's surfaces that does not carry a request envelope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenSurface {
+    /// A discovery document, fetched with no body and no credential.
+    Discovery,
+    /// The callback an agent this node dialled posts a task document back to.
+    Push,
+    /// A task read through the collection binding rather than through a method name.
+    TaskRead(busbar_contract::ids::OpClassId),
+}
+
+/// Which surface a request target names, where the target names one that carries no envelope.
+///
+/// `None` is the document binding — the mount an envelope arrives on — which is every other claim
+/// this plane holds. A query string names no surface, so it is cut before the match: it is an
+/// argument to an operation, never part of which operation it is.
+fn surface_of(target: &str) -> Option<OpenSurface> {
+    let path = target.split(['?', '#']).next().unwrap_or(target);
+    match path {
+        "/.well-known/agent-card.json" | "/.well-known/oauth-protected-resource/a2a" => {
+            Some(OpenSurface::Discovery)
+        }
+        "/a2a/push" => Some(OpenSurface::Push),
+        "/a2a/tasks" => Some(OpenSurface::TaskRead(ops::OP_TASK_LIST)),
+        _ => {
+            let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+            match segments.as_slice() {
+                ["a2a", "tasks", id] if !id.is_empty() => {
+                    Some(OpenSurface::TaskRead(ops::OP_TASK_GET))
+                }
+                _ => None,
+            }
+        }
+    }
+}
+
+/// Decode one request on a surface that carries no request envelope.
+///
+/// Each of the three is a different shape and each is answered as itself. A discovery document is
+/// fetched with no body at all, so there is nothing to read and the unit is complete the moment it
+/// is recognised. A task read through the collection binding names its task in the target rather
+/// than in a document. The callback carries a task document of its own — not an envelope around
+/// one — and it is the provider-initiated class, which is what the plane says a frame arriving
+/// on a connection this node dialled MEANS.
+fn decode_open_surface<'u>(
+    surface: OpenSurface,
+    frames: &mut FrameCursor<'u>,
+    ctx: &Ctx<'u>,
+) -> Result<Ingress<'u>, Decode> {
+    let target = ctx.transport().fact(FACT_PATH).unwrap_or_default();
+    let body: &'u [u8] = frames
+        .next_frame()
+        .map(|f| f.bytes.as_slice())
+        .unwrap_or(&[]);
+    let mut facts = Facts::new();
+    let op = match surface {
+        // Both discovery documents are the same operation: reading what this node publishes about
+        // itself. They price as the card read the vocabulary already names, because that is the
+        // work — a static document handed back — and a second class for the same work would be a
+        // second price for it.
+        OpenSurface::Discovery => ops::OP_AGENT_CARD,
+        OpenSurface::TaskRead(op) => {
+            if let Some(id) = task_id_of(target) {
+                let id = ctx.arena().alloc_str(id).map_err(|_| Decode::Oversize)?;
+                let _ = facts.set(f::FACT_TASK_ID, FactValue::Str(id));
+            }
+            op
+        }
+        OpenSurface::Push => {
+            if body.is_empty() {
+                return Ok(Ingress::NeedMore);
+            }
+            if let Some(id) = read_str(body, PTR_TASK_ID) {
+                let _ = facts.set(f::FACT_TASK_ID, FactValue::Str(id));
+            }
+            if let Some(context) = read_str(body, PTR_CONTEXT_ID) {
+                let _ = facts.set(f::FACT_CONTEXT_ID, FactValue::Str(context));
+            }
+            ops::OP_PUSH_EVENT
+        }
+    };
+    let _ = facts.set(f::FACT_STREAMING, FactValue::Bool(false));
+    Ok(Ingress::OneShot(Box::new(UnitDraft {
+        op,
+        body_ir: view(body, &[PTR_TASK_ID, PTR_CONTEXT_ID], ctx)?,
+        // Nothing here answers a request of this node's own, and nothing here is answered by a
+        // later frame: each of the three is complete in itself.
+        correlates: None,
+        correlation_out: None,
+        facts,
+    })))
+}
+
+/// The task a collection-binding target names, if it names one.
+fn task_id_of(target: &str) -> Option<&str> {
+    let path = target.split(['?', '#']).next().unwrap_or(target);
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    match segments.as_slice() {
+        ["a2a", "tasks", id] if !id.is_empty() => Some(id),
+        _ => None,
+    }
+}
+
 impl Plane for A2aPlane {
     fn decode_ingress<'u>(
         &self,
@@ -228,6 +342,14 @@ impl Plane for A2aPlane {
         _st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<Ingress<'u>, Decode> {
+        // Which surface a request arrived on is a question about the target, and the target is a
+        // transport fact. It is asked FIRST because not every surface this plane claims carries an
+        // envelope: three of them carry no request document at all, and one carries a document of
+        // its own shape. Asking the body first meant every one of them decoded as a malformed
+        // envelope — the plane claimed surfaces it then refused everything on.
+        if let Some(surface) = ctx.transport().fact(FACT_PATH).and_then(surface_of) {
+            return decode_open_surface(surface, frames, ctx);
+        }
         let Some(frame) = frames.next_frame() else {
             return Ok(Ingress::NeedMore);
         };
