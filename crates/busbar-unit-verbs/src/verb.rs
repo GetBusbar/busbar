@@ -696,6 +696,18 @@ pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Approve,
 ];
 
+/// The two of the seventeen the architecture document binds as `GET` — "POST for every mutating
+/// verb, GET for the two read-only verbs (`verify`, `plane_facts`)".
+///
+/// They stay members of [`NEW_VERBS`] because they ARE two of the seventeen, and the operator
+/// ceremony still reaches them through the same gate every other new verb runs (neither is in
+/// [`IRREDUCIBLE_VERBS`], so that gate admits them). What being named here changes is everything
+/// that follows from a verb being a read rather than a mutation: the scope it asks for, the mutation
+/// budget it does not draw, and the maker-checker step it has nothing to wait for. A read held
+/// behind an approval is not delayed, it is refused forever — nobody can approve a mutation that
+/// does not exist.
+pub const READ_ONLY_NEW_VERBS: &[KernelVerb] = &[KernelVerb::Verify, KernelVerb::PlaneFacts];
+
 /// The five 1.6.0 ledger views, in the order the admin surface lists them.
 ///
 /// Kept as their own list rather than folded into [`NEW_VERBS`] because membership of that list is

@@ -1348,6 +1348,79 @@ fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
     }
 }
 
+/// The two 1.6.0 verbs the design binds as GETs are reads, and a read-only credential is what they
+/// ask for.
+///
+/// `verify` and `plane_facts` are the two of the seventeen the architecture document binds as `GET`
+/// — "GET for the two read-only verbs" — and everything that follows from a verb being a read
+/// follows for them: an operator holding a read-only admin credential is answered, and the
+/// maker-checker gate has no mutation of theirs to interpose on, so `required` posture answers them
+/// too. Demanding `full` of them refuses the operator who was only ever allowed to look; holding
+/// them behind an approval refuses them forever, because there is no pending mutation anyone can
+/// approve.
+///
+/// The control below is a mutating verb on the same executor under the same posture, so the green
+/// above is these two being reads rather than the gates being unwired.
+#[test]
+fn the_two_read_only_new_verbs_answer_a_read_only_credential_under_required_posture() {
+    let admin = admin();
+    let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
+    let posture = Some(PostureCtx {
+        operator: OperatorState::Set,
+        dual_control: DualControl::Required,
+    });
+
+    for verb in [KernelVerb::Verify, KernelVerb::PlaneFacts] {
+        assert_eq!(
+            crate::verbs::required_scope(verb),
+            VerbScope::ReadOnly,
+            "{verb:?} is bound as a GET and must ask what a read asks"
+        );
+        let body = verbs
+            .execute(
+                verb,
+                &admin,
+                "alice",
+                VerbScope::ReadOnly,
+                0,
+                posture,
+                ApprovalState::NotYetApproved,
+                b"",
+            )
+            .unwrap_or_else(|e| panic!("{verb:?} was refused: {e:?}"));
+        assert_eq!(body, b"new", "{verb:?} did not reach the new-verb seam");
+    }
+
+    // The control: a mutating new verb still needs `full`, and still waits for its approval.
+    let err = verbs
+        .execute(
+            KernelVerb::Adjust,
+            &admin,
+            "alice",
+            VerbScope::ReadOnly,
+            0,
+            posture,
+            ApprovalState::NotYetApproved,
+            b"",
+        )
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
+    let err = verbs
+        .execute(
+            KernelVerb::Adjust,
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            posture,
+            ApprovalState::NotYetApproved,
+            b"",
+        )
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::ApprovalPending);
+}
+
 /// A store that records which recovery primitive it was asked to perform, so a test can say
 /// "nothing reached the store" and mean it rather than inferring it from a return value.
 struct RecordingStore(Mutex<Vec<&'static str>>);

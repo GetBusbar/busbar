@@ -186,10 +186,33 @@ fn for_verb_matches_1_5_5s_classify_mutation_row_for_row() {
         );
     }
 
-    // A 1.6.0 new verb has no admin path at all and falls through to CRUD, exactly as 1.5.5's
-    // path-only classifier implicitly does for anything it never saw.
+    // A 1.6.0 new MUTATING verb has no admin path at all and falls through to CRUD, exactly as
+    // 1.5.5's path-only classifier implicitly does for anything it never saw.
     assert_eq!(
-        MutationClass::for_verb(Verify, CONFIG_CLASS_RULES),
+        MutationClass::for_verb(Adjust, CONFIG_CLASS_RULES),
+        MutationClass::Crud
+    );
+}
+
+/// The two 1.6.0 verbs bound as GETs never spend a mutation slot.
+///
+/// `verify` and `plane_facts` are the two of the seventeen the architecture document binds as `GET`,
+/// and they have no legacy row, so the path lookup below cannot see them: without being named they
+/// fall through to CRUD and cost one of the sixty mutations a minute an operator gets. A node being
+/// watched — `verify` is the check the operator-key ceremony's own battery cell runs — would then
+/// refuse the config change the operator came to make, and name the config change in the refusal.
+#[test]
+fn the_two_read_only_new_verbs_never_spend_a_mutation_slot() {
+    for verb in [KernelVerb::Verify, KernelVerb::PlaneFacts] {
+        assert_eq!(
+            MutationClass::for_verb(verb, CONFIG_CLASS_RULES),
+            MutationClass::Forbidden,
+            "{verb:?} is a read and must never draw the mutation budget"
+        );
+    }
+    // The control: a mutating new verb on the same table still draws it.
+    assert_eq!(
+        MutationClass::for_verb(KernelVerb::Adjust, CONFIG_CLASS_RULES),
         MutationClass::Crud
     );
 }
