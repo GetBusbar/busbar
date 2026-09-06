@@ -2577,3 +2577,112 @@ fn any_content_hook_ignores_whether_the_granted_hook_is_wired() {
     };
     assert!(any_content_hook(&registry("unwired", granted)));
 }
+
+// ── The disposition of a hook call that FAILED ─────────────────────────────────────────────────────
+// `on_error: reject` is the operator declaring a hook LOAD-BEARING: without its answer the unit is
+// refused. The READ-ONLY (decide) seat has honored that since the on_error chain landed; the
+// READ-WRITE (transform) seat silently skipped the hook instead, so a redaction/compression gate an
+// operator had declared load-bearing failed OPEN. The disposition now lives in ONE decorator applied
+// at RESOLUTION, over ONE rule shared with the read-only seat.
+
+/// Resolve the same `prompt: rw` gate through BOTH rewrite resolvers (global and per-pool) and hand
+/// back the two chains' transports. Returning both is the point: they are siblings, and a
+/// disposition applied to one and not the other would be exactly the drift this fix removes.
+fn resolve_rewrite_pair(
+    env: &HookEnv,
+    settings: &serde_json::Value,
+    on_error: &str,
+) -> Option<(Arc<dyn RoutingPolicy>, Arc<dyn RoutingPolicy>)> {
+    let mut hook = base_gate();
+    hook.prompt = PromptAccess::Rw;
+    hook.global = true;
+    hook.on_error = on_error.to_string();
+    hook.settings = settings.as_object().cloned().unwrap_or_default();
+    let hooks = registry("h", hook);
+    let global = resolve_rewrite_hooks(&hooks, &["h".to_string()], env, 0)
+        .into_iter()
+        .next()?
+        .1;
+    let pool = resolve_pool_rewrites(&pool_with_hook("h"), &hooks, env, 0)
+        .into_iter()
+        .next()?
+        .1;
+    Some((global, pool))
+}
+
+/// THE MATRIX: {call answered, call failed} × {`on_error: weighted`, `on_error: reject`}, over the
+/// REAL resolved chain (so it covers the decorator AND the resolution wiring that applies it).
+///
+/// A call that FAILED is driven by the fixture's own "I could not answer" reply — the shape a gate
+/// takes when its classifier or model endpoint is down. A hook that is unreachable or over its
+/// deadline reaches the same arm one layer lower, in the transport (`DlopenPolicy::transform`).
+#[tokio::test]
+async fn rewrite_call_failure_takes_the_configured_disposition() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
+    use busbar_api::TransformOutcome;
+    let Some(env) = test_env() else {
+        eprintln!("skip: hook cdylib not built (run under --workspace)");
+        return;
+    };
+    let budget = std::time::Duration::from_secs(5);
+    let failed = serde_json::json!({"fail_transform": "classifier unreachable"});
+    let answered = serde_json::json!({});
+
+    for (on_error, call_failed, expect_refusal) in [
+        ("weighted", true, false),
+        ("reject", true, true),
+        ("weighted", false, false),
+        ("reject", false, false),
+    ] {
+        let settings = if call_failed { &failed } else { &answered };
+        let Some((global, pool)) = resolve_rewrite_pair(&env, settings, on_error) else {
+            panic!("the rw gate must resolve into both rewrite chains");
+        };
+        for (which, policy) in [("global", &global), ("pool", &pool)] {
+            let outcome = policy.transform(&dreq("hello"), budget).await;
+            match (&outcome, expect_refusal, call_failed) {
+                // The refusal: the load-bearing hook could not answer, so the unit is refused —
+                // with the shared status/message, never the hook's name or the reason.
+                (TransformOutcome::Reject { status, message }, true, _) => {
+                    assert_eq!(
+                        *status,
+                        busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                        "{which}: a failed load-bearing hook refuses with the shared status"
+                    );
+                    assert_eq!(
+                        message,
+                        busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+                        "{which}: and the shared, content-free message"
+                    );
+                }
+                // Not load-bearing: the failure is carried through to the firing site, which
+                // proceeds with the ORIGINAL body and logs it — today's fail-safe shape, now the
+                // operator's stated choice rather than an assumption.
+                (TransformOutcome::Failed { .. }, false, true) => {}
+                // The call ANSWERED: `on_error` is not consulted at all — the answer stands,
+                // whatever the disposition says.
+                (TransformOutcome::Rewrite(_), false, false) => {}
+                (other, _, _) => panic!(
+                    "{which}: on_error={on_error} call_failed={call_failed} \
+                     expect_refusal={expect_refusal} got {other:?}"
+                ),
+            }
+        }
+    }
+}
+
+/// The `on_error` disposition is asked of ONE rule, and that rule is what both seats consult. Pinned
+/// directly so a future edit that special-cases one seat has to change this line first.
+#[test]
+fn only_reject_refuses_a_failed_call() {
+    use crate::config::PolicyOnError;
+    assert!(busbar_substrate::hooks::failed_call_refuses(
+        &PolicyOnError::Reject
+    ));
+    assert!(!busbar_substrate::hooks::failed_call_refuses(
+        &PolicyOnError::Weighted
+    ));
+    assert!(!busbar_substrate::hooks::failed_call_refuses(
+        &PolicyOnError::First
+    ));
+}

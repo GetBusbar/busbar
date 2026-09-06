@@ -66,10 +66,13 @@ pub(crate) fn projectors() -> Arc<HookProjectors> {
             },
         ),
         // transform_outcome: parse the reply and run the shared reject > rewrite > abstain
-        // normalizer. A malformed reply → Abstain (proceed with the ORIGINAL body).
+        // normalizer. A malformed reply is a protocol violation, not "no opinion" → `Failed`, which
+        // the caller's `on_error` disposes of (the `normalize` twin above does the same).
         transform_outcome: Box::new(|v| match serde_json::from_value::<wire::HookResponse>(v) {
             Ok(parsed) => wire::transform_outcome(parsed),
-            Err(_) => busbar_api::TransformOutcome::Abstain,
+            Err(e) => busbar_api::TransformOutcome::Failed {
+                message: format!("hook transform reply failed to parse: {e}"),
+            },
         }),
         // status: parse the `{"status": {...}}` envelope into the shared `HookStatus`. `{}` / no
         // `status` key = the hook doesn't speak status (fail-open None). Metrics are validated +

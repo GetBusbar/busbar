@@ -2153,6 +2153,13 @@ fn reject_kind_mapping_matches_status_semantics() {
     assert_eq!(reject_kind_for_status(404), KIND_NOT_FOUND);
     assert_eq!(reject_kind_for_status(408), KIND_TIMEOUT);
     assert_eq!(reject_kind_for_status(429), KIND_RATE_LIMIT);
+    // The refusal a load-bearing REWRITE hook's failed call produces travels this same map (it is
+    // minted as the transform path's `reject` verb). It must read as RETRYABLE — the identical kind
+    // the read-only seat renders for the same condition — never as a client error.
+    assert_eq!(
+        reject_kind_for_status(busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS),
+        KIND_OVERLOADED
+    );
     for other in [400, 422, 451, 499] {
         assert_eq!(reject_kind_for_status(other), KIND_INVALID_REQUEST);
     }
