@@ -29,18 +29,32 @@
 #          (closed object, no "error" property), so a PASS here is proof the checker judged it
 #          against the dialect's ERROR envelope, not the success schema
 #
+# A third fixture, fixtures/selftest-gap-recording (one recorded cell: the ingress-Anthropic
+# cross-protocol stream, which carries the `ping` frame Anthropic documents and its published
+# MessageStreamEvent union omits), holds the NAMED CONFORMANCE GAP register to the four things it
+# claims — a register that cannot do these is a way to make a failure disappear:
+#
+#   (j) the registered gap MATCHES        -> the row is classified `gap`: its own column, out of the
+#       owed set, counted by the verdict, and NEVER a pass. The entry's own `named-gap|<id>` row is
+#       PASS because it fired.
+#   (k) a registered gap that never fires -> RED. An unused gap is a lie.
+#   (l) a STALE pin (the entry's spec digest is not what spec-digests.tsv pins today) -> RED, and it
+#       forgives nothing while stale: the row it used to cover goes back to FAIL.
+#   (m) zero rows                         -> RED. The register cannot make a vacuous run green.
+#
 # Needs the vendored specs (run.sh vendors them; cached by digest, so this is offline after once).
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 FIX="${here}/fixtures/selftest-recording"
 FIX2="${here}/fixtures/selftest-errors-recording"
+FIX3="${here}/fixtures/selftest-gap-recording"
 W="$(mktemp -d "${TMPDIR:-/tmp}/llm-conformance-selftest.XXXXXX")"
 trap 'rm -rf "$W"' EXIT
 fails=0
 say() { printf '%s  %s\n' "$1" "$2"; [ "$1" = PASS ] || fails=$((fails+1)); }
-run() {  # run <recording> <out> [cells.json] -> rc
-  local cells="${3:-$1/cells.json}"
-  bash "${here}/run.sh" --recording "$1" --out "$2" --cells "$cells" >"$2.log" 2>&1; echo $?
+run() {  # run <recording> <out> [cells.json] [named-gaps.json] -> rc
+  local cells="${3:-$1/cells.json}" gaps="${4:-${here}/named-gaps.json}"
+  bash "${here}/run.sh" --recording "$1" --out "$2" --cells "$cells" --named-gaps "$gaps" >"$2.log" 2>&1; echo $?
 }
 count() { awk -F'\t' -v s="$2" '$2==s{n++} END{print n+0}' "$1/ledger.tsv"; }
 fail_rows() { awk -F'\t' '$2=="FAIL"{print $1"\t"$4}' "$1/ledger.tsv"; }
@@ -137,5 +151,70 @@ else
   say FAIL "(h) malformed array element rc=$rc fails=$(count "$W/h" FAIL): $rows"
 fi
 
+# ── the named conformance gap register ──────────────────────────────────────────────────────────
+# The four cases below drive the REAL register through run.sh; (k) and (l) mutate a COPY of it, so
+# what is proven is the mechanism, not a test-only path.
+
+# (j) the registered `ping` gap matches -> the row is a GAP, not a PASS and not a FAIL
+rc="$(run "$FIX3" "$W/j")"
+gap_row='llm|anthropic|openai|request|ok_stream#response'
+if [ "$rc" = 0 ] && [ "$(count "$W/j" GAP)" = 1 ] && [ "$(count "$W/j" FAIL)" = 0 ] \
+   && awk -F'\t' -v i="$gap_row" '$1==i && $2=="GAP"{f=1} END{exit !f}' "$W/j/ledger.tsv" \
+   && grep -q $'^named-gap|G-1 anthropic ping\tPASS' "$W/j/ledger.tsv" \
+   && grep -q 'named conformance gaps: 1' "$W/j.log"; then
+  say PASS "(j) a matching named gap -> row class gap, its own column, counted by the verdict, never a pass"
+else
+  say FAIL "(j) matching gap rc=$rc gap=$(count "$W/j" GAP) fail=$(count "$W/j" FAIL) pass=$(count "$W/j" PASS)"; tail -12 "$W/j.log"
+fi
+
+# (k) a registered gap that never fires -> RED (an unused gap is a lie)
+python3 - "${here}/named-gaps.json" "$W/gaps-unused.json" <<'EOF'
+import copy, json, sys
+d = json.load(open(sys.argv[1]))
+ghost = copy.deepcopy(d["gaps"][0])
+ghost["id"] = "G-TEST never fires"
+# In scope (it names the same cells, so the run owes it a row) but it forgives a violation no row
+# produces — the shape of an entry the product outgrew.
+ghost["violation"]["detail_contains"] = "'type': 'a-frame-nothing-emits' is not one of"
+d["gaps"].append(ghost)
+json.dump(d, open(sys.argv[2], "w"), indent=1)
+EOF
+rc="$(run "$FIX3" "$W/k" "$FIX3/cells.json" "$W/gaps-unused.json")"
+if [ "$rc" != 0 ] && [ "$(count "$W/k" GAP)" = 1 ] \
+   && grep -q $'^named-gap|G-TEST never fires\tFAIL' "$W/k/ledger.tsv" \
+   && grep -q 'NEVER FIRED' "$W/k/ledger.tsv"; then
+  say PASS "(k) a registered gap that never fired -> RED, named as its own failing row"
+else
+  say FAIL "(k) unused gap rc=$rc gap=$(count "$W/k" GAP) fail=$(count "$W/k" FAIL)"; tail -12 "$W/k.log"
+fi
+
+# (l) the pinned spec digest moved -> the entry is STALE: RED, and it forgives nothing meanwhile
+python3 - "${here}/named-gaps.json" "$W/gaps-stale.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+old = d["gaps"][0]["spec_digest"]
+stale = ("0" * 8) + old[8:]          # a digest spec-digests.tsv does not pin
+d["gaps"][0]["spec_digest"] = stale
+d["gaps"][0]["review_at"] = "spec-digest:" + stale
+json.dump(d, open(sys.argv[2], "w"), indent=1)
+EOF
+rc="$(run "$FIX3" "$W/l" "$FIX3/cells.json" "$W/gaps-stale.json")"
+if [ "$rc" != 0 ] && [ "$(count "$W/l" GAP)" = 0 ] \
+   && awk -F'\t' -v i="$gap_row" '$1==i && $2=="FAIL"{f=1} END{exit !f}' "$W/l/ledger.tsv" \
+   && grep -q 'STALE' "$W/l/ledger.tsv"; then
+  say PASS "(l) a stale spec pin -> RED, and the row it covered goes back to FAIL until re-confirmed"
+else
+  say FAIL "(l) stale pin rc=$rc gap=$(count "$W/l" GAP) fail=$(count "$W/l" FAIL)"; tail -12 "$W/l.log"
+fi
+
+# (m) zero rows with the register in play -> still the vacuous-run RED
+mkdir -p "$W/m-rec"
+rc="$(run "$W/m-rec" "$W/m" "$FIX3/cells.json")"
+if [ "$rc" != 0 ] && [ "$(count "$W/m" GAP)" = 0 ] && grep -qE 'VACUOUS RUN|DID NOT RUN' "$W/m.log"; then
+  say PASS "(m) zero rows -> RED; a register cannot make a run that judged nothing green"
+else
+  say FAIL "(m) zero rows with register rc=$rc rows=$(awk 'NF{n++} END{print n+0}' "$W/m/ledger.tsv")"; tail -8 "$W/m.log"
+fi
+
 echo
-if [ "$fails" -eq 0 ]; then echo "llm-conformance selftest: GREEN (8/8)"; else echo "llm-conformance selftest: RED (${fails} failed)"; exit 1; fi
+if [ "$fails" -eq 0 ]; then echo "llm-conformance selftest: GREEN (12/12)"; else echo "llm-conformance selftest: RED (${fails} failed)"; exit 1; fi
