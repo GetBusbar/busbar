@@ -524,14 +524,20 @@ impl Walk {
     /// fallback is unreachable from the loop's order — every path to a terminal has already rendered
     /// something — and it is an answer rather than an unwrap, because a path that cannot be taken
     /// still has to say something if it is.
+    ///
+    /// `reversible` is whether this END may take the flat fee back, and it is the DRIVER'S to say
+    /// because the only thing that decides it is the outcome the loop sealed. The charge is the
+    /// walk's — a door that fail-opened without charging must never refund — so the two are `and`ed
+    /// here: a fee comes back only where one was taken and the end is one that may reverse it.
     pub fn audit(
         &self,
         token: &UnitToken<busbar_caps::step::Audit>,
         ctx: &crate::unit::audit::AuditCtx<'_>,
+        reversible: bool,
         fallback: impl FnOnce() -> Served,
     ) -> Decision<busbar_caps::step::Audit> {
         let bytes = self.take_bytes().unwrap_or_else(fallback);
-        let audited = crate::unit::audit::audit(token, ctx, bytes, self.charged());
+        let audited = crate::unit::audit::audit(token, ctx, bytes, self.charged() && reversible);
         self.seal_terminal(audited.response);
         audited.decision
     }
