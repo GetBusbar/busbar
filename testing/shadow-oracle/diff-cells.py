@@ -329,6 +329,14 @@ def main() -> int:
                 "change to normalize.py/capture.py/cells.json/etc, not by busbar's behavior. Re-record both "
                 "with the current testing/shadow-oracle tree, or pass --allow-harness-skew to compare anyway.\n")
             return 2
+    # THE CORPUS IS READ BEFORE THE REGISTER, because the register's width guard is measured against
+    # it: an entry's `cells` regex is a claim about HOW MANY cells it forgives, and that claim can
+    # only be checked against the full cell list (never the --family/--id-filter subset, or a
+    # narrower run would make a wide entry look narrow).
+    with open(a.cells, encoding="utf-8") as f:
+        cells_doc = json.load(f)
+    all_cell_ids = [c["id"] for c in cells_doc["cells"]]
+
     accepted, transforms = [], []
     if os.path.exists(a.accepted):
         for e in json.load(open(a.accepted, encoding="utf-8")).get("accepted", []):
@@ -348,6 +356,39 @@ def main() -> int:
                 sys.exit(f"accepted-differences: entry {base['id']!r} accepts {sorted(money)} but is not kind=breaking with a changelog line")
             if "cells" not in e and not base["classes"] and "transform" not in e:
                 sys.exit(f"accepted-differences: entry {base['id']!r} has neither cells nor classes (a total blanket)")
+            # ── AN ENTRY DECLARES ITS OWN WIDTH, AND MAY NEVER EXCEED IT ─────────────────────────
+            # A `cells` regex is prose that runs. `^llm\|[a-z_]+\|cohere\|request\|ok(_stream)?$` is
+            # a scope an owner can read; the same string with `|^billing\|` glued on the end reads
+            # almost identically and forgives twelve more cells in a different family — which is
+            # exactly what M-3 did: an entry whose id, rationale and changelog line all speak only
+            # about Cohere `billed_units` held effects.usage (MONEY) over every billing cell in the
+            # corpus. Nothing refused it, because the money guard asks WHICH classes an entry takes
+            # and never HOW MANY cells it takes them over.
+            #
+            # So the entry must say the number out loud. `expected_cells` is the count the author
+            # saw when they wrote the regex; matching MORE than that is refused. An alternation
+            # bolted onto a live entry, or a new family whose ids happen to fall under an old
+            # pattern, now stops the run and names the drift instead of widening in silence.
+            # Matching FEWER is not refused (a cell can be renamed away or not yet recorded) but is
+            # reported, so a stale entry is visible rather than merely harmless.
+            #
+            # `transform` entries are exempt HERE only because they still default `cells` to "." —
+            # the next commit gives them a required `cells` and folds them into this same guard.
+            n_match = sum(1 for cid in all_cell_ids if base["rx"].search(cid))
+            exp = e.get("expected_cells") if "transform" not in e else n_match
+            if not isinstance(exp, int) or isinstance(exp, bool) or exp < 0:
+                sys.exit(f"accepted-differences: entry {base['id']!r} declares no `expected_cells` "
+                         f"(a non-negative integer: how many cells in {os.path.basename(a.cells)} its `cells` regex "
+                         f"is meant to cover). It currently matches {n_match}. Without it the regex can widen silently.")
+            if n_match > exp:
+                over = [cid for cid in all_cell_ids if base["rx"].search(cid)][:12]
+                sys.exit(f"accepted-differences: entry {base['id']!r} declares expected_cells={exp} but its `cells` "
+                         f"regex matches {n_match} cells — the waiver is wider than the entry says it is. "
+                         f"Narrow the regex, or raise expected_cells DELIBERATELY and say why in the rationale. "
+                         f"Matched (first {len(over)}): {', '.join(over)}")
+            if n_match < exp:
+                sys.stderr.write(f"accepted-differences: note: entry {base['id']!r} declares expected_cells={exp} "
+                                 f"but matches {n_match} — cells renamed away, or not recorded yet.\n")
             if "transform" in e:
                 # a LINE-PRECISE acceptance: the candidate's text is rewritten by these regexes before the
                 # diff, so ONLY the accepted token (a diagnostic code, a renamed line) is forgiven and any
@@ -359,8 +400,6 @@ def main() -> int:
                 accepted.append(base)
     os.makedirs(a.out, exist_ok=True)
 
-    with open(a.cells, encoding="utf-8") as f:
-        cells_doc = json.load(f)
     fam_rx = re.compile(a.family) if a.family else None
     cells = [c for c in cells_doc["cells"] if not fam_rx or fam_rx.search(c.get("family", c.get("plane", "")))]
     id_rx = re.compile(a.id_filter) if a.id_filter else None
