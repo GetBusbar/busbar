@@ -275,6 +275,27 @@ boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three key
   assert_port_is_ours "$LISTEN_PORT" "$BUSBAR_PID" || return 4
   assert_port_is_ours "$ADMIN_PORT" "$BUSBAR_PID" || return 4
   oracle_mint_keys "$ADMIN_PORT" || return 2
+  # A HOOK THAT HAS NOT ANSWERED YET IS NOT A HOOK THAT CANNOT ANSWER. /healthz gates the boot, but
+  # under the `hooks` variant busbar also spawns the published headroom plugin, and that process is
+  # ready some milliseconds LATER. The hook is configured `timeout_ms: 50`, so a status read that
+  # lands in that window comes back
+  #     {"drift": null, "reported": null, "note": "hook did not answer status (unsupported or unreachable)"}
+  # instead of the drift report — and admin.ops|GetHooksNameStatus|ok recorded whichever of the two
+  # this machine happened to produce (three full 1.5.5 recordings gave the drift report, a fourth
+  # gave the note). Same class of defect as the boot-log sweep: the cell records the recorder's
+  # timing, not busbar's behaviour. So the boot is not finished until the hook has answered once,
+  # exactly as it is not finished until /healthz has: readiness is waited for, never sampled.
+  if [ "$variant" = hooks ]; then
+    local hw=0 hw_max=$(( boot_bound * 10 ))
+    while [ $hw -lt "$hw_max" ]; do
+      curl -fsS -m 2 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" \
+        "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/hooks/busbar-headroom/status" 2>/dev/null \
+        | jq -e '.reported != null' >/dev/null 2>&1 && break
+      kill -0 "$BUSBAR_PID" 2>/dev/null || return 1
+      sleep 0.1; hw=$((hw + 1))
+    done
+    [ $hw -lt "$hw_max" ] || return 6
+  fi
   # PRIME the BROKE key: its group admits exactly one request per day, so one un-recorded request
   # now makes every over_budget cell a real 429 at Admit (the first request would be admitted).
   # PRIME the QUOTA key too: group `broke-quota` carries only a budget cap (no requests cap), so one
@@ -327,6 +348,8 @@ case "$rc" in
   1) fail_setup "busbar (${VER}) did not come up" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 500)" ;;
   4) fail_setup "the listeners on ${LISTEN_PORT}/${ADMIN_PORT} are not the busbar this run spawned" \
        "pid ${BUSBAR_PID:-?} vs port owners '$(port_owner_pid "$LISTEN_PORT")'/'$(port_owner_pid "$ADMIN_PORT")'; refusing to record a foreign process as ${BIN}" ;;
+  6) fail_setup "the headroom hook never answered status on a hooks-variant boot" \
+       "the hooks cells would record the recorder's timing (the 'hook did not answer status' note) instead of the drift report" ;;
   5) fail_setup "the over-budget priming request was not admitted (HTTP ${PRIME_CODE:-?})" \
        "the broke/broke-quota caps are therefore intact, and every over_budget cell would record a 200 where the refusal belongs" ;;
   *) fail_setup "could not mint the three oracle keys" "admin API on ${ADMIN_PORT}; see $WORK/busbar.log" ;;
