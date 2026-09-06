@@ -11,13 +11,13 @@ and carries the check that would prove it -- that list is the owner's post-check
 - bindings: **103**  (PB-0 master rule + 102 table rows)
 - mapped: **103**
 - unmapped: **0**
-- checks by kind: gate 9, lint 5, oracle-cell 58, oracle-family 5, test 441
+- checks by kind: gate 13, lint 5, oracle-cell 58, oracle-family 5, test 441
 
 ## Bindings
 
 | # | Surface | Status | Checks |
 |---|---|---|---|
-| PB-0 | master rule | mapped | gate: `scripts/inventory-coverage.sh` |
+| PB-0 | master rule | mapped | gate: `scripts/inventory-coverage.sh`<br>gate: `scripts/construction-gate.sh` |
 | PB-1 | hook `on_empty` | mapped | test: `enforce_restricts_reapplies_compliance_tags_across_pools`<br>test: `multi_restrict_disjoint_intersection_fails_closed` |
 | PB-2 | per-lane `max_concurrent` | mapped | test: `excluded_reasons_records_at_capacity`<br>test: `at_capacity_reject_sheds_503_not_queued`<br>test: `queue_dispatches_when_permit_frees_before_deadline`<br>test: `queue_times_out_to_503_when_capacity_never_frees`<br>gate: `scripts/release-check.sh` |
 | PB-3 | tripped / budget-exhausted / at-capacity lanes | mapped | test: `ordered_walk_skips_tripped_preferred_to_next`<br>test: `ordered_walk_skips_excluded_preferred`<br>test: `at_capacity_plus_tripped_member_rejects_503`<br>test: `least_bad_never_reaches_an_excluded_member`<br>test: `strengthened_lane_availability_invariant` |
@@ -39,7 +39,7 @@ and carries the check that would prove it -- that list is the owner's post-check
 | PB-19 | `MissingGroup` | mapped | test: `test_missing_group_fails_closed_at_ingress`<br>test: `test_missing_group_fails_closed`<br>test: `govern_admit_reason_reason_bytes_match_direct_try_admit` |
 | PB-20 | admin audit chain | mapped | test: `the_admin_audit_digest_is_unchanged_by_the_unification`<br>test: `hash_chain_links_and_verifies`<br>test: `export_load_roundtrip_resumes_chain`<br>test: `admin_audit_chain_boot_verifies_from_frozen_bytes`<br>oracle-cell: `admin.ops\|GetAudit\|ok` |
 | PB-21 | idempotency | mapped | oracle-cell: `admin.ops\|PostKeysIdRotate\|idempotent-replay`<br>oracle-cell: `admin.ops\|PostKeys\|idempotent-replay`<br>test: `test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete`<br>test: `test_admin_v1_key_idempotent_mint_and_if_match`<br>test: `test_admin_v1_idempotency_key_is_principal_scoped`<br>test: `test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep`<br>test: `test_admin_v1_idempotency_reservation_frees_on_failure`<br>test: `an_idempotency_key_survives_a_client_disconnect_mid_mint` |
-| PB-22 | admission decision | mapped | test: `test_governance_over_budget_native_envelope_all_ingress`<br>test: `test_governance_rate_limit_429_native_envelope_all_ingress`<br>test: `chain_and_parent_blocks_child_and_charges_nothing`<br>test: `test_group_blocked_429_names_the_budget_group`<br>test: `budget_cap_derives_from_ledger_and_rate_card`<br>test: `test_group_token_spend_blocks_chain_admission`<br>test: `concurrent_gauge_holds_and_releases`<br>test: `disabled_group_freezes_the_chain` |
+| PB-22 | admission decision | mapped | test: `test_governance_over_budget_native_envelope_all_ingress`<br>test: `test_governance_rate_limit_429_native_envelope_all_ingress`<br>test: `chain_and_parent_blocks_child_and_charges_nothing`<br>test: `test_group_blocked_429_names_the_budget_group`<br>test: `budget_cap_derives_from_ledger_and_rate_card`<br>test: `test_group_token_spend_blocks_chain_admission`<br>test: `concurrent_gauge_holds_and_releases`<br>test: `disabled_group_freezes_the_chain`<br>gate: `scripts/construction-gate.sh` |
 | PB-23 | `--safe-mode` as first argument | mapped | oracle-cell: `cli\|--safe-mode\|first-arg` |
 | PB-24 | listeners | mapped | test: `split_admin_listener_no_double_exposure`<br>test: `admin_plane_boot_guard`<br>test: `admin_require_mtls_defaults_on_and_the_retired_key_loud_fails`<br>oracle-cell: `ops.scrape\|metrics\|admin-listener` |
 | PB-25 | usage absent from a stream | mapped | test: `stream_without_usage_frame_bills_zero_on_every_dialect` |
@@ -103,12 +103,12 @@ and carries the check that would prove it -- that list is the owner's post-check
 | PB-83 | breaker scope | mapped | oracle-cell: `route.failover\|fb\|member-401`<br>test: `test_pool_breaker_isolation`<br>test: `test_record_hard_down_all_cells_trips_default_and_every_pool`<br>test: `test_budget_is_lane_global_across_pools`<br>test: `test_unbounded_lane_skips_the_semaphore_bounded_still_enforces` |
 | PB-84 | response-stage taps | mapped | test: `completion_tap_reports_ok_outcome`<br>test: `completion_tap_fires_synthetic_rejected_by_gate`<br>test: `completion_tap_fires_synthetic_rejected_by_auth`<br>oracle-cell: `hooks\|hooked-pool\|unauth` |
 | PB-85 | `max_tokens` injection | mapped | test: `per_model_then_global_then_4096`<br>test: `test_requires_max_tokens_per_protocol`<br>test: `test_openai_explicit_max_tokens_preserved_over_lane_default`<br>test: `test_openai_omits_max_tokens_injects_fallback_for_anthropic` |
-| PB-86 | usage locators are plane-normalized | mapped | lint: `scripts/kernel-token-wire-purity-lint.sh` |
+| PB-86 | usage locators are plane-normalized | mapped | lint: `scripts/kernel-token-wire-purity-lint.sh`<br>gate: `scripts/construction-gate.sh` |
 | PB-87 | non-chat billing classes | mapped | test: `rerank_resp_billing_is_flat`<br>test: `rerank_resp_billing_flat_regardless_of_search_units` |
 | PB-88 | dialect pairs never refuse | mapped | test: `bad_request_reject_keeps_the_unchanged_generic_400`<br>test: `req_bedrock_to_cohere`<br>test: `resp_responses_to_gemini` |
 | PB-89 | migrated hook `on_error` | mapped | test: `the_serde_default_is_nothing`<br>test: `nothing_resolves_to_the_same_terminal_as_weighted` |
 | PB-90 | unmapped 1.5.5 config keys | mapped | test: `every_shipped_config_migrates_to_a_valid_current_config`<br>test: `every_patch_mirrors_every_field_of_its_section`<br>test: `resolved_billing_and_limits_config_is_byte_stable`<br>gate: `scripts/config-stability-gate.sh` |
-| PB-91 | fee basis | mapped | oracle-cell: `route.failover\|fo\|primary-cut-body`<br>test: `refund_returns_the_fee_but_never_the_requests_limit_slot`<br>test: `test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx` |
+| PB-91 | fee basis | mapped | oracle-cell: `route.failover\|fo\|primary-cut-body`<br>test: `refund_returns_the_fee_but_never_the_requests_limit_slot`<br>test: `test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx`<br>gate: `scripts/construction-gate.sh` |
 | PB-92 | `VirtualKey.expires_at` | mapped | test: `a_key_row_whose_expires_at_is_in_the_past_still_verifies` |
 | PB-93 | 1.6.0-only store ops on an ABI-2 store | mapped | oracle-cell: `plugins.store-persist\|store-mysql`<br>oracle-cell: `plugins.store-persist\|store-postgres`<br>oracle-cell: `plugins.store-persist\|store-sqlite`<br>oracle-cell: `plugins.store-persist\|store-valkey`<br>test: `unsupported_alone_opens_the_inert_default_on_every_defaulting_verb`<br>test: `a_real_answer_passes_through_untouched` |
 | PB-94 | upstream credential mode | mapped | test: `test_passthrough_forwards_caller_token`<br>test: `sign_request_resolves_ambiguous_credential_to_single_header_by_mode`<br>test: `override_present_runs_full_lookup`<br>test: `golden_migrate_auth_upstream_credentials_moves_to_pools` |

@@ -14,7 +14,7 @@
   "mapped": 103,
   "unmapped": 0,
   "checks_by_kind": {
-   "gate": 9,
+   "gate": 13,
    "lint": 5,
    "oracle-cell": 58,
    "oracle-family": 5,
@@ -64,6 +64,13 @@
      "proves": "every docs/design/inventory/*.md row id either has a citing shadow-oracle cell or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns the check red",
      "source": "curated",
      "status": "mapped"
+    },
+    {
+     "kind": "gate",
+     "ref": "scripts/construction-gate.sh",
+     "status": "mapped",
+     "source": "hand",
+     "proves": "construction-gate `legacy-reach`: the composition root's count of distinct symbols named through the retiring engine crates is a ratchet that may only go down, and every red row lists them -- so the behaviour behind each inventory row moves into a unit as core empties rather than being re-implemented beside it"
     }
    ]
   },
@@ -1063,6 +1070,13 @@
      "proves": "the FREEZE arm",
      "source": "curated",
      "status": "mapped"
+    },
+    {
+     "kind": "gate",
+     "ref": "scripts/construction-gate.sh",
+     "status": "mapped",
+     "source": "hand",
+     "proves": "construction-gate `one-pricing-site`: the cost unit's pricing entry points and the seam verb that turns usage into an amount are called only from the composition root's meter/admission wiring and the kernel's three settle sites, each enumerated with its reason in qa/construction.toml -- so the fee lookahead and the charge have exactly one derivation"
     }
    ]
   },
@@ -3842,6 +3856,13 @@
      "ref": "scripts/kernel-token-wire-purity-lint.sh",
      "status": "mapped",
      "source": "hand"
+    },
+    {
+     "kind": "gate",
+     "ref": "scripts/construction-gate.sh",
+     "status": "mapped",
+     "source": "hand",
+     "proves": "construction-gate `plane-no-money`: the plane crates, the plane codecs and the plane unit modules name no money symbol (no rate card, pricer, fee, price or cost handle that carries an amount, and no dependency on the cost crate) -- so a usage class can only reach the ledger as the plane's own normalized quantity, never as a figure the plane priced itself"
     }
    ]
   },
@@ -3983,6 +4004,13 @@
      "proves": "the fee follows the client-facing status",
      "source": "curated",
      "status": "mapped"
+    },
+    {
+     "kind": "gate",
+     "ref": "scripts/construction-gate.sh",
+     "status": "mapped",
+     "source": "hand",
+     "proves": "construction-gate `one-pricing-site:fee-fields`: no production code outside the crate that owns the card (and the retiring 1.5.5 core) reads a per-request fee off a config or a card, so the fee basis is decided in one place"
     }
    ]
   },
