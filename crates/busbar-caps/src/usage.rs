@@ -9,7 +9,11 @@ use busbar_contract::ClassDirection;
 
 /// The most lines one unit's usage report may carry. A bound, not a guess: the record the journal
 /// writes is fixed-size, so the report that feeds it has to be bounded too.
-pub const MAX_USAGE_LINES: usize = 16;
+///
+/// The contract's number, not a second copy of it. A plane's usage locators are bounded by the
+/// contract's ceiling and the report built from them is bounded by this one; if the two ever
+/// differed, a plane could name locators for lines the report has no room to settle.
+pub use busbar_contract::MAX_USAGE_LINES;
 
 /// Where in a decoded payload a locator found its value.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

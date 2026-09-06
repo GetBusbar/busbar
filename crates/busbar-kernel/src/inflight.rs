@@ -37,7 +37,11 @@ use crate::teller::Kernel;
 use crate::Millis;
 
 /// How many upstream connections one session may pair with.
-pub const MAX_SESSION_UPSTREAMS: usize = 8;
+///
+/// The contract's number, not a second copy of it: a plane declares its legs against the contract's
+/// ceiling and the kernel admits pairings against this one, and two constants that drift apart are
+/// a plane refused at a number it was never told about.
+pub use busbar_contract::MAX_SESSION_UPSTREAMS;
 
 /// How many shards the tables are split across. A power of two so the shard is a mask, not a
 /// division, and large enough that a busy node's units rarely queue behind each other.

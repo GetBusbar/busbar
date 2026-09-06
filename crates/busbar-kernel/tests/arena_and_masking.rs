@@ -6,8 +6,30 @@
 //! Masking is decided by the location grammar rather than per plane, so every form is asked here
 //! what it does — including the one that does nothing, because it was never in the bytes.
 
-use busbar_kernel::arena::{Arena, CredentialSlab, ARENA_BYTES, FILL_BYTE};
+use busbar_kernel::arena::{Arena, CredentialSlab, ARENA_BYTES, CURSOR_CAP_BYTES, FILL_BYTE};
 use busbar_kernel::grammar::{ArrivalLocation, MaskKind, SignedOver, Span};
+use busbar_kernel::inflight::MAX_SESSION_UPSTREAMS;
+
+/// The ceilings the kernel enforces are the ceilings the contract told the plugin about.
+///
+/// Three of these were declared twice, once here and once on the plugin surface, with nothing
+/// checking that the two agreed. A plugin allocates, declares legs and names usage lines against
+/// the contract's numbers; the kernel sizes buffers, admits pairings and settles reports against
+/// these. Two independently-maintained constants that happen to agree today are a plugin refused
+/// at a limit it was never told about the first time one of them moves.
+#[test]
+fn the_kernels_ceilings_are_the_contracts_own() {
+    assert_eq!(ARENA_BYTES, busbar_contract::ARENA_BYTES);
+    assert_eq!(CURSOR_CAP_BYTES, busbar_contract::MAX_CURSOR_BYTES);
+    assert_eq!(
+        MAX_SESSION_UPSTREAMS,
+        busbar_contract::MAX_SESSION_UPSTREAMS
+    );
+    assert_eq!(
+        busbar_caps::usage::MAX_USAGE_LINES,
+        busbar_contract::MAX_USAGE_LINES
+    );
+}
 
 #[test]
 fn masking_leaves_the_cursor_the_same_length_and_the_offsets_intact() {
