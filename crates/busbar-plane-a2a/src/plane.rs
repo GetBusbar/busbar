@@ -232,6 +232,12 @@ const PTR_TASK_ID: &str = "/id";
 /// The pointer a bare task document carries its conversation at.
 const PTR_CONTEXT_ID: &str = "/contextId";
 
+/// The transport fact key the request's own verb is published under.
+///
+/// The kernel's own reserved key, named rather than guessed at. Four of this plane's surfaces are
+/// one path serving two operations, and the verb is the only thing that tells them apart.
+const FACT_METHOD: &str = busbar_contract::transport::facts::METHOD;
+
 /// One of this plane's surfaces that does not carry a request envelope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OpenSurface {
@@ -239,8 +245,8 @@ enum OpenSurface {
     Discovery,
     /// The callback an agent this node dialled posts a task document back to.
     Push,
-    /// A task read through the collection binding rather than through a method name.
-    TaskRead(busbar_contract::ids::OpClassId),
+    /// An operation named by the TARGET rather than by a method name in a document.
+    Targeted(busbar_contract::ids::OpClassId),
 }
 
 /// Which surface a request target names, where the target names one that carries no envelope.
@@ -248,19 +254,49 @@ enum OpenSurface {
 /// `None` is the document binding — the mount an envelope arrives on — which is every other claim
 /// this plane holds. A query string names no surface, so it is cut before the match: it is an
 /// argument to an operation, never part of which operation it is.
-fn surface_of(target: &str) -> Option<OpenSurface> {
+///
+/// The four surfaces below the task collection are the ones this used to leave out. A claim with no
+/// arm here reaches the document binding, which demands an envelope of a request that carries no
+/// body at all — and an empty body is answered "nothing has arrived yet", on a surface where nothing
+/// more ever will. So the plane claimed four routes the codec serves and then held every request to
+/// them open until the caller gave up. Each of the four is one path serving two operations, told
+/// apart by the request's own verb, which is why the verb is read here.
+fn surface_of(target: &str, verb: Option<&str>) -> Option<OpenSurface> {
     let path = target.split(['?', '#']).next().unwrap_or(target);
+    let is = |want: &str| verb.is_some_and(|v| v.eq_ignore_ascii_case(want));
     match path {
         "/.well-known/agent-card.json" | "/.well-known/oauth-protected-resource/a2a" => {
             Some(OpenSurface::Discovery)
         }
         "/a2a/push" => Some(OpenSurface::Push),
-        "/a2a/tasks" => Some(OpenSurface::TaskRead(ops::OP_TASK_LIST)),
+        "/a2a/tasks" => Some(OpenSurface::Targeted(ops::OP_TASK_LIST)),
+        // The authenticated card: the same document as the open one, read by a caller this node
+        // knows, and the vocabulary's own class for reading a card.
+        "/a2a/extendedAgentCard" => Some(OpenSurface::Targeted(ops::OP_AGENT_CARD)),
         _ => {
             let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
             match segments.as_slice() {
                 ["a2a", "tasks", id] if !id.is_empty() => {
-                    Some(OpenSurface::TaskRead(ops::OP_TASK_GET))
+                    Some(OpenSurface::Targeted(ops::OP_TASK_GET))
+                }
+                // A task's push-notification configurations, as a collection: posting one creates
+                // it, reading the collection lists them.
+                ["a2a", "tasks", id, "pushNotificationConfigs"] if !id.is_empty() => {
+                    Some(OpenSurface::Targeted(if is("POST") {
+                        ops::OP_PUSH_CONFIG_CREATE
+                    } else {
+                        ops::OP_PUSH_CONFIG_LIST
+                    }))
+                }
+                // One configuration of that collection: reading it and removing it.
+                ["a2a", "tasks", id, "pushNotificationConfigs", config]
+                    if !id.is_empty() && !config.is_empty() =>
+                {
+                    Some(OpenSurface::Targeted(if is("DELETE") {
+                        ops::OP_PUSH_CONFIG_DELETE
+                    } else {
+                        ops::OP_PUSH_CONFIG_GET
+                    }))
                 }
                 _ => None,
             }
@@ -293,7 +329,7 @@ fn decode_open_surface<'u>(
         // work — a static document handed back — and a second class for the same work would be a
         // second price for it.
         OpenSurface::Discovery => ops::OP_AGENT_CARD,
-        OpenSurface::TaskRead(op) => {
+        OpenSurface::Targeted(op) => {
             if let Some(id) = task_id_of(target) {
                 let id = ctx.arena().alloc_str(id).map_err(|_| Decode::Oversize)?;
                 let _ = facts.set(f::FACT_TASK_ID, FactValue::Str(id));
@@ -326,11 +362,15 @@ fn decode_open_surface<'u>(
 }
 
 /// The task a collection-binding target names, if it names one.
+///
+/// The task is the third segment of every target below the collection, whatever follows it: a
+/// configuration of a task belongs to that task, and a surface that could not say which task it was
+/// about would be a unit with no subject.
 fn task_id_of(target: &str) -> Option<&str> {
     let path = target.split(['?', '#']).next().unwrap_or(target);
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     match segments.as_slice() {
-        ["a2a", "tasks", id] if !id.is_empty() => Some(id),
+        ["a2a", "tasks", id, ..] if !id.is_empty() => Some(id),
         _ => None,
     }
 }
@@ -347,7 +387,12 @@ impl Plane for A2aPlane {
         // envelope: three of them carry no request document at all, and one carries a document of
         // its own shape. Asking the body first meant every one of them decoded as a malformed
         // envelope — the plane claimed surfaces it then refused everything on.
-        if let Some(surface) = ctx.transport().fact(FACT_PATH).and_then(surface_of) {
+        let verb = ctx.transport().fact(FACT_METHOD);
+        if let Some(surface) = ctx
+            .transport()
+            .fact(FACT_PATH)
+            .and_then(|target| surface_of(target, verb))
+        {
             return decode_open_surface(surface, frames, ctx);
         }
         let Some(frame) = frames.next_frame() else {
