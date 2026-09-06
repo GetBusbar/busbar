@@ -740,10 +740,14 @@ confined_to_paths = ["crates/busbar-kernel/src/recovery.rs"]
 because = "it materialises a hold from a journal record with no admission behind it"
 
 [rules.seal-sites.symbols.hold-cell-take]
-symbol = "take(&ExitToken::mint("
+# The TOKEN, not one spelling of a call on it. The scan reads a line at a time, and the node's
+# sweep binds its exit token on the line above the take, so `take(&ExitToken::mint(` matched two of
+# the three take sites and walked past the third -- and past any fourth written the same way, in a
+# rule whose ceiling is zero. Nothing can empty a hold cell without naming this type.
+symbol = "ExitToken"
 confined_to = "kernel/src"
 # The scope resolved against this tree, matched as path prefixes.
-confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-kernel/src/tick.rs"]
+confined_to_paths = ["crates/busbar-kernel/src/"]
 because = "there are three take sites -- the exit path, the sweep and the tick -- and no fourth"
 
 # ── 28. plane-no-money ───────────────────────────────────────────────────────────────────────────

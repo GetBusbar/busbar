@@ -797,7 +797,7 @@ fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
         "AssertUnwindSafe",
         "KernelSeal::acquire_for_kernel",
         "RecoveryToken",
-        "take(&ExitToken::mint(",
+        "ExitToken",
     ] {
         assert!(
             symbols.contains(&expected),
@@ -812,6 +812,51 @@ fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
             assert!(!path.is_empty(), "{} confines to nowhere", rule.symbol);
         }
     }
+}
+
+/// The literal that hunts for takes has to find every file that performs one.
+///
+/// The scan is a per-line substring search, so a symbol that spells one WAY of doing the thing
+/// finds only the sites written that way. The take key is minted on its own line as often as it is
+/// minted inline — the node's sweep binds it once and takes under it — and a literal that names the
+/// inline spelling walks straight past that file. The consequence is not cosmetic: `seal-sites`
+/// holds its ceiling at zero, so a fourth take written `let exit = ExitToken::mint(..); ..
+/// cell.take(&exit)` in any crate outside the kernel passes a gate whose whole purpose is to refuse
+/// it, and this crate's honesty table says CI holds that line.
+///
+/// So the rule's literal is checked against the tree it governs, at file granularity, which is the
+/// granularity the confinement is written at: a file that empties a hold cell has to be a file the
+/// scan sees. Nothing can take without naming the token that opens the take, so the token's own
+/// name is the literal that is total over the spellings.
+#[test]
+fn the_scan_for_the_take_key_sees_every_file_that_empties_a_cell() {
+    let take = lint::SEAL_SITES
+        .iter()
+        .find(|rule| rule.because.contains("take sites"))
+        .expect("the seal-site list names the take");
+
+    let kernel = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../busbar-kernel/src");
+    let mut seen = 0usize;
+    for entry in std::fs::read_dir(&kernel).expect("the kernel's source sits beside this crate") {
+        let path = entry.expect("a readable directory entry").path();
+        if path.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("a readable source file");
+        if !source.contains(".take(&") {
+            continue;
+        }
+        seen += 1;
+        assert!(
+            source.contains(take.symbol),
+            "{} empties a hold cell and the scan's literal never appears in it",
+            path.display()
+        );
+    }
+    assert!(
+        seen >= 2,
+        "no file in the kernel empties a hold cell: the walk found nothing to check"
+    );
 }
 
 /// The rule list is a specification; the gate is the enforcement. This is the join between them.
