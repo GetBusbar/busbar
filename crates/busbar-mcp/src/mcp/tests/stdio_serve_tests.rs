@@ -890,6 +890,84 @@ async fn an_out_of_band_elicitation_response_redeems_the_pending_ask() {
     client.eof().await;
 }
 
+/// THE SUBSCRIPTION SET IS BOUNDED. `resources/subscribe` is answered above dispatch and for ANY
+/// uri, so the retained set is written entirely by the client — a client that subscribes in a loop
+/// with fresh uris must be REFUSED at the ceiling, not silently grown, because every entry is
+/// re-read (and its fingerprint recomputed against the catalogue) on every generation move.
+#[tokio::test]
+async fn the_resource_subscription_set_is_refused_past_its_ceiling() {
+    let (_peer, app) = plain_deployment().await;
+    let handle = app_handle(app);
+    let mut client = Client::open_on(handle.clone(), busbar_api::PlaneRequestCtx::default());
+    // Fill exactly to the ceiling: every one of these is accepted.
+    for i in 0..crate::mcp::stdio_serve::MAX_RESOURCE_SUBS {
+        client
+            .send(&frame(
+                i as i64 + 1,
+                "resources/subscribe",
+                serde_json::json!({ "uri": format!("ws_{RESOURCE_URI}/{i}") }),
+            ))
+            .await;
+        let ok = client.recv().await;
+        assert!(
+            ok.get("result").is_some(),
+            "entry {i} inside the ceiling: {ok}"
+        );
+    }
+    // One past it is REFUSED, not retained.
+    client
+        .send(&frame(
+            9001,
+            "resources/subscribe",
+            serde_json::json!({ "uri": format!("ws_{RESOURCE_URI}/overflow") }),
+        ))
+        .await;
+    let refused = client.recv().await;
+    assert!(
+        refused.get("error").is_some(),
+        "the subscription past the ceiling must be refused: {refused}"
+    );
+    // A uri already in the set is still accepted at the ceiling — re-subscribing is a baseline
+    // re-take, not growth.
+    client
+        .send(&frame(
+            9002,
+            "resources/subscribe",
+            serde_json::json!({ "uri": format!("ws_{RESOURCE_URI}/0") }),
+        ))
+        .await;
+    let ok = client.recv().await;
+    assert!(
+        ok.get("result").is_some(),
+        "a re-subscribe at the ceiling: {ok}"
+    );
+    client.eof().await;
+}
+
+/// A SUBSCRIPTION URI IS BOUNDED IN LENGTH, for the same reason the relay's announced-uri record is:
+/// the string is retained for the session's life and compared on every watcher tick, and the frame
+/// cap alone would let one entry be megabytes.
+#[tokio::test]
+async fn an_oversized_subscription_uri_is_refused() {
+    let (_peer, app) = plain_deployment().await;
+    let handle = app_handle(app);
+    let mut client = Client::open_on(handle.clone(), busbar_api::PlaneRequestCtx::default());
+    let uri = "u".repeat(crate::mcp::stdio_serve::MAX_RESOURCE_SUB_URI_BYTES + 1);
+    client
+        .send(&frame(
+            1,
+            "resources/subscribe",
+            serde_json::json!({ "uri": uri }),
+        ))
+        .await;
+    let refused = client.recv().await;
+    assert!(
+        refused.get("error").is_some(),
+        "an oversized subscription uri must be refused: {refused}"
+    );
+    client.eof().await;
+}
+
 /// `resources/unsubscribe` STOPS the updates: after it, the same registration change that fired a
 /// notification before moves nothing on the channel.
 #[tokio::test]

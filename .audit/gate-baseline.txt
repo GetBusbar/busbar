@@ -1,0 +1,110 @@
+
+== construction gate — current / ceiling (/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/agent-ac210eae916332254/qa/construction.toml) ==
+PASS  one-attempt-seam                      0 / 0       exactly one function sends the upstream attempt (`attempt`)
+FAIL  request-path-fn-size               1117 / 200     request-path functions stay under 200 lines
+PASS  ports-only:busbar-llm                 0 / 0       busbar-llm names no `busbar_core::` in production code
+FAIL  ports-only-tests:busbar-llm          29 / 20      busbar-llm names no `busbar_core::` in test code
+PASS  ports-only:busbar-mcp                 0 / 0       busbar-mcp names no `busbar_core::` in production code
+PASS  ports-only-tests:busbar-mcp           1 / 1       busbar-mcp names no `busbar_core::` in test code
+PASS  ports-only:busbar-a2a                 0 / 0       busbar-a2a names no `busbar_core::` in production code
+PASS  ports-only-tests:busbar-a2a           3 / 3       busbar-a2a names no `busbar_core::` in test code
+PASS  ports-only:busbar-voice               0 / 0       busbar-voice names no `busbar_core::` in production code
+PASS  ports-only-tests:busbar-voice         0 / 0       busbar-voice names no `busbar_core::` in test code
+PASS  no-uninstalled-seam                   0 / 0       every installable substrate seam has a production installer
+PASS  neutral-no-dialect                    0 / 0       neutral crates name no dialect or plane (delegated to plane-purity-lint.sh)
+PASS  single-terminal                       0 / 0       `finish_inner` is called only from its allowed doors
+WARN  duplicate-dispatch                    0 / 0       near-duplicate blocks between the attempt twins
+PASS  token-sealed                          0 / 0       the Teller's tokens are minted only inside the Teller
+PASS  token-sealed:kernel-seal              0 / 0       `KernelSeal::acquire_for_kernel(` is spelled only inside crates/busbar-kernel/src
+PASS  token-sealed:admit-token-mint         0 / 0       `AdmitToken::mint(` is spelled only inside crates/busbar-kernel/src
+PASS  teller-step-order                     0 / 0       the Teller loop calls the nine steps once each, in the canonical order
+PASS  one-teller-loop                       0 / 1       each plane runs its units through the one Teller loop, from one place
+PASS  one-teller-loop:run_gauntlet          4 / 4       the legacy adapter's call sites only ever shrink
+PASS  no-response-escapes-audit             0 / 0       only the Audit step hands a Response back to the loop
+FAIL  terminal-doors-in-audit-step         17 / 0       the plane's terminal doors are called only from its Audit step
+FAIL  one-pick-site                         4 / 2       the lane pick is called from at most the loop and the fallback re-entry
+PASS  loc-ceilings:kernel                5270 / 8000    busbar-kernel (own files + call-graph-reachable busbar-unit-* files) stays within its LOC ceiling
+PASS  loc-ceilings:kernel:teller          606 / 1500    busbar-kernel's Teller loop stays within its LOC ceiling
+PASS  loc-ceilings:kernel:pump            356 / 1500    busbar-kernel's pump/scheduler stays within its LOC ceiling
+PASS  loc-ceilings:kernel:inflight        564 / 1000    busbar-kernel's in-flight/sessions stays within its LOC ceiling
+PASS  loc-ceilings:kernel:recovery        177 / 800     busbar-kernel's recovery stays within its LOC ceiling
+PASS  loc-ceilings:kernel:slice           397 / 800     busbar-kernel's slice/lease stays within its LOC ceiling
+PASS  loc-ceilings:kernel:registry        313 / 800     busbar-kernel's registry + generations stays within its LOC ceiling
+PASS  loc-ceilings:kernel:grammars         61 / 800     busbar-kernel's grammars incl. JSON span scanner stays within its LOC ceiling
+PASS  loc-ceilings:kernel:ticks           193 / 200     busbar-kernel's tick: session tick, node tick and the drain sweep stays within its LOC ceiling
+PASS  loc-ceilings:kernel:arena           178 / 300     busbar-kernel's arena/masking stays within its LOC ceiling
+PASS  loc-ceilings:caps-contract         3473 / 3500    busbar-caps + busbar-contract together stay within their LOC ceiling
+PASS  loc-ceilings:unit-total           13695 / 45000   all busbar-unit-* crates together stay within their LOC ceiling
+PASS  loc-ceilings:unit-verbs            1408 / 15000   busbar-unit-verbs stays within its LOC ceiling
+PASS  loc-ceilings:union                22438 / 56000   the kernel + caps/contract + unit-* union stays within its LOC ceiling
+PASS  manifest-allowlist:busbar-plane-a2a      0 / 0       busbar-plane-a2a depends only on busbar-contract plus reviewed crates
+PASS  manifest-allowlist:busbar-plane-admin      0 / 0       busbar-plane-admin depends only on busbar-contract plus reviewed crates
+PASS  manifest-allowlist:busbar-plane-llm      0 / 0       busbar-plane-llm depends only on busbar-contract plus reviewed crates
+PASS  manifest-allowlist:busbar-plane-mcp      0 / 0       busbar-plane-mcp depends only on busbar-contract plus reviewed crates
+PASS  manifest-allowlist:busbar-plane-voice      0 / 0       busbar-plane-voice depends only on busbar-contract plus reviewed crates
+PASS  manifest-allowlist:store-example-plugin      0 / 0       store-example-plugin depends only on busbar-contract plus reviewed crates
+PASS  manifest-allowlist:store-memory       0 / 0       store-memory depends only on busbar-contract plus reviewed crates
+PASS  manifest-allowlist:auth-admin-tokens      0 / 0       auth-admin-tokens depends only on busbar-contract plus reviewed crates
+PASS  manifest-allowlist:auth-static-plugin      0 / 0       auth-static-plugin depends only on busbar-contract plus reviewed crates
+PASS  manifest-allowlist:hook-test-plugin      0 / 0       hook-test-plugin depends only on busbar-contract plus reviewed crates
+PASS  manifest-allowlist:hooks-ranking      0 / 0       hooks-ranking depends only on busbar-contract plus reviewed crates
+PASS  manifest-allowlist:export-example-plugin      0 / 0       export-example-plugin depends only on busbar-contract plus reviewed crates
+PASS  manifest-allowlist:secret-example-plugin      0 / 0       secret-example-plugin depends only on busbar-contract plus reviewed crates
+PASS  manifest-allowlist:secret-ref         0 / 0       secret-ref depends only on busbar-contract plus reviewed crates
+PASS  source-denylist:busbar-plane-a2a      0 / 0       busbar-plane-a2a performs no I/O of its own (pure kind)
+PASS  source-denylist:busbar-plane-admin      0 / 0       busbar-plane-admin performs no I/O of its own (pure kind)
+PASS  source-denylist:busbar-plane-llm      0 / 0       busbar-plane-llm performs no I/O of its own (pure kind)
+PASS  source-denylist:busbar-plane-mcp      0 / 0       busbar-plane-mcp performs no I/O of its own (pure kind)
+PASS  source-denylist:busbar-plane-voice      0 / 0       busbar-plane-voice performs no I/O of its own (pure kind)
+PASS  source-denylist:hook-test-plugin      0 / 0       hook-test-plugin performs no I/O of its own (pure kind)
+PASS  source-denylist:hooks-ranking         0 / 0       hooks-ranking performs no I/O of its own (pure kind)
+PASS  source-denylist:auth-admin-tokens      0 / 0       auth-admin-tokens performs no I/O of its own (pure kind)
+PASS  source-denylist:auth-static-plugin      0 / 0       auth-static-plugin performs no I/O of its own (pure kind)
+PASS  lean-core                            21 / 21      the kernel and unit crates name no dialect and no open-vocabulary word
+PASS  no-default-bodies                     0 / 0       every kind-trait method is bodiless; implementing the trait is the only way to answer it
+PASS  sealed-unit-traits                    1 / 1       a unit's kernel-facing trait is sealed on a private supertrait
+PASS  hold-discipline:no-early-exit         0 / 0       no `?` or early return between a Hold take and its settle
+PASS  hold-discipline:no-catch-unwind-capture      0 / 0       no `Hold` is captured in a `catch_unwind` closure
+PASS  hold-discipline:no-join-abort         0 / 0       no `JoinHandle::abort` in scope
+PASS  hold-discipline:no-forget-or-drop      0 / 0       no `mem::forget`/`drop(...)` of a value named like a Hold
+PASS  hold-discipline:cancellation-before-await      0 / 0       a cancellation-token check precedes every `.await` in the route step
+FAIL  hold-escapes                          2 / 0       no production source deliberately forgets, leaks or unwind-smuggles a hold
+PASS  seal-sites                            0 / 0       no production source outside its one reviewed home names a capability-minting symbol
+PASS  kernel-seal-impls                     0 / 0       the contract's sealing trait is implemented only inside busbar-caps
+PASS  forbid-unsafe:busbar-plane-a2a        0 / 1       busbar-plane-a2a carries `#![forbid(unsafe_code)]`
+PASS  forbid-unsafe:busbar-plane-admin      0 / 0       busbar-plane-admin carries `#![forbid(unsafe_code)]`
+PASS  forbid-unsafe:busbar-plane-llm        0 / 0       busbar-plane-llm carries `#![forbid(unsafe_code)]`
+PASS  forbid-unsafe:busbar-plane-mcp        0 / 1       busbar-plane-mcp carries `#![forbid(unsafe_code)]`
+PASS  forbid-unsafe:busbar-plane-voice      0 / 0       busbar-plane-voice carries `#![forbid(unsafe_code)]`
+PASS  forbid-unsafe:hook-test-plugin        1 / 1       hook-test-plugin carries `#![forbid(unsafe_code)]`
+PASS  forbid-unsafe:hooks-ranking           1 / 1       hooks-ranking carries `#![forbid(unsafe_code)]`
+PASS  forbid-unsafe:auth-admin-tokens       1 / 1       auth-admin-tokens carries `#![forbid(unsafe_code)]`
+PASS  forbid-unsafe:auth-static-plugin      1 / 1       auth-static-plugin carries `#![forbid(unsafe_code)]`
+PASS  forbid-unsafe:secret-example-plugin      1 / 1       secret-example-plugin carries `#![forbid(unsafe_code)]`
+PASS  forbid-unsafe:secret-ref              1 / 1       secret-ref carries `#![forbid(unsafe_code)]`
+PASS  forbid-unsafe-deny:busbar-transport-grpc      0 / 1       busbar-transport-grpc carries `#![deny(unsafe_code)]`
+PASS  forbid-unsafe-deny:busbar-transport-http      0 / 1       busbar-transport-http carries `#![deny(unsafe_code)]`
+PASS  forbid-unsafe-deny:busbar-transport-sse      0 / 1       busbar-transport-sse carries `#![deny(unsafe_code)]`
+PASS  forbid-unsafe-deny:busbar-transport-stdio      0 / 0       busbar-transport-stdio carries `#![deny(unsafe_code)]`
+PASS  forbid-unsafe-deny:busbar-transport-tcp      0 / 0       busbar-transport-tcp carries `#![deny(unsafe_code)]`
+PASS  forbid-unsafe-deny:busbar-transport-tls      0 / 1       busbar-transport-tls carries `#![deny(unsafe_code)]`
+PASS  forbid-unsafe-deny:busbar-transport-ws      0 / 1       busbar-transport-ws carries `#![deny(unsafe_code)]`
+PASS  forbid-unsafe-deny:busbar-contract      0 / 0       busbar-contract carries `#![deny(unsafe_code)]`
+PASS  forbid-unsafe-deny:plugin-loader      1 / 1       plugin-loader carries `#![deny(unsafe_code)]`
+PASS  forbid-unsafe-deny:store-example-plugin      1 / 1       store-example-plugin carries `#![deny(unsafe_code)]`
+PASS  forbid-unsafe-deny:store-memory       1 / 1       store-memory carries `#![deny(unsafe_code)]`
+PASS  forbid-unsafe-deny:export-example-plugin      1 / 1       export-example-plugin carries `#![deny(unsafe_code)]`
+PASS  secret-carrier-debug                  0 / 0       a type carrying secret bytes hand-rolls its Debug
+PASS  no-escaped-newline-doc-comment        0 / 0       no doc comment carries a literal backslash-n instead of a real line break
+PASS  unit-no-wall-clock                    0 / 0       no unit crate reads the wall or monotonic clock
+PASS  unit-no-finding-ids                   0 / 0       a unit crate states its rule in words, not as a finding identifier
+FAIL  plane-no-money                        3 / 0       a plane names usage classes and quantities, never a price
+FAIL  one-pricing-site                      1 / 0       only the root's meter/admission wiring and the kernel's settle sites price a unit
+FAIL  one-pricing-site:fee-fields           5 / 0       the per-request fee is read only where the card lives
+PASS  legacy-reach:busbar_core             49 / 49      the root's reach into `busbar_core::` only shrinks
+PASS  legacy-reach:busbar_llm              17 / 17      the root's reach into `busbar_llm::` only shrinks
+FAIL  legacy-reach:busbar_substrate        26 / 24      the root's reach into `busbar_substrate::` only shrinks
+PASS  surface-ceiling:contract+caps      3470 / 3500    the contract pair's plugin-visible surface
+PASS  surface-ceiling:grammar             388 / 500     the closed span grammar's surface
+PASS  surface-ceiling:contract-transport    443 / 1000    the transport-facing contract's surface
+CONSTRUCTION: RED.
