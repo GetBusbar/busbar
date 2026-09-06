@@ -256,7 +256,7 @@ impl Default for Scheduler {
 #[derive(Debug)]
 pub struct NestedPool {
     permits: AtomicUsize,
-    blocked: AtomicUsize,
+    refusals: AtomicUsize,
     size: usize,
     max_depth: usize,
 }
@@ -274,7 +274,7 @@ impl NestedPool {
     pub fn new(size: usize, max_depth: usize) -> Self {
         NestedPool {
             permits: AtomicUsize::new(size),
-            blocked: AtomicUsize::new(0),
+            refusals: AtomicUsize::new(0),
             size,
             max_depth,
         }
@@ -285,9 +285,15 @@ impl NestedPool {
         self.permits.load(Ordering::Acquire)
     }
 
-    /// How many parents are waiting on a permit.
-    pub fn blocked(&self) -> usize {
-        self.blocked.load(Ordering::Acquire)
+    /// How many times the pool had nothing to give.
+    ///
+    /// A COUNTER and not a gauge, and the distinction is the whole of it: `enter` does not block,
+    /// so a refused parent is back with its caller before this number is read and will never come
+    /// back to `leave`. Counted as "parents waiting" it only ever went up — a number that says the
+    /// pool is the bottleneck right now when what it means is that the pool has ever been one. How
+    /// much of the pool is out is `size` less `available`, and that one does come back to zero.
+    pub fn refusals(&self) -> usize {
+        self.refusals.load(Ordering::Acquire)
     }
 
     /// The pool's size.
@@ -309,18 +315,16 @@ impl NestedPool {
         {
             Ok(_) => Ok(NestedPermit { depth }),
             Err(_) => {
-                self.blocked.fetch_add(1, Ordering::AcqRel);
+                self.refusals.fetch_add(1, Ordering::AcqRel);
                 Err(ReasonCode::InFlightCap)
             }
         }
     }
 
-    /// Give a permit back, and wake one waiting parent's accounting.
+    /// Give a permit back. It returns the permit and nothing else: a permit coming back does not
+    /// un-refuse a parent the pool already turned away.
     pub fn leave(&self, _permit: NestedPermit) {
         self.permits.fetch_add(1, Ordering::AcqRel);
-        let _ = self
-            .blocked
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
     }
 }
 

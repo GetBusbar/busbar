@@ -532,19 +532,30 @@ fn k_parents_blocked_on_children_wait_rather_than_deadlock() {
     let second = pool.enter(0).expect("a permit");
     assert_eq!(pool.available(), 0);
 
-    // Two more parents want children and there are none to be had. They are counted as blocked,
-    // which is the number that says the pool is the bottleneck, and neither of them deadlocks.
+    // Two more parents want children and there are none to be had. Neither deadlocks, and both
+    // refusals are COUNTED — a refusal is a thing that happened, not a parent still standing in
+    // the pool: the refused parent is already back with its caller and will never call `leave`.
+    // Counted as a gauge it only ever went up, and the number an operator reads as "the pool is
+    // the bottleneck right now" was really "the pool has ever been the bottleneck".
     assert_eq!(pool.enter(0), Err(ReasonCode::InFlightCap));
     assert_eq!(pool.enter(0), Err(ReasonCode::InFlightCap));
-    assert_eq!(pool.blocked(), 2);
+    assert_eq!(pool.refusals(), 2);
 
     pool.leave(first);
     assert_eq!(pool.available(), 1);
-    assert_eq!(pool.blocked(), 1);
+    assert_eq!(
+        pool.refusals(),
+        2,
+        "giving a permit back un-refuses nothing"
+    );
     pool.leave(second);
+    // Every permit is back, so the pool is whole again however many refusals it made.
+    assert_eq!(pool.available(), pool.size());
 
-    // And nesting past the depth bound is refused whatever the pool looks like.
+    // And nesting past the depth bound is refused whatever the pool looks like — for want of
+    // depth, which is not the pool having nothing to give.
     assert_eq!(pool.enter(4), Err(ReasonCode::ScopeDenied));
+    assert_eq!(pool.refusals(), 2);
 }
 
 #[test]
