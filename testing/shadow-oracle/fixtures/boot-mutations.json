@@ -8,7 +8,7 @@
     "expect.exit: refusals exit 1 (BOOT-184 exits 2); warnings exit 0 \u2014 in boot mode `0` means the recorder reached /healthz and then stopped the process cleanly. expect.stderr_contains is a literal substring of the inventory's exact message with placeholders filled in where the mutation fixes them; expect.stdout_contains is null unless a stdout literal is load-bearing.",
     "Baseline facts relied on: listen/admin_listen loopback; identity-providers.admin-tokens {module: admin-tokens, token: {env: BUSBAR_ADMIN_TOKEN}}; auth {chain: [keys], signing_key: {file: <work>/signing.key}, admin_auth: [admin-tokens]}; export.metrics {module: prometheus, settings: {buffer_seconds: 60}}; groups oracle/broke; six config-side providers with api_key {env: ORACLE_UPSTREAM_KEY} (=unused); six models m-<dialect>; one pool oracle-unused [m-openai-chat]; providers.yaml catalog with protocol + base_url http://127.0.0.1:<mock>. oracle_env exports BUSBAR_CONFIG, BUSBAR_PROVIDERS, ORACLE_UPSTREAM_KEY=unused, BUSBAR_ADMIN_TOKEN, RUST_LOG=warn.",
     "MAX_SEMAPHORE_PERMITS = tokio::sync::Semaphore::MAX_PERMITS = usize::MAX >> 3 = 2305843009213693951 on 64-bit; the over-ceiling mutations use 2305843009213693952.",
-    "Ordering traps worth knowing: env interpolation (P02-P06) runs on the raw text BEFORE the legacy-marker detector (P41), which runs BEFORE serde parse (P01, P07-P40), which runs BEFORE config::resolve (BOOT-056 resolve twin, BOOT-074c/d/e, BOOT-101), which runs BEFORE config_validate (the rest of 3.2). A `both`-scoped row that is shadowed by an earlier stage from config.yaml is marked op: null with the reason."
+    "Ordering traps worth knowing: env interpolation (P02-P06) runs on the raw text BEFORE the legacy-marker detector (the legacy-config-marker pass), which runs BEFORE serde parse (the plain-serde pass, P07-P40), which runs BEFORE config::resolve (BOOT-056 resolve twin, BOOT-074c/d/e, BOOT-101), which runs BEFORE config_validate (the rest of 3.2). A `both`-scoped row that is shadowed by an earlier stage from config.yaml is marked op: null with the reason."
   ],
   "mutations": [
     {
@@ -838,7 +838,7 @@
         "stderr_contains": "`providers.gemini.api_key_env:` (secret fields are now secret references: api_key: {env: VAR})",
         "stdout_contains": null
       },
-      "notes": "\u00a73.1 P41 legacy detector marker #21 (config/migrate.rs:277-289, error text :42-58). Runs before DeployCfg deserializes, so the unknown field under ProviderDeploy (P01) is never reached. The banner opens with `this looks like a busbar 1.x config; run `busbar --migrate-config`."
+      "notes": "\u00a73.1 the legacy-config-marker pass's marker #21 (config/migrate.rs:277-289, error text :42-58). Runs before DeployCfg deserializes, so the unknown field under ProviderDeploy (caught by the plain-serde pass) is never reached. The banner opens with `this looks like a busbar 1.x config; run `busbar --migrate-config`."
     },
     {
       "id": "BOOT-001",
