@@ -1412,6 +1412,29 @@ async fn read_ingress_message(
         }
     }
 
+    // The declared length is resolved HERE, ahead of the interim answer, because it is one of the
+    // checks that answer stands for. A `Content-Length` this reader cannot parse, or one past the
+    // operator's cap, is refused without a byte of the body behind it being read — so a go-ahead
+    // written first asks the client to upload a body this transport has already decided to throw
+    // away, which is the one thing `Expect: 100-continue` exists to spare it. RFC 9110 10.1.1 says
+    // the same: a server that will not accept the declared length answers the refusal instead of
+    // the continue. A chunked message declares no total, so there is nothing to check here and its
+    // cap is held against the bytes that actually arrive, below.
+    let chunked = raw::is_chunked(&headers);
+    let declared = if chunked {
+        0
+    } else {
+        let declared = raw::content_length(&headers)
+            .map_err(|()| TransportError::Framing)?
+            .unwrap_or(0);
+        if declared > max_body_bytes {
+            // Refused on the declaration, before a byte of the body behind it is read: reading a
+            // megabyte only to discard it is the resource cost the cap exists to avoid.
+            return Err(TransportError::Framing);
+        }
+        declared
+    };
+
     // The head passed its framing checks, so this request IS accepted for a body — and a client
     // that asked to be told so is WAITING to be told before it sends one. `curl` sets the header
     // itself for any body past about a kibibyte; against a reader that only parks on the body,
@@ -1426,7 +1449,7 @@ async fn read_ingress_message(
         let _ = w.flush().await;
     }
 
-    let (bodies, trailers) = if raw::is_chunked(&headers) {
+    let (bodies, trailers) = if chunked {
         let mut decoder = raw::ChunkedDecoder::default();
         // A chunked sender declares no total, so the cap is held against the bytes that have
         // actually arrived rather than against a number the peer supplied.
@@ -1452,14 +1475,6 @@ async fn read_ingress_message(
         }
         decoder.take()
     } else {
-        let declared = raw::content_length(&headers)
-            .map_err(|()| TransportError::Framing)?
-            .unwrap_or(0);
-        if declared > max_body_bytes {
-            // Refused on the declaration, before a byte of the body behind it is read: reading a
-            // megabyte only to discard it is the resource cost the cap exists to avoid.
-            return Err(TransportError::Framing);
-        }
         while rest.len() < declared {
             let Some(read) = read_or_closed(r, closed, closing).await else {
                 return Ok(None);

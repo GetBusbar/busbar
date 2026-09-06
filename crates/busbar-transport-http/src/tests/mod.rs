@@ -2085,6 +2085,74 @@ async fn a_request_expecting_a_continue_is_answered_before_its_body_is_waited_fo
     assert!(head.bytes.as_slice().starts_with(b"POST /x HTTP/1.1"));
 }
 
+/// A request whose DECLARED LENGTH is past the cap is not told to go ahead and send it.
+///
+/// `Expect: 100-continue` is what a client sets when it would rather be refused than upload, and
+/// the go-ahead stands for the framing checks the head has passed. The body cap is one of those
+/// checks: a declared length past `limits.request_body_max_bytes` is refused without a byte of the
+/// body behind it being read, so telling the client to send it anyway asks for an upload this
+/// transport has already decided to throw away. `curl` sets the header itself for any body past
+/// about a kibibyte, so what the client then sees is its whole upload going into a socket nobody is
+/// draining and a broken pipe where it asked for an answer.
+#[tokio::test]
+async fn a_request_expecting_a_continue_past_the_body_cap_is_not_told_to_send_it() {
+    const CAP: usize = 64;
+    let served = StdArc::new(HttpTransport::new(ClientSettings {
+        request_body_max_bytes: CAP,
+        ..ClientSettings::default()
+    }));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = served.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let served = served.clone();
+        async move { served.accept(&listener).await.unwrap() }
+    });
+    let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let conn = accept_fut.await.unwrap();
+
+    // The head only, exactly as a client waiting for the go-ahead sends it: the declared length is
+    // far past what this node accepts.
+    tokio::io::AsyncWriteExt::write_all(
+        &mut client,
+        b"POST /x HTTP/1.1\r\nHost: h\r\nExpect: 100-continue\r\nContent-Length: 100000\r\n\r\n",
+    )
+    .await
+    .unwrap();
+
+    let mut frames = served.frames(conn);
+    let first = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("the reader answers rather than hanging")
+        .expect("the stream yields the framing error");
+    assert_eq!(
+        first.unwrap_err(),
+        TransportError::Framing,
+        "a declared length past the cap is refused without the body behind it"
+    );
+
+    // And nothing was written back: a go-ahead here asks for an upload already decided against.
+    let mut interim = [0_u8; 64];
+    let read = tokio::time::timeout(
+        Duration::from_millis(500),
+        tokio::io::AsyncReadExt::read(&mut client, &mut interim),
+    )
+    .await;
+    let wrote = match read {
+        Err(_) => Vec::new(),
+        Ok(Ok(0)) => Vec::new(),
+        Ok(Ok(n)) => interim[..n].to_vec(),
+        Ok(Err(_)) => Vec::new(),
+    };
+    assert!(
+        wrote.is_empty(),
+        "the client was told {:?} — a go-ahead for a body this transport has already refused",
+        String::from_utf8_lossy(&wrote)
+    );
+}
+
 /// An upstream's response TRAILERS reach the caller as one final frame, in the same wire form the
 /// ingress reader hands a request's trailers up in — one `name: value` line each.
 ///
