@@ -486,6 +486,18 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub origin: busbar_caps::Origin,
 }
 
+/// A lock this plane holds, taken the way the root takes its locks.
+///
+/// A poisoned lock is read through rather than refused. The panic that poisoned it happened
+/// somewhere else, and what is behind these two locks is written once per field and then read — so
+/// a reader after a panic sees a prefix of the truth rather than a corrupted one. The alternative
+/// is a node whose audit chain stops sealing, and whose exit path stops settling, because one
+/// unrelated unit panicked once: a poisoned node-global lock would take every later request with
+/// it, which is a far larger failure than the one that poisoned it.
+fn read_through_poison<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    lock.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// What the steps recorded as they ran.
 ///
 /// The settlement table reads this once, at the exit. It is behind a lock because the steps take
@@ -596,11 +608,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 mono: self.bindings.now,
             },
         };
-        let mut durability = self
-            .bindings
-            .durability
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut durability = read_through_poison(self.bindings.durability);
         durability.settle_posted(&at, posted)
     }
 
@@ -729,7 +737,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
 
     /// The audit record one ending seals.
     fn audit_inputs(&self, outcome: Outcome, principal: Option<&PrincipalId>) -> AuditInputs {
-        let progress = self.progress.lock().expect("progress lock");
+        let progress = read_through_poison(&self.progress);
         AuditInputs {
             subject: match principal.or(progress.principal.as_ref()) {
                 Some(p) => busbar_unit_audit::Subject::PrincipalId(p.as_str().to_string()),
@@ -862,14 +870,14 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         {
             // The first step that is handed the principal is the first that can record it. The
             // audit and the settlement both read it and neither is handed it again.
-            let mut progress = self.progress.lock().expect("progress lock");
+            let mut progress = read_through_poison(&self.progress);
             progress.principal = Some(principal.clone());
             progress.grants = Some(self.grants);
         }
         match self.verified_lanes(trust_origin(ctx.origin)) {
             Err(refusal) => Decision::refuse(token, refusal),
             Ok(lanes) => {
-                self.progress.lock().expect("progress lock").lanes = lanes.clone();
+                read_through_poison(&self.progress).lanes = lanes.clone();
                 // An empty set is a legitimate answer and is NOT a refusal here. A pool with every
                 // lane excluded proceeds through the door, draws its slot and retains it, and ends
                 // at the pool's own exhaustion terminal — refusing here would move the charge.
@@ -964,7 +972,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             Err(LegError::Store(_)) => {
                 return Decision::refuse(token, Refusal::new(ReasonCode::DurabilityUnavailable))
             }
-            Ok(results) => self.progress.lock().expect("progress lock").legs = results,
+            Ok(results) => read_through_poison(&self.progress).legs = results,
         }
 
         // The bytes the request carried accrue as the unit runs; the answer's bytes settle at the
@@ -1047,7 +1055,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         ) {
             Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::MeterDisputed)),
             Ok(metered) => {
-                let mut progress = self.progress.lock().expect("progress lock");
+                let mut progress = read_through_poison(&self.progress);
                 progress.metered = Some(self.draft.response_bytes);
                 progress.disputed = metered.disputed();
                 Decision::proceed(token, metered.usage)
@@ -1063,10 +1071,10 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
     ) -> Decision<Audit> {
         let inputs = self.audit_inputs(*outcome, None);
         let record = {
-            let mut durability = self.bindings.durability.lock().expect("durability lock");
+            let mut durability = read_through_poison(self.bindings.durability);
             durability.record.seal(inputs, token)
         };
-        self.progress.lock().expect("progress lock").audit_hash = Some(record.hash);
+        read_through_poison(&self.progress).audit_hash = Some(record.hash);
         // The class the plane named is the class that priced the unit, read back off the draft. A
         // different class here would be this file disputing the plane's own earlier answer.
         Decision::proceed(
@@ -1092,10 +1100,10 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         );
         let inputs = self.audit_inputs(outcome, None);
         let record = {
-            let mut durability = self.bindings.durability.lock().expect("durability lock");
+            let mut durability = read_through_poison(self.bindings.durability);
             durability.record.seal(inputs, token)
         };
-        self.progress.lock().expect("progress lock").audit_hash = Some(record.hash);
+        read_through_poison(&self.progress).audit_hash = Some(record.hash);
         Decision::proceed(
             token,
             AuditFacts {
@@ -1115,7 +1123,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // nor the plane's draft, so the bytes are written where the borrow lives and this step
         // reports what left. That is a statement about the seam, not a shortcut: a root that
         // allocated a second buffer here would be writing the wire format twice.
-        let bytes = self.progress.lock().expect("progress lock").encoded;
+        let bytes = read_through_poison(&self.progress).encoded;
         Decision::proceed(
             token,
             busbar_contract::wire::Frame {
@@ -1132,7 +1140,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
     }
 
     fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
-        let progress = self.progress.lock().expect("progress lock");
+        let progress = read_through_poison(&self.progress);
         Evidence {
             located: progress.metered,
             accrued_floor: self.draft.request_bytes,
@@ -1213,6 +1221,58 @@ fn trust_origin(kind: busbar_caps::OriginKind) -> OriginKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A panic somewhere else does not stop this plane from sealing and settling.
+    ///
+    /// The node's durability is one lock, shared by every unit on every plane. A step that took it
+    /// and refused a poisoned one would turn a single unrelated panic into a node that can no longer
+    /// seal an audit record or settle an exit — for every later request, permanently. The lock is
+    /// read through instead, which is how the rest of the root reads it.
+    #[test]
+    fn a_poisoned_lock_does_not_stop_the_audit_chain() {
+        let durability = Mutex::new(
+            crate::root::durability::build(
+                &crate::root::durability::DurabilityConfig { data_dir: None },
+                Box::new(busbar_unit_wal::NullShipper::new()),
+                Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+            )
+            .expect("a memory-buffered node cannot fail to open"),
+        );
+
+        // Poison it the only way a lock gets poisoned: a panic while it is held.
+        let poisoning = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _held = durability.lock().expect("the lock is not yet poisoned");
+                    panic!("a unit somewhere else panicked");
+                })
+                .join()
+        });
+        assert!(poisoning.is_err(), "the thread panicked under the lock");
+        assert!(durability.is_poisoned(), "so the lock is poisoned");
+
+        // The seam the audit and settlement steps take it through still hands back the node's one
+        // durability, rather than taking the process with it.
+        assert!(!read_through_poison(&durability).on_disk());
+
+        // And the per-unit progress the exit reads is taken the same way.
+        let progress = Mutex::new(Progress::default());
+        let poisoning = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let mut held = progress.lock().expect("the lock is not yet poisoned");
+                    held.encoded = 7;
+                    panic!("a step panicked after writing");
+                })
+                .join()
+        });
+        assert!(poisoning.is_err());
+        assert_eq!(
+            read_through_poison(&progress).encoded,
+            7,
+            "what the step wrote before it panicked is still what the exit reads"
+        );
+    }
 
     /// The audit action is the word the gating rig reads.
     ///
