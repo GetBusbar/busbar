@@ -3942,6 +3942,57 @@ fn strip_same_proto_usage_fires_without_object_field() {
     );
 }
 
+/// Usage-trailer suppression object gate: an OpenAI-COMPATIBLE upstream may omit (or vary) the
+/// `object` field on the forced-`include_usage` trailing usage-only chunk. The suppression predicate
+/// must drop that frame for an opted-out client on the shape alone - a usage OBJECT alongside an
+/// EMPTY `choices` array - exactly as its `strip_same_proto_usage` sibling ignores `object`.
+#[test]
+fn suppress_same_proto_frame_fires_without_object_field() {
+    use super::super::proto_codec::StreamFraming;
+
+    let framing = OpenAiStreamFraming::default();
+
+    // The trailing usage-only chunk with NO `object` field.
+    let no_object_trailer = serde_json::json!({
+        "id": "chatcmpl-x",
+        "choices": [],
+        "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+    });
+    assert!(
+        framing.suppress_same_proto_frame(&no_object_trailer),
+        "an opted-out client must not receive the usage-only trailer even when it omits `object`"
+    );
+
+    // A variant `object` value must be suppressed too.
+    let variant_object = serde_json::json!({
+        "object": "chat.completion.chunk.delta",
+        "choices": [],
+        "usage": {"total_tokens": 10}
+    });
+    assert!(
+        framing.suppress_same_proto_frame(&variant_object),
+        "a compatible upstream using an `object` variant must still have its trailer suppressed"
+    );
+
+    // Guard: a content/finish chunk (non-empty `choices`) is never suppressed.
+    let content = serde_json::json!({
+        "choices": [{"index": 0, "delta": {"content": "hi"}}],
+        "usage": {"total_tokens": 10}
+    });
+    assert!(
+        !framing.suppress_same_proto_frame(&content),
+        "a content chunk carries the client's tokens and must never be dropped"
+    );
+
+    // Guard: a client that legitimately opted in receives the trailer verbatim.
+    let mut opted_in = OpenAiStreamFraming::default();
+    opted_in.set_client_include_usage(true);
+    assert!(
+        !opted_in.suppress_same_proto_frame(&no_object_trailer),
+        "an opted-in client's requested usage trailer must never be suppressed"
+    );
+}
+
 /// 0-based streaming tool_calls index (unit): `remap_tool_call_index` rewrites the
 /// writer's raw IR-block index onto a 0-based per-call ordinal. First distinct raw index → 0, next →
 /// 1; the same raw index (argument-fragment chunks) replays its ordinal. Guarantees the first tool
