@@ -23,23 +23,61 @@ cd "$(dirname "$0")/../.."
 DESCRIBE=0
 [ "${1:-}" = "--describe" ] && DESCRIBE=1
 
+EMITTED=0
 emit() {  # emit <id> <description>
+  EMITTED=$((EMITTED + 1))
   if [ "$DESCRIBE" = 1 ]; then printf '%s\t%s\n' "$1" "$2"; else printf '%s\n' "$1"; fi
 }
+
+# ── THE FLOORS, AND WHY THIS FILE HAS THEM AT ALL ───────────────────────────────────────────────
+#
+# This list is what makes "did not run" detectable, so a list that comes back SHORT is the one
+# failure this file cannot survive: gate.sh diffs the ledger against whatever we print, and an id
+# we never printed is an id nobody is owed. Print nothing and the gate has nothing to miss.
+#
+# The original loop was `done < <(published_targets)`. A process substitution's exit status is not
+# the loop's and is not seen by `set -e`, so a jq that failed for ANY reason — contract absent,
+# malformed after an edit, `.targets[]` renamed, jq not installed — produced an empty stream, the
+# loop body never ran, all 36 per-target ids vanished, and the script exited 0 with a
+# perfectly-formatted 24-line answer. gate.sh (`if ! expected-ids.sh --describe`) checks only the
+# exit code, so it accepted it, and every per-target check that DID report landed in `unexpected`
+# (a ::warning::, not a failure) while every one that did NOT report was owed by nobody. Silent,
+# green, and in the direction that matters.
+#
+# So: capture first and check the status explicitly, then refuse a list that is implausibly short.
+# The floors are deliberately BELOW today's numbers (6 published targets, 60 ids) — they are a
+# tripwire against collapse, not a second copy of the contract, and a target legitimately retired
+# must not have to edit this file. Collapse to zero, or to a fraction, is what they catch.
+: "${EXPECTED_IDS_TARGET_FLOOR:=5}"   # the five platforms the contract's own comment names
+: "${EXPECTED_IDS_TOTAL_FLOOR:=50}"   # 6 per-target rows x 5 + the release/docker/channel rows
 
 # ── Per-target (the matrix legs) ────────────────────────────────────────────────────────────────
 # Six rows per published target, each on a NATIVE runner for that target. They are separate ids
 # rather than one composite "the artifact is fine" because a composite hides which property broke,
 # and because #52 broke exactly one of the six (pubkey/plugin) while the other four were perfect.
+if ! TARGETS="$(published_targets)"; then
+  echo "::error title=release gate::expected-ids: could not read the published targets out of ${CONTRACT} (jq exited non-zero). The per-target ids cannot be derived, so the list this script would print is SHORT and every 'did not run' verdict derived from it would be vacuous. Refusing to print a partial contract. Fix: check ${CONTRACT} parses as JSON and carries .targets[] with published==true entries, and that jq is installed." >&2
+  exit 1
+fi
+
+n_targets=0
 while read -r t; do
   [ -n "$t" ] || continue
+  n_targets=$((n_targets + 1))
   emit "asset:${t}"   "the named release asset exists, is plausibly sized and is really downloadable"
   emit "extract:${t}" "the archive extracts to the declared executable"
   emit "version:${t}" "the shipped binary answers --version with the tagged version"
   emit "binfmt:${t}"  "the shipped binary is the declared architecture and object format"
   emit "pubkey:${t}"  "the shipped binary embeds the release public key (#52)"
   emit "plugin:${t}"  "a REAL signed first-party plugin loads as first-party/ready (#52, functionally)"
-done < <(published_targets)
+done <<TARGETS_EOF
+$TARGETS
+TARGETS_EOF
+
+if [ "$n_targets" -lt "$EXPECTED_IDS_TARGET_FLOOR" ]; then
+  echo "::error title=release gate::expected-ids: only ${n_targets} published target(s) came out of ${CONTRACT}; the floor is ${EXPECTED_IDS_TARGET_FLOOR}. Either the contract lost platforms (a release that ships fewer platforms than it claims is the v1.5.3 defect) or the query stopped matching. Refusing to print a list that would leave those platforms owed by nobody." >&2
+  exit 1
+fi
 
 # ── Release-level ───────────────────────────────────────────────────────────────────────────────
 emit "release:exists"         "the GitHub Release for the tag exists and is not a draft"
@@ -82,3 +120,13 @@ emit "contract:drift"         "the contract's target list still matches release.
 # bakes busbar + the headroom hook, on its own version line, rebuilt by the fan-out.
 emit "bundle:headroom-latest" "the getbusbar/busbar-headroom bundle :latest was (re)pushed and pulls"
 emit "bundle:headroom-boot"   "the rebuilt headroom bundle actually boots and serves ok on /healthz"
+
+# ── The total floor ─────────────────────────────────────────────────────────────────────────────
+# The per-target floor above catches a collapsed contract. This catches everything else that could
+# make the list short — a `set -e` abort partway down, an emit() that stopped emitting, a future
+# edit that accidentally guards a whole block. Printed output is already on stdout by now; exiting
+# non-zero is what matters, because gate.sh refuses a non-zero expected-ids and goes RED.
+if [ "$EMITTED" -lt "$EXPECTED_IDS_TOTAL_FLOOR" ]; then
+  echo "::error title=release gate::expected-ids: emitted only ${EMITTED} ids; the floor is ${EXPECTED_IDS_TOTAL_FLOOR}. A short expected list silently un-owes whole classes of check, which is how a gate goes green having verified less than it claims." >&2
+  exit 1
+fi
