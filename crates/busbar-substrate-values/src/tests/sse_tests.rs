@@ -138,6 +138,34 @@ fn test_terminator_split_across_chunks_still_frames() {
     }
 }
 
+/// `feed` drained from the front once PER FRAME (`self.buf.drain(..pos + len)`), and reset `scanned`
+/// to 0 on every drain — so one chunk holding many small events cost quadratic memmove (a full
+/// rescan-from-zero AND a full-tail memmove, once per frame). One chunk of many trivial ("\n\n")
+/// events must cost work proportional to the chunk's BYTES, not to bytes × frames.
+///
+/// The bound is generous (16 bytes of drained work per byte fed) because the point is the SHAPE: a
+/// per-frame front-drain walks ~N²/2 bytes for N frames, which is orders of magnitude past this
+/// bound at the size used here.
+#[test]
+fn test_feed_drain_work_is_linear_in_bytes_fed() {
+    const N: usize = 4096;
+    let chunk = "\n\n".repeat(N).into_bytes();
+    let total = chunk.len();
+
+    let mut r = SseReader::default();
+    let _ = take_drained_bytes();
+    let out = r.feed(&chunk);
+    let drained = take_drained_bytes();
+
+    assert_eq!(out.len(), N, "every \"\\n\\n\" pair is its own frame");
+    assert_eq!(r.pending(), 0, "the whole chunk was framed");
+    assert!(
+        drained <= 16 * total,
+        "feeding {total} bytes as {N} frames in one chunk drained {drained} bytes — the buffer is \
+         drained once per frame instead of once per feed() call (quadratic)"
+    );
+}
+
 /// A frame that was framed by a bare-CR terminator must still split into fields on a bare-CR line
 /// break — `str::lines()` only splits on LF/CRLF, so a bare-CR frame yielded NO data at all (the
 /// A2A relay then answered 502), and a multi-field bare-CR frame swallowed later fields into the

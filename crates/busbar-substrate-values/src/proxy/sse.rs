@@ -31,25 +31,29 @@ const TERMINATOR_REWIND: usize = 3;
 
 impl SseReader {
     /// Feed a chunk and take every COMPLETE event it finished.
+    ///
+    /// Walks a local `consumed` cursor across `buf` and applies ONE `drain` at the end, rather than
+    /// draining from the front once PER FRAME: `Vec::drain` from the front memmoves the entire
+    /// remaining tail, so draining per frame cost O(frames × bytes) on a chunk carrying many small
+    /// events (the same shape `eventstream::drain_frames_checked` fixed for the AWS framing). Nothing
+    /// else observes `buf` mid-loop (this method holds the only `&mut`), so tracking a position and
+    /// draining once at the end is behavior-identical.
     pub fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
         self.buf.extend_from_slice(chunk);
         let mut out = Vec::new();
-        loop {
-            // Resume where the last scan stopped (minus the rewind), and rebase the hit onto the
-            // whole buffer so the drain arithmetic and the emitted frame are byte-identical to a
-            // scan from zero. Nothing before `from` can hold the earliest terminator: that region
-            // was already searched and every terminator it could still complete extends into the
-            // rewind window.
-            let from = self.scanned.saturating_sub(TERMINATOR_REWIND);
+        let mut consumed = 0usize;
+        // Resume where the last scan stopped (minus the rewind): nothing before this point can hold
+        // the earliest terminator, since that region was already searched and every terminator it
+        // could still complete extends into the rewind window. `buf` is not mutated mid-loop (the
+        // drain happens once, after), so this absolute position stays valid across every iteration.
+        let mut scan_from = self.scanned.saturating_sub(TERMINATOR_REWIND);
+        while let Some((rel, len)) = {
             #[cfg(test)]
-            SCANNED_BYTES.with(|c| c.set(c.get() + (self.buf.len() - from)));
-            let Some((pos, len)) = frame_end(&self.buf[from..]).map(|(pos, len)| (from + pos, len))
-            else {
-                self.scanned = self.buf.len();
-                break;
-            };
-            self.scanned = 0;
-            let frame = self.buf.drain(..pos + len).collect::<Vec<u8>>();
+            SCANNED_BYTES.with(|c| c.set(c.get() + (self.buf.len() - scan_from)));
+            frame_end(&self.buf[scan_from..])
+        } {
+            let end = scan_from + rel + len;
+            let frame = self.buf[consumed..end].to_vec();
             match String::from_utf8(frame) {
                 Ok(s) => out.push(s),
                 // The event-stream format is UTF-8 by definition, so a non-UTF-8 frame is a
@@ -62,7 +66,13 @@ impl SseReader {
                     "dropping a non-UTF-8 SSE frame (the event-stream format requires UTF-8)"
                 ),
             }
+            consumed = end;
+            scan_from = end;
         }
+        self.scanned = self.buf.len() - consumed;
+        #[cfg(test)]
+        DRAINED_BYTES.with(|c| c.set(c.get() + self.buf.len()));
+        self.buf.drain(..consumed);
         out
     }
 
@@ -85,6 +95,20 @@ thread_local! {
 #[cfg(test)]
 fn take_scanned_bytes() -> usize {
     SCANNED_BYTES.with(|c| c.replace(0))
+}
+
+// Test-only tally of the buffer length observed at each `drain` call, so a test can assert the
+// reader's drain work is linear in the bytes fed rather than in bytes × frames-per-chunk. Thread-
+// local, so parallel tests do not contaminate each other's count.
+#[cfg(test)]
+thread_local! {
+    static DRAINED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Zero the drain tally and return what it held (test-only).
+#[cfg(test)]
+fn take_drained_bytes() -> usize {
+    DRAINED_BYTES.with(|c| c.replace(0))
 }
 
 /// WHERE THE FIRST COMPLETE SSE EVENT ENDS, and how many bytes its terminator takes: the offset of
