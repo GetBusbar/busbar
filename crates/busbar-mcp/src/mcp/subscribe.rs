@@ -182,22 +182,63 @@ impl Kind {
 /// too. The narrowed list is left `None` when nothing survives rather than set to an empty list:
 /// an empty list is "you subscribed to no resources", which is a different statement from "this
 /// category has nothing for you".
-fn accept(requested: &SubscriptionFilter, entitled: impl Fn(&str) -> bool) -> SubscriptionFilter {
+/// THE CAP ON HOW MANY URIS ONE SUBSCRIPTION MAY NAME.
+///
+/// `entitled` is a CATALOGUE WALK — the ordered `resources/read` gate, run under this caller's grant
+/// — and it runs once per requested uri. The requested list arrives on a caller's request body and
+/// nothing else bounded it, so a single `subscriptions/listen` naming a hundred thousand uris was a
+/// hundred thousand grant-scoped catalogue walks charged to one request, and the same list is walked
+/// again on every 250ms poll for the stream's whole life. That is a request whose cost the caller
+/// chooses, which is the shape of every amplification defect.
+///
+/// 64 is far above what a client subscribes to in practice (a document set it has open) and far
+/// below anything that costs. A list longer than this is REFUSED rather than truncated: silently
+/// serving the first 64 would leave a client believing it is subscribed to uris no notification will
+/// ever arrive for, which is the exact dishonesty the acknowledgement's narrowing exists to prevent.
+pub(crate) const MAX_SUBSCRIBED_URIS: usize = 64;
+
+/// The requested uris, DEDUPLICATED and length-checked, or the count that broke the cap.
+///
+/// Deduplication comes first and is not a tidiness step: the cap is a bound on WORK, and a caller
+/// that names one uri sixty-five times has asked for one subscription, not sixty-five. Rejecting
+/// that would refuse a request that costs nothing, and counting it against the cap before collapsing
+/// it would make a client's harmless repetition indistinguishable from an attack. Duplicates are
+/// also what turns the delivery loop quadratic — each recorded update is tested against every entry.
+fn narrow_uris(requested: &[String]) -> Result<Vec<String>, usize> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut unique = Vec::new();
+    for uri in requested {
+        if seen.insert(uri.as_str()) {
+            unique.push(uri.clone());
+        }
+    }
+    if unique.len() > MAX_SUBSCRIBED_URIS {
+        return Err(unique.len());
+    }
+    Ok(unique)
+}
+
+fn accept(
+    requested: &SubscriptionFilter,
+    entitled: impl Fn(&str) -> bool,
+) -> Result<SubscriptionFilter, usize> {
     let mut accepted = SubscriptionFilter::new();
     accepted.tools_list_changed = requested.tools_list_changed.filter(|v| *v);
     accepted.prompts_list_changed = requested.prompts_list_changed.filter(|v| *v);
     accepted.resources_list_changed = requested.resources_list_changed.filter(|v| *v);
-    accepted.resource_subscriptions = requested
-        .resource_subscriptions
-        .as_ref()
-        .map(|uris| {
-            uris.iter()
+    // BOUNDED BEFORE THE WALK. `entitled` is the catalogue read, so a cap applied to the SURVIVORS
+    // would have run the unbounded work already and bounded only the answer.
+    accepted.resource_subscriptions = match requested.resource_subscriptions.as_ref() {
+        None => None,
+        Some(uris) => {
+            let kept: Vec<String> = narrow_uris(uris)?
+                .into_iter()
                 .filter(|u| entitled(u))
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .filter(|kept| !kept.is_empty());
-    accepted
+                .collect();
+            (!kept.is_empty()).then_some(kept)
+        }
+    };
+    Ok(accepted)
 }
 
 /// A CHANGE KEY for one grant-scoped catalogue slice: two runs that produce the same value saw the
@@ -570,6 +611,26 @@ pub(crate) fn listen(
             )
         })
     };
+    let accepted = match accepted {
+        Ok(accepted) => accepted,
+        Err(asked) => {
+            // The list is the caller's and the walk it drives is busbar's, so the length is refused
+            // before either is spent. Named rather than truncated — see `MAX_SUBSCRIBED_URIS`.
+            return super::envelope::error_response(
+                StatusCode::BAD_REQUEST,
+                id,
+                super::envelope::code::INVALID_PARAMS,
+                &format!(
+                    "`params.notifications.resourceSubscriptions` names {asked} distinct uris; one \
+                     subscription may name at most {MAX_SUBSCRIBED_URIS}. Each uri is resolved \
+                     under your grant at open and again on every poll for the life of the stream, \
+                     so the list is bounded rather than truncated — a truncated list would leave \
+                     you subscribed to uris no notification will ever arrive for."
+                ),
+                None,
+            );
+        }
+    };
     if !Kind::ALL.into_iter().any(|k| k.wanted(&accepted))
         && accepted.resource_subscriptions.is_none()
     {
@@ -587,6 +648,41 @@ pub(crate) fn listen(
              resources you cannot read is a stream with nothing to say.",
             None,
         );
+    }
+    // THE PER-KEY GATE, the SAME one `tools/call` runs (`method::charge_round` → the host's
+    // `govern_admit_reason` seam, which is `GovState::try_admit`).
+    //
+    // This method reached NO per-key admission at all, and of every method in the table it is the
+    // one that most needs one: an accepted `subscriptions/listen` is a 300-second task that wakes
+    // every 250ms, re-derives this caller's whole visible catalogue on each wake, and can be
+    // re-opened as fast as a client can POST. A caller's budget bounded every `tools/call` it made
+    // and bounded nothing about the streams it held open beside them, so the cheapest way to spend
+    // a gateway was the one method that cost nothing to ask for.
+    //
+    // Charged ONCE, at open, and not per poll: the poll is busbar's own timer rather than a request,
+    // and metering a timer would attribute to the caller a cost it cannot stop paying. The unit
+    // being charged is the OPENING, which is the thing the caller controls and the thing a limit
+    // has to be able to refuse.
+    {
+        let fallback_scope = busbar_substrate::plane_host::DispatchScope::new();
+        let scope = ctx.scope.unwrap_or(&fallback_scope);
+        if let Err(reason) = super::method::charge_round(
+            ctx,
+            METHOD_SUBSCRIPTIONS_LISTEN,
+            &super::inputreq::RoundRecord {
+                round: 0,
+                satisfied: None,
+            },
+            scope,
+        ) {
+            return super::envelope::error_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                id,
+                super::method::CODE_REFUSED,
+                &format!("opening a subscription was refused by your budget: {reason}"),
+                Some(serde_json::json!({ "reason": "budget_exhausted" })),
+            );
+        }
     }
     // Never `None` on this path — `ingress` has already refused a notification and a null id — and
     // carried as `Option` only because every method in the table takes one. `Null` here would
