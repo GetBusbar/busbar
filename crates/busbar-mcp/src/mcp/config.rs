@@ -1349,6 +1349,44 @@ fn validate_endpoint(at: &str, def: &McpServerDefCfg) -> Result<(), String> {
     Ok(())
 }
 
+/// REFUSE AN ASK THAT NAMES A METHOD NOTHING CAN SEND.
+///
+/// `ask_caller[].method` is a free string in the grammar, and at dispatch a method outside the
+/// closed set is silently DROPPED — `callerask::CallerAsk::capability_key` returns `None` and the
+/// round's filter removes the entry. So an operator who typed `elicitation/created` did not get a
+/// broken confirmation gate, they got NO confirmation gate: the destructive tool the gate was
+/// written for dispatches unconfirmed, and the only visible symptom is a refusal that blames the
+/// CALLER for declaring no capabilities. A round emptied by the filter is dropped entirely, so even
+/// that refusal disappears once the typo is the only entry.
+///
+/// Boot is the only place an operator is present to be told. The set is
+/// [`super::callerask::ASK_METHODS`] — the same three strings dispatch matches on, read rather than
+/// re-spelled, so a fourth method the protocol grows is added in exactly one place.
+fn refuse_unknown_ask_methods(
+    at: &str,
+    family: &str,
+    capability: &str,
+    field: &str,
+    rounds: &[AskRoundCfg],
+) -> Result<(), String> {
+    for (round, entries) in rounds.iter().enumerate() {
+        for (key, entry) in entries {
+            if !super::callerask::ASK_METHODS.contains(&entry.method.as_str()) {
+                return Err(format!(
+                    "{at}: `{family}.{capability}.{field}[{round}].{key}.method` is \
+                     `{}`, which is not one of the three client-side methods an ask may name \
+                     ({}). A method outside that set names no capability a caller could declare, \
+                     so it would be dropped at dispatch and this confirmation gate would never be \
+                     shown.",
+                    entry.method,
+                    super::callerask::ASK_METHODS.join(", ")
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// THE CREDENTIAL CONFLICT, at whichever level the `passthrough` was written.
 ///
 /// An exchange mints BUSBAR's credential. `passthrough` says the CALLER supplies the credential.
@@ -1514,6 +1552,14 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
 
     for (tool, allow) in &def.tools_allow {
         validate_capability_name(&at, "tools_allow", tool)?;
+        refuse_unknown_ask_methods(&at, "tools_allow", tool, "ask_caller", &allow.ask_caller)?;
+        refuse_unknown_ask_methods(
+            &at,
+            "tools_allow",
+            tool,
+            "task_ask_caller",
+            &allow.task_ask_caller,
+        )?;
         // A task-scoped ask on a tool that never creates a task has no task to be asked inside of,
         // so it would be silently unreachable: the caller would get a plain result and never see
         // the confirmation gate the operator wrote. Refused at boot, where the operator is, rather
@@ -1552,6 +1598,13 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
     }
     for (prompt, allow) in &def.prompts_allow {
         validate_capability_name(&at, "prompts_allow", prompt)?;
+        refuse_unknown_ask_methods(
+            &at,
+            "prompts_allow",
+            prompt,
+            "ask_caller",
+            &allow.ask_caller,
+        )?;
         validate_prompt(&at, prompt, allow)?;
     }
     for (uri, allow) in &def.resources_allow {
