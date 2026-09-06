@@ -10,9 +10,29 @@ end to end WITHOUT a real IdP, this fixture is a complete-enough issuer:
   GET /mint                              -> a freshly signed RS256 id_token for the configured sub
                                             (the probe grabs this and presents it to /auth/token)
 
+A FIXTURE THAT CANNOT SAY NO MAKES THE PROBE VACUOUS (the rule vault-fixture.py and mock-upstream.py
+already state, and this one used to break). This issuer served exactly ONE token and it was always
+valid, so every credential the probe could present was a credential that SHOULD be accepted — and a
+plugin that never fetched the JWKS at all, never checked `exp`, never checked `aud`, and minted a
+busbar key for anything with a bearer header, passed probe-auth.sh byte-for-byte. The positive
+control alone cannot tell "verified the token" from "waved it through".
+
+So the issuer also mints tokens that MUST be refused, one per property the plugin is supposed to
+check, each wrong in exactly one way and correct in every other:
+
+  GET /mint/bad-signature   same header (same kid) and same claims, signed with a SECOND keypair
+                            whose public half is NOT in /jwks -> only signature verification refuses
+  GET /mint/expired         iat/exp an hour in the past -> only expiry checking refuses
+  GET /mint/wrong-audience  aud = a different audience -> only audience checking refuses
+
+The fourth arm needs no endpoint: presenting NO credential at all.
+
+Any other path is 404 — a fixture that answered an unknown /mint/<typo> with a valid token would let
+a probe arm silently degrade into the positive control it is supposed to contrast with.
+
 RS256 signing is done by shelling out to `openssl` (present on every GitHub-hosted runner and on
 macOS), so the fixture needs no Python crypto package — it stays dependency-free and self-contained,
-which is the rule for fleet fixtures. The keypair is generated once at startup into a temp dir.
+which is the rule for fleet fixtures. The keypairs are generated once at startup into a temp dir.
 
 Usage: stub-idp.py <port> <self-base-url> <issuer> <audience> <sub> <group-claim-name> <group-value>
 """
@@ -35,7 +55,14 @@ GROUP_VALUE = sys.argv[7]
 
 TMP = tempfile.mkdtemp(prefix="stub-idp-")
 PRIV = os.path.join(TMP, "priv.pem")
+# The IMPOSTOR key. Its public half is deliberately never published in /jwks, so a token signed with
+# it is well-formed, correctly `kid`-labelled, unexpired and correctly audienced — and verifiable by
+# nobody. That is the point: it isolates signature verification from every other check.
+PRIV_BAD = os.path.join(TMP, "priv-impostor.pem")
 KID = "stub-idp-key-1"
+
+# The arms this issuer can mint, and how each one is wrong. Exactly one property is broken per arm.
+MINT_ARMS = ("ok", "bad-signature", "expired", "wrong-audience")
 
 
 def b64url(raw: bytes) -> str:
@@ -44,10 +71,11 @@ def b64url(raw: bytes) -> str:
 
 def gen_key():
     # 2048-bit RSA; traditional PEM so `openssl dgst -sign` reads it directly.
-    subprocess.run(
-        ["openssl", "genrsa", "-out", PRIV, "2048"],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    for path in (PRIV, PRIV_BAD):
+        subprocess.run(
+            ["openssl", "genrsa", "-out", path, "2048"],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
 
 
 def public_numbers():
@@ -64,25 +92,37 @@ def public_numbers():
 
 
 def jwks():
+    # ONLY the real key. Publishing the impostor here would make /mint/bad-signature verifiable and
+    # turn that whole arm into a second positive control.
     n, e = public_numbers()
     return {"keys": [{"kty": "RSA", "use": "sig", "alg": "RS256", "kid": KID,
                       "n": b64url(n), "e": b64url(e)}]}
 
 
-def sign_jwt():
+def sign_jwt(arm="ok"):
     now = int(time.time())
     header = {"alg": "RS256", "typ": "JWT", "kid": KID}
     payload = {
         "iss": ISSUER, "aud": AUDIENCE, "sub": SUB,
         "iat": now, "exp": now + 3600, GROUP_CLAIM: [GROUP_VALUE],
     }
+    key = PRIV
+    if arm == "bad-signature":
+        key = PRIV_BAD
+    elif arm == "expired":
+        # Already expired when it is handed out, and issued before that: a plugin that checks `exp`
+        # (or `iat` skew) refuses it, and nothing else about it is wrong.
+        payload["iat"] = now - 7200
+        payload["exp"] = now - 3600
+    elif arm == "wrong-audience":
+        payload["aud"] = AUDIENCE + "-not-this-one"
     signing_input = (
         b64url(json.dumps(header, separators=(",", ":")).encode())
         + "."
         + b64url(json.dumps(payload, separators=(",", ":")).encode())
     )
     proc = subprocess.run(
-        ["openssl", "dgst", "-sha256", "-sign", PRIV],
+        ["openssl", "dgst", "-sha256", "-sign", key],
         input=signing_input.encode(), capture_output=True, check=True,
     )
     return signing_input + "." + b64url(proc.stdout)
@@ -118,8 +158,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             })
         elif self.path.startswith("/jwks"):
             self._json(jwks())
-        elif self.path.startswith("/mint"):
-            self._text(sign_jwt())
+        elif self.path == "/mint" or self.path.startswith("/mint?"):
+            self._text(sign_jwt("ok"))
+        elif self.path.split("?", 1)[0].startswith("/mint/"):
+            # EXACT arm names only. A prefix match, or a fallback to the happy path, would answer
+            # /mint/expierd with a VALID token and the probe would then record "expired refused"
+            # about a token that was never expired.
+            arm = self.path.split("?", 1)[0][len("/mint/"):]
+            if arm in MINT_ARMS:
+                self._text(sign_jwt(arm))
+            else:
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
         else:
             self.send_response(404)
             self.send_header("Content-Length", "0")
