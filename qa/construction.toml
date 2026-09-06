@@ -1052,3 +1052,191 @@ file = "crates/busbar/src/root/harness.rs"
 symbol = "RecordingRows"
 verdict = "real"
 because = "a type alias over the rows the loop posted, and a reader of it; the name is spelled, nothing is constructed"
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+# The rules below are measured by scripts/construction-gate/rules_extra.py, a second module rules.py
+# imports. They are the construction CLASSES an audit found more than one instance of, turned into
+# instruments so the class cannot come back quietly. Everything above this line is measured by
+# rules.py; the split is about who edits which file, never about which rules are enforced.
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+# ── 31. gate-script-hygiene ──────────────────────────────────────────────────────────────────────
+[rules.gate-script-hygiene]
+why = """A gate is only worth what it reports, and a shell script reports through its exit code. \
+Two ways that code stops meaning anything, both found by hand in this tree: the shell was never \
+asked to be strict, so an unset variable silently became an empty scope and a pipeline reported the \
+exit code of `tee`; and the command the gate exists to run had `|| true` on it, so the gate passed \
+whatever the compiler or the node said. `-u` and `pipefail` are required of every script in scope. \
+`-e` is deliberately NOT required: the ledger-style gates here run every check and let verdict.sh \
+decide, and `-e` would make the first red check the last one that ran. The subject list names the \
+commands a gate runs to LEARN something; housekeeping (`rm`, `mkdir`, a `grep` used as a test) may \
+still discard its status, because there a non-zero is the answer rather than a failure."""
+scope_globs = ["scripts/*.sh", "testing/**/*.sh"]
+# How far into a script the strict-mode line must appear. Far enough to sit under the licence header
+# and the module comment every script in this tree carries, and no further.
+head_lines = 40
+# A line that both matches one of these and discards its status is a muffled subject.
+subject_patterns = [
+  "(^|[^A-Za-z0-9_-])cargo[ \t]",
+  "(^|[^A-Za-z0-9_-])busbar[ \t]",
+  "(^|[^A-Za-z0-9_-])python3?[ \t][^|]*\\.py",
+  "(^|[^A-Za-z0-9_-])(bash|sh)[ \t][^|]*\\.sh",
+]
+# Scripts held to neither check. Empty on purpose: a gate script that may lie is not a gate script.
+exempt = []
+# Ratchets, at today's count. Neither is a permission: the figures come down as the scripts are
+# fixed, and a NEW script is held to the rule the day it is written because it would raise the count
+# above the ratchet. 48 of the 122 scripts in scope do not ask the shell to be strict — the report
+# at target/construction/report.md names every one. The single muffled subject is
+# construction-gate.sh's own delegated purity scan, which runs the lint in `--baseline` mode, a mode
+# whose contract is that it always exits 0 and reports through its rows file instead; that reasoning
+# is written at the call site, and pinning it at 1 is what makes a SECOND such line red.
+max_lax = 48
+max_muffled = 1
+
+# ── 32. unused-waiver ────────────────────────────────────────────────────────────────────────────
+[rules.unused-waiver]
+why = """A waiver names a site a rule is not applied to. When the site is gone, the entry excuses \
+nothing — and it is not harmless: it reads to the next person as debt still owed, it hides that the \
+rule is now clean, and it is how a rule quietly loosens, because the file can come back under a \
+name the entry no longer matches while the entry goes on looking like it is watching. So an entry \
+that names a path this tree does not have is RED, and the fix is to delete the entry. The check is \
+about EXISTENCE only: whether the rule would still fire at a site that IS there is the owning \
+rule's judgement, and this one does not second-guess it. Every waiver table in the file is walked, \
+including ones added after this rule was written."""
+# List-valued waivers whose entries are repo paths (`path`, `path::symbol` or `dir/`).
+waiver_list_keys = ["known_sites", "confined_to_paths", "exempt_files"]
+# Table-valued waivers whose KEYS are repo paths.
+waiver_table_keys = ["allowlist"]
+max_unused = 0
+
+# ── 33. assertion-free-tests ─────────────────────────────────────────────────────────────────────
+[rules.assertion-free-tests]
+why = """A test with no assertion cannot fail. It runs, it is counted in the total, it turns a red \
+suite green, and the only thing it proves is that the code under it did not panic — which is not \
+what anyone reading the test name believes it proves. This counts `#[test]`/`#[…::test]` functions \
+whose whole body contains no evidence of a claim at all, over both `src` and `tests`, and ratchets \
+the count: the list IS the worklist, and each name on it is either given an assertion or deleted. \
+The companion row `assertion-loose-for-name` is informational and never a gate: a test whose name \
+promises an exact figure and whose only assertion is a bound is usually wrong, but a bound can be \
+the honest claim (a timing floor, a capacity), and only the reader can tell which."""
+scope_globs = ["crates/*/src/**/*.rs", "crates/*/src/*.rs", "crates/*/tests/**/*.rs", "crates/*/tests/*.rs"]
+# What counts as a claim that can fail. `?` is included because a test that returns `Result` and
+# propagates is asserting that every step succeeded.
+evidence_patterns = [
+  "assert", "\\.expect\\(", "\\.expect_err\\(", "unwrap_err", "panic!", "unreachable!",
+  "todo!", "\\?[ \t]*;", "\\?[ \t]*\\.", "should_panic",
+]
+# How far a test's claim may be delegated to helpers IN THE SAME FILE and still be seen. A battery
+# whose cases each call one shared `battery(…)` holding the assertions is a good test; a rule blind
+# to that would report the whole battery and be switched off within a week.
+helper_depth = 4
+# A name promising an exact figure, for the informational row only.
+exactness_words = ["exactly", "equals", "_one_", "_one$", "only_one", "single"]
+# THE WORKLIST, not a permission. Each name below is a `#[test]` in this tree today whose body — and
+# the bodies of the helpers in its own file that it calls — contain no claim the harness can check.
+# Some are honestly compile-time claims (`let _: Contract = value.into();` proves a conversion
+# exists, and the test is there so the file fails to BUILD when it stops existing); some are
+# smoke tests whose only claim is "this did not panic", which is a claim, but a much weaker one than
+# their names promise. Either way the resolution is the same: give it an assertion, or say in the
+# test's own doc comment that the compiler is the assertion and rename it to match.
+#
+# Named individually rather than absorbed into a number, so the ceiling can stay at ZERO: a bare
+# test written tomorrow is red the day it is written, and the debt below can only shrink, because
+# deleting a name from this list is the only way to close one.
+known_bare = [
+  "crates/busbar-caps/src/tests.rs::every_reason_code_has_a_contract_spelling",
+  "crates/busbar-contract/tests/object_safety.rs::the_remaining_kinds_shapes_are_constructible",
+  "crates/busbar-core/src/admin/tests/tests.rs::test_existence_gate_is_std_sync_mutex_lockable_without_runtime",
+  "crates/busbar-core/src/config/tests/patch_tests.rs::every_patch_mirrors_every_field_of_its_section",
+  "crates/busbar-core/src/plane/tests/store_seam_tests.rs::compile_time_seam_proof_is_referenced",
+  "crates/busbar-core/src/plane_host/tests/dispatch_tests.rs::durable_scope_stub_constructs",
+  "crates/busbar-core/src/store/tests/tests.rs::bench_select_weighted_in_seam",
+  "crates/busbar-core/src/tests/metrics_tests.rs::test_init_is_idempotent_and_does_not_panic",
+  "crates/busbar-core/src/tests/observability_tests.rs::test_shutdown_tracing_is_noop_when_unconfigured",
+  "crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::capture_latency_metrics",
+  "crates/busbar-llm/src/unit/admit.rs::the_step_has_the_doors_shape",
+  "crates/busbar-llm/src/unit/audit.rs::the_step_has_the_terminals_shape",
+  "crates/busbar-llm/src/unit/meter.rs::the_step_has_the_meters_shape",
+  "crates/busbar-plugin/src/hot/tests/decl_tests.rs::free_noop_tolerates_null",
+  "crates/busbar-plugin/src/hot/tests/workitem_tests.rs::all_reserved_kinds_are_declared",
+  "crates/busbar-substrate/src/rate_apply.rs::an_uninstalled_seam_swallows_the_apply",
+  "crates/busbar-voice/src/tests/billing_ledger_tests.rs::an_ungoverned_voice_turn_meters_nobody_without_panicking",
+  "crates/busbar/tests/source_classifier.rs::a_brace_inside_a_string_does_not_disturb_the_structure",
+]
+max_bare = 0
+
+# ── 34. accrued-floor-metered ────────────────────────────────────────────────────────────────────
+[rules.accrued-floor-metered]
+why = """`Evidence::accrued_floor` is documented in busbar-kernel as "what the kernel counted while \
+the unit ran", and the kernel reports its own accrual against the `nano_units` class. A root that \
+fills it from a request document's byte count hands the settlement table a figure in the wrong \
+denomination: the table posts the LOWER of the floor and the located reading, so a floor counted in \
+bytes beside a located reading counted in a priced class decides the posting by an accident of \
+scale rather than by the rule the table states. The sibling field `located` is deliberately NOT \
+checked: it is explicitly class-denominated — the `class:` line beside it names the meter it is \
+counted on — so requiring nanos of it would be requiring the wrong thing. The check is a \
+REVIEWED-SOURCE list in the same shape as this gate's other allow-lists: reading one of the named \
+accumulators is the design working, and any other source is a site a human has to look at."""
+scope_globs = ["crates/busbar/src/root/units_*.rs"]
+field = "accrued_floor"
+# The reviewed accumulators. `meter` is the kernel's own running total handed to the root; `accrued`
+# is the root's atomic mirror of it, written by the metering step; a literal `0` is a unit that
+# accrued nothing. A source not on this list is not forbidden — it is unreviewed, which is what the
+# ratchet below records.
+metered_sources = ["(?<![A-Za-z0-9_])meter(?![A-Za-z0-9_])", "(?<![A-Za-z0-9_])accrued(?![A-Za-z0-9_])", "^\\s*0\\s*,"]
+# How far a multi-line initialiser may run before the comma that ends it.
+lookahead_lines = 6
+# Ratchet at today's count, NOT a waiver. Two sites read a plane-side document size: units_mcp.rs
+# fills the floor from the ended unit's `request_bytes`, and units_a2a.rs from the draft's — the
+# second on a path that can be a refusal, where the draft size is a figure the caller chose. Both
+# are pinned here with their reason rather than excused, so neither can multiply and a third would
+# go red the day it is written.
+max_unreviewed = 2
+
+# ── 35. live-config-pinned ───────────────────────────────────────────────────────────────────────
+[rules.live-config-pinned]
+why = """The admin contract divides the configuration in two: sections a `PUT` makes live \
+immediately, and sections that need a reload to take effect. A `OnceLock`/`OnceCell` holding a \
+value of a LIVE section is a promise the admin API cannot keep — the first request to touch it \
+decides the value for the life of the process, and every later apply returns success while changing \
+nothing anyone reads. It is the worst shape of configuration bug because the API says it worked. \
+The type list is the live half of the contract named as types; a section that becomes \
+reload-scoped comes off this list by a decision, never by drift."""
+scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/root/**/*.rs", "crates/busbar-substrate/src/*.rs", "crates/busbar-substrate/src/**/*.rs"]
+once_types = ["OnceLock", "OnceCell", "Lazy", "LazyLock"]
+# The live-swappable sections of busbar-core/src/admin/v1/contract/schema.rs, as the types that
+# carry them. `limits` and `advanced` are live except for a named handful of boot-scoped fields;
+# pinning the whole section still breaks the live majority of it, so the section type is listed.
+live_types = ["RateCard", "RateCards", "PerRequestFee", "Limits", "LimitsSettings", "Security", "SecuritySettings", "GroupTable", "BucketChain"]
+max_pinned = 0
+
+# ── 36. claimed-path-has-arm ─────────────────────────────────────────────────────────────────────
+[rules.claimed-path-has-arm]
+why = """A claim is a promise to the router that requests on this path belong to this plane. A \
+claimed path the plane's decoder has no arm for is handed to whatever the decoder does by default, \
+and for a plane whose default is "read a request envelope" a surface that carries no envelope \
+decodes as an empty document — which is answered "nothing has arrived yet", on a surface where \
+nothing more ever will. The caller is held open until it gives up. That is worse than not claiming \
+the route at all: an unclaimed route is a 404 the caller can read. The check is by VALUE, not by \
+name: each `Selector::ExactPath(NAME)` is resolved to the literal `NAME` is declared as, and the \
+LITERAL is looked for in the rest of the plane's production sources. That is what makes it usable \
+across planes that dispatch differently — one matches the path constants, another writes the same \
+strings out in a `match`, and both are recognising the route. A path that appears nowhere but the \
+claim itself has nothing that could answer on it."""
+claims_glob = "crates/busbar-plane-*/src/claims.rs"
+# What an OPEN claim looks like: a claim constructed through a helper whose name says the route
+# carries no credential (`open(…)`, `open_http(…)`). Those are the discovery and callback documents
+# — fetched with no body — and they are the ones the default envelope arm cannot answer. A claim on
+# the plane's own authenticated request surface is deliberately out of scope: the default arm IS its
+# arm, and counting it would bury the one real finding under three sound ones.
+open_claim_pattern = "(^|[^A-Za-z0-9_])open[a-z_]*\\s*\\("
+
+# Per-plane ratchets. Zero everywhere except the plane carrying the defect this rule was written
+# from: busbar-plane-mcp claims `/.well-known/oauth-protected-resource/mcp` as an OPEN route and its
+# `decode_ingress` never reads the path, so a fetch of that document meets the JSON-RPC envelope arm,
+# decodes as an empty document and is answered "nothing has arrived yet" — forever. Serving that
+# document is a change of its own; pinned at 1 with this note rather than waived, so the number can
+# only come down and a second such claim goes red the day it is written.
+[rules.claimed-path-has-arm.max_unanswered]
+busbar-plane-mcp = 1

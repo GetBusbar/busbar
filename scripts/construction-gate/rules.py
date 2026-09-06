@@ -37,6 +37,15 @@ import subprocess
 import sys
 import tomllib
 
+# The gate's SECOND measuring module, imported as a sibling so `python3 rules.py` works from any
+# directory. It carries the rules born from the construction-class audit (gate-script hygiene,
+# unused waivers, assertion-free tests, the settled floor's source, pinned live configuration,
+# claimed routes with no decode arm) and is a separate file for one reason: two authors adding a
+# rule in the same week collide in one file line by line. The seam is two calls, `evaluate` and
+# `calibrate`, and nothing else crosses it.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rules_extra  # noqa: E402
+
 # ── Source scanning (a faithful port of the purity lint's awk `strip()` + test tracking) ──────────
 
 
@@ -2044,7 +2053,6 @@ def rule_legacy_reach(tree, cfg):
         current = len(seen)
         total += current
         offenders = [f"{s} ({len(seen[s])} site(s), first {seen[s][0]})" for s in sorted(seen)]
-<<<<<<< HEAD
         total_offenders += offenders
         if not files:
             detail = VACUOUS + "no composition-root source is present in this tree"
@@ -2068,15 +2076,6 @@ def rule_legacy_reach(tree, cfg):
     rows.append(row("legacy-reach", total <= c["ceiling"],
                     "the root's total reach into the retiring crates only shrinks",
                     detail, total, c["ceiling"], c["why"], total_offenders))
-=======
-        detail = (f"the root names {current} distinct `{spec['prefix']}` symbol(s) "
-                  f"(ratchet {spec['ceiling']}, may only go down): "
-                  + (", ".join(sorted(seen)[:6]) + (" …" if current > 6 else "")
-                     if seen else "none"))
-        rows.append(row(f"legacy-reach:{key}", current <= spec["ceiling"],
-                        f"the root's reach into `{spec['prefix']}` only shrinks",
-                        detail, current, spec["ceiling"], c["why"], offenders))
->>>>>>> 2c59cd358 (construction gate: a subject that matches nothing is unproven, not a clean zero)
     return rows
 
 
@@ -2266,6 +2265,7 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_legacy_reach(tree, cfg)
     rows += rule_no_test_doubles_in_production(tree, cfg)
     rows += rule_census(tree, cfg)
+    rows += rules_extra.evaluate(tree, cfg)
     return rows
 
 
@@ -2392,6 +2392,7 @@ def calibrate(rows, cfg, path):
             r["id"].split(":", 1)[1] for r in rows
             if r["id"].startswith(rid + ":") and r["current"] > 0
         )
+    rules_extra.calibrate(rows, cfg)
     out = ["# calibrated copy of qa/construction.toml: every ceiling equals the measured value", ""]
     _emit_table("", cfg, out)
     with open(path, "w", encoding="utf-8") as fh:
