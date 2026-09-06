@@ -658,7 +658,23 @@ impl Plane for A2aPlane {
         // nothing — which is a stronger statement than the invented "anonymous" alternative it
         // replaces, because that one was a value a plane could narrow an authenticated claim down
         // to. The rest present a bearer credential.
-        let open_surface = matches!(u.op(), ops::OP_PUSH_EVENT);
+        //
+        // Which of the three a request is on is a question about the TARGET, and it is asked here
+        // the same way the decode step asks it. It used to be asked of the operation class, which
+        // could only ever answer for the callback: both discovery documents decode to the class
+        // that reads a card, and so does the AUTHENTICATED card on its own mount. So the two open
+        // documents named an alternative their claim does not declare, and a plane may narrow only
+        // within the set its claim declares — a caller reading the card to find out how to
+        // authenticate was refused for not having authenticated.
+        let on_open_target = matches!(
+            ctx.transport()
+                .fact(FACT_PATH)
+                .and_then(|target| surface_of(target, ctx.transport().fact(FACT_METHOD))),
+            Some(OpenSurface::Discovery | OpenSurface::Push)
+        );
+        // A push that arrived on a connection this node DIALLED has no request target at all: the
+        // kernel paired that connection, so the class is the only thing left that says what it is.
+        let open_surface = on_open_target || matches!(u.op(), ops::OP_PUSH_EVENT);
         CredentialLocator {
             narrowing: if open_surface {
                 None
