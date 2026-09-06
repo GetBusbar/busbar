@@ -1068,3 +1068,90 @@ fn an_identified_chain_still_caches_the_leading_pass() {
         "an identified chain must still cache both the leading Pass and the Identify"
     );
 }
+
+// ── THE SAME RULE ON THE ADMIN CHAIN ─────────────────────────────────────────────
+//
+// `run_admin_chain` runs its own copy of this loop against the SAME `CredentialCache`, and it kept
+// the unconditional `Pass` put the data plane gave up. The admin plane is where that costs the
+// most: a cacheable admin module is by definition an EXTERNAL `kind: auth` plugin doing a JWKS /
+// introspection round-trip, and it shares one 4096-entry cache with the data plane, so
+// unauthenticated churn on the admin port evicts real data-plane identities and buys back nothing.
+// `test-scope-module` is the compiled-in external-admin stand-in: it `Pass`es any credential that
+// is not `grp:<group>`, and it is cacheable for the same reason a real one is (`name !=
+// "admin-tokens"`).
+
+/// An unauthenticated ADMIN caller must leave NO trace in the shared credential cache — the rule
+/// `an_unauthenticated_chain_admits_nothing_to_the_cache` already pins on the data plane.
+#[test]
+fn an_unauthenticated_admin_chain_admits_nothing_to_the_cache() {
+    let app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["test-scope-module".to_string()])
+        .build();
+
+    let (verdict, _) = crate::auth::run_admin_chain(&app, Some("junk-token"), None);
+
+    assert_eq!(verdict, ChainVerdict::Denied);
+    assert_eq!(
+        app.credential_cache.flush_all(),
+        0,
+        "an all-Pass admin chain must admit nothing to the cache"
+    );
+}
+
+/// The end-to-end scenario, admin side: a real identity cached first, then `MAX_ENTRIES`
+/// unauthenticated admin probes with distinct junk credentials at the same `now`. An
+/// unconditional-`Pass` put admits every one of them and evicts the identity, which has the lowest
+/// `inserted_seq`.
+#[test]
+fn admin_pass_churn_cannot_evict_an_identity() {
+    let app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["test-scope-module".to_string()])
+        .build();
+    let now = crate::store::now();
+
+    app.credential_cache.put(
+        "real-identity-module",
+        "real-credential",
+        &busbar_api::AuthOutcome::Identify(crate::auth::Principal {
+            id: "real:identity".to_string(),
+            name: None,
+            roles: vec![],
+            ttl_secs: Some(3600),
+        }),
+        now,
+        app.credential_cache.generation(),
+    );
+
+    for i in 0..4096u64 {
+        let junk = format!("junk-{i}");
+        let _ = crate::auth::run_admin_chain(&app, Some(&junk), None);
+    }
+
+    assert!(
+        matches!(
+            app.credential_cache
+                .get("real-identity-module", "real-credential", now),
+            Some(busbar_api::AuthOutcome::Identify(_))
+        ),
+        "unauthenticated admin Pass churn must not evict a real identity from the shared cache"
+    );
+}
+
+/// REGRESSION PROOF: the admin buffering must not be over-broad either. An admin chain that DOES
+/// identify still caches its `Identify`, so the next request on the same credential skips the
+/// module's round-trip — the whole reason the admin cache exists.
+#[test]
+fn an_identified_admin_chain_still_caches_its_identity() {
+    let app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["test-scope-module".to_string()])
+        .build();
+
+    let (verdict, _) = crate::auth::run_admin_chain(&app, Some("grp:admins"), None);
+
+    assert!(matches!(verdict, ChainVerdict::Identified { .. }));
+    assert_eq!(
+        app.credential_cache.flush_all(),
+        1,
+        "an identified admin chain must still cache the identity it resolved"
+    );
+}
