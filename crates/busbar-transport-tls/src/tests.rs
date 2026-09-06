@@ -100,6 +100,53 @@ async fn bound_pair() -> (StdArc<TlsTransport>, Listener, StdArc<TlsTransport>) 
     (server, listener, client)
 }
 
+/// One client that connects and then says nothing must not be able to hold the listener.
+///
+/// `accept` runs the handshake inline, so a peer that completes the TCP connection and then never
+/// sends a ClientHello parks the accept loop for as long as it cares to — no bytes, no cost to it,
+/// and every other client waiting behind it. The budget is what ends that: the accept answers, the
+/// half-open stream is dropped, and the next well-behaved dial gets through.
+#[tokio::test]
+async fn a_silent_client_cannot_park_the_listener() {
+    let (server_cfg, client_cfg) = self_signed();
+    let server =
+        StdArc::new(TlsTransport::new().with_handshake_timeout(Duration::from_millis(300)));
+    server.register_server_config(0, server_cfg);
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = server.listen(&cfg, &fixture_key(0)).await.unwrap();
+    let addr = listener.local_addr();
+
+    let silent = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let refused = tokio::time::timeout(Duration::from_secs(5), server.accept(&listener))
+        .await
+        .expect("the accept answers rather than parking on a client that says nothing");
+    assert_eq!(
+        refused.unwrap_err(),
+        TransportError::Timeout,
+        "a handshake that never started is a timeout, not a handshake failure"
+    );
+    drop(silent);
+
+    let client = StdArc::new(TlsTransport::new());
+    client.register_client_config(0, client_cfg);
+    let dial_addr = addr.clone();
+    let dialling = tokio::spawn(async move {
+        client
+            .dial(&upstream_dest(&dial_addr), &fixture_key(0))
+            .await
+    });
+    let served = tokio::time::timeout(Duration::from_secs(5), server.accept(&listener))
+        .await
+        .expect("the listener still serves after shedding the silent one");
+    served.expect("the well-behaved dial completes");
+    dialling
+        .await
+        .unwrap()
+        .expect("and so does its client half");
+}
+
 #[tokio::test]
 async fn byte_exact_round_trip_over_a_real_handshake() {
     let (server, listener, client) = bound_pair().await;

@@ -32,6 +32,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use busbar_contract::{
     ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
@@ -63,6 +64,15 @@ pub use rustls;
 
 /// How many bytes one read syscall may fill a frame with.
 pub const READ_CHUNK_BYTES: usize = 16 * 1024;
+
+/// How long an inbound TLS handshake has to complete before the connection is dropped.
+///
+/// `accept` runs the handshake inline, so without a budget one peer that opens a TCP connection and
+/// then sends nothing holds the accept loop for as long as it likes — a listener taken out of
+/// service by a client that never spent a byte. Ten seconds is the same budget the egress
+/// connector's own connect timeout is set to, so the two ends of this crate's tolerance for a peer
+/// that will not talk are one number rather than two.
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Any duplex byte stream this transport can run a handshake over: the socket it opened itself, or
 /// the one a lower layer handed up. Boxing it is what lets one connection type cover both, so an
@@ -145,6 +155,9 @@ pub struct TlsTransport {
     listeners: Mutex<HashMap<String, (Arc<TcpListener>, u64)>>,
     server_configs: Mutex<HashMap<u64, Arc<rustls::ServerConfig>>>,
     client_configs: Mutex<HashMap<u64, Arc<rustls::ClientConfig>>>,
+    /// How long an inbound handshake has to complete; [`HANDSHAKE_TIMEOUT`] unless a caller said
+    /// otherwise.
+    handshake_timeout: Duration,
 }
 
 impl Default for TlsTransport {
@@ -169,7 +182,16 @@ impl TlsTransport {
             listeners: Mutex::new(HashMap::new()),
             server_configs: Mutex::new(HashMap::new()),
             client_configs: Mutex::new(HashMap::new()),
+            handshake_timeout: HANDSHAKE_TIMEOUT,
         }
+    }
+
+    /// Set the budget an inbound handshake has to complete in, for a deployment — or a battery cell
+    /// — whose tolerance is not the default ten seconds.
+    #[must_use]
+    pub fn with_handshake_timeout(mut self, budget: Duration) -> Self {
+        self.handshake_timeout = budget;
+        self
     }
 
     /// Register the server-side rustls config a [`TransportKeyHandle`]'s slot resolves to.
@@ -436,10 +458,17 @@ impl Transport for TlsTransport {
                 .cloned()
                 .ok_or(TransportError::KeyUnavailable)?;
             let acceptor = TlsAcceptor::from(cfg);
-            let tls_stream = acceptor
-                .accept(Box::new(stream) as BoxedIo)
-                .await
-                .map_err(|_| TransportError::HandshakeFailed)?;
+            // The handshake runs inline, so it is also this accept loop's exposure: a peer that
+            // completes the TCP connection and then says nothing costs itself nothing and holds the
+            // listener indefinitely. The budget ends that — on expiry the future is dropped, and
+            // with it the half-open stream, and the loop is free for the next caller.
+            let tls_stream = tokio::time::timeout(
+                self.handshake_timeout,
+                acceptor.accept(Box::new(stream) as BoxedIo),
+            )
+            .await
+            .map_err(|_| TransportError::Timeout)?
+            .map_err(|_| TransportError::HandshakeFailed)?;
             Ok(self.insert_server(tls_stream, peer, vec!["tcp", "tls"]))
         })
     }
@@ -594,10 +623,15 @@ impl Transport for TlsTransport {
                 .get(&keys.slot())
                 .cloned()
                 .ok_or(TransportError::KeyUnavailable)?;
-            let tls_stream = TlsAcceptor::from(cfg)
-                .accept(stream)
-                .await
-                .map_err(|_| TransportError::HandshakeFailed)?;
+            // Same budget as `accept`, for the same reason: the peer whose stream was just handed
+            // up is under no obligation to send a ClientHello, and this await is otherwise unbounded.
+            let tls_stream = tokio::time::timeout(
+                self.handshake_timeout,
+                TlsAcceptor::from(cfg).accept(stream),
+            )
+            .await
+            .map_err(|_| TransportError::Timeout)?
+            .map_err(|_| TransportError::HandshakeFailed)?;
             Ok(self.insert_server(tls_stream, peer, chain))
         })
     }
