@@ -2655,19 +2655,30 @@ fn a_session_that_ends_closes_once_and_takes_its_open_calls_with_it() {
         "the call is waiting when the lease runs dry under it"
     );
 
-    // Three more frames arrive on a session that can pay for none of them. The first is the
-    // ending; the two after it find a session that has already ended.
-    for _ in 0..3 {
+    // Three more frames arrive on a session whose lease is dry. The FIRST is the one that finds
+    // that out: it delivered its audio and is metered, the settle comes back dry, and the session
+    // is marked — audio already streamed cannot be refunded, so the enforcement point is the next
+    // frame. The two after it find a session that has already ended. (The tool call above settles
+    // nothing at all: the half that hands a call over is not the half that finishes it.)
+    for n in 0..3 {
         let next = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
             .charging_through(ungoverned());
         let Ended::Settled { end, .. } = run(&kernel, &next) else {
             panic!("the exit settles it");
         };
-        assert!(
-            matches!(end.outcome(), Outcome::Refused(_, ReasonCode::OverBudget)),
-            "got {:?}",
-            end.outcome()
-        );
+        if n == 0 {
+            assert!(
+                matches!(end.outcome(), Outcome::Completed),
+                "the turn that emptied the lease is delivered, not refused: {:?}",
+                end.outcome()
+            );
+        } else {
+            assert!(
+                matches!(end.outcome(), Outcome::Refused(_, ReasonCode::OverBudget)),
+                "got {:?}",
+                end.outcome()
+            );
+        }
     }
     assert_eq!(
         *counting.closes.lock().expect("lock"),
@@ -2718,4 +2729,66 @@ fn a_tool_call_refused_before_it_is_delivered_leaves_no_wait_and_no_ending() {
     let deadline = u64::from(busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000;
     assert!(node.tool_calls.expired(deadline + 1).is_empty());
     assert_eq!(node.tool_calls.ending(7, UnitKey::new(1)), None);
+}
+
+/// **One call, two units, one settlement — even when both halves carry the same usage.**
+///
+/// The module says a call is finished by the answer, and the code runs two units under one key
+/// to do it: one delivers the question, one is resumed by the reply. Which meant that whatever
+/// usage each of them happened to carry was metered, so a resumed unit carrying the turn's
+/// figure posted it a second time — one call, one hold, one key, two rows, and nothing
+/// downstream able to say which was the duplicate.
+///
+/// Both halves below carry the SAME figure, which is the case that used to double. The
+/// delivering half posts nothing because it has not finished; the resuming half posts once.
+#[test]
+fn a_calls_two_halves_settle_its_usage_exactly_once() {
+    let kernel = Kernel::new();
+    let node = priced_node(serviceable());
+    let carrying = TurnUsage {
+        audio_tokens_out: 120,
+        audio_ms_in: 900,
+        ..TurnUsage::default()
+    };
+    let half = |now_ms: Millis| {
+        VoiceUnit::new(&node, UnitShape::ToolCall, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .calling("call_aaa")
+            .reporting(carrying)
+            .at_ms(now_ms)
+    };
+
+    // (1) The delivering half. It hands the call over and ends waiting.
+    let Ended::Settled { end, .. } = run(&kernel, &half(0)) else {
+        panic!("the exit settles it");
+    };
+    let delivered = end.into_posted().expect("the usage report fits the record");
+    assert_eq!(
+        delivered.settled(),
+        0,
+        "the half that is still waiting has not finished, so it posts nothing"
+    );
+    assert!(
+        node.tool_calls.waiting(7, UnitKey::new(1)),
+        "and the wait it entered is what the answer will find"
+    );
+
+    // (2) The answer arrives, and the half the pump resumes is the one that finishes the call.
+    assert_eq!(
+        node.tool_calls.replied(7, reply("call_aaa")),
+        Ok(UnitKey::new(1))
+    );
+    let Ended::Settled { end, .. } = run(&kernel, &half(1)) else {
+        panic!("the exit settles it");
+    };
+    let answered = end.into_posted().expect("the usage report fits the record");
+    assert!(
+        answered.settled() > 0,
+        "the half that finished the call is the one that carries what it cost"
+    );
+    assert_eq!(
+        node.tool_calls.open(),
+        0,
+        "and the resumed half enters no second wait for a call that is over"
+    );
 }
