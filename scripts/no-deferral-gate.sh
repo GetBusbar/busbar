@@ -80,6 +80,8 @@ note() { printf '  %s\n' "$*"; }
 hdr()  { printf '\n== %s ==\n' "$*"; }
 
 WAIVERS_FILE="${NO_DEFERRAL_WAIVERS:-$(dirname "$0")/no-deferral.waivers}"
+# Where a waiver's `[retires: <ID>]` is looked up. An expiry that names nothing is not an expiry.
+TRACKER_DOC="${NO_DEFERRAL_TRACKER:-$(dirname "$0")/../docs/design/1.6.0-TRACKER.md}"
 
 # Every workspace member's shipped source. A crate that appears/disappears is picked up automatically
 # (find over crates/*/src), so a plane this gate never lists is never a plane it scans zero files of.
@@ -192,6 +194,29 @@ load_waivers() {
     rest="${rest#"${rest%%[![:space:]]*}"}"     # ltrim the reason
     if [ -z "$rest" ]; then
       red "no-deferral gate: waiver row has no reason: '$line'"; return 1
+    fi
+    # ── EVERY WAIVER CARRIES AN EXPIRY, AND THE EXPIRY MUST EXIST ─────────────────────────────────
+    # A reason says why a marker is exempt today; it says nothing about when it stops being exempt.
+    # One un-expiring glob covered all 52 markers of a whole directory and would have covered any
+    # number more, forever, because nothing in the file could go out of date. So each row names the
+    # tracker row that retires it, and that row is looked up: a `[retires: X]` pointing at nothing is
+    # a promise nobody made.
+    local tid
+    tid="$(printf '%s' "$rest" | sed -n 's/.*\[retires:[[:space:]]*\([A-Za-z0-9._-]\{1,\}\)\].*/\1/p')"
+    if [ -z "$tid" ]; then
+      red "no-deferral gate: waiver row carries no expiry: '$line'"
+      note "Every row must end in \`[retires: <TRACKER-ID>]\` naming the $TRACKER_DOC row that"
+      note "retires it. A waiver that cannot expire is a permanent unreviewed exemption."
+      return 1
+    fi
+    if [ ! -f "$TRACKER_DOC" ]; then
+      red "no-deferral gate: the tracker $TRACKER_DOC is missing, so no waiver's expiry can be checked"
+      return 1
+    fi
+    if ! grep -qE "^- \[[ x]\] ${tid}[[:space:]]" "$TRACKER_DOC"; then
+      red "no-deferral gate: waiver names expiry \`${tid}\`, which is not a row in $TRACKER_DOC: '$line'"
+      note "The waiver outlived the work that was supposed to retire it, or the id is a typo."
+      return 1
     fi
     WV_MATCH+=("$m"); WV_REASON+=("$rest")
     case "$m" in */hot/*) WV_ISHOT+=(1);; *) WV_ISHOT+=(0);; esac
