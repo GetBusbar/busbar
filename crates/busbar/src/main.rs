@@ -1566,14 +1566,16 @@ async fn run(data_workers: usize) {
     // a graceful stop loses nothing (an ungraceful crash can lose at most one flush interval). Spawned
     // once here (not on config apply/reload — the reused `Arc<GovState>` keeps its live cells and its
     // already-running flusher). No-op when governance is disabled.
-    if let Some(gov) = app_handle.load().governance.clone() {
+    // The flusher's GATE is kept: the inline shutdown flush at the bottom of `run()` is a third
+    // flusher over the same cells, and an overlap double-counts a delta into the durable ledger.
+    let budget_flush_gate = app_handle.load().governance.clone().map(|gov| {
         // Handle intentionally dropped (not awaited): the flusher runs for the process lifetime and
         // exits its own loop on the shutdown broadcast; nothing here needs to join it.
-        std::mem::drop(busbar_core::governance::spawn_budget_flusher(
-            gov,
-            shutdown_tx.subscribe(),
-        ));
-    }
+        let (task, gate) =
+            busbar_core::governance::spawn_budget_flusher(gov, shutdown_tx.subscribe());
+        std::mem::drop(task);
+        gate
+    });
 
     // START EVERY PLANE'S BACKGROUND WORK — the MCP tool-list refresh sweep and the A2A
     // re-verification job — through ONE boot entry point that folds over the plane registry and calls
@@ -1701,6 +1703,17 @@ async fn run(data_workers: usize) {
     // exit; flushing inline here on the run task guarantees durability (this call blocks briefly under
     // the budget lock, off any request path — the listeners have already drained).
     if let Some(gov) = app_handle.load().governance.clone() {
+        // UNDER THE FLUSHER'S GATE. This inline flush snapshots each dirty cell's delta against its
+        // acked baseline, and a tick flush still in flight has not advanced that baseline — so an
+        // overlap re-sends the in-flight delta and the durable ledger double-counts it. The gate is
+        // the same single permit the tick and the flusher task's own final flush take; taking it
+        // here waits for an in-flight flush to drain instead of racing it. Held for both flushes
+        // below and released when this scope ends. `None` only when governance is disabled, in
+        // which case no flusher was spawned and there is nothing to serialize against.
+        let _flush_guard = match budget_flush_gate.as_ref() {
+            Some(gate) => Some(gate.lock().await),
+            None => None,
+        };
         let n = gov.flush_budgets();
         tracing::info!(flushed = n, "budget counters flushed on shutdown");
         // The flusher task's own shutdown arm also flushes metering, but it is fire-and-forget and
