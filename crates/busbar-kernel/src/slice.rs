@@ -198,6 +198,13 @@ pub enum Draw {
 #[derive(Debug, Default)]
 pub struct SliceBook {
     held: HashMap<(BucketId, CapDimension), Slice>,
+    /// Every grant that went into the held slice, in the order the store gave them.
+    ///
+    /// The held slice is the MERGED view a draw spends against; this is what the store is owed
+    /// back. They are not the same thing the moment a bucket is topped up: a top-up adds headroom
+    /// to something the node is already spending, and the second grant has an id of its own that
+    /// only ever gets spoken again if somebody kept it.
+    drawn: HashMap<(BucketId, CapDimension), Vec<SliceGrant>>,
 }
 
 impl SliceBook {
@@ -207,6 +214,10 @@ impl SliceBook {
     }
 
     /// Put a grant in the book.
+    ///
+    /// A top-up MERGES: the headroom adds up, and the validity and epoch are the newer grant's,
+    /// because that is the window the node is now spending in. What does not merge is the grant
+    /// itself — the store handed out two slices and is owed two back, so both are kept.
     pub fn install(&mut self, bucket: BucketId, dimension: CapDimension, grant: SliceGrant) {
         self.held
             .entry((bucket, dimension))
@@ -216,6 +227,31 @@ impl SliceBook {
                 slice.grant.epoch = grant.epoch;
             })
             .or_insert(Slice { grant, spent: 0 });
+        self.drawn
+            .entry((bucket, dimension))
+            .or_default()
+            .push(grant);
+    }
+
+    /// Give a bucket's dimension back to the store: every grant that went into it, with what is
+    /// left unspent of that grant.
+    ///
+    /// Spend is attributed in the order the grants arrived — the node spent the headroom it had
+    /// before it spent the headroom it topped up with — so the unspent remainders add up to the
+    /// slice's own remainder and no grant is returned twice over.
+    pub fn release(&mut self, bucket: &BucketId, dimension: &CapDimension) -> Vec<(SliceId, u64)> {
+        let key = (*bucket, *dimension);
+        let mut spent = self.held.remove(&key).map(|slice| slice.spent).unwrap_or(0);
+        self.drawn
+            .remove(&key)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|grant| {
+                let consumed = spent.min(grant.granted);
+                spent -= consumed;
+                (grant.id, grant.granted - consumed)
+            })
+            .collect()
     }
 
     /// What the node holds for a bucket and dimension.
