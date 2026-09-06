@@ -670,6 +670,82 @@ fn sealed_destination() -> busbar_contract::dest::VerifiedDestination {
 // JSON-RPC envelope of every one of them, so the plane claimed surfaces it then refused everything
 // on — a caller fetching the agent card got a decode refusal from the plane that publishes it.
 
+/// Every bodyless route the codec mounts decodes to a unit rather than to "nothing has arrived".
+///
+/// A claim with no arm in the surface table falls through to the document binding, which asks for a
+/// JSON-RPC envelope — and a request with no body at all is answered "wait for more", on a surface
+/// where nothing more is ever coming. That is a claimed route the plane holds open until the caller
+/// gives up, which is indistinguishable from a hang and is not a refusal anyone can read. Four of
+/// the codec's routes were in exactly that state.
+#[test]
+fn every_bodyless_route_the_codec_mounts_decodes() {
+    let plane = A2aPlane::EMPTY;
+    for (verb, target, expected) in [
+        ("GET", "/a2a/tasks", ops::OP_TASK_LIST),
+        ("GET", "/a2a/tasks/t-1", ops::OP_TASK_GET),
+        ("GET", "/a2a/extendedAgentCard", ops::OP_AGENT_CARD),
+        (
+            "GET",
+            "/a2a/tasks/t-1/pushNotificationConfigs",
+            ops::OP_PUSH_CONFIG_LIST,
+        ),
+        (
+            "POST",
+            "/a2a/tasks/t-1/pushNotificationConfigs",
+            ops::OP_PUSH_CONFIG_CREATE,
+        ),
+        (
+            "GET",
+            "/a2a/tasks/t-1/pushNotificationConfigs/c-9",
+            ops::OP_PUSH_CONFIG_GET,
+        ),
+        (
+            "DELETE",
+            "/a2a/tasks/t-1/pushNotificationConfigs/c-9",
+            ops::OP_PUSH_CONFIG_DELETE,
+        ),
+    ] {
+        let scaffold = Scaffold::new("http").on_path(target).with_method(verb);
+        let ctx = scaffold.ctx();
+        let frames = vec![frame(b"")];
+        let mut cursor = FrameCursor::new(&frames);
+        let ingress = plane
+            .decode_ingress(&mut cursor, None, &ctx)
+            .unwrap_or_else(|e| panic!("{verb} {target} decodes: {e:?}"));
+        let Ingress::OneShot(draft) = ingress else {
+            panic!("{verb} {target} is one whole unit, got {ingress:?}");
+        };
+        assert_eq!(draft.op, expected, "{verb} {target} named the wrong class");
+    }
+}
+
+/// Every surface below the task collection says which task it is about.
+#[test]
+fn a_configuration_of_a_task_names_that_task() {
+    let plane = A2aPlane::EMPTY;
+    for target in [
+        "/a2a/tasks/t-1",
+        "/a2a/tasks/t-1/pushNotificationConfigs",
+        "/a2a/tasks/t-1/pushNotificationConfigs/c-9",
+    ] {
+        let scaffold = Scaffold::new("http").on_path(target).with_method("GET");
+        let ctx = scaffold.ctx();
+        let frames = vec![frame(b"")];
+        let mut cursor = FrameCursor::new(&frames);
+        let Ingress::OneShot(draft) = plane
+            .decode_ingress(&mut cursor, None, &ctx)
+            .unwrap_or_else(|e| panic!("{target} decodes: {e:?}"))
+        else {
+            panic!("{target} is one whole unit");
+        };
+        assert_eq!(
+            draft.facts.get(facts::FACT_TASK_ID),
+            Some(busbar_contract::bounded::FactValue::Str("t-1")),
+            "{target} does not say which task it is about"
+        );
+    }
+}
+
 /// A discovery document is fetched with no body, and it is a whole unit.
 #[test]
 fn a_discovery_document_decodes_with_no_body_at_all() {

@@ -129,6 +129,9 @@ pub struct TestTransport {
     /// that publishes no target at all, which is how every test that predates the plane's open
     /// surfaces still reaches the document binding.
     pub path: Option<String>,
+    /// The request's own verb, under the kernel's other reserved key. `None` is a stack that
+    /// publishes none, which is what a framed transport does.
+    pub method: Option<String>,
 }
 
 impl TestTransport {
@@ -138,6 +141,7 @@ impl TestTransport {
             key,
             chain: vec![key],
             path: None,
+            method: None,
         }
     }
 }
@@ -152,6 +156,9 @@ impl TransportView for TestTransport {
     fn fact(&self, key: &str) -> Option<&str> {
         if key == busbar_contract::transport::facts::PATH {
             return self.path.as_deref();
+        }
+        if key == busbar_contract::transport::facts::METHOD {
+            return self.method.as_deref();
         }
         None
     }
@@ -296,6 +303,13 @@ impl Scaffold {
             &self.labels,
             &self.arena,
         )
+    }
+
+    /// The same scaffold, over a stack that saw this request verb.
+    #[must_use]
+    pub fn with_method(mut self, method: &str) -> Self {
+        self.transport.method = Some(method.to_string());
+        self
     }
 
     /// The same scaffold, over a stack that saw this request target.
