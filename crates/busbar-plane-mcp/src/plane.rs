@@ -563,11 +563,21 @@ impl Plane for McpPlane {
                 }
             }
             let Some(row) = ops::row_for(method) else {
-                // A notice a server sends is dropped, exactly as one a caller sends is.
+                // A notice a server sends is dropped, exactly as an unrecognised one a caller sends
+                // is: a notice obliges no answer, and a refusal is an answer.
                 return Ok(Progress::Discard {
                     reason: DiscardCode::Unsupported,
                 });
             };
+            // A method a CALLER sends is not one an upstream may send. The ingress side has always
+            // refused the mirror of this, and this leg had no guard at all: a server that sent
+            // `tools/call` back opened a unit of the caller's own class, and the routing step gives
+            // that class a hop to a server, a redemption of the approval grant that says the CALLER
+            // may use the tool, and a call record. So a server drove a tool call on this node's
+            // budget and this node's authority, with no caller asking for one.
+            if row.sender == ops::Sender::Client {
+                return Err(Decode::UnsupportedOperation);
+            }
             // The subject is read HERE, at the one step entitled to read the bytes, so the steps
             // after this one read it off the draft rather than scanning the request a second time.
             if let Some(pointer) = row.name_pointer {
