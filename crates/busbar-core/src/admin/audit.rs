@@ -36,13 +36,37 @@
 
 use serde::Serialize;
 
-use crate::audit::{ChainLabels, ChainedRecord, Digest, Framing};
+use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
+use crate::plane::auditlog::{
+    audit_suffix, audit_suffix_legacy, DIGEST_SCHEME_LEGACY_PIPE, DIGEST_SCHEME_LEN_PREFIXED,
+};
+
+/// The scheme a record that does not name one was sealed under.
+///
+/// A record persisted before the framing was versioned carries no scheme field at all, and serde
+/// defaults it here — which is correct, because those records really were sealed under the pipe join.
+/// Defaulting the other way would report every chain written before this release as tampered.
+fn default_digest_scheme() -> u8 {
+    DIGEST_SCHEME_LEGACY_PIPE
+}
+
+/// Whether a scheme is the legacy one, and so is left OFF the wire.
+fn is_legacy_scheme(scheme: &u8) -> bool {
+    *scheme == DIGEST_SCHEME_LEGACY_PIPE
+}
 
 /// One admin audit record. `outcome` is a stable token tooling can branch on. The record is
-/// HASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |
-/// outcome | principal)`, and `prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any
-/// altered/reordered/deleted entry (detection, not prevention; a compromised host can still rewrite
-/// the whole chain; prevention is shipping the log off-box to a SIEM).
+/// HASH-CHAINED for tamper-EVIDENCE over the previous hash, the sequence, the timestamp, the action,
+/// the resource, the outcome and the principal, and `prev_hash` is the preceding entry's `hash`.
+/// Recomputing the chain detects any altered/reordered/deleted entry (detection, not prevention; a
+/// compromised host can still rewrite the whole chain; prevention is shipping the log off-box to a
+/// SIEM).
+///
+/// HOW those fields are framed into the digest input is `digest_scheme`'s business and each record is
+/// verified under its OWN, so a chain that spans the 1.6.0 upgrade is legitimately mixed and still
+/// verifies end to end. An external re-implementation of the digest MUST read `digest_scheme`: the
+/// field is absent on records sealed before 1.6.0, which are the pipe-joined framing, and present and
+/// equal to 2 on every record 1.6.0 and later seals.
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct AuditEntry {
@@ -64,8 +88,28 @@ pub struct AuditEntry {
     /// The preceding entry's `hash` (empty for the first entry of the process, or the oldest retained
     /// entry whose predecessor was pruned).
     pub(crate) prev_hash: String,
-    /// `sha256(prev_hash | seq | ts | action | resource | outcome | principal)`: the tamper-evidence digest.
+    /// The tamper-evidence digest over the previous hash, the sequence, the timestamp, the action,
+    /// the resource, the outcome and the principal, framed as `digest_scheme` says.
     pub(crate) hash: String,
+    /// WHICH FRAMING `hash` was computed under: absent for the legacy pipe-joined framing every
+    /// record sealed before 1.6.0 carries, `2` for the length-prefixed framing every record sealed
+    /// by 1.6.0 and later carries.
+    ///
+    /// Carried PER ENTRY rather than per chain, because a chain that has crossed the upgrade is
+    /// legitimately mixed: the entries a store already holds were sealed under the pipe join and
+    /// everything appended after it under the length-prefixed framing, in one sequence, linked to
+    /// each other. A per-chain scheme would force a deployment to choose between verifying its own
+    /// history and being safe from the collision the legacy framing admits; a per-entry one asks
+    /// nobody to choose.
+    ///
+    /// Absent on the wire for a legacy entry, so a record written before this release re-serialises
+    /// to the same eight fields it arrived as — a scheme field appearing on it would be this build
+    /// rewriting somebody else's bytes to say something they do not say.
+    #[serde(
+        default = "default_digest_scheme",
+        skip_serializing_if = "is_legacy_scheme"
+    )]
+    pub(crate) digest_scheme: u8,
     /// TRUE only for entries THIS process appended live (via `record_by` on this ring, or the seam's
     /// live emit). Seeded entries — restored from the durable store — are FALSE. `#[serde(skip)]` gives
     /// the right default (false) on the encoded/store-seeding paths; the live-append sites set it true
@@ -106,9 +150,12 @@ impl ChainedRecord for AuditEntry {
         chain: "the admin audit chain",
         scope: "log",
     };
-    /// PIPE-SEPARATED because that is how the entries already on disk were written, and
-    /// `busbar_api::AuditRecord`'s own doc publishes the formula. A new record type takes
-    /// [`Framing::LengthPrefixed`] instead — see [`crate::audit::Framing`].
+    /// THE PRELUDE FRAMING, and only the prelude's: `prev_hash|seq`, which is how the entries already
+    /// on disk were written. It does not need to move and must not — both of its fields are allocated
+    /// by the CHAIN, never by a caller (`prev_hash` is a hex digest or empty, `seq` is decimal
+    /// digits), so no caller's bytes can move a boundary inside it. Every field a caller DOES supply
+    /// lives in the content suffix, which [`AuditEntry::digest_fields`] frames per the entry's own
+    /// [`AuditEntry::digest_scheme`].
     const FRAMING: Framing = Framing::PipeSeparated;
 
     fn scope_of(&self) -> &str {
@@ -137,6 +184,10 @@ impl ChainedRecord for AuditEntry {
             principal: input.principal,
             prev_hash,
             hash: String::new(),
+            // EVERY NEW ENTRY IS SEALED UNDER THE INJECTIVE FRAMING. This is the only place an
+            // entry's scheme is chosen and it has no branch: nothing can ask for a new record under
+            // the ambiguous one, which is what stops the defect being reintroduced by a caller.
+            digest_scheme: DIGEST_SCHEME_LEN_PREFIXED,
             // Reached only from `record_by`: THIS process is appending it live right now.
             recorded_here: true,
         }
@@ -146,17 +197,47 @@ impl ChainedRecord for AuditEntry {
         self.hash = hash;
     }
 
-    /// `sha256(prev_hash | seq | ts | action | resource | outcome | principal)` — the formula
-    /// `busbar_api::AuditRecord` publishes, fed field by field instead of being formatted here.
-    /// Note there is no scope field: this chain has exactly one scope, so nothing distinguishes it.
+    /// The digest input, built the way the DURABLE SEAM builds it: the host-framed prelude
+    /// `prev_hash|seq`, then this entry's content suffix. Note there is no scope field: this chain has
+    /// exactly one scope, so nothing distinguishes it.
+    ///
+    /// ONE IMPLEMENTATION, not two. The bytes come from
+    /// [`crate::plane::auditlog::audit_suffix`]/[`crate::plane::auditlog::audit_suffix_legacy`] and
+    /// [`frame_prelude`] — the same two functions the seam's `PlaneJournalRecord` digests through —
+    /// so this in-process ring and the durable chain `GET /audit` serves cannot drift into two
+    /// answers about what happened. Written out here with `raw` rather than `text`/`num` for exactly
+    /// that reason: the framing is the suffix builder's, not this `Digest`'s.
+    ///
+    /// The scheme is read off the ENTRY, so a chain spanning the upgrade is checked entry by entry
+    /// against the framing that sealed each one. An unrecognised scheme falls to the legacy framing
+    /// rather than panicking or verifying vacuously: it can only have been written by a build that
+    /// does not exist, and the honest consequence is that the record fails to verify under a framing
+    /// that is at least defined.
     fn digest_fields(&self, d: &mut Digest) {
-        d.text(&self.prev_hash)
-            .num(self.seq)
-            .num(self.ts)
-            .text(&self.action)
-            .text(&self.resource)
-            .text(&self.outcome)
-            .text(&self.principal);
+        d.raw(&frame_prelude(
+            Framing::PipeSeparated,
+            &self.prev_hash,
+            None,
+            self.seq,
+        ));
+        let suffix = if self.digest_scheme == DIGEST_SCHEME_LEN_PREFIXED {
+            audit_suffix(
+                self.ts,
+                &self.action,
+                &self.resource,
+                &self.outcome,
+                &self.principal,
+            )
+        } else {
+            audit_suffix_legacy(
+                self.ts,
+                &self.action,
+                &self.resource,
+                &self.outcome,
+                &self.principal,
+            )
+        };
+        d.raw(&suffix);
     }
 }
 
