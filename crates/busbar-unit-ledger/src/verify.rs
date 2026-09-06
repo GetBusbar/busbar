@@ -20,7 +20,9 @@ pub enum Finding {
         /// Which checkpoint.
         checkpoint_seq: u64,
     },
-    /// A node's sequence went backwards or repeated between the two checkpoints.
+    /// A node's sequence went BACKWARDS between the two checkpoints. A repeat is not this finding:
+    /// a node that posted nothing between the checkpoints is at the sequence it was at, and an idle
+    /// node is the ordinary case rather than a defect.
     SequenceNotMonotonic {
         /// Which node.
         node: u64,
