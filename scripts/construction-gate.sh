@@ -233,7 +233,21 @@ run_selftest() {
   fi
 
   # 3. Plant each violation and require exactly one FAIL row, naming the rule.
-  local rule rc
+  #
+  # A SKIP IS COUNTED, AND A SKIPPED RULE IS NOT A PROVED RULE. `plant.py` exits 3 for "the subject
+  # is absent from this tree", and this loop used to `continue` on it without recording anything:
+  # `fail` stayed 0, so a run in which EVERY plant returned 3 printed a line of SKIPs and then
+  # "ALL GREEN (every rule proved on a planted violation)" — a claim about 34 rules, none of which
+  # had been exercised. It is not hypothetical plumbing: the scratch tree is assembled by the `tar`
+  # at the top of this function from `ls -d crates/*/src`, and any drift that empties that copy
+  # (a crate layout change, a partial tar, a plant.py whose subject paths moved) makes every plant
+  # unplantable at once. The gate would announce that its saboteur could not find a single thing to
+  # sabotage, in green.
+  #
+  # So skips are counted and a skip is RED. The two honest resolutions are both cheap: teach the
+  # planter about the rule's new subject, or take the rule out of this list because it no longer has
+  # one. Silently proving nothing is not among them.
+  local rule rc proven=0 skipped=0 skipped_rules=""
   for rule in one-attempt-seam request-path-fn-size ports-only:busbar-voice ports-only-tests:busbar-voice \
               ports-only:busbar-llm \
               no-uninstalled-seam neutral-no-dialect single-terminal \
@@ -247,18 +261,35 @@ run_selftest() {
               legacy-reach:busbar_core legacy-reach:busbar_llm legacy-reach:busbar_substrate; do
     python3 "$planter" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
     # exit 3 = the rule's subject is absent from this tree (nothing to plant): noted, not failed
-    [ "$rc" -ne 3 ] || { note "SKIP $rule: nothing to plant (subject absent from this tree)"; continue; }
+    [ "$rc" -ne 3 ] || { skipped=$((skipped+1)); skipped_rules="$skipped_rules $rule"
+                         note "SKIP $rule: nothing to plant (subject absent from this tree)"; continue; }
     [ "$rc" -eq 0 ] || { fail=1; note "plant FAILED for $rule"; continue; }
     CONSTRUCTION_TOML="$scratch/calibrated.toml" CONSTRUCTION_OUT="$out" bash "$gate" --check >/dev/null 2>&1
     local failed_ids
     failed_ids="$(awk -F'\t' '$2=="FAIL"{print $1}' "$out/ledger.tsv" | tr '\n' ' ' | sed 's/ $//')"
     if [ "$failed_ids" = "$rule" ]; then
+      proven=$((proven+1))
       note "RED $rule: planted violation produced exactly one FAIL row, naming it"
     else
       fail=1; note "RED $rule FAILED: expected exactly one FAIL row [$rule], got [${failed_ids:-none}]"
       awk -F'\t' '$2=="FAIL"{print "    " $1 ": " $4}' "$out/ledger.tsv"
     fi
   done
+
+  # 3b. THE PLANT FLOOR. Every rule in the list above must have been proved on a planted violation.
+  # A skip is a rule this run said nothing about, and a run of nothing but skips is the vacuous green
+  # the whole ledger discipline exists to refuse — the same rule verdict.sh applies to a SKIP row and
+  # the same rule full-gate.sh applies to an unclassified gate.
+  if [ "$skipped" -ne 0 ]; then
+    fail=1
+    note "PLANT FLOOR FAILED: $skipped of $((proven + skipped)) rule(s) had nothing to plant, so this run"
+    note "  proved $proven rule(s), not all of them:${skipped_rules}"
+    note "  A rule the saboteur cannot find a subject for is not a rule that passed. Either teach"
+    note "  scripts/construction-gate/plant.py the rule's new subject, or drop the rule from the list"
+    note "  above because the tree no longer has one."
+  else
+    note "plant floor: all $proven rule(s) in the list were planted and proved (0 skipped)"
+  fi
 
   # 4. The informational rule: planting a shared block raises its duplicated-line count and still
   #    produces no FAIL row (it is a WARN, never a gate).
