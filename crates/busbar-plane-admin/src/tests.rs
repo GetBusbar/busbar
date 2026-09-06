@@ -375,6 +375,48 @@ fn encode_refusal_renders_the_1_5_5_error_envelope_for_common_codes() {
 
 // ── requirement 3: purity / determinism ─────────────────────────────────────────────────────────
 
+/// A request still arriving asks for the next frame; it is not ended as a caller's mistake.
+///
+/// Two shapes reach this: a cursor with nothing left in it (every byte that has arrived is already
+/// handed over) and a frame whose envelope object has not closed. Both used to end the unit — the
+/// first as `Malformed`, the second as `UnsupportedOperation` — so a caller whose body was merely
+/// still on the wire was answered as though they had sent a bad one.
+#[test]
+fn a_request_still_arriving_asks_for_the_next_frame() {
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TestArena;
+    let ctx = test_ctx(&config, &transport, &labels, &arena);
+
+    let empty: Vec<Frame> = Vec::new();
+    let mut cursor = FrameCursor::new(&empty);
+    assert_eq!(
+        plane.decode_ingress(&mut cursor, None, &ctx),
+        Ok(Ingress::NeedMore),
+        "a cursor with no frame left has nothing yet to decode"
+    );
+
+    let whole = envelope("POST", "/api/v1/admin/keys", r#"{"name":"k1"}"#);
+    let half = &whole[..whole.len() - 4];
+    let (frames, ()) = frame_cursor_for(half);
+    let mut cursor = FrameCursor::new(&frames);
+    assert_eq!(
+        plane.decode_ingress(&mut cursor, None, &ctx),
+        Ok(Ingress::NeedMore),
+        "an envelope that has not closed is not yet an envelope"
+    );
+
+    // and the whole thing still decodes, so the check above is a filter and not a wall
+    let (frames, ()) = frame_cursor_for(&whole);
+    let mut cursor = FrameCursor::new(&frames);
+    assert!(matches!(
+        plane.decode_ingress(&mut cursor, None, &ctx),
+        Ok(Ingress::OneShot(_))
+    ));
+}
+
 /// Calling `decode_ingress` twice on the same bytes yields the same verb, the same op class and the
 /// same path-parameter facts: the plane keeps no interior state that could make the second call
 /// disagree with the first.
