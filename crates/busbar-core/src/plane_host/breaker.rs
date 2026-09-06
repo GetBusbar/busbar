@@ -244,6 +244,7 @@ unsafe fn classify(signal: &Signal) -> Outcome {
         class,
         provider_signal,
         retry_after,
+        ..Default::default()
     })
 }
 
@@ -261,6 +262,7 @@ fn coarse_signal(class: StatusClass) -> CanonicalSignal {
         class,
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     }
 }
 

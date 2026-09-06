@@ -805,6 +805,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
         class: StatusClass::ClientError,
         provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
+        ..Default::default()
     })?;
 
     let block_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -837,6 +838,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             })
         }
         // A file ATTACHMENT: `{"type":"input_file","file_data":"data:application/pdf;base64,…",

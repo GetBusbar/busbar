@@ -772,9 +772,16 @@ impl ProtocolWriter for OpenAiWriter {
             }
             IrStreamEvent::MessageStop => None,
             IrStreamEvent::Error(err) => {
+                // The provider's own SENTENCE, when it wrote one. `provider_signal` carries the most
+                // specific TOKEN the reader could find (the `code`, else the `type`), so using it as
+                // the message replaced "The model `nope` does not exist" with `model_not_found` —
+                // the client lost the only human-readable part of the error. Fall back to the token
+                // when the upstream sent no prose, exactly as before.
                 let message = err
-                    .provider_signal
+                    .detail
+                    .message
                     .clone()
+                    .or_else(|| err.provider_signal.clone())
                     .unwrap_or_else(|| "error".to_string());
                 // Map the IR error class onto OpenAI's enumerated error `type` vocabulary. The prior
                 // hardcoded "error" is not a valid OpenAI error type — SDK clients that switch on
@@ -811,11 +818,19 @@ impl ProtocolWriter for OpenAiWriter {
                 // shape and this writer's own non-stream `write_error` envelope. Omitting them made
                 // an in-stream error structurally different from a non-stream error (a detectable
                 // proxy tell) and broke clients that destructure `error.code` / `error.param`.
+                // `code` is the upstream's own code when the reader carried one (`model_not_found`,
+                // `context_length_exceeded`) — that string is what an SDK branches on. The
+                // class-derived `bearer_error_code` stays the fallback for a signal that names none.
+                let code = err
+                    .provider_signal
+                    .clone()
+                    .filter(|_| err.detail != Default::default())
+                    .map_or_else(|| bearer_error_code(error_type), serde_json::Value::String);
                 let error_obj = serde_json::json!({
                     "error": {
                         "message": message,
                         "type": error_type,
-                        "code": bearer_error_code(error_type),
+                        "code": code,
                         "param": serde_json::Value::Null,
                     }
                 });

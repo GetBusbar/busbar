@@ -1162,10 +1162,23 @@ impl ProtocolWriter for GeminiWriter {
             // left SDK retry-decision code reading null. We derive `code`/`status` from the
             // canonical `StatusClass`; an untyped/unknown class falls back to 500 / INTERNAL.
             IrStreamEvent::Error(err) => {
-                let (code, status_name) = gemini_stream_error_code_status(err.class);
-                let message = err
-                    .provider_signal
+                // The class-derived pair is the FALLBACK. `StatusClass` is a lossy projection built
+                // for the breaker's dispositions, and a mid-stream error has no HTTP status of its
+                // own — so reconstructing `code`/`status` from the class alone answered a 404
+                // `NOT_FOUND` with a 400 `INVALID_ARGUMENT`. When the upstream told us what it was,
+                // that is what the client gets.
+                let (class_code, class_status) = gemini_stream_error_code_status(err.class);
+                let code = err.detail.http_status.unwrap_or(class_code);
+                let status_name = err
+                    .detail
+                    .status_name
                     .clone()
+                    .unwrap_or_else(|| class_status.to_string());
+                let message = err
+                    .detail
+                    .message
+                    .clone()
+                    .or_else(|| err.provider_signal.clone())
                     .unwrap_or_else(|| "error".to_string());
                 Some((
                     "".to_string(),

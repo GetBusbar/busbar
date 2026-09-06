@@ -1553,6 +1553,7 @@ fn stream_error_uses_enumerated_openai_type() {
             class,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
+            ..Default::default()
         });
         let (_, chunk) = OpenAiWriter
             .write_response_event(&ev)
@@ -2130,6 +2131,7 @@ fn stream_error_envelope_includes_null_code_and_param() {
         class: busbar_substrate_values::breaker::StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
+        ..Default::default()
     });
     let (_, chunk) = OpenAiWriter
         .write_response_event(&ev)
@@ -2156,6 +2158,7 @@ fn stream_error_shape_matches_write_error_shape() {
         class: busbar_substrate_values::breaker::StatusClass::Auth,
         provider_signal: Some("nope".to_string()),
         retry_after: None,
+        ..Default::default()
     });
     let (_, stream_chunk) = OpenAiWriter
         .write_response_event(&ev)
@@ -2923,6 +2926,7 @@ fn stream_error_auth_event_carries_invalid_api_key_code() {
         class: busbar_substrate_values::breaker::StatusClass::Auth,
         provider_signal: Some("bad key".to_string()),
         retry_after: None,
+        ..Default::default()
     });
     let (_, chunk) = w
         .write_response_event(&ev)
@@ -2943,6 +2947,7 @@ fn stream_error_billing_event_maps_to_insufficient_quota() {
         class: busbar_substrate_values::breaker::StatusClass::Billing,
         provider_signal: Some("over quota".to_string()),
         retry_after: None,
+        ..Default::default()
     });
     let (_, chunk) = w
         .write_response_event(&ev)

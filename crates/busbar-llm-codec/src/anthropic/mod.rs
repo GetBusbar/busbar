@@ -879,6 +879,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
         class: StatusClass::ClientError,
         provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
+        ..Default::default()
     })?;
 
     let block_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -935,6 +936,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                         busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                     ),
                     retry_after: None,
+                    ..Default::default()
                 })?
                 .to_string();
             let name = obj
@@ -986,6 +988,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             })?;
             // `cache_control` sits on the OUTER image block object (a sibling of `source`), not on
             // the source — read it once and attach to whichever source shape we produce.
@@ -1031,6 +1034,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                         busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                     ),
                     retry_after: None,
+                    ..Default::default()
                 })
             }
         }
@@ -1254,6 +1258,7 @@ fn read_message(msg_val: &serde_json::Value) -> Result<crate::ir::IrMessage, IrE
         class: StatusClass::ClientError,
         provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
+        ..Default::default()
     })?;
 
     let role_str = obj.get("role").and_then(|v| v.as_str()).unwrap_or("");
@@ -1266,6 +1271,7 @@ fn read_message(msg_val: &serde_json::Value) -> Result<crate::ir::IrMessage, IrE
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             })
         }
     };
@@ -1280,6 +1286,7 @@ fn read_message(msg_val: &serde_json::Value) -> Result<crate::ir::IrMessage, IrE
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         });
     }
     let content = if let Some(arr) = content_val.as_array() {
@@ -1300,6 +1307,7 @@ fn read_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, IrError>
         class: StatusClass::ClientError,
         provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
+        ..Default::default()
     })?;
 
     let name = obj
@@ -1349,6 +1357,7 @@ fn read_cache_control(
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         }),
     }
 }

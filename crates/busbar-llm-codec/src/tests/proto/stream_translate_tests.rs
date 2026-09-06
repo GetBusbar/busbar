@@ -3141,6 +3141,7 @@ fn responses_ingress_terminal_error_continues_the_live_stream_identity() {
         class: busbar_substrate_values::breaker::StatusClass::ServerError,
         provider_signal: Some("The response stream was interrupted.".to_string()),
         retry_after: None,
+        ..Default::default()
     };
     let (event_type, data) = t
         .terminal_error_frame(&err)

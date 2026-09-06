@@ -97,6 +97,7 @@ impl ProtocolReader for AnthropicReader {
                 class: StatusClass::ContextLength,
                 provider_signal: Some("context_length".to_string()),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -114,6 +115,7 @@ impl ProtocolReader for AnthropicReader {
                         class: StatusClass::ClientError,
                         provider_signal: Some("client_error".to_string()),
                         retry_after: None,
+                        ..Default::default()
                     };
                 }
             }
@@ -128,6 +130,7 @@ impl ProtocolReader for AnthropicReader {
                         class: StatusClass::Billing,
                         provider_signal: Some("billing".to_string()),
                         retry_after: None,
+                        ..Default::default()
                     };
                 }
                 if msg_str.contains("unauthorized") || msg_str.contains("invalid token") {
@@ -135,6 +138,7 @@ impl ProtocolReader for AnthropicReader {
                         class: StatusClass::Auth,
                         provider_signal: Some("auth".to_string()),
                         retry_after: None,
+                        ..Default::default()
                     };
                 }
             }
@@ -145,6 +149,7 @@ impl ProtocolReader for AnthropicReader {
                 class: StatusClass::Auth,
                 provider_signal: None,
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -156,12 +161,14 @@ impl ProtocolReader for AnthropicReader {
                     class: StatusClass::Billing,
                     provider_signal: Some("429-quota-exhausted".to_string()),
                     retry_after: None,
+                    ..Default::default()
                 };
             }
             return CanonicalSignal {
                 class: StatusClass::RateLimit,
                 provider_signal: Some("429-slowdown".to_string()),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -170,6 +177,7 @@ impl ProtocolReader for AnthropicReader {
                 class: StatusClass::ServerError,
                 provider_signal: Some("5xx".to_string()),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -178,6 +186,7 @@ impl ProtocolReader for AnthropicReader {
                 class: StatusClass::ClientError,
                 provider_signal: None,
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -185,6 +194,7 @@ impl ProtocolReader for AnthropicReader {
             class: StatusClass::ClientError,
             provider_signal: None,
             retry_after: None,
+            ..Default::default()
         }
     }
 
@@ -197,6 +207,7 @@ impl ProtocolReader for AnthropicReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         let mut extra = serde_json::Map::new();
@@ -246,6 +257,7 @@ impl ProtocolReader for AnthropicReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             })?;
             for msg_val in messages_arr {
                 let msg = read_message(msg_val)?;
@@ -275,6 +287,7 @@ impl ProtocolReader for AnthropicReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             })?;
             for tool_val in tools_arr {
                 tools.push(read_tool(tool_val)?);
@@ -597,6 +610,7 @@ impl ProtocolReader for AnthropicReader {
                     class,
                     provider_signal,
                     retry_after: None,
+                    ..Default::default()
                 }))
             }
             _ => None,
@@ -654,6 +668,7 @@ impl ProtocolReader for AnthropicReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         // Parse role (should be "assistant" for responses)
@@ -665,6 +680,7 @@ impl ProtocolReader for AnthropicReader {
                     class: StatusClass::ClientError,
                     provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
                     retry_after: None,
+                    ..Default::default()
                 })
             }
         };
@@ -674,6 +690,7 @@ impl ProtocolReader for AnthropicReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
             retry_after: None,
+            ..Default::default()
         })?;
         let mut content: Vec<crate::ir::IrBlock> = Vec::new();
         if let Some(arr) = content_val.as_array() {
