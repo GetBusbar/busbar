@@ -3137,6 +3137,76 @@ mod tests {
         assert_eq!(refused, error_answer(403, "forbidden"));
     }
 
+    /// A binding holding one open unit, with the decode step run so the verb is resolved exactly as
+    /// the loop resolves it. Returns the binding and the context every later step reads the unit
+    /// through, so a cell drives the real steps rather than a table it filled in by hand.
+    #[cfg(feature = "root-admin")]
+    fn a_bound_unit(request: AdminRequest) -> (AdminBinding, UnitCtx, busbar_caps::KernelSeal) {
+        let binding = AdminBinding::new(Arc::new(AnsweringDispatch));
+        let key = UnitKey::new(1);
+        binding.units.open(key, request);
+        let ctx = UnitCtx {
+            key,
+            origin: busbar_caps::OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: true,
+            kernel_verb_only: true,
+        };
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        // Decode is what puts the verb in the table. A cell that called `set_verb` itself would be
+        // asserting over a row the loop never wrote.
+        let _ = decode(&binding, &UnitToken::mint(&seal), &ctx);
+        (binding, ctx, seal)
+    }
+
+    /// Where an admin unit may go, and what that costs it.
+    ///
+    /// THE verify STEP, over the loop. The gating contract is that a destination the caller cannot
+    /// reach is refused before Admit draws a bucket, and this plane answers it in a shape worth
+    /// pinning precisely BECAUSE the admin principal is exempt and full: there is no scope to cap,
+    /// so the only destination question left is whether the verb resolved at all — and the step
+    /// still refuses, with `NoDestination`, for a path the table never named.
+    ///
+    /// The other half is the one the money path reads. A resolved verb proceeds with an EMPTY
+    /// verified set, and that emptiness is not an oversight: a sealed destination carries a LANE,
+    /// the priced axis a charge sits on, and a kernel verb is not dialled and not billed. So the
+    /// empty set IS the fact that makes the admin unit draw no request slot and post no fee,
+    /// whatever the deployment configured the fee to be. A verify that returned one destination
+    /// would put an admin request on the priced axis, and nothing downstream would object.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere_priced() {
+        let principal = PrincipalId::new("admin");
+
+        // A path no row names: the unit has nowhere to go at all, and is refused here.
+        let mut unknown = a_request();
+        unknown.path = "/api/v1/admin/not-a-real-operation".to_string();
+        let (binding, ctx, seal) = a_bound_unit(unknown);
+        assert!(
+            binding.units.verb(ctx.key).is_none(),
+            "the fixture must be a path the table never resolved"
+        );
+        let refusal = verify(&binding, &UnitToken::mint(&seal), &ctx, &principal)
+            .into_result(&seal)
+            .expect_err("a verb that resolved to nothing has nowhere to go");
+        assert_eq!(refusal.reason(), ReasonCode::NoDestination);
+
+        // A real operation: it proceeds, and it proceeds to nowhere PRICED.
+        let (binding, ctx, seal) = a_bound_unit(a_request());
+        assert!(
+            binding.units.verb(ctx.key).is_some(),
+            "the fixture must be a path the table did resolve"
+        );
+        let destinations = verify(&binding, &UnitToken::mint(&seal), &ctx, &principal)
+            .into_result(&seal)
+            .expect("a resolved verb has somewhere to go");
+        assert!(
+            destinations.is_empty(),
+            "an admin unit that sealed a destination would sit on the priced axis"
+        );
+    }
+
     // ── the five ledger views ───────────────────────────────────────────────────────────────────
 
     /// The day the fixture's postings fall in.
