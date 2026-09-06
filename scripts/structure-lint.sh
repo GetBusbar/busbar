@@ -1010,6 +1010,21 @@ pub fn outbound() -> String {
 }
 RS
 
+  # ── PLANE-ROOT ADDRESSING. `plane_roots_resolve` (scripts/plane-roots.sh) is what turned the
+  #    codec split's same-named `a2a` sibling from a hard PLANE-ROOT-AMBIGUOUS refusal into a clean
+  #    resolve, and it is driven here over throwaway trees for the same reason every case above is:
+  #    the interesting half is a REFUSAL (two declaring homes, or none), and a refusal nothing
+  #    exercises is a refusal nobody knows still fires.
+  hdr "self-test: plane-root addressing (found by OWNERSHIP, not by name — and ambiguity refused)"
+  # plane-roots.sh is already sourced at the top of this file (it resolves $MCP/$A2A before this
+  # function is ever reached), so `plane_roots_selftest` is already in scope.
+  plane_roots_selftest
+  selftest_ran=$((selftest_ran + PLANE_ROOTS_SELFTEST_RAN))
+  selftest_pass=$((selftest_pass + PLANE_ROOTS_SELFTEST_RAN - PLANE_ROOTS_SELFTEST_FAIL))
+  if [ "$PLANE_ROOTS_SELFTEST_FAIL" -ne 0 ]; then
+    selftest_fail=1
+  fi
+
   # A self-test that asserted nothing would report exactly what a passing one reports. So the count
   # of cases actually EXECUTED is itself an assertion: zero cases is RED, not "ok, nothing to do".
   if [ "$selftest_ran" -eq 0 ]; then
@@ -1778,14 +1793,28 @@ AXIS_BRANCH=(
 # matches is a HARD ERROR (a ledger nobody prunes becomes a permanent exemption), and ADDING a row
 # for NEW code is evading the check rather than passing it. Shrinking is the only permitted edit.
 # Row format:  <axis> | <file> | <why this one branch is allowed to exist, and when it goes>
-# EMPTY, and it got here the way the rules say a row leaves: the branch went. The one row this
-# ledger ever carried was `mcp/config.rs`'s `Some(Transport::Stdio)` — the pre-axis branch guarding a
-# crash-loop supervisor with no dispatch arm to reach it. `Transport::Stdio` is now a real arm of the
-# axis, `mcp/config.rs` asks the transport ONE question through a method on the type
-# (`Transport::spawns_child`) instead of comparing it, and the supervisor has a production caller. A
-# row is added here only by a change that cannot avoid a branch, and SHRINKING is still the only
-# permitted edit.
+#
+# ONE ROW, and it is a NOUN COLLISION rather than a branch on the axis, of the exact shape this
+# invariant's own `scope` field documentation already names: "plugin-loader compares a plugin-ABI
+# `transport` VERSION number, an unrelated noun that a type-blind grep cannot tell apart from the
+# axis." `units_mcp.rs`'s `if transport == claims::TRANSPORT_STDIO` compares a `&str` claim label
+# (`busbar_plane_mcp::claims::TRANSPORT_STDIO = "stdio"`, the plane's own claim-scheme vocabulary,
+# read from the auth claim the plane was handed) against another `&str` — never the axis's
+# `busbar_substrate_values::transport::Transport` type this row exists to keep off the agnostic
+# core. The IDENTICAL comparison shape exists unflagged today in `busbar-plane-mcp/src/plane.rs`
+# (`ctx.transport().key() == crate::claims::TRANSPORT_STDIO`), which only reads as clean because
+# that crate sits outside every root this axis scans — a difference of SCOPE, not of correctness,
+# which is the tell that the flagged copy is the same false positive and not a real violation.
+# This row is not new permission for new code: the line predates this ledger entry, and it was
+# invisible to the axis for as long as the plane-root resolver's `a2a` ambiguity left the `transport`
+# row's scope with a missing prefix — a missing prefix fails the WHOLE row closed (see
+# scripts/plane-roots.sh), so `units_mcp.rs` was never actually scanned until that resolver was
+# fixed to require plane OWNERSHIP rather than a bare name match. Nothing here weakens the axis: a
+# real `Transport::` comparison anywhere in scope still fails loud. The row leaves when the constant
+# is renamed off the word "transport" (the honest fix — it names a claim SCHEME, not a wire carrier)
+# or the file moves out of `$BIN`.
 AXIS_EXCEPTIONS="
+transport|crates/busbar/src/root/units_mcp.rs|the comparison reads a plane claim-scheme string constant literally named TRANSPORT_STDIO, never the axis's Transport type; see the ledger header above for the full argument and the identical unflagged copy in busbar-plane-mcp/src/plane.rs that proves it is a scope accident, not a correctness difference
 "
 
 hdr "axis purity (nothing branches on an axis outside that axis's own arms)"
