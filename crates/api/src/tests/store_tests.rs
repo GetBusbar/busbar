@@ -302,11 +302,15 @@ fn scope_kinds_survive_store_round_trip() {
 /// remapped into `allowed_pools` (the pre-P0 behavior) and never silently dropped. When 1.6.0
 /// adds `agent`, this is the test that forces it to get its own named wire field before an
 /// `agent` grant can be persisted at all.
+///
+/// The kind here is deliberately one no OTHER test in this file reads off a wire body: reassembly
+/// registers what it reads, so a kind that had arrived from a row would be registered process-wide
+/// and this gate would (correctly) no longer fire for it.
 #[test]
 fn unknown_scope_kind_is_a_hard_serialize_error() {
     let mut k = sample_key();
     k.allowed_scopes = Some(vec![ScopeRef {
-        kind: "agent".to_string(),
+        kind: "never_read_off_any_wire".to_string(),
         value: "planner".to_string(),
     }]);
     let err = serde_json::to_string(&k);
@@ -1055,4 +1059,49 @@ fn a_row_with_a_new_scalar_field_still_reads_on_an_older_node() {
         Some(vec![ScopeRef::pool("fast")]),
         "the grant this build DOES understand is unchanged by the fields it does not"
     );
+}
+
+/// READ and WRITE agree about a scope kind this node has no plane for.
+///
+/// The two halves were settled independently and ended up opposed: reassembly accepts ANY
+/// `allowed_*` field and tags it with its kind, while the partition consults the registry and makes
+/// an unregistered kind a hard serialize error. A key written by a node that HAS the plane therefore
+/// reads fine on a node that does not — and then every subsequent write of that key fails, so the
+/// operations an operator most needs on a key they cannot fully interpret (disable it, rotate it,
+/// tombstone it) are exactly the ones this refuses.
+///
+/// Both halves ACCEPT, which is the reading the wire's own doc already forces. The alternatives are
+/// both failures it names by hand: dropping the unknown kind on read is the "never silently
+/// dropped" case (the node writes the grant back out having quietly deleted a plane's grant), and
+/// refusing it on read makes the whole key unreadable, so a principal a node cannot fully interpret
+/// becomes one it can neither authenticate nor revoke. Round-tripping it under its frozen
+/// `allowed_{kind}s` field remaps nothing into `allowed_pools`, drops nothing, and widens nothing.
+#[test]
+fn a_scope_kind_this_node_has_no_plane_for_round_trips_unchanged() {
+    // Deliberately NOT registered here: this is the "a peer has a plane we do not" case.
+    let wire = r#"{"id":"vk_x","generation_hash":"h","name":"n","allowed_pools":["fast"],"allowed_widgets":["left","right"],"enabled":true,"created_at":1}"#;
+    let k: VirtualKey = serde_json::from_str(wire).expect("read accepts an unregistered kind");
+    assert!(
+        k.scope_allowed("widget", "left"),
+        "the grant survives the read: {:?}",
+        k.allowed_scopes
+    );
+
+    // The same key must be writable — this is the half that used to refuse.
+    let out = serde_json::to_string(&k).expect("write must accept what read accepted");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        v.get("allowed_widgets"),
+        Some(&serde_json::json!(["left", "right"])),
+        "the grant is written back under its own frozen wire field, never folded elsewhere: {out}"
+    );
+    assert_eq!(
+        v.get("allowed_pools"),
+        Some(&serde_json::json!(["fast"])),
+        "and the pool grant is untouched — nothing is remapped into it: {out}"
+    );
+
+    // Round-trip is lossless, so a node that cannot interpret the kind cannot silently destroy it.
+    let back: VirtualKey = serde_json::from_str(&out).unwrap();
+    assert_eq!(back.allowed_scopes, k.allowed_scopes);
 }

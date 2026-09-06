@@ -110,6 +110,14 @@ pub fn register_scope_kind(kind: &str) {
 ///   into `allowed_pools` (the pre-P0 defect: an `mcp_server` grant became a POOL grant on any
 ///   store round-trip - a lost MCP grant AND a pool-access escalation) and never silently dropped
 ///   (which would WIDEN a `Some([unknown])` = no-scopes grant toward the `None` = all wildcard);
+/// - READ and WRITE agree about every kind: reassembly REGISTERS each `allowed_{kind}s` field it
+///   reads, so a grant of a kind this node has no plane for - written by a peer that does - can
+///   always be written back out. The two halves settled independently would not have agreed, and
+///   the disagreement was the sharp end: such a key read fine and then failed every write, so
+///   disabling, rotating or tombstoning the principal a node least understands was precisely what
+///   that node could not do. Registering what was read widens nothing, because an unknown kind
+///   grants nothing (`scope_allowed` is fail-closed across kinds) - it only buys the kind a field
+///   of its own to be carried back into;
 /// - reassembly is canonical-by-kind (pools, then the remaining kinds in wire-field order).
 ///   `scope_allowed` is a pure membership test, so cross-kind order is never consulted.
 ///
@@ -284,7 +292,15 @@ mod virtual_key_wire {
     pub(super) type ScopePartition = (Option<Vec<String>>, BTreeMap<String, FlatField>);
 
     /// Partition `allowed_scopes` into the per-kind wire fields. `Err` names the offending kind:
-    /// an unregistered kind must fail the WRITE, loudly, at the boundary - see the module doc.
+    /// a kind with no wire field of its own must fail the WRITE, loudly, at the boundary - see the
+    /// module doc.
+    ///
+    /// This gate can never refuse a grant that came off the wire, because [`assemble_scopes`] adds
+    /// every kind it READS to the registry. That is what keeps the two halves in agreement, and the
+    /// agreement is the point: refusing here what reassembly accepted there left a key that read
+    /// fine on a node lacking the writing peer's plane, and then failed every write of that same
+    /// key — so disabling, rotating or tombstoning it, the operations an operator most needs on a
+    /// principal they cannot fully interpret, were exactly the ones refused.
     pub(super) fn partition_scopes(
         scopes: &Option<Vec<ScopeRef>>,
     ) -> Result<ScopePartition, String> {
@@ -341,6 +357,21 @@ mod virtual_key_wire {
                 FlatField::Foreign => None,
             })
             .collect();
+        // A kind THIS node has no plane for is still a kind this node must be able to write back.
+        // Reassembly accepts any `allowed_{kind}s` field, so without this the write half would
+        // refuse the very grant the read half just produced: a key from a peer that has the plane
+        // reads fine here and then fails every subsequent write, which makes disabling, rotating or
+        // tombstoning it impossible on this node. Registering what was read is what makes the two
+        // halves agree, and it is the only way to agree that the module doc leaves open — dropping
+        // the kind is the "never silently dropped" case, and refusing it on read would make a
+        // principal this node cannot fully interpret one it cannot authenticate at all. Idempotent,
+        // and it widens nothing: an unknown kind grants nothing (`scope_allowed` is fail-closed
+        // across kinds), so all this buys the kind is a field of its own to be written back into.
+        for (kind, _) in &scope_fields {
+            if !scope_kinds::is_registered(kind) {
+                scope_kinds::register(kind);
+            }
+        }
         if pools.is_none() && scope_fields.is_empty() {
             return None;
         }
