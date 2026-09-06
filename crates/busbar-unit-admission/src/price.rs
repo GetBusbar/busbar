@@ -52,28 +52,32 @@ pub struct RateNanos {
 }
 
 impl RateNanos {
-    /// Project the four raw micro-units-per-token config floats into this integer rate. The clamp
-    /// is defence in depth: a value that is not finite, or is negative, becomes 0 rather than a
-    /// garbage integer.
+    /// Project the four raw micro-units-per-token config floats into this integer rate.
+    ///
+    /// ONE ARITHMETIC, AND IT IS THE COST UNIT'S. This used to be a second copy of the same three
+    /// lines, written here because this crate named nothing else in the workspace, with a test
+    /// asking both of them the same ten thousand questions to catch the day they drifted. They then
+    /// drifted: a clamp for a finite-but-overflowing rate went onto one copy and not the other, and
+    /// the two answered a config typo with too many zeros as "nothing" on one side and "the largest
+    /// rate there is" on the other. A request JUDGED at one rate and BILLED at another is the exact
+    /// failure that test was written to notice, and having it notice is not as good as not having
+    /// the second copy.
+    ///
+    /// So the door consults the pricing law rather than restating it. The clamp, the rounding rule
+    /// and the multiply are [`busbar_unit_cost::nano_rate`]'s, once, and a change to any of them
+    /// moves the decision and the bill together by construction. The agreement test stays: it is now
+    /// a guard against the copy coming back rather than a check that two copies match.
     pub fn from_micros_per_token(
         input: f64,
         output: f64,
         cache_read: f64,
         cache_write: f64,
     ) -> Self {
-        fn nanos(utok: f64) -> u64 {
-            let v = (utok * 1000.0).round();
-            if v.is_finite() && v > 0.0 {
-                v as u64
-            } else {
-                0
-            }
-        }
         Self {
-            input: nanos(input),
-            output: nanos(output),
-            cache_read: nanos(cache_read),
-            cache_write: nanos(cache_write),
+            input: busbar_unit_cost::nano_rate(input),
+            output: busbar_unit_cost::nano_rate(output),
+            cache_read: busbar_unit_cost::nano_rate(cache_read),
+            cache_write: busbar_unit_cost::nano_rate(cache_write),
         }
     }
 
