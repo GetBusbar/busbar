@@ -212,7 +212,7 @@ egress-auth-gate = []
 # FORWARDS to substrate: the relocated `admin::v1` data helpers (`NamedDefView`'s `schemars` derive
 # and `set_response_schema`) live behind substrate's matching feature, and core re-exports them, so
 # enabling this must enable substrate's so the re-exported view keeps its schema impl in lock-step.
-openapi-schema = ["dep:schemars", "busbar-substrate/openapi-schema"]
+openapi-schema = ["dep:schemars", "busbar-substrate/openapi-schema", "busbar-llm/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
 loom-model = ["dep:loom"]
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only. Forwards to substrate's matching feature
