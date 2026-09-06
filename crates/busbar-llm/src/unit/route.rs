@@ -977,7 +977,7 @@ mod tests {
         assert_eq!(refusal.reason(), busbar_caps::ReasonCode::NoDestination);
         assert_eq!(
             refusal.step(),
-            busbar_caps::StepName::Route,
+            Some(busbar_caps::StepName::Route),
             "the decision stamps the step, so the record cannot claim it stopped elsewhere"
         );
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);

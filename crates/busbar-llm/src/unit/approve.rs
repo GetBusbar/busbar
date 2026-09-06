@@ -175,9 +175,9 @@ mod tests {
             .into_result(&seal)
             .expect_err("the seat vetoed");
         assert_eq!(refusal.reason(), ReasonCode::HookVeto);
-        assert_eq!(refusal.step(), StepName::Approve);
+        assert_eq!(refusal.step(), Some(StepName::Approve));
         assert!(
-            !refusal.step().under_hold(),
+            !refusal.under_hold(),
             "a veto at approve is raised before the door, so nothing was charged"
         );
     }

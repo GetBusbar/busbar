@@ -493,8 +493,11 @@ impl Units for ProductionUnits {
         }
         Decision::proceed(
             token,
+            // The step is the decision's stamp. A refusal that reaches the refused-audit door
+            // without one never came from a decision; the door itself is the latest step it could
+            // have been raised at, which is a truer answer than a fixed sentinel.
             crate::root::units_admin::unresolved_facts(&Outcome::Refused(
-                refusal.step(),
+                refusal.step().unwrap_or(busbar_caps::StepName::Admit),
                 refusal.reason(),
             )),
         )

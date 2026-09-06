@@ -575,7 +575,7 @@ mod tests {
         assert_eq!(refusal.reason(), ReasonCode::OverBudget);
         assert_eq!(
             refusal.step(),
-            StepName::Admit,
+            Some(StepName::Admit),
             "the decision stamps the step, so the record cannot claim it stopped elsewhere"
         );
     }

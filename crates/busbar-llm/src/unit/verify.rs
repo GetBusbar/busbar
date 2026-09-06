@@ -600,7 +600,7 @@ mod tests {
             .decision
             .into_result(&seal)
             .expect_err("the key may not reach it");
-        assert_eq!(refusal.step(), StepName::Verify);
+        assert_eq!(refusal.step(), Some(StepName::Verify));
         assert_eq!(refusal.reason(), ReasonCode::PoolNotPermitted);
     }
 

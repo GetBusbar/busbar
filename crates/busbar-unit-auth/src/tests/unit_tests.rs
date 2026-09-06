@@ -64,7 +64,7 @@ fn a_denied_chain_refuses_at_the_authenticate_step() {
     assert_eq!(refusal.reason(), ReasonCode::Unauthenticated);
     assert_eq!(
         refusal.step(),
-        StepName::Authenticate,
+        Some(StepName::Authenticate),
         "the step is stamped by the decision, not claimed by the unit"
     );
     assert!(!refusal.under_hold(), "nothing is charged this early");

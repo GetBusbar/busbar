@@ -1086,7 +1086,10 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
     ) -> Decision<Audit> {
         // The second door: a unit that never passed the first one, and was charged nothing. It is
         // sealed on the same chain, because a refusal is an event with a record of its own.
-        let outcome = Outcome::Refused(refusal.step(), refusal.reason());
+        let outcome = Outcome::Refused(
+            refusal.step().unwrap_or(busbar_caps::StepName::Admit),
+            refusal.reason(),
+        );
         let inputs = self.audit_inputs(outcome, None);
         let record = {
             let mut durability = self.bindings.durability.lock().expect("durability lock");

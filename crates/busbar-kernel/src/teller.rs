@@ -693,7 +693,11 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
         // The refused door: nothing was charged beyond the arrival hold the table minted, and the
         // audit that seals it never sees a hold.
         Err(refusal) => {
-            let outcome = Outcome::Refused(refusal.step(), refusal.reason());
+            // The step comes from the decision that stamped it. `unwrap_or` names the door
+            // rather than a sentinel: a refusal that reached here without a stamp did not come
+            // from a decision at all, and the door is the last step it could have been raised at.
+            let outcome =
+                Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
             let _sealed = units
                 .audit_refused(&UnitToken::<Audit>::mint(seal), ctx, &refusal)
                 .into_result(seal);
@@ -921,7 +925,9 @@ async fn under_hold<U: Units, R: RouteAwait>(
     let seal = &kernel.seal;
     let token = UnitToken::<Route>::mint(seal);
     match route.route_leg(&token, ctx, meter).await.into_result(seal) {
-        Err(refusal) => Outcome::Failed(refusal.step(), refusal.reason()),
+        Err(refusal) => {
+            Outcome::Failed(refusal.step().unwrap_or(StepName::Route), refusal.reason())
+        }
         Ok(_) => {
             let provisional = Outcome::Completed;
             match units
@@ -934,7 +940,9 @@ async fn under_hold<U: Units, R: RouteAwait>(
                 .into_result(seal)
             {
                 Ok(_) => Outcome::Completed,
-                Err(refusal) => Outcome::Failed(refusal.step(), refusal.reason()),
+                Err(refusal) => {
+                    Outcome::Failed(refusal.step().unwrap_or(StepName::Meter), refusal.reason())
+                }
             }
         }
     }

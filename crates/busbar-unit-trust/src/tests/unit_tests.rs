@@ -127,7 +127,7 @@ fn the_pool_allow_list_refuses_at_the_verify_step() {
     // Its own reason, not a plain scope denial: the ladder answers this before it asks about
     // pricing at all, and the two carry different statuses on the wire.
     assert_eq!(refusal.reason(), ReasonCode::PoolNotPermitted);
-    assert_eq!(refusal.step(), StepName::Verify);
+    assert_eq!(refusal.step(), Some(StepName::Verify));
     assert!(!refusal.under_hold(), "nothing is charged before the door");
 }
 

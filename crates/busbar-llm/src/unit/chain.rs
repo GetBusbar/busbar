@@ -1766,7 +1766,7 @@ mod rehearsal {
             .decision
             .into_result(&seal)
             .expect_err("a destination that resolves to nothing refuses");
-        assert_eq!(refusal.step(), StepName::Route);
+        assert_eq!(refusal.step(), Some(StepName::Route));
         assert_eq!(refusal.reason(), busbar_caps::ReasonCode::NoDestination);
 
         rig.server.shutdown().await;

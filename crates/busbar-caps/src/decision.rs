@@ -261,10 +261,12 @@ impl std::fmt::Display for ReasonCode {
 /// A unit's "stop here": the reason, and the step it was raised at.
 ///
 /// The step is stamped by the decision, not by the caller, so a unit cannot claim it stopped
-/// somewhere it never reached.
+/// somewhere it never reached. Until a decision stamps it there is no step, and the refusal says
+/// so: an unstamped refusal that named the first step of the loop would be a claim about where the
+/// unit got to, and the step is precisely what says whether money was committed before it stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
-    at: StepName,
+    at: Option<StepName>,
     reason: ReasonCode,
     retry_after: Option<u32>,
 }
@@ -273,7 +275,7 @@ impl Refusal {
     /// Raise a refusal for `reason`. The step is filled in when the refusal becomes a decision.
     pub fn new(reason: ReasonCode) -> Self {
         Refusal {
-            at: StepName::Arrival,
+            at: None,
             reason,
             retry_after: None,
         }
@@ -287,12 +289,12 @@ impl Refusal {
 
     /// Stamp the step. Crate-internal: only a decision does this.
     pub(crate) fn at(mut self, at: StepName) -> Self {
-        self.at = at;
+        self.at = Some(at);
         self
     }
 
-    /// The step the unit stopped at.
-    pub fn step(&self) -> StepName {
+    /// The step the unit stopped at, once a decision has stamped one.
+    pub fn step(&self) -> Option<StepName> {
         self.at
     }
 
@@ -306,9 +308,10 @@ impl Refusal {
         self.retry_after
     }
 
-    /// Whether the refusal was raised while a hold was open.
+    /// Whether the refusal was raised while a hold was open. False until a step is stamped: an
+    /// unstamped refusal has not reached any step, so it cannot have reached one past the door.
     pub fn under_hold(&self) -> bool {
-        self.at.under_hold()
+        self.at.is_some_and(StepName::under_hold)
     }
 }
 

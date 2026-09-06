@@ -105,10 +105,34 @@ fn a_refusal_is_stamped_with_the_step_that_raised_it() {
     let refusal = decision
         .into_result(&k.seal)
         .expect_err("this decision refuses");
-    assert_eq!(refusal.step(), StepName::Approve);
+    assert_eq!(refusal.step(), Some(StepName::Approve));
     assert_eq!(refusal.reason(), ReasonCode::ScopeDenied);
     assert_eq!(refusal.retry_after_secs(), Some(30));
     assert!(!refusal.under_hold(), "approve runs before the door");
+}
+
+/// An unstamped refusal says it has no step, rather than naming one it never reached.
+///
+/// The step is the decision's to stamp, so between raising a refusal and turning it into a
+/// decision there is a moment where no step is known. Filling that moment with the first step of
+/// the loop makes the record claim the unit stopped at arrival, which is a claim about where money
+/// was committed: everything before the door is free, everything after it is not.
+#[test]
+fn a_refusal_that_was_never_stamped_names_no_step() {
+    let k = Kernel::new();
+    let unstamped = Refusal::new(ReasonCode::OverBudget);
+    assert_eq!(unstamped.step(), None);
+    assert!(
+        !unstamped.under_hold(),
+        "a refusal with no step cannot have been raised under a hold"
+    );
+
+    let token: UnitToken<Meter> = UnitToken::mint(&k.seal);
+    let refusal = Decision::refuse(&token, Refusal::new(ReasonCode::OverBudget))
+        .into_result(&k.seal)
+        .expect_err("this decision refuses");
+    assert_eq!(refusal.step(), Some(StepName::Meter));
+    assert!(refusal.under_hold(), "the meter runs after the door");
 }
 
 #[test]
