@@ -1268,6 +1268,7 @@ fn composition(slice: &str) -> i32 {
         "route-failover" => probe_route_failover(),
         "audit-record" => probe_audit_record(),
         "exit-terminal" => probe_exit_terminal(),
+        "tool-reply" => probe_tool_reply(),
         other => ("FAIL", format!("unknown composition slice '{other}'")),
     };
     println!("RESULT {slice} {verdict} {detail}");
@@ -1335,6 +1336,224 @@ fn probe_provider_credential() -> (&'static str, String) {
         "the declared provider reference resolves through the deployment's secret resolver and \
          composes the endpoint the mint / SDP passes serve under (set-once; an unresolvable \
          reference composes nothing)"
+            .into(),
+    )
+}
+
+// ── the governed tool-call wait, driven through a real session ───────────────────────────────────
+
+/// The node's open-call table, as a session reaches it — the same two questions the composition root's
+/// own implementor answers, over a table this probe can watch.
+#[derive(Debug, Default)]
+struct ProbeCalls {
+    open: std::sync::Mutex<Vec<(u64, String)>>,
+    woken: std::sync::Mutex<Vec<String>>,
+    refused: std::sync::Mutex<Vec<String>>,
+}
+
+impl ProbeCalls {
+    fn enter(&self, session: u64, call_id: &str) {
+        self.open
+            .lock()
+            .unwrap()
+            .push((session, call_id.to_string()));
+    }
+}
+
+impl busbar_voice::runtime::GovernedCalls for ProbeCalls {
+    fn replied(
+        &self,
+        session: u64,
+        call_id: &str,
+    ) -> Result<(), busbar_voice::runtime::ReplyRefusal> {
+        let mut open = self.open.lock().unwrap();
+        if !open.iter().any(|(s, _)| *s == session) {
+            self.refused.lock().unwrap().push(call_id.to_string());
+            return Err(busbar_voice::runtime::ReplyRefusal::NoSuchSession);
+        }
+        match open.iter().position(|(s, c)| *s == session && c == call_id) {
+            Some(i) => {
+                open.remove(i);
+                self.woken.lock().unwrap().push(call_id.to_string());
+                Ok(())
+            }
+            None => {
+                self.refused.lock().unwrap().push(call_id.to_string());
+                Err(busbar_voice::runtime::ReplyRefusal::UnknownCall)
+            }
+        }
+    }
+
+    fn expired(&self, _now_ms: u64) -> usize {
+        self.open.lock().unwrap().drain(..).count()
+    }
+}
+
+/// A tool executor that serves nothing at all — every call this session sees is the client's to
+/// answer, which is the shape the governed wait exists for.
+#[derive(Debug)]
+struct ServesNothing;
+
+#[async_trait::async_trait]
+impl busbar_voice::runtime::ToolExecutor for ServesNothing {
+    fn serves(&self, _name: &str) -> bool {
+        false
+    }
+    async fn execute(&self, _name: &str, _arguments: &[u8]) -> Vec<u8> {
+        b"{}".to_vec()
+    }
+}
+
+/// One dialect's three wire shapes for this leg: the frames that announce a call, the client's own
+/// reply to it, and a reply naming a call nobody opened.
+struct ToolWire {
+    dialect: &'static str,
+    announce: Vec<Value>,
+    reply: Value,
+    wrong: Value,
+}
+
+fn openai_tool_wire() -> ToolWire {
+    ToolWire {
+        dialect: "openai-realtime",
+        announce: vec![
+            serde_json::json!({"type":"response.output_item.added",
+                "item":{"type":"function_call","call_id":"call_x","name":"lookup"}}),
+            serde_json::json!({"type":"response.function_call_arguments.delta",
+                "call_id":"call_x","delta":"{\"q\":1}"}),
+            serde_json::json!({"type":"response.function_call_arguments.done","call_id":"call_x"}),
+        ],
+        reply: serde_json::json!({"type":"conversation.item.create",
+            "item":{"type":"function_call_output","call_id":"call_x","output":"ok"}}),
+        wrong: serde_json::json!({"type":"conversation.item.create",
+            "item":{"type":"function_call_output","call_id":"call_forged","output":"ok"}}),
+    }
+}
+
+fn gemini_tool_wire() -> ToolWire {
+    ToolWire {
+        dialect: "gemini-live",
+        // Gemini delivers a call ATOMICALLY; the codec expands it into the same open/args/close
+        // triple, which is exactly why one runtime serves both dialects.
+        announce: vec![serde_json::json!({"toolCall":{"functionCalls":[
+            {"id":"call_x","name":"lookup","args":{"q":1}}]}})],
+        reply: serde_json::json!({"toolResponse":{"functionResponses":[
+            {"id":"call_x","name":"lookup","response":{"ok":true}}]}}),
+        wrong: serde_json::json!({"toolResponse":{"functionResponses":[
+            {"id":"call_forged","name":"lookup","response":{"ok":true}}]}}),
+    }
+}
+
+/// Drive one dialect's whole leg over a real [`SessionCore`]: announce a client-served call, answer
+/// it, forge an answer, and let the tick sweep an unanswered one. `Ok(())` or the first failure.
+fn drive_tool_reply<C>(codec: C, w: &ToolWire) -> Result<(), String>
+where
+    C: DuplexReader + DuplexWriter + Send + Sync + 'static,
+{
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let table = Arc::new(ProbeCalls::default());
+    let lease = LocalMeteringPort
+        .reserve(1_000, 0, None)
+        .expect("an uncapped lease always opens");
+    let core = SessionCore::new(
+        codec,
+        lease,
+        None,
+        Arc::new(ServesNothing),
+        Carrier::sideband(),
+        None,
+    )
+    .with_governed(busbar_voice::runtime::GovernedSession {
+        session: 7,
+        calls: Arc::clone(&table) as Arc<dyn busbar_voice::runtime::GovernedCalls>,
+    });
+
+    // The call is announced. Nothing goes upstream: the node serves no tool, so it authors no
+    // answer — the wait the root planned is the only thing that can end this call.
+    for f in &w.announce {
+        let plan = rt.block_on(core.on_server_frame(wire_of(f)));
+        if !plan.upstream.is_empty() {
+            return Err(format!(
+                "{}: the node answered a call it does not serve",
+                w.dialect
+            ));
+        }
+    }
+
+    // THE WAKE. The root entered the wait where it planned the leg; the client's reply names it.
+    table.enter(7, "call_x");
+    let plan = core.on_client_frame(wire_of(&w.reply));
+    if plan.refused_reply {
+        return Err(format!(
+            "{}: an open wait refused its own answer",
+            w.dialect
+        ));
+    }
+    if table.woken.lock().unwrap().as_slice() != ["call_x"] {
+        return Err(format!(
+            "{}: the reply never reached the node's table",
+            w.dialect
+        ));
+    }
+    let up: String = plan
+        .upstream
+        .iter()
+        .map(|e| String::from_utf8_lossy(&e.0).to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !up.contains("call_x") {
+        return Err(format!(
+            "{}: the woken reply never reached the model: {up}",
+            w.dialect
+        ));
+    }
+
+    // THE REFUSAL. A reply naming a call nobody is waiting on reaches the model on no wire at all.
+    table.enter(7, "call_y");
+    let plan = core.on_client_frame(wire_of(&w.wrong));
+    if !plan.refused_reply || !plan.upstream.is_empty() {
+        return Err(format!(
+            "{}: a reply naming no open call was carried upstream anyway",
+            w.dialect
+        ));
+    }
+    if table.refused.lock().unwrap().as_slice() != ["call_forged"] {
+        return Err(format!(
+            "{}: the forged reply was not refused by identifier",
+            w.dialect
+        ));
+    }
+
+    // THE SWEEP. `call_y` is still open and nobody answered it; the tick is what ends it. WHICH calls
+    // are past their deadline is the node's own judgement — the leg the root plans carries the plane's
+    // declared seconds, and the root's own tests pin that figure — so what this leg judges is that the
+    // pump has a tick at all and that it reaches the table.
+    if core.sweep_expired(60_000) != 1 {
+        return Err(format!("{}: the tick swept no unanswered call", w.dialect));
+    }
+    Ok(())
+}
+
+/// A client-served tool call's reply reaches the node's own table through a REAL session, on every
+/// dialect the plane serves a duplex session on. Without this the root entered a wait that the served
+/// path could never wake and no tick ever swept — the call's hold was held open by a client that
+/// simply never replied, and a forged reply rode upstream under whatever call happened to be open.
+fn probe_tool_reply() -> (&'static str, String) {
+    if let Err(e) = drive_tool_reply(OpenAiRealtimeCodec, &openai_tool_wire()) {
+        return ("FAIL", e);
+    }
+    if let Err(e) = drive_tool_reply(GeminiLiveCodec, &gemini_tool_wire()) {
+        return ("FAIL", e);
+    }
+    (
+        "PASS",
+        "on both duplex dialects a call for a tool the node does not serve is answered by nobody but \
+         the client: the reply wakes the wait the root planned and only then reaches the model, a \
+         reply naming no open call is refused and carried on no wire, and the tick sweeps a call \
+         nobody answered so its unit ends under the deadline its leg declared"
             .into(),
     )
 }
