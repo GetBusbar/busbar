@@ -776,6 +776,7 @@ fn write_response_event_error_serializes_native_shape() {
         class: StatusClass::RateLimit,
         provider_signal: Some(ERR_TYPE_RATE_LIMIT.to_string()),
         retry_after: None,
+        ..Default::default()
     };
     let (event_type, data) = anthropic_writer()
         .write_response_event(&IrStreamEvent::Error(err))
@@ -816,6 +817,7 @@ fn write_response_event_error_null_type_when_signal_absent() {
         class: StatusClass::ClientError,
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     };
     let (event_type, data) = anthropic_writer()
         .write_response_event(&IrStreamEvent::Error(err))
@@ -853,6 +855,7 @@ fn write_response_event_error_type_is_a_spec_token_not_free_text() {
         class: StatusClass::RateLimit,
         provider_signal: Some(sentence.to_string()),
         retry_after: None,
+        ..Default::default()
     };
     let (_, data) = anthropic_writer()
         .write_response_event(&IrStreamEvent::Error(err))
@@ -878,6 +881,7 @@ fn write_response_event_error_type_falls_back_to_api_error() {
         class: StatusClass::ServerError,
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     };
     let (_, data) = anthropic_writer()
         .write_response_event(&IrStreamEvent::Error(err))
@@ -898,6 +902,7 @@ fn write_response_event_error_type_round_trips_a_native_token() {
         class: StatusClass::Auth,
         provider_signal: Some("permission_error".to_string()),
         retry_after: None,
+        ..Default::default()
     };
     let (_, data) = anthropic_writer()
         .write_response_event(&IrStreamEvent::Error(err))
@@ -971,6 +976,7 @@ fn stream_error_overloaded_is_transient_not_client_fault() {
         class: read_stream_error_class(ERR_TYPE_OVERLOADED),
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     };
     assert_eq!(
         busbar_substrate_values::breaker::classify(&sig),
@@ -989,6 +995,7 @@ fn stream_error_rate_limit_is_rate_limit_class() {
         class: read_stream_error_class(ERR_TYPE_RATE_LIMIT),
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     };
     assert_eq!(
         busbar_substrate_values::breaker::classify(&sig),
@@ -1006,6 +1013,7 @@ fn stream_error_api_error_is_server_error_class() {
         class: read_stream_error_class(ERR_TYPE_API_ERROR),
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     };
     assert_eq!(
         busbar_substrate_values::breaker::classify(&sig),
@@ -1031,6 +1039,7 @@ fn stream_error_authentication_is_auth_hard_down() {
         class: read_stream_error_class(ERR_TYPE_AUTHENTICATION),
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     };
     assert_eq!(
         busbar_substrate_values::breaker::classify(&sig),
@@ -1057,6 +1066,7 @@ fn stream_error_billing_is_billing_hard_down() {
         class: read_stream_error_class("billing_error"),
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     };
     assert_eq!(
         busbar_substrate_values::breaker::classify(&sig),
@@ -1074,6 +1084,7 @@ fn stream_error_invalid_request_stays_client_error() {
         class: read_stream_error_class(ERR_TYPE_INVALID_REQUEST),
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     };
     assert_eq!(
         busbar_substrate_values::breaker::classify(&sig),
@@ -2190,6 +2201,7 @@ fn every_write_response_event_carries_matching_top_level_type() {
             class: StatusClass::ServerError,
             provider_signal: Some(ERR_TYPE_OVERLOADED.to_string()),
             retry_after: None,
+            ..Default::default()
         }),
     ];
     // ONE writer for the whole sequence: the writer now tracks which block indices it opened so a
@@ -2471,6 +2483,7 @@ fn write_response_event_error_message_has_no_proxy_vocabulary() {
             class: StatusClass::ServerError,
             provider_signal: signal.clone(),
             retry_after: None,
+            ..Default::default()
         };
         let (_, data) = anthropic_writer()
             .write_response_event(&IrStreamEvent::Error(err))

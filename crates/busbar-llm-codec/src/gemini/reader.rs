@@ -230,6 +230,7 @@ impl ProtocolReader for GeminiReader {
                     busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string(),
                 ),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -239,6 +240,7 @@ impl ProtocolReader for GeminiReader {
                 class: StatusClass::RateLimit,
                 provider_signal: Some("429".to_string()),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -248,6 +250,7 @@ impl ProtocolReader for GeminiReader {
                 class: StatusClass::Auth,
                 provider_signal: Some("auth".to_string()),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -257,6 +260,7 @@ impl ProtocolReader for GeminiReader {
                 class: StatusClass::ServerError,
                 provider_signal: Some("5xx".to_string()),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -266,6 +270,7 @@ impl ProtocolReader for GeminiReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(format!("{}", status.as_u16())),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -273,6 +278,7 @@ impl ProtocolReader for GeminiReader {
             class: StatusClass::ClientError,
             provider_signal: None,
             retry_after: None,
+            ..Default::default()
         }
     }
 
@@ -281,6 +287,7 @@ impl ProtocolReader for GeminiReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         let mut extra = serde_json::Map::new();
@@ -318,6 +325,7 @@ impl ProtocolReader for GeminiReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             })?;
             for content_val in contents_arr {
                 let role_str = content_val
@@ -337,6 +345,7 @@ impl ProtocolReader for GeminiReader {
                                 busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                             ),
                             retry_after: None,
+                            ..Default::default()
                         })
                     }
                 };
@@ -362,6 +371,7 @@ impl ProtocolReader for GeminiReader {
                                 busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                             ),
                             retry_after: None,
+                            ..Default::default()
                         });
                     }
                 }
@@ -837,8 +847,21 @@ impl ProtocolReader for GeminiReader {
                 .and_then(|m| m.as_str())
                 .map(String::from)
                 .or_else(|| status_str.map(String::from));
+            // Carry the envelope VERBATIM alongside the lossy class. A mid-stream error has no HTTP
+            // status of its own, so whatever the ingress writer reconstructs is the only status the
+            // client ever sees — and reconstructing it from the class alone turned a 404/`NOT_FOUND`
+            // into a 400/`INVALID_ARGUMENT`.
+            let detail = busbar_substrate_values::breaker::ProviderErrorDetail {
+                http_status: code.and_then(|c| u16::try_from(c).ok()),
+                status_name: status_str.map(String::from),
+                message: error_obj
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .map(String::from),
+            };
             out.push(IrStreamEvent::Error(
                 busbar_substrate_values::proto::IrError {
+                    detail,
                     class,
                     provider_signal: message,
                     retry_after: None,
@@ -1321,6 +1344,7 @@ impl ProtocolReader for GeminiReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         // Prompt-blocked envelope. A native Gemini `generateContent` can reject the PROMPT itself
@@ -1366,11 +1390,13 @@ impl ProtocolReader for GeminiReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         })?;
         let candidates = candidates_val.as_array().ok_or(IrError {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         if candidates.is_empty() {
@@ -1378,6 +1404,7 @@ impl ProtocolReader for GeminiReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             });
         }
 

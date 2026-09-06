@@ -114,6 +114,7 @@ impl ProtocolReader for BedrockReader {
                     busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string(),
                 ),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -122,6 +123,7 @@ impl ProtocolReader for BedrockReader {
                 class: StatusClass::RateLimit,
                 provider_signal: Some("429".to_string()),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -130,6 +132,7 @@ impl ProtocolReader for BedrockReader {
                 class: StatusClass::Auth,
                 provider_signal: Some("auth".to_string()),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -138,6 +141,7 @@ impl ProtocolReader for BedrockReader {
                 class: StatusClass::ServerError,
                 provider_signal: Some("5xx".to_string()),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -146,6 +150,7 @@ impl ProtocolReader for BedrockReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(format!("{}", status.as_u16())),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -153,6 +158,7 @@ impl ProtocolReader for BedrockReader {
             class: StatusClass::ClientError,
             provider_signal: None,
             retry_after: None,
+            ..Default::default()
         }
     }
 
@@ -162,6 +168,7 @@ impl ProtocolReader for BedrockReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         // Collect every unmodeled top-level request field into `extra` so a same-protocol
@@ -276,6 +283,7 @@ impl ProtocolReader for BedrockReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             })?;
             for (msg_idx, msg_val) in msgs_arr.iter().enumerate() {
                 let role_str = msg_val.get("role").and_then(|r| r.as_str()).unwrap_or("");
@@ -290,6 +298,7 @@ impl ProtocolReader for BedrockReader {
                                 busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                             ),
                             retry_after: None,
+                            ..Default::default()
                         })
                     }
                 };
@@ -307,6 +316,7 @@ impl ProtocolReader for BedrockReader {
                                 busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                             ),
                             retry_after: None,
+                            ..Default::default()
                         });
                     }
                 }
@@ -333,6 +343,7 @@ impl ProtocolReader for BedrockReader {
                                         busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                                     ),
                                     retry_after: None,
+                                    ..Default::default()
                                 })?
                                 .to_string();
                             let name = tool_use
@@ -1200,11 +1211,29 @@ impl ProtocolReader for BedrockReader {
                         StatusClass::ServerError
                     }
                 };
+                // Carry the exception the upstream NAMED, verbatim, alongside the lossy class.
+                // `internalServerException` and `modelStreamErrorException` share a StatusClass, so
+                // a writer deriving the name from the class alone answered every model-stream
+                // failure as a generic `InternalServerException`. The event-type key is the
+                // union member's lowerCamel form; the exception NAME on the wire is its UpperCamel
+                // twin, which is what a Bedrock SDK matches on.
+                let exception_name = {
+                    let mut c = exc.chars();
+                    c.next()
+                        .map(|f| f.to_ascii_uppercase().to_string() + c.as_str())
+                };
                 out.push(IrStreamEvent::Error(
                     busbar_substrate_values::proto::IrError {
                         class,
-                        provider_signal: message.or_else(|| Some(exc.to_string())),
+                        provider_signal: message.clone().or_else(|| Some(exc.to_string())),
                         retry_after: None,
+                        detail: busbar_substrate_values::breaker::ProviderErrorDetail {
+                            // A stream exception event carries no HTTP status of its own — the whole
+                            // stream is a 200 — so there is none to carry here.
+                            http_status: None,
+                            status_name: exception_name,
+                            message,
+                        },
                     },
                 ));
             }
@@ -1225,6 +1254,7 @@ impl ProtocolReader for BedrockReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         // DOCUMENTED CROSS-PROTOCOL DROP (field-coverage carry, drop+warn+test). A native Converse
@@ -1257,12 +1287,14 @@ impl ProtocolReader for BedrockReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         let message_val = output_val.get("message").ok_or(IrError {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         let mut content: Vec<crate::ir::IrBlock> = Vec::new();

@@ -2126,6 +2126,7 @@ fn test_write_error_stream_event_full_shape() {
         class: StatusClass::ServerError,
         provider_signal: Some("boom".to_string()),
         retry_after: None,
+        ..Default::default()
     });
     let (etype, payload) = writer
         .write_response_event(&ev)
@@ -2639,6 +2640,7 @@ fn test_response_failed_carries_empty_output_skeleton() {
             class: StatusClass::ServerError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
+            ..Default::default()
         }))
         .expect("Error emits response.failed");
     assert_eq!(etype, "response.failed"); // golden wire-contract literal (kept bare on purpose)
@@ -2864,6 +2866,7 @@ fn test_error_event_wraps_in_response_object() {
         class: StatusClass::ServerError,
         provider_signal: Some("overloaded".to_string()),
         retry_after: None,
+        ..Default::default()
     });
     let (etype, payload) = writer
         .write_response_event(&ev)
@@ -2959,6 +2962,7 @@ fn test_every_stream_event_carries_top_level_type() {
             class: StatusClass::ServerError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
+            ..Default::default()
         }),
     ];
 
@@ -3120,6 +3124,7 @@ fn test_every_stream_event_carries_sequence_number() {
             class: StatusClass::ServerError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
+            ..Default::default()
         }),
     ];
 
@@ -3320,6 +3325,7 @@ fn test_response_failed_uses_native_responseerror_shape() {
             class: StatusClass::ServerError,
             provider_signal: Some("rate_limit_exceeded".to_string()),
             retry_after: None,
+            ..Default::default()
         }))
         .expect("emit");
     assert_eq!(etype, "response.failed"); // golden wire-contract literal (kept bare on purpose)
@@ -3352,6 +3358,7 @@ fn test_response_failed_uses_native_responseerror_shape() {
             class: StatusClass::ServerError,
             provider_signal: None,
             retry_after: None,
+            ..Default::default()
         }))
         .expect("emit");
     let code = payload
@@ -3378,6 +3385,7 @@ fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
             class: StatusClass::ServerError,
             provider_signal: Some(busbar_substrate_values::proto::STREAM_ABORT_DETAIL.to_string()),
             retry_after: None,
+            ..Default::default()
         }))
         .expect("emit");
     let error = payload
@@ -3402,6 +3410,7 @@ fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
             class: StatusClass::Auth,
             provider_signal: Some("connection reset by peer".to_string()),
             retry_after: None,
+            ..Default::default()
         }))
         .expect("emit");
     assert_eq!(
@@ -3803,6 +3812,7 @@ fn test_failed_id_matches_created_id_cross_protocol() {
             class: StatusClass::ServerError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
+            ..Default::default()
         }))
         .expect("Error emits response.failed");
     assert_eq!(etype, "response.failed"); // golden wire-contract literal (kept bare on purpose)
@@ -4620,6 +4630,7 @@ fn test_failed_event_replays_created_at() {
             class: StatusClass::ServerError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
+            ..Default::default()
         }))
         .expect("response.failed");
     assert_eq!(
@@ -4965,6 +4976,7 @@ fn test_stream_terminal_events_carry_model_fallback() {
         class: StatusClass::ServerError,
         provider_signal: Some("boom".to_string()),
         retry_after: None,
+        ..Default::default()
     });
     let (ename2, failed) = writer2.write_response_event(&err).expect("failed event");
     assert_eq!(ename2, "response.failed"); // golden wire-contract literal (kept bare on purpose)
@@ -5278,6 +5290,7 @@ fn test_stream_terminal_events_carry_output_and_error() {
             class: StatusClass::ServerError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
+            ..Default::default()
         }))
         .expect("failed event");
     assert_eq!(ename, "response.failed"); // golden wire-contract literal (kept bare on purpose)
@@ -6921,6 +6934,7 @@ fn responses_spec_required_members_present_on_every_response_shape() {
             class: StatusClass::ServerError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
+            ..Default::default()
         }))
         .expect("failed");
     assert_required(&failed.1["response"], "response.failed");

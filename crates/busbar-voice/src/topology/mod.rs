@@ -96,6 +96,7 @@ fn dial_signal(e: &DialError) -> CanonicalSignal {
         class,
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     }
 }
 

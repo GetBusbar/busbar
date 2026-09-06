@@ -45,6 +45,7 @@ fn test_context_length_disposition() {
         class: StatusClass::ContextLength,
         provider_signal: Some(PROVIDER_SIGNAL_CONTEXT_LENGTH.to_string()),
         retry_after: None,
+        ..Default::default()
     };
     assert_eq!(classify(&sig), Disposition::ContextLength);
 }

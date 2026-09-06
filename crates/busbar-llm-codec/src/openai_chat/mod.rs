@@ -737,6 +737,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
         class: StatusClass::ClientError,
         provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
+        ..Default::default()
     })?;
 
     let block_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -756,6 +757,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             })?;
             let url = image_obj.get("url").and_then(|v| v.as_str()).unwrap_or("");
             // The IR `Image` contract (set by the Anthropic reader) is: `media_type` = a real MIME
@@ -798,6 +800,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             })?;
             let data = audio_obj
                 .get("data")
@@ -830,6 +833,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             })?;
             let name = file_obj
                 .get("filename")
@@ -907,6 +911,7 @@ fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, I
         class: StatusClass::ClientError,
         provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
+        ..Default::default()
     })?;
 
     // OpenAI nests the tool definition under `function` ({"type":"function","function":{...}}).

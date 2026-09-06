@@ -107,6 +107,7 @@ impl ProtocolReader for OpenAiReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         let mut extra = serde_json::Map::new();
@@ -182,6 +183,7 @@ impl ProtocolReader for OpenAiReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             })?;
 
             for msg_val in msgs_arr.iter() {
@@ -202,6 +204,7 @@ impl ProtocolReader for OpenAiReader {
                                 busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                             ),
                             retry_after: None,
+                            ..Default::default()
                         });
                     }
                 }
@@ -222,6 +225,7 @@ impl ProtocolReader for OpenAiReader {
                                 busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                             ),
                             retry_after: None,
+                            ..Default::default()
                         })
                     }
                 };
@@ -307,6 +311,7 @@ impl ProtocolReader for OpenAiReader {
                                                     .to_string(),
                                             ),
                                             retry_after: None,
+                                            ..Default::default()
                                         })?
                                         .to_string();
                                     let func = tc_val.get("function").ok_or(IrError {
@@ -316,6 +321,7 @@ impl ProtocolReader for OpenAiReader {
                                                 .to_string(),
                                         ),
                                         retry_after: None,
+                                        ..Default::default()
                                     })?;
                                     let name = func
                                         .get("name")
@@ -457,6 +463,7 @@ impl ProtocolReader for OpenAiReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             })?;
             for tool_val in tools_arr {
                 tools.push(read_openai_tool(tool_val)?);
@@ -636,6 +643,21 @@ impl ProtocolReader for OpenAiReader {
                     class: stream_inline_error_class(error_type, code),
                     provider_signal,
                     retry_after: None,
+                    // Carry the envelope VERBATIM alongside the lossy class. `provider_signal` is
+                    // the most specific TOKEN (the code, else the type); on its own it replaced the
+                    // provider's sentence with a bare code by the time the frame was written, and a
+                    // mid-stream error has no HTTP status for the writer to recover any other way.
+                    detail: busbar_substrate_values::breaker::ProviderErrorDetail {
+                        http_status: error_obj
+                            .get("status")
+                            .and_then(|s| s.as_u64())
+                            .and_then(|s| u16::try_from(s).ok()),
+                        status_name: error_type.map(String::from),
+                        message: error_obj
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .map(String::from),
+                    },
                 },
             ));
             return out;
@@ -1057,6 +1079,7 @@ impl ProtocolReader for OpenAiReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         // Get choices array
@@ -1064,11 +1087,13 @@ impl ProtocolReader for OpenAiReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
             retry_after: None,
+            ..Default::default()
         })?;
         let choices = choices_val.as_array().ok_or(IrError {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         if choices.is_empty() {
@@ -1076,6 +1101,7 @@ impl ProtocolReader for OpenAiReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
                 retry_after: None,
+                ..Default::default()
             });
         }
 
@@ -1099,6 +1125,7 @@ impl ProtocolReader for OpenAiReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
             retry_after: None,
+            ..Default::default()
         })?;
         let _role_str = message_val
             .get("role")
@@ -1198,6 +1225,7 @@ impl ProtocolReader for OpenAiReader {
                             busbar_substrate_values::proto::SIGNAL_IR_PARSE.into(),
                         ),
                         retry_after: None,
+                        ..Default::default()
                     })?;
                     let name = func
                         .get("name")

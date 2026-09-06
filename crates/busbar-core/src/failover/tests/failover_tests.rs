@@ -360,6 +360,7 @@ fn a_transient_failure_trips_the_primary_and_the_next_request_reroutes() {
         class: crate::breaker::StatusClass::ServerError,
         provider_signal: Some("503".into()),
         retry_after: None,
+        ..Default::default()
     };
     // Enough consecutive transients to cross the trip threshold whatever it is configured to.
     let mut disposition = crate::breaker::Disposition::ClientFault;
@@ -694,6 +695,7 @@ fn a_third_plane_costs_a_candidate_type_and_nothing_else() {
         class: crate::breaker::StatusClass::Network,
         provider_signal: Some("link_loss".into()),
         retry_after: None,
+        ..Default::default()
     };
     for _ in 0..16 {
         record_outcome(&store, POOL, first.candidate(), &signal, &cfg);
@@ -779,6 +781,7 @@ fn a_client_fault_never_trips_a_plane_upstream() {
         class: crate::breaker::StatusClass::ClientError,
         provider_signal: Some("400".into()),
         retry_after: None,
+        ..Default::default()
     };
     for _ in 0..64 {
         assert_eq!(
@@ -805,6 +808,7 @@ fn an_auth_failure_hard_downs_the_plane_upstream_everywhere() {
         class: crate::breaker::StatusClass::Auth,
         provider_signal: Some("401".into()),
         retry_after: None,
+        ..Default::default()
     };
     assert_eq!(
         record_outcome(&store, POOL, &members[0], &signal, &cfg),
