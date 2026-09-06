@@ -150,13 +150,16 @@ impl std::error::Error for ClosedWindowMoved {}
 ///
 /// Everything that can change in a closed window is a transfer out of it; once the transfers are
 /// accounted for, every other figure must be where it was at the last checkpoint.
+///
+/// That is the SAME question [`residual`] answers, asked between the checkpoint and now, so it is
+/// asked through [`residual`] rather than re-summed here. A second sum over a hand-picked subset of
+/// the columns is a second definition of "the books balance", and this one had drifted from the
+/// first: it omitted `unreconciled` and the carried overdraft, so a reconciliation that moved value
+/// between the settled and unreconciled columns — which changes nothing about the window — was
+/// reported as a closed window still moving, while a posting that landed in `unreconciled` alone
+/// moved the window invisibly. One identity, asked once.
 pub fn closed_window_is_settled(since: &Totals, now: &Totals) -> Result<(), i128> {
-    let moved = (now.settled - since.settled)
-        + (now.open_holds - since.open_holds)
-        + (now.open_slice_remainders - since.open_slice_remainders)
-        + (now.adjustments - since.adjustments)
-        + (now.cross_window_transfers - since.cross_window_transfers)
-        - (now.drawn - since.drawn);
+    let moved = residual(since, now).amount();
     if moved == 0 {
         Ok(())
     } else {

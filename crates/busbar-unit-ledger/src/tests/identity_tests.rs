@@ -217,6 +217,56 @@ fn a_closed_window_that_is_still_moving_is_a_different_finding_from_one_that_doe
     assert_eq!(closed_window_is_settled(&since, &posted_late), Err(50));
 }
 
+/// "STOPPED MOVING" IS THE IDENTITY READING ZERO, not a second sum over a hand-picked subset of the
+/// columns.
+///
+/// A closed window is settled exactly when its residual has not moved since the checkpoint, and the
+/// residual is the thing that already knows which columns count and with which sign. A second sum
+/// that omits `unreconciled` and `overdraft_carried()` answers a different question, and answers it
+/// wrong in both directions: a reconciliation that moves value between two columns it disagrees
+/// about is reported as a closed window still moving, while a posting that lands in the one column
+/// the sum skips moves the window invisibly.
+#[test]
+fn a_closed_window_is_settled_exactly_when_its_residual_has_not_moved() {
+    let since = Totals {
+        drawn: 1_000,
+        settled: 1_000,
+        ..Totals::zero()
+    };
+
+    // A reconciliation INSIDE a closed window: value moves from the settled column to the
+    // unreconciled one and the books are exactly where they were. Nothing entered or left the
+    // window, so nothing moved.
+    let mut reconciled = since;
+    reconciled.unreconciled += 40;
+    reconciled.settled -= 40;
+    assert_eq!(
+        closed_window_is_settled(&since, &reconciled),
+        Ok(()),
+        "a reconciliation that only re-columns value did not move the window"
+    );
+    assert!(
+        residual(&since, &reconciled).holds(),
+        "and the identity agrees, which is the whole point of asking it"
+    );
+
+    // A posting that lands in `unreconciled` ALONE: value appeared in a window that is already
+    // reported, which is precisely what this check exists to catch.
+    let mut posted_late = since;
+    posted_late.unreconciled += 40;
+    assert_eq!(
+        closed_window_is_settled(&since, &posted_late),
+        Err(40),
+        "value posted into a closed window is a closed window that moved"
+    );
+
+    // The same for the overdraft column, which the old sum also skipped. Overdraft carried out is
+    // subtracted by the identity, so 40 more of it is a window down by 40.
+    let mut overdrawn = since;
+    overdrawn.overdraft_carried_out += 40;
+    assert_eq!(closed_window_is_settled(&since, &overdrawn), Err(-40));
+}
+
 #[test]
 fn cross_window_transfers_close_on_both_sides() {
     let mut ledger = Ledger::new();
