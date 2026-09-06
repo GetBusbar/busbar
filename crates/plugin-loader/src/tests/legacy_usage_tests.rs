@@ -25,6 +25,33 @@ use busbar_api::{ModelTokens, ModelTokensDelta, UNIT_CACHE_READ, UNIT_INPUT, UNI
 /// The request bytes the last `capture_call` saw — the JSON a plugin would have to decode.
 static LAST_REQUEST: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 
+/// Serializes every `request_json_for` window (clear, op, read) end to end, mirroring
+/// `FAKE_CALL_IN_USE` in `lib_tests.rs`: a `Mutex` around the `Vec<u8>` only makes each individual
+/// lock/unlock atomic, not "clear, then the op that writes it, then read" as a whole — a second
+/// test's write landing in that gap would corrupt the JSON the first test asserts against. Taken on
+/// first use in `request_json_for` and held until the calling test's thread ends (libtest gives
+/// each test its own thread), so no concurrent `request_json_for` call can observe a partial window.
+static LAST_REQUEST_IN_USE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+thread_local! {
+    static LAST_REQUEST_HOLD: std::cell::RefCell<Option<std::sync::MutexGuard<'static, ()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Take (once per test thread) and hold the exclusive window over `LAST_REQUEST`.
+fn hold_last_request_window() {
+    LAST_REQUEST_HOLD.with(|held| {
+        let mut held = held.borrow_mut();
+        if held.is_none() {
+            *held = Some(
+                LAST_REQUEST_IN_USE
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()),
+            );
+        }
+    });
+}
+
 /// A fake `busbar_call` that RECORDS the request, then answers `StoreResponse::Unit`.
 unsafe extern "C-unwind" fn capture_call(
     _handle: *mut c_void,
@@ -79,6 +106,7 @@ fn one_delta() -> UsageDelta {
 
 /// Run `op` against a store at `abi` and return the request JSON the plugin received.
 fn request_json_for(abi: u32, op: impl FnOnce(&DynStore)) -> serde_json::Value {
+    hold_last_request_window();
     let store = store_at_abi(abi).expect("checked by the caller");
     FAKE_CALL_HANDLE.with(|c| c.set((STATUS_OK, br#""Unit""#)));
     LAST_REQUEST
