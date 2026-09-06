@@ -386,6 +386,56 @@ fn any_other_shape_forgives_the_frames_that_asked_for_more() {
     }
 }
 
+/// A closed session takes its run of "not yet" with it.
+///
+/// The run lived in a node-global map keyed by session id, and nothing ever took an entry out of
+/// it: connect, send one byte, disconnect, repeat, and the map grew for as long as the node ran.
+/// It also outlived the connection it described — a later session on the same id inherited the
+/// dead one's stalling run and was refused for frames it never sent. The run belongs to the
+/// session, so it ends when the session does.
+#[test]
+fn a_run_of_asks_ends_with_the_session_that_made_them() {
+    let kernel = Kernel::new();
+    let table = InFlight::new(8, 0);
+    let sessions = Sessions::new(4);
+    let scheduler = Scheduler::default();
+    let id = kernel.session_id(13);
+
+    let stalling = sessions
+        .open(id, Binding::Bound, 0)
+        .expect("under the session budget");
+    for _ in 0..MAX_NEEDMORE_FRAMES {
+        assert_eq!(
+            scheduler.dispatch(
+                Some(&stalling),
+                &table,
+                StreamId(1),
+                Direction::Inbound,
+                Shape::NeedMore,
+            ),
+            Dispatch::Wait
+        );
+    }
+    sessions.remove(id);
+    drop(stalling);
+
+    // A new connection on the same id starts from nothing.
+    let fresh = sessions
+        .open(id, Binding::Bound, 0)
+        .expect("the slot came back with the close");
+    assert_eq!(
+        scheduler.dispatch(
+            Some(&fresh),
+            &table,
+            StreamId(1),
+            Direction::Inbound,
+            Shape::NeedMore,
+        ),
+        Dispatch::Wait,
+        "the new session was charged the old one's run"
+    );
+}
+
 #[test]
 fn a_superseding_open_reaches_the_compare_and_set_even_on_an_occupied_direction() {
     let kernel = Kernel::new();

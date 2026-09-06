@@ -530,6 +530,7 @@ pub struct SessionSlot {
     open: Mutex<HashMap<(StreamId, Direction), UnitKey>>,
     upstreams: AtomicUsize,
     last_non_tick: AtomicU64,
+    needmore: AtomicUsize,
     closed: AtomicBool,
 }
 
@@ -618,6 +619,25 @@ impl SessionSlot {
         self.upstreams.load(Ordering::Acquire)
     }
 
+    /// Count one more frame in a row that was not a whole anything yet, and say what the run is
+    /// now at. The run lives HERE and not in a table beside the pump: a counter keyed by session id
+    /// in a node-global map is a counter nothing takes out again, and one that a later session on
+    /// the same id inherits. On the slot it is born and closed with the connection it describes,
+    /// and no node-global lock is taken on the path every relayed frame walks.
+    pub fn asked_again(&self) -> usize {
+        self.needmore.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// A frame that WAS something ends the run.
+    pub fn made_progress(&self) {
+        self.needmore.store(0, Ordering::Release);
+    }
+
+    /// How long the current run of asks is.
+    pub fn asks(&self) -> usize {
+        self.needmore.load(Ordering::Acquire)
+    }
+
     /// Note a unit that was not a tick. The idle clock reads this and nothing else, so a priced
     /// accrual tick can run all night without making an idle session look busy.
     pub fn touch_non_tick(&self, now: Millis) {
@@ -696,6 +716,7 @@ impl Sessions {
             open: Mutex::new(HashMap::new()),
             upstreams: AtomicUsize::new(0),
             last_non_tick: AtomicU64::new(now),
+            needmore: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
         });
         let displaced = self

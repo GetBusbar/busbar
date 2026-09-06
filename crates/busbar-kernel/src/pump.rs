@@ -23,11 +23,9 @@
 //!   datagram transport the frame is dropped and journaled as unemitted. Only emitted frames are
 //!   metered.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 
-use busbar_caps::{ReasonCode, SessionId, StepName, UnitKey};
+use busbar_caps::{ReasonCode, StepName, UnitKey};
 
 use crate::grammar::{resolve_pointer, DeepestPointer, Resolved};
 use crate::inflight::{InFlight, SessionSlot};
@@ -110,12 +108,6 @@ pub enum Dispatch {
 pub struct Scheduler {
     one_shots: AtomicUsize,
     k: usize,
-    /// How many frames in a row a session has answered "not a whole anything yet" with.
-    ///
-    /// A session appears here only while it is in such a run: the first frame that IS something
-    /// takes it out again, so the map is bounded by the sessions currently stalling, which the
-    /// session budget already bounds.
-    needmore: Mutex<HashMap<SessionId, usize>>,
 }
 
 impl Scheduler {
@@ -124,29 +116,23 @@ impl Scheduler {
         Scheduler {
             one_shots: AtomicUsize::new(0),
             k,
-            needmore: Mutex::new(HashMap::new()),
         }
     }
 
     /// Count one more consecutive "not yet" for a session, and say whether the run is past the
-    /// ceiling. A session with no slot — a one-shot transport — has no run to keep.
-    fn ask_again(&self, session: Option<&SessionSlot>) -> bool {
-        let Some(session) = session else {
-            return false;
-        };
-        let mut runs = self.needmore.lock().unwrap_or_else(|e| e.into_inner());
-        let run = runs.entry(session.id()).or_insert(0);
-        *run += 1;
-        *run > MAX_NEEDMORE_FRAMES
+    /// ceiling. A session with no slot — a one-shot transport — has no run to keep. The count is
+    /// the session's own, so it is neither shared with another connection nor left behind by one.
+    fn ask_again(session: Option<&SessionSlot>) -> bool {
+        match session {
+            None => false,
+            Some(session) => session.asked_again() > MAX_NEEDMORE_FRAMES,
+        }
     }
 
     /// A frame that was something ends the run.
-    fn made_progress(&self, session: Option<&SessionSlot>) {
+    fn made_progress(session: Option<&SessionSlot>) {
         if let Some(session) = session {
-            self.needmore
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&session.id());
+            session.made_progress();
         }
     }
 
@@ -195,13 +181,13 @@ impl Scheduler {
     ) -> Dispatch {
         // A frame that is something ends whatever run of "not yet" came before it.
         if shape != Shape::NeedMore {
-            self.made_progress(session);
+            Scheduler::made_progress(session);
         }
         match shape {
             // The handshake framing ceiling, enforced where it can be: a peer that never finishes a
             // frame otherwise holds its session slot for as long as it likes. The run is counted per
             // session and consecutively, so a slow-but-progressing peer never meets it.
-            Shape::NeedMore if self.ask_again(session) => Dispatch::Refuse {
+            Shape::NeedMore if Scheduler::ask_again(session) => Dispatch::Refuse {
                 step: StepName::Decode,
                 reason: ReasonCode::Stalled,
             },
