@@ -429,28 +429,42 @@ impl Plane for LlmPlane {
         let egress_protocol = busbar_llm_codec::proto_codec::protocol_for(egress.name)
             .ok_or(Encode::Unrepresentable)?;
         let bytes = u.body().body();
-        let mut value: serde_json::Value =
-            sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
+        // Both quantities the hop needs from the REQUEST document were read once, at decode, and
+        // sealed into the draft: whether the client asked for a stream, and which model it named.
+        // Reading them back is what lets the relay below decide without a document.
+        let draft = u.draft_facts();
+        let stream = matches!(draft.get(meta::FACT_STREAM), Some(FactValue::Bool(true)));
+        let named_model = match draft.get(meta::FACT_MODEL) {
+            Some(FactValue::Str(model)) => Some(model),
+            _ => None,
+        };
 
-        let stream = value
-            .get("stream")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-
-        let out = if ingress.name == egress.name {
-            // Same dialect. The bytes the client sent are the bytes the upstream gets, unless the
-            // model has to change — re-serializing an unchanged document would move whitespace and
-            // member order for no reason, and a request that is signed over its bytes would stop
-            // verifying.
+        let out = if ingress.name == egress.name && named_model == Some(upstream.model) {
+            // Same dialect, and the model the client named is already the model this lane wants. So
+            // there is nothing to rewrite, and the bytes the client sent are the bytes the upstream
+            // gets — the same conclusion the parse-and-compare below reaches, reached without the
+            // parse. Re-serializing an unchanged document would move whitespace and member order
+            // for no reason, and a request that is signed over its bytes would stop verifying.
+            //
+            // The relay is a BORROW, not a copy: decode already put these bytes in this unit's
+            // arena (it copies them off the connection slab before reading them), so they live
+            // exactly as long as the hop that carries them.
+            ArenaBytes::new(bytes)
+        } else if ingress.name == egress.name {
+            // Same dialect, but the model may have to change. Only this arm needs the document.
+            let mut value: serde_json::Value =
+                sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
             if egress_protocol
                 .writer()
                 .rewrite_model_if_needed(&mut value, upstream.model)
             {
-                serialize(&value)?
+                put(ctx, &serialize(&value)?)?
             } else {
-                bytes.to_vec()
+                ArenaBytes::new(bytes)
             }
         } else {
+            let value: serde_json::Value =
+                sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
             let ingress_protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
                 .ok_or(Encode::Unrepresentable)?;
             let mut request = ingress_protocol
@@ -475,7 +489,7 @@ impl Plane for LlmPlane {
             egress_protocol
                 .writer()
                 .rewrite_model_if_needed(&mut written, upstream.model);
-            serialize(&written)?
+            put(ctx, &serialize(&written)?)?
         };
 
         let mut envelope = TransportEnvelope::default();
@@ -497,7 +511,7 @@ impl Plane for LlmPlane {
 
         Ok(EgressBody {
             envelope,
-            body: put(ctx, &out)?,
+            body: out,
             auth: SchemeKey::new(egress.egress_scheme),
         })
     }
