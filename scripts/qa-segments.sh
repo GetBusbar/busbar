@@ -291,6 +291,10 @@ run_all() {
   local f id status tier run rc=0
   local -a rows=()
   local covered="" reserved="" tierskipped="" failedset="" plugins_covered=no
+  # HOW MANY SEGMENTS THIS RUN ACTUALLY REACHED. Counted, not inferred from `rc`: `rc` starts at 0
+  # and only a FAILING segment raises it, so a run that reached no segment at all is indistinguishable
+  # from a run in which every segment passed. See the floor after the loop.
+  local attempted=0
   f="$(feed)" || { red "qa-gate umbrella: RED (manifest/registry feed failed)"; return 1; }
   while IFS=$'\t' read -r id status tier run; do
     [ -n "$id" ] || continue
@@ -301,6 +305,7 @@ run_all() {
       tierskipped="${tierskipped:+$tierskipped, }$id"
       continue
     fi
+    attempted=$((attempted + 1))
     if run_one "$id"; then
       if [ "$status" != "reserved" ]; then
         # COVERED means: active, executed, AND passed. A segment that failed is listed separately —
@@ -338,6 +343,29 @@ run_all() {
     note "PLUGINS NOT COVERED BY THIS RUN — no plugin segment passed here; this result makes NO"
     note "                claim about any plugin."
     [ "$tier_filter" != "fast" ] || note "                (Expected on --tier fast: plugin segments are live-mock.)"
+  fi
+
+  # ── THE FLOOR: A RUN THAT REACHED NO SEGMENT IS NOT A GREEN RUN ─────────────────────────────────
+  # `--tier` is a free-text filter compared with `!=` against each segment's tier, and it was never
+  # checked against the manifest's tier vocabulary. So `--tier fastt` — one keystroke off the `fast`
+  # that scripts/qa-gate-run.sh passes — matched no segment, excluded all 34, left `rc` at its initial
+  # 0, and printed "qa-gate umbrella: GREEN". The scope block underneath said COVERED: <none>, which
+  # is honest and which nothing reads: the exit code and the banner are what a workflow step sees.
+  # A renamed tier in qa/segments.toml would do the same thing without anyone mistyping anything.
+  #
+  # The floor is the count of segments this run actually reached, not a re-derivation of the filter:
+  # whatever the reason nothing ran — a typo, a renamed tier, a feed that came back short — the
+  # answer is the same one this file gives everywhere else, and it is not green.
+  if [ "$attempted" -eq 0 ]; then
+    rc=1
+    red "qa-gate umbrella: RED — ZERO segments were reached, so nothing was verified."
+    if [ -n "$tier_filter" ]; then
+      note "  --tier '$tier_filter' matched no segment in the manifest. Tiers in use: $(printf '%s\n' "$f" | cut -f3 | sort -u | tr '\n' ' ')"
+    else
+      note "  the manifest feed yielded no segment rows at all."
+    fi
+    note "  A filter that selects nothing is not a gate that passed; it is a gate that did not run."
+    return "$rc"
   fi
 
   if [ "$rc" -eq 0 ]; then
@@ -594,6 +622,39 @@ TOML
     fails=$((fails+1))
   fi
   rm -rf "$stmp"
+
+  # (l) A TIER THAT SELECTS NOTHING IS RED. `--tier` is compared with `!=` against each segment's
+  #     tier and was never checked against the manifest's vocabulary, so `--tier fastt` — one
+  #     keystroke off the `fast` scripts/qa-gate-run.sh passes — excluded every segment, left `rc`
+  #     at 0 and printed the GREEN banner. Run as a CHILD PROCESS, so what is proven is the exit
+  #     code a workflow step would actually read, not an internal variable.
+  local ttmp
+  ttmp="$(mktemp -d)"
+  cat >"$ttmp/segments.toml" <<'TOML'
+[[segment]]
+id     = "selftest-tier-active"
+status = "active"
+tier   = "fast"
+run    = "true"
+TOML
+  if QA_SEGMENTS_MANIFEST="$ttmp/segments.toml" "$0" --run --tier fastt >"$ttmp/out" 2>&1; then
+    red "  FAIL  --tier with a value matching NO segment exited 0: a filter that selects nothing read as green"
+    fails=$((fails+1))
+  elif grep -q 'ZERO segments were reached' "$ttmp/out"; then
+    note "PASS  a --tier that matches no segment is RED (zero segments reached is never a pass)"
+  else
+    red "  FAIL  --tier with no matching segment was non-zero, but not for the zero-segments reason"
+    fails=$((fails+1))
+  fi
+  # The positive control: the SAME manifest with the tier spelled right must still be green, so the
+  # guard above is refusing an empty selection rather than refusing --tier.
+  if QA_SEGMENTS_MANIFEST="$ttmp/segments.toml" "$0" --run --tier fast >"$ttmp/ok" 2>&1; then
+    note "PASS  the same manifest with the tier spelled correctly is still GREEN (the guard is not refusing --tier)"
+  else
+    red "  FAIL  --tier fast on a matching manifest went red; the zero-segments floor is over-firing"
+    fails=$((fails+1))
+  fi
+  rm -rf "$ttmp"
 
   if [ "$fails" -eq 0 ]; then
     grn "qa-gate segmentation self-test: ALL GREEN (shape + preserved coverage + inert reserved + registry-exact fan-out + every active segment proven red-then-green)"
