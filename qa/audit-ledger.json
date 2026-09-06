@@ -225,13 +225,17 @@
    "paths": [
     "crates/busbar-core/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "0a1eef10e66a725f644483e54a281e4a74a2aa26c9770516151131f75d8ddc9b",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 4,
+    "MEDIUM": 3,
+    "LOW": 1
+   },
+   "report": "pass 1 (partial read): rotate_key unbounded id (fixed abf9e1fe), login authorize url panic (fixed 3407bf7c); config/validate endpoint rejects plane config and reads caller paths unbounded, admin-tokens terminal reject, limits_guard commit before persist, shutdown flush_budgets gate reported; migrate.rs 1100-1740, store tests, auth chain tests unread",
+   "auditor": "opus-pass1",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core/src/tests"
