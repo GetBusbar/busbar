@@ -117,9 +117,16 @@ step() {   # $1 = label ; rest = command
 # banner and the SAME exit 0 as a full run — and the banner and the exit code are all a wrapper
 # script, a CI step or the proof-manifest collator ever sees. A provisional answer must not be
 # spendable as the real one.
-# The floor is the number of begin_group/end_group pairs this file defines (19 today). Raise it
+# The floor is the number of begin_group/end_group pairs this file defines (20 today). Raise it
 # with a new group; a run that reports fewer is a run that lost groups, not a run that passed.
-DONE_GROUP_FLOOR="${DONE_GROUP_FLOOR:-19}"
+#
+# A FLOOR ONE BELOW THE TRUTH IS NOT A FLOOR. It stood at 19 while this file defined 20 groups, so a
+# run that lost a whole group — PARITY, BYTE-IDENTITY, PUBLIC-HYGIENE, any one of them — reported
+# "19 / 19 groups GREEN" and printed the unqualified DONE banner with exit 0. The slack was invisible
+# because the number was maintained by hand beside a list that grows: every new group had to remember
+# to raise it, and one did not. The selftest below now derives the true count from this file and
+# refuses a floor that does not equal it, so the constant can never drift below the list again.
+DONE_GROUP_FLOOR="${DONE_GROUP_FLOOR:-20}"
 final_verdict() {
   local fail=0 green=0 total=0 i
   if [ "${#G_NAME[@]}" -gt 0 ]; then
@@ -169,14 +176,29 @@ if [ "$SELFTEST" -eq 1 ]; then
       printf 'FAIL  %s (rc=%s want=%s, looked for %s)\n' "$label" "$rc" "$want" "$needle"; _st_fails=$((_st_fails+1))
     fi
   }
+  # THE FLOOR MUST EQUAL THE LIST, and be checked against it rather than remembered. The constant is
+  # a hand-maintained mirror of the begin_group calls below it; it sat one BELOW them, which made the
+  # anti-vacuity guard accept a run that had lost an entire group. Deriving the truth here means the
+  # next group added reds this selftest until the constant follows it up.
+  _st_groups="$(grep -c '^begin_group "' "$0")"
+  if [ "$DONE_GROUP_FLOOR" -eq "$_st_groups" ]; then
+    printf 'PASS  the floor (%s) equals the number of groups this file defines (%s)\n' \
+      "$DONE_GROUP_FLOOR" "$_st_groups"
+  else
+    printf 'FAIL  the floor is %s but this file defines %s group(s): a run that lost %s group(s) would still be called DONE\n' \
+      "$DONE_GROUP_FLOOR" "$_st_groups" "$((_st_groups - DONE_GROUP_FLOOR))"; _st_fails=$((_st_fails+1))
+  fi
   # A --fast run whose groups are all green must NOT be spendable as the DONE claim.
-  _st "--fast + all green -> PROVISIONAL, non-zero"      3 "PROVISIONAL"    1 19 0
-  _st "full run + all green -> DONE, exit 0"             0 "is DONE"        0 19 0
-  _st "--fast + a red group -> NOT done"                 1 "is NOT done"    1 18 1
-  _st "full run + a red group -> NOT done"               1 "is NOT done"    0 18 1
+  _st "--fast + all green -> PROVISIONAL, non-zero"      3 "PROVISIONAL"    1 "$_st_groups" 0
+  _st "full run + all green -> DONE, exit 0"             0 "is DONE"        0 "$_st_groups" 0
+  _st "--fast + a red group -> NOT done"                 1 "is NOT done"    1 "$((_st_groups - 1))" 1
+  _st "full run + a red group -> NOT done"               1 "is NOT done"    0 "$((_st_groups - 1))" 1
   # Zero groups is not DONE: nothing raised `fail`, because nothing ran.
   _st "zero groups -> RED, never DONE"                   1 "floor is"       0 0  0
   _st "groups went missing (below the floor) -> RED"     1 "floor is"       0 3  0
+  # EXACTLY ONE GROUP MISSING is the case the slack floor let through, and the only one that matters
+  # in practice: nobody deletes nineteen groups, somebody deletes one. All-green, one short, RED.
+  _st "one group missing of the full set -> RED, never DONE" 1 "floor is"   0 "$((_st_groups - 1))" 0
   echo
   [ "$_st_fails" -eq 0 ] && { grn "verify-1.6.0-done selftest: GREEN"; exit 0; }
   red "verify-1.6.0-done selftest: RED ($_st_fails)"; exit 1
