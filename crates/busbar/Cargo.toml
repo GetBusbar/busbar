@@ -112,6 +112,10 @@ rustls = { workspace = true }
 tower = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 axum = { workspace = true }
+# The body trait itself, named because the composition root implements it: the llm plane's answer goes
+# out wrapped so the spend its body reports on the way past has somewhere to land. A passthrough, and
+# the same version axum is built on — this is the trait axum's own `Body` implements, not a second one.
+http-body = { workspace = true }
 tracing = { workspace = true }
 metrics = { workspace = true }
 serde_yaml = { workspace = true }

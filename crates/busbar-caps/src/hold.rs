@@ -563,6 +563,31 @@ impl HoldAccrual {
     pub fn convert_at_parent_exit<S: Step>(self, sized: u64, token: &AdmitToken<S>) -> Hold {
         Hold::open(token, self.principal, sized)
     }
+
+    /// A spend that became knowable only AFTER the unit's own terminal, on its way to
+    /// [`Posted::settle_late`].
+    ///
+    /// The same shape as a child's missed accrual and for the same reason, which is why it is this
+    /// type rather than a new one: by the time the figure exists the reservation is gone. A streamed
+    /// or deferred body reports what it consumed when it DRAINS, and the exit sealed the end and
+    /// released the slot before the first byte of it reached the client — so there is nothing held
+    /// back for this amount, whoever asks. `overdraft` is the whole amount because there was never a
+    /// reservation for any part of it; `settle_late` says the same thing in the two figures the
+    /// reconciliation reads, and this constructor is what lets a caller outside the loop say it.
+    ///
+    /// It draws no slice and opens no hold. Recovering the amount from the principal's bucket is a
+    /// draw the caller makes; what this is, is the record that the value moved.
+    ///
+    /// The ledger's token is required and unread, exactly as [`Posted::settle_late`] requires and
+    /// does not read it: minting one is the kernel's, so an accrual cannot be conjured by anything
+    /// the kernel did not hand a token to.
+    pub fn after_terminal(principal: PrincipalId, amount: u64, _token: &LedgerToken) -> Self {
+        HoldAccrual {
+            principal,
+            amount,
+            overdraft: amount,
+        }
+    }
 }
 
 /// The flags a posting can carry. A posting is never just an amount: it says how much the amount is

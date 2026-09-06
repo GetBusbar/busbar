@@ -155,6 +155,24 @@ impl Kernel {
         busbar_caps::DurabilityToken::mint(&self.seal)
     }
 
+    /// The ledger unit's token, as the composition root lends it to a posting made after the exit.
+    ///
+    /// The fourth token minted outside the loop, and the reason is the sharpest of the four. Inside
+    /// the loop the ledger's token is minted at the terminal, which is where every posting the loop
+    /// itself makes is built — and a figure that only exists AFTER that terminal cannot be built
+    /// there. There is no step of the unit still running when it arrives, so there is no step token
+    /// that could stand in, and a root that wanted to post it had to reach for the seal itself.
+    ///
+    /// This is what a late accrual is: the money a streamed or deferred body reports once the body
+    /// has drained, posted onto the same balance and the same window the terminal settled in. The
+    /// token is minted for one such posting and dropped with it, exactly as the terminal's is.
+    ///
+    /// Kept beside the other three and named the same way, so the source scan that accounts for
+    /// every mint sees this one too.
+    pub fn ledger_token(&self) -> busbar_caps::LedgerToken {
+        busbar_caps::LedgerToken::mint(&self.seal)
+    }
+
     /// The seal itself, for the other two places in the kernel that mint tokens: the recovery
     /// module, which materialises a hold from a journal record, and the node's sweep, which is the
     /// second and last holder of an exit token.

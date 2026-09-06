@@ -102,6 +102,33 @@ struct Carry {
     terminal: Option<Served>,
 }
 
+/// THE COMPLETION TAP, as a root may hold it.
+///
+/// Opaque on purpose: what is inside is the engine's own cell and naming it would be a root that had
+/// learned how this plane forwards. What a holder can do with it is the one thing a holder needs —
+/// hand it back to [`Walk::priced_after_terminal`] once the body it belongs to has drained.
+///
+/// Cheap to hold and safe to hold for as long as the body lives: it is a refcount on a cell that is
+/// written exactly once and never rewritten.
+#[derive(Clone, Debug)]
+pub struct Tap(crate::engine::TapCell);
+
+/// WHAT THE RESPONSE WAS WORTH, read after its body drained.
+///
+/// The three facts a second book needs about a spend that arrived after the terminal, and no more:
+/// the amount, and the two names the row it belongs to is keyed by. Whether that amount is a
+/// posting, and what flags it carries, is the ledger's decision and not this plane's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LateFigure {
+    /// The amount, in the nano-units a reservation is in.
+    pub priced_nanos: u128,
+    /// The SERVING lane's config name — the lane that actually answered, after any failover, which
+    /// is the key a rate card is written against and the key the legacy row carries.
+    pub lane: String,
+    /// That lane's provider, as the legacy row carries it.
+    pub provider: String,
+}
+
 /// One request, as this plane's steps carry it.
 pub struct Walk {
     host: Arc<dyn EngineHost>,
@@ -364,6 +391,71 @@ impl Walk {
             .and_then(|b| b.probe().get("stream"))
             .and_then(|s| s.as_bool())
             .unwrap_or(false)
+    }
+
+    /// A HANDLE ON THIS RESPONSE'S COMPLETION TAP, taken before the body that fills it is handed to
+    /// the client.
+    ///
+    /// The tap is what knows what a streamed or deferred answer consumed, and it does not know it
+    /// until the BODY has drained — which is after the unit's terminal, after the exit sealed the
+    /// end, and after the response left this plane. The cell rides on the response as an extension
+    /// so that the thing draining the body can still find it; taking a handle here is the same move
+    /// the engine's own driver makes for the same reason, and it is a refcount bump on a cell that
+    /// is written exactly once.
+    ///
+    /// `None` where the response carries no tap: nothing was ever going to fill one.
+    #[must_use]
+    pub fn tap_of(response: &Response) -> Option<Tap> {
+        response
+            .extensions()
+            .get::<crate::engine::TapCell>()
+            .cloned()
+            .map(Tap)
+    }
+
+    /// WHAT THE TAP REPORTED, PRICED — the reading that does not exist until the body has drained.
+    ///
+    /// The Meter step ran while this cell was empty, so the amount it priced was zero: on this plane
+    /// there is no earlier moment at which a streamed answer's money is a fact. This is that moment.
+    /// The figure is the SAME expression the step would have run had it been able to — the tier split
+    /// the tap read, priced against the card the sink pinned at the door, keyed by the lane that
+    /// actually answered — because it is literally that function, called here instead of there.
+    ///
+    /// It ACCRUES NOTHING. The tap already put this response on the governance ledger when it filled
+    /// the cell, which is what the previous release bills and what `/usage` reports; calling the
+    /// accrual seam again here would bill the same tokens twice. What this produces is a reading, for
+    /// a second book to post onto.
+    ///
+    /// `None` where there is nothing to post: the cell is still empty, the Route step never ran, no
+    /// lane answered, or the walk held no sink to price against. A response the tap marked as billing
+    /// failed prices at zero, which is what the plane bills for it — the figures seen before a
+    /// terminal error are evidence and not a charge.
+    #[must_use]
+    pub fn priced_after_terminal(&self, tap: &Tap) -> Option<LateFigure> {
+        let report = tap.0.get()?;
+        let carry = self.lock();
+        let mut facts = carry.facts.clone()?;
+        facts.fold(report);
+        let tables = crate::engine::EngineTables::new(&self.rt);
+        let lane = facts.lane.and_then(|i| tables.lanes().get(i))?;
+        let sink = carry.meter_sink.as_ref()?;
+        // A terminal error, an abort or a cut transfer bills ZERO and the tier is empty, so the
+        // reading is zero rather than absent: this response reached a lane and consumed nothing the
+        // node will charge for, which is a different statement from "no reading could be taken".
+        let tier = if facts.billing_failed {
+            busbar_substrate::billing::Usage::default()
+        } else {
+            facts
+                .usage
+                .as_ref()
+                .map(crate::engine::usage::tier_usage)
+                .unwrap_or_default()
+        };
+        Some(LateFigure {
+            priced_nanos: crate::unit::meter::price_against(&self.host, sink, lane, &tier),
+            lane: lane.model.clone(),
+            provider: lane.provider.clone(),
+        })
     }
 
     /// Post the terminal's bytes. Private: the two doors below are the only posters.

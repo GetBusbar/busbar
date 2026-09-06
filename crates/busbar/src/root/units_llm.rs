@@ -88,7 +88,7 @@ use busbar_caps::{
 use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
-use busbar_llm::unit::walk::{Walk, WalkArrival};
+use busbar_llm::unit::walk::{Tap, Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
 use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
 use busbar_substrate::proxy::POOL_LABEL_UNRESOLVED;
@@ -406,17 +406,229 @@ impl LlmNode {
                 // which has moved no balance and left no record until something settles it — and
                 // until this line nothing did, so a unit ran, ended, posted, and posted into a value
                 // that was dropped on the floor.
-                self.settle_end(&principal, unit.charged_at, ended);
+                let charged_at = unit.charged_at;
+                self.settle_end(&principal, charged_at, ended);
                 // The loop ran; the answer is whatever the terminal posted. There is no unit that
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
                 // cannot be taken still has to say something if it is.
-                unit.walk
+                let walk = unit.walk;
+                let response = walk
                     .take_terminal()
                     .map(audit::Served::into_response)
-                    .unwrap_or_else(|| unavailable(proto))
+                    .unwrap_or_else(|| unavailable(proto));
+                // THE LATE ARM. The settlement above carried what the terminal knew, and on this
+                // plane that is the record a unit ran and ended and nothing else: the money is in a
+                // cell the response's own body fills when it DRAINS, which has not happened yet. So
+                // the body goes out wrapped, and the figure lands when it arrives.
+                self.attach_late_accrual(response, walk, &principal, charged_at)
             }
         }
+    }
+
+    /// Wrap the answer's body so the figure that arrives after the terminal has somewhere to land.
+    ///
+    /// Nothing here changes a byte of what the client is given: the frames, their order, the trailers
+    /// and the size hint are the inner body's, forwarded. What the wrapper adds is a place to stand
+    /// at the one instant this plane's money becomes a fact.
+    ///
+    /// Three ways this hands the response straight back, and each is a case where there is nothing to
+    /// wait for. No book bound: the build carries no root ledger. No tap on the response: nothing was
+    /// ever going to fill one, so a wrapper would only ever drop empty.
+    fn attach_late_accrual(
+        &self,
+        response: Response,
+        walk: Walk,
+        principal: &PrincipalId,
+        charged_at: u64,
+    ) -> Response {
+        let Some(book) = self.book.get() else {
+            return response;
+        };
+        let Some(tap) = Walk::tap_of(&response) else {
+            return response;
+        };
+        let arm = LateAccrual {
+            book: Arc::clone(book),
+            // MINTED FOR THIS ONE POSTING and dropped with it. A token is neither `Clone` nor `Copy`
+            // and the node's own is lent by reference for the length of a call, which is exactly what
+            // this is not: the posting outlives every call on this path. So the pair is minted where
+            // the unit is and travels with the body it is a posting OF.
+            durability_token: self.kernel.durability_token(),
+            ledger_token: self.kernel.ledger_token(),
+            principal: principal.clone(),
+            // The unit's PINNED arrival epoch, not a clock read at drain time. The late posting lands
+            // on the same balance and in the same window the terminal settled in, which is the whole
+            // of what makes it the same row: a body that drained past midnight would otherwise open a
+            // second day's row for a request the node admitted, priced and billed in the first.
+            charged_at,
+            walk,
+            tap,
+        };
+        let (parts, body) = response.into_parts();
+        Response::from_parts(parts, axum::body::Body::new(LateBody::new(body, arm)))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The late accrual
+// ---------------------------------------------------------------------------------------------
+
+/// **THE LATE ACCRUAL'S ARM.** What this unit spent, posted once the body that reports it has
+/// drained.
+///
+/// The exit settles what it knows AT THE TERMINAL. On this plane a delivered answer's usage is not
+/// among it: the response's completion tap fills its cell when the body is consumed, and the body is
+/// consumed after the terminal handed the client its bytes, after the audit door sealed the end, and
+/// after the slot went back to the table. A figure that arrives then is a LATE ACCRUAL — posted onto
+/// the same principal, the same window and the same lane and provider the legacy row carries, flagged
+/// so that a reader can tell it apart from a spend the door reserved for.
+///
+/// It needs no hold and no slot, and that is not an accommodation — it is what the flags SAY. The
+/// reservation went back at the terminal, so the whole amount books as overdraft with nothing behind
+/// it, which is the honest description of a spend the node learned about after it had let go.
+struct LateAccrual {
+    book: Arc<Mutex<crate::root::durability::Durability>>,
+    durability_token: busbar_caps::DurabilityToken,
+    ledger_token: busbar_caps::LedgerToken,
+    principal: PrincipalId,
+    charged_at: u64,
+    /// The unit's carry, kept alive for exactly as long as the body is: the pricing reads the sink
+    /// the door pinned and the lane table the walk resolved, and both live here.
+    walk: Walk,
+    /// The cell the body fills. Held rather than looked up again, because by the time it is read the
+    /// response it rode on no longer exists.
+    tap: Tap,
+}
+
+impl LateAccrual {
+    /// Read the tap and post what it says. Runs at most once per unit — see [`LateBody`].
+    fn post(self) {
+        let LateAccrual {
+            book,
+            durability_token,
+            ledger_token,
+            principal,
+            charged_at,
+            walk,
+            tap,
+        } = self;
+        let Some(figure) = walk.priced_after_terminal(&tap) else {
+            return;
+        };
+        // THE ROW THIS LANDS ON. `figure` names the serving lane and its provider — the two names the
+        // legacy row is keyed by — and the balance below is keyed by principal and window. Those are
+        // the same row: the node's books retain no lane and no provider, so both the ledger's side and
+        // the legacy side of the reconciliation are read at the width the node keeps, with the two
+        // names empty on BOTH. Carrying them here is what makes that a fact about the width rather
+        // than a figure that lost its row on the way — and it is where a wider key attaches the day
+        // the books grow one.
+        //
+        // A ZERO IS NOT A ROW, and posting one would say the node had settled something. A unit that
+        // reached a lane and billed nothing — a terminal error, a cut before any usage was reported,
+        // an unpriced card — is already fully described by the settlement the exit made.
+        //
+        // A figure too large for the record settles at the ceiling rather than wrapping, exactly as
+        // the terminal's own settlement narrows it: there is no amount above the ceiling to post, and
+        // a wrap would post nearly nothing for the most expensive unit the node has ever run.
+        let amount = u64::try_from(figure.priced_nanos).unwrap_or(u64::MAX);
+        if amount == 0 {
+            return;
+        }
+        let accrual = busbar_caps::HoldAccrual::after_terminal(principal.clone(), amount, &ledger_token);
+        let posted = busbar_caps::Posted::settle_late(accrual, &ledger_token);
+        let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
+        let _settled = settle(
+            &mut durability,
+            &principal,
+            charged_at,
+            &durability_token,
+            posted,
+        );
+    }
+}
+
+/// The answer's body, with the late arm riding on it.
+///
+/// A passthrough and nothing more: every frame the inner body yields is the frame this yields, in
+/// order, and the end-of-stream and size-hint questions are answered by asking it. The client cannot
+/// tell this is here, which is the requirement — the previous release's bytes are the bytes.
+///
+/// The arm fires ONCE, on whichever of the two ends this body reaches. A body that runs to
+/// `Ready(None)` has been drained and the tap has filled; a body that is DROPPED first has been cut,
+/// which is the client hanging up mid-answer, and the tap fills on that path too — the engine's own
+/// stream wrapper reports a partial from its `Drop`. Which of the two happened is the tap's to say
+/// and not this wrapper's.
+struct LateBody {
+    /// `None` after the inner body has been let go, which is how the drop path orders itself.
+    inner: Option<axum::body::Body>,
+    /// `None` after the arm has fired, which is what makes "once" a property of the value.
+    arm: Option<LateAccrual>,
+}
+
+impl LateBody {
+    fn new(inner: axum::body::Body, arm: LateAccrual) -> Self {
+        LateBody {
+            inner: Some(inner),
+            arm: Some(arm),
+        }
+    }
+
+    /// Fire the arm if it has not fired. Called from both ends.
+    fn fire(&mut self) {
+        if let Some(arm) = self.arm.take() {
+            arm.post();
+        }
+    }
+}
+
+impl http_body::Body for LateBody {
+    type Data = axum::body::Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        let Some(inner) = this.inner.as_mut() else {
+            return std::task::Poll::Ready(None);
+        };
+        let polled = std::pin::Pin::new(inner).poll_frame(cx);
+        // THE DRAIN. `Ready(None)` is the inner body saying it has no more frames, and by then its
+        // own end-of-stream arm has already filled the tap — the report is on the cell before the
+        // frame that ends the stream is handed back. A stream that ends in an ERROR is not fired on
+        // here: that body is dropped rather than drained, and the drop path below is what reads it.
+        if matches!(polled, std::task::Poll::Ready(None)) {
+            this.fire();
+        }
+        polled
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.as_ref().is_none_or(http_body::Body::is_end_stream)
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner
+            .as_ref()
+            .map_or_else(|| http_body::SizeHint::with_exact(0), http_body::Body::size_hint)
+    }
+}
+
+impl Drop for LateBody {
+    /// THE CUT. A client that hangs up mid-answer drops this body where it stands, and what the node
+    /// bills for that is what the tap reported — the same figure the previous release's ledger took
+    /// from the same cell, on the same event, which is why this arm posts rather than declining.
+    ///
+    /// The inner body is let go FIRST and the order is the whole of it: the engine's stream wrapper
+    /// files its partial report from its own `Drop`, so an arm that read the cell before that ran
+    /// would read an empty one and post nothing for a request the previous release charges for.
+    /// Fields drop after this body runs, so dropping it by hand here is what puts the two in the
+    /// order the figure needs.
+    fn drop(&mut self) {
+        drop(self.inner.take());
+        self.fire();
     }
 }
 

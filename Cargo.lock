@@ -376,6 +376,7 @@ dependencies = [
  "criterion",
  "futures",
  "hex",
+ "http-body",
  "http-body-util",
  "metrics",
  "rcgen",
