@@ -722,22 +722,31 @@ pub fn provider_origin() -> OriginKind {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// One thing the caller is asking to act on.
+///
+/// The name is borrowed rather than `'static` because the fine-grained one is not a registration: a
+/// tool name arrives in the caller's own frame and is read out of it, so it lives as long as the
+/// decoded unit does and no longer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Resource {
+pub struct Resource<'n> {
     /// The kind, in this plane's vocabulary.
     pub kind: &'static str,
-    /// The registration the request is about.
-    pub name: &'static str,
+    /// The registration or the tool the request is about.
+    pub name: &'n str,
 }
 
 /// The resources one operation class names.
 ///
-/// A call names two: the server it is on and the tool namespace within it. Everything else names the
-/// server alone. The coarse grant never stands in for the fine one — that is the reason there are
-/// two kinds rather than one — and a deployment with nothing registered names nothing at all, which
-/// the scope unit reads as a refusal rather than as a pass.
+/// A call names two: the server it is on and the TOOL it invokes — the tool, by its own name, and
+/// not the server's name a second time. Naming the server twice would collapse every tool on one
+/// registration into a single scope, so a grant for the harmless tool would carry the destructive
+/// one; that is exactly the substitution the two kinds exist to prevent. The subject the ingress
+/// read off the call is what supplies it.
+///
+/// Everything else names the server alone. A deployment with nothing registered names nothing at
+/// all, and so does a call that names no tool — both are read by the scope unit as a refusal rather
+/// than as a pass.
 #[must_use]
-pub fn resources(plane: &McpPlane, op: OpClassId) -> Vec<Resource> {
+pub fn resources<'n>(plane: &McpPlane, op: OpClassId, tool: Option<&'n str>) -> Vec<Resource<'n>> {
     let Some(server) = plane.servers().first() else {
         return Vec::new();
     };
@@ -746,9 +755,12 @@ pub fn resources(plane: &McpPlane, op: OpClassId) -> Vec<Resource> {
         name: server.id,
     }];
     if op == ops::OP_TOOL_CALL {
+        let Some(tool) = tool.filter(|t| !t.is_empty()) else {
+            return Vec::new();
+        };
         out.push(Resource {
             kind: SCOPE_KIND_TOOL,
-            name: server.id,
+            name: tool,
         });
     }
     out
@@ -762,8 +774,8 @@ pub enum ApproveRefusal {
     NoPolicyEntry,
     /// The policy named a scope, and the caller does not hold it.
     Insufficient(Refused),
-    /// The plane named no resource, because the deployment registered no server. There is nothing
-    /// here to be authorized to reach.
+    /// The plane named no resource: the deployment registered no server, or the call named no tool.
+    /// There is nothing here to be authorized to reach.
     NoResource,
 }
 
@@ -776,13 +788,14 @@ pub enum ApproveRefusal {
 ///
 /// The hook seats are not here. `approve` runs first and a veto after it wins regardless, which is a
 /// composition the root makes around this call rather than something the scope unit can express.
-pub fn approve(
+pub fn approve<'n>(
     plane: &McpPlane,
     op: OpClassId,
+    tool: Option<&'n str>,
     held: Grants,
     policy: &dyn PolicyView,
-) -> Result<Vec<Resource>, ApproveRefusal> {
-    let resources = resources(plane, op);
+) -> Result<Vec<Resource<'n>>, ApproveRefusal> {
+    let resources = resources(plane, op, tool);
     if resources.is_empty() {
         return Err(ApproveRefusal::NoResource);
     }
@@ -1328,7 +1341,7 @@ pub struct Ended<'a> {
     /// Who was calling, where the loop resolved them.
     pub principal: Option<&'a PrincipalId>,
     /// What the record names as the thing acted on.
-    pub resource: Option<Resource>,
+    pub resource: Option<Resource<'a>>,
 }
 
 /// The evidence one ended unit settles against.
