@@ -218,7 +218,12 @@ pub(crate) async fn operation_ingress_inner(
     model_hint: Option<String>,
 ) -> Response {
     let started = Instant::now();
-    let charged_at = busbar_substrate::store::now();
+    // C10 (state/store port): the header-arrival epoch is read off the HOST's clock port
+    // (`ClockHost::clock_now_secs`, inherited through `EngineHost`) rather than the ambient free
+    // function. Value-identical — the wired `clock_now` slot is `store::now_ms()` scaled to nanos and
+    // divided back down, i.e. the same `SystemTime` epoch seconds `store::now()` returns — so the
+    // money path (`charged_at`) is byte-identical; the plane now takes its clock from the port.
+    let charged_at = host.clock_now_secs();
     // App-retype WEDGE 3: the pre-routing finish/label/guard capabilities route through the `host`
     // threaded in (the arrival's `Arc<dyn EngineHost>`), so this plane names no core ingress module.
 
@@ -687,7 +692,9 @@ async fn ingress_path_model_inner(
 ) -> Response {
     let started = Instant::now();
     // Header-arrival epoch pinned once and reused for both the per-request and token fees (#29).
-    let charged_at = busbar_substrate::store::now();
+    // C10: read off the host's clock port (`ClockHost::clock_now_secs`), value-identical to the
+    // ambient `store::now()` it replaces.
+    let charged_at = host.clock_now_secs();
     // App-retype WEDGE 3: the pre-routing finish seam routes through the threaded `host` (the body-model
     // twin does the same).
     let mut v: Value = match busbar_substrate::json::parse(&body) {
@@ -899,7 +906,9 @@ pub fn synthesize_completion(
             parsed,
             p.caller_token.as_deref(),
             Instant::now(),
-            busbar_substrate::store::now(),
+            // C10: the synthesized completion's charge epoch, off the arrival payload's own host
+            // clock port rather than the ambient free function. Same value, one clock.
+            p.host.clock_now_secs(),
             None,
         )
         .await

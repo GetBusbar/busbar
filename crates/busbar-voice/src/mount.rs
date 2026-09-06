@@ -1060,7 +1060,7 @@ async fn serve(
         .iter()
         .find(|(k, _)| k == "call_id")
         .map(|(_, v)| v.clone())
-        .unwrap_or_else(|| format!("voice-{}", unix_secs()));
+        .unwrap_or_else(|| format!("voice-{}", unix_secs(&*ctx.host)));
     // The resolved presenting virtual key (the middleware-resolved, audience-checked key), or `None`
     // ungoverned. The hook gate reads its `(id, name)`; the Meter step lands usage on its ledger.
     let vkey = ctx.gov.as_ref().and_then(|g| g.key()).cloned();
@@ -1074,19 +1074,21 @@ async fn serve(
         vkey,
         body: ctx.body.clone(),
         headers: ctx.headers.clone(),
-        now: unix_secs(),
+        now: unix_secs(&*ctx.host),
     })
     .await
 }
 
-/// Wall-clock unix seconds for the session's `charged_at` / genesis stamp. The gauntlet clock the
-/// production pump reads off the host is threaded once the composition root wires it; the structural
-/// mount stamps the process clock.
-fn unix_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+/// Wall-clock unix seconds for the session's `charged_at` / genesis stamp, READ OFF THE HOST'S CLOCK
+/// PORT (C10, state/store port): `ClockHost::clock_now_secs`, which every route already holds through
+/// its `Arc<dyn EngineHost>`. This is what the old doc comment promised ("the gauntlet clock the
+/// production pump reads off the host is threaded once the composition root wires it") and the
+/// structural `SystemTime::now()` stood in for; the port's wired slot is that same `SystemTime` epoch
+/// clock (`store::now_ms()` scaled to nanos and divided back to seconds), so the value — and with it
+/// the session's `charged_at` money stamp — is byte-identical. Generic over the port rather than
+/// taking `&dyn ClockHost`, so no trait-object upcast is needed at the call sites.
+fn unix_secs<H: busbar_substrate::plane_host::ClockHost + ?Sized>(clock: &H) -> u64 {
+    clock.clock_now_secs()
 }
 
 async fn mint_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> axum::response::Response {
@@ -1198,8 +1200,8 @@ where
         .iter()
         .find(|(k, _)| k == "call_id")
         .map(|(_, v)| v.clone())
-        .unwrap_or_else(|| format!("voice-{}", unix_secs()));
-    let now = unix_secs();
+        .unwrap_or_else(|| format!("voice-{}", unix_secs(&*host)));
+    let now = unix_secs(&*host);
     // The locked session posture: g711 for telephony, the plane-default otherwise (including Gemini —
     // the Gemini leg carries no media-format lock of its own). The destination the gauntlet judges is
     // this config's model, exactly as `begin_session` derives it.
