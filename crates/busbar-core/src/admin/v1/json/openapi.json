@@ -144,14 +144,21 @@
         "type": "object"
       },
       "AuditEntry": {
-        "description": "One admin audit record. `outcome` is a stable token tooling can branch on. The record is\nHASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |\noutcome | principal)`, and `prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any\naltered/reordered/deleted entry (detection, not prevention; a compromised host can still rewrite\nthe whole chain; prevention is shipping the log off-box to a SIEM).",
+        "description": "One admin audit record. `outcome` is a stable token tooling can branch on. The record is\nHASH-CHAINED for tamper-EVIDENCE over the previous hash, the sequence, the timestamp, the action,\nthe resource, the outcome and the principal, and `prev_hash` is the preceding entry's `hash`.\nRecomputing the chain detects any altered/reordered/deleted entry (detection, not prevention; a\ncompromised host can still rewrite the whole chain; prevention is shipping the log off-box to a\nSIEM).\n\nHOW those fields are framed into the digest input is `digest_scheme`'s business and each record is\nverified under its OWN, so a chain that spans the 1.6.0 upgrade is legitimately mixed and still\nverifies end to end. An external re-implementation of the digest MUST read `digest_scheme`: the\nfield is absent on records sealed before 1.6.0, which are the pipe-joined framing, and present and\nequal to 2 on every record 1.6.0 and later seals.",
         "properties": {
           "action": {
             "description": "The action, `noun.verb` (e.g. `hook.register`, `hook.delete`).",
             "type": "string"
           },
+          "digest_scheme": {
+            "description": "WHICH FRAMING `hash` was computed under: absent for the legacy pipe-joined framing every\nrecord sealed before 1.6.0 carries, `2` for the length-prefixed framing every record sealed\nby 1.6.0 and later carries.\n\nCarried PER ENTRY rather than per chain, because a chain that has crossed the upgrade is\nlegitimately mixed: the entries a store already holds were sealed under the pipe join and\neverything appended after it under the length-prefixed framing, in one sequence, linked to\neach other. A per-chain scheme would force a deployment to choose between verifying its own\nhistory and being safe from the collision the legacy framing admits; a per-entry one asks\nnobody to choose.\n\nAbsent on the wire for a legacy entry, so a record written before this release re-serialises\nto the same eight fields it arrived as — a scheme field appearing on it would be this build\nrewriting somebody else's bytes to say something they do not say.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
           "hash": {
-            "description": "`sha256(prev_hash | seq | ts | action | resource | outcome | principal)`: the tamper-evidence digest.",
+            "description": "The tamper-evidence digest over the previous hash, the sequence, the timestamp, the action,\nthe resource, the outcome and the principal, framed as `digest_scheme` says.",
             "type": "string"
           },
           "outcome": {
