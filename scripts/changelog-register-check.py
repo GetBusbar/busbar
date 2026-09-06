@@ -2,21 +2,29 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# changelog-register-check.py -- every `breaking` entry in the accepted-differences register names
-# its own CHANGELOG line, verbatim, so the release notes cannot silently fall out of sync with what
-# the owner actually accepted as a break. This is the ONLY thing this script checks: it does not
-# validate `improvement` entries (those have no `changelog` contract) and it does not judge whether
-# the CHANGELOG's prose is otherwise truthful -- only that every register-declared break is NAMED.
+# changelog-register-check.py -- EVERY entry in the accepted-differences register names its own
+# CHANGELOG line, verbatim, so the release notes cannot silently fall out of sync with what the owner
+# actually accepted. ARCHITECTURE.md's owner rule says a difference registered as `improvement` is
+# accepted "(owner sign-off, named in the CHANGELOG)" exactly as a break is, so the contract is not
+# `kind == "breaking"` -- it is every accepted difference. What this script does NOT do is judge
+# whether the CHANGELOG's prose is otherwise truthful: only that every register-declared difference
+# is NAMED, and that the name still exists in the file.
 #
-#   PASS   every `breaking` entry has a non-empty `changelog` field and that exact string is a
-#          substring of CHANGELOG.md
-#   FAIL   a `breaking` entry has no `changelog` field, an empty one, or a `changelog` string that
-#          is not found verbatim in CHANGELOG.md (the line drifted or was never written)
+#   PASS    the entry has a non-empty `changelog` string and that exact string is a substring of
+#           CHANGELOG.md (whitespace-normalized, so a markdown line-wrap still matches)
+#   WAIVED  the entry carries an EXPLICIT `"changelog": null` together with a non-empty
+#           `changelog_reason` saying why this difference is not user-visible. The waiver is a
+#           written argument a reviewer can disagree with, never an omission -- which is the whole
+#           difference between "we decided this needs no line" and "nobody wrote one".
+#   FAIL    the entry has no `changelog` key at all, an empty/blank one, a `null` with no
+#           `changelog_reason`, a `changelog` string not found verbatim in CHANGELOG.md (the line
+#           drifted or was never written), or -- for a `breaking` entry -- a waiver at all, because
+#           a break the owner accepted is user-visible by definition and always owes a line.
 #
-# Zero `breaking` entries is a PASS with zero rows (nothing owed) -- this is not the ship gate by
-# itself, see docs/design/1.6.0-TRACKER.md group I; testing/shadow-oracle's own differ separately
-# refuses any entry that accepts `status`/`effects.usage` without kind=breaking and a `changelog`
-# field, so a malformed register is caught there, not here.
+# Zero entries is a PASS with zero rows (nothing owed) -- this is not the ship gate by itself, see
+# docs/design/1.6.0-TRACKER.md group I; testing/shadow-oracle's own differ separately refuses any
+# entry that accepts `status`/`effects.usage` without kind=breaking and a `changelog` field, so a
+# malformed register is caught there, not here.
 #
 # python3 stdlib only.
 import argparse
@@ -54,13 +62,48 @@ def check(register_path: Path, changelog_path: Path):
 
     ok = True
     entries = register.get("accepted", [])
-    breaking = [e for e in entries if e.get("kind") == "breaking"]
     normalized_changelog = _normalize(changelog_text)
-    for entry in breaking:
+    for entry in entries:
         entry_id = entry.get("id", "<unnamed>")
-        line = entry.get("changelog")
-        if not line:
-            rows.append((entry_id, "FAIL", "kind=breaking but no (or empty) `changelog` field"))
+        kind = entry.get("kind", "<no kind>")
+        if "changelog" not in entry:
+            rows.append(
+                (
+                    entry_id,
+                    "FAIL",
+                    f"kind={kind} but the entry carries no `changelog` key at all -- an accepted "
+                    f"difference owes either a named line or an explicit waiver",
+                )
+            )
+            ok = False
+            continue
+        line = entry["changelog"]
+        if line is None:
+            reason = (entry.get("changelog_reason") or "").strip()
+            if kind == "breaking":
+                rows.append(
+                    (
+                        entry_id,
+                        "FAIL",
+                        "kind=breaking may not waive its CHANGELOG line: an accepted break is "
+                        "user-visible by definition",
+                    )
+                )
+                ok = False
+            elif not reason:
+                rows.append(
+                    (
+                        entry_id,
+                        "FAIL",
+                        "`changelog` is null but no `changelog_reason` says why no line is owed",
+                    )
+                )
+                ok = False
+            else:
+                rows.append((entry_id, "WAIVED", f"no line owed: {reason}"))
+            continue
+        if not isinstance(line, str) or not line.strip():
+            rows.append((entry_id, "FAIL", f"`changelog` is empty or not a string: {line!r}"))
             ok = False
         elif _normalize(line) not in normalized_changelog:
             rows.append(
@@ -93,33 +136,51 @@ def selftest() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
 
-        # (a) a breaking entry whose changelog line IS in the changelog -> PASS, overall ok
+        # (a) a breaking entry AND an improvement entry, both with their lines present -> PASS.
+        # The improvement row is the half ARCHITECTURE.md's owner rule owes and this gate used to
+        # skip entirely: an improvement is accepted "named in the CHANGELOG" just as a break is.
         good_register = tmp / "good.json"
         good_register.write_text(
             json.dumps(
                 {
                     "accepted": [
-                        {"id": "X-1", "kind": "improvement", "rationale": "no changelog needed"},
+                        {"id": "X-1", "kind": "improvement", "changelog": "the grass is now greener"},
                         {"id": "X-2", "kind": "breaking", "changelog": "the sky is now green"},
                     ]
                 }
             )
         )
         good_changelog = tmp / "good.md"
-        good_changelog.write_text("## [1.6.0]\n\n- the sky is now green\n")
+        good_changelog.write_text("## [1.6.0]\n\n- the grass is now greener\n- the sky is now green\n")
         rows, ok = check(good_register, good_changelog)
         say(
-            ok and rows == [("X-2", "PASS", "changelog line present verbatim")],
-            "breaking entry with its line present -> PASS, run green",
+            ok
+            and rows
+            == [
+                ("X-1", "PASS", "changelog line present verbatim"),
+                ("X-2", "PASS", "changelog line present verbatim"),
+            ],
+            "improvement AND breaking entries with their lines present -> PASS, run green",
         )
 
         # (b) a breaking entry whose changelog line is ABSENT -> FAIL, overall not ok
         bad_changelog = tmp / "bad.md"
-        bad_changelog.write_text("## [1.6.0]\n\n- nothing to see here\n")
+        bad_changelog.write_text("## [1.6.0]\n\n- the grass is now greener\n")
         rows, ok = check(good_register, bad_changelog)
         say(
-            (not ok) and rows[0][0] == "X-2" and rows[0][1] == "FAIL",
+            (not ok) and rows[1][0] == "X-2" and rows[1][1] == "FAIL",
             "breaking entry whose line is missing from CHANGELOG -> FAIL, run red",
+        )
+
+        # (b2) an IMPROVEMENT entry whose changelog line is absent -> FAIL too, on the same terms.
+        improvement_only = tmp / "improvement_only.json"
+        improvement_only.write_text(
+            json.dumps({"accepted": [{"id": "X-6", "kind": "improvement", "changelog": "never written"}]})
+        )
+        rows, ok = check(improvement_only, good_changelog)
+        say(
+            (not ok) and rows[0][0] == "X-6" and rows[0][1] == "FAIL",
+            "improvement entry whose line is missing from CHANGELOG -> FAIL, run red",
         )
 
         # (c) a breaking entry with NO changelog field at all -> FAIL
@@ -129,15 +190,82 @@ def selftest() -> int:
         )
         rows, ok = check(no_field_register, good_changelog)
         say(
-            (not ok) and rows[0] == ("X-3", "FAIL", "kind=breaking but no (or empty) `changelog` field"),
+            (not ok) and rows[0][0] == "X-3" and rows[0][1] == "FAIL",
             "breaking entry with no changelog field -> FAIL",
         )
 
-        # (d) zero breaking entries -> PASS with zero rows (nothing owed)
+        # (c2) an IMPROVEMENT with no changelog key at all -> FAIL. This is the exact shape the
+        # register carried before this rule existed, so it is the red the change is measured by.
+        no_field_improvement = tmp / "no_field_improvement.json"
+        no_field_improvement.write_text(
+            json.dumps({"accepted": [{"id": "X-7", "kind": "improvement", "rationale": "silent"}]})
+        )
+        rows, ok = check(no_field_improvement, good_changelog)
+        say(
+            (not ok) and rows[0][0] == "X-7" and rows[0][1] == "FAIL",
+            "improvement entry with no changelog key -> FAIL (the pre-rule shape is red)",
+        )
+
+        # (d) an explicit waiver: `changelog: null` WITH a reason -> WAIVED, run still green.
+        waived = tmp / "waived.json"
+        waived.write_text(
+            json.dumps(
+                {
+                    "accepted": [
+                        {
+                            "id": "X-4",
+                            "kind": "improvement",
+                            "changelog": None,
+                            "changelog_reason": "internal-only; no user-observable byte changes",
+                        }
+                    ]
+                }
+            )
+        )
+        rows, ok = check(waived, good_changelog)
+        say(
+            ok and rows[0][0] == "X-4" and rows[0][1] == "WAIVED",
+            "explicit `changelog: null` with a reason -> WAIVED, run green",
+        )
+
+        # (d2) the same waiver with NO reason -> FAIL: a null is a decision, not an omission.
+        waived_no_reason = tmp / "waived_no_reason.json"
+        waived_no_reason.write_text(
+            json.dumps({"accepted": [{"id": "X-8", "kind": "improvement", "changelog": None}]})
+        )
+        rows, ok = check(waived_no_reason, good_changelog)
+        say(
+            (not ok) and rows[0][0] == "X-8" and rows[0][1] == "FAIL",
+            "`changelog: null` with no reason -> FAIL",
+        )
+
+        # (d3) a BREAKING entry may not waive at all.
+        waived_breaking = tmp / "waived_breaking.json"
+        waived_breaking.write_text(
+            json.dumps(
+                {
+                    "accepted": [
+                        {
+                            "id": "X-9",
+                            "kind": "breaking",
+                            "changelog": None,
+                            "changelog_reason": "we would rather not say",
+                        }
+                    ]
+                }
+            )
+        )
+        rows, ok = check(waived_breaking, good_changelog)
+        say(
+            (not ok) and rows[0][0] == "X-9" and rows[0][1] == "FAIL",
+            "a breaking entry trying to waive its line -> FAIL",
+        )
+
+        # (d4) zero entries -> PASS with zero rows (nothing owed)
         empty_register = tmp / "empty.json"
-        empty_register.write_text(json.dumps({"accepted": [{"id": "X-4", "kind": "improvement"}]}))
+        empty_register.write_text(json.dumps({"accepted": []}))
         rows, ok = check(empty_register, good_changelog)
-        say(ok and rows == [], "no breaking entries -> zero rows, PASS")
+        say(ok and rows == [], "no register entries -> zero rows, PASS")
 
         # (e) missing register file -> FAIL, not a crash
         rows, ok = check(tmp / "does-not-exist.json", good_changelog)
@@ -176,16 +304,24 @@ def main() -> int:
 
     rows, ok = check(args.register, args.changelog)
     if not rows:
-        print("changelog-register-check: 0 `breaking` register entries -- nothing owed")
+        print("changelog-register-check: 0 register entries -- nothing owed")
         return 0
     for entry_id, status, detail in rows:
-        print(f"{status}  {entry_id}  {detail}")
+        print(f"{status:<6}  {entry_id}  {detail}")
     print()
+    named = sum(1 for _, status, _ in rows if status == "PASS")
+    waived = sum(1 for _, status, _ in rows if status == "WAIVED")
     if ok:
-        print(f"changelog-register-check: GREEN ({len(rows)} breaking entr{'y' if len(rows) == 1 else 'ies'} named)")
+        print(
+            f"changelog-register-check: GREEN ({named} of {len(rows)} accepted difference(s) named "
+            f"in CHANGELOG.md, {waived} explicitly waived)"
+        )
         return 0
     bad = sum(1 for _, status, _ in rows if status == "FAIL")
-    print(f"changelog-register-check: RED ({bad}/{len(rows)} breaking entries not named in CHANGELOG.md)")
+    print(
+        f"changelog-register-check: RED ({bad}/{len(rows)} accepted differences are neither named "
+        f"in CHANGELOG.md nor explicitly waived)"
+    )
     return 1
 
 

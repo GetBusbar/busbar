@@ -37,10 +37,12 @@
 #                    binding is mapped to a check that still exists in the tree (test, oracle cell,
 #                    lint, gate). An unmapped binding is a named gap and is RED here -- "done" means
 #                    nothing we designed is unproven. Existence only; the checks run in their own tiers.
-#   changelog        scripts/changelog-register-check.sh --check: every `kind: breaking` entry in
-#                    testing/shadow-oracle/accepted-differences.json has its `changelog` field's exact
-#                    line present, verbatim, in CHANGELOG.md -- a named break the owner accepted cannot
-#                    silently fall out of the release notes.
+#   changelog        scripts/changelog-register-check.sh --check: EVERY entry in
+#                    testing/shadow-oracle/accepted-differences.json -- improvement as well as
+#                    breaking, per ARCHITECTURE.md's owner rule -- has its `changelog` field's exact
+#                    line present, verbatim, in CHANGELOG.md, or an explicit null with a written
+#                    reason. A difference the owner accepted cannot silently fall out of the release
+#                    notes, and a break may never waive its line.
 # Every sub-gate runs its own `--selftest` FIRST where it has one, then its `--check`, so a gate that
 # could not fire is refused before its verdict is trusted (the house rule).
 #
@@ -340,10 +342,11 @@ fi
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "CHANGELOG — every breaking register entry is named"
+begin_group "CHANGELOG — every accepted register entry is named"
 # testing/shadow-oracle/accepted-differences.json's own differ refuses an entry that accepts
 # status/effects.usage without kind=breaking and a `changelog` field; this gate closes the other
-# half -- that the named line was actually WRITTEN, verbatim, in CHANGELOG.md, not just declared.
+# half -- that the named line was actually WRITTEN, verbatim, in CHANGELOG.md, not just declared --
+# and it owes that of improvements too, which the owner rule accepts "named in the CHANGELOG".
 if [ -f scripts/changelog-register-check.sh ]; then
   step "changelog-register-check --selftest" bash scripts/changelog-register-check.sh --selftest
   step "changelog-register-check --check"    bash scripts/changelog-register-check.sh --check
