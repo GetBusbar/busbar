@@ -926,7 +926,7 @@ fn main() {
     busbar_substrate::admin_verbs::install_plane_admin_envelope(
         &busbar_core::admin::planeverbs::CorePlaneAdminEnvelope,
     );
-    // THE A2A PLANE'S KERNEL COMPOSITION, behind `root-a2a` and default off. The root is built
+    // THE A2A PLANE'S KERNEL COMPOSITION, behind `root-a2a`, which is default-ON. The root is built
     // before any plane is switched onto it, so what this installs is the scope entries the approve
     // step reads for this plane's twelve operation classes — every one of them, because the scope
     // unit reads silence as a refusal and a partly-declared policy leaves the rest unreachable. It
@@ -1408,7 +1408,7 @@ async fn run(data_workers: usize) {
         max_inbound,
         response_headers_cfg.server_timing,
     );
-    // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default off. The router that
+    // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
     // and out through the one exit. Off, this line does not exist and the surface is the one it was.
