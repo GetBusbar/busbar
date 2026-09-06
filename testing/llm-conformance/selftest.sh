@@ -424,3 +424,55 @@ fi
 
 echo
 if [ "$fails" -eq 0 ]; then echo "llm-conformance selftest: GREEN (19/19)"; else echo "llm-conformance selftest: RED (${fails} failed)"; exit 1; fi
+# ── the SPEC PIN itself: a gate that judges busbar against an unpinned document proves nothing ───
+#
+# (n) and (o) do not go through run.sh's recording path; they attack the specs run.sh validates
+# AGAINST. Everything above could be perfectly green while the schema documents were arbitrary.
+
+# (n) a cached spec whose BYTES are not the pinned document -> RED, in both vendor.sh --check and
+#     validate.py. The parsed sidecar is left intact on purpose: that is the shape CI restores from
+#     its cache artifact, and it is exactly what used to let the substitution through unseen.
+real_cache="${BUSBAR_LLM_SPEC_CACHE:-$HOME/.cache/busbar-llm-specs}"
+if [ -d "$real_cache" ]; then
+  cp -R "$real_cache" "$W/poisoned-cache"
+  poisoned=0
+  while IFS= read -r s; do
+    printf '%s' 'THIS IS NOT THE PINNED SPEC' >"$s"; poisoned=$((poisoned+1))
+  done < <(find "$W/poisoned-cache" -name 'spec.yaml' -o -name 'spec.json')
+  if [ "$poisoned" -eq 0 ]; then
+    say FAIL "(n) could not poison any cached spec under $real_cache (nothing to test against)"
+  else
+    vrc=0; BUSBAR_LLM_SPEC_CACHE="$W/poisoned-cache" bash "${here}/vendor.sh" --check \
+      >"$W/n-vendor.log" 2>&1 || vrc=$?
+    prc=0; BUSBAR_LLM_SPEC_CACHE="$W/poisoned-cache" python3 "${here}/validate.py" \
+      --recording "$FIX" --out "$W/n-out" --cells "$FIX/cells.json" --ledger "$W/n-ledger.tsv" \
+      >"$W/n-validate.log" 2>&1 || prc=$?
+    if [ "$vrc" != 0 ] && grep -q 'CACHED SPEC DOES NOT MATCH ITS PIN' "$W/n-vendor.log" \
+        && [ "$prc" != 0 ] && grep -q 'digest mismatch in cache' "$W/n-validate.log"; then
+      say PASS "(n) a cached spec that is not the pinned bytes -> RED in vendor.sh --check AND validate.py"
+    else
+      say FAIL "(n) poisoned spec cache accepted: vendor rc=$vrc validate rc=$prc (poisoned $poisoned file(s))"
+      tail -5 "$W/n-vendor.log"; tail -5 "$W/n-validate.log"
+    fi
+  fi
+else
+  say FAIL "(n) no spec cache at $real_cache -- run testing/llm-conformance/vendor.sh first"
+fi
+
+# (o) a digest file that parses to ZERO rows -> RED. `-s` alone is satisfied by the comment header,
+#     so a malformed edit (spaces for tabs, a column dropped) used to unpin every spec silently and
+#     report success over nothing.
+# vendor.sh resolves $DIGESTS from its OWN directory, so drive the real script from a scratch dir
+# holding a comment-only copy of the digest file -- the malformed-edit shape, byte for byte.
+cp "${here}/vendor.sh" "$W/vendor-o.sh"
+grep '^#' "${here}/spec-digests.tsv" >"$W/spec-digests.tsv" || :
+[ -s "$W/spec-digests.tsv" ] || printf '# comment-only digest file\n' >"$W/spec-digests.tsv"
+krc=0; bash "$W/vendor-o.sh" --check >"$W/o.log" 2>&1 || krc=$?
+if [ "$krc" != 0 ] && grep -q 'ZERO pinned spec' "$W/o.log"; then
+  say PASS "(o) a digest file with no data rows -> RED, never 'all specs verified' over nothing"
+else
+  say FAIL "(o) comment-only digest file accepted: rc=$krc"; cat "$W/o.log"
+fi
+
+echo
+if [ "$fails" -eq 0 ]; then echo "llm-conformance selftest: GREEN (15/15)"; else echo "llm-conformance selftest: RED (${fails} failed)"; exit 1; fi
