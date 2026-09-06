@@ -8,19 +8,89 @@
 // The harness knows nothing about any particular implementation. A target is a
 // launch command supplied on the command line or in the environment.
 
-import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runAll, allTests, VERDICT } from '../src/core/runner.mjs';
 import { Target } from '../src/core/target.mjs';
 import { compare, renderDifferential } from '../src/core/differential.mjs';
 import { REVISION } from '../src/core/spec.mjs';
 
-// Registering the suites is what populates the test registry.
-import '../src/suites/server-conformance.mjs';
-import '../src/suites/server-adversarial.mjs';
-import '../src/suites/server-concurrency.mjs';
-import '../src/suites/client-role.mjs';
-import '../src/suites/seam.mjs';
+// ── THE SUITE REGISTRY, DECLARED AND THEN HELD TO THE TREE ────────────────────────────────────────
+//
+// THE DEFECT THIS REPLACES. The five suites used to be five bare `import '…/suites/x.mjs'` lines and
+// nothing anywhere checked them. Registering a suite is the ONLY thing that puts its scenarios in the
+// denominator, so deleting one import silently deleted its scenarios from every number this battery
+// prints — no SKIP, no FAIL, no trace at all, exactly the shape of hole the role audit below exists
+// to refuse one level up. `50 pass, 0 fail` is a true sentence about whatever happened to be
+// imported, and a run with a suite missing prints the identical shape as a run with all five. A new
+// suite file added to `src/suites/` and never imported is the same hole arriving from the other
+// direction: the tests exist, are reviewed, are committed, and never once execute.
+//
+// THE RULE NOW, and it is the same set-equality-plus-floor discipline `assert_covered` in
+// scripts/mcp-conformance.sh and `declared_legs` in the voice battery use:
+//
+//   * the DECLARED list below must equal the `*.mjs` files ON DISK under src/suites/. A file nobody
+//     imported, and an import of a file nobody wrote, are both refused.
+//   * every declared suite must register AT LEAST ONE test. A suite whose body got commented out,
+//     or whose registrations moved behind a condition that is never true, loads cleanly and
+//     contributes nothing; the per-suite count below is what turns that into a red.
+//
+// Imported SEQUENTIALLY and IN THIS ORDER, which is the order the static imports used. Order is
+// load-bearing: `runAll` is a `for` loop, the seam and client suites share ONE long-lived subject and
+// ONE upstream registration, and a shuffled order changes which scenario meets that registration
+// first. The counting is what the loop is for; the order is preserved because it was never free.
+const SUITES = [
+  'server-conformance',
+  'server-adversarial',
+  'server-concurrency',
+  'client-role',
+  'seam',
+];
+
+const SUITES_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../src/suites');
+
+const registeredBySuite = {};
+{
+  let seen = 0;
+  for (const s of SUITES) {
+    await import(`../src/suites/${s}.mjs`);
+    registeredBySuite[s] = allTests().length - seen;
+    seen = allTests().length;
+  }
+
+  const onDisk = readdirSync(SUITES_DIR)
+    .filter((f) => f.endsWith('.mjs'))
+    .map((f) => f.replace(/\.mjs$/, ''))
+    .sort();
+  const declared = [...SUITES].sort();
+  const notImported = onDisk.filter((f) => !declared.includes(f));
+  const notOnDisk = declared.filter((f) => !onDisk.includes(f));
+  const empty = SUITES.filter((s) => (registeredBySuite[s] || 0) === 0);
+
+  if (notImported.length || notOnDisk.length || empty.length) {
+    console.error(`
+FATAL: THE SUITE REGISTRY DOES NOT MATCH THE TREE. Nothing this battery prints can be read as
+coverage of a battery whose own inventory is wrong: an unregistered suite's scenarios leave the
+denominator without printing SKIP, FAIL, or anything else.
+`);
+    for (const f of notImported) {
+      console.error(`  ON DISK, NEVER IMPORTED : src/suites/${f}.mjs`);
+      console.error('    Its scenarios are committed, reviewed and never executed. Add it to SUITES');
+      console.error('    in bin/mcp-battery.mjs, in the position its ordering requires.');
+    }
+    for (const f of notOnDisk) {
+      console.error(`  DECLARED, NOT ON DISK   : src/suites/${f}.mjs`);
+    }
+    for (const s of empty) {
+      console.error(`  REGISTERED NOTHING      : src/suites/${s}.mjs`);
+      console.error('    The module loaded and added no test to the registry, so the suite is in the');
+      console.error('    inventory and absent from every number. Never resolve this by deleting the');
+      console.error('    declaration — that is the same hole with the evidence removed.');
+    }
+    process.exit(2);
+  }
+}
 
 function parseArgs(argv) {
   const out = { _: [] };
@@ -101,6 +171,10 @@ function renderRun(results, target, quiet, roleAudit) {
   }
   L.push(`target      : ${target.name}`);
   L.push(`revision    : ${REVISION}`);
+  // The inventory, next to the number it produced, for the same reason the roles are: a count with
+  // no denominator beside it is what let a missing suite read as a clean run.
+  L.push(`suites      : ${SUITES.map((s) => `${s}=${registeredBySuite[s]}`).join(' ')}`
+    + `  (${allTests().length} registered)`);
   L.push(`server role : ${target.hasServerRole ? target.serverLaunch : 'NOT CONFIGURED'}`);
   L.push(`client role : ${target.hasClientRole ? target.clientLaunch : 'NOT CONFIGURED'}`);
   if (roleAudit) {
@@ -232,6 +306,9 @@ Do ONE of these, and either way the choice is now visible in the log and in the 
     // Persisted so a READER OF THE REPORT, and the differential, can see which directions this
     // number covers without re-deriving it from the target's launch commands.
     roleAudit,
+    // Persisted for the same reason `roleAudit` is: a reader of the report, and anyone diffing two
+    // reports, must be able to see WHICH suites produced this number without re-deriving it.
+    suiteAudit: { declared: SUITES, registered: registeredBySuite, total: allTests().length },
     results,
   };
 
