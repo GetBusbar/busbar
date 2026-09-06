@@ -141,7 +141,7 @@ impl AdminAnswer {
         let mut cursor = 0usize;
         let status = u16::from_be_bytes(take(bytes, &mut cursor, 2)?.try_into().ok()?);
         let count = u32::from_be_bytes(take(bytes, &mut cursor, 4)?.try_into().ok()?);
-        let mut headers = Vec::with_capacity(count as usize);
+        let mut headers = Vec::with_capacity(header_capacity(count, bytes.len() - cursor));
         for _ in 0..count {
             let name = String::from_utf8(pull_bytes(bytes, &mut cursor)?.to_vec()).ok()?;
             let value = String::from_utf8(pull_bytes(bytes, &mut cursor)?.to_vec()).ok()?;
@@ -157,6 +157,19 @@ impl AdminAnswer {
             body,
         })
     }
+}
+
+/// How much room to make for a frame's headers, given the bytes still in hand.
+///
+/// The count is a claim the frame makes about itself, and the loop reading the headers is what
+/// checks it. Reserving on the claim alone hands an arbitrary allocation size to whoever wrote the
+/// bytes — a truncated or corrupt row asking for billions of headers, which is not a parse failure
+/// but a failed allocation, and a failed allocation is the process leaving rather than a `None`
+/// coming back. Every header costs at least its two length prefixes on the wire, so the remaining
+/// bytes bound how many there can actually be.
+fn header_capacity(count: u32, remaining: usize) -> usize {
+    const MIN_HEADER_BYTES: usize = 8;
+    (count as usize).min(remaining / MIN_HEADER_BYTES)
 }
 
 fn push_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
@@ -2197,6 +2210,24 @@ mod tests {
         .pack();
         trailing.push(0);
         assert_eq!(AdminAnswer::unpack(&trailing), None);
+    }
+
+    /// A count is a claim about bytes that are not there, not an instruction to go and find room
+    /// for them. The frame below says it carries four billion headers in three bytes: the answer is
+    /// `None`, and no room is made for the claim on the way to it.
+    #[test]
+    fn a_header_count_larger_than_the_frame_is_refused_not_reserved() {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&200u16.to_be_bytes());
+        frame.extend_from_slice(&u32::MAX.to_be_bytes());
+        frame.extend_from_slice(&[0, 0, 0]);
+        assert_eq!(AdminAnswer::unpack(&frame), None);
+
+        // What the frame could actually be carrying, not what it says it is.
+        assert_eq!(header_capacity(u32::MAX, 3), 0);
+        assert_eq!(header_capacity(u32::MAX, 4_096), 512);
+        // An honest count is still reserved for in full.
+        assert_eq!(header_capacity(2, 4_096), 2);
     }
 
     /// Both tables were extracted from the same pinned tag. Every row the plane decodes to has to
