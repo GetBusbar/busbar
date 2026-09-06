@@ -614,24 +614,38 @@ impl crate::runtime::GovernedCalls for TableFake {
 
 /// A core bound to `table` as session 7, serving only the tool `local`.
 fn governed_core(table: Arc<TableFake>) -> Arc<SessionCore<OpenAiRealtimeCodec>> {
-    let (dtx, _drx) = unbounded::<Vec<u8>>();
+    governed_core_with_downlink(table).0
+}
+
+/// [`governed_core`], plus the downlink the client would be reading — the half a test of the UPLINK
+/// leg needs, because what that leg does with a refusal is a frame on this receiver or nothing.
+fn governed_core_with_downlink(
+    table: Arc<TableFake>,
+) -> (
+    Arc<SessionCore<OpenAiRealtimeCodec>>,
+    UnboundedReceiver<Vec<u8>>,
+) {
+    let (dtx, drx) = unbounded::<Vec<u8>>();
     let host = Arc::new(MockMeteringHost::default()) as Arc<dyn MeteringHost>;
     let lease = HostMeteringPort::new(host)
         .reserve(1_000, 0, None)
         .expect("lease opens");
-    Arc::new(
-        SessionCore::new(
-            OpenAiRealtimeCodec,
-            lease,
-            None,
-            Arc::new(ServesOnly("local")),
-            Carrier::with_downlink(dtx),
-            None,
-        )
-        .with_governed(crate::runtime::GovernedSession {
-            session: 7,
-            calls: table as Arc<dyn crate::runtime::GovernedCalls>,
-        }),
+    (
+        Arc::new(
+            SessionCore::new(
+                OpenAiRealtimeCodec,
+                lease,
+                None,
+                Arc::new(ServesOnly("local")),
+                Carrier::with_downlink(dtx),
+                None,
+            )
+            .with_governed(crate::runtime::GovernedSession {
+                session: 7,
+                calls: table as Arc<dyn crate::runtime::GovernedCalls>,
+            }),
+        ),
+        drx,
     )
 }
 
@@ -728,10 +742,67 @@ async fn a_reply_naming_no_open_call_is_refused_rather_than_carried_upstream() {
         plan.upstream.is_empty(),
         "and a refused reply reaches the model on no wire at all"
     );
+    // AND THE CLIENT IS TOLD. Refusing upstream and saying nothing downlink is a stall the client
+    // cannot tell from a reply still being worked on.
+    let down: String = plan
+        .downlink
+        .iter()
+        .map(|w| String::from_utf8_lossy(&w.0).to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        down.contains(crate::runtime::session::REFUSED_TOOL_REPLY_CODE),
+        "the refusal is reported to the client rather than stalling it: {down}"
+    );
     assert_eq!(
         table.sessions.lock().unwrap()[&7],
         vec!["cr".to_string()],
         "the call it did not answer is still waiting"
+    );
+}
+
+/// **A refusal on the uplink leg is an answer, never a stall.**
+///
+/// The plan already said the reply was refused; what this judges is the leg that has to act on it.
+/// The uplink forwarder used to read `plan.upstream` and drop the rest of the plan on the floor, so
+/// a client that answered a call this node was not waiting on got nothing on either wire: no frame
+/// upstream, no error downlink, and a conversation that simply stopped. The frame below is the
+/// difference between a refusal and a hang.
+#[tokio::test]
+async fn a_refused_reply_reaches_the_client_as_an_error_rather_than_a_silent_stall() {
+    let table = Arc::new(TableFake::default());
+    let (core, mut drx) = governed_core_with_downlink(Arc::clone(&table));
+    // The session is known to the node and holds one call; the client answers a different one.
+    table
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(7, vec!["cr".to_string()]);
+
+    let (up_tx, mut up_rx) = unbounded::<Vec<u8>>();
+    let uplink = Arc::new(crate::runtime::session::UplinkForwarder::new(
+        Arc::clone(&core),
+        up_tx,
+    ));
+
+    let (in_tx, in_rx) = unbounded::<Vec<u8>>();
+    let (out_tx, _out_rx) = unbounded::<Vec<u8>>();
+    in_tx.unbounded_send(client_reply("cz").0.to_vec()).unwrap();
+    drop(in_tx);
+    serve_messages(in_rx, out_tx, uplink).await;
+
+    up_rx.close();
+    assert!(
+        up_rx.next().await.is_none(),
+        "a refused reply reaches the model on no wire at all"
+    );
+    drx.close();
+    let told = drx.next().await.expect("the client is told, not stalled");
+    let v: serde_json::Value = serde_json::from_slice(&told).unwrap();
+    assert_eq!(v["type"], "error");
+    assert_eq!(
+        v["error"]["code"],
+        crate::runtime::session::REFUSED_TOOL_REPLY_CODE
     );
 }
 
