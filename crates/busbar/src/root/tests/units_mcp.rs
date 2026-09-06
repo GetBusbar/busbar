@@ -746,15 +746,49 @@ fn an_explicit_empty_scope_list_denies_every_pool() {
     }];
     let plane = McpPlane::new(SERVERS);
 
-    let empty = Pools::new(plane, Some(Vec::new()), true, false);
+    let empty = Pools::new(plane, Vec::new(), Some(Vec::new()), true, false);
     assert!(!empty.pool_allowed(&pool_key("fs")));
 
-    let unrestricted = Pools::new(plane, None, true, false);
+    let unrestricted = Pools::new(plane, Vec::new(), None, true, false);
     assert!(unrestricted.pool_allowed(&pool_key("fs")));
 
-    let named = Pools::new(plane, Some(vec!["fs".to_string()]), true, false);
+    let named = Pools::new(plane, Vec::new(), Some(vec!["fs".to_string()]), true, false);
     assert!(named.pool_allowed(&pool_key("fs")));
     assert!(!named.pool_allowed(&pool_key("other")));
+}
+
+/// A configured POOL is priced, and a name that is neither pool nor server is not.
+///
+/// A pool key is a destination this deployment routes to; it is not a registration id and it
+/// matches no `Server`. Resolving pool keys against the server table alone answers "nothing is
+/// configured here" for every pooled deployment, and the trust unit reads that as unpriced —
+/// so a card that prices the pool refuses every request that names it.
+#[test]
+fn a_configured_pool_is_priced_even_though_it_is_no_registration() {
+    static SERVERS: &[Server] = &[Server {
+        id: "fs",
+        lane: LaneId::new("fs-lane"),
+        host: "127.0.0.1:9",
+        transport: claims::TRANSPORT_HTTP,
+    }];
+    let plane = McpPlane::new(SERVERS);
+    let priced = Pools::new(plane, vec![pool_key("search")], None, true, true);
+
+    // The registration, as before.
+    assert!(priced.is_configured(&pool_key("fs")));
+    assert!(!priced.is_unpriced(&pool_key("fs")));
+
+    // The pool, which is the half that was answering "not configured, so not priced".
+    assert!(priced.is_configured(&pool_key("search")));
+    assert!(
+        !priced.is_unpriced(&pool_key("search")),
+        "a configured pool the card prices is not an unpriced destination"
+    );
+
+    // And a name that is neither is still both unconfigured and unpriced — the resolution got
+    // wider, not blind.
+    assert!(!priced.is_configured(&pool_key("ghost")));
+    assert!(priced.is_unpriced(&pool_key("ghost")));
 }
 
 /// A call names both resource kinds; everything else names only the server.

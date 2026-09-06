@@ -606,32 +606,71 @@ impl KindFacts for Catalogue<'_> {
 
 /// What the guards read about this plane's pools.
 ///
-/// A pool here is one registered server, keyed the way the breaker keys it. The explicit empty scope
-/// list is the case worth naming: a key scoped to nothing denies every pool, which is a different
-/// answer from a key that names no restriction at all, and it is the rig's own verify cell.
+/// A destination here is one of TWO things, and both have to resolve: a configured POOL, which is
+/// what the deployment routes a call through when it has more than one server behind one name, and a
+/// single registered SERVER, which is the degenerate pool of one. A pool key is not a registration
+/// id and matches no [`Server`] — so a view that resolved only the server table would answer "not
+/// configured" for every pooled deployment, and the trust unit reads that as UNPRICED and refuses
+/// every request the card does price. The two halves are tried pool-first, which is the order the
+/// route's own candidate lookup uses, so "configured" here and "routable" there cannot disagree
+/// about which half a name belongs to.
+///
+/// The explicit empty scope list is the other case worth naming: a key scoped to nothing denies
+/// every pool, which is a different answer from a key that names no restriction at all, and it is
+/// the rig's own verify cell.
 pub struct Pools {
     plane: McpPlane,
+    pools: Vec<String>,
     scopes: Option<Vec<String>>,
     has_key: bool,
     priced: bool,
 }
 
 impl Pools {
-    /// The view for one caller over one deployment's registrations.
+    /// The view for one caller over one deployment's pools and registrations.
+    ///
+    /// `pools` is the deployment's configured pool keys. It is carried in rather than read off the
+    /// plane because the plane declares registrations and says nothing about how an operator grouped
+    /// them, and a second copy of that grouping here is a copy that drifts.
     #[must_use]
-    pub fn new(plane: McpPlane, scopes: Option<Vec<String>>, has_key: bool, priced: bool) -> Self {
+    pub fn new(
+        plane: McpPlane,
+        pools: Vec<String>,
+        scopes: Option<Vec<String>>,
+        has_key: bool,
+        priced: bool,
+    ) -> Self {
         Pools {
             plane,
+            pools,
             scopes,
             has_key,
             priced,
         }
     }
 
+    /// One key with the plane's pool prefix taken off, so a bare name and a qualified one are the
+    /// same name.
+    fn bare(pool: &str) -> &str {
+        pool.strip_prefix(POOL_PREFIX_TOOL).unwrap_or(pool)
+    }
+
+    /// Whether one key names a configured pool.
+    fn pool_of(&self, pool: &str) -> bool {
+        let name = Pools::bare(pool);
+        self.pools.iter().any(|p| Pools::bare(p) == name)
+    }
+
     /// The name of the server one pool key refers to, where it refers to one.
     fn server_of(&self, pool: &str) -> Option<&'static Server> {
-        let name = pool.strip_prefix(POOL_PREFIX_TOOL).unwrap_or(pool);
+        let name = Pools::bare(pool);
         self.plane.servers().iter().find(|s| s.id == name)
+    }
+
+    /// Whether one key resolves to somewhere this deployment routes at all — a pool, or the
+    /// registration that is its own pool of one.
+    fn resolves(&self, name: &str) -> bool {
+        self.pool_of(name) || self.server_of(name).is_some()
     }
 }
 
@@ -646,7 +685,7 @@ impl PoolView for Pools {
             None => true,
             // An explicit list — including an explicitly empty one — is the whole of what is allowed.
             Some(scopes) => {
-                let name = pool.strip_prefix(POOL_PREFIX_TOOL).unwrap_or(pool);
+                let name = Pools::bare(pool);
                 scopes.iter().any(|s| s == pool || s == name)
             }
         }
@@ -660,7 +699,7 @@ impl PoolView for Pools {
     }
 
     fn is_configured(&self, name: &str) -> bool {
-        self.server_of(name).is_some()
+        self.resolves(name)
     }
 
     fn pricing_enabled(&self) -> bool {
@@ -668,7 +707,7 @@ impl PoolView for Pools {
     }
 
     fn is_unpriced(&self, name: &str) -> bool {
-        self.priced && self.server_of(name).is_none()
+        self.priced && !self.resolves(name)
     }
 
     fn has_key(&self) -> bool {
