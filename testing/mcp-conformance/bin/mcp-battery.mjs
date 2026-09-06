@@ -249,9 +249,16 @@ or set MCP_SUBJECT_SERVER_CMD / MCP_SUBJECT_CLIENT_CMD.
   const roleIsArmed = {
     server: target.hasServerRole,
     client: target.hasClientRole,
-    // The seam is observed THROUGH the server role: the suite spawns the subject as a server and
-    // watches what it emits at its back door. No server launch, no seam.
-    seam: target.hasServerRole,
+    // The seam is observed through the server DIRECTION, but a server launch is not what ARMS it:
+    // `seam.mjs:startSeam()` throws `serverLaunch` away and spawns `MCP_SUBJECT_UPSTREAM_CONFIG_CMD`
+    // instead -- the launcher that mounts a hostile peer as one of the subject's upstreams -- and
+    // skips every SEAM.* scenario when that is empty. This used to read `target.hasServerRole`, so
+    // an armed server with no upstream launcher was audited as an ARMED seam: the verdict printed
+    // `roles run: ... seam`, emitted no `roles NOT run` line, and the seam scenarios' failures
+    // (turned from SKIP into FAIL by MCP_NO_SKIPS) arrived looking like DEFECTS IN BUSBAR rather
+    // than like a leg that was never armed. Auditing the actual arming input is what makes the
+    // degrade visible in the verdict instead of misattributed in it.
+    seam: target.hasSeamRole,
   };
   const unarmed = requestedRoles.filter((r) => roleIsArmed[r] === false);
   const allowedUnarmed = new Set(
@@ -285,7 +292,14 @@ ${refused.map((r) => `  ${r}: ${roleCounts[r] || 0} registered scenario(s) would
 
 Do ONE of these, and either way the choice is now visible in the log and in the report:
 
-  ARM IT      ${refused.includes('client') ? '--client-cmd "<command that makes the subject act as an MCP client>"' : '--server-cmd "<command that starts the subject as an MCP server on stdio>"'}
+  ARM IT      ${refused.includes('client')
+    ? '--client-cmd "<command that makes the subject act as an MCP client>"'
+    : refused.includes('seam')
+      ? 'MCP_SUBJECT_UPSTREAM_CONFIG_CMD="<command that starts the subject as an MCP server with\n'
+        + '                                          the fake peer mounted as one of its upstreams>"\n'
+        + '              (the seam is NOT armed by --server-cmd: startSeam replaces the server launch\n'
+        + '               with this one, because a seam scenario needs a back door to watch.)'
+      : '--server-cmd "<command that starts the subject as an MCP server on stdio>"'}
   NARROW IT   --role ${(filter.roles.length ? filter.roles : ['<roles you can arm>']).join(',')}
               (a deliberate, printed narrowing: the number then says which roles it measured)
   DECLARE IT  --allow-unarmed-role ${refused.join(',')}
