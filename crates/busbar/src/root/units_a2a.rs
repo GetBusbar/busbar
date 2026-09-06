@@ -163,8 +163,18 @@ pub struct LegKey<'a> {
     pub parent: Option<&'a str>,
     /// Monotonic sequence within the parent, for the append-only kinds.
     pub seq: u64,
-    /// The record's timestamp, which is the axis retention compares against.
+    /// The record's timestamp, which is the axis retention compares against. It is also the NOW a
+    /// redemption is judged at.
     pub ts: u64,
+    /// When a single-use token stops being redeemable.
+    ///
+    /// A separate field from `ts` on purpose, and the separation is the whole of the single-use
+    /// guarantee: the store keeps its spent-token ledger by expiry and sweeps every row that is not
+    /// still in the future at the moment it is asked. A leg that presented one figure as both would
+    /// write a row that lapses on the very next call, and the token it was supposed to spend would
+    /// redeem as a first redemption again — for the replay, for the race, and for anyone who kept a
+    /// copy of the callback.
+    pub expires_at: u64,
     /// Whether retention may drop the row once it is older than a cutoff.
     pub terminal: bool,
 }
@@ -271,7 +281,7 @@ impl RecordLegs {
                 // an ordinary event, and only one of them is the first.
                 redeemed: self
                     .store
-                    .redeem_plane_token(kind, key.id, key.ts, key.ts)
+                    .redeem_plane_token(kind, key.id, key.expires_at, key.ts)
                     .map_err(fail)?,
                 ..LegResult::default()
             }),
@@ -356,6 +366,13 @@ pub struct A2aDraft {
     pub resource: Option<ResourceLocator>,
     /// The legs of the plane's route plan, in the plan's order.
     pub legs: Vec<Leg>,
+    /// When the single-use token this plan redeems stops being redeemable, where it redeems one.
+    ///
+    /// The plane read it off the token; the root neither invents it nor derives it from a lifetime
+    /// of its own, because a node that decided how long another party's token lives would be
+    /// deciding when a replay becomes legal. `None` on every plan that redeems nothing — and on a
+    /// plan that does, a refusal rather than a guess.
+    pub redeem_expires_at: Option<u64>,
     /// The whole request document's length, which is what this plane prices its input on.
     pub request_bytes: u64,
     /// What the metering step's locator carried — the size of the answer the plane read.
@@ -863,6 +880,34 @@ fn plan_fits(legs: &[Leg]) -> bool {
     legs.len() <= busbar_contract::MAX_LEGS
 }
 
+/// The record operation one leg names, where the leg is a record leg at all.
+///
+/// The one place a plan's legs are read as operations, so the run and the checks over its answers
+/// walk the same subset in the same order — which is what makes an answer at position *n* the answer
+/// to leg *n* rather than to whichever leg happened to be counted the same way twice.
+fn record_ops(legs: &[Leg]) -> impl Iterator<Item = &'static str> + '_ {
+    legs.iter().filter_map(|leg| match leg.destination {
+        DestinationFacts::PlaneRecord { op, .. } => Some(op),
+        _ => None,
+    })
+}
+
+/// Whether any leg of a plan spends a single-use token.
+fn plans_redemption(legs: &[Leg]) -> bool {
+    record_ops(legs).any(|op| op == records::OP_REDEEM)
+}
+
+/// Whether a redemption came back saying somebody else got there first.
+///
+/// Paired with the plan rather than read off the answers alone: every other operation answers
+/// `false` for "was this the first redemption" because it redeemed nothing, and reading that as a
+/// spent token would refuse every plan that ever wrote a row.
+fn spent_token(legs: &[Leg], results: &[LegResult]) -> bool {
+    record_ops(legs)
+        .zip(results)
+        .any(|(op, result)| op == records::OP_REDEEM && !result.redeemed)
+}
+
 /// The words a caller sees when the name it asked for has no configured rate.
 ///
 /// Carried as one static because the trust unit takes it as one: the text names what was asked for
@@ -1091,6 +1136,22 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
         }
 
+        // A redemption that cannot be held is not run. The store keeps its spent-token ledger by
+        // expiry, so a token presented with none — or with one already behind the unit's own epoch
+        // — is a row swept before anyone could present the token a second time, which is a
+        // single-use grant that redeems for ever. The plane reads the expiry off the token and this
+        // step refuses the plan that carries none, rather than supplying a lifetime the root has no
+        // standing to decide.
+        let expires_at = match self.draft.redeem_expires_at {
+            Some(expiry) if expiry > self.bindings.now => expiry,
+            other => {
+                if plans_redemption(&self.draft.legs) {
+                    return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+                }
+                other.unwrap_or(self.bindings.now)
+            }
+        };
+
         // The record legs, in the plan's order, before anything is dialled. They are what says
         // whether this caller may see the task at all and what the agent's own name for it is, and
         // the hop that follows carries that name.
@@ -1099,6 +1160,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             parent: None,
             seq: 0,
             ts: self.bindings.now,
+            expires_at,
             terminal: matches!(
                 self.draft.finish,
                 FinishClass::Complete | FinishClass::Error
@@ -1111,7 +1173,16 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             Err(LegError::Store(_)) => {
                 return Decision::refuse(token, Refusal::new(ReasonCode::DurabilityUnavailable))
             }
-            Ok(results) => read_through_poison(&self.progress).legs = results,
+            Ok(results) => {
+                // A token is spent exactly once, and the store said which call spent it. A second
+                // caller presenting the same one is refused HERE, where the answer is still a
+                // refusal — the alternative is what this step used to do, which was to store the
+                // answer and dial the agent anyway.
+                if spent_token(&self.draft.legs, &results) {
+                    return Decision::refuse(token, Refusal::new(ReasonCode::Replayed));
+                }
+                read_through_poison(&self.progress).legs = results;
+            }
         }
 
         // The bytes the request carried accrue as the unit runs; the answer's bytes settle at the
@@ -1750,6 +1821,7 @@ mod tests {
             parent: None,
             seq: 0,
             ts: 0,
+            expires_at: 0,
             terminal: false,
         };
         // The event chain is hash-linked, so it is append-and-read and never overwritten. Asking it
@@ -1779,6 +1851,7 @@ mod tests {
             parent: Some("p-1"),
             seq: 1,
             ts: 7,
+            expires_at: 0,
             terminal: false,
         };
         for schema in records::RECORD_SCHEMAS {
@@ -1832,6 +1905,7 @@ mod tests {
             parent: Some("t-1"),
             seq: 1,
             ts: 3,
+            expires_at: 0,
             terminal: true,
         };
         let results = legs.run_plan(&plan, &key, b"{}").expect("the legs run");
@@ -1884,6 +1958,7 @@ mod tests {
             parent: None,
             seq: 0,
             ts: 0,
+            expires_at: 0,
             terminal: false,
         };
         assert!(matches!(
@@ -2089,6 +2164,88 @@ mod tests {
             meter.total(),
             128 * BYTES_NANOS,
             "what the leg wrote down is what it handed the kernel's meter"
+        );
+    }
+
+    /// **A single-use token is spent once.** The store keeps its spent-token ledger by expiry and
+    /// sweeps every row that is not still in the future before it answers, so a leg that passed the
+    /// unit's own epoch as the expiry wrote a row that lapsed on the very next call: the second
+    /// presentation of the same callback token found an empty ledger and was told it was the first.
+    #[test]
+    fn a_spent_callback_token_is_not_redeemed_a_second_time() {
+        const NOW: u64 = 1_700_000_000;
+        let legs = RecordLegs::new(Arc::new(SweepingStore::default()));
+        let key = LegKey {
+            id: "push-token-1",
+            parent: None,
+            seq: 0,
+            ts: NOW,
+            expires_at: NOW + 300,
+            terminal: false,
+        };
+        let first = legs
+            .run(records::SCHEMA_PUSH_CONFIG, records::OP_REDEEM, &key, &[])
+            .expect("the first redemption runs");
+        assert!(first.redeemed, "nobody spent it before");
+
+        // The replay: the same token, presented again while it is still live.
+        let replay = LegKey { ts: NOW + 1, ..key };
+        let second = legs
+            .run(
+                records::SCHEMA_PUSH_CONFIG,
+                records::OP_REDEEM,
+                &replay,
+                &[],
+            )
+            .expect("the second redemption runs and answers");
+        assert!(!second.redeemed, "a token is spent exactly once");
+    }
+
+    /// And the answer is ACTED ON: the second caller is refused at the step that read it, rather
+    /// than having its redemption stored and its agent dialled anyway. A plan that redeems with no
+    /// expiry at all is refused before it runs, because a row that lapses immediately is a
+    /// single-use grant that redeems for ever.
+    #[test]
+    fn a_replayed_redemption_is_refused_and_an_expiryless_one_never_runs() {
+        const NOW: u64 = 1_700_000_000;
+        let mut deployment = deployment(one_call_at_a_time("a2a-team"));
+        deployment.records = RecordLegs::new(Arc::new(SweepingStore::default()));
+
+        let mut redeeming = draft(ops::OP_PUSH_EVENT);
+        redeeming.legs = vec![leg_record(records::SCHEMA_PUSH_CONFIG, records::OP_REDEEM)];
+        redeeming.redeem_expires_at = Some(NOW + 300);
+
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let route = |unit: &A2aUnits<'_, busbar_unit_admission::InMemoryCells>| {
+            Units::route(
+                unit,
+                &UnitToken::mint(&seal),
+                &a2a_ctx(),
+                &AccrualMeter::new(),
+            )
+            .into_result(&seal)
+        };
+
+        let first = deployment.driving(None, redeeming.clone());
+        assert!(route(&first).is_ok(), "the first caller spends the token");
+
+        let replay = deployment.driving(None, redeeming.clone());
+        assert_eq!(
+            route(&replay)
+                .expect_err("the token is already spent")
+                .reason(),
+            ReasonCode::Replayed,
+            "the second caller is refused where the store answered, not dialled anyway"
+        );
+
+        let mut expiryless = redeeming;
+        expiryless.redeem_expires_at = None;
+        let unheld = deployment.driving(None, expiryless);
+        assert_eq!(
+            route(&unheld)
+                .expect_err("a redemption nothing can hold is not run")
+                .reason(),
+            ReasonCode::NoDestination
         );
     }
 
@@ -2404,6 +2561,7 @@ mod tests {
                 name: "probe",
             }),
             legs: Vec::new(),
+            redeem_expires_at: None,
             request_bytes: 128,
             response_bytes: 256,
             finish: FinishClass::Complete,
@@ -2549,6 +2707,37 @@ mod tests {
         ) -> busbar_api::StoreResult<bool> {
             self.note("redeem", kind);
             Ok(true)
+        }
+    }
+
+    /// A store whose spent-token ledger sweeps by expiry, exactly as the shipped memory backend
+    /// does.
+    ///
+    /// The sweep is the whole fixture: the default store keeps `(kind, token) -> expiry` and drops
+    /// every row that is not still in the future before it answers, which is why a leg that
+    /// presented the unit's own epoch as the expiry got a `true` for every replay. A double that
+    /// simply remembered the token would answer correctly whatever the leg passed, and would prove
+    /// nothing about the figures.
+    #[derive(Default)]
+    struct SweepingStore {
+        spent: Mutex<std::collections::BTreeMap<(String, String), u64>>,
+    }
+
+    impl busbar_api::Store for SweepingStore {
+        no_governance_rows!();
+
+        fn redeem_plane_token(
+            &self,
+            kind: &str,
+            token: &str,
+            expires_at: u64,
+            now: u64,
+        ) -> busbar_api::StoreResult<bool> {
+            let mut spent = self.spent.lock().unwrap_or_else(|e| e.into_inner());
+            spent.retain(|_, expiry| *expiry > now);
+            Ok(spent
+                .insert((kind.to_string(), token.to_string()), expires_at)
+                .is_none())
         }
     }
 
@@ -2768,6 +2957,15 @@ mod tests {
             &'r self,
             chain: Option<&'r busbar_unit_admission::BucketChain>,
         ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
+            self.driving(chain, draft(ops::OP_MESSAGE_SEND))
+        }
+
+        /// The same, over a draft the cell chose.
+        fn driving<'r>(
+            &'r self,
+            chain: Option<&'r busbar_unit_admission::BucketChain>,
+            draft: A2aDraft,
+        ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
             A2aUnits::new(
                 A2aBindings {
                     auth: &self.auth,
@@ -2792,7 +2990,7 @@ mod tests {
                     now: 1_700_000_000,
                     origin: self.origin,
                 },
-                draft(ops::OP_MESSAGE_SEND),
+                draft,
                 Grants::of(Scope::Full),
             )
         }
