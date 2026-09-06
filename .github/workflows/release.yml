@@ -819,6 +819,15 @@ jobs:
       # now: someone re-runs a flaky job and it fails the second time, or a scheduled workflow lands
       # on this commit. The tag is the irreversible-ish moment, so the question is asked again at
       # exactly that moment. Same rule as before: no bypass, and unknown is red.
+      #
+      # AND IT JUDGES THE SAME POPULATION `branch-green` JUDGES -- EVERY RUN ON THE SHA, NOT ONE PER
+      # NAME. This step kept `unique_by(.name)` after branch-green dropped it, which made it the
+      # weaker of the two gates while reading as the stricter one: it is the LAST thing asked before
+      # the tag is pushed, and `unique_by` keeps exactly one element per key from a newest-first
+      # list, so the main push's own empty, all-skipped `qa-gate` run stood in for the real
+      # multi-hour soak and `skipped` counted green. That is the identical defect branch-green's
+      # REQUIRED_WORKFLOWS comment documents at length, surviving one screen further down the same
+      # file. release-order-lint.py's R12 now lints BOTH gates, so it cannot come back to either.
       - name: Refuse to tag a commit that is red RIGHT NOW
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -838,7 +847,6 @@ jobs:
             ($skip | split(",")) as $not
             | [.[] | .workflow_runs[]?]
             | map(select(.id != (env.GITHUB_RUN_ID | tonumber) and (.name | IN($not[]) | not)))
-            | unique_by(.name)
             | .[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")
             | "\(.name) -> \(.conclusion // "still running") \(.html_url)"')"
           if [ -n "$red" ]; then
