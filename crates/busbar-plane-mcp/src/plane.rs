@@ -462,8 +462,15 @@ impl Plane for McpPlane {
         // A message with no identifier is a NOTICE. The specification forbids answering one, so a
         // notice this plane recognises opens a unit that ends without writing anything, and one it
         // does not recognise is DROPPED — never refused, because a refusal is an answer.
+        //
+        // Recognised is not the whole question: a notice is still SENT by one side. Two of the three
+        // this plane knows are the SERVER describing its own catalogue, and the class they decode to
+        // is routed to a catalogue write — so a caller sending one told this node that the server it
+        // fronts had changed, and the party being catalogued stopped being the party that decides
+        // when its catalogue is stale. A caller's notice is admitted here; a server's is dropped on
+        // this leg, silently, for the same reason an unrecognised one is.
         if !envelope.is_request() {
-            if !ops::is_known_notification(method) {
+            if ops::notice_for(method).map(|n| n.sender) != Some(ops::Sender::Client) {
                 return Ok(Ingress::Discard {
                     reason: DiscardCode::Unsupported,
                 });

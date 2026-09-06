@@ -2,7 +2,7 @@
 //! measures implementation and nothing else; still a direct child module, so `use
 //! super::*` reaches the private items it always did.
 
-use super::{is_known_notification, row_for, Sender, METHODS, NOTIFICATIONS, OP_CLASSES};
+use super::{is_known_notification, notice_for, row_for, Sender, METHODS, NOTICES, OP_CLASSES};
 
 /// Every method maps to a class the plane declares.
 #[test]
@@ -59,8 +59,12 @@ fn the_lookup_answers_the_table_and_nothing_else() {
 /// The two lists must not overlap: a name in both would be answered and not answered at once.
 #[test]
 fn the_two_lists_do_not_overlap() {
-    for name in NOTIFICATIONS {
-        assert!(row_for(name).is_none(), "{name} is in both lists");
+    for notice in NOTICES {
+        assert!(
+            row_for(notice.method).is_none(),
+            "{} is in both lists",
+            notice.method
+        );
     }
     for row in METHODS {
         assert!(
@@ -69,6 +73,52 @@ fn the_two_lists_do_not_overlap() {
             row.method
         );
     }
+}
+
+/// Every notice names a side, and no notice is listed twice.
+///
+/// A notice with no sender is one either side may send, and one of these three opens a unit whose
+/// plan writes the catalogue. `Notice` is the third arm of the sender kind and it is the one
+/// answer this column may NOT carry: it would mean exactly the "either side" this column exists
+/// to stop.
+#[test]
+fn every_notice_names_the_side_that_sends_it() {
+    for (i, notice) in NOTICES.iter().enumerate() {
+        assert!(
+            !NOTICES[..i].iter().any(|n| n.method == notice.method),
+            "the notice {} is listed twice",
+            notice.method
+        );
+        assert_ne!(
+            notice.sender,
+            Sender::Notice,
+            "the notice {} names no side",
+            notice.method
+        );
+        assert_eq!(notice_for(notice.method), Some(notice));
+    }
+    assert_eq!(notice_for("notifications/something/else"), None);
+}
+
+/// The notices a SERVER originates are the two the codec's own notification half carries.
+///
+/// The roots list is the caller's own, because roots are the caller's; the other two are the
+/// server describing its own catalogue. Pinned by value so a row added later has to say which
+/// side it came from and be right about it.
+#[test]
+fn the_server_originated_notices_are_the_two() {
+    let from_the_server: Vec<&str> = NOTICES
+        .iter()
+        .filter(|n| n.sender == Sender::Provider)
+        .map(|n| n.method)
+        .collect();
+    assert_eq!(
+        from_the_server,
+        vec![
+            "notifications/tools/list_changed",
+            "notifications/resources/updated"
+        ]
+    );
 }
 
 /// Every method the codec's own dispatch table names is one this plane carries.
