@@ -660,14 +660,6 @@ impl DynStore {
             .transport_call_status::<StoreRequest, StoreResponse>(&req)
     }
 
-    /// THE ONE PLACE a store op is allowed a safe default when the plugin is too OLD to know the
-    /// request variant. `extract` names the response variant the op expects; `on_unsupported` supplies
-    /// the default for the [`TransportErrorKind::Unsupported`] case and NOTHING ELSE.
-    ///
-    /// Every op that tolerates an old plugin routes through here, so the fail-open surface is one
-    /// function instead of four hand-written `match` arms — a fifth op cannot re-introduce the class by
-    /// writing `Err(_) => <default>` (which would swallow a real backend error, a caught PANIC, and a
-    /// caller-protocol violation, hydrating an empty denylist and re-accepting revoked tokens).
     /// Does this store need the 1.5.5 four-tier usage shape instead of the unit map?
     fn legacy_usage_wire(&self) -> bool {
         legacy_usage::needs_legacy_usage_wire(self.abi_version)
@@ -705,6 +697,14 @@ impl DynStore {
         );
     }
 
+    /// THE ONE PLACE a store op is allowed a safe default when the plugin is too OLD to know the
+    /// request variant. `extract` names the response variant the op expects; `on_unsupported` supplies
+    /// the default for the [`TransportErrorKind::Unsupported`] case and NOTHING ELSE.
+    ///
+    /// Every op that tolerates an old plugin routes through here, so the fail-open surface is one
+    /// function instead of four hand-written `match` arms — a fifth op cannot re-introduce the class by
+    /// writing `Err(_) => <default>` (which would swallow a real backend error, a caught PANIC, and a
+    /// caller-protocol violation, hydrating an empty denylist and re-accepting revoked tokens).
     fn call_with_legacy_default<T>(
         &self,
         req: StoreRequest,
