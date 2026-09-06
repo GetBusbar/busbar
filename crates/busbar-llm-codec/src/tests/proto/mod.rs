@@ -34,6 +34,9 @@ pub use crate::{
 // for exactly this surface, pre-relocation — see the `#[cfg(test)] use anthropic::{…}` block that
 // remains in core's `proto/mod.rs` for the witness build).
 pub use crate::anthropic::{synth_anthropic_request_id, AnthropicReader, AnthropicWriter};
+// `pub(crate)` in its home module, so it is re-exported at the same visibility here (a `pub`
+// re-export of a crate-visible item is an over-export error).
+pub(crate) use crate::anthropic::anthropic_writer;
 pub use crate::bedrock::{BedrockReader, BedrockWriter};
 pub use crate::cohere::{CohereReader, CohereWriter};
 pub use crate::gemini::{GeminiJsonArrayFramer, GeminiReader, GeminiWriter};

@@ -7,7 +7,7 @@
 //! no cross-protocol slot are carried 100% lossless SAME-protocol (read→write) and, where they are
 //! dropped on a foreign egress, that drop is asserted too.
 use super::super::proto_codec::{ProtocolReader, ProtocolWriter};
-use super::{AnthropicReader, AnthropicWriter};
+use super::{anthropic_writer, AnthropicReader, AnthropicWriter};
 
 // ---------------------------------------------------------------------------------------------
 // Request-level provider-specific fields — carried verbatim through `extra` (same-protocol lossless).
@@ -29,7 +29,7 @@ fn anthropic_request_provider_specific_fields_carry() {
         "betas": ["token-counting-2024-11-01", "pdfs-2024-09-25"]
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
 
     // metadata: the WHOLE object survives (user_id is also promoted to `user`, but the verbatim
     // extra overlay wins so custom keys are not lost).
@@ -54,7 +54,7 @@ fn anthropic_request_top_k_carry() {
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
     assert_eq!(ir.top_k, Some(40), "top_k read first-class");
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     assert_eq!(out["top_k"], 40, "top_k must re-emit");
 }
 
@@ -72,7 +72,7 @@ fn anthropic_request_tools_carry() {
         }]
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     let tool = &out["tools"][0];
     assert_eq!(tool["name"], "get_weather", "tool name survives");
     assert_eq!(
@@ -99,7 +99,7 @@ fn anthropic_request_tool_choice_carry() {
         "tool_choice": {"type": "tool", "name": "f"}
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     assert_eq!(
         out["tool_choice"]["type"], "tool",
         "tool_choice type survives"
@@ -122,7 +122,7 @@ fn anthropic_request_thinking_carry() {
         Some(crate::ir::IrReasoningAsk::Budget(6000)),
         "thinking read into the reasoning ask"
     );
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     assert_eq!(
         out["thinking"]["type"], "enabled",
         "thinking param re-emitted"
@@ -166,7 +166,7 @@ fn anthropic_content_block_field_carry() {
         ]
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     let user0 = out["messages"][0]["content"].as_array().unwrap();
     let text = &user0[0];
     assert_eq!(
@@ -220,7 +220,7 @@ fn anthropic_thinking_content_block_carry() {
         ]}]
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     let block = &out["messages"][0]["content"][0];
     assert_eq!(block["type"], "thinking");
     assert_eq!(
@@ -252,7 +252,7 @@ fn anthropic_document_block_carry() {
     let ir = AnthropicReader.read_request(&body).expect("parses");
 
     // SAME-protocol: everything survives verbatim.
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     let doc = &out["messages"][0]["content"][0];
     assert_eq!(doc["type"], "document");
     assert_eq!(
@@ -277,7 +277,7 @@ fn anthropic_document_block_carry() {
     // citations are the documented drop.
     let mut crossed = ir.clone();
     crossed.extra.clear();
-    let cout = AnthropicWriter.write_request(&crossed);
+    let cout = anthropic_writer().write_request(&crossed);
     let cdoc = &cout["messages"][0]["content"][0];
     assert_eq!(cdoc["type"], "document");
     assert_eq!(
@@ -310,7 +310,7 @@ fn anthropic_search_result_block_carry() {
         ]}]
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     let sr = &out["messages"][0]["content"][0];
     assert_eq!(sr["type"], "search_result");
     assert_eq!(
@@ -353,7 +353,7 @@ fn anthropic_response_usage_extras_carry() {
         Some("priority"),
         "service_tier read into IR"
     );
-    let out = AnthropicWriter.write_response(&ir);
+    let out = anthropic_writer().write_response(&ir);
     assert_eq!(
         out["usage"]["server_tool_use"]["web_search_requests"], 2,
         "usage.server_tool_use.web_search_requests survives"
@@ -457,7 +457,7 @@ fn anthropic_stream_delta_roundtrip_carry() {
         let ev = AnthropicReader
             .read_response_event("content_block_delta", &data)
             .expect("read delta");
-        AnthropicWriter
+        anthropic_writer()
             .write_response_event(&ev)
             .expect("write delta")
             .1
@@ -549,7 +549,7 @@ fn anthropic_drops_penalties_seed_n_observably() {
 
     let cap = WarnCapture::default();
     let sub = tracing_subscriber::registry().with(cap.clone());
-    let out = tracing::subscriber::with_default(sub, || AnthropicWriter.write_request(&ir));
+    let out = tracing::subscriber::with_default(sub, || anthropic_writer().write_request(&ir));
 
     // None of the four leaks onto the Anthropic wire.
     for field in ["frequency_penalty", "presence_penalty", "seed", "n"] {
@@ -564,7 +564,7 @@ fn anthropic_drops_penalties_seed_n_observably() {
         );
     }
     // …and each is reported to the cross-protocol seam for audit.
-    let dropped = AnthropicWriter.dropped_egress_controls(&ir);
+    let dropped = anthropic_writer().dropped_egress_controls(&ir);
     for field in ["frequency_penalty", "presence_penalty", "seed", "n"] {
         assert!(
             dropped.contains(&field),
@@ -679,7 +679,7 @@ fn anthropic_response_carries_every_spec_required_member_with_default_shapes() {
 
         request_echo: None,
     };
-    let out = AnthropicWriter.write_response(&resp);
+    let out = anthropic_writer().write_response(&resp);
     assert_eq!(out["stop_details"], serde_json::Value::Null);
     assert_eq!(out["container"], serde_json::Value::Null);
     assert_eq!(out["content"][0]["citations"], serde_json::Value::Null);
@@ -728,7 +728,7 @@ fn anthropic_response_spec_required_members_pass_reported_values_through() {
     });
     let ir = AnthropicReader.read_response(&body).expect("reads");
     assert_eq!(ir.usage.detail.reasoning_tokens, Some(2));
-    let out = AnthropicWriter.write_response(&ir);
+    let out = anthropic_writer().write_response(&ir);
     assert_eq!(
         out["content"][0]["citations"],
         body["content"][0]["citations"]
@@ -775,7 +775,7 @@ fn anthropic_response_cache_creation_is_null_when_total_known_but_tiers_are_not(
 
         request_echo: None,
     };
-    let out = AnthropicWriter.write_response(&resp);
+    let out = anthropic_writer().write_response(&resp);
     assert_eq!(out["usage"]["cache_creation_input_tokens"], 9);
     assert_eq!(out["usage"]["cache_creation"], serde_json::Value::Null);
 }

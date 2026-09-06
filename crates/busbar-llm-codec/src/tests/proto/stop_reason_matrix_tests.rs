@@ -82,7 +82,7 @@ fn every_writer_emits_only_valid_native_finish_tokens() {
         let fr = o["choices"][0]["finish_reason"].as_str().unwrap();
         assert!(openai_ok.contains(&fr), "openai leaked {fr:?} for {r:?}");
 
-        let a = AnthropicWriter.write_response(&resp(r));
+        let a = anthropic_writer().write_response(&resp(r));
         let sr = a["stop_reason"].as_str().unwrap();
         assert!(
             anthropic_ok.contains(&sr),

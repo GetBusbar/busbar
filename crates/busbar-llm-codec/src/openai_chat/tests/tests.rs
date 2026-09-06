@@ -5222,7 +5222,7 @@ fn openai_chat_citation_survives_the_hop_to_anthropic() {
         "usage": {"prompt_tokens": 3, "completion_tokens": 4}
     });
     let ir = OpenAiReader.read_response(&body).expect("read_response");
-    let out = super::super::anthropic::AnthropicWriter.write_response(&ir);
+    let out = super::super::anthropic::anthropic_writer().write_response(&ir);
     let content = out["content"].as_array().expect("content array");
     let citation = content
         .iter()

@@ -1985,6 +1985,18 @@ pub const AnthropicWriter: AnthropicWriter = AnthropicWriter {
     open_block_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
 };
 
+/// A FRESH writer as a VALUE, for the one-shot `write_request` / `write_response` calls the test
+/// suites make. Borrowing the const directly (`AnthropicWriter.write_request(…)`) is
+/// `clippy::borrow_interior_mutable_const`: each borrow inlines its own copy of the interior-mutable
+/// set, which is harmless for a stateless one-shot call but wrong for a STREAM (whose open/close
+/// correlation must see one writer). This returns the value so the temporary is explicit, and a test
+/// that drives a sequence of stream events binds one writer to a local instead of calling this per
+/// event.
+#[cfg(test)]
+pub(crate) fn anthropic_writer() -> AnthropicWriter {
+    AnthropicWriter
+}
+
 impl Clone for AnthropicWriter {
     fn clone(&self) -> Self {
         // Carry the open-index set across a clone so a mid-stream `Protocol::clone` keeps the

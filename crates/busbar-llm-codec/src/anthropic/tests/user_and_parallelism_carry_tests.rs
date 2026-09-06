@@ -3,7 +3,7 @@
 //! spelling/location — these must CROSS the seam instead of dying in `extra`.
 use super::super::openai_chat::{OpenAiReader, OpenAiWriter};
 use super::super::proto_codec::{ProtocolReader, ProtocolWriter};
-use super::{AnthropicReader, AnthropicWriter};
+use super::{anthropic_writer, AnthropicReader};
 
 fn tools_json() -> serde_json::Value {
     serde_json::json!([{
@@ -31,7 +31,7 @@ fn openai_user_and_parallel_carry_to_anthropic() {
     assert!(!ir.extra.contains_key("user"));
     assert!(!ir.extra.contains_key("parallel_tool_calls"));
 
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     assert_eq!(out["metadata"]["user_id"], "end-user-7");
     assert_eq!(out["tool_choice"]["type"], "auto");
     assert_eq!(out["tool_choice"]["disable_parallel_tool_use"], true);
@@ -91,7 +91,7 @@ fn absence_gains_nothing() {
     let ir = OpenAiReader.read_request(&body).expect("parses");
     assert_eq!(ir.user, None);
     assert_eq!(ir.parallel_tool_calls, None);
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     assert!(out.get("metadata").is_none());
     assert!(out.get("tool_choice").is_none());
 
@@ -122,7 +122,7 @@ fn parallel_flag_with_tool_choice_none_stays_none() {
     });
     let ir = OpenAiReader.read_request(&body).expect("parses");
     assert_eq!(ir.parallel_tool_calls, Some(false));
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     assert_eq!(out["tool_choice"]["type"], "none");
     assert!(
         out["tool_choice"]
@@ -141,7 +141,7 @@ fn parallel_without_directive_synthesizes_auto_only_with_tools() {
         "parallel_tool_calls": false
     });
     let ir = OpenAiReader.read_request(&with_tools).expect("parses");
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     assert_eq!(out["tool_choice"]["type"], "auto");
     assert_eq!(out["tool_choice"]["disable_parallel_tool_use"], true);
 
@@ -151,7 +151,7 @@ fn parallel_without_directive_synthesizes_auto_only_with_tools() {
         "parallel_tool_calls": false
     });
     let ir2 = OpenAiReader.read_request(&toolless).expect("parses");
-    let out2 = AnthropicWriter.write_request(&ir2);
+    let out2 = anthropic_writer().write_request(&ir2);
     assert!(
         out2.get("tool_choice").is_none(),
         "no tools -> no synthesized tool_choice: {out2}"
@@ -170,7 +170,7 @@ fn native_metadata_wins_over_promoted_user() {
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
     // Same-protocol translated path: extra still carries metadata verbatim.
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     assert_eq!(out["metadata"]["user_id"], "original");
     assert_eq!(
         out["metadata"].as_object().unwrap().len(),

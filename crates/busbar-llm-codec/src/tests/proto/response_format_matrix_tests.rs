@@ -180,7 +180,7 @@ fn tool_choice_without_tools_is_omitted_on_every_writer() {
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     let (a, o, g, b, c, r) = tracing::subscriber::with_default(subscriber, || {
         (
-            AnthropicWriter.write_request(&req),
+            anthropic_writer().write_request(&req),
             OpenAiWriter.write_request(&req),
             gemini_writer.write_request(&req),
             bedrock_writer.write_request(&req),
@@ -306,7 +306,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
     );
 
     // Anthropic and Bedrock publish no fixed cap — UNCHANGED, still carrying all 8.
-    let a = AnthropicWriter.write_request(&req);
+    let a = anthropic_writer().write_request(&req);
     let a_stop = a["stop_sequences"]
         .as_array()
         .expect("anthropic stop_sequences array");

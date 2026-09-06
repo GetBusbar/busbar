@@ -84,7 +84,10 @@ fn responses_part_logprobs_stay_a_bare_array_after_the_refusal_member_lands() {
         }],
         "hi",
     );
-    let wire = openai_responses::ResponsesWriter.write_response(&ir);
+    // Bind the interior-mutable const to a local before borrowing
+    // (clippy::borrow_interior_mutable_const).
+    let writer = openai_responses::ResponsesWriter;
+    let wire = writer.write_response(&ir);
     let part = wire
         .pointer("/output/0/content/0")
         .expect("an output_text content part");

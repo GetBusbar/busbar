@@ -3789,7 +3789,7 @@ fn test_cross_protocol_openai_to_anthropic() {
     let ir_resp = OpenAiReader
         .read_response(&openai_data)
         .expect("OpenAI read");
-    let anthropic_json = AnthropicWriter.write_response(&ir_resp);
+    let anthropic_json = anthropic_writer().write_response(&ir_resp);
 
     // Assert Anthropic-shaped output
     assert_eq!(
@@ -3899,7 +3899,7 @@ fn test_cross_protocol_tool_use_response() {
         panic!("expected ToolUse block");
     }
 
-    let anthropic_json = AnthropicWriter.write_response(&ir_resp);
+    let anthropic_json = anthropic_writer().write_response(&ir_resp);
 
     // Assert Anthropic output has tool_use block with correct fields
     if let Some(content_arr) = anthropic_json.get("content").and_then(|c| c.as_array()) {
