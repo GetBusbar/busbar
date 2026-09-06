@@ -61,7 +61,7 @@ auth-admin-tokens = []
 # to `busbar-substrate/openapi-schema` — the plugin carries no `schemars` derive of its own (the LLM
 # plane contributes `openapi_schemas: None`), it only needs the field-site `#[cfg]` to agree with
 # substrate's. The binary's `openapi-schema` forwards `busbar-llm?/openapi-schema`.
-openapi-schema = ["busbar-substrate/openapi-schema", "busbar-llm-codec/openapi-schema"]
+openapi-schema = ["busbar-substrate/openapi-schema", "busbar-llm-codec/openapi-schema", "busbar-mcp/openapi-schema"]
 # T3 — inbound OpenAI Responses async/background WEBHOOK RECEIVER, LIVE HTTP-ROUTE MOUNT. DEFAULT OFF.
 # The parse+verify+surface HANDLER (`openai_responses::webhook`) compiles and is tested
 # UNCONDITIONALLY; only MOUNTING it as a live `/v1/llm/webhooks/openai` route is gated here, because
