@@ -21,6 +21,11 @@ export const VERDICT = {
   FAIL: 'FAIL',
   SKIP: 'SKIP',
   ERROR: 'ERROR',
+  // Not run because the CALLER's --tier did not select it -- as opposed to SKIP, which is the
+  // TEST deciding at run time that it could not reach its surface. A tier default is a coverage
+  // decision made before the battery ever starts, and it must leave the same kind of trace a
+  // SKIP does, or the scenario silently leaves the denominator: see EXCLUDED_TIER below.
+  EXCLUDED_TIER: 'EXCLUDED_TIER',
 };
 
 const registry = [];
@@ -172,17 +177,54 @@ export async function runOne(t, target) {
   return record;
 }
 
+// Filters OTHER than tier: a deliberate, requested narrowing (--area, --role, --only, transport).
+// Tier is handled separately below, because an EXCLUDED-by-tier scenario still has to be reported
+// -- these other filters are asked for on the command line and are already visible there.
+function passesNonTierFilter(t, filter) {
+  if (filter.areas && !filter.areas.includes(t.area)) return false;
+  if (filter.roles && !filter.roles.includes(t.role)) return false;
+  if (filter.transport && !t.transports.includes(filter.transport)) return false;
+  if (filter.only && !filter.only.some((p) => t.id.includes(p))) return false;
+  return true;
+}
+
+function excludedByTierRecord(t, filter) {
+  return {
+    id: t.id,
+    title: t.title,
+    role: t.role,
+    area: t.area,
+    tier: t.tier,
+    peer: t.peer,
+    timing: Boolean(t.timing),
+    catches: t.catches,
+    assertions: [],
+    variance: [],
+    recommendations: [],
+    notes: [],
+    failed: false,
+    verdict: VERDICT.EXCLUDED_TIER,
+    error: `excluded by --tier ${filter.tiers.join(',')}: this scenario is tier '${t.tier}'`,
+  };
+}
+
 export async function runAll(target, filter = {}) {
-  const selected = allTests().filter((t) => {
-    if (filter.tiers && !filter.tiers.includes(t.tier)) return false;
-    if (filter.areas && !filter.areas.includes(t.area)) return false;
-    if (filter.roles && !filter.roles.includes(t.role)) return false;
-    if (filter.transport && !t.transports.includes(filter.transport)) return false;
-    if (filter.only && !filter.only.some((p) => t.id.includes(p))) return false;
-    return true;
-  });
   const results = [];
-  for (const t of selected) {
+  for (const t of allTests()) {
+    if (!passesNonTierFilter(t, filter)) continue;
+    // A SCENARIO A TIER DEFAULT LEAVES OUT STILL APPEARS IN THE VERDICT.
+    //
+    // This used to be a plain `.filter()` that dropped a tier-excluded scenario before it ever
+    // became a result: it left no row, no verdict, and no line in any count. A `prerelease`-tier
+    // scenario run under the push/pr default (run-subject.sh's MCP_TIER) then vanished from the
+    // denominator exactly like the unarmed-role hole this harness already refuses elsewhere --
+    // except with no SKIP, no FAIL, and nothing to grep for. Recording it as EXCLUDED_TIER instead
+    // means the same scenario appears in every run's results with a count attached, so a reader
+    // can tell "never selected by this tier" apart from "selected and green".
+    if (filter.tiers && !filter.tiers.includes(t.tier)) {
+      results.push(excludedByTierRecord(t, filter));
+      continue;
+    }
     results.push(await runOne(t, target));
   }
   return results;
