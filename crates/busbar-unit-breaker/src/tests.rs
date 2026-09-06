@@ -861,6 +861,56 @@ fn a_probe_that_closed_the_cell_is_always_journaled_as_succeeded() {
     );
 }
 
+/// A reader must never pair a cell's stale cooldown with its freshly stored state.
+///
+/// Every writer that moves a cell stores the cooldown FIRST and the state SECOND. A reader that
+/// loads them in that SAME order can slip between the two stores: it takes the old cooldown (zero,
+/// on a cell that has never tripped) and then the new Open state, and decodes a cell that was just
+/// tripped for an hour as probe-winnable — an admission the cooldown forbids. Loading state first
+/// and cooldown second is the reverse of the write order, which is what makes an observed fresh
+/// state imply an at-least-as-fresh cooldown.
+#[test]
+fn a_verdict_never_pairs_a_stale_cooldown_with_a_fresh_state() {
+    use crate::cell::BreakerVerdict;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    const CELLS: usize = 50_000;
+    let now = 1_000u64;
+    // Each cell is tripped exactly ONCE, from a never-cooled Closed cell to a long Open cooldown,
+    // so "probe-winnable" is not a legitimate answer at any point in the cell's life here.
+    let cells: Vec<BreakerCell> = (0..CELLS).map(|_| BreakerCell::new()).collect();
+    let violations = AtomicUsize::new(0);
+
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            for cell in &cells {
+                cell.hard_down(now, 3_600);
+            }
+        });
+        scope.spawn(|| {
+            for cell in &cells {
+                loop {
+                    match cell.verdict(now) {
+                        // Not tripped yet from this thread's point of view: keep watching.
+                        BreakerVerdict::Ready => continue,
+                        BreakerVerdict::ProbeWinnable => {
+                            violations.fetch_add(1, AtomicOrdering::Relaxed);
+                            break;
+                        }
+                        _ => break,
+                    }
+                }
+            }
+        });
+    });
+
+    assert_eq!(
+        violations.load(AtomicOrdering::Relaxed),
+        0,
+        "a cell tripped with an hour of cooldown decoded as probe-winnable"
+    );
+}
+
 /// A pool cell that a caller can reach is a pool cell a hard-down can reach.
 ///
 /// `cell` published a freshly created cell into the cell map and only afterwards registered its

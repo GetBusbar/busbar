@@ -243,8 +243,16 @@ impl BreakerCell {
     /// no probe CAS. Every "is the breaker open" question resolves here so the notions can never
     /// drift between the selection filter, observability, and the mutating admit path.
     pub fn verdict(&self, now: u64) -> BreakerVerdict {
+        // The load order is an obligation, not a style choice: every writer that moves this cell
+        // stores the cooldown FIRST and the state SECOND, so a reader must take them in the reverse
+        // order — state first, then cooldown. Reading them in the same order the writer wrote them
+        // lets a reader slip between the two stores and pair a stale cooldown with a fresh state,
+        // decoding a cell that has just been tripped for an hour as probe-winnable. Taking the
+        // state first means an observed fresh state was published after the cooldown it belongs to,
+        // so the cooldown read that follows is at least as fresh as the state.
+        let state = self.breaker_state.load(Ordering::Acquire);
         let until = self.cooldown_until.load(Ordering::Acquire);
-        match self.breaker_state.load(Ordering::Acquire) {
+        match state {
             ST_CLOSED => {
                 if now >= until {
                     BreakerVerdict::Ready
