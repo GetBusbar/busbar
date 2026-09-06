@@ -20,6 +20,9 @@
 #   config-stability scripts/config-stability-gate.sh --check (config-schema.snapshot.json byte-stable).
 #   test             cargo test --workspace  +  cargo test -p busbar-voice --features runtime.
 #   conformance      the conformance rigs' selftests + verdict-covers-every-leg.py + the voice legs =ready.
+#   teller-steps     the H2 matrix holds on BOTH its columns: every rig cell id still resolves to the
+#                    scenario/script/leg/suite that owns it and the rigs behind them pass
+#                    (rigs-ledger.sh), and every root-leg cell it calls proven runs over the loop.
 #   no-deferral      scripts/no-deferral-gate.sh --strict-done (nothing deferred; voice markers CLEARED).
 #   config-noun      scripts/plane-config-noun-gate.sh armed (GREP_GATE_REPORT_ONLY=0). Its residual is
 #                    a LOCKED-legitimate floor, not zero and not a done condition, so what is asserted
@@ -402,6 +405,11 @@ if [ -f scripts/teller-steps-check.py ] && [ -f qa/teller-steps.json ]; then
   # (a proven cell's fn exists in its own leg's file; a leg proving nothing is red); this RUNS every
   # named cell with all five legs on, so "proven" means watched rather than present on disk.
   step "every root-leg step cell RUNS and passes" python3 scripts/teller-steps-check.py --root-legs
+  # And the same treatment for the RIG column the matrix's `cell` values name. --check above proves
+  # every id still resolves to the scenario, subject script, voice leg or suite that owns it; this
+  # RUNS the rigs behind them through testing/shadow-oracle/rigs-ledger.sh. It refuses (loudly)
+  # rather than skipping when there is no release binary to arm the MCP and A2A legs with.
+  step "the rig suites the matrix cites RUN and pass" python3 scripts/teller-steps-check.py --rig-legs
   printf '  \033[36m[info]\033[0m '
   python3 scripts/teller-steps-check.py --check 2>/dev/null | grep -E "^ROOT-STEPS:" || echo "root-steps count unavailable"
 else

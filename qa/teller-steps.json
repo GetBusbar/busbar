@@ -109,7 +109,7 @@
         }
       },
       "decode": {
-        "cell": "llm|openai-chat|openai-chat|request|malformed",
+        "cell": "llm|openai|openai|request|malformed",
         "status": "mapped",
         "note": "representative of the llm.wire malformed outcome, enumerated per dialect",
         "root": {
@@ -140,7 +140,7 @@
         }
       },
       "approve": {
-        "cell": "llm|openai-chat|openai-chat|request|out_of_scope",
+        "cell": "llm|openai|openai|request|out_of_scope",
         "status": "mapped",
         "note": "existing OUTCOMES cross, enumerated per dialect",
         "root": {
