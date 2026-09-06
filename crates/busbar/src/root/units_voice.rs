@@ -3533,6 +3533,10 @@ mod tests {
         .expect("a memory-buffered journal cannot fail to open");
         let node = VoiceNode::new(VoiceNodeParts {
             plane: VoicePlane::new(UPSTREAMS),
+            groups: crate::root::policy::group_table(
+                &std::collections::BTreeMap::new(),
+                &std::collections::BTreeMap::new(),
+            ),
             pricer: Pricer::flat(0),
             auth: Auth::new(AuthChain::new(Vec::new(), true)),
             auth_bindings: AuthBindings::new(std::sync::Arc::new(Directory)),
@@ -3578,5 +3582,147 @@ mod tests {
         let refusal =
             answer(Some("mcp-tok")).expect_err("another plane's audience does not open this one");
         assert_eq!(refusal.reason(), ReasonCode::Unauthenticated);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // The configured group reaches the door
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// One group, one turn at a time — the smallest cap an operator can write.
+    fn one_turn_at_a_time(group: &str) -> busbar_unit_admission::GroupTable {
+        let groups = std::collections::BTreeMap::from([(
+            group.to_string(),
+            busbar_substrate::config::groups::GroupCfg {
+                parent: None,
+                enabled: true,
+                limits: vec![busbar_substrate::config::groups::LimitCfg {
+                    metric: busbar_substrate::config::groups::LimitMetric::Concurrent,
+                    amount: 1,
+                    per: None,
+                    scope: None,
+                    on_exhaust: None,
+                    downgrade_to: None,
+                }],
+                child_default: None,
+            },
+        )]);
+        // Through the interner the root uses at boot, so the name the slot records is the same
+        // static the vocabulary holds rather than one this fixture invented.
+        let mut vocabulary = crate::root::vocabulary::Vocabulary::new();
+        let ids = vocabulary.group_ids(&crate::root::vocabulary::ConfigKeys {
+            groups: vec![group.to_string()],
+            ..crate::root::vocabulary::ConfigKeys::default()
+        });
+        crate::root::policy::group_table(&groups, &ids)
+    }
+
+    /// Ask the door for one turn, keeping what its yes counted.
+    fn ask_the_door(
+        kernel: &Kernel,
+        unit: &VoiceUnit<'_>,
+        who: &PrincipalId,
+    ) -> (Result<Admission, busbar_caps::Refusal>, GroupLeaseSlip) {
+        let slip = GroupLeaseSlip::new();
+        let decision = Units::admit(
+            unit,
+            &busbar_caps::UnitToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel()),
+            &kernel.admit_token(),
+            &ctx(1),
+            who,
+            &[],
+            &slip,
+        );
+        (
+            decision.into_result(&busbar_caps::KernelSeal::acquire_for_kernel()),
+            slip,
+        )
+    }
+
+    /// **The cap is a cap.** A deployment that wrote `concurrent: 1` against a voice group gets one
+    /// turn in the air at a time: the second is refused while the first is still running, and it is
+    /// admitted once the first has ended.
+    ///
+    /// This is the whole point of the chain being the configured one. With an empty chain the door
+    /// walks no group, raises no gauge and says yes to both — which is what a node whose operator
+    /// wrote this cap down did, silently, with nothing on any surface to say the limit was inert.
+    #[test]
+    fn a_voice_group_capped_at_one_turn_refuses_the_second_and_admits_it_after_the_first_ends() {
+        const GROUP: &str = "voice-team";
+        let node = node_governed_by(serviceable(), one_turn_at_a_time(GROUP));
+        let kernel = Kernel::new();
+        let who = PrincipalId::new("acct:voice");
+        let turn =
+            || VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(GROUP);
+
+        let first = turn();
+        let (admitted, held) = ask_the_door(&kernel, &first, &who);
+        assert!(admitted.is_ok(), "the first turn of a group capped at one");
+        assert_eq!(
+            held.taken().len(),
+            1,
+            "and the yes names the one capped group it counted"
+        );
+        // The count itself, taken onto the slot as the loop takes it. Held for as long as the unit
+        // it admitted is running, which is what makes the next line a refusal rather than a second
+        // yes.
+        let running = held.grant_taken().expect("the yes is holding a count");
+
+        let second = turn();
+        let (refused, _) = ask_the_door(&kernel, &second, &who);
+        let refusal = refused.expect_err("the group is full");
+        assert_eq!(
+            refusal.reason(),
+            ReasonCode::RateLimited,
+            "an in-flight gauge is a count cap, not a spend cap"
+        );
+
+        // The unit ends: the slot gives back what it held, and the group has room again.
+        drop(running);
+        let third = turn();
+        let (after, _) = ask_the_door(&kernel, &third, &who);
+        assert!(
+            after.is_ok(),
+            "the cap is instantaneous — it gates what is running, never what has run"
+        );
+    }
+
+    /// A caller bound to a group this node's configuration does not have is refused, not admitted
+    /// under caps that could not be read. Fail-closed, and rendered as over-quota, which is what the
+    /// door itself answers for the same cause.
+    #[test]
+    fn a_voice_caller_bound_to_an_unconfigured_group_is_refused() {
+        let node = node_governed_by(serviceable(), one_turn_at_a_time("voice-team"));
+        let kernel = Kernel::new();
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through("a-group-this-node-never-had");
+        let (decision, _) = ask_the_door(&kernel, &unit, &PrincipalId::new("acct:voice"));
+        assert_eq!(
+            decision
+                .expect_err("nothing is admitted under caps that cannot be read")
+                .reason(),
+            ReasonCode::OverBudget
+        );
+    }
+
+    /// The handshake stays exempt. A group capped out still opens its sessions, because unit zero
+    /// takes no lease of either kind — the posture that keeps an operator's own surface answering
+    /// while everything else is at its cap.
+    #[test]
+    fn a_capped_group_still_opens_a_session() {
+        const GROUP: &str = "voice-team";
+        let node = node_governed_by(serviceable(), one_turn_at_a_time(GROUP));
+        let kernel = Kernel::new();
+        let who = PrincipalId::new("acct:voice");
+        let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(GROUP);
+        let (_, held) = ask_the_door(&kernel, &turn, &who);
+        let _running = held.grant_taken().expect("the turn is counted");
+
+        let open =
+            VoiceUnit::new(&node, UnitShape::SessionOpen, 8, 1_700_000_000).charging_through(GROUP);
+        let (decision, _) = ask_the_door(&kernel, &open, &who);
+        assert!(
+            decision.is_ok(),
+            "unit zero's admission is the zero-priced one and draws no lease"
+        );
     }
 }
