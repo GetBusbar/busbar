@@ -269,13 +269,17 @@
    "paths": [
     "crates/busbar-kernel/src"
    ],
-   "tree_hash": "96563642b190bb07bf700496613a76f46b980195fa646bb4819e4286591ae688",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "46d22124c992709e046a8b7cd23cdc7c1dd0ff62afd7bf8b59ef8096d97b39ca",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 3,
+    "LOW": 2,
+    "NIT": 3
+   },
+   "report": "pass 2 fresh eyes: duplicate key displaced a live slot (fixed 907b54f8), third take site and no fixture (fixed d8af7663), permit-less one-shot answered Wait (fixed fe6d85ee); challenge round skips Verify/Approve/Admit and sweep/exit class mismatch reported; all ten src modules read, 3100 test lines unread",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel/src/tests"
@@ -606,13 +610,13 @@
    "paths": [
     "crates/busbar-transport-tcp/src"
    ],
-   "tree_hash": "be0d789b31b1255e3cdc4a5b19b25e9dbc611ea3e581066b884aedbe434cfea5",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
+   "tree_hash": "31c9932fbaca8aa2338d79f2b5086860d6745d9164b93a12fb7ee70031abd1a9",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 6,
+   "result": "zero",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "report": "pass 2 fresh eyes: lib.rs read fully, zero; tests.rs unread",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-tcp/src/tests"
@@ -624,13 +628,16 @@
    "paths": [
     "crates/busbar-transport-tls/src"
    ],
-   "tree_hash": "a7fb61acd27ccf613801ac306acd4f875ae5bc2998fa462bc13c828cdcbe6d3c",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "d3cadadde498bc0df2de6f0a78a7211d823c0e0e33a4f84d1a461638126eb4ac",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "pass 2 fresh eyes: close_notify unbounded (fixed 206af31a); dial handshake bound unverified; tests.rs partially read",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-tls/src/tests"
@@ -642,13 +649,15 @@
    "paths": [
     "crates/busbar-transport-ws/src"
    ],
-   "tree_hash": "71368d6a741566357991dacc1e28a81efaeb66aa92a68fde84f78df654c1e3f8",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "f5b37edf1ae00860916b06c3b7617ae6199ffc84115c77be407f93b4c006ea2d",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1
+   },
+   "report": "pass 2 fresh eyes: close does not wake a pump parked in the read, socket leaked per silent peer (fixed 98e22dbf); battery.rs partially read",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-ws/src/tests"
