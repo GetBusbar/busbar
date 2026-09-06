@@ -404,6 +404,75 @@ fn all_of_branch_non_properties_keys_are_merged_in() {
     });
 }
 
+/// The marker rule is about WHERE a field sits, not how many levels down the walk happened to be.
+/// A schema under `patternProperties` is one level from the root and is NOT a root property —
+/// `resolve_settings()` will never resolve it, so a secret marked there silently never resolves,
+/// which is the whole reason for the rule.
+#[test]
+fn a_secret_marker_under_pattern_properties_is_rejected() {
+    let schema = serde_json::json!({
+        "$schema": SCHEMA_2020_12, "type": "object",
+        "patternProperties": {
+            "^backend_": {"type": "string", "x-busbar-secret": true},
+        },
+    });
+    assert!(
+        validate_secret_fields(&schema).is_err(),
+        "a marker one level down but NOT in the root `properties` map must be rejected"
+    );
+}
+
+/// And the other side of the same ruling: a root `oneOf` whose alternatives each spell out the root
+/// object's own shape declares ROOT properties, however many structural levels down they sit. A
+/// depth counter refuses these, and refusing them tells a plugin author to flatten a field that is
+/// already as flat as it can be.
+#[test]
+fn a_root_oneof_alternative_may_mark_its_top_level_property() {
+    let schema = serde_json::json!({
+        "$schema": SCHEMA_2020_12,
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {"api_key": {"type": "string", "x-busbar-secret": true}},
+                "required": ["api_key"],
+            },
+            {
+                "type": "object",
+                "properties": {"anonymous": {"type": "boolean"}},
+                "required": ["anonymous"],
+            },
+        ],
+    });
+    validate_secret_fields(&schema)
+        .expect("a root oneOf alternative's own top-level property IS a root property");
+}
+
+/// A `$defs` entry that refers to ITSELF is not caught by the cyclic-`$ref` guard: that guard
+/// unwinds as each resolution returns, so every individual step resolves cleanly and the walk simply
+/// never ends. On operator-supplied input at pack time the result is a stack overflow — an abort with
+/// no diagnostic, the one outcome a validator must not have. It returns an error instead.
+#[test]
+fn a_self_recursive_defs_schema_is_refused_rather_than_overflowing_the_stack() {
+    let recursive = serde_json::json!({
+        "$schema": SCHEMA_2020_12,
+        "$ref": "#/$defs/Node",
+        "$defs": {
+            "Node": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "child": {"$ref": "#/$defs/Node"},
+                },
+            },
+        },
+    });
+    let err = validate_secret_fields(&recursive).unwrap_err();
+    assert!(
+        err.contains("nests deeper"),
+        "a self-recursive schema must be refused with a diagnostic, got: {err}"
+    );
+}
+
 /// `oneOf`/`anyOf`/`prefixItems` are also places a field can hide — a marked OR unmarked
 /// secret-looking field placed inside one of these composition keywords must be caught the
 /// same as a plain nested object. A scanner that only walks `properties`/`items` leaves both the
@@ -640,14 +709,15 @@ fn remaining_subschema_keywords_are_scanned_for_secret_violations() {
     validate_secret_fields(&clean).unwrap();
 }
 
-/// Every `scan(..., depth + 1, ...)` call site accepts a CORRECTLY root-level (depth-1) marked
-/// secret reached ONLY through that specific keyword — the `is_err()` assertions elsewhere in
-/// this module prove a nested-and-marked field is REJECTED, but the depth check is `depth !=
-/// 1`, so any wrong depth value (0, 2, anything but 1) produces that SAME rejection outcome and
-/// can't tell a correct `+ 1` from a mutated `* 1`/`- 1`. Only a case that must SUCCEED (a
-/// genuinely depth-1 field) pins the actual arithmetic down.
+/// None of these keywords is the root `properties` map, so a marker reached through any of them is
+/// REFUSED however few levels down it sits. This table used to assert the opposite, because the rule
+/// was written as "exactly one level down" and each of these puts a schema exactly one level down —
+/// so a secret marked under `items` or `patternProperties` packaged clean while `resolve_settings()`,
+/// which resolves the root object's own named fields and nothing else, could never resolve it. The
+/// positive control at the end pins the tracking down: a rule that simply refused everything would
+/// satisfy a table of `is_err()`s just as well.
 #[test]
-fn each_combinator_keyword_accepts_a_secret_reached_at_exactly_root_depth() {
+fn every_keyword_but_the_root_properties_map_refuses_a_marker() {
     for (label, schema) in [
         (
             "items",
@@ -720,9 +790,20 @@ fn each_combinator_keyword_accepts_a_secret_reached_at_exactly_root_depth() {
             }),
         ),
     ] {
-        validate_secret_fields(&schema)
-            .unwrap_or_else(|e| panic!("{label}: a depth-1 marked secret must be accepted: {e}"));
+        assert!(
+            validate_secret_fields(&schema).is_err(),
+            "{label}: a marker reached through this keyword is not on a root property and must be \
+             refused"
+        );
     }
+
+    // The positive control, in the one place the marker belongs.
+    let root_property = serde_json::json!({
+        "$schema": SCHEMA_2020_12, "type": "object",
+        "properties": {"api_key": {"type": "string", "x-busbar-secret": true}},
+    });
+    validate_secret_fields(&root_property)
+        .expect("a direct member of the root properties map is exactly where a marker belongs");
 }
 
 /// `x-busbar-ref: "pool" | "group" | "model" | "provider"` is a recognized schema

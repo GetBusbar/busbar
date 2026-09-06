@@ -268,11 +268,27 @@ fn resolve_effective(
     Ok(merged)
 }
 
+/// Where the schema the walk is currently looking at SITS, which is what the secret-marker rule is
+/// actually about — `resolve_settings()` resolves the root object's own properties and nothing else.
+/// A depth counter answered a different question and got it wrong in both directions: a schema under
+/// `patternProperties` (or `items`, or a `$defs` entry reached from anywhere) sits one level down and
+/// is NOT a root property, while a root `oneOf` alternative's top-level property sits two levels down
+/// and IS.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Position {
+    /// The root schema itself, or a composition alternative still describing the root.
+    Root,
+    /// A direct member of the root object's `properties` — the only place a secret marker belongs.
+    RootProperty,
+    /// Anywhere else.
+    Nested,
+}
+
 /// Pack-time secret-field validator. Two independent hard-error rules, walked together over the WHOLE resolved
 /// document (root `$defs` collected once, `$ref`/`allOf` resolved before any depth or marker
 /// decision is made):
 ///   1. `x-busbar-secret: true` is valid ONLY on a field that is a DIRECT member of the schema's
-///      root `properties` (depth 1) — `resolve_settings()` only resolves top-level fields, so a
+///      root `properties` (see [`Position`]) — `resolve_settings()` only resolves top-level fields, so a
 ///      nested marked field would silently never resolve, defeating the whole guarantee. A
 ///      legitimately nested secret-bearing struct field must be flattened to a root property
 ///      (`tls_key`, not `tls.key`).
@@ -291,17 +307,32 @@ fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
     fn scan(
         schema: &serde_json::Value,
         defs: &serde_json::Map<String, serde_json::Value>,
+        at: Position,
         depth: u32,
         resolving: &mut HashSet<String>,
     ) -> Result<(), String> {
+        // A schema may nest as deeply as it likes, but a `$defs` entry that refers to ITSELF is not
+        // caught by the `resolving` cycle guard: that guard is unwound as each resolution returns,
+        // so a `Node -> properties.child -> $ref Node` schema resolves cleanly at every single step
+        // and simply never stops. This walk runs on operator-supplied input at pack time, and the
+        // failure mode without a cap is a stack overflow — an abort with no diagnostic, which is the
+        // one outcome a validator must never have. Deeper than this is not a schema anyone wrote by
+        // hand; it is the recursion.
+        const MAX_SCAN_DEPTH: u32 = 64;
+        if depth > MAX_SCAN_DEPTH {
+            return Err(format!(
+                "settings_schema nests deeper than {MAX_SCAN_DEPTH} levels — a self-referencing \
+                 $defs entry is the usual cause; the schema cannot be validated"
+            ));
+        }
         let eff = resolve_effective(schema, defs, resolving)?;
         if eff.get("x-busbar-secret") == Some(&serde_json::Value::Bool(true)) {
-            if depth != 1 {
-                return Err(format!(
-                    "x-busbar-secret: true is only allowed on a direct root-level property \
-                     (found at nesting depth {depth}) — flatten the field to a root property \
-                     instead"
-                ));
+            if at != Position::RootProperty {
+                return Err(
+                    "x-busbar-secret: true is only allowed on a direct property of the schema's \
+                     root object — flatten the field to a root property instead"
+                        .to_string(),
+                );
             }
             let ty = eff.get("type").and_then(|t| t.as_str());
             let content_encoding = eff.get("contentEncoding").and_then(|t| t.as_str());
@@ -329,26 +360,40 @@ fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
                         ));
                     }
                 }
-                scan(prop_schema, defs, depth + 1, resolving)?;
+                // A property is a ROOT property when the object declaring it is the root schema —
+                // which is what `at` tracks, not a depth counter. `patternProperties` and the rest
+                // sit one `properties` map deeper than the root even when they are written at the
+                // top of the document, and a `oneOf` alternative at the root declares root
+                // properties even though it is a level down structurally.
+                let child = match at {
+                    Position::Root => Position::RootProperty,
+                    _ => Position::Nested,
+                };
+                scan(prop_schema, defs, child, depth + 1, resolving)?;
             }
         }
         if let Some(items) = eff.get("items") {
-            scan(items, defs, depth + 1, resolving)?;
+            scan(items, defs, Position::Nested, depth + 1, resolving)?;
         }
         // `oneOf`/`anyOf`/`prefixItems` are also places a field can hide — walked the same way as
         // `properties`/`items` (one nesting level deeper), or both the root-only placement rule
         // and the unmarked-secret-name heuristic can be evaded by putting the violating field
         // inside one of these composition keywords instead of a plain nested object.
+        //
+        // A composition keyword does NOT move a field out of the position its parent occupies: a
+        // root `oneOf` whose alternatives each declare the same top-level object is still spelling
+        // out the ROOT's shape, and its properties are root properties `resolve_settings()` will
+        // resolve. So the position is carried through rather than reset.
         for combinator in ["oneOf", "anyOf"] {
             if let Some(alts) = eff.get(combinator).and_then(|v| v.as_array()) {
                 for alt in alts {
-                    scan(alt, defs, depth + 1, resolving)?;
+                    scan(alt, defs, at, depth + 1, resolving)?;
                 }
             }
         }
         if let Some(prefix_items) = eff.get("prefixItems").and_then(|v| v.as_array()) {
             for item in prefix_items {
-                scan(item, defs, depth + 1, resolving)?;
+                scan(item, defs, Position::Nested, depth + 1, resolving)?;
             }
         }
         // Every other JSON Schema 2020-12 keyword whose value is itself a subschema (or holds one)
@@ -368,20 +413,19 @@ fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         // "must match `^[a-z]+$`"), not the shape or value of any field, so it can never itself
         // carry an `x-busbar-secret` marker or a secret-shaped VALUE for a field — there is nothing
         // for this scan to find there.
-        if let Some(sub) = eff.get("if") {
-            scan(sub, defs, depth + 1, resolving)?;
-        }
-        if let Some(sub) = eff.get("then") {
-            scan(sub, defs, depth + 1, resolving)?;
-        }
-        if let Some(sub) = eff.get("else") {
-            scan(sub, defs, depth + 1, resolving)?;
+        // `if`/`then`/`else` constrain the SAME object their parent does (a conditional root branch
+        // still describes the root), so they carry the position like `oneOf`/`anyOf`. `not` and
+        // `contentSchema` describe something else entirely and are nested.
+        for keyword in ["if", "then", "else"] {
+            if let Some(sub) = eff.get(keyword) {
+                scan(sub, defs, at, depth + 1, resolving)?;
+            }
         }
         if let Some(sub) = eff.get("not") {
-            scan(sub, defs, depth + 1, resolving)?;
+            scan(sub, defs, Position::Nested, depth + 1, resolving)?;
         }
         if let Some(sub) = eff.get("contentSchema") {
-            scan(sub, defs, depth + 1, resolving)?;
+            scan(sub, defs, Position::Nested, depth + 1, resolving)?;
         }
         for keyword in [
             "additionalProperties",
@@ -391,20 +435,20 @@ fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         ] {
             if let Some(sub) = eff.get(keyword) {
                 if sub.is_object() {
-                    scan(sub, defs, depth + 1, resolving)?;
+                    scan(sub, defs, Position::Nested, depth + 1, resolving)?;
                 }
             }
         }
         for keyword in ["patternProperties", "dependentSchemas"] {
             if let Some(map) = eff.get(keyword).and_then(|v| v.as_object()) {
                 for sub in map.values() {
-                    scan(sub, defs, depth + 1, resolving)?;
+                    scan(sub, defs, Position::Nested, depth + 1, resolving)?;
                 }
             }
         }
         Ok(())
     }
-    scan(root, defs, 0, &mut HashSet::new())
+    scan(root, defs, Position::Root, 0, &mut HashSet::new())
 }
 
 fn pack(args: &[String]) -> ExitCode {
