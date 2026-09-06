@@ -392,6 +392,70 @@ async fn an_unparsable_header_block_is_a_framing_error_not_a_headerless_request(
     writer.abort();
 }
 
+/// Drive one raw request through a real ingress connection and hand back the first frame result.
+/// The header questions this exercises are asked of a live socket, not of a header vector built by
+/// hand, so a reading that only holds in a unit test cannot pass here.
+async fn ingress_first(request: &'static [u8]) -> Result<(StreamId, Frame), TransportError> {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let writer = tokio::spawn(async move {
+        let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut client, request)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+    let conn = accept_fut.await.unwrap();
+    let mut frames = transport.frames(conn);
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the reader answers rather than hanging")
+        .expect("the stream yields something");
+    writer.abort();
+    first
+}
+
+/// RFC 9110 5.3: a field sent on more than one line means the same thing as the one line those
+/// values would have made, joined by commas. So `Transfer-Encoding: chunked` followed by
+/// `Transfer-Encoding: gzip` is the coding list `chunked, gzip` — one whose final coding is not
+/// `chunked`, which RFC 9112 6.1 requires, and whose body length is therefore undeterminable.
+/// Reading only the first line answers `chunked` and frames a body the sender never described:
+/// the smuggling shape, spelled across two lines instead of one.
+#[tokio::test]
+async fn a_transfer_encoding_split_across_lines_is_read_as_the_one_list_it_is() {
+    let err = ingress_first(
+        b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        err,
+        TransportError::Framing,
+        "the combined list ends in gzip, so the body length is undeterminable"
+    );
+}
+
+/// `chunked` applied twice is `chunked, chunked`: the final coding is chunked, but the first one is
+/// a coding this transport cannot undo underneath it, and RFC 9112 6.1 forbids applying chunked
+/// more than once. Refused rather than decoded one layer deep and handed up as whole.
+#[tokio::test]
+async fn chunked_declared_twice_is_refused() {
+    let err = ingress_first(
+        b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err, TransportError::Framing);
+}
+
 /// A `Transfer-Encoding` whose final coding is not `chunked` is refused, not read as chunked and
 /// not quietly fallen back to `Content-Length`. Both halves of the ambiguity, closed.
 #[tokio::test]
