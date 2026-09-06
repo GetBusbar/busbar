@@ -256,6 +256,14 @@ root-mcp = []
 # `tower` is the feature's own edge: wrapping a mounted router means calling it as the service it
 # already is, which is the one thing that guarantees the inner surface answers exactly as it did.
 root-admin = ["dep:tower"]
+# THE INTEGRATION-TEST HARNESS SEAM (`src/root/harness.rs`), off by default and never in `default`.
+# An integration test under `tests/` links the library as an ordinary DEPENDENCY, where `cfg(test)`
+# is false — so the legs' own `#[cfg(test)] mod tests` fixtures do not exist in the artifact it
+# links, and no visibility change can reach them. This feature is how a cross-leg test gets an
+# in-crate module compiled INTO that artifact instead. It adds no code to the shipped binary: the
+# module is `#[cfg(any(test, feature = "test-harness"))]` and this feature is never enabled by a
+# release build, which is why the surface ceilings do not count it.
+test-harness = []
 auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]
 openapi-schema = ["busbar-core/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
