@@ -253,14 +253,32 @@ impl DecodeState {
     /// an upstream is under no obligation to close one. Past the ceiling the oldest accumulation is
     /// given up, exactly as the oldest call id is.
     ///
-    /// A fragment that is ITSELF a whole JSON OBJECT is not a fragment of anything: it is the dialect
-    /// handing the arguments over complete (an atomic call's `args`, or the complete `arguments` a
-    /// streamed call states when it closes), so it REPLACES what was held rather than being appended
-    /// to it. Appending would splice the same arguments onto their own prefix and leave nothing
-    /// readable — the call would be lost precisely when the dialect had just said it plainly.
+    /// A fragment that is ITSELF a whole JSON OBJECT *may* be the dialect handing the arguments over
+    /// complete (an atomic call's `args`, or the complete `arguments` a streamed call states when it
+    /// closes), and then it REPLACES what was held rather than being appended to it. Appending would
+    /// splice the same arguments onto their own prefix and leave nothing readable — the call would be
+    /// lost precisely when the dialect had just said it plainly.
+    ///
+    /// BUT A WHOLE OBJECT IS ALSO WHAT A NESTED ARGUMENT LOOKS LIKE. A call whose arguments CONTAIN an
+    /// object streams a fragment that parses on its own the moment a chunk boundary lands on the inner
+    /// brace — `{"where":` then `{"city":"NY"}` then `}` — and reading that as a restatement throws the
+    /// outer object away, leaves `{"city":"NY"}}`, and frames NOTHING. The tool call is lost silently,
+    /// which is the one outcome this seam exists to prevent.
+    ///
+    /// WHAT TELLS THE TWO APART IS WHETHER WHAT IS HELD IS A PREFIX OF THE FRAGMENT. A restatement is
+    /// the SAME arguments said again, so everything streamed so far is the beginning of it
+    /// (`{"city":"Pa` against `{"city":"Paris"}`). A nested object is a DIFFERENT run of bytes that
+    /// continues the prefix rather than repeating it (`{"where":` against `{"city":"NY"}`). Nothing
+    /// held at all is the empty prefix, which is every restatement's and every atomic call's case.
     pub fn push_call_args(&mut self, call: CallRef, fragment: &[u8]) {
+        let restates_what_is_held = self
+            .call_args
+            .get(&call)
+            .and_then(Option::as_deref)
+            .is_none_or(|buf| fragment.starts_with(buf.as_bytes()));
         let whole = serde_json::from_slice::<Value>(fragment)
             .ok()
+            .filter(|_| restates_what_is_held)
             .filter(Value::is_object);
         if !self.call_args.contains_key(&call) {
             self.call_args_order.push_back(call);
