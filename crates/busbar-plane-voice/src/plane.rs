@@ -345,9 +345,10 @@ impl Plane for VoicePlane {
         _st: Option<&PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<ArenaBytes<'u>, Encode> {
+        let (code, message) = refusal_render(refusal.reason);
         let event = IrServerEvent::Error {
-            code: format!("{:?}", refusal.reason),
-            message: "the session was refused".to_string(),
+            code: code.to_string(),
+            message: message.to_string(),
         };
         // A refusal is rendered in the OpenAI Realtime shape unconditionally: `st` is deliberately
         // `&PlaneSessionState` (immutable — a refusal never advances codec state, per the trait's own
@@ -579,6 +580,41 @@ impl SessionPlane for VoicePlane {
     fn open_upstream<'u>(&self, dest: &VerifiedDestination, _ctx: &Ctx<'u>) -> PlaneSessionState {
         let dialect = upstream_dialect_for(self, dest);
         PlaneSessionState::new(VoiceSessionState::for_dialect(dialect))
+    }
+}
+
+/// What a refused session is told, in the closed vocabulary a client is allowed to see.
+///
+/// The internal reason is a kernel enum with names for the money, the buckets and the store
+/// (`OverdraftCeiling`, `StaleSlice`, `DurabilityUnavailable`). Formatting it onto the wire told
+/// every caller which internal ceiling it met and pinned this node's private vocabulary as the
+/// dialect's `error.code` — a name no client library has a case for and no dialect documents. What
+/// goes out instead is the same small opaque set every other plane in this workspace renders (see
+/// `busbar-plane-admin`'s own table): the caller learns the CLASS of refusal and nothing about why
+/// this node reached it.
+fn refusal_render(reason: busbar_contract::unit::RefusalReason) -> (&'static str, &'static str) {
+    use busbar_contract::unit::RefusalReason as R;
+    match reason {
+        R::BodyTooLarge | R::DecodeFailed | R::SchemeNotDeclared | R::SecretPlaceholder => {
+            ("invalid_request", "the request could not be read")
+        }
+        R::CredentialRejected | R::SessionUnbound | R::CredentialBudget => {
+            ("unauthorized", "the session did not carry usable authority")
+        }
+        R::ScopeMissing | R::Vetoed | R::Revoked | R::PoolNotPermitted => (
+            "forbidden",
+            "the caller may not open a session for this operation",
+        ),
+        R::RateLimited | R::InFlightCap | R::OpenSlotBusy | R::SessionBudget => {
+            ("rate_limited", "too many sessions at once")
+        }
+        R::NoDestination | R::DestinationUnreachable | R::BreakerOpen | R::Drain => (
+            "unavailable",
+            "no provider is reachable for this session right now",
+        ),
+        // Everything else is this node saying no for a reason that is this node's own — the money,
+        // the buckets, the journal. A caller is told it failed here and nothing more.
+        _ => ("internal", "the session could not be opened at this time"),
     }
 }
 

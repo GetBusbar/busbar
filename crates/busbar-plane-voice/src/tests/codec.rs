@@ -1148,3 +1148,66 @@ fn ws_frame_carrying_no_bytes_yet_is_genuinely_need_more() {
         .expect("an empty frame is a partial read, not a refusal");
     assert!(matches!(ingress, Ingress::NeedMore));
 }
+
+/// A refused session is told a class, never this node's own vocabulary.
+///
+/// The reason a unit stops is a kernel enum whose names are the money, the buckets and the journal.
+/// Rendered onto the wire verbatim it made every internal ceiling a client-visible `error.code` —
+/// a name no dialect documents and no client library has a case for.
+#[test]
+fn a_refusal_renders_an_opaque_code_not_the_internal_reason() {
+    use busbar_contract::unit::{Refusal, RefusalReason, Step};
+
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+
+    const OPAQUE: &[&str] = &[
+        "invalid_request",
+        "unauthorized",
+        "forbidden",
+        "rate_limited",
+        "unavailable",
+        "internal",
+    ];
+    let reasons = [
+        RefusalReason::OverdraftCeiling,
+        RefusalReason::StaleSlice,
+        RefusalReason::DurabilityUnavailable,
+        RefusalReason::ScopeMissing,
+        RefusalReason::CredentialRejected,
+        RefusalReason::NoDestination,
+        RefusalReason::RateLimited,
+        RefusalReason::BodyTooLarge,
+        RefusalReason::PlanePanic,
+    ];
+    for reason in reasons {
+        let refusal = Refusal {
+            step: Step::Decode,
+            reason,
+            retry_after_secs: None,
+            stream: None,
+            correlates: None,
+        };
+        let bytes = plane
+            .encode_refusal(&refusal, None, None, &c)
+            .expect("a refusal renders");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(bytes.as_slice()).expect("the refusal is this dialect's JSON");
+        assert_eq!(parsed["type"], "error", "the dialect's own error event");
+        let code = parsed["error"]["code"]
+            .as_str()
+            .expect("the error names a code");
+        assert!(
+            OPAQUE.contains(&code),
+            "{reason:?} rendered {code:?}, which is outside the codes a client may be told"
+        );
+        assert!(
+            parsed["error"]["message"].is_string(),
+            "the error carries a message"
+        );
+    }
+}
