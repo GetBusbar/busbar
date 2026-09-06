@@ -61,6 +61,7 @@ import itertools
 import json
 import os
 import sys
+import threading
 import time
 from urllib.parse import unquote
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -369,9 +370,40 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         # Readiness only (fleet-fixtures wait_for_http probes with GET /). Every dialect is POST.
-        if self.path.split("?", 1)[0] == "/":
+        p = self.path.split("?", 1)[0]
+        if p == "/":
             return self._send(200, j({"ok": True, "mock": "oracle-upstream"}))
+        if p == "/__control":
+            # A diagnostic echo, never a dialect: a writer of the control file (record.sh,
+            # cooldown-trip.sh, ...) polls this after an atomic rename to CONFIRM this mock has
+            # actually seen the new bytes before it fires the cell's real request — otherwise a
+            # writer has no way to know its write landed before the request that depends on it goes
+            # out. Deliberately not wired into any dialect path or _capture_egress, so a cell can
+            # never record it by accident.
+            return self._send(200, j({"raw": self._read_control_file()}))
         return self._send(404, j({"error": f"oracle mock: no GET route {self.path}"}))
+
+    def _read_control_file(self):
+        """A single best-effort read of the control file's raw (whitespace-stripped) text, or None
+        if there is no file / it could not be read. Used both by /__control and by the outage-verb
+        resolution in do_POST below."""
+        ctl_file = self.server.control_file  # type: ignore[attr-defined]
+        if not ctl_file or not os.path.exists(ctl_file):
+            return None
+        try:
+            with open(ctl_file, "r") as f:
+                return f.read().strip()
+        except OSError:
+            return None
+
+    @staticmethod
+    def _verb_for_model(raw_ctl, model):
+        """raw_ctl is either a bare verb (applies to every model) or JSON {"<model>": "<verb>"}.
+        May raise ValueError on malformed JSON -- callers decide how to treat that."""
+        if raw_ctl.startswith("{"):
+            parsed = json.loads(raw_ctl)
+            return (parsed.get(model) or parsed.get("*") or "").lower()
+        return raw_ctl.lower()
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -408,15 +440,39 @@ class H(BaseHTTPRequestHandler):
         #          error shape — the failure a 200 stream cannot report as a status code)
         ctl = (self.headers.get("X-Oracle-Upstream") or "").strip().lower()
         ctl_file = self.server.control_file  # type: ignore[attr-defined]
-        if ctl_file and os.path.exists(ctl_file):
-            try:
-                raw_ctl = open(ctl_file).read().strip()
-                if raw_ctl.startswith("{"):
-                    ctl = (json.loads(raw_ctl).get(model) or json.loads(raw_ctl).get("*") or "").lower()
-                else:
-                    ctl = raw_ctl.lower() or ctl
-            except (OSError, ValueError):
-                pass
+        if ctl_file:
+            if os.path.exists(ctl_file):
+                raw_ctl = self._read_control_file()
+                if raw_ctl:
+                    try:
+                        ctl = self._verb_for_model(raw_ctl, model)
+                    except ValueError:
+                        raw_ctl = None  # malformed JSON: treat exactly like an empty/unreadable read
+                    else:
+                        with self.server.control_lock:  # type: ignore[attr-defined]
+                            self.server.last_raw = raw_ctl  # type: ignore[attr-defined]
+                if not raw_ctl:
+                    # An EMPTY (or unreadable, or malformed-JSON) read means a writer's rename hadn't
+                    # landed yet, or a transient OS hiccup -- NOT "no outage". Falling through to
+                    # healthy here is exactly the bug this fix closes: a cell that ordered an outage
+                    # would silently get served a 200. Hold the last verb this mock successfully read
+                    # instead, and say so in mock.log so the condition is visible.
+                    with self.server.control_lock:  # type: ignore[attr-defined]
+                        last_raw = self.server.last_raw  # type: ignore[attr-defined]
+                    try:
+                        ctl = self._verb_for_model(last_raw, model) if last_raw else ""
+                    except ValueError:
+                        ctl = ""
+                    sys.stderr.write(
+                        f"[control] empty/unreadable/malformed read on {ctl_file} for model {model!r}; "
+                        f"holding last verb (raw={last_raw!r}) -> {ctl!r}\n")
+                    sys.stderr.flush()
+            else:
+                # No file at all is a real, intentional "no outage" (record.sh/cooldown-trip.sh clear
+                # it with an atomic unlink between cells) -- not a torn read, so no verb survives it.
+                with self.server.control_lock:  # type: ignore[attr-defined]
+                    self.server.last_raw = None  # type: ignore[attr-defined]
+                ctl = ""
         if ctl == "down":
             return self._send(503, j({"error": {"type": "upstream_unavailable", "message": "oracle: upstream down"}}))
         if ctl == "429":
@@ -489,6 +545,12 @@ def main():
     srv.daemon_threads = True
     srv.marker = marker  # type: ignore[attr-defined]
     srv.control_file = control_file  # type: ignore[attr-defined]
+    # Last successfully-read raw control-file text, shared across the threaded handlers so an empty
+    # or unreadable read on one request can fall back to the last verb a DIFFERENT request actually
+    # read, instead of "no outage". Guarded by a lock: ThreadingHTTPServer serves overlapping
+    # requests on separate threads.
+    srv.last_raw = None  # type: ignore[attr-defined]
+    srv.control_lock = threading.Lock()  # type: ignore[attr-defined]
     srv.serve_forever()
 
 
