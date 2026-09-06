@@ -223,6 +223,56 @@ fn a_byte_derived_line_is_an_estimate_and_a_frame_derived_one_is_not() {
     assert!(!exact.usage.is_estimated());
 }
 
+/// THE PROVENANCE TRAVELS WITH THE LINE. The fold matches on the source to decide what to charge,
+/// so it knows exactly what evidence each figure rests on; the line it posts must carry that same
+/// source, and its own estimate mark, rather than a uniform `Count`/not-estimated pair.
+///
+/// The audit record seals `line.source` into its digest and the ledger settles against it, so a
+/// posted line claiming the kernel counted a figure the destination actually reported is a claim
+/// about evidence that a billing dispute turns on.
+#[test]
+fn each_posted_line_carries_the_source_the_fold_matched_and_its_own_estimate_mark() {
+    let m = fold(
+        vec![
+            located(OUTPUT, 7, Direction::Response),
+            crate::LocatedValue {
+                class: MeterClassId::new(INPUT),
+                quantity: 9,
+                source: QuantitySource::KernelBytes { divisor: 4 },
+            },
+        ],
+        counts(vec![]),
+        &MeterPolicy::default(),
+    );
+    let lines = m.usage.lines();
+    assert_eq!(lines.len(), 2);
+
+    assert_eq!(lines[0].class.as_str(), OUTPUT);
+    assert_eq!(
+        lines[0].source,
+        QuantitySource::Locator {
+            direction: Direction::Response,
+            ptr: LocatorPtr::new("/usage"),
+        },
+        "a located figure must post as located, not as a kernel count"
+    );
+    assert!(
+        !lines[0].estimated,
+        "a figure the destination reported is not the node's floor"
+    );
+
+    assert_eq!(lines[1].class.as_str(), INPUT);
+    assert_eq!(
+        lines[1].source,
+        QuantitySource::KernelBytes { divisor: 4 },
+        "a byte-derived figure must post as byte-derived"
+    );
+    assert!(
+        lines[1].estimated,
+        "a byte division floors, and a floor is an estimate"
+    );
+}
+
 /// The conversion from a raw measurement to the class's own quantity: bytes floor, frames multiply,
 /// and a class declared with no divisor converts nothing rather than dividing by zero.
 #[test]
