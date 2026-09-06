@@ -218,6 +218,9 @@ fn the_units_assemble_from_values_configuration_decided() {
         crate::root::adapters::BreakerPolicy::new(),
         crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
         crate::root::policy::ScopePolicy::new(),
+        // No directory in a cell that is about the ASSEMBLY: the unbound posture, said out loud,
+        // which is what the constructor now requires of a caller that has no governance state.
+        crate::root::auth_bindings::AuthBindings::without_directory(),
         #[cfg(feature = "root-admin")]
         crate::root::units_admin::AdminBinding::new(std::sync::Arc::new(
             crate::root::units_admin::RefusingDispatch,
@@ -280,6 +283,9 @@ fn an_unrecognized_error_map_class_reaches_the_roots_sink() {
         crate::root::adapters::BreakerPolicy::new(),
         crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
         crate::root::policy::ScopePolicy::new(),
+        // No directory in a cell that is about the ASSEMBLY: the unbound posture, said out loud,
+        // which is what the constructor now requires of a caller that has no governance state.
+        crate::root::auth_bindings::AuthBindings::without_directory(),
         #[cfg(feature = "root-admin")]
         crate::root::units_admin::AdminBinding::new(Arc::new(
             crate::root::units_admin::RefusingDispatch,

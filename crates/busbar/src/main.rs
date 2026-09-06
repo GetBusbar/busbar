@@ -1591,27 +1591,34 @@ async fn run(data_workers: usize) {
                 std::sync::Arc::clone(&book.durability),
                 std::sync::Arc::clone(&book.rows)
                     as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
+                // THE NODE'S REVOCATION VIEW, bound to the governance state the keys live in. This
+                // is the deployment's own directory and the only one this binary has: revoking a
+                // subject through the administrative surface has to reach the gate that refuses the
+                // next unit, and until this line the gate had nothing behind it — a revoked
+                // credential whose subject IS its own id was refused nowhere and served for the life
+                // of the process. A deployment with governance disabled has no directory to bind and
+                // says so, which is the posture the chain already fails closed on.
+                app_handle.load().governance.as_ref().map_or_else(
+                    root::kernel::auth_bindings::AuthBindings::without_directory,
+                    |gov| {
+                        root::kernel::auth_bindings::AuthBindings::new(std::sync::Arc::new(
+                            root::kernel::auth_bindings::GovernanceDirectory::new(
+                                std::sync::Arc::clone(gov),
+                            ),
+                        ))
+                    },
+                ),
             );
-            // THE DEPLOYMENT'S OWN DOOR, in front of the authenticate step. Without these two lines
-            // the assembly's open posture shipped: the step admitted every caller anonymously and
-            // the only thing deciding was the surface mounted underneath — so a credential this node
-            // had REVOKED was admitted at Authenticate, and the revocation the governance state
-            // holds was consulted by nothing on the request path. The chain is the operator's admin
-            // token and the bindings are the same governance state's directory, which is what makes
-            // the revocation set the one this node actually keeps.
+            // THE DEPLOYMENT'S OWN DOOR, in front of the authenticate step. Without this the
+            // assembly's open posture shipped: the step admitted every caller anonymously and the
+            // only thing deciding was the surface mounted underneath. The chain is the operator's
+            // admin token; the directory beside it is bound through the constructor above, which is
+            // what makes the revocation set the one this node actually keeps.
             match app_handle.load().governance.clone() {
-                Some(gov) => units
-                    .with_auth_chain(root::kernel::auth_bindings::admin_chain(
-                        std::sync::Arc::clone(&gov),
-                    ))
-                    .with_auth_bindings(root::kernel::auth_bindings::AuthBindings::new(
-                        std::sync::Arc::new(root::kernel::auth_bindings::GovernanceDirectory::new(
-                            gov,
-                        )),
-                    )),
-                // No governance state is no directory and no configured token, which is the open
-                // administrative posture the previous release also has. Left as the assembly built
-                // it rather than wired to an authority that does not exist.
+                Some(gov) => units.with_auth_chain(root::kernel::auth_bindings::admin_chain(gov)),
+                // No governance state is no configured token, which is the open administrative
+                // posture the previous release also has. Left as the assembly built it rather than
+                // wired to an authority that does not exist.
                 None => units,
             }
         },
