@@ -1217,11 +1217,26 @@ impl ProtocolReader for GeminiReader {
             // the first citation once per chunk. A shorter-than-watermark list (an upstream that
             // resets rather than accumulates) yields an empty tail and no delta, never a panic.
             let all_citations = read_gemini_citations(candidate, None);
+            // Dedup by IDENTITY, not by position. The list is cumulative but NOT append-only: a
+            // grounded answer emits one span-less citation per `groundingChunks[]` entry until
+            // `groundingSupports[]` arrives, then re-emits the same chunks as span-BEARING
+            // citations. A positional watermark skipped exactly those spans. Capped at the same
+            // per-stream cardinality every other accumulator on this path uses, so a pathological
+            // upstream restating an unbounded citation list cannot grow the set without limit.
             let citations: Vec<crate::ir::IrCitation> = all_citations
-                .get(state.citations_emitted..)
-                .unwrap_or_default()
-                .to_vec();
-            state.citations_emitted = state.citations_emitted.max(all_citations.len());
+                .into_iter()
+                .filter(|c| {
+                    let key = gemini_citation_identity(c);
+                    if state.citations_emitted.contains(&key) {
+                        return false;
+                    }
+                    if state.citations_emitted.len() >= MAX_GEMINI_STREAM_CITATIONS {
+                        return false;
+                    }
+                    state.citations_emitted.insert(key);
+                    true
+                })
+                .collect();
             if !citations.is_empty() {
                 // Claim the text block's index from the monotone counter (see `claim_ir_index`),
                 // exactly like the text-part arm — otherwise a citation/logprobs delta arriving
