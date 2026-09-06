@@ -76,6 +76,13 @@ pub const OP_ELICITATION: OpClassId = OpClassId::new("elicitation");
 /// A message that obliges no answer.
 pub const OP_NOTIFICATION: OpClassId = OpClassId::new("notification");
 
+/// Read the discovery document that says how to authenticate to this mount.
+///
+/// This one is named by the TARGET rather than by a method in a document: the request carries no
+/// body at all, so there is no envelope to name an operation in. It is the one surface of this
+/// plane whose claim declares no scheme, because it is what a caller reads BEFORE it has one.
+pub const OP_METADATA: OpClassId = OpClassId::new("metadata");
+
 /// Every operation class this plane's units can be, in declaration order.
 pub const OP_CLASSES: &[OpClassId] = &[
     OP_DISCOVER,
@@ -95,6 +102,7 @@ pub const OP_CLASSES: &[OpClassId] = &[
     OP_ROOTS_LIST,
     OP_ELICITATION,
     OP_NOTIFICATION,
+    OP_METADATA,
 ];
 
 /// Who sends a method, and whether it obliges an answer.
@@ -245,6 +253,12 @@ pub const METHODS: &[MethodRow] = &[
         name_pointer: None,
     },
 ];
+
+/// The name the discovery fetch is reported under, since it has no method member to be read from.
+///
+/// A unit of every other class carries the method a caller spelled; this one carries what it IS, so
+/// a journal row for the discovery fetch is not a row with the method fact missing.
+pub const METHOD_METADATA: &str = "well-known/protected-resource-metadata";
 
 /// The notification names this plane recognises.
 ///
