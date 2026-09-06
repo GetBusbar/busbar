@@ -41,6 +41,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HELPERS="$ROOT/scripts/construction-gate"
 TOML="${CONSTRUCTION_TOML:-$ROOT/qa/construction.toml}"
 OUT="${CONSTRUCTION_OUT:-$ROOT/target/construction}"
+SELFTEST_SCRATCH=""   # set by --selftest; read by its EXIT trap, so never `local`
 
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
 grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -146,9 +147,22 @@ measure() {
 # ── self-test: every rule proves it can see its own violation ────────────────────────────────────
 run_selftest() {
   hdr "construction-gate SELF-TEST (each planted violation must produce exactly one FAIL row)"
-  local scratch="$ROOT/target/construction/selftest"
+  # A PRIVATE scratch directory, not a fixed path this run first deletes. Two selftests in one
+  # checkout — a developer's and CI's, or two CI jobs sharing a workspace — planted their violations
+  # into the same tree and deleted each other's, and the loser reported on whatever the winner had
+  # planted. mktemp gives each run its own; the trap takes it away again on any exit.
+  mkdir -p "$ROOT/target/construction"
+  # SELFTEST_SCRATCH is deliberately not `local`: the EXIT trap fires after this function's frame is
+  # gone, and a trap that cannot read the path it is meant to delete deletes nothing (under `set -u`
+  # it does not even run) -- which is the leak this whole change exists to close.
+  SELFTEST_SCRATCH="$(mktemp -d "$ROOT/target/construction/selftest.XXXXXX")" || {
+    red "construction-gate: could not create a scratch directory under $ROOT/target/construction"
+    return 1
+  }
+  trap 'rm -rf "$SELFTEST_SCRATCH"' EXIT
+  local scratch="$SELFTEST_SCRATCH"
   local pristine="$scratch/pristine" tree="$scratch/tree"
-  rm -rf "$scratch"; mkdir -p "$pristine" "$tree"
+  mkdir -p "$pristine" "$tree"
   # The scratch copy carries everything the gate reads: every crate's src, every crate's Cargo.toml
   # (manifest-allowlist reads `[dependencies]` straight from disk, not from the Tree scan), the
   # scripts, the ceilings and the ledger machinery. No target/, so the copy is small and never
