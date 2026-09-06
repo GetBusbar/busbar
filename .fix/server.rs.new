@@ -265,9 +265,10 @@ pub(crate) fn map_status(status: &Status) -> busbar_contract_transport::wire::St
         | Code::DeadlineExceeded
         | Code::Aborted => StatusClass::ServerError,
         // Cancelled is the one code where NEITHER side is blamed: the call was called off, usually
-        // by the caller itself, so `Other` is the honest reading. Named, with no catch-all behind
-        // it: every code gRPC defines has a row here, so one added later stops this compiling
-        // rather than quietly acquiring a class nobody chose.
+        // by the caller itself, so `Other` is the honest reading — and it is named rather than left
+        // to the backstop so that arm cannot quietly acquire new members again.
+        // Named, with no catch-all behind it: every code gRPC defines has a row above, so a code
+        // added later stops this compiling rather than quietly acquiring a class nobody chose.
         Code::Cancelled => StatusClass::Other,
     }
 }
