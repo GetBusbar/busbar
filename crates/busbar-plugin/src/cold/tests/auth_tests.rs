@@ -229,6 +229,42 @@ fn credential_flow_wire_roundtrips() {
     );
 }
 
+/// The WIRE type must redact in `Debug` too. `submitted` is the one documented plaintext
+/// credential boundary — the values have to reach the plugin that verifies them — but crossing
+/// that boundary must not also re-open the LOG channel `Redacted` closes on the engine side. A
+/// plugin author's `tracing::debug!(?req)` (or the SDK's own tracing bridge, which renders every
+/// field with `{:?}`) would otherwise print the submitted password, the OAuth code, the PKCE
+/// verifier, and the token endpoint's response body verbatim into the operator's log.
+#[test]
+fn complete_login_request_debug_redacts_every_credential() {
+    let wire = CompleteLoginRequest {
+        code: Some("authcode-abc".into()),
+        redirect_uri: Some("https://busbar.example/auth/token".into()),
+        code_verifier: Some("pkce-verifier-xyz".into()),
+        submitted: vec![
+            ("username".into(), "alice".into()),
+            ("password".into(), "s3cr3t".into()),
+        ],
+        token_response: Some(HttpResponse {
+            status: 200,
+            body: r#"{"access_token":"at-9999"}"#.into(),
+        }),
+    };
+    let rendered = format!("{wire:?}");
+    for leaked in ["s3cr3t", "authcode-abc", "pkce-verifier-xyz", "at-9999"] {
+        assert!(
+            !rendered.contains(leaked),
+            "Debug leaked {leaked}: {rendered}"
+        );
+    }
+    // The non-secret context an operator needs to diagnose a failed login must SURVIVE: the
+    // redirect_uri, the field NAMES, and the hop status. Redacting the whole struct would trade
+    // one defect for another.
+    assert!(rendered.contains("busbar.example"), "got: {rendered}");
+    assert!(rendered.contains("password"), "got: {rendered}");
+    assert!(rendered.contains("200"), "got: {rendered}");
+}
+
 /// `TokenExchange(HttpRequest)` / `HttpResponse` round-trip; the secret field names a KEY, not a
 /// value.
 #[test]
