@@ -300,6 +300,70 @@ fn a_tool_call_open_surfaces_as_progress_one_shot() {
     );
 }
 
+/// Two tool calls open at once are two different things to wait on.
+///
+/// A turn that asks for two tools opens two units, and each waits for its own reply. The reply leg
+/// used to name the constant zero for every one of them, so the two were indistinguishable: the
+/// first reply satisfied whichever leg was found first, and the second call waited out its whole
+/// deadline against an answer that had already been delivered elsewhere.
+#[test]
+fn two_open_tool_calls_wait_on_two_different_correlations() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut upstream_state = SessionPlane::open_upstream(&plane, &dest, &c);
+
+    let open_call = |call_id: &str| {
+        serde_json::to_vec(&json!({
+            "type": "response.output_item.added",
+            "item": { "type": "function_call", "call_id": call_id, "name": "lookup" },
+        }))
+        .unwrap()
+    };
+
+    let mut waits_on = |call_id: &str| {
+        let opened = open_call(call_id);
+        let frames = [frame(&opened)];
+        let mut cursor = FrameCursor::new(&frames);
+        let Progress::OneShot(draft) = plane
+            .decode_response(&mut cursor, &dest, Some(&mut upstream_state), &c)
+            .expect("tool-call open decodes")
+        else {
+            panic!("a tool-call open is its own unit");
+        };
+        // The draft's own correlation carries the identifier itself; the leg is what the kernel
+        // matches a reply against, and the two must not disagree about which call is which.
+        assert_eq!(
+            draft.correlation_out.map(|c| c.value),
+            Some(busbar_contract::ids::CorrelationValue::Str(call_id))
+        );
+        let unit = crate::tests::harness::unit(draft.op, draft.body_ir, draft.facts);
+        match plane.verify(&unit, &c) {
+            busbar_contract::dest::DestinationFacts::Client {
+                mode: busbar_contract::dest::ClientMode::AwaitReply { correlation, .. },
+                ..
+            } => correlation.value,
+            other => panic!("a tool call is delivered to the client, got {other:?}"),
+        }
+    };
+
+    let first = waits_on("call_1");
+    let second = waits_on("call_2");
+    assert_ne!(
+        first, second,
+        "two open tool calls waited on the same correlation"
+    );
+    assert_eq!(
+        second,
+        waits_on("call_2"),
+        "the same call named two different correlations"
+    );
+}
+
 #[test]
 fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
     let plane = openai_plane();

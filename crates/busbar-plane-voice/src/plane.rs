@@ -343,7 +343,7 @@ impl Plane for VoicePlane {
                 mode: ClientMode::AwaitReply {
                     correlation: CorrelationRef {
                         fact_key: FACT_TOOL_CORRELATION,
-                        value: CorrelationValue::Num(0),
+                        value: tool_correlation(u),
                     },
                     deadline_secs: 30,
                 },
@@ -518,6 +518,44 @@ fn upstream_dialect_for(plane: &VoicePlane, dest: &VerifiedDestination) -> Diale
             .map(|u| u.dialect)
             .unwrap_or(Dialect::OpenaiRealtime),
     }
+}
+
+/// What a tool call's reply leg waits on, derived from the call the upstream actually opened.
+///
+/// The leg used to wait on the constant zero, for every tool call in every session. Two calls open
+/// at once — which is the ordinary shape of a turn that asks for two tools — were then one and the
+/// same thing to whatever matches replies to legs: the first reply satisfies whichever leg is found
+/// first, and the other call waits out its whole deadline and settles a hold against an answer it
+/// never got.
+///
+/// The identifier itself is what `decode_response` mints on the draft's `correlation_out`, and it is
+/// what this leg should carry. It cannot: a destination is sealed and outlives the frame that
+/// planned it, so the contract fixes a leg's correlation at `'static`, and a call id lives in the
+/// unit's own arena. What travels here is therefore a digest of those bytes — 64 bits of FNV-1a,
+/// the same for the same id and different for different ones. That is weaker than the id (two ids
+/// could in principle digest alike) and it is not the shape the draft mints, both of which want the
+/// contract to carry a borrowed correlation. It is not the constant, which collided every time.
+fn tool_correlation(u: &Unit<'_>) -> CorrelationValue<'static> {
+    let Some(FactValue::Str(call_id)) = u.draft_facts().get(meta::FACT_CALL_ID) else {
+        // No call id on the draft is no call to correlate. Zero says "nothing to match", which is
+        // exactly what it is here, rather than standing in for an identity that exists.
+        return CorrelationValue::Num(0);
+    };
+    CorrelationValue::Num(digest(call_id))
+}
+
+/// FNV-1a over the bytes of a call identifier. Stated here rather than pulled in, because what the
+/// correlation needs is a fixed, allocation-free function of the id, not a hash a library is free
+/// to change the output of between releases.
+fn digest(id: &str) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for byte in id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
 }
 
 /// The dialect the decode step named, read back off the unit's sealed draft facts.
