@@ -569,11 +569,47 @@ assert t["AuthDeployCfg"]["fields"]["policy"]["type"] == "AuthPolicyCfg", t["Aut
   if "$PY" "$GEN" gen "$tmp/no-such-source.rs" >/dev/null 2>&1; then rc=1; else rc=0; fi
   verdict "a MISSING tracked source is an error, never a skip" 0 "$rc"
 
+  # ── THE MISSING-BASELINE ARM, PROVEN RED ──────────────────────────────────────────────────────
+  # The additive check IS the gate. `check()` refuses an unresolvable baseline ref for exactly that
+  # reason ("silently skipping it would be a free bypass"), and then handed out the identical bypass
+  # one branch later: a ref that RESOLVES but carries no committed snapshot printed a yellow note
+  # and returned 0. Any commit from before the snapshot landed grants that, so "point it somewhere
+  # harmless" was a working way to make every breaking config change green.
+  #
+  # The probe ref is an EMPTY-TREE commit built with `commit-tree` — an object, no ref, nothing
+  # written to any branch — rather than the repository's root commit, because a CI checkout can be
+  # shallow and the root commit is then whatever the shallow boundary happens to be. This one is a
+  # commit that resolves and provably contains no files at all, on any clone depth.
+  local empty_tree probe_ref probe_out probe_rc
+  empty_tree="$(git mktree </dev/null 2>/dev/null)"
+  probe_ref="$(printf 'config-stability selftest probe\n' | git commit-tree "$empty_tree" 2>/dev/null)"
+  if [ -z "$probe_ref" ]; then
+    red "  FAIL  could not build an empty-tree probe commit — the missing-baseline arm is unproven"
+    fails=$((fails + 1)); cases=$((cases + 1))
+  else
+    probe_out="$(CONFIG_SCHEMA_BASELINE_REF="$probe_ref" bash "$0" --check 2>&1)"; probe_rc=$?
+    if [ "$probe_rc" -ne 0 ] && printf '%s' "$probe_out" | grep -q "carries NO"; then
+      verdict "a baseline ref that resolves with NO snapshot is RED, not a note" 0 0
+    else
+      note "      got exit $probe_rc; the run must be RED and must say the baseline carries no snapshot"
+      verdict "a baseline ref that resolves with NO snapshot is RED, not a note" 0 1
+    fi
+
+    # And the declared escape must still be an escape — visible, named, and never silent.
+    probe_out="$(CONFIG_SCHEMA_BASELINE_REF="$probe_ref" CONFIG_SCHEMA_BOOTSTRAP=1 bash "$0" --check 2>&1)"; probe_rc=$?
+    if [ "$probe_rc" -eq 0 ] && printf '%s' "$probe_out" | grep -q "CONFIG_SCHEMA_BOOTSTRAP=1"; then
+      verdict "CONFIG_SCHEMA_BOOTSTRAP=1 is the ONLY way past it, and it announces itself" 0 0
+    else
+      note "      got exit $probe_rc; the declared bootstrap must pass AND print what it skipped"
+      verdict "CONFIG_SCHEMA_BOOTSTRAP=1 is the ONLY way past it, and it announces itself" 0 1
+    fi
+  fi
+
   # ── The self-test's own honesty check. A suite that runs zero cases reports zero failures, which
   # is the false green this project has already been burned by three times in one night. Assert the
   # cases actually EXECUTED, and pin the floor to the count at the time of writing so deleting
   # coverage is itself RED.
-  local want_cases=62
+  local want_cases=64
   if [ "$cases" -lt "$want_cases" ]; then
     red "  FAIL  self-test executed only $cases case(s); expected at least $want_cases."
     red "        Coverage was deleted, or the suite exited early — either way this is NOT a pass."
@@ -652,12 +688,37 @@ check() {
       return "$rc"
     fi
   else
-    # The ref resolves but carries no snapshot: the genuine one-time bootstrap, i.e. the very commit
-    # that introduces this gate. Narrow and self-extinguishing — true only until the snapshot lands.
-    ylw "baseline $BASELINE_REF resolves but has no committed snapshot yet (ONE-TIME bootstrap: the"
-    ylw "commit that introduces this gate) — additive check has nothing to diff against this run."
-    note "every later commit/PR IS diffed against the committed snapshot. If you see this after the"
-    note "snapshot is committed, the baseline ref is wrong — investigate, do not ignore."
+    # ── A MISSING BASELINE SNAPSHOT IS RED, EXACTLY LIKE A MISSING REF ──
+    # This arm used to print a yellow note and `return 0`, and it was the free bypass the arm above
+    # exists to close, reached one step later. The comment above spells out why an unresolvable ref
+    # cannot be a skip — "point the gate at a nonexistent ref and every breaking change sails
+    # through green" — and then this branch handed out the identical bypass to anyone who could
+    # point it at a ref that resolves but does not carry the snapshot. Any commit before the
+    # snapshot landed will do; so will an orphan branch, or a subtree ref, or a tag from before the
+    # gate existed. The additive check is the WHOLE gate, and a run that did not perform it has not
+    # measured anything: it must not be able to say `PASS`.
+    #
+    # The bootstrap this arm was written for (the very commit that introduces the gate) is over —
+    # the snapshot is committed — so the case is now purely a misconfiguration, and it is treated as
+    # one. If it ever recurs legitimately, the escape is a deliberate, visible, one-run
+    # `CONFIG_SCHEMA_BOOTSTRAP=1`, not a silent green: it prints what it is skipping and why, and
+    # scripts/verify-1.6.0-done.sh's bless-env assertion refuses a DONE run that sets it.
+    if [ "${CONFIG_SCHEMA_BOOTSTRAP:-}" = "1" ]; then
+      ylw "CONFIG_SCHEMA_BOOTSTRAP=1: baseline $BASELINE_REF carries no snapshot; the additive check"
+      ylw "did NOT run this run. This is a declared bootstrap, not a pass — it proves nothing about"
+      ylw "whether the config surface changed compatibly."
+      return 0
+    fi
+    red "config-stability gate: baseline ref '$BASELINE_REF' resolves but carries NO $SNAPSHOT."
+    note "the additive check is the whole gate, and it did not run — so nothing was measured."
+    note "a ref that resolves without the snapshot is the same free bypass as a ref that does not"
+    note "resolve at all: any commit from before the snapshot landed grants it. It is RED for the"
+    note "same reason, and pointing the gate somewhere else is not a fix."
+    note "in CI this means CONFIG_SCHEMA_BASELINE_REF names the wrong ref, or the checkout is"
+    note "missing history — use actions/checkout with  with: { fetch-depth: 0 }."
+    note "the ONE legitimate case (the commit that first introduces this gate) is declared, not"
+    note "inferred:  CONFIG_SCHEMA_BOOTSTRAP=1 scripts/config-stability-gate.sh"
+    return 1
   fi
   return 0
 }
