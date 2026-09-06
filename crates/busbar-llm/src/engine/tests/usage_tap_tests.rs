@@ -161,7 +161,7 @@ fn gemini_rewrite_role_round_trips_model_and_assistant() {
 async fn apply_global_rewrites_chains_in_order() {
     crate::testkit::install_test_seams();
     use busbar_api::RewriteReply;
-    use busbar_core::hooks::{
+    use busbar_api::{
         Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
     };
 

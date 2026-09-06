@@ -5,10 +5,10 @@
 use super::*;
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
-use busbar_core::hooks::{
-    Candidate, PolicyResult, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingPolicy,
-    RoutingRequest,
+use busbar_api::{
+    Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
 };
+use busbar_substrate::hooks::ResolvedPolicy;
 use std::sync::Mutex as StdMutex;
 
 /// The prompt as the policy saw it: (flattened system, [(role, text)]).
