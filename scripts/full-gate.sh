@@ -173,6 +173,7 @@ MIN_GATES=8
 declare -a CARGO_LOCAL=(
   "cargo fmt --all -- --check"
   "cargo clippy --workspace --all-targets --locked -- -D warnings"
+  "cargo clippy --workspace --all-targets --all-features -- -D warnings"
   "cargo build --workspace --locked"
   "cargo test --workspace --locked"
   "cargo clippy --no-default-features --locked -- -D warnings"
