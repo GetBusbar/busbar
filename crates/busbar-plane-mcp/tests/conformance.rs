@@ -564,6 +564,74 @@ fn a_server_may_still_send_its_own_three_methods() {
     }
 }
 
+/// The notices a SERVER sends decode on the leg they arrive on, into the class routed for them.
+///
+/// This plane recognises three notices, declares a class for one, and gives that class a plan that
+/// writes the catalogue. Two of the three are server-originated, and the leg a server reaches had no
+/// arm for a notice at all: it looked the name up in the METHOD table, found nothing, and dropped it
+/// under a comment saying an unrecognised notice is dropped. These are recognised. So the catalogue
+/// invalidation this plane declares a route for could never happen, and the only notice that reached
+/// the route was the one a caller sends.
+#[test]
+fn a_servers_notice_decodes_on_the_leg_it_arrives_on() {
+    let plane = McpPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let mut seen = 0usize;
+    for notice in ops::NOTICES
+        .iter()
+        .filter(|n| n.sender == ops::Sender::Provider)
+    {
+        let sent = notification(notice.method);
+        let frames = vec![response_frame(&sent)];
+        let mut cursor = FrameCursor::new(&frames);
+        match plane
+            .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
+            .unwrap_or_else(|e| panic!("a server may send {} and got {e:?}", notice.method))
+        {
+            Progress::OneShot(draft) => {
+                assert_eq!(draft.op, ops::OP_NOTIFICATION, "{}", notice.method);
+                // A notice obliges no answer, so there is nothing to answer it with.
+                assert!(draft.correlation_out.is_none());
+                assert!(draft.correlates.is_none());
+            }
+            other => panic!("{} decoded as {other:?}", notice.method),
+        }
+        seen += 1;
+    }
+    assert!(seen > 0, "no notice of the server's own was exercised");
+}
+
+/// A notice only a CALLER sends is dropped when a server sends it, and so is one nobody declares.
+#[test]
+fn a_server_cannot_send_a_callers_notice() {
+    let plane = McpPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let mut names: Vec<&str> = ops::NOTICES
+        .iter()
+        .filter(|n| n.sender == ops::Sender::Client)
+        .map(|n| n.method)
+        .collect();
+    assert!(
+        !names.is_empty(),
+        "no notice of the caller's own is declared"
+    );
+    names.push("notifications/something/else");
+    for name in names {
+        let sent = notification(name);
+        let frames = vec![response_frame(&sent)];
+        let mut cursor = FrameCursor::new(&frames);
+        assert_eq!(
+            plane.decode_response(&mut cursor, &sealed_destination(), None, &ctx),
+            Ok(Progress::Discard {
+                reason: DiscardCode::Unsupported
+            }),
+            "a server was allowed to send {name}"
+        );
+    }
+}
+
 /// A result that asks the caller for something is a turn, not an ending.
 #[test]
 fn a_result_that_asks_for_something_is_a_turn() {
