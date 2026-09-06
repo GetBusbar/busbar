@@ -59,6 +59,11 @@ CI_YML=".github/workflows/ci.yml"
 # apply, which is why the fixture carries eight script invocations of its own.
 [ "${1:-}" = "--dump-cargo" ] && [ -n "${2:-}" ] && CI_YML="$2"
 
+# `--dump-gates [FILE]` is the script half's twin of `--dump-cargo`: it prints the SCRIPT invocations
+# discovery finds in FILE and exits before classification, so the selftest can point discovery at a
+# fixture and assert on what it found rather than on what it hopes it found.
+[ "${1:-}" = "--dump-gates" ] && [ -n "${2:-}" ] && CI_YML="$2"
+
 # Gates that genuinely cannot run locally. Each entry carries WHY, because a skip without a reason
 # becomes permanent.
 declare -a SKIP_REASON=(
@@ -72,6 +77,18 @@ declare -a SKIP_REASON=(
   "scripts/build-provenance-gate.sh|asserts the provenance stamp of a BUILT release binary ('… target/release/busbar release false'). Needs the release artifact the release build produces, exactly as verify-artifact.py does; a bare local run has no binary to inspect. The --selftest form runs here — it is the local mirror that proves the stamp discriminates."
   "scripts/proof-manifest.py|the Build-Proof-Dashboard collator, run ONLY on the dev/qa/main promotion branches (it needs --version/--out and re-emits docs/proof/<branch>.json). By its own contract it CHANGES NO GATE — it re-runs the cheap grep gates and records their verdicts — so there is nothing to prove locally on an integration branch."
   "scripts/release-order-lint.py|release-graph shape; included via its own entries below, see RELEASE_ORDER."
+  # ── THE `testing/` HARNESS GATES ────────────────────────────────────────────────────────────────
+  # Newly VISIBLE, not newly skipped: discovery could not see a `testing/` path at all until now, so
+  # these were neither run nor named. Four of the eleven invocations DO run here and are absent from
+  # this list on purpose — testing/shadow-oracle/enumerate-cells.py --check,
+  # testing/shadow-oracle/harness-rev.sh, testing/shadow-oracle/replay-selftest.sh and
+  # testing/llm-conformance/selftest.sh are hermetic and each takes seconds.
+  "testing/shadow-oracle/fetch-golden.sh|downloads the PUBLISHED 1.5.5 release tarball from GitHub Releases and verifies it against golden-digests.tsv. It measures the network and a published artifact, not this tree."
+  "testing/shadow-oracle/fetch-plugin.sh|same: fetches each published plugin artifact by digest over the network, one per plugin named in plugin-digests.tsv."
+  "testing/shadow-oracle/selftest.sh|takes TWO built binaries as positional arguments (the release build and the cached 1.5.5 golden). Neither exists on a laptop until fetch-golden.sh has run and a release profile has been built; a bare invocation has nothing to compare."
+  "testing/shadow-oracle/record.sh|drives a built binary through every recorded cell and writes a recording tree. Needs the release build and the fetched golden binary, exactly as selftest.sh does — CI runs it twice, once per side."
+  "testing/shadow-oracle/replay.sh|compares the two recording trees record.sh produces. With no recordings there is nothing to replay; the harness's own logic IS proven here by testing/shadow-oracle/replay-selftest.sh, which runs."
+  "testing/llm-conformance/run.sh|replays the candidate recording against the vendor specs pinned in spec-digests.tsv, which are fetched over the network and are not in the repository. Its harness logic is proven here by testing/llm-conformance/selftest.sh, which runs."
   "scripts/construction-gate.sh|RED BY DESIGN on HEAD (three rows over their qa/construction.toml ceilings) while the construction work it measures is in flight; ci.yml runs its --check report-only (continue-on-error, verdict printed by the umbrella, not counted). Running it here would red the whole local gate on a fact CI does not score. Its --selftest DOES run here (the rule above). Run 'scripts/construction-gate.sh --check' directly for the report; DELETE this entry when the CI job is flipped to blocking."
 )
 
@@ -229,14 +246,40 @@ ci_logical_lines() {
 # past it. The extension set and the interpreter prefixes are therefore both widened beyond what the
 # tree happens to contain today, because the next gate written in a new language should break this
 # script rather than disappear from it.
+#
+# THE DIRECTORY SET IS NOT `scripts/`, AND IT WAS — the same shape of hole as the extension set, one
+# axis over. `ci.yml` makes ELEVEN gate invocations under `testing/`: the whole shadow-oracle harness
+# (`replay-selftest.sh`, `selftest.sh`, `fetch-golden.sh`, `record.sh`, `replay.sh`,
+# `enumerate-cells.py`, `harness-rev.sh`) and the llm-conformance suite (`selftest.sh`, `run.sh`).
+# Those are gates by every definition this file uses — CI reds when they red — and discovery could
+# not see any of them because the pattern began with the literal `scripts/`. Four of the eleven run
+# perfectly well on a laptop and were simply never run; the other seven need a golden binary, a
+# recording or the network, and were not NAMED as such either. Both halves are now visible: run, or
+# skipped with a reason, and never absent.
+#
+# The path pattern also allows nested directories (`testing/shadow-oracle/replay.sh`), which the
+# flat `scripts/` shape never needed.
 GATE_EXT='(sh|py|mjs|js|ts|rb)'
+# The trailing `\b` is load-bearing now that `testing/` is in the set: `spec-digests.tsv`,
+# `golden-digests.tsv` and `plugin-digests.tsv` are DATA files ci.yml reads with `cut`/`awk`, and
+# without a word boundary the `ts` alternative matches their first two extension characters and
+# discovery invents three gates named `…-digests.ts` that do not exist. A discovery that invents
+# gates is the mirror of one that loses them, and it fails just as closed: those three would land in
+# neither list and abort the runner.
+GATE_PATH="(scripts|testing)/([a-z0-9-]+/)*[a-z0-9-]+\.${GATE_EXT}\b"
 mapfile -t DISCOVERED < <(
   sed -e 's/^[[:space:]]*#.*$//' -e 's/^[[:space:]]*-\{0,1\}[[:space:]]*name:.*$//' "$CI_YML" \
-    | grep -oE "(python3 |bash |node |npx )?scripts/[a-z0-9-]+\.${GATE_EXT}( --[a-z-]+( [^ \"'|]+)?)*" \
+    | grep -oE "(python3 |bash |node |npx )?${GATE_PATH}( --[a-z-]+( [^ \"'|]+)?)*" \
     | sed 's/^ *//' | sort -u
 )
 
 [ "${#DISCOVERED[@]}" -ge "$MIN_GATES" ] || die "discovered only ${#DISCOVERED[@]} gate invocation(s) in $CI_YML (floor $MIN_GATES). The parser is broken, and a broken discovery reports a clean tree."
+
+# After the floor, deliberately: `--dump-gates` relaxes nothing.
+if [ "${1:-}" = "--dump-gates" ]; then
+  printf '%s\n' "${DISCOVERED[@]}"
+  exit 0
+fi
 
 # Every cargo invocation CI makes, normalised. COMMENT LINES AND STEP `name:` LABELS ARE STRIPPED
 # FIRST: `ci.yml` documents the openapi refresh command in a comment, and a step's `name:` field is a
@@ -284,7 +327,7 @@ skip_reason_for() {
 
 RUN=(); SKIP=()
 for inv in "${DISCOVERED[@]}"; do
-  script="$(printf '%s' "$inv" | grep -oE "scripts/[a-z0-9-]+\.${GATE_EXT}")"
+  script="$(printf '%s' "$inv" | grep -oE "$GATE_PATH")"
   # A `--selftest` ALWAYS runs, whatever its script's classification. A self-test plants its own
   # fixtures by definition -- that is what makes it a self-test rather than a run -- so it needs no
   # release artifact, no fleet and no network. Skipping one because its sibling REAL run needs a
@@ -307,7 +350,7 @@ if [ "${1:-}" = "--list" ]; then
   printf '  %s\n' "${RUN[@]}"
   printf '\n== SKIPPED, WITH REASON (%d) ==\n' "${#SKIP[@]}"
   for inv in "${SKIP[@]}"; do
-    s="$(printf '%s' "$inv" | grep -oE "scripts/[a-z0-9-]+\.${GATE_EXT}")"
+    s="$(printf '%s' "$inv" | grep -oE "$GATE_PATH")"
     printf '  %-44s %s\n' "$inv" "$(skip_reason_for "$s")"
   done
   exit 0
@@ -332,6 +375,31 @@ if [ "${1:-}" = "--selftest" ]; then
       printf '  [ok]     %s is discovered\n' "$must"
     else
       printf '  [FAILED] %s is in ci.yml but was NOT discovered -- the parser missed a real gate\n' "$must"; bad=1
+    fi
+  done
+
+  # THE `testing/` HALF, planted rather than hoped for. Discovery hard-coded `scripts/` and was blind
+  # to every gate under `testing/`; a gate a discovery cannot SEE is not skipped with a reason, it is
+  # absent from both lists while the final "N gates, M skipped" line counts confidently past it. The
+  # fixture carries one planted `testing/planted/gate.sh` invocation, and this is the red-before-green:
+  # against the old pattern `--dump-gates` on that fixture returns it nowhere.
+  PLANTED_FIXTURE="scripts/fixtures/full-gate/continuation-ci.yml"
+  if [ ! -f "$PLANTED_FIXTURE" ]; then
+    printf '  [FAILED] the discovery fixture %s is missing\n' "$PLANTED_FIXTURE"; bad=1
+  elif bash "$0" --dump-gates "$PLANTED_FIXTURE" 2>/dev/null | grep -q '^bash testing/planted/gate.sh'; then
+    printf '  [ok]     a planted testing/planted/gate.sh invocation IS discovered (nested dirs included)\n'
+  else
+    printf '  [FAILED] a planted testing/ gate invocation was NOT discovered -- gates outside scripts/ are invisible\n'; bad=1
+  fi
+
+  # And the real ones: the shadow-oracle harness and the llm-conformance suite, by name, so the
+  # directory set cannot narrow back to `scripts/` without this going red.
+  for must in testing/shadow-oracle/replay-selftest.sh testing/shadow-oracle/record.sh \
+              testing/shadow-oracle/enumerate-cells.py testing/llm-conformance/run.sh; do
+    if printf '%s\n' "${DISCOVERED[@]}" | grep -q "$must"; then
+      printf '  [ok]     %s is discovered\n' "$must"
+    else
+      printf '  [FAILED] %s is invoked by ci.yml but was NOT discovered\n' "$must"; bad=1
     fi
   done
 
