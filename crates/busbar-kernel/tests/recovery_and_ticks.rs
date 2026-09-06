@@ -218,6 +218,94 @@ fn a_lost_task_is_settled_within_one_tick() {
     );
 }
 
+/// THE LOST UNIT'S OWN LEASE, drawn by the loop and given back by the sweep.
+///
+/// The cell above hands the slot a lease by hand, which proves the sweep gives back what it finds.
+/// This one proves there is something to find: the lease the DOOR drew, through the real loop, on a
+/// unit whose task then disappeared. The loop is polled to its one await and then leaked — which is
+/// what a lost task is, a frame nobody will ever run again — so the exit path it would have used
+/// never runs and the sweep is the unit's only remaining end.
+///
+/// Without the draw, the gauge reads zero here whatever the sweep does, and a node whose tasks are
+/// dying quietly looks idle right up until it stops admitting anything.
+#[test]
+fn the_sweep_gives_back_the_lease_the_door_drew_on_a_lost_task() {
+    let kernel = Kernel::new();
+    let table = InFlight::new(4, 0);
+    let canary = Canary::new();
+    let units = common::TestUnits::passing();
+    let dropped = std::sync::atomic::AtomicBool::new(false);
+    let route = common::NeverRoutes {
+        units: &units,
+        dropped: &dropped,
+    };
+    let gauge = ConcurrencyGauge::new();
+    let meter = busbar_kernel::teller::AccrualMeter::new();
+    let slot = table
+        .insert(Enter {
+            key: UnitKey::new(9),
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            now: 0,
+        })
+        .map_err(|_| ())
+        .expect("under the cap");
+
+    let unit = common::ctx(9);
+    let mut running = Box::pin(busbar_kernel::teller::run_unit_async(
+        &kernel,
+        &units,
+        &unit,
+        busbar_kernel::teller::Run {
+            cell: slot.cell(),
+            parent: None,
+            leases: slot.leases(),
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+        &route,
+    ));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(std::future::Future::poll(running.as_mut(), &mut cx).is_pending());
+    assert_eq!(
+        gauge.count(&busbar_kernel::slice::IN_FLIGHT),
+        1,
+        "the door drew the unit's lease on its slot"
+    );
+    // The task is gone: its frame is never polled again and never dropped, so nothing it owns comes
+    // back on its own. Everything the unit still holds is on the slot.
+    std::mem::forget(running);
+
+    slot.mark();
+    let verdict = sweep(&slot, StepName::Route, 0, 30_000, true);
+    assert_eq!(
+        verdict,
+        Sweep::TaskLost {
+            at: StepName::Route
+        }
+    );
+    sweep_settle(
+        &kernel,
+        &slot,
+        verdict,
+        &Evidence::default(),
+        &canary,
+        &gauge,
+    )
+    .expect("the sweep is the second key to the cell");
+    assert_eq!(
+        gauge.count(&busbar_kernel::slice::IN_FLIGHT),
+        0,
+        "the lost unit's slot is back on the gauge"
+    );
+    assert!(!slot.leases().is_owned(), "and the slot is unowned now");
+}
+
 /// A sweep that races a unit which is still running reclaims nothing of it.
 ///
 /// The unit's leases live on the slot now, where the sweep can reach them, so this is a rule and

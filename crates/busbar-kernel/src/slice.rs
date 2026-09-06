@@ -347,6 +347,14 @@ pub struct ChainRefused {
     pub draw: Draw,
 }
 
+/// The bucket a unit's in-flight slot is counted on.
+///
+/// One bucket, node-wide, because that is what the node's own concurrency limit is: the count of
+/// units this node is running right now. The per-group gauges a chain declares are a second axis
+/// the door already enforces, on its own counters, at its own statuses; this is the kernel's
+/// reading of the slot the door's yes occupied, and it is the reading the sweep gives back.
+pub const IN_FLIGHT: BucketId = bucket_all("kernel:in_flight");
+
 /// Does a unit of this origin take a concurrency lease?
 ///
 /// Handshake units and tick units move no money and take none, so a node at a saturated
@@ -508,6 +516,22 @@ impl ConcurrencyGauge {
         }
         *entry += 1;
         Ok(())
+    }
+
+    /// Count a lease a door has already granted.
+    ///
+    /// [`ConcurrencyGauge::acquire`] is a gate: it reads a cap and can refuse. This is not one, and
+    /// deliberately cannot be. The decision about whether a unit may run was taken at the door, on
+    /// the door's own counters, at the status and in the order the caller already sees; a second
+    /// gate here would be a second place a unit can be turned away, and a refusal nobody asked for
+    /// is the one change a lease that is only ever COUNTED cannot make.
+    pub fn record(&self, bucket: &BucketId) {
+        *self
+            .counts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(*bucket)
+            .or_insert(0) += 1;
     }
 
     /// Give a lease back.

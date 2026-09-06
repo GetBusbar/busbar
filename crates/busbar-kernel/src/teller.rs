@@ -66,7 +66,7 @@ use busbar_caps::{
 };
 
 use crate::registry::Generation;
-use crate::slice::{ConcurrencyGauge, LeaseCell};
+use crate::slice::{takes_lease, ConcurrencyGauge, LeaseCell, IN_FLIGHT};
 
 /// The kernel's own authority: the one place the tokens the units are lent are minted.
 ///
@@ -687,7 +687,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                 )
                 .and_then(
                     |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
-                        units
+                        let admitted = units
                             .admit(
                                 &UnitToken::<Admit>::mint(seal),
                                 &AdmitToken::<Admit>::mint(seal),
@@ -695,7 +695,16 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                                 &principal,
                                 &destinations,
                             )
-                            .into_result(seal)
+                            .into_result(seal);
+                        // THE LEASE, drawn on the one answer that entitles a unit to it. The door
+                        // said yes, so from here until this unit's end the node is running it, and
+                        // the lease is what says so. A refusal draws nothing — there is no slot to
+                        // count — and a unit that never reached this step, a challenge round, is
+                        // never here to draw one.
+                        if admitted.is_ok() {
+                            draw_lease(ctx, &run);
+                        }
+                        admitted
                     },
                 ),
         });
@@ -768,6 +777,34 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                     abandoned.reached(outcome)
                 }
             }
+        }
+    }
+}
+
+/// Draw the concurrency lease the door's yes entitles a unit to, on the unit's own SLOT.
+///
+/// The lease is the other half of a rule the exit path has kept on its own until now: leases go back
+/// on every end. Nothing drew one, so what went back was always nothing, and the gauge read zero
+/// while the node was full. This is the draw.
+///
+/// It is recorded on the slot's cell rather than in this frame, because the unit has two ends and
+/// only one of them is here. A task that disappears takes its frame with it; the sweep finds the
+/// slot, and the slot is where the lease it has to give back lives.
+///
+/// The exempt origins are the design's own: a handshake and a tick move no money and take no lease,
+/// so a node at a saturated gauge still finishes its handshakes and still runs the sweep that
+/// empties it, and a kernel-verb unit takes none either — which is what makes the administrative
+/// surface answer while everything else is capped out.
+///
+/// The gauge is counted BEFORE the cell is asked, and given straight back when the cell says no.
+/// A cell that refuses a lease is a unit whose other end has already run, and the count it would
+/// otherwise be left holding is one no exit and no sweep would ever release — a cap that only goes
+/// up, invisible until the node stops admitting anything.
+fn draw_lease(ctx: &UnitCtx, run: &Run<'_>) {
+    if takes_lease(ctx.origin, ctx.kernel_verb_only) {
+        run.gauge.record(&IN_FLIGHT);
+        if !run.leases.take(IN_FLIGHT) {
+            run.gauge.release(&IN_FLIGHT);
         }
     }
 }

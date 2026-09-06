@@ -15,7 +15,7 @@ use busbar_caps::{
     Abort, Canary, HoldCellState, OriginKind, Outcome, PostingFlags, ReasonCode, StepName, UnitKey,
 };
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
-use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
+use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell, IN_FLIGHT};
 use busbar_kernel::teller::{
     exit, run_unit, run_unit_async, AccrualMeter, Ended, Evidence, Kernel, Run,
 };
@@ -619,6 +619,171 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
     canary
         .balanced()
         .expect("one draft, one hold, one settlement — an abandoned unit still balances");
+}
+
+/// THE DRAW. A unit the door admitted is one the node is running, and the gauge says so.
+///
+/// The exit path and the sweep have both given leases back since they were written, but nothing ever
+/// took one, so the gauge read zero on a node that was full and the sweep had nothing of a lost unit
+/// to reclaim. This is the other half of the rule: the door's yes draws the lease, on the unit's own
+/// slot, and the unit's end gives it back.
+///
+/// The reading is taken WHILE the unit is in flight, which is the only moment the difference between
+/// a drawn lease and no lease at all is visible: a gauge read after the end is zero either way.
+#[test]
+fn the_door_draws_the_in_flight_lease_and_the_end_gives_it_back() {
+    let kernel = Kernel::new();
+    let units = TestUnits::passing();
+    let dropped = AtomicBool::new(false);
+    let route = NeverRoutes {
+        units: &units,
+        dropped: &dropped,
+    };
+    let table = InFlight::new(4, 0);
+    let slot = table
+        .insert(client(21))
+        .map_err(|_| ())
+        .expect("under the cap");
+    let gauge = ConcurrencyGauge::new();
+    let canary = Canary::new();
+    let meter = AccrualMeter::new();
+    let unit = ctx(21);
+
+    assert_eq!(
+        gauge.count(&IN_FLIGHT),
+        0,
+        "nothing is running before the unit starts"
+    );
+    {
+        let mut running = std::pin::pin!(run_unit_async(
+            &kernel,
+            &units,
+            &unit,
+            Run {
+                cell: slot.cell(),
+                parent: None,
+                leases: slot.leases(),
+                gauge: &gauge,
+                canary: &canary,
+                meter: &meter,
+            },
+            &route,
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(running.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(
+            gauge.count(&IN_FLIGHT),
+            1,
+            "the door said yes, so the node is running one unit and the gauge counts it"
+        );
+        assert_eq!(
+            slot.leases().held(),
+            1,
+            "and the lease is on the unit's own slot, where both of its ends can reach it"
+        );
+    }
+    assert_eq!(
+        gauge.count(&IN_FLIGHT),
+        0,
+        "the unit ended, so the slot it occupied is back"
+    );
+    assert_eq!(slot.leases().held(), 0);
+}
+
+/// A unit that never reaches the door draws nothing, and neither does an exempt one.
+///
+/// Three units that must not raise the gauge, for three different reasons: a challenge round, which
+/// is a handshake and never reaches the door at all; a tick, which moves no money; and a unit whose
+/// every destination is a kernel verb, which is what makes the administrative surface answer while
+/// the rest of the node is capped out. A gauge these three raised would be a node that stopped
+/// admitting because of the very units that are meant to keep it reachable.
+#[test]
+fn a_challenge_a_tick_and_a_kernel_verb_unit_draw_no_lease() {
+    for (name, units, unit_ctx) in [
+        (
+            "a challenge round never reaches the door",
+            TestUnits {
+                challenge: true,
+                ..TestUnits::passing()
+            },
+            ctx(31),
+        ),
+        ("a tick moves no money", TestUnits::passing(), {
+            let mut c = ctx(32);
+            c.origin = OriginKind::Tick;
+            c
+        }),
+        (
+            "a kernel-verb unit answers at a saturated gauge",
+            TestUnits::passing(),
+            {
+                let mut c = ctx(33);
+                c.kernel_verb_only = true;
+                c
+            },
+        ),
+    ] {
+        let kernel = Kernel::new();
+        let dropped = AtomicBool::new(false);
+        let route = NeverRoutes {
+            units: &units,
+            dropped: &dropped,
+        };
+        let leases = LeaseCell::new();
+        let gauge = ConcurrencyGauge::new();
+        let canary = Canary::new();
+        let meter = AccrualMeter::new();
+        let cell = cell(&kernel);
+        let mut running = std::pin::pin!(run_unit_async(
+            &kernel,
+            &units,
+            &unit_ctx,
+            Run {
+                cell: &cell,
+                parent: None,
+                leases: &leases,
+                gauge: &gauge,
+                canary: &canary,
+                meter: &meter,
+            },
+            &route,
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(running.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(gauge.count(&IN_FLIGHT), 0, "{name}");
+        assert_eq!(leases.held(), 0, "{name}");
+    }
+}
+
+/// A door that refuses draws nothing: there is no slot to count.
+#[test]
+fn a_unit_the_door_refused_draws_no_lease() {
+    let kernel = Kernel::new();
+    let units = TestUnits::refusing(StepName::Admit, ReasonCode::OverBudget);
+    let leases = LeaseCell::new();
+    let gauge = ConcurrencyGauge::new();
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    let meter = AccrualMeter::new();
+    let ended = run_unit(
+        &kernel,
+        &units,
+        &ctx(41),
+        Run {
+            cell: &cell,
+            parent: None,
+            leases: &leases,
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+    );
+    assert!(matches!(ended, Ended::Settled { .. }));
+    assert_eq!(
+        gauge.count(&IN_FLIGHT),
+        0,
+        "a refused unit never occupied a slot, so it never gave one back either"
+    );
 }
 
 /// One client arrival, as the table weighs it against the cap.
