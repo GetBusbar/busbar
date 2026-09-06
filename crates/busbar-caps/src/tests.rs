@@ -711,6 +711,44 @@ fn the_construction_gate_scans_for_every_escape_this_crate_names() {
     assert!(escapes.contains("max_sites = 0"));
 }
 
+/// One vocabulary, two spellings, and a bridge that cannot be left incomplete.
+///
+/// The kernel decides in `ReasonCode`; the plane renders `RefusalReason`. While the two sets were
+/// written independently, a reason the kernel could raise had no rendering at all, and the ones
+/// that did have one were spelled differently on each side — which is how a refusal arrives at a
+/// client as some other refusal. The bridge below is the join, and it is exhaustive on purpose:
+/// a reason added to the kernel's set does not compile until it has a spelling a client can be
+/// shown.
+#[test]
+fn every_reason_code_has_a_contract_spelling() {
+    for &code in ReasonCode::ALL {
+        // The conversion is total: a code with no spelling would not compile, and there is no
+        // fallback arm for one to hide in.
+        let _: busbar_contract::unit::RefusalReason = code.into();
+    }
+}
+
+/// Two codes that render as one spelling make two refusals indistinguishable to whatever reads
+/// the record — the same defect the reason set already split `PoolNotPermitted` and `NoRate` out
+/// to avoid, so the bridge must not reintroduce it by collapsing them again on the way across.
+#[test]
+fn the_contract_spelling_of_a_reason_code_is_its_own() {
+    use busbar_contract::unit::RefusalReason;
+    let mut seen: std::collections::HashMap<RefusalReason, ReasonCode> =
+        std::collections::HashMap::new();
+    for &code in ReasonCode::ALL {
+        let reason = RefusalReason::from(code);
+        if let Some(previous) = seen.insert(reason, code) {
+            panic!("{previous:?} and {code:?} both render as {reason:?}");
+        }
+    }
+    assert_eq!(
+        seen.len(),
+        ReasonCode::ALL.len(),
+        "the bridge collapsed two reasons into one spelling"
+    );
+}
+
 #[test]
 fn a_reason_code_reads_the_same_in_the_journal_and_the_refusal() {
     assert_eq!(ReasonCode::OverBudget.to_string(), "over_budget");

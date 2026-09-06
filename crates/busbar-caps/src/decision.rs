@@ -188,6 +188,70 @@ reasons! {
     DeadlineExceeded => "deadline_exceeded",
 }
 
+/// The one bridge from the kernel's reason vocabulary to the contract's spelling of it.
+///
+/// The kernel decides in `ReasonCode` and the plane is handed a `RefusalReason` to render, so
+/// without a written-down join the two sets drift: a reason with no spelling on the far side
+/// reaches a client as whatever the nearest arm said, and the same reason spelled two ways on the
+/// two sides is the same defect wearing a different name. The match is exhaustive and has no
+/// fallback arm, so a reason added to the vocabulary above does not compile until a client can be
+/// told about it, and `busbar-caps`'s own tests walk `ReasonCode::ALL` to check the mapping is
+/// injective — two reasons that render as one spelling are two refusals nothing can tell apart.
+impl From<ReasonCode> for busbar_contract::unit::RefusalReason {
+    fn from(code: ReasonCode) -> Self {
+        use busbar_contract::unit::RefusalReason as R;
+        match code {
+            // The reasons both sides already named, keeping each side's existing spelling: these
+            // are what a client sees today, and the wording is not this bridge's to change.
+            ReasonCode::InFlightCap => R::InFlightCap,
+            ReasonCode::CursorBudget => R::CursorBudget,
+            ReasonCode::CredentialBudget => R::CredentialBudget,
+            ReasonCode::SessionBudget => R::SessionBudget,
+            ReasonCode::BodyTooLarge => R::BodyTooLarge,
+            ReasonCode::OpenSlotBusy => R::OpenSlotBusy,
+            ReasonCode::SchemeNotDeclared => R::SchemeNotDeclared,
+            ReasonCode::SessionUnbound => R::SessionUnbound,
+            ReasonCode::Revoked => R::Revoked,
+            ReasonCode::NoDestination => R::NoDestination,
+            ReasonCode::OverBudget => R::OverBudget,
+            ReasonCode::GroupFrozen => R::GroupFrozen,
+            ReasonCode::Unpriced => R::Unpriced,
+            ReasonCode::OverdraftCeiling => R::OverdraftCeiling,
+            ReasonCode::StaleSlice => R::StaleSlice,
+            ReasonCode::DurabilityUnavailable => R::DurabilityUnavailable,
+            ReasonCode::TierMismatch => R::TierMismatch,
+            // The three the two sides named differently. One thing, two spellings, and this is
+            // where they are joined rather than in each renderer's head.
+            ReasonCode::Unauthenticated => R::CredentialRejected,
+            ReasonCode::ScopeDenied => R::ScopeMissing,
+            ReasonCode::HookVeto => R::Vetoed,
+            // The reasons that had no spelling a client could be shown at all.
+            ReasonCode::SpillBudget => R::SpillBudget,
+            ReasonCode::ArenaBudget => R::ArenaBudget,
+            ReasonCode::RateLimited => R::RateLimited,
+            ReasonCode::DecodeFailed => R::DecodeFailed,
+            ReasonCode::ChallengeExhausted => R::ChallengeExhausted,
+            ReasonCode::PoolNotPermitted => R::PoolNotPermitted,
+            ReasonCode::NoRate => R::NoRate,
+            ReasonCode::Replayed => R::Replayed,
+            ReasonCode::InFlight => R::InFlight,
+            ReasonCode::DestinationBudgetExhausted => R::DestinationBudgetExhausted,
+            ReasonCode::BreakerOpen => R::BreakerOpen,
+            ReasonCode::DestinationUnreachable => R::DestinationUnreachable,
+            ReasonCode::MeterDisputed => R::MeterDisputed,
+            ReasonCode::HandoffMismatch => R::HandoffMismatch,
+            ReasonCode::PlanePanic => R::PlanePanic,
+            ReasonCode::TaskLost => R::TaskLost,
+            ReasonCode::Stalled => R::Stalled,
+            ReasonCode::SecretPlaceholder => R::SecretPlaceholder,
+            ReasonCode::Drain => R::Drain,
+            ReasonCode::Superseded => R::Superseded,
+            ReasonCode::ClientGone => R::ClientGone,
+            ReasonCode::DeadlineExceeded => R::DeadlineExceeded,
+        }
+    }
+}
+
 impl std::fmt::Display for ReasonCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())

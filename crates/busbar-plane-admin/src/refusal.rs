@@ -40,6 +40,28 @@
 //! | `StaleSlice` | `unavailable` | the node's slice of a bucket window is out of date: transient, node-side |
 //! | `DurabilityUnavailable` | `unavailable` | the journal cannot be written: the textbook `unavailable` case |
 //! | `TierMismatch` | `internal` | a configuration inconsistency across a bucket chain: not the caller's fault and not a normal request outcome |
+//! | `SpillBudget` | `unavailable` | a node-global spill ceiling: transient and node-side, same family as `SessionBudget` |
+//! | `ArenaBudget` | `unavailable` | the per-unit arena ran out: a node-side resource, not a property of the request |
+//! | `RateLimited` | `rate_limited` | the source is over its arrival rate: the code exists for exactly this |
+//! | `DecodeFailed` | `invalid_request` | the bytes could not be read: a property of THIS request |
+//! | `ChallengeExhausted` | `unauthorized` | the exchange ran out before authority was established |
+//! | `PoolNotPermitted` | `forbidden` | authenticated and not allowed to reach the pool it named |
+//! | `NoRate` | `invalid_request` | the name the caller supplied cannot be billed: nothing is wrong with the budget |
+//! | `Replayed` | `conflict` | the idempotency key was already used: a state conflict, not a throttle |
+//! | `InFlight` | `conflict` | the key belongs to a unit still running: the same conflict, earlier |
+//! | `DestinationBudgetExhausted` | `unavailable` | the destination has nothing left to spend: node-side, not the caller's fault |
+//! | `BreakerOpen` | `unavailable` | the destination is being protected: transient by construction |
+//! | `DestinationUnreachable` | `unavailable` | nothing answered upstream |
+//! | `MeterDisputed` | `internal` | two evidence sources disagree: a node-side inconsistency |
+//! | `HandoffMismatch` | `internal` | two legs did not agree on what they were doing: not the caller's doing |
+//! | `PlanePanic` | `internal` | the textbook `internal` case |
+//! | `TaskLost` | `internal` | the unit's task disappeared without an end |
+//! | `SecretPlaceholder` | `internal` | a minted secret did not land where it was declared: node-side |
+//! | `Stalled` | `unavailable` | no progress inside the deadline: transient |
+//! | `Drain` | `unavailable` | the node is going away: the textbook retry-elsewhere case |
+//! | `Superseded` | `conflict` | a later unit took this one's place: a conflict over the same state |
+//! | `ClientGone` | `conflict` | the caller abandoned the request: a connection-state outcome, same family as `OpenSlotBusy` |
+//! | `DeadlineExceeded` | `unavailable` | the unit ran past its maximum duration |
 //!
 //! Where a `RefusalReason` has no crisp admin-error analog, the row above states the closest
 //! reasonable one rather than defaulting silently to `internal`; only `TierMismatch` (a genuine
@@ -75,6 +97,28 @@ pub(crate) fn code_for(reason: RefusalReason) -> &'static str {
         RefusalReason::StaleSlice => "unavailable",
         RefusalReason::DurabilityUnavailable => "unavailable",
         RefusalReason::TierMismatch => "internal",
+        RefusalReason::SpillBudget => "unavailable",
+        RefusalReason::ArenaBudget => "unavailable",
+        RefusalReason::RateLimited => "rate_limited",
+        RefusalReason::DecodeFailed => "invalid_request",
+        RefusalReason::ChallengeExhausted => "unauthorized",
+        RefusalReason::PoolNotPermitted => "forbidden",
+        RefusalReason::NoRate => "invalid_request",
+        RefusalReason::Replayed => "conflict",
+        RefusalReason::InFlight => "conflict",
+        RefusalReason::DestinationBudgetExhausted => "unavailable",
+        RefusalReason::BreakerOpen => "unavailable",
+        RefusalReason::DestinationUnreachable => "unavailable",
+        RefusalReason::MeterDisputed => "internal",
+        RefusalReason::HandoffMismatch => "internal",
+        RefusalReason::PlanePanic => "internal",
+        RefusalReason::TaskLost => "internal",
+        RefusalReason::SecretPlaceholder => "internal",
+        RefusalReason::Stalled => "unavailable",
+        RefusalReason::Drain => "unavailable",
+        RefusalReason::Superseded => "conflict",
+        RefusalReason::ClientGone => "conflict",
+        RefusalReason::DeadlineExceeded => "unavailable",
     }
 }
 
@@ -104,6 +148,28 @@ pub(crate) fn message_for(reason: RefusalReason) -> &'static str {
         RefusalReason::StaleSlice => "the node's bucket slice is stale",
         RefusalReason::DurabilityUnavailable => "the journal is unavailable",
         RefusalReason::TierMismatch => "bucket chain tier mismatch",
+        RefusalReason::SpillBudget => "the node's spill budget is exhausted",
+        RefusalReason::ArenaBudget => "the unit's working memory is exhausted",
+        RefusalReason::RateLimited => "too many requests",
+        RefusalReason::DecodeFailed => "the request could not be read",
+        RefusalReason::ChallengeExhausted => "the authentication exchange was exhausted",
+        RefusalReason::PoolNotPermitted => "principal may not use this pool",
+        RefusalReason::NoRate => "the name supplied has no configured rate",
+        RefusalReason::Replayed => "this request was already answered",
+        RefusalReason::InFlight => "this request is still in flight",
+        RefusalReason::DestinationBudgetExhausted => "the destination's request budget is spent",
+        RefusalReason::BreakerOpen => "the destination is not accepting requests",
+        RefusalReason::DestinationUnreachable => "the destination could not be reached",
+        RefusalReason::MeterDisputed => "usage evidence disagrees",
+        RefusalReason::HandoffMismatch => "the two legs of this request did not agree",
+        RefusalReason::PlanePanic => "the request handler failed",
+        RefusalReason::TaskLost => "the request was lost",
+        RefusalReason::SecretPlaceholder => "a secret placeholder did not resolve",
+        RefusalReason::Stalled => "the request made no progress",
+        RefusalReason::Drain => "the node is draining",
+        RefusalReason::Superseded => "a later request took this one's place",
+        RefusalReason::ClientGone => "the client went away",
+        RefusalReason::DeadlineExceeded => "the request ran past its deadline",
     }
 }
 
@@ -173,12 +239,34 @@ mod tests {
             RefusalReason::StaleSlice,
             RefusalReason::DurabilityUnavailable,
             RefusalReason::TierMismatch,
+            RefusalReason::SpillBudget,
+            RefusalReason::ArenaBudget,
+            RefusalReason::RateLimited,
+            RefusalReason::DecodeFailed,
+            RefusalReason::ChallengeExhausted,
+            RefusalReason::PoolNotPermitted,
+            RefusalReason::NoRate,
+            RefusalReason::Replayed,
+            RefusalReason::InFlight,
+            RefusalReason::DestinationBudgetExhausted,
+            RefusalReason::BreakerOpen,
+            RefusalReason::DestinationUnreachable,
+            RefusalReason::MeterDisputed,
+            RefusalReason::HandoffMismatch,
+            RefusalReason::PlanePanic,
+            RefusalReason::TaskLost,
+            RefusalReason::SecretPlaceholder,
+            RefusalReason::Stalled,
+            RefusalReason::Drain,
+            RefusalReason::Superseded,
+            RefusalReason::ClientGone,
+            RefusalReason::DeadlineExceeded,
         ];
         // The whole closed set, not a sample of it: `code_for` matches exhaustively, so a reason
         // added to the contract fails to compile there and this count says the walk saw it too.
         assert_eq!(
             all.len(),
-            20,
+            42,
             "the contract's reason set changed and this walk did not"
         );
         for reason in all {
@@ -222,6 +310,28 @@ mod tests {
             ("StaleSlice", "unavailable"),
             ("DurabilityUnavailable", "unavailable"),
             ("TierMismatch", "internal"),
+            ("SpillBudget", "unavailable"),
+            ("ArenaBudget", "unavailable"),
+            ("RateLimited", "rate_limited"),
+            ("DecodeFailed", "invalid_request"),
+            ("ChallengeExhausted", "unauthorized"),
+            ("PoolNotPermitted", "forbidden"),
+            ("NoRate", "invalid_request"),
+            ("Replayed", "conflict"),
+            ("InFlight", "conflict"),
+            ("DestinationBudgetExhausted", "unavailable"),
+            ("BreakerOpen", "unavailable"),
+            ("DestinationUnreachable", "unavailable"),
+            ("MeterDisputed", "internal"),
+            ("HandoffMismatch", "internal"),
+            ("PlanePanic", "internal"),
+            ("TaskLost", "internal"),
+            ("SecretPlaceholder", "internal"),
+            ("Stalled", "unavailable"),
+            ("Drain", "unavailable"),
+            ("Superseded", "conflict"),
+            ("ClientGone", "conflict"),
+            ("DeadlineExceeded", "unavailable"),
         ] {
             let row = format!("| `{reason}` | `{code}` |");
             assert!(

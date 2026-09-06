@@ -189,6 +189,31 @@ fn refusal_shape(reason: RefusalReason) -> (u16, &'static str) {
         RefusalReason::DurabilityUnavailable
         | RefusalReason::StaleSlice
         | RefusalReason::TierMismatch => (503, KIND_OVERLOADED),
+        // The reasons the kernel could always raise and this dialect had no rendering for. Each
+        // joins the family it belongs to rather than acquiring a status of its own: a client learns
+        // the shape of the refusal, never which of the node's ceilings it met.
+        RefusalReason::ChallengeExhausted => (401, KIND_AUTHENTICATION),
+        RefusalReason::PoolNotPermitted => (403, KIND_PERMISSION),
+        RefusalReason::RateLimited | RefusalReason::InFlight => (429, KIND_RATE_LIMIT),
+        RefusalReason::DecodeFailed
+        | RefusalReason::NoRate
+        | RefusalReason::Replayed
+        | RefusalReason::Superseded => (400, KIND_INVALID_REQUEST),
+        RefusalReason::SpillBudget
+        | RefusalReason::ArenaBudget
+        | RefusalReason::DestinationBudgetExhausted
+        | RefusalReason::BreakerOpen
+        | RefusalReason::DestinationUnreachable
+        | RefusalReason::Stalled
+        | RefusalReason::Drain
+        | RefusalReason::ClientGone
+        | RefusalReason::DeadlineExceeded => (503, KIND_OVERLOADED),
+        // Node-side faults: the node got something wrong, and says so without saying what.
+        RefusalReason::MeterDisputed
+        | RefusalReason::HandoffMismatch
+        | RefusalReason::PlanePanic
+        | RefusalReason::TaskLost
+        | RefusalReason::SecretPlaceholder => (500, KIND_API_ERROR),
     }
 }
 
@@ -202,6 +227,7 @@ fn refusal_message(reason: RefusalReason) -> &'static str {
         403 => "Not permitted.",
         413 => "Request too large.",
         429 => "Rate limited.",
+        500 => "The request could not be completed.",
         503 => "Temporarily unavailable.",
         _ => "Request rejected.",
     }
