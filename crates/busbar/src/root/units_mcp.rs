@@ -56,6 +56,7 @@ use busbar_caps::{
 use busbar_contract::dest::DestinationFacts;
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
 use busbar_contract::plane::{Plane, PlaneMeta};
+use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_plane_mcp::meta::{CLASS_BYTES, CLASS_TOOL_CALLS};
 use busbar_plane_mcp::{claims, ops, records, McpPlane, Server};
 use busbar_plugin_loader::store_adapter::StoreAdapter;
@@ -893,20 +894,39 @@ pub struct Admitting<'a> {
     pub chain: &'a BucketChain,
 }
 
-/// Ask the door.
+/// Ask the door, and put what its yes counted onto the unit's slot.
+///
+/// The slip is the second half of the answer and not a courtesy: the door raises a gauge per capped
+/// group when it says yes and lowers it when the grant is dropped, so a grant that dies with this
+/// call is a cap released before the unit it admitted has done anything — and a group written
+/// `concurrent: 1` would then admit every unit that ever arrives. Handed to the slot, the count is
+/// held for as long as the unit is in the air and given back at whichever of its two ends arrives
+/// first, which is what makes the limit a limit.
+///
+/// The names beside it are what the door counted, said out loud: one lease per capped group, interned
+/// where the root interned them, recorded on the same slot. Empty on a refusal and empty for a chain
+/// with no capped group — neither is decided here.
 pub fn admit(
     unit: &Admitting<'_>,
     admit_token: &AdmitToken<Admit>,
     token: &UnitToken<Admit>,
+    leases: &GroupLeaseSlip,
 ) -> Decision<Admit> {
     let mut door = AdmissionUnit::new(unit.door, unit.pricer, unit.pool, unit.arrival_epoch);
-    door.admit(
+    let decision = door.admit(
         unit.estimate,
         unit.principal,
         unit.chain,
         admit_token,
         token,
-    )
+    );
+    for group in door.group_leases() {
+        leases.counted(group);
+    }
+    if let Some(grant) = door.take_grant() {
+        leases.holding(DoorGrant::new(grant));
+    }
+    decision
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2634,6 +2654,7 @@ mod tests {
             &unit,
             &AdmitToken::<AdmitStep>::mint(&seal),
             &UnitToken::<AdmitStep>::mint(&seal),
+            &GroupLeaseSlip::new(),
         );
         let busbar_caps::Admission::Own(hold) = decision
             .into_result(&seal)
@@ -2653,6 +2674,109 @@ mod tests {
             &busbar_caps::Usage::report(&busbar_caps::UsageToken::mint(&seal), Vec::new())
                 .expect("empty"),
             &busbar_caps::LedgerToken::mint(&seal),
+        );
+    }
+
+    /// A group table with one group in it, capped at one unit in flight.
+    ///
+    /// Built through the interner the root uses at boot, so the name the slot records is the same
+    /// static the vocabulary holds rather than one this fixture invented.
+    fn one_call_at_a_time(group: &str) -> busbar_unit_admission::GroupTable {
+        let groups = BTreeMap::from([(
+            group.to_string(),
+            busbar_substrate::config::groups::GroupCfg {
+                parent: None,
+                enabled: true,
+                limits: vec![busbar_substrate::config::groups::LimitCfg {
+                    metric: busbar_substrate::config::groups::LimitMetric::Concurrent,
+                    amount: 1,
+                    per: None,
+                    scope: None,
+                    on_exhaust: None,
+                    downgrade_to: None,
+                }],
+                child_default: None,
+            },
+        )]);
+        let mut vocabulary = crate::root::vocabulary::Vocabulary::new();
+        let ids = vocabulary.group_ids(&crate::root::vocabulary::ConfigKeys {
+            groups: vec![group.to_string()],
+            ..crate::root::vocabulary::ConfigKeys::default()
+        });
+        crate::root::policy::group_table(&groups, &ids)
+    }
+
+    /// Ask the door for one call, keeping what its yes counted.
+    fn ask_the_door(
+        door: &Door<InMemoryCells>,
+        chain: &BucketChain,
+        who: &PrincipalId,
+    ) -> (Result<busbar_caps::Admission, Refusal>, GroupLeaseSlip) {
+        use busbar_caps::{step::Admit as AdmitStep, AdmitToken, KernelSeal, UnitToken};
+        let seal = KernelSeal::acquire_for_kernel();
+        let pricer = Pricer::flat(0);
+        let est = estimate(ops::OP_TOOL_CALL, 10, &ClassPrices::default(), 0);
+        let unit = Admitting {
+            door,
+            pricer: &pricer,
+            pool: "fs",
+            arrival_epoch: 1_700_000_000,
+            estimate: &est,
+            principal: who,
+            chain,
+        };
+        let slip = GroupLeaseSlip::new();
+        let decision = admit(
+            &unit,
+            &AdmitToken::<AdmitStep>::mint(&seal),
+            &UnitToken::<AdmitStep>::mint(&seal),
+            &slip,
+        );
+        (decision.into_result(&seal), slip)
+    }
+
+    /// **The cap is a cap.** A deployment that wrote `concurrent: 1` against a group gets one MCP
+    /// call in the air at a time: the second is refused while the first is still running, and it is
+    /// admitted once the first has ended.
+    ///
+    /// The count is what makes that true. Left to die with the call that asked, the gauge is lowered
+    /// before the unit it admitted has done anything, and a limit an operator wrote down admits
+    /// every unit that ever arrives with nothing on any surface to say so.
+    #[test]
+    fn an_mcp_group_capped_at_one_call_refuses_the_second_and_admits_it_after_the_first_ends() {
+        const GROUP: &str = "mcp-team";
+        let door = Door::new(InMemoryCells::new());
+        let who = PrincipalId::new("vk_mcp");
+        // Resolved once, where the root resolves the caller. Every unit below reads this one value.
+        let chain = one_call_at_a_time(GROUP)
+            .chain_for(who.as_str(), Some(GROUP))
+            .expect("the group is configured");
+
+        let (admitted, held) = ask_the_door(&door, &chain, &who);
+        assert!(admitted.is_ok(), "the first call of a group capped at one");
+        assert_eq!(
+            held.taken().len(),
+            1,
+            "and the yes names the one capped group it counted"
+        );
+        // The count itself, taken onto the slot as the loop takes it. Held for as long as the unit
+        // it admitted is running, which is what makes the next line a refusal rather than a second
+        // yes.
+        let running = held.grant_taken().expect("the yes is holding a count");
+
+        let (refused, _) = ask_the_door(&door, &chain, &who);
+        assert_eq!(
+            refused.expect_err("the group is full").reason(),
+            ReasonCode::RateLimited,
+            "an in-flight gauge is a count cap, not a spend cap"
+        );
+
+        // The unit ends: the slot gives back what it held, and the group has room again.
+        drop(running);
+        let (after, _) = ask_the_door(&door, &chain, &who);
+        assert!(
+            after.is_ok(),
+            "the cap is instantaneous — it gates what is running, never what has run"
         );
     }
 
