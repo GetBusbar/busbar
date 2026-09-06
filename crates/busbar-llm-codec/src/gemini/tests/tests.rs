@@ -5631,7 +5631,8 @@ fn test_gemini_usage_counts_tool_use_prompt_tokens_as_input() {
         stop_sequence: None,
         request_echo: None,
     };
-    let out = GeminiWriter.write_response(&resp);
+    let writer = GeminiWriter;
+    let out = writer.write_response(&resp);
     assert_eq!(
         out.pointer("/usageMetadata/promptTokenCount"),
         Some(&serde_json::json!(100))
@@ -5647,7 +5648,7 @@ fn test_gemini_usage_counts_tool_use_prompt_tokens_as_input() {
     );
 
     // Same on the streamed terminal chunk.
-    let ev = GeminiWriter
+    let ev = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
             stop_reason: None,
             usage: u_of(140, 11, Some(40)),
