@@ -32,6 +32,24 @@
 //! is the identical blind spot one path over. [`every_billing_plane_reaches_the_usage_seam_on_its_teller_meter_step`]
 //! closes it: every billing plane's leg must carry a Meter step AND reach the one usage seam.
 
+//! ## What this gate reads, and what it deliberately does not
+//!
+//! Both scans read PRODUCTION source through `tests/common/mod.rs` — comments stripped, and every
+//! `#[cfg(test)] mod` body removed. That is not a detail. Reading a leg file whole means a
+//! `Usage::report(` written inside that file's own unit tests satisfies the gate, and a plane whose
+//! Meter step reaches nothing passes on the strength of the mock its tests use to stand in for the
+//! step that is missing. The same applies one level down: the waist hop is resolved to the Meter
+//! step's OWN module rather than summed over the plane's whole `src/unit/` tree, because a token in
+//! the plane's Admit or Audit step is not the Meter step reaching the ledger — it is a different
+//! step, and counting it means the gate answers a question about the file layout instead of about
+//! the step.
+//!
+//! And the scan is of the Meter step's BODY, not of the file the step lives in. A leg file names
+//! the usage seam in several steps; asking the file is how a `fn meter` that returns
+//! `Decision::proceed` with an empty report keeps a green gate.
+
+mod common;
+
 use std::path::{Path, PathBuf};
 
 /// Every plane that performs billable work and therefore MUST reach the core Meter seam. Keyed by
@@ -56,61 +74,18 @@ fn crates_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Collect every `.rs` file under `dir` that is PRODUCTION source (not a test file), skipping any
-/// `target/` build dir. Test files are excluded because a plane's tests may drive the seam via a
-/// mock — the point is whether the SHIPPED source reaches it.
-fn production_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name == "target" || name == "tests" {
-                continue;
-            }
-            production_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            let p = path.to_string_lossy().replace('\\', "/");
-            let is_test =
-                p.ends_with("_tests.rs") || p.ends_with("/tests.rs") || p.contains("/test_support");
-            if !is_test {
-                out.push(path);
-            }
-        }
-    }
-}
-
-/// Whether `line` contains a Meter-seam call token outside a line/doc comment.
-fn has_meter_seam_call(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
-        return false;
-    }
-    let code = match line.find("//") {
-        Some(i) => &line[..i],
-        None => line,
-    };
-    METER_SEAM_TOKENS.iter().any(|tok| code.contains(tok))
-}
-
-/// The count of production Meter-seam reaches in a plane crate's `src/` tree.
+/// The count of production Meter-seam reaches in a plane crate's `src/` tree. PRODUCTION means the
+/// shipped binary's text: [`common::production_lines`] has already dropped the comments and every
+/// `#[cfg(test)] mod` body, so a plane whose only `meter_charge(` is in the mock its unit tests use
+/// counts as zero — which is what it is.
 fn meter_seam_reaches(crate_dir: &Path) -> usize {
     let mut files = Vec::new();
-    production_rs_files(&crate_dir.join("src"), &mut files);
-    let mut n = 0usize;
-    for path in &files {
-        let Ok(src) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        for line in src.lines() {
-            if has_meter_seam_call(line) {
-                n += 1;
-            }
-        }
-    }
-    n
+    common::production_rs_files(&crate_dir.join("src"), &mut files);
+    files
+        .iter()
+        .flat_map(|p| common::production_lines(p))
+        .filter(|l| METER_SEAM_TOKENS.iter().any(|tok| l.code.contains(tok)))
+        .count()
 }
 
 #[test]
@@ -176,37 +151,41 @@ const BILLING_PLANE_ROOT_LEGS: &[(&str, &str)] = &[
 const TELLER_USAGE_SEAM_TOKENS: &[&str] =
     &["busbar_unit_usage::meter(", "Usage::report(", "fold_usage("];
 
-/// Whether `line` reaches a Teller usage seam outside a line/doc comment.
-fn has_teller_usage_seam(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
-        return false;
-    }
-    let code = match line.find("//") {
-        Some(i) => &line[..i],
-        None => line,
-    };
+/// THE ONE HOP a Meter step is allowed. `units_llm.rs`'s step is `self.walk.meter(token, usage)`,
+/// which lands in the plane's own Meter module — the same one usage seam, reached through the
+/// plane's waist rather than restated in the root. What the hop may NOT do is land anywhere else in
+/// the plane: the destination below is the Meter step's own module, and a `Usage::report(` in the
+/// plane's Admit or Audit step is a different step doing a different thing.
+const PLANE_METER_STEP_MODULE: &[&str] = &["src", "unit", "meter.rs"];
+
+/// The call shapes that hand the Meter step off to the plane's own waist.
+const WAIST_HOP_TOKENS: &[&str] = &[".meter(", "::meter("];
+
+/// Whether a classified production line reaches a Teller usage seam.
+fn line_reaches_usage_seam(line: &common::Line) -> bool {
     TELLER_USAGE_SEAM_TOKENS
         .iter()
-        .any(|tok| code.contains(tok))
+        .any(|tok| line.code.contains(tok))
 }
 
-/// The count of usage-seam reaches in a file's production text.
-fn usage_seam_reaches_in(path: &Path) -> usize {
-    let Ok(src) = std::fs::read_to_string(path) else {
-        return 0;
-    };
-    src.lines().filter(|l| has_teller_usage_seam(l)).count()
+/// The count of usage-seam reaches among a set of production lines.
+fn usage_seam_reaches(lines: &[&common::Line]) -> usize {
+    lines.iter().filter(|l| line_reaches_usage_seam(l)).count()
 }
 
-/// The count of usage-seam reaches in a plane crate's own Teller-waist unit tree (`src/unit/`).
-/// A leg is allowed EXACTLY ONE hop: `units_llm.rs`'s Meter step is `self.walk.meter(token, usage)`,
-/// which lands in `busbar-llm/src/unit/meter.rs`. That is still the one usage seam, reached through
-/// the plane's own waist rather than restated in the root — what is forbidden is reaching NOTHING.
-fn usage_seam_reaches_in_plane_waist(crate_dir: &Path) -> usize {
-    let mut files = Vec::new();
-    production_rs_files(&crate_dir.join("src").join("unit"), &mut files);
-    files.iter().map(|p| usage_seam_reaches_in(p)).sum()
+/// The count of usage-seam reaches in the plane's OWN Meter step module — the single legal hop
+/// destination, rather than a sum over the whole `src/unit/` tree.
+fn usage_seam_reaches_in_plane_meter_step(crate_dir: &Path) -> Option<usize> {
+    let mut path: PathBuf = crate_dir.to_path_buf();
+    for part in PLANE_METER_STEP_MODULE {
+        path = path.join(part);
+    }
+    if !path.is_file() {
+        return None;
+    }
+    let lines = common::production_lines(&path);
+    let refs: Vec<&common::Line> = lines.iter().collect();
+    Some(usage_seam_reaches(&refs))
 }
 
 #[test]
@@ -223,33 +202,69 @@ fn every_billing_plane_reaches_the_usage_seam_on_its_teller_meter_step() {
              scanning the wrong tree",
             leg_path.display()
         );
-        let src = std::fs::read_to_string(&leg_path).expect("the leg file is readable");
+        let lines = common::production_lines(&leg_path);
+        assert!(
+            !lines.is_empty(),
+            "root leg {} classified to zero production lines — the scan is reading nothing, and a \
+             scan that reads nothing passes everything",
+            leg_path.display()
+        );
 
-        // (1) The leg must CARRY the Teller Meter step at all. A leg with no `fn meter` contributes
-        //     no Meter method to the loop, and the loop cannot call a step that is not there.
-        if !src.contains("fn meter(") {
+        // (1) The leg must CARRY the Teller Meter step at all, IN PRODUCTION. A leg with no
+        //     `fn meter` contributes no Meter method to the loop, and the loop cannot call a step
+        //     that is not there. A `fn meter` that exists only inside the leg's own
+        //     `#[cfg(test)] mod` is not in the binary and does not count.
+        let Some(body) = common::item_body(&lines, "fn meter(") else {
             offenders.push(format!(
-                "{plane}: root leg {leg} has NO `fn meter(` — it contributes no Meter step to the \
-                 Teller loop, so nothing it serves over the root is ever priced"
+                "{plane}: root leg {leg} has NO production `fn meter(` — it contributes no Meter \
+                 step to the Teller loop, so nothing it serves over the root is ever priced"
             ));
+            continue;
+        };
+
+        // (2) The STEP'S OWN BODY must reach the one usage seam, directly or through the single
+        //     legal hop into the plane's own Meter module. The question is asked of the step, not
+        //     of the file: another step in the same file reaching the seam says nothing about this
+        //     one, and a `fn meter` that proceeds with an empty report charges nobody.
+        let direct = usage_seam_reaches(&body);
+        if direct > 0 {
+            println!("  {plane:<13} {leg:<15} usage seam: {direct} in the step's own body");
             continue;
         }
 
-        // (2) The step must reach the one usage seam — in the leg itself, or one hop into the
-        //     plane's own Teller waist.
-        let direct = usage_seam_reaches_in(&leg_path);
-        let waist = usage_seam_reaches_in_plane_waist(&root.join(plane));
-        if direct == 0 && waist == 0 {
+        let hops = body
+            .iter()
+            .filter(|l| WAIST_HOP_TOKENS.iter().any(|tok| l.code.contains(tok)))
+            .count();
+        if hops == 0 {
             offenders.push(format!(
-                "{plane}: root leg {leg} carries a Meter step but reaches the usage seam ({}) \
-                 NEITHER in the leg NOR in {plane}/src/unit/. A Meter step that reports no lines \
-                 proceeds with an empty usage report — the loop runs, the audit seals, and the \
-                 principal is charged nothing",
+                "{plane}: root leg {leg}'s `fn meter` body reaches the usage seam ({}) directly and \
+                 hands off to nothing. A Meter step that reports no lines proceeds with an empty \
+                 usage report — the loop runs, the audit seals, and the principal is charged nothing",
                 TELLER_USAGE_SEAM_TOKENS.join(" / "),
             ));
             continue;
         }
-        println!("  {plane:<13} {leg:<15} usage seam: {direct} in leg, {waist} in plane waist");
+
+        let meter_module = root.join(plane).join(PLANE_METER_STEP_MODULE.join("/"));
+        match usage_seam_reaches_in_plane_meter_step(&root.join(plane)) {
+            None => offenders.push(format!(
+                "{plane}: root leg {leg}'s `fn meter` body hands off to the plane's waist, but \
+                 {} does not exist. The hop lands nowhere this gate can follow, so nothing proves \
+                 the handoff ends at the usage seam rather than at a step that reports no lines",
+                meter_module.display()
+            )),
+            Some(0) => offenders.push(format!(
+                "{plane}: root leg {leg}'s `fn meter` body hands off to the plane's waist, and the \
+                 plane's own Meter step ({}) reaches the usage seam ({}) ZERO times in production. \
+                 The handoff is real and the destination meters nobody",
+                meter_module.display(),
+                TELLER_USAGE_SEAM_TOKENS.join(" / "),
+            )),
+            Some(n) => {
+                println!("  {plane:<13} {leg:<15} usage seam: {n} in the plane's own Meter step");
+            }
+        }
     }
 
     assert!(
@@ -265,25 +280,105 @@ fn every_billing_plane_reaches_the_usage_seam_on_its_teller_meter_step() {
 // SELF-TEST: both gates are proven to FIRE. A gate that cannot fail is worse than none.
 // ---------------------------------------------------------------------------
 
+/// Classify a synthetic leg and hand back its `fn meter` body's production lines.
+fn meter_body_of(src: &str) -> Vec<String> {
+    let lines = common::classify(src, false);
+    let prod: Vec<common::Line> = lines.into_iter().filter(|l| !l.intest).collect();
+    common::item_body(&prod, "fn meter(")
+        .map(|b| b.iter().map(|l| l.code.clone()).collect())
+        .unwrap_or_default()
+}
+
 #[test]
 fn selftest_the_seam_scanners_discriminate() {
-    // The legacy scanner: a real call counts, the same token in a comment does not.
-    assert!(has_meter_seam_call("        host.meter_charge(&scope, n);"));
-    assert!(!has_meter_seam_call(
-        "        // host.meter_charge(&scope, n);"
-    ));
-    assert!(!has_meter_seam_call(
-        "        let x = 1; // meter_ledger(y)"
-    ));
-    assert!(!has_meter_seam_call("        let x = record_metering;")); // no call parens
+    let seam = |code: &str| {
+        TELLER_USAGE_SEAM_TOKENS
+            .iter()
+            .any(|tok| code.contains(tok))
+    };
+    // A real call counts; the same token in a comment or with no call parens does not.
+    let prod = |src: &str| {
+        common::classify(src, false)
+            .into_iter()
+            .filter(|l| !l.intest)
+            .map(|l| l.code)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(seam(&prod("Usage::report(usage, lines)\n")));
+    assert!(!seam(&prod("// Usage::report(usage, lines)\n")));
+    assert!(!seam(&prod("let x = 1; // fold_usage(y)\n")));
+    assert!(!seam(&prod("let x = record_metering;\n")));
+    assert!(METER_SEAM_TOKENS
+        .iter()
+        .any(|t| prod("host.meter_charge(&scope, n);\n").contains(t)));
+}
 
-    // The Teller scanner: same discrimination over the usage seam's own tokens.
-    assert!(has_teller_usage_seam(
-        "        match busbar_unit_usage::meter(&retained, &kernel, p, &d, usage) {"
-    ));
-    assert!(has_teller_usage_seam("        Usage::report(usage, lines)"));
-    assert!(!has_teller_usage_seam(
-        "        //! the metering step calls Usage::report(…) here"
-    ));
-    assert!(!has_teller_usage_seam("        let usage = 1;"));
+/// THE FAILURE THIS GATE WAS BLIND TO. The scan used to read the leg file whole, so a seam token in
+/// the leg's own `#[cfg(test)] mod tests` satisfied it — a Meter step reaching NOTHING passed on
+/// the strength of the mock the tests use to stand in for the step that is missing. Driven here on
+/// synthetic source so the proof does not require planting a fake leg in the tree.
+#[test]
+fn selftest_a_seam_reached_only_by_a_test_module_does_not_count() {
+    let leg_that_meters_nobody = r#"
+impl TellerPlane for Leg {
+    fn meter(&self, token: &UnitToken<Meter>, usage: &UsageToken) -> Decision<Meter> {
+        Decision::proceed(token, Default::default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_step_meters() {
+        let report = Usage::report(usage, lines);
+        assert!(report.is_ok());
+    }
+}
+"#;
+    let body = meter_body_of(leg_that_meters_nobody).join("\n");
+    assert!(
+        !body.is_empty(),
+        "the synthetic leg's Meter step must be found at all, or this self-test proves nothing"
+    );
+    assert!(
+        !TELLER_USAGE_SEAM_TOKENS.iter().any(|t| body.contains(t)),
+        "a `Usage::report(` that exists only inside the leg's `#[cfg(test)] mod tests` was counted \
+         as the Meter step reaching the ledger. The whole gate is satisfiable by a mock while that \
+         is true:\n{body}"
+    );
+    assert!(
+        !WAIST_HOP_TOKENS.iter().any(|t| body.contains(t)),
+        "the step hands off to nothing either, so this synthetic leg is exactly the shape the gate \
+         must report: proceed with an empty report, charging nobody:\n{body}"
+    );
+}
+
+/// THE SECOND FAILURE. The waist hop used to be summed over the plane's whole `src/unit/` tree, so
+/// a `Usage::report(` in the plane's AUDIT step satisfied a gate asking about its METER step. The
+/// hop destination is now one named module, and this proves the two are told apart.
+#[test]
+fn selftest_the_hop_lands_on_the_meter_step_and_not_the_neighbouring_step() {
+    let root = crates_root();
+    for (plane, _) in BILLING_PLANE_ROOT_LEGS {
+        let dir = root.join(plane);
+        let unit_dir = dir.join("src").join("unit");
+        if !unit_dir.is_dir() {
+            continue;
+        }
+        let mut all = Vec::new();
+        common::production_rs_files(&unit_dir, &mut all);
+        let tree_wide: usize = all
+            .iter()
+            .flat_map(|p| common::production_lines(p))
+            .filter(line_reaches_usage_seam)
+            .count();
+        let step_only = usage_seam_reaches_in_plane_meter_step(&dir).unwrap_or(0);
+        assert!(
+            step_only <= tree_wide,
+            "{plane}: the Meter step's own module cannot reach the seam more often than the whole \
+             unit tree does — the scan is reading the wrong file"
+        );
+        println!("  {plane:<13} usage seam: {step_only} in the Meter step, {tree_wide} tree-wide");
+    }
 }
