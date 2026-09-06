@@ -772,8 +772,13 @@ impl Transport for HttpTransport {
                     // the one the guard exists to stand in for, so disarm it first.
                     guard.armed = false;
                     let tx = resp_tx.lock().expect("poisoned").take();
+                    // The request is already OUT — the upstream has been asked, and has answered.
+                    // With no sender left there is nowhere to put that answer, and `Ok` here would
+                    // tell the caller its exchange was carried when the only observable half of it
+                    // has been dropped. The connection has no delivery left in it; that is what it
+                    // says.
                     let Some(tx) = tx else {
-                        return Ok(queued);
+                        return Err(TransportError::Closed);
                     };
                     let head_frame = Frame {
                         direction: Direction::Inbound,
@@ -794,7 +799,10 @@ impl Transport for HttpTransport {
                         },
                     };
                     if tx.send(Ok((StreamId(0), head_frame))).is_err() {
-                        return Ok(queued);
+                        // The receiver has gone: the frame stream this answer belongs to is no
+                        // longer being drained. Same reading as above — the exchange happened and
+                        // its answer reached nobody, so it is not an `Ok`.
+                        return Err(TransportError::Closed);
                     }
                     // The body streams. Collecting it first would mean nothing composes over this
                     // transport: `sse` re-segments the bytes `http` hands it, and a body that only
