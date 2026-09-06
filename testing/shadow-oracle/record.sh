@@ -556,7 +556,20 @@ run_pre_request() {  # <request-json {method,path,headers,body,auth,listener}> �
   [ -z "$tok" ] || h+=(-H "Authorization: Bearer ${tok}")
   local b; b="$(jq -r '.body // empty' <<<"$rq")"
   [ -z "$b" ] || h+=(-H "Content-Type: application/json")
-  echo "pre $m $pth -> $(curl -sS -m 30 -o /dev/null -w '%{http_code}' -X "$m" "http://127.0.0.1:${port}${pth}" "${h[@]}" ${b:+--data-binary "$b"} 2>&1)"
+  # A `pre` IS THE CELL'S SETUP, AND IT WAS NEVER CHECKED. The status was printed into pre.log and
+  # the caller ignored it, so a `pre` that never reached busbar at all (curl's own "000": connection
+  # refused, a timeout, a boot window that had not opened yet) left the cell recording the UNPREPARED
+  # state — a breaker that was never tripped, a hook that was never registered, a key that was never
+  # rotated — as if that were the contract. Both binaries then agree on the wrong cell.
+  #
+  # The bar is deliberately "busbar ANSWERED", not "the answer was 2xx": several cells prime state
+  # with a request that is SUPPOSED to be refused (a 5xx from a downed upstream is how the failover
+  # family trips its breaker), and demanding success there would refuse cells that are working. What
+  # can never be right is no answer at all.
+  local code
+  code="$(curl -sS -m 30 -o /dev/null -w '%{http_code}' -X "$m" "http://127.0.0.1:${port}${pth}" "${h[@]}" ${b:+--data-binary "$b"} 2>&1)"
+  echo "pre $m $pth -> $code"
+  case "$code" in [1-5]??) return 0 ;; *) return 1 ;; esac
 }
 
 run_readback() {  # <request-json {path,headers,auth,listener}> <write-response-body-file> <key-id>
@@ -645,14 +658,26 @@ record_concurrent_cell() {  # <id> <cell-json> <raw-dir> <safe>
   # each par/<i>.status file holds exactly the one %{http_code} curl wrote for that request; a
   # missing/empty file (curl itself never got a status line) counts as 0, same convention capture.py
   # uses for "no HTTP response" elsewhere in this recorder.
-  local codes=()
+  local codes=() no_answer=0
   for ((i = 1; i <= cn; i++)); do
     local c; c="$(cat "$raw/par/$i.status" 2>/dev/null)"
     # curl's own "no HTTP response" placeholder is the 3-digit literal "000", which is a leading
     # zero and therefore not a valid JSON number: force base-10 so it becomes the plain integer 0.
     [[ "$c" =~ ^[0-9]+$ ]] && c=$((10#$c)) || c=0
+    [ "$c" -eq 0 ] && no_answer=$((no_answer + 1))
     codes+=("$c")
   done
+  # A 0 IS THE DRIVER FAILING, NOT THE POOL REFUSING. The single-request path has always treated
+  # curl's 000 as a FAIL row ("no HTTP response (curl)"); this driver instead folded the same 0 into
+  # the recorded multiset, so `[200,0,503]` went into the golden as if "no answer" were one of the
+  # outcomes a concurrency cell can pin. It is not: the shed arm answers 503, the queued arm answers
+  # 200, and a request that got no status line at all means the recorder could not run the cell —
+  # a connection this harness failed to make, recorded on both binaries, agreeing.
+  if [ "$no_answer" -gt 0 ]; then
+    record "$id" FAIL "${no_answer} of ${cn} concurrent requests got no HTTP response (curl)" \
+      "$(cat "$raw/par/1.err" 2>/dev/null | tr '\n' ' ' | tail -c 200)"
+    return
+  fi
   statuses="$(printf '%s\n' "${codes[@]}" | sort -n | paste -sd, - | sed 's/^/[/; s/$/]/')"
   printf '%s\n' "$statuses" >"$raw/statuses.json"
   if ! python3 "${here}/capture-concurrent.py" "$statuses" "$raw/before" "$raw/after" >"$raw/captured.json" 2>"$raw/capture.err"; then
@@ -768,10 +793,16 @@ while IFS=$'\x1f' read -r id outcome driver keep_lines keep_spec needs_fixture p
     # pre: [requests run UNRECORDED first, same boot], repeat: N (record the LAST response)}.
     # Placeholders in path/headers/body are bound to this boot's values.
     cell="$(subst_placeholders "$cell")"
+    pre_failed=""
     while IFS= read -r pre; do
       [ -n "$pre" ] || continue
-      run_pre_request "$pre" >>"$raw/pre.log" 2>&1
+      run_pre_request "$pre" >>"$raw/pre.log" 2>&1 || pre_failed="$pre"
     done < <(jq -c '.request.pre[]? // empty' <<<"$cell")
+    if [ -n "$pre_failed" ]; then
+      record "$id" FAIL "a pre-request never reached busbar" \
+        "$(printf '%s' "$pre_failed" | cut -c1-160); see $(basename "$raw")/pre.log — the state this cell needs was not set up, so what follows would be recorded against the unprepared boot"
+      continue
+    fi
     method="$(jq -r .request.method <<<"$cell")"; path="$(jq -r .request.path <<<"$cell")"
     listener="$(jq -r '.request.listener // "data"' <<<"$cell")"
     repeat="$(jq -r '.request.repeat // 1' <<<"$cell")"
