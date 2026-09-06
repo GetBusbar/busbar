@@ -8,8 +8,67 @@ use super::*;
 /// `Signal::ALL` must list every variant exactly once, and `Signal::name`'s hand-written match
 /// must agree with the `#[serde(rename_all = "snake_case")]` derive — the exhaustiveness guard
 /// for this append-only catalog (mirrors the codebase's `KNOWN_PROTOCOLS` pattern).
+///
+/// The variant list below is built from an EXHAUSTIVE MATCH, not from `ALL`, and that is the whole
+/// of what makes this an exhaustiveness guard. Iterating `ALL` to check `ALL` cannot see the one
+/// failure the test exists for: a variant added to the enum and forgotten in `ALL` is simply absent
+/// from the loop, and every assertion passes over the nine that were remembered. The match is what
+/// the compiler can hold, so a new variant fails to build until it is named here — and the
+/// assertion below then fails until it is named in `ALL` too.
 #[test]
 fn all_lists_every_variant_and_name_matches_serde() {
+    // Exhaustive by construction: `_ =>` is deliberately absent, so adding a variant to `Signal`
+    // stops this compiling until the variant is listed. (`Signal` is `#[non_exhaustive]`, but that
+    // only binds crates DOWNSTREAM of this one; in-crate the match is still checked exhaustively,
+    // which is exactly the reach this guard needs.)
+    fn every_variant() -> Vec<Signal> {
+        let all = vec![
+            Signal::RequestedModel,
+            Signal::RequestTotalChars,
+            Signal::RequestMessageCount,
+            Signal::RequestToolCount,
+            Signal::RequestSystemChars,
+            Signal::CandidateBreakerState,
+            Signal::CandidateErrorRate,
+            Signal::CandidateLatencyP95Ms,
+            Signal::RoutingPolicy,
+            Signal::ResponseTokensOut,
+        ];
+        // The compiler-checked half: this match names every variant, so the list above cannot fall
+        // behind the enum without a build failure here first.
+        for s in &all {
+            match s {
+                Signal::RequestedModel
+                | Signal::RequestTotalChars
+                | Signal::RequestMessageCount
+                | Signal::RequestToolCount
+                | Signal::RequestSystemChars
+                | Signal::CandidateBreakerState
+                | Signal::CandidateErrorRate
+                | Signal::CandidateLatencyP95Ms
+                | Signal::RoutingPolicy
+                | Signal::ResponseTokensOut => {}
+            }
+        }
+        all
+    }
+
+    let variants = every_variant();
+    assert_eq!(
+        variants.len(),
+        Signal::ALL.len(),
+        "ALL must list every variant exactly once — it has {} entries for {} variants",
+        Signal::ALL.len(),
+        variants.len()
+    );
+    for v in &variants {
+        assert!(
+            Signal::ALL.contains(v),
+            "{v:?} is a variant of Signal but is missing from Signal::ALL — every consumer that \
+             walks the catalog would skip it silently"
+        );
+    }
+
     for &s in Signal::ALL {
         let derived = serde_json::to_value(s).unwrap();
         assert_eq!(derived, serde_json::Value::String(s.name().to_string()));
