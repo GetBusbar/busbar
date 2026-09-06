@@ -244,7 +244,9 @@ impl StdioChild {
     fn recv(&self) -> serde_json::Value {
         let line = self
             .stdout
-            .recv_timeout(Duration::from_secs(30))
+            // A hang detector, not a latency assertion: a debug child on a saturated host has
+            // taken most of thirty seconds just to answer, so the bound is well past that.
+            .recv_timeout(Duration::from_secs(120))
             .expect("the child must answer within the bound");
         serde_json::from_str(&line).unwrap_or_else(|e| {
             panic!("every stdout line must be one JSON-RPC message ({e}): {line:?}")
@@ -255,7 +257,7 @@ impl StdioChild {
     /// rather than hanging it.
     fn eof_and_wait(mut self) -> i32 {
         drop(self.stdin.take());
-        wait_bounded(&mut self.child, Duration::from_secs(15))
+        wait_bounded(&mut self.child, Duration::from_secs(60))
     }
 
     /// Everything stderr has said so far. Drained with a short grace per line, because the reader
@@ -300,7 +302,7 @@ fn an_mcp_deployment_with_an_empty_chain_refuses_to_boot() {
     let dir = fixture_dir("open-refused");
     write_configs(&dir, "");
     let mut child = spawn(&dir, None);
-    let code = wait_bounded(&mut child.child, Duration::from_secs(20));
+    let code = wait_bounded(&mut child.child, Duration::from_secs(80));
     assert_ne!(code, 0, "mcp + empty auth.chain must not boot");
     let stderr = child.stderr_so_far();
     assert!(
@@ -323,7 +325,7 @@ fn a_governed_deployment_refuses_an_uncredentialed_stdio_session() {
     let token = jwt_with_aud(CANONICAL);
     write_configs(&dir, &governed_config(&dir, &token, ""));
     let mut child = spawn(&dir, None);
-    let code = wait_bounded(&mut child.child, Duration::from_secs(30));
+    let code = wait_bounded(&mut child.child, Duration::from_secs(120));
     assert_ne!(code, 0, "a governed deployment must not serve unattributed");
     let stderr = child.stderr_so_far();
     assert!(
@@ -349,7 +351,7 @@ fn a_governed_deployment_refuses_a_wrong_audience_credential() {
     write_configs(&dir, &governed_config(&dir, &token, ""));
     let wrong = jwt_with_aud("https://some-other-resource.example.com/mcp");
     let mut child = spawn(&dir, Some(&wrong));
-    let code = wait_bounded(&mut child.child, Duration::from_secs(30));
+    let code = wait_bounded(&mut child.child, Duration::from_secs(120));
     assert_ne!(code, 0);
     let stderr = child.stderr_so_far();
     assert!(
