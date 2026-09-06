@@ -283,6 +283,63 @@ async fn a_caller_that_named_no_version_produces_an_explicit_0_3_hop() {
     assert_eq!(hop_version(&h).as_deref(), Some("0.3"));
 }
 
+/// AND THE HTTP+JSON BINDING'S DEFAULT IS NOT `0.3`, BECAUSE THAT BINDING DID NOT EXIST AT `0.3`.
+///
+/// `0.3`-for-an-absent-header is the JSON-RPC binding's rule and it is right there: every client
+/// written before the header existed sends none, and they are 0.3 clients. The HTTP+JSON binding was
+/// introduced WITH v1.0 — `rest::method` composes the v1.0 operation spellings for exactly that
+/// reason, and there is no 0.3 client that could have sent this request line at all.
+///
+/// So a REST hop stamped `0.3` was declaring one version by omission and then sending the other's
+/// methods: the same defect `the_hop_declares_the_version_the_caller_negotiated` records for the
+/// version-less JSON-RPC hop, and the same one `grpc::GRPC_A2A_VERSION` already avoids for the
+/// third binding, which is likewise a v1-only descriptor.
+#[tokio::test]
+async fn a_rest_caller_that_named_no_version_produces_an_explicit_1_0_hop() {
+    let h = harness(Outcome::Answers(200, backend_ok()), false).await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{}/a2a/message:send", h.addr))
+        .header("authorization", format!("Bearer {}", h.bearer))
+        .header("content-type", "application/json")
+        .body(
+            serde_json::to_vec(&envelope()["params"])
+                .expect("the REST body IS the params verbatim"),
+        )
+        .send()
+        .await
+        .expect("the call completes");
+    // WHAT THE BACKEND MAKES OF THE ANSWER IS NOT THIS TEST'S SUBJECT. The shared harness's fronted
+    // agent answers the v0.3 result shape, so a v1.0 method's answer does not re-frame and busbar
+    // reports the backend. THE HOP is what is under test, and the hop HAPPENED.
+    drop(resp);
+    assert_eq!(hops(&h), 1, "the request reached the backend");
+    assert_eq!(
+        hop_version(&h).as_deref(),
+        Some("1.0"),
+        "the REST binding composes v1.0 method names, so its hop must say 1.0"
+    );
+}
+
+/// AND A REST CALLER THAT DID NAME A VERSION STILL GETS THE ONE IT NAMED. The default is a default,
+/// not an override: `Wire::refuse` still judges the header the caller sent, and a caller that
+/// explicitly asks for `0.3` is relayed as `0.3`.
+#[tokio::test]
+async fn a_rest_caller_that_named_a_version_is_relayed_at_the_version_it_named() {
+    let h = harness(Outcome::Answers(200, backend_ok()), false).await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{}/a2a/message:send", h.addr))
+        .header("authorization", format!("Bearer {}", h.bearer))
+        .header("content-type", "application/json")
+        .header("A2A-Version", "0.3")
+        .body(serde_json::to_vec(&envelope()["params"]).expect("serialise"))
+        .send()
+        .await
+        .expect("the call completes");
+    drop(resp);
+    assert_eq!(hops(&h), 1, "the request reached the backend");
+    assert_eq!(hop_version(&h).as_deref(), Some("0.3"));
+}
+
 /// PATCH LEVELS ARE NOT NEGOTIATED. A caller asking for `1.0.7` is asking for `1.0`, and the hop
 /// declares the granularity the specification negotiates at rather than echoing the caller's string
 /// — an echo would put a version busbar never checked onto a hop.

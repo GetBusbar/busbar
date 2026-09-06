@@ -409,6 +409,12 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
   REST binding can reach it: `POST /message:send`, `POST /message:stream`, `GET /tasks`, the
   `pushNotificationConfigs` collection and the rest, with errors in that binding's own
   representation.
+- **Each A2A binding declares the protocol version it actually speaks.** A HTTP+JSON request that
+  names no `A2A-Version` is relayed onward as `1.0` rather than `0.3`: that binding was introduced
+  with v1.0 and composes v1.0 method names, so a `0.3` hop told the backend one version and then
+  sent it the other's methods. And Busbar's own agent card no longer advertises a `GRPC` interface
+  at `protocolVersion: "0.3"` — there is no v0.3 protobuf, so that interface could not be spoken.
+  A caller that sends `A2A-Version` explicitly is relayed at the version it named, unchanged.
 - **A push notification now arrives when the agent finishes**, not only when Busbar happens to be
   holding a request open. Busbar registers a callback of its own with the backend and relays to
   yours, so the backend never learns your receiver address and never holds your webhook secret.

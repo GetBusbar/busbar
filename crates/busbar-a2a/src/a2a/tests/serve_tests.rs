@@ -270,6 +270,44 @@ fn the_planes_own_card_advertises_every_binding_the_plane_mounts() {
     }
 }
 
+/// THE VERSION AXIS OF THAT CROSS PRODUCT, and the one binding it is not a cross product for.
+///
+/// The two HTTP bindings really do answer both versions: one endpoint reads `A2A-Version` and
+/// answers with the semantics it names, so `JSONRPC × {1.0, 0.3}` is two interfaces that both exist.
+/// gRPC is not that shape — the service descriptor IS the v1 protocol, there is no v0.3 protobuf,
+/// which is why the binding's own absent-metadata default is `1.0`. A `GRPC`/`0.3` entry advertises
+/// an interface no client can speak: there is no descriptor to generate a 0.3 stub from, and a
+/// channel dialed anyway is answered under 1.0 semantics it did not ask for.
+#[test]
+fn the_grpc_interface_is_published_only_at_the_version_its_descriptor_speaks() {
+    let card = self_card(PUBLIC, None).expect("self card");
+    let ifaces = card["supportedInterfaces"].as_array().expect("interfaces");
+    let versions_of = |binding: &str| -> Vec<String> {
+        ifaces
+            .iter()
+            .filter(|i| i["protocolBinding"] == binding)
+            .filter_map(|i| i["protocolVersion"].as_str().map(str::to_string))
+            .collect()
+    };
+    assert_eq!(
+        versions_of("GRPC"),
+        vec!["1.0".to_string()],
+        "gRPC is advertised at the ONE version its descriptor speaks, and nothing else"
+    );
+    // The HTTP bindings keep the whole cross product: both versions genuinely answer there.
+    let http: Vec<String> = crate::a2a::receive::SUPPORTED_A2A_VERSIONS
+        .iter()
+        .rev()
+        .map(|v| (*v).to_string())
+        .collect();
+    assert_eq!(versions_of("JSONRPC"), http, "newest-first, both versions");
+    assert_eq!(
+        versions_of("HTTP+JSON"),
+        http,
+        "newest-first, both versions"
+    );
+}
+
 #[test]
 fn every_published_binding_is_one_the_a2a_plane_declares_a_wire_format_for() {
     // THE RULE, not today's answer. The published set is derived from `Plane::A2a`'s wire formats,
