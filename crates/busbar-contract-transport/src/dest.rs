@@ -13,6 +13,11 @@ use core::fmt;
 
 /// Where a dial lands, as the transport family that dials it spells it.
 ///
+/// Every reader below matches on all three arms by name rather than falling through a catch-all.
+/// A fourth family added to this enum has to be answered for at each reader, which is the point of
+/// a closed vocabulary: a catch-all would silently give the new family no program, no arguments,
+/// no environment and no method, and the first thing anyone would learn is that it failed to dial.
+///
 /// One opaque `host` string was read three incompatible ways by three transports: as a socket
 /// address whose IP doubled as the offered certificate name, as an absolute program path with no
 /// argument vector and no environment, and as an address a method name had nowhere to sit beside.
@@ -153,7 +158,7 @@ impl UpstreamAddress {
     pub const fn program(&self) -> Option<&'static str> {
         match self {
             Self::Program { path, .. } => Some(path),
-            _ => None,
+            Self::Socket { .. } | Self::Grpc { .. } => None,
         }
     }
 
@@ -162,7 +167,7 @@ impl UpstreamAddress {
     pub const fn args(&self) -> &'static [&'static str] {
         match self {
             Self::Program { args, .. } => args,
-            _ => &[],
+            Self::Socket { .. } | Self::Grpc { .. } => &[],
         }
     }
 
@@ -171,7 +176,7 @@ impl UpstreamAddress {
     pub const fn env(&self) -> &'static [(&'static str, &'static str)] {
         match self {
             Self::Program { env, .. } => env,
-            _ => &[],
+            Self::Socket { .. } | Self::Grpc { .. } => &[],
         }
     }
 
@@ -180,7 +185,7 @@ impl UpstreamAddress {
     pub const fn method(&self) -> Option<&'static str> {
         match self {
             Self::Grpc { method, .. } => Some(method),
-            _ => None,
+            Self::Socket { .. } | Self::Program { .. } => None,
         }
     }
 
