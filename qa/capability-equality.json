@@ -394,7 +394,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/units_llm.rs::one_unit_leaves_exactly_one_link_on_the_chain"
+        "test": "crates/busbar/src/root/tests/units_llm_tests.rs::one_unit_leaves_exactly_one_link_on_the_chain"
       }
     },
     {
@@ -406,7 +406,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/units_mcp.rs::only_a_served_call_leaves_an_administrative_entry"
+        "test": "crates/busbar/src/root/tests/units_mcp_tests.rs::only_a_served_call_leaves_an_administrative_entry"
       }
     },
     {
@@ -417,7 +417,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/units_mcp.rs::only_a_served_call_leaves_an_administrative_entry"
+        "test": "crates/busbar/src/root/tests/units_mcp_tests.rs::only_a_served_call_leaves_an_administrative_entry"
       }
     },
     {
@@ -429,7 +429,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/units_a2a.rs::every_ending_has_an_audited_spelling"
+        "test": "crates/busbar/src/root/tests/units_a2a_tests.rs::every_ending_has_an_audited_spelling"
       }
     },
     {
@@ -441,7 +441,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/units_a2a.rs::the_audit_action_is_the_word_the_rig_reads"
+        "test": "crates/busbar/src/root/tests/units_a2a_tests.rs::the_audit_action_is_the_word_the_rig_reads"
       }
     },
     {
@@ -452,7 +452,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/units_llm.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it"
+        "test": "crates/busbar/src/root/tests/units_llm_tests.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it"
       }
     },
     {
@@ -464,7 +464,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/units_mcp.rs::a_call_is_estimated_flat_plus_its_document"
+        "test": "crates/busbar/src/root/tests/units_mcp_tests.rs::a_call_is_estimated_flat_plus_its_document"
       }
     },
     {
@@ -475,7 +475,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/units_mcp.rs::a_call_is_estimated_flat_plus_its_document"
+        "test": "crates/busbar/src/root/tests/units_mcp_tests.rs::a_call_is_estimated_flat_plus_its_document"
       }
     },
     {
@@ -486,7 +486,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/units_a2a.rs::only_a_hop_to_an_agent_carries_the_fee"
+        "test": "crates/busbar/src/root/tests/units_a2a_tests.rs::only_a_hop_to_an_agent_carries_the_fee"
       }
     },
     {
@@ -497,7 +497,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/units_a2a.rs::only_a_hop_to_an_agent_carries_the_fee"
+        "test": "crates/busbar/src/root/tests/units_a2a_tests.rs::only_a_hop_to_an_agent_carries_the_fee"
       }
     },
     {
@@ -508,7 +508,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/units_llm.rs::every_fixture_reaches_the_end_it_names"
+        "test": "crates/busbar/src/root/tests/units_llm_tests.rs::every_fixture_reaches_the_end_it_names"
       }
     },
     {
@@ -519,7 +519,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/units_mcp.rs::every_planned_kind_classifies"
+        "test": "crates/busbar/src/root/tests/units_mcp_tests.rs::every_planned_kind_classifies"
       }
     },
     {
@@ -574,7 +574,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/units_mcp.rs::a_completed_call_is_counted_once"
+        "test": "crates/busbar/src/root/tests/units_mcp_tests.rs::a_completed_call_is_counted_once"
       }
     },
     {
@@ -585,7 +585,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/units_mcp.rs::a_completed_call_is_counted_once"
+        "test": "crates/busbar/src/root/tests/units_mcp_tests.rs::a_completed_call_is_counted_once"
       }
     },
     {
@@ -597,7 +597,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/units_a2a.rs::a_record_leg_is_not_priced_on_a_lane"
+        "test": "crates/busbar/src/root/tests/units_a2a_tests.rs::a_record_leg_is_not_priced_on_a_lane"
       }
     },
     {
@@ -608,7 +608,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/units_a2a.rs::a_record_leg_is_not_priced_on_a_lane"
+        "test": "crates/busbar/src/root/tests/units_a2a_tests.rs::a_record_leg_is_not_priced_on_a_lane"
       }
     },
     {
@@ -629,7 +629,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/units_mcp.rs::a_record_leg_is_judged_against_the_planes_own_declaration"
+        "test": "crates/busbar/src/root/tests/units_mcp_tests.rs::a_record_leg_is_judged_against_the_planes_own_declaration"
       }
     },
     {
@@ -640,7 +640,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/units_mcp.rs::a_record_leg_is_judged_against_the_planes_own_declaration"
+        "test": "crates/busbar/src/root/tests/units_mcp_tests.rs::a_record_leg_is_judged_against_the_planes_own_declaration"
       }
     },
     {
@@ -651,7 +651,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/units_a2a.rs::every_origin_has_a_trust_side_spelling"
+        "test": "crates/busbar/src/root/tests/units_a2a_tests.rs::every_origin_has_a_trust_side_spelling"
       }
     },
     {
@@ -662,7 +662,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/units_a2a.rs::the_origin_gate_over_this_planes_kinds"
+        "test": "crates/busbar/src/root/tests/units_a2a_tests.rs::the_origin_gate_over_this_planes_kinds"
       }
     },
     {
@@ -704,7 +704,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/units_a2a.rs::a_metadata_endpoint_is_refused_even_when_private_addressing_is_allowed"
+        "test": "crates/busbar/src/root/tests/units_a2a_tests.rs::a_metadata_endpoint_is_refused_even_when_private_addressing_is_allowed"
       }
     },
     {
@@ -716,7 +716,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/units_a2a.rs::a_private_address_needs_the_operators_word"
+        "test": "crates/busbar/src/root/tests/units_a2a_tests.rs::a_private_address_needs_the_operators_word"
       }
     },
     {
@@ -738,7 +738,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/units_mcp.rs::the_narrowing_follows_the_transport"
+        "test": "crates/busbar/src/root/tests/units_mcp_tests.rs::the_narrowing_follows_the_transport"
       }
     },
     {
@@ -781,7 +781,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/units_llm.rs::the_switched_table_names_every_dialect_the_plane_names"
+        "test": "crates/busbar/src/root/tests/units_llm_tests.rs::the_switched_table_names_every_dialect_the_plane_names"
       }
     },
     {
@@ -792,7 +792,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/units_mcp.rs::a_read_only_grant_lists_and_does_not_call"
+        "test": "crates/busbar/src/root/tests/units_mcp_tests.rs::a_read_only_grant_lists_and_does_not_call"
       }
     },
     {
@@ -803,7 +803,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/units_mcp.rs::a_call_names_the_tool_as_well_as_the_server"
+        "test": "crates/busbar/src/root/tests/units_mcp_tests.rs::a_call_names_the_tool_as_well_as_the_server"
       }
     },
     {
@@ -814,7 +814,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/units_a2a.rs::a_read_only_grant_does_not_reach_a_send"
+        "test": "crates/busbar/src/root/tests/units_a2a_tests.rs::a_read_only_grant_does_not_reach_a_send"
       }
     },
     {
@@ -825,7 +825,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/units_a2a.rs::every_operation_class_is_declared"
+        "test": "crates/busbar/src/root/tests/units_a2a_tests.rs::every_operation_class_is_declared"
       }
     },
     {
@@ -857,7 +857,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/units_voice.rs::a_refused_dial_ends_the_opening_unit"
+        "test": "crates/busbar/src/root/tests/units_voice_tests.rs::a_refused_dial_ends_the_opening_unit"
       }
     },
     {
@@ -942,7 +942,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/units_voice.rs::the_opening_unit_seals_under_the_declared_operation_class"
+        "test": "crates/busbar/src/root/tests/units_voice_tests.rs::the_opening_unit_seals_under_the_declared_operation_class"
       }
     },
     {
@@ -953,7 +953,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/units_voice.rs::unit_zero_runs_every_station_and_settles_exactly_once"
+        "test": "crates/busbar/src/root/tests/units_voice_tests.rs::unit_zero_runs_every_station_and_settles_exactly_once"
       }
     },
     {
@@ -964,7 +964,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/units_voice.rs::a_detached_node_refuses_the_session_at_the_door"
+        "test": "crates/busbar/src/root/tests/units_voice_tests.rs::a_detached_node_refuses_the_session_at_the_door"
       }
     },
     {
@@ -975,7 +975,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/units_voice.rs::the_handshake_draws_no_request_slot_and_posts_nothing"
+        "test": "crates/busbar/src/root/tests/units_voice_tests.rs::the_handshake_draws_no_request_slot_and_posts_nothing"
       }
     },
     {
@@ -1006,7 +1006,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/units_voice.rs::a_turn_meters_the_classes_the_plane_declares_with_text_split_by_direction"
+        "test": "crates/busbar/src/root/tests/units_voice_tests.rs::a_turn_meters_the_classes_the_plane_declares_with_text_split_by_direction"
       }
     },
     {
@@ -1017,7 +1017,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/units_voice.rs::a_class_with_nothing_to_report_produces_no_line"
+        "test": "crates/busbar/src/root/tests/units_voice_tests.rs::a_class_with_nothing_to_report_produces_no_line"
       }
     },
     {

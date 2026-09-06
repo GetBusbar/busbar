@@ -355,6 +355,16 @@ struct RootSummary {
 
 /// One named instrument, checked the way [`verify`] checks the legacy column: the file must be
 /// readable and the fn must be in it, so a root cell cannot outlive its evidence either.
+/// Where the tree's test-locality rule puts `<dir>/foo.rs`'s test bodies: `<dir>/tests/foo_tests.rs`,
+/// declared back from `foo.rs` with a `#[cfg(test)] #[path] mod`. Pure string derivation — the caller
+/// still proves the named fn is really in there.
+fn sibling_tests_file(file: &str) -> String {
+    match file.rsplit_once('/') {
+        Some((dir, base)) => format!("{dir}/tests/{}_tests.rs", base.trim_end_matches(".rs")),
+        None => format!("tests/{}_tests.rs", file.trim_end_matches(".rs")),
+    }
+}
+
 fn named_fn_exists(root: &Path, id: &str, test: &str) -> Result<(), String> {
     let (file, func) = test.split_once("::").ok_or_else(|| {
         format!("root cell `{id}`: `test` must be `<repo-relative file>::<test fn>`, got {test:?}")
@@ -528,10 +538,19 @@ fn verify_root(
                         )
                     })?;
                 let want = leg_file.get(leg).unwrap();
-                if !test.starts_with(&format!("{want}::")) {
+                // The leg's own file OR the test file that file declares. The tree's test-locality
+                // rule puts a `foo.rs` body in `tests/foo_tests.rs` and leaves `foo.rs` holding the
+                // `#[path]` declaration, so the cells are still the leg's own — same module, same
+                // `use super::*`, one file further down. Both spellings are accepted and nothing
+                // else is: evidence from a SIBLING leg's file still fails, which is what this
+                // check is for.
+                if !test.starts_with(&format!("{want}::"))
+                    && !test.starts_with(&format!("{}::", sibling_tests_file(want)))
+                {
                     return Err(format!(
                         "cell `{id}`'s root evidence {test:?} does not live in `{leg}`'s own file \
-                         {want}. A leg is proven by its own cells."
+                         {want} (nor in its declared {}). A leg is proven by its own cells.",
+                        sibling_tests_file(want)
                     ));
                 }
                 named_fn_exists(root, &id, test)?;
