@@ -580,6 +580,24 @@ while IFS= read -r cell; do
       SCRIPT_LISTEN_PORT="$LISTEN_PORT" SCRIPT_ADMIN_PORT="$ADMIN_PORT" SCRIPT_MOCK_PORT="$((ADMIN_PORT+1))" \
       bash "${here}/scripts/${sname}" "${local_args[@]}" >"$raw/script.log" 2>&1
     [ -s "$raw/captured.json" ] || { record "$id" FAIL "script ${sname} produced no captured.json" "$(tail -c 300 "$raw/script.log")"; continue; }
+    # STRIP THE DIRECTORIES THIS RUN CHOSE, exactly as record_exec_cell does for an exec cell. A
+    # script cell quotes busbar's own stdout back into its effects ("plugins dir: <path>", a
+    # --validate tail), and those name $OUT/$raw/$WORK/$repo/$BIN — so the same binary recorded to
+    # two different --out dirs produced two different cell files and the diff was about where the
+    # harness put things. In place, because renormalize.sh re-derives cells from this exact file:
+    # writing a second scrubbed copy would make a re-normalized cell disagree with the recorded one.
+    # Both the given and the absolute form of each dir: a relative --out still reaches busbar's own
+    # output absolutized, and a relative one survives in the strings the script built itself.
+    abs_out="$(cd "$OUT" 2>/dev/null && pwd)"; abs_raw="$(cd "$raw" 2>/dev/null && pwd)"
+    abs_bin="$(cd "$(dirname "$BIN")" 2>/dev/null && pwd)/$(basename "$BIN")"
+    if python3 "${here}/capture-exec.py" --scrub-paths "$raw/captured.json" \
+         --strip-path "$abs_raw" --strip-path "$raw" --strip-path "$abs_out" --strip-path "$OUT" \
+         --strip-path "$WORK" --strip-path "$repo" --strip-path "$abs_bin" --strip-path "$BIN" \
+         >"$raw/captured.scrubbed" 2>"$raw/scrub.err"; then
+      mv "$raw/captured.scrubbed" "$raw/captured.json"
+    else
+      record "$id" FAIL "could not strip the harness paths out of ${sname}'s capture" "$(tail -c 300 "$raw/scrub.err")"; continue
+    fi
     python3 "${here}/normalize.py" "$raw/captured.json" >"$OUT/cells/$safe.json" 2>"$raw/normalize.err" \
       || { record "$id" FAIL "normalize.py failed" "$(tail -c 300 "$raw/normalize.err")"; continue; }
     st="$(jq -r .status "$raw/captured.json")"

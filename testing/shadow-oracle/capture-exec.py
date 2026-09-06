@@ -4,6 +4,17 @@
 """Assemble one captured oracle cell for an EXEC cell (CLI flag, --validate, --migrate-config, boot).
 
   capture-exec.py <exit-code> <stdout-file> <stderr-file> [--strip-path <p>]... > captured.json
+  capture-exec.py --scrub-paths <captured.json> [--strip-path <p>]...      > captured.json
+
+The second form exists for the SCRIPT driver. A script cell assembles its own captured.json out of
+strings it read back from busbar, and those strings name the directories THIS run chose — $OUT, the
+cell's $RAW, $WORK, the repo, the binary. The same binary recorded twice to two different --out dirs
+therefore produced two different cell files, so `golden` and `candidate` diverged on the paths the
+harness picked rather than on anything busbar did. (It only stayed quiet while every run used one
+fixed --out; a date-and-pid stamped recording path makes it a divergence on every run.) This form
+applies the SAME `exec.paths` rule the exec driver already applies, to every string in an already
+assembled capture — and only that rule: versions, timestamps, ports and durations belong to
+normalize.py for these cells and are deliberately left alone here.
 
 Same shape as capture.py's output so normalize.py / diff-cells.py treat it like any other cell:
   status   = the process exit code
@@ -56,11 +67,49 @@ def scrub(text: str, strip_paths: list[str], applied: set) -> str:
     return text
 
 
+def scrub_paths_only(text: str, strip_paths: list[str], applied: set) -> str:
+    """The `exec.paths` rule alone, for an already-assembled capture (the script driver)."""
+    for p in sorted(strip_paths, key=len, reverse=True):
+        if p and p in text:
+            applied.add("exec.paths"); text = text.replace(p, "<WORK>")
+    if TMPDIR.search(text):
+        applied.add("exec.paths"); text = TMPDIR.sub("<TMP>", text)
+    return text
+
+
+def walk(node, strip_paths: list[str], applied: set):
+    if isinstance(node, dict):
+        # keys too: a script cell can key an effect by a path it built (e.g. a plugin dir)
+        return {scrub_paths_only(k, strip_paths, applied) if isinstance(k, str) else k:
+                walk(v, strip_paths, applied) for k, v in node.items()}
+    if isinstance(node, list):
+        return [walk(x, strip_paths, applied) for x in node]
+    if isinstance(node, str):
+        return scrub_paths_only(node, strip_paths, applied)
+    return node
+
+
+def scrub_capture(path: str, strip_paths: list[str]) -> int:
+    cap = json.load(open(path, encoding="utf-8"))
+    applied: set = set()
+    cap = walk(cap, strip_paths, applied)
+    # Keep the rule ledger a UNION: whatever the script already declared, plus what was stripped
+    # here. Only when there is something to say — a cell that named no harness path keeps exactly
+    # the bytes it had, so this pass does not move every script cell's golden for an empty list.
+    eff = cap.get("effects")
+    if isinstance(eff, dict) and (applied or "exec_rules" in eff):
+        eff["exec_rules"] = sorted(set(eff.get("exec_rules") or []) | applied)
+    print(json.dumps(cap, separators=(",", ":"), sort_keys=True))
+    return 0
+
+
 def main() -> int:
     args = sys.argv[1:]
     strip = []
     while "--strip-path" in args:
         i = args.index("--strip-path"); strip.append(args[i + 1]); del args[i:i + 2]
+    if args[0:1] == ["--scrub-paths"]:
+        return scrub_capture(args[1], strip)
     code, out_f, err_f = args[0], args[1], args[2]
     applied: set = set()
     out = scrub(open(out_f, encoding="utf-8", errors="replace").read(), strip, applied)
