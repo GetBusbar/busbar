@@ -81,6 +81,11 @@ pub enum UnitEnd {
     Completed,
     /// A step refused; the plane's refusal went out. Names the step that refused.
     Refused(StepName),
+    /// The caller went away while the unit was under the hold: the loop's future was dropped inside
+    /// Route or Meter, so no response was ever read. The unit still leaves through Audit — the hold
+    /// is closed and the posting is made — because the admission stands whether or not anyone was
+    /// left to receive the answer.
+    Abandoned,
 }
 
 /// The neutral per-unit facts ONE loop traversal reads and threads — the resolved caller context,

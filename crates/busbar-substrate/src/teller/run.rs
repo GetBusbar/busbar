@@ -14,7 +14,9 @@
 //! A refusal at or before Admit reaches the plane's `audit_refused` (nothing was charged; there is
 //! no hold). A refusal at Route or Meter reaches the plane's `audit` WITH the hold (the admission
 //! stands; the caller was charged). No `Response` leaves this module except through one of those
-//! two Audit doors, and every unit that runs through [`run_unit`] is posted exactly once.
+//! two Audit doors, and every unit that runs through [`run_unit`] is posted exactly once — including
+//! the unit whose caller went away mid-Route or mid-Meter, which [`Abandoned`] carries through the
+//! same `audit` door with the hold, ending as `UnitEnd::Abandoned`.
 
 use super::steps::{Closing, Refusal, TellerPlane};
 use super::tokens::{Hold, Posted, UnitToken};
@@ -98,13 +100,35 @@ pub async fn run_unit<P: TellerPlane>(mut plane: P, unit: Unit<'_>) -> Response 
         Ok(hold) => hold,
         Err(refusal) => return close_refused(&mut plane, &unit, refusal),
     };
-    let closing = match plane
-        .route(&UnitToken::<Route>::mint(), &unit, &hold)
+    // THE TWO AWAITS are inside this scope, and they are the only place a caller that goes away can
+    // drop the loop. The guard owns the audit door for the length of them, so an admitted unit ends
+    // at Audit whichever way it leaves.
+    let mut abandoned = Abandoned::arm(plane, unit, hold);
+    let closing = under_hold(&mut abandoned).await;
+    reached(abandoned, closing)
+}
+
+/// Route then Meter, under the hold the door opened, and what Audit will close over. THE TWO AWAITS
+/// are here; the guard holding the plane, the unit and the hold is what survives a caller that goes
+/// away in the middle of either.
+async fn under_hold<P: TellerPlane>(guard: &mut Abandoned<'_, P>) -> Closing {
+    let Some(hold) = guard.hold.as_ref() else {
+        // Unreachable: this is called exactly once, before either taker has run. Answered rather
+        // than unwrapped, because a guard that cannot be read still has to say something if it is.
+        return Closing {
+            resp: abandoned_response(),
+            end: UnitEnd::Abandoned,
+        };
+    };
+    match guard
+        .plane
+        .route(&UnitToken::<Route>::mint(), &guard.unit, hold)
         .await
         .into_result()
     {
-        Ok(resp) => match plane
-            .meter(&UnitToken::<Meter>::mint(), &unit, &hold, resp)
+        Ok(resp) => match guard
+            .plane
+            .meter(&UnitToken::<Meter>::mint(), &guard.unit, hold, resp)
             .await
             .into_result()
         {
@@ -115,8 +139,81 @@ pub async fn run_unit<P: TellerPlane>(mut plane: P, unit: Unit<'_>) -> Response 
             Err(refusal) => refusal.into_closing(),
         },
         Err(refusal) => refusal.into_closing(),
-    };
-    close_admitted(&mut plane, &unit, hold, closing)
+    }
+}
+
+/// The unit reached its own end: take the hold back out of the guard and close it here, so the
+/// guard's own drop has nothing left to do.
+fn reached<P: TellerPlane>(mut guard: Abandoned<'_, P>, closing: Closing) -> Response {
+    match guard.hold.take() {
+        Some(hold) => close_admitted(&mut guard.plane, &guard.unit, hold, closing),
+        // Unreachable: this is called exactly once, on the one path out of the awaits, and the only
+        // other taker is the guard's drop — which cannot have run while the guard is still owned here.
+        None => closing.resp,
+    }
+}
+
+/// The status an abandoned unit's stand-in response carries: the client closed the request. It never
+/// reaches a socket — the caller that would have read it is the one that went away — but a plane that
+/// records what it audited records the truth about how the unit ended.
+const CLIENT_CLOSED_REQUEST: u16 = 499;
+
+/// The stand-in response Audit closes over for a unit nobody is left to answer.
+fn abandoned_response() -> Response {
+    let mut resp = Response::new(axum::body::Body::empty());
+    *resp.status_mut() = axum::http::StatusCode::from_u16(CLIENT_CLOSED_REQUEST)
+        .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    resp
+}
+
+/// THE UNIT THE CALLER WENT AWAY FROM.
+///
+/// The loop awaits in exactly two places — Route and Meter — so a client that disconnects
+/// mid-request drops the loop's future in exactly those two places, with the hold open and the
+/// plane's admission standing. This is what stands there.
+///
+/// It owns everything Audit needs from the moment the door answered — the plane, the unit and the
+/// hold — so an abandoned unit leaves through the SAME audit door and the SAME posting a finished
+/// unit leaves through, with the end named for what happened. Without it, a dropped future takes the
+/// hold with it and neither `audit` nor `posted` ever runs, which is the one thing this module says
+/// cannot happen: every unit is posted exactly once.
+///
+/// [`reached`] is how a unit that finished on its own takes the hold back out. A guard whose hold has
+/// been taken does nothing when it is dropped, which is the whole of the arming.
+struct Abandoned<'a, P: TellerPlane> {
+    plane: P,
+    unit: Unit<'a>,
+    /// The open hold, until somebody closes it. `None` once one of the two callers has.
+    hold: Option<Hold>,
+}
+
+impl<'a, P: TellerPlane> Abandoned<'a, P> {
+    /// Take the audit door, for the length of the awaits.
+    fn arm(plane: P, unit: Unit<'a>, hold: Hold) -> Self {
+        Abandoned {
+            plane,
+            unit,
+            hold: Some(hold),
+        }
+    }
+}
+
+impl<P: TellerPlane> Drop for Abandoned<'_, P> {
+    fn drop(&mut self) {
+        if let Some(hold) = self.hold.take() {
+            // The response is discarded because there is nobody left to hand it to. What matters is
+            // that Audit was REACHED — the hold is closed and the unit is posted, exactly once.
+            let _resp = close_admitted(
+                &mut self.plane,
+                &self.unit,
+                hold,
+                Closing {
+                    resp: abandoned_response(),
+                    end: UnitEnd::Abandoned,
+                },
+            );
+        }
+    }
 }
 
 /// The session opener: the same steps as [`run_unit`] up to and including Admit, for a plane whose
