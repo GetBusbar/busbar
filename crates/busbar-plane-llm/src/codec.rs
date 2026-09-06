@@ -285,6 +285,70 @@ fn split_event(bytes: &[u8]) -> (&str, &[u8]) {
     (name, data)
 }
 
+/// Whether the answer this response was read from arrived as a streamed event.
+///
+/// The fact `decode_response` stamped, read back rather than re-derived: the step that saw the
+/// frame is the step entitled to say what shape it was.
+fn is_streamed(r: &Response<'_>) -> bool {
+    matches!(
+        r.facts.get(meta::FACT_FRAME_KIND),
+        Some(FactValue::Str("event"))
+    )
+}
+
+/// The payload of a streamed frame: its event name and its JSON document.
+///
+/// `None` where the frame carries no document at all — the dialect's end-of-stream marker ends the
+/// answer, it does not describe one. The `data:` line is the transport's framing, so a reader
+/// handed the frame verbatim is handed something no JSON parser accepts; `encode_response` has
+/// always split the two before reading.
+fn event_payload(bytes: &[u8]) -> Option<(&str, serde_json::Value)> {
+    let (name, data) = split_event(bytes);
+    if data == b"[DONE]" || data.is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = sonic_rs::from_slice(data).ok()?;
+    Some((name, value))
+}
+
+/// What an answer said it consumed, whichever framing carried the answer.
+///
+/// A whole-body answer states its usage in the response document. A streamed one states it in an
+/// event — the dialect's opening frame, its closing frame, or the trailing usage-only chunk the
+/// streaming convention adds — and each dialect's own reader is what knows which. This step used
+/// to hand the raw event frame, `data:` line and all, to the whole-body reader; the parse failed,
+/// and a failed parse here returns no lines rather than an error. Every streamed request metered
+/// zero tokens and settled free.
+///
+/// The stream state is a fresh one because a usage frame states its own figures: this step reads
+/// one frame and returns what that frame reported, and it holds nothing across frames the way the
+/// decode step, which owns the kernel's state, does.
+fn reported_usage(
+    protocol: &busbar_llm_codec::proto_codec::Protocol,
+    r: &Response<'_>,
+) -> Option<busbar_llm_codec::ir::IrUsage> {
+    let bytes = r.ir.body();
+    if !is_streamed(r) {
+        let value: serde_json::Value = sonic_rs::from_slice(bytes).ok()?;
+        return protocol
+            .reader()
+            .read_response(&value)
+            .ok()
+            .map(|r| r.usage);
+    }
+    let (name, value) = event_payload(bytes)?;
+    let mut state = StreamDecodeState::default();
+    protocol
+        .reader()
+        .read_response_events(name, &value, &mut state)
+        .into_iter()
+        .find_map(|event| match event {
+            IrStreamEvent::MessageStart { usage, .. } => usage,
+            IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
+            _ => None,
+        })
+}
+
 /// The per-connection codec state a streamed answer needs.
 ///
 /// One value, held by the kernel, handed in and taken back. Nothing about a stream lives in the
@@ -839,17 +903,14 @@ impl Plane for LlmPlane {
         let Some(protocol) = busbar_llm_codec::proto_codec::protocol_for(source.name) else {
             return locators;
         };
-        let Ok(value) = sonic_rs::from_slice::<serde_json::Value>(r.ir.body()) else {
-            return locators;
-        };
-        let Ok(response) = protocol.reader().read_response(&value) else {
+        let Some(usage) = reported_usage(&protocol, r) else {
             return locators;
         };
         // The quantities come back already normalized: a dialect that reports its cached count
         // INSIDE its input total has had it subtracted by its own reader, and a dialect whose cache
         // counts are already separate is left alone. So the four lines below partition the input
         // once, whichever dialect answered — and the plane does no arithmetic to make that true.
-        let usage = &response.usage;
+        let usage = &usage;
         let mut line = |class: &'static str, ptr: Option<&'static str>, quantity: Option<u64>| {
             if let Some(quantity) = quantity {
                 let _ = locators.lines.push(UsageLocator {
@@ -934,6 +995,23 @@ impl Plane for LlmPlane {
         let Some(protocol) = busbar_llm_codec::proto_codec::protocol_for(source) else {
             return ContentFacts { facts };
         };
+        if is_streamed(r) {
+            // A streamed frame states what the frame states \u2014 the stream's identity and model on
+            // the opening event, how it stopped on the closing one \u2014 and nothing about the frames
+            // either side of it. A tool-call count in particular is a property of a whole answer,
+            // and a count taken from one frame would be a number no frame reported.
+            let Some((name, value)) = event_payload(r.ir.body()) else {
+                return ContentFacts { facts };
+            };
+            let mut state = StreamDecodeState::default();
+            for event in protocol
+                .reader()
+                .read_response_events(name, &value, &mut state)
+            {
+                stream_event_facts(ctx, &event, &mut facts);
+            }
+            return ContentFacts { facts };
+        }
         let Ok(value) = sonic_rs::from_slice::<serde_json::Value>(r.ir.body()) else {
             return ContentFacts { facts };
         };
@@ -976,6 +1054,31 @@ fn response_facts<'u>(ctx: &Ctx<'u>, response: &IrResponse, facts: &mut Facts<'u
         meta::FACT_TOOL_CALLS,
         FactValue::Int(i64::try_from(tool_calls).unwrap_or(i64::MAX)),
     );
+}
+
+/// What one streamed event says about the answer it is part of, for the same record.
+///
+/// The whole-answer twin of this is [`response_facts`]. What differs is what a single frame is
+/// entitled to claim: the opening event names the stream's model and identity, the closing one names
+/// how it stopped, and neither names a count over frames it never saw.
+fn stream_event_facts<'u>(ctx: &Ctx<'u>, event: &IrStreamEvent, facts: &mut Facts<'u>) {
+    match event {
+        IrStreamEvent::MessageStart { id, model, .. } => {
+            if let Some(model) = model.as_deref().and_then(|m| put_str(ctx, m)) {
+                let _ = facts.set(meta::FACT_RESPONSE_MODEL, FactValue::Str(model));
+            }
+            if let Some(id) = id.as_deref().and_then(|i| put_str(ctx, i)) {
+                let _ = facts.set(meta::FACT_RESPONSE_ID, FactValue::Str(id));
+            }
+        }
+        IrStreamEvent::MessageDelta {
+            stop_reason: Some(stop),
+            ..
+        } => {
+            let _ = facts.set(meta::FACT_FINISH_REASON, FactValue::Str(stop_name(*stop)));
+        }
+        _ => {}
+    }
 }
 
 /// The name a stop reason is recorded under.
