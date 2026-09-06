@@ -159,9 +159,16 @@ pub fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::ir::I
         if entry.get("type").and_then(|t| t.as_str()) != Some("url_citation") {
             continue;
         }
-        let Some(citation) = entry.get("url_citation") else {
-            continue;
-        };
+        // BOTH wire shapes, because both are ours to read. Chat NESTS the citation under a
+        // `url_citation` member (`ChatCompletionResponseMessage.annotations`); Responses FLATTENS it
+        // onto the entry (`UrlCitationBody`) — and the Responses writer above emits exactly that flat
+        // form. Reading only the nested one silently dropped every citation a real `/v1/responses`
+        // web-search answer carries, and made this dialect unable to read back what it had itself
+        // just written: the round-trip the Responses reader's own comment claims is lossless was
+        // dropping the whole annotation. A flat entry has its `url` directly on the entry, so falling
+        // back to the entry itself reads it; a nested entry still takes the nested member first, so
+        // the Chat shape is unchanged.
+        let citation = entry.get("url_citation").unwrap_or(entry);
         // Never invent a fact: an entry with no usable url is skipped, symmetric with
         // `url_annotations`' own rule in the write direction (a citation with no url is not
         // emitted there either).
