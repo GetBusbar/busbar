@@ -554,11 +554,16 @@ def admin_cells() -> list[dict]:
             cells.append(http(f"admin.ops|{opid}|overlong-id", F, op["method"],
                               op["path"].replace("{id}", OVERLONG_KEY_ID), auth="admin", listener="admin",
                               headers=(v.get("headers") or {}), body=_req_of(op, v)["body"] if v else None,
-                              why="an id past the 64-character bound on a caller-supplied path segment: "
-                                  "an unbounded identifier otherwise reaches the store lookup and the "
-                                  "audit `resource` string. 1.5.5 refuses 400 on five of the six "
-                                  "`/keys/{id}` handlers and 404 on PostKeysIdRotate, the one handler "
-                                  "that never calls the bound (see accepted-differences.json K-1)"))
+                              why="an unbounded caller-supplied identifier: a 203-character id on the "
+                                  "`{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the "
+                                  "six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id "
+                                  "must be <= 64 characters\" before the store lookup; "
+                                  "PostKeysIdRotate — the one handler that never calls the bound — "
+                                  "falls through to 404 `not_found` / \"key not found\", which is "
+                                  "indistinguishable from an ordinary miss. On every one of the six "
+                                  "the audit row is still written with the FULL id in `resource`, so "
+                                  "the 400 bounds the lookup and the rotate idempotency cache key, "
+                                  "not the audit string. See accepted-differences.json K-1"))
 
     # Three cells added for the ADMIN row of qa/teller-steps.json (the H2 Teller-step matrix): a fifth
     # plane, mapped onto the existing admin.ops family rather than a new one.
@@ -714,6 +719,40 @@ def plugin_cells() -> list[dict]:
     return cells
 
 
+# The oracle config's rate card at ONE HUNDRED TIMES its booted rates (oracle-config.sh prices every
+# model at input 100000 / output 200000 micro-units per token and sets no per-request fee), plus a
+# per_request_fee the boot config does not have at all.
+#
+# THE FIGURES ARE THE DISCRIMINATOR, so they are chosen to make the three hypotheses arithmetically
+# distinct rather than merely "different". The mock answers every request with the same 11 in / 7 out,
+# so one request costs 11*100000 + 7*200000 = 2,500,000 micros under the BOOT card and
+# 11*10,000,000 + 7*20,000,000 + a 3-cent fee (30,000 micros) = 250,030,000 under the WRITTEN one.
+# Four requests reach /admin/usage in this cell (two the recorder primes at boot, one before the PUT,
+# one after):
+#
+#   read-time derivation, whole ledger repriced  -> total 1,000,120,000  (4 x 250,030,000)
+#   priced per row at charge time                -> total   257,530,000  (3 x 2,500,000 + 250,030,000)
+#   restart-to-apply, card never applied         -> total    10,000,000  (4 x 2,500,000)
+#
+# Two rows at the same price could not tell those apart; these totals share no leading digits.
+#
+# UNITS, since they are not the same field to field: `rate_card`'s *_utok are MICRO-units per token,
+# `spend_micros` is micro-units, and `per_request_fee` is an i64 in CENTS — 1 cent = 10,000 micros,
+# 1 cost unit = 100 cents = 1,000,000 micros. Recorded, not assumed: a first pass set the fee to
+# 7,000,000 meaning "7 units" and it landed as 70,000,000,000 micros per request, which put the
+# `oracle` group (budget 1,000,000/day) over its cap and got the SECOND chat request refused 429 —
+# the cell then had three rows instead of four and proved nothing about the epoch. 3 cents keeps
+# every request inside the budget, so all four rows are present to be priced.
+#
+# COMPLETE ON PURPOSE, not for tidiness: 1.5.5 refuses a partial card outright — "rate_card is
+# AUTHORITATIVE and COMPLETE: you either price nothing or price everything" — with a 400, and a
+# rate-card cell whose write was refused would record the boot card twice and call that a finding.
+HUNDREDFOLD_RATE_CARD = {m: {"input_utok": 10000000, "output_utok": 20000000} for m in
+                         ["m-anthropic", "m-openai-chat", "m-openai-responses", "m-gemini", "m-bedrock",
+                          "m-cohere", "m-lane-c1", "m-queue-lane", "m-cd-lane"]}
+NEW_PER_REQUEST_FEE = 3
+
+
 def billing_cells() -> list[dict]:
     """Money as the user reads it: the key and group usage views after a known sequence of requests
     (all priced 2.5 units each by the rate card: cents-truncation, per-request fee, refund on a
@@ -756,28 +795,70 @@ def billing_cells() -> list[dict]:
     refund["needs_fixture"] = True
     cells.append(refund)
 
-    # THE RATE-CARD EPOCH. `PUT /config/settings` documents `rate_card` as LIVE (hot-applied, no
-    # restart) and the usage views document spend as DERIVED AT READ TIME from the *current* card —
-    # docs/admin-api.md: "a rate correction re-prices history on the next read". Those two sentences
-    # together say a card written mid-window re-prices EVERYTHING, including the request that came
-    # before the write. The cell drives exactly that sequence on one boot — request, PUT a 10x card
-    # (200), request, then read `/usage` — so whatever the epoch really is, it is recorded rather
-    # than assumed. The `why` below states what the published 1.5.5 binary ACTUALLY did.
+    # THE RATE-CARD EPOCH — which requests a card written mid-window prices. One boot, one sequence:
+    # a request, `PUT /config/settings` with a complete 100x card + a new per_request_fee (200), a
+    # second request, then `GET /admin/usage`. See HUNDREDFOLD_RATE_CARD above for the three
+    # hypotheses and the three totals that separate them.
+    #
+    # WHAT 1.5.5 ACTUALLY DOES (recorded from the published binary, 48e2800c): the whole ledger is
+    # priced off the card in force at READ time. Every row — the request after the write, the request
+    # BEFORE it, and the two the recorder primed at boot — comes back at the new rate. Not an epoch
+    # boundary, not a restart. That matches what the code says (`admin/v1/service.rs` derives spend
+    # per read; `contract/mod.rs` calls spend_micros "a MUTABLE ESTIMATE"; rate_card is not in
+    # `reload_to_apply_fields`) and what docs/admin-api.md promises ("a rate correction re-prices
+    # history on the next read"). The cell's value is holding the binary to it byte for byte, and
+    # naming the consequence: an invoice already read off this endpoint stops being reproducible
+    # from it the moment a rate is corrected.
+    #
+    # THE ASSUMPTION THIS REPLACES, and why it looked true: an earlier pass drove a PARTIAL card (one
+    # model), read both requests at the boot rate, and concluded restart-to-apply. It was not. 1.5.5
+    # refuses a partial card with a 400 — "rate_card is AUTHORITATIVE and COMPLETE: you either price
+    # nothing or price everything" — so the write never landed and the boot card was still the only
+    # card there had ever been. A `pre` need only be ANSWERED, not 2xx (record.sh's
+    # run_pre_request), so that refusal was invisible: the cell would have recorded a REFUSED WRITE
+    # as a pricing epoch. Hence the complete card, and hence figures that move far enough that "the
+    # write landed" is legible in the total itself.
+    #
+    # ONE APPLY PATH, NOT TWO. `PUT /api/v1/admin/config/settings` is the only route that can write
+    # `rate_card`: the root-settings sections are single-valued, and the named-map overlay route
+    # (`admin/v1/json/named_map.rs`, whose no-disk-base / locked-overlay arms answer 400) serves
+    # `export`/`hooks`/`identity-providers`-shaped NAMED maps, of which rate_card is not one — the
+    # 1.5.5 verb table has no per-section config route for it. So there is no second apply path for
+    # this cell to record; the closest neighbour is `POST /config/apply` (a whole-document apply),
+    # a different operation with its own admin.ops cells.
+    #
+    # `config_variant: rate-card-epoch` IS THE CLEAN-UP, and it is load-bearing. The 200 writes a
+    # runtime overlay beside config.yaml, and record.sh rewrites the config (the only thing that
+    # deletes that overlay) ONLY when a cell's variant differs from the one on disk. Left in place,
+    # the next baseline boot inherits the 100x card, its per-boot priming request for the `broke` /
+    # `broke-quota` keys — whose groups carry a 1-cent/day budget — is refused at Admit, boot_busbar
+    # fails, and THE FOLLOWING CELL is red for a reason that has nothing to do with it (observed:
+    # ops.scrape|/v1/models/{id}|retrieve, the cell that happens to sort next). An unrecognized
+    # variant writes the baseline config byte for byte (see oracle-config.sh), so this costs the
+    # cell nothing and hands the next one a clean tree.
     epoch = usage("rate-card|epoch-mid-window",
                   [chat(),
                    {"method": "PUT", "path": "/api/v1/admin/config/settings", "listener": "admin",
                     "auth": "admin", "headers": {"Content-Type": "application/json"},
-                    "body": json.dumps({"rate_card": {"m-openai-chat": {"input_utok": 1000000, "output_utok": 2000000}}},
+                    "body": json.dumps({"rate_card": HUNDREDFOLD_RATE_CARD,
+                                        "per_request_fee": NEW_PER_REQUEST_FEE},
                                        separators=(",", ":"), sort_keys=True)},
                    chat()],
-                  "RECORDED TRUTH (published 1.5.5): a `rate_card` written through PUT "
-                  "/api/v1/admin/config/settings mid-window prices NEITHER request at the new rate — "
-                  "the read-time derivation both before and after the 200 uses the card the process "
-                  "booted with, so the write is restart-to-apply in practice even though "
-                  "docs/admin-api.md lists `rate_card` as live and hot-applied and the usage views "
-                  "promise reprice-on-read. The money class this pins: an operator's rate correction "
-                  "is accepted with a 200 and silently does not reach the bill.",
-                  path="/api/v1/admin/usage")
+                  "RECORDED TRUTH (published 1.5.5, binary 48e2800c). Three hypotheses, three "
+                  "totals: read-time derivation over the whole ledger = 1000120000; priced per row "
+                  "at charge time = 257530000; restart-to-apply = 10000000. RECORDED: 1000120000 — "
+                  "4 requests at 250030000 each. A complete `rate_card` (+ per_request_fee) written "
+                  "through PUT /api/v1/admin/config/settings mid-window is LIVE and RETROACTIVE: "
+                  "/admin/usage prices the entire ledger off the card in force at READ time, so the "
+                  "request before the write, the request after it, and the recorder's two boot "
+                  "priming requests all come back at the new rate. No restart, no epoch boundary, no "
+                  "row left at the old price. The money class this pins is the retroactivity itself "
+                  "— a rate correction silently re-prices history, so an invoice already read off "
+                  "this endpoint is not reproducible from it afterwards. (An earlier pass concluded "
+                  "restart-to-apply by driving a PARTIAL card, which 1.5.5 refuses 400 as "
+                  "incomplete; the write never landed and a `pre` need only be answered, not 2xx, "
+                  "so the refusal was invisible. This card is complete and the write is a 200.)",
+                  path="/api/v1/admin/usage", config_variant="rate-card-epoch")
     cells.append(epoch)
     return cells
 
