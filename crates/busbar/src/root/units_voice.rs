@@ -425,6 +425,13 @@ pub struct VoiceNode {
     /// The node's monotonic sequence for the audit record's second clock, so a wall clock that
     /// jumped cannot reorder one unit's own events.
     mono: AtomicU64,
+    /// The sessions whose metering lease has said there is nothing left.
+    ///
+    /// It lives on the node rather than on a unit because a unit is one frame and the answer has to
+    /// outlive it: the frame that emptied the lease is delivered and paid for, and what the
+    /// exhaustion decides is every frame after it. Audio already streamed cannot be refunded, so
+    /// the next door is the only enforcement point there is.
+    exhausted: Mutex<std::collections::BTreeSet<u64>>,
 }
 
 impl std::fmt::Debug for VoiceNode {
@@ -479,12 +486,37 @@ impl VoiceNode {
             io: parts.io,
             origin: parts.origin,
             mono: AtomicU64::new(0),
+            exhausted: Mutex::new(std::collections::BTreeSet::new()),
         }
     }
 
     /// The next reading of the node's monotonic clock.
     fn tick(&self) -> u64 {
         self.mono.fetch_add(1, Ordering::AcqRel)
+    }
+
+    /// Record that a session's lease has nothing left.
+    fn exhaust(&self, session: u64) {
+        self.exhausted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session);
+    }
+
+    /// Forget whatever a previous session on this identifier ended as.
+    fn reopened(&self, session: u64) {
+        self.exhausted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session);
+    }
+
+    /// Whether a session's lease has already said it is dry.
+    fn is_exhausted(&self, session: u64) -> bool {
+        self.exhausted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&session)
     }
 }
 
@@ -935,11 +967,24 @@ impl Units for VoiceUnit<'_> {
         principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
     ) -> Decision<Admit> {
+        // A SESSION WHOSE LEASE RAN DRY GETS NO FURTHER FRAME. The turn that emptied it was
+        // delivered and settled — this is the one after it — and the refusal is raised at the door
+        // under the door's own money reason, which is what the kernel reads when it decides a
+        // refusal closes the session rather than merely ending the unit.
+        if !self.shape.is_handshake() && self.node.is_exhausted(self.session) {
+            return Decision::refuse(token, Refusal::new(ReasonCode::OverBudget));
+        }
+
         // The handshake's admission: a hold that reserves nothing, drawing no request slot and
         // taking no concurrency lease. It is still an admission and it still ends at the exit path
         // with a settlement of zero — the point of the zero-priced hold is that the unit is
         // accounted for, not that it is exempt from accounting.
         if self.shape.is_handshake() {
+            // Unit zero is a NEW session, whatever ran on this identifier before it. The mark is
+            // the previous session's and is dropped here rather than left to refuse a conversation
+            // that has its own reservation to take — which is also what keeps the marks from
+            // outliving the sessions they were made for.
+            self.node.reopened(self.session);
             // The session's opening reservation is taken here, once, and it is the reservation every
             // later frame of the session is allowed against. A lease that cannot be opened is an
             // exhaustion answer at the door rather than a session that opens and then cannot pay.
@@ -1022,7 +1067,11 @@ impl Units for VoiceUnit<'_> {
         let total: u64 = lines.iter().map(|line| line.quantity).sum();
         if !self.shape.is_handshake() && !self.node.io.lease.settle(self.session, total) {
             // Not a refusal of this unit. This unit's value was delivered and is metered; what the
-            // exhausted lease decides is whether there is a next one.
+            // exhausted lease decides is whether there is a next one — and it decides no. The
+            // session is marked here and refused at the door below, which is the answer the seam's
+            // own contract asks for: a session that cannot pay for the next frame must stop
+            // receiving them, and that is the one thing metering after the fact cannot do.
+            self.node.exhaust(self.session);
         }
         match Usage::report(usage, lines) {
             Ok(report) => Decision::proceed(token, report),
@@ -1669,6 +1718,90 @@ mod tests {
             .sealed();
         assert_eq!(after, before + 1, "exactly one record for one unit");
         assert_eq!(UnitShape::SessionOpen.op_class(), meta::OP_SESSION_OPEN);
+    }
+
+    /// A lease that answers "nothing left" closes the session it answered for.
+    ///
+    /// The turn that emptied it is served and settled in full — audio that has already streamed
+    /// cannot be refunded, so refusing it would be a refusal of value the caller already received.
+    /// The frame AFTER it is the enforcement point, and it is refused at the door under the money
+    /// reason, which is the same one the kernel reads to close a session rather than merely to end
+    /// a unit. A session that never ran dry is untouched by any of this.
+    #[test]
+    fn a_session_whose_lease_runs_dry_is_closed_and_its_next_frame_refused() {
+        struct DryLease;
+        impl SessionLease for DryLease {
+            fn reserve(&self, _session: u64, _nanos: u64) -> Result<(), ReasonCode> {
+                Ok(())
+            }
+            fn settle(&self, _session: u64, _nanos: u64) -> bool {
+                false
+            }
+            fn close(&self, _session: u64) {}
+        }
+        let node = priced_node(VoiceIo {
+            dial: Box::new(OpenDial),
+            lease: Box::new(DryLease),
+            ..VoiceIo::default()
+        });
+        let kernel = Kernel::new();
+
+        // The turn that empties the lease runs to the end and settles.
+        let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
+            audio_tokens_out: 120,
+            audio_ms_in: 900,
+            ..TurnUsage::default()
+        });
+        let Ended::Settled { end, .. } = run(&kernel, &turn) else {
+            panic!("the exit path settles it");
+        };
+        assert_eq!(end.outcome(), Outcome::Completed);
+        assert_eq!(
+            end.into_posted().expect("the report fits").settled(),
+            120,
+            "the frame that emptied the lease is charged exactly what it delivered"
+        );
+
+        // And the next frame on that session does not get in.
+        let next = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let Ended::Settled { end, .. } = run(&kernel, &next) else {
+            panic!("the exit path settles it");
+        };
+        assert_eq!(
+            end.outcome(),
+            Outcome::Refused(busbar_caps::StepName::Admit, ReasonCode::OverBudget),
+            "the door refuses a session that cannot pay for another frame"
+        );
+        assert_eq!(
+            busbar_kernel::inflight::hard_closes(
+                busbar_caps::OriginKind::Provider,
+                busbar_caps::StepName::Admit,
+                ReasonCode::OverBudget,
+                busbar_contract::Framing::Stream,
+            ),
+            Some(busbar_kernel::inflight::HardClose::ProviderRefusedForMoney),
+            "and that refusal is the one that closes the session"
+        );
+
+        // A session that never ran dry is not caught by the mark.
+        let other = VoiceUnit::new(&node, UnitShape::Turn, 8, 1_700_000_000);
+        let Ended::Settled { end, .. } = run(&kernel, &other) else {
+            panic!("the exit path settles it");
+        };
+        assert_eq!(end.outcome(), Outcome::Completed);
+
+        // And a NEW session on the same identifier is a new session: it takes its own reservation
+        // and is not refused for what the last one spent.
+        let reopened = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
+        let Ended::Settled { end, .. } = run(&kernel, &reopened) else {
+            panic!("the exit path settles it");
+        };
+        assert_eq!(end.outcome(), Outcome::Completed);
+        let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let Ended::Settled { end, .. } = run(&kernel, &turn) else {
+            panic!("the exit path settles it");
+        };
+        assert_eq!(end.outcome(), Outcome::Completed);
     }
 
     /// A refused unit's record says it was refused, and names the step that refused it.
