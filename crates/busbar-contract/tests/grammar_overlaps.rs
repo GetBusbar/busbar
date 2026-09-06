@@ -144,6 +144,112 @@ fn the_path_family_is_decided_rather_than_assumed() {
         .overlaps(&Selector::ExactPath("/v1beta/models/m:streamGenerate")));
 }
 
+/// A one-level prefix read as the pattern it is: the prefix's literals, then one more segment.
+///
+/// The two forms used to fall through to the catch-all and answer "they might", which made a prefix
+/// on one root and a pattern on another read as a contest. They are comparable segment by segment
+/// exactly as two patterns are, because a one-level prefix IS a pattern.
+#[test]
+fn a_one_level_prefix_and_a_pattern_are_compared_segment_by_segment() {
+    let prefix = Selector::PrefixOneLevel("/a2a");
+
+    // Same root, one level down: the prefix's own shape.
+    assert!(prefix.overlaps(&Selector::PathPattern(&[PathSeg::Lit("a2a"), PathSeg::Var])));
+    // A different root cannot be reached from this prefix.
+    assert!(!prefix.overlaps(&Selector::PathPattern(&[PathSeg::Lit("mcp"), PathSeg::Var])));
+    // Right root, wrong depth: a prefix takes exactly one segment, never two.
+    assert!(!prefix.overlaps(&Selector::PathPattern(&[
+        PathSeg::Lit("a2a"),
+        PathSeg::Var,
+        PathSeg::Var,
+    ])));
+    // A tail swallows whatever is left, so it reaches one level down as well.
+    assert!(prefix.overlaps(&Selector::PathPattern(&[PathSeg::Lit("a2a"), PathSeg::Tail])));
+}
+
+/// Two suffixes collide only when one of them ends the other.
+#[test]
+fn two_suffixes_collide_only_when_one_ends_the_other() {
+    assert!(Selector::PathSuffix("/v1/chat/completions")
+        .overlaps(&Selector::PathSuffix("/completions")));
+    assert!(Selector::PathSuffix("/completions")
+        .overlaps(&Selector::PathSuffix("/v1/chat/completions")));
+    assert!(!Selector::PathSuffix("/v1/embeddings").overlaps(&Selector::PathSuffix("/v1/speech")));
+}
+
+/// A suffix against a pattern, decided rather than assumed.
+///
+/// A suffix's slashes are the path's own slashes, so a suffix pins the pattern's LAST segments: the
+/// pieces between its slashes are whole segments, counted from the end. A pattern whose segment in
+/// one of those positions is a literal that does not match cannot produce a path ending that way,
+/// however the rest of it is filled in.
+#[test]
+fn a_suffix_against_a_pattern_pins_the_patterns_last_segments() {
+    let a2a_tasks = Selector::PathPattern(&[
+        PathSeg::Lit("a2a"),
+        PathSeg::Lit("tasks"),
+        PathSeg::Var,
+    ]);
+    // `/a2a/tasks/<id>` has three segments and the last two are `tasks` and one variable: no path
+    // it matches can end `/v1/embeddings`, because that would need the second-from-last segment to
+    // be `v1`.
+    assert!(!Selector::PathSuffix("/v1/embeddings").overlaps(&a2a_tasks));
+    assert!(!a2a_tasks.overlaps(&Selector::PathSuffix("/v1/audio/speech")));
+    // The variable IS the last segment, so a suffix inside one segment still reaches it.
+    assert!(Selector::PathSuffix("-draft").overlaps(&a2a_tasks));
+    // And the pinned literals, when they do line up.
+    assert!(Selector::PathSuffix("/tasks/live").overlaps(&a2a_tasks));
+
+    // A tail is open-ended: whatever the suffix asks for, the tail can supply.
+    let admin = Selector::PathPattern(&[
+        PathSeg::Lit("api"),
+        PathSeg::Lit("v1"),
+        PathSeg::Lit("admin"),
+        PathSeg::Tail,
+    ]);
+    assert!(Selector::PathSuffix("/v1/audio/speech").overlaps(&admin));
+
+    // A pattern shorter than the suffix's own segment count cannot end with it.
+    assert!(!Selector::PathSuffix("/v1/audio/speech")
+        .overlaps(&Selector::PathPattern(&[PathSeg::Var, PathSeg::Var])));
+    // And the whole-path alignment: the suffix may start at the leading slash itself.
+    assert!(Selector::PathSuffix("/v1/audio/speech").overlaps(&Selector::PathPattern(&[
+        PathSeg::Lit("v1"),
+        PathSeg::Lit("audio"),
+        PathSeg::Var,
+    ])));
+}
+
+/// A substring against a pattern, decided rather than assumed.
+///
+/// A substring carrying a slash asks for consecutive whole segments, so it can be placed against a
+/// pattern the same way a suffix can — anywhere rather than at the end. A substring with no slash
+/// at all lands inside one segment, and any variable segment can be that one.
+#[test]
+fn a_substring_against_a_pattern_asks_for_consecutive_segments() {
+    let a2a_agents =
+        Selector::PathPattern(&[PathSeg::Lit("a2a"), PathSeg::Lit("agents"), PathSeg::Var]);
+
+    // `/v1/audio/` needs the whole segments `v1` and `audio` next to each other, with something
+    // after them. Nothing this pattern matches has that shape.
+    assert!(!Selector::PathContains("/v1/audio/").overlaps(&a2a_agents));
+    assert!(!Selector::PathContains("/v1/messages").overlaps(&a2a_agents));
+    // With no slash it lives inside a segment, and the variable is one.
+    assert!(Selector::PathContains(":predict").overlaps(&a2a_agents));
+    // One leading slash asks only that a segment START with the rest, and the variable can.
+    assert!(Selector::PathContains("/converse").overlaps(&a2a_agents));
+    // A literal segment that starts with it works too.
+    assert!(Selector::PathContains("/agen").overlaps(&a2a_agents));
+    // And one that does not, does not.
+    assert!(!Selector::PathContains("/a2a/agents/x/y").overlaps(&a2a_agents));
+
+    // A tail answers anything.
+    assert!(Selector::PathContains("/v1/audio/").overlaps(&Selector::PathPattern(&[
+        PathSeg::Lit("api"),
+        PathSeg::Tail
+    ])));
+}
+
 /// Fixture per pair within the header family.
 #[test]
 fn the_header_family_is_decided_rather_than_assumed() {
@@ -318,4 +424,157 @@ fn every_form_has_one_family() {
                 | SelectorFamily::Port
         ));
     }
+}
+
+/// The property the whole tightening rests on: DISJOINT means no arrival matches both.
+///
+/// The overlap rule is allowed to be conservative — to answer "they might" where it cannot prove
+/// otherwise — and every tightening above narrows that. What must never happen is the other
+/// direction: a pair reported disjoint that one arriving request satisfies, because that is a route
+/// decided by declaration accident with the boot check saying nothing about it. So the corpus below
+/// is walked against every pair of path-family selectors, and a disjoint answer is checked against
+/// every path in it.
+///
+/// The corpus is generated rather than listed: every path the fixtures' own literals can spell, to
+/// the depth the fixtures reach, plus the shapes the segment reasoning is delicate about — a
+/// trailing slash and a doubled one.
+#[test]
+fn a_disjoint_answer_is_never_contradicted_by_an_arrival() {
+    let selectors = path_fixtures();
+    let corpus = arrival_corpus();
+    for left in &selectors {
+        for right in &selectors {
+            if left.overlaps(right) {
+                continue;
+            }
+            for path in &corpus {
+                assert!(
+                    !(matches_path(left, path) && matches_path(right, path)),
+                    "{left:?} and {right:?} were called disjoint, and `{path}` matches both"
+                );
+            }
+        }
+    }
+}
+
+/// Every path-family form, in the spellings the declared claim set actually uses.
+fn path_fixtures() -> Vec<Selector> {
+    const A2A_TASKS: &[PathSeg] = &[PathSeg::Lit("a2a"), PathSeg::Lit("tasks"), PathSeg::Var];
+    const A2A_PUSH: &[PathSeg] = &[
+        PathSeg::Lit("a2a"),
+        PathSeg::Lit("tasks"),
+        PathSeg::Var,
+        PathSeg::Lit("pushNotificationConfigs"),
+    ];
+    const A2A_AGENTS: &[PathSeg] = &[PathSeg::Lit("a2a"), PathSeg::Lit("agents"), PathSeg::Var];
+    const ADMIN: &[PathSeg] = &[
+        PathSeg::Lit("api"),
+        PathSeg::Lit("v1"),
+        PathSeg::Lit("admin"),
+        PathSeg::Tail,
+    ];
+    const V1_MODELS: &[PathSeg] = &[PathSeg::Lit("v1"), PathSeg::Lit("models"), PathSeg::Tail];
+    const MODEL_INVOKE: &[PathSeg] = &[PathSeg::Lit("model"), PathSeg::Var, PathSeg::Lit("invoke")];
+    vec![
+        Selector::ExactPath("/mcp"),
+        Selector::ExactPath("/a2a/tasks"),
+        Selector::ExactPath("/v1/audio/speech"),
+        Selector::PrefixOneLevel("/a2a"),
+        Selector::PrefixOneLevel("/v1"),
+        Selector::PathPattern(A2A_TASKS),
+        Selector::PathPattern(A2A_PUSH),
+        Selector::PathPattern(A2A_AGENTS),
+        Selector::PathPattern(ADMIN),
+        Selector::PathPattern(V1_MODELS),
+        Selector::PathPattern(MODEL_INVOKE),
+        Selector::PathSuffix("/v1/audio/speech"),
+        Selector::PathSuffix("/v1/audio/transcriptions"),
+        Selector::PathSuffix("/v1/chat/completions"),
+        Selector::PathSuffix("/v1/embeddings"),
+        Selector::PathSuffix("/v2/chat"),
+        Selector::PathSuffix("-draft"),
+        Selector::PathContains("/v1/audio/"),
+        Selector::PathContains("/v1/messages"),
+        Selector::PathContains("/converse"),
+        Selector::PathContains(":predict"),
+        Selector::PathContains(":generateContent"),
+    ]
+}
+
+/// Every path the fixtures' own vocabulary can spell, to the depth they reach.
+fn arrival_corpus() -> Vec<String> {
+    let vocabulary = [
+        "a2a",
+        "mcp",
+        "tasks",
+        "agents",
+        "pushNotificationConfigs",
+        "api",
+        "v1",
+        "v2",
+        "admin",
+        "models",
+        "model",
+        "invoke",
+        "audio",
+        "speech",
+        "transcriptions",
+        "chat",
+        "completions",
+        "embeddings",
+        "messages",
+        "converse",
+        "m:predict",
+        "m:generateContent",
+        "x-draft",
+        "id",
+    ];
+    let mut corpus: Vec<String> = vec![String::from("/")];
+    let mut level: Vec<String> = vec![String::new()];
+    // Four segments deep is one past the deepest fixture, which is what makes "the pattern runs out
+    // before the suffix does" a case the corpus actually contains.
+    for depth in 0..4 {
+        let mut next = Vec::new();
+        for stem in &level {
+            for segment in vocabulary {
+                next.push(format!("{stem}/{segment}"));
+            }
+        }
+        // The two shapes the segment reasoning is delicate about, at the deepest level only: the
+        // cross-product is already large, and the awkward shapes are about slashes, not depth.
+        if depth == 3 {
+            let awkward: Vec<String> = next
+                .iter()
+                .flat_map(|p| [format!("{p}/"), p.replacen('/', "//", 1)])
+                .collect();
+            corpus.extend(awkward);
+        }
+        corpus.extend(next.iter().cloned());
+        level = next;
+    }
+    corpus
+}
+
+/// Whether one path-family selector matches a concrete path, as the transports evaluate it.
+///
+/// The pattern arm is the contract's own rule, read through the exact-path pair of the overlap
+/// predicate rather than spelled a second time here: an evaluator that disagreed with the boot's
+/// own reading would be testing something other than the boot.
+fn matches_path(selector: &Selector, path: &str) -> bool {
+    match selector {
+        Selector::ExactPath(p) => *p == path,
+        Selector::PrefixOneLevel(prefix) => busbar_contract::grammar::one_level_under(prefix, path),
+        Selector::PathSuffix(s) => path.ends_with(s),
+        Selector::PathContains(s) => path.contains(s),
+        Selector::PathPattern(_) => selector.overlaps(&Selector::ExactPath(leak(path))),
+        _ => false,
+    }
+}
+
+/// A corpus path as the `'static` string the exact-path form takes.
+///
+/// The corpus is built once per test process and every path in it is compared against every
+/// selector, so leaking it is the lifetime the fixture already has.
+fn leak(path: &str) -> &'static str {
+    Box::leak(path.to_owned().into_boxed_str())
 }
