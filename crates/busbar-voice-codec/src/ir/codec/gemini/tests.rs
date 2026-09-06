@@ -333,18 +333,27 @@ fn client_content_roundtrips_verbatim() {
 
 #[test]
 fn realtime_input_audio_decodes_and_frames_up() {
+    // The LEGACY `mediaChunks[]` spelling is still read (a peer may speak it); it re-frames onto the
+    // GA `realtimeInput.audio` blob, so the guarantee here is IR-fixpoint, not byte carriage.
     let payload = b"pretend-uplink-audio-bytes";
+    let codec = GeminiLiveCodec;
     let src = json!({
         "realtimeInput": {
             "mediaChunks": [ { "mimeType": "audio/pcm;rate=16000", "data": b64(payload) } ]
         }
     });
-    let ir = roundtrip_up(&src);
+    let ir = codec.read_up(wire(&src.to_string()), &mut DecodeState::default());
+    assert_eq!(ir.len(), 1);
     let IrClientEvent::AudioFrame(f) = &ir[0] else {
         panic!("expected AudioFrame");
     };
     assert_eq!(f.dir, UpDown::Up);
     assert_eq!(&f.media[..], payload, "base64 decoded to the exact bytes");
+    let ir2 = codec.read_up(up(&codec, ir[0].clone()), &mut DecodeState::default());
+    let IrClientEvent::AudioFrame(f2) = &ir2[0] else {
+        panic!("expected AudioFrame");
+    };
+    assert_eq!(f.media, f2.media, "the audio survives the re-frame");
 }
 
 #[test]
@@ -424,6 +433,41 @@ fn realtime_input_ga_audio_is_ir_fixpoint() {
         "uplink audio survives the IR round-trip"
     );
     assert_eq!(&f2.media[..], payload);
+}
+
+#[test]
+fn uplink_audio_is_framed_as_the_ga_blob_stating_its_true_rate() {
+    // The writer frames the GA `realtimeInput.audio` SINGLE blob (the shape this codec's own reader
+    // prefers), not the legacy `mediaChunks[]` array — and the mime states the rate the bytes are
+    // ACTUALLY in (the session's negotiated pcm16 = 24 kHz), never a rate they are not.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    st.set_output_format(AudioFormat::Pcm16);
+    let w = codec
+        .write_up(
+            IrClientEvent::AudioFrame(IrAudioFrame {
+                dir: UpDown::Up,
+                seq: 0,
+                media: Bytes::from_static(b"uplink-pcm"),
+            }),
+            &mut st,
+        )
+        .expect("uplink audio frames");
+    let ri = &as_value(&w)["realtimeInput"];
+    assert!(ri["audio"].is_object(), "the GA single blob: {ri}");
+    assert!(ri["mediaChunks"].is_null(), "not the legacy array: {ri}");
+    let mime = ri["audio"]["mimeType"].as_str().unwrap_or_default();
+    assert!(
+        !mime.contains("rate=16000"),
+        "pcm16 bytes are 24 kHz; the mime must not claim 16 kHz: {mime}"
+    );
+    assert_eq!(mime, "audio/pcm;rate=24000");
+    // And the codec reads its own frame back to the same bytes.
+    let ir = codec.read_up(w, &mut DecodeState::default());
+    let IrClientEvent::AudioFrame(f) = &ir[0] else {
+        panic!("expected AudioFrame");
+    };
+    assert_eq!(&f.media[..], b"uplink-pcm");
 }
 
 #[test]

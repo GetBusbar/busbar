@@ -67,11 +67,28 @@ mod wire {
     pub const USAGE_METADATA: &str = "usageMetadata";
 }
 
-/// The canonical Gemini Live PCM mime types: 16 kHz signed-16 LE for the UPLINK (the required input
-/// rate) and 24 kHz for the DOWNLINK (the model's synthesis rate). Named so the writer frames a
-/// consistent mime and the reader's format probe agrees.
-const UPLINK_MIME: &str = "audio/pcm;rate=16000";
-const DOWNLINK_MIME: &str = "audio/pcm;rate=24000";
+/// The Gemini Live mime for 24 kHz signed-16 LE PCM — the model's synthesis rate on the downlink, and
+/// the rate the shared `pcm16` format IS. Named once so the writer's mime and the reader's format
+/// probe never drift apart.
+const PCM_24K_MIME: &str = "audio/pcm;rate=24000";
+
+/// THE MIME FOR THE FORMAT THE BYTES ARE ACTUALLY IN. Gemini tags the rate per frame; the plane
+/// negotiates it per session, so the mime is derived from the negotiated format rather than fixed.
+///
+/// The uplink used to state `rate=16000` unconditionally — Gemini's REQUIRED input rate — while the
+/// bytes were the negotiated `pcm16`, which this plane defines as 24 kHz. That is a label describing
+/// audio nobody sent: the peer resamples nothing and plays 24 kHz samples at 16 kHz. The rate the
+/// plane does not convert is a real gap, recorded as a named asymmetry in the cross-dialect map; a
+/// mime that lies about it is a different, worse thing, because it makes the gap invisible.
+///
+/// `None` for a format Gemini has no PCM mime for: this dialect has no g711 mode at all (the map
+/// records the telephony codecs as having no Gemini twin), and there is no honest mime to write.
+fn pcm_mime(fmt: AudioFormat) -> Option<&'static str> {
+    match fmt {
+        AudioFormat::Pcm16 => Some(PCM_24K_MIME),
+        AudioFormat::G711Ulaw => None,
+    }
+}
 
 /// THE Gemini Live DIALECT CODEC — the plane's SECOND dialect. A unit struct: all per-session state
 /// lives in the shared [`DecodeState`], so the codec is stateless and shareable, exactly like
@@ -581,9 +598,12 @@ impl DuplexWriter for GeminiLiveCodec {
     /// them (`None`) rather than framing a stand-in.
     fn write_up(&self, ev: IrClientEvent, st: &mut DecodeState) -> Option<WireEvent> {
         let v = match ev {
+            // THE GA UPLINK SHAPE: `realtimeInput.audio`, a SINGLE inline blob — the spelling this
+            // codec's own reader prefers, and the one the cross-dialect map names. The legacy
+            // `mediaChunks[]` array is still READ (a peer may speak it) but no longer written.
             IrClientEvent::AudioFrame(f) => json!({
                 wire::REALTIME_INPUT: {
-                    "mediaChunks": [ { "mimeType": UPLINK_MIME, "data": encode_audio(&f.media) } ]
+                    "audio": { "mimeType": pcm_mime(st.output_format())?, "data": encode_audio(&f.media) }
                 }
             }),
             IrClientEvent::Control(c) => match c {
@@ -689,7 +709,7 @@ impl DuplexWriter for GeminiLiveCodec {
             IrServerEvent::AudioFrame(f) => json!({
                 wire::SERVER_CONTENT: {
                     "modelTurn": { "parts": [ { "inlineData": {
-                        "mimeType": DOWNLINK_MIME, "data": encode_audio(&f.media)
+                        "mimeType": PCM_24K_MIME, "data": encode_audio(&f.media)
                     } } ] }
                 }
             }),

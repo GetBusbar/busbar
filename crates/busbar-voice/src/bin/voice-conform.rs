@@ -898,6 +898,18 @@ fn asym_drop(id: &str, n1: &[Norm], n2: &[Norm]) -> (&'static str, String) {
                 "boundary maps to interrupted; ms offset dropped",
             )
         }
+        "openai_uplink_rate" => {
+            // The uplink audio BYTES survive verbatim; what does not happen is the resample Gemini's
+            // 16 kHz input wants. The bridge states the rate the bytes are really in, so the gap is
+            // visible on the wire rather than hidden behind a mimeType that names a rate nobody sent.
+            drop_if(
+                n1.iter()
+                    .zip(n2.iter())
+                    .all(|(a, b)| matches!((a, b), (Norm::AudioUp(x), Norm::AudioUp(y)) if x == y))
+                    && !n2.is_empty(),
+                "uplink audio bridges verbatim at its true rate; the resample toward Gemini's 16 kHz input is not performed",
+            )
+        }
         "gemini_go_away" | "gemini_tool_call_cancellation" => drop_if(
             n1.is_empty() && n2.is_empty(),
             "no OpenAI twin — dropped at decode (drop+warn)",
