@@ -130,5 +130,17 @@
     "action": "None — self-heals. The refusal reason is recorded in the audit and call log.",
     "since": "1.6.0",
     "retired": false
+  },
+  {
+    "code": "BUSBAR-7105",
+    "number": 7105,
+    "class": "plane",
+    "slug": "mcp-demotion-row-unreadable",
+    "title": "A durable MCP demotion record could not be decoded at boot",
+    "severity": "actionable",
+    "summary": "A row in the durable MCP demotion record did not decode into a demotion at boot. The               row exists because an upstream was QUARANTINED — a live observation disagreed with               the operator's approval — so an unreadable one is a quarantine busbar can no longer               read the terms of, and skipping it silently would let a drifted upstream be served               again on the strength of a corrupt byte. The replay fails CLOSED: the server named by               the row stays demoted when its name can still be salvaged, and the row is retained               either way so the evidence is not destroyed by the restart that found it.",
+    "action": "Investigate the durable governance store: an undecodable plane record is either              corruption or tampering. Capture the store for review before it is overwritten, then              clear the named server's demotion deliberately once the upstream is known good —              busbar will not clear it for you.",
+    "since": "1.6.0",
+    "retired": false
   }
 ]

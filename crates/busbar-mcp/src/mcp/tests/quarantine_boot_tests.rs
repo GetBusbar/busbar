@@ -359,3 +359,58 @@ async fn a_server_nobody_has_called_is_still_advertised() {
          alike would empty the catalogue of every declarative deployment on the day it shipped"
     );
 }
+
+/// AN UNREADABLE DEMOTION ROW HOLDS THE QUARANTINE RATHER THAN DROPPING IT.
+///
+/// `docs/mcp.md` states the property the boot replay exists for: *"a quarantine survives a
+/// restart… a restart does not silently re-open it"*. The replay decoded each durable row and, on a
+/// row that would not decode, ran `continue` — no log line, no diagnostic, no count. So corrupting
+/// ONE row was a supported and untraceable way to un-quarantine a drifted upstream across the next
+/// restart, and the durable store is exactly the surface an attacker with write access reaches.
+///
+/// The corruption here is the ordinary kind: a body that is still legible JSON naming the server,
+/// with the rest of the row no longer decodable. The demotion must survive it — the upstream stays
+/// un-advertised until an operator clears it deliberately.
+#[tokio::test]
+async fn a_demotion_row_that_will_not_decode_still_holds_the_upstream_quarantined() {
+    metrics_init();
+    let (_file, cfg) = engine().durable_store_cfg("mcp-quarantine-corrupt-row");
+    let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
+    let app = quarantined(
+        &peer,
+        Arc::new(CatalogueCache::new()),
+        Some(engine().open_store_plugin(&cfg)),
+    )
+    .await;
+    drop(app);
+
+    // CORRUPT THE ROW IN PLACE, through the same seam that wrote it: still JSON, still naming the
+    // server, no longer a demotion row. `reason` and `recorded_at` are gone, which is what a schema
+    // drift or a targeted edit produces.
+    let store =
+        busbar_substrate::plane::store::PlaneStoreView::narrow(engine().open_store_plugin(&cfg));
+    store
+        .upsert_plane_record(&busbar_api::PlaneRecord {
+            kind: crate::record::KIND_DEMOTION.to_string(),
+            id: "fs".to_string(),
+            parent: None,
+            seq: 0,
+            ts: 0,
+            disposition: busbar_api::PlaneDisposition::Active,
+            body: br#"{"server":"fs","this_row":"is not a demotion"}"#.to_vec(),
+        })
+        .expect("the corrupted row is written");
+    drop(store);
+
+    let restarted = boot(
+        &peer,
+        Arc::new(CatalogueCache::new()),
+        Some(engine().open_store_plugin(&cfg)),
+    );
+    let names = advertised(&restarted).await;
+    assert!(
+        !names.contains(&"fs_read".to_string()),
+        "a row busbar could not decode dropped the quarantine it recorded, and a restart \
+         re-advertised a drifted upstream on the strength of a corrupt byte: {names:?}"
+    );
+}
