@@ -676,6 +676,24 @@ fn client_dialect_from_session<'u>(ctx: &Ctx<'u>) -> Option<Dialect> {
         .and_then(dialect_from_name)
 }
 
+/// The turn this session has open, read back off the fact the open published.
+///
+/// The correlation is minted against the CLIENT's half of the session (`open_or_relay`), and every
+/// downlink frame is read against an UPSTREAM's half, which never saw it. Reading it off the
+/// reader's own half therefore answered nothing at all, and a duplex session has the turn and every
+/// tool call it opened in flight at once — so "no correlation" is not "the only thing it could be".
+fn turn_correlation_from_session(ctx: &Ctx<'_>) -> Option<CorrelationRef<'static>> {
+    let id: u64 = ctx
+        .session()
+        .and_then(|s| s.session_fact(VoiceSessionState::TURN_FACT_KEY))?
+        .parse()
+        .ok()?;
+    Some(CorrelationRef {
+        fact_key: VoiceSessionState::TURN_FACT_KEY,
+        value: CorrelationValue::Num(id),
+    })
+}
+
 /// The inverse of [`Dialect::name`].
 fn dialect_from_name(name: &str) -> Option<Dialect> {
     match name {
@@ -1010,6 +1028,18 @@ fn open_or_relay<'u>(
         }
         let correlation = state.open_turn();
         let _ = facts.set(meta::FACT_DIALECT, FactValue::Str(dialect.name()));
+        // The turn PUBLISHES itself. A session has two connection halves and every downlink frame
+        // of this turn is read against the other one, which has no sight of what was minted here;
+        // a session fact is the only thing that crosses, and it is the route this plane's dialect
+        // already travels. Published as the identity's own decimal text, because a session fact is
+        // text and the reader below turns it back into the number it was minted as.
+        if let CorrelationValue::Num(id) = correlation.value {
+            let published = ctx
+                .arena()
+                .alloc_str(&id.to_string())
+                .map_err(|_| Decode::Oversize)?;
+            let _ = facts.set(VoiceSessionState::TURN_FACT_KEY, FactValue::Str(published));
+        }
         let ir = view(relay.as_slice(), ctx)?;
         Ok(Ingress::Open(Box::new(UnitDraft {
             op: meta::OP_DUPLEX_TURN,
@@ -1035,7 +1065,10 @@ fn progress_from_server_event<'u>(
     client_dialect: Dialect,
     ctx: &Ctx<'u>,
 ) -> Result<Progress<'u>, Decode> {
-    let for_ = state.turn_correlation;
+    // The session's own answer first: the turn was opened on the client's half and this runs
+    // against an upstream's, so the reader's own half only ever holds a turn when the loop hands
+    // one half to both, which is not the shape the contract describes.
+    let for_ = turn_correlation_from_session(ctx).or(state.turn_correlation);
     match event {
         IrServerEvent::SessionCreated { .. } | IrServerEvent::RateLimits => Ok(Progress::Discard {
             reason: DiscardCode::Unsupported,
