@@ -739,17 +739,28 @@ pub fn read_speech_response(wire: &[u8]) -> Result<crate::ir::audio::SpeechResp,
     // inside bytes labelled as an MP3. It is refused here instead, and the buffered seam turns that
     // refusal into the upstream-shaped error the caller can actually read.
     if let Ok(v) = serde_json::from_slice::<Value>(wire) {
-        let Some(data) = v
-            .pointer("/candidates/0/content/parts/0/inlineData/data")
-            .and_then(Value::as_str)
-        else {
+        // The audio is the first part that CARRIES it, not `parts[0]`. A generateContent candidate
+        // is an array and Gemini is free to put a text (or thought) part ahead of the `inlineData`;
+        // pointing at index 0 missed the audio for that shape. Both spellings are accepted for the
+        // same reason `read_transcription_request` accepts both. A body with no inlineData part at
+        // all is still refused below rather than handed back as an audio container: an error
+        // envelope, a safety block or a candidate with no audio part served as `audio/mpeg` is a
+        // 200 whose body a player cannot open.
+        let inline = v
+            .pointer("/candidates/0/content/parts")
+            .and_then(Value::as_array)
+            .and_then(|parts| {
+                parts
+                    .iter()
+                    .find_map(|p| p.get("inlineData").or_else(|| p.get("inline_data")))
+            });
+        let Some(data) = inline.and_then(|i| i.get("data")).and_then(Value::as_str) else {
             return Err(CodecError::Malformed(
-                "gemini speech response carries no candidates[0].content.parts[0].inlineData"
-                    .into(),
+                "gemini speech response carries no candidates[0].content.parts[].inlineData".into(),
             ));
         };
-        let mime = v
-            .pointer("/candidates/0/content/parts/0/inlineData/mimeType")
+        let mime = inline
+            .and_then(|i| i.get("mimeType").or_else(|| i.get("mime_type")))
             .and_then(Value::as_str)
             .unwrap_or("audio/L16;codec=pcm;rate=24000")
             .to_string();
