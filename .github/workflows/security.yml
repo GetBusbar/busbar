@@ -4,20 +4,16 @@ name: Security
 # the license/source/duplicate policy in deny.toml. Runs on dependency changes AND
 # on a weekly schedule — a crate already in Cargo.lock can have an advisory filed
 # AFTER it was merged, so PR-time scanning alone is not enough.
+#
+# DELIBERATELY UNFILTERED. This job's status is a REQUIRED check on `qa` and `main`
+# (see .github/required-status-checks.md). A required check that is path-filtered
+# never reports on a PR that touches no dependency file, and GitHub leaves such a PR
+# pending on it forever. So there is no `paths:` filter here: cargo-deny runs on
+# every push and every pull request, and always reports.
 on:
   push:
     branches: [main]
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "deny.toml"
-      - ".github/workflows/security.yml"
   pull_request:
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "deny.toml"
-      - ".github/workflows/security.yml"
   schedule:
     # Mondays 07:00 UTC — catch newly-disclosed advisories against pinned deps.
     - cron: "0 7 * * 1"
