@@ -154,11 +154,24 @@ struct Inner {
 type ReplaySlots = HashMap<(String, String), Option<Vec<u8>>>;
 
 /// The node-local answer for the operations the loaded store predates.
+///
+/// # The lock order, stated once
+///
+/// The five mutexes below are independent, and every one of them is on the request path: a slice
+/// draw takes `slices` on every reserve and release. A thread that needs more than one takes them
+/// in the order they are declared here — recovery, then slices, then replay, then shipped, then
+/// migration — and no thread takes them in any other order. Two orders is a deadlock that wedges
+/// the slice seam for the whole process, because the pair a restore holds is the pair a slice draw
+/// waits on.
+///
+/// Only [`VerbStore::store_restore`] needs two at once, and it needs them because the reseal it
+/// performs must be one critical section. Everything else — the diagnostics read included — takes
+/// one lock, copies what it wants out, drops it, and only then takes the next.
 #[derive(Default)]
 struct Shim {
+    recovery: Mutex<Recovery>,
     slices: Mutex<Slices>,
     replay: Mutex<ReplaySlots>,
-    recovery: Mutex<Recovery>,
     /// What the shipper acknowledged. Records are counted, not copied — see the module preamble —
     /// and the count travels WITH the identity it ends at, under one lock: "n acknowledged, ending
     /// here" is one answer, and the preamble supports two logs shipping through one adapter, so
@@ -254,19 +267,47 @@ impl StoreAdapter {
     }
 
     /// What the node-local shim is holding.
+    ///
+    /// One lock at a time, each taken, copied out and dropped before the next — see the lock order
+    /// on [`Shim`]. This is a diagnostics read on a path a restore and every slice draw also walk,
+    /// so holding one of the shim's locks while reaching for another would put a second lock order
+    /// in the process and wedge both threads, and behind them the slice seam.
+    ///
+    /// What that costs is that the four groups below are read at four instants rather than one, so
+    /// a caller reading while the shim is being written can see one group's figures beside a
+    /// slightly older other group's. Each group is still internally whole — the two slice figures
+    /// come out under one guard, and so do the three recovery ones — which is what the figures
+    /// actually have to promise.
     pub fn shim_state(&self) -> ShimState {
-        let slices = self.inner.shim.slices();
-        let replay = self.inner.shim.replay();
-        let recovery = self.inner.shim.recovery();
+        let (slices_outstanding, slices_granted) = {
+            let slices = self.inner.shim.slices();
+            (slices.outstanding.len(), slices.granted_total)
+        };
+        let (replay_slots, replay_committed) = {
+            let replay = self.inner.shim.replay();
+            (
+                replay.len(),
+                replay.values().filter(|v| v.is_some()).count(),
+            )
+        };
+        let records_shipped = self.inner.shim.shipped().count;
+        let (chain_breaks, restores, epoch_floor) = {
+            let recovery = self.inner.shim.recovery();
+            (
+                recovery.chain_breaks,
+                recovery.restores,
+                recovery.epoch_floor,
+            )
+        };
         ShimState {
-            slices_outstanding: slices.outstanding.len(),
-            slices_granted: slices.granted_total,
-            replay_slots: replay.len(),
-            replay_committed: replay.values().filter(|v| v.is_some()).count(),
-            records_shipped: self.inner.shim.shipped().count,
-            chain_breaks: recovery.chain_breaks,
-            restores: recovery.restores,
-            epoch_floor: recovery.epoch_floor,
+            slices_outstanding,
+            slices_granted,
+            replay_slots,
+            replay_committed,
+            records_shipped,
+            chain_breaks,
+            restores,
+            epoch_floor,
         }
     }
 
@@ -622,6 +663,23 @@ impl Shim {
     }
 }
 
+#[cfg(test)]
+impl StoreAdapter {
+    /// Stand in for one side of a shim lock interleaving: take the recovery guard, run `between`,
+    /// then take the slices guard — the exact pair, in the exact order, that
+    /// [`VerbStore::store_restore`] takes them in.
+    ///
+    /// It exists because `store_restore` has no pause between its two locks, so a test cannot park
+    /// a thread there; `between` is that pause, and nothing else about the sequence differs.
+    pub(crate) fn hold_recovery_then_slices(&self, between: impl FnOnce()) {
+        let recovery = self.inner.shim.recovery();
+        between();
+        let slices = self.inner.shim.slices();
+        drop(slices);
+        drop(recovery);
+    }
+}
+
 impl SliceStore for StoreAdapter {
     /// Draw a slice. The shim grants what was asked for, in full, at its own epoch.
     ///
@@ -679,9 +737,10 @@ impl VerbStore for StoreAdapter {
         recovery.last_restore = Some(backup_ref.to_string());
         // The slices guard is taken BEFORE the recovery one is released, so the reseal is one
         // critical section: a `reserve` landing between them would otherwise be recorded and then
-        // erased. Recovery-then-slices is the fixed order, and this is the only place both are
-        // held. `granted_total` is zeroed beside the map it describes — the counter is net units
-        // held by the outstanding reservations, and there are about to be none.
+        // erased. Recovery-then-slices is the shim's fixed order (stated on `Shim`), and this is
+        // the only place that holds two of its locks at once — every other reader takes one, copies
+        // and drops. `granted_total` is zeroed beside the map it describes — the counter is net
+        // units held by the outstanding reservations, and there are about to be none.
         let mut slices = self.inner.shim.slices();
         slices.outstanding.clear();
         slices.granted_total = 0;
