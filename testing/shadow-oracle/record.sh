@@ -502,7 +502,10 @@ record_concurrent_cell() {  # <id> <cell-json> <raw-dir> <safe>
   [ -z "$token" ] || hdr_args+=(-H "Authorization: Bearer ${token}")
   port="$LISTEN_PORT"; [ "$listener" = admin ] && port="$ADMIN_PORT"
   mc="$(jq -c '.mock_control // empty' <<<"$cell")"
-  [ -z "$mc" ] || [ "$mc" = "{}" ] || printf '%s' "$mc" >"$CONTROL"
+  if [ -n "$mc" ] && [ "$mc" != "{}" ]; then
+    oracle_write_control "$CONTROL" "$MOCK_PORT" "$mc" \
+      || { record "$id" FAIL "mock control write never landed" "wrote '${mc}' to ${CONTROL}"; return; }
+  fi
   settle_then_snapshot "$raw/before" "$kid"
   mkdir -p "$raw/par"
   local pids=() i
@@ -513,7 +516,7 @@ record_concurrent_cell() {  # <id> <cell-json> <raw-dir> <safe>
   done
   for p in "${pids[@]}"; do wait "$p" 2>/dev/null; done
   settle_then_snapshot "$raw/after" "$kid"
-  rm -f "$CONTROL"
+  oracle_clear_control "$CONTROL" "$MOCK_PORT" || true
   # each par/<i>.status file holds exactly the one %{http_code} curl wrote for that request; a
   # missing/empty file (curl itself never got a status line) counts as 0, same convention capture.py
   # uses for "no HTTP response" elsewhere in this recorder.
@@ -675,7 +678,10 @@ PY
     port="$LISTEN_PORT"; [ "$listener" = admin ] && port="$ADMIN_PORT"
     local_m=(-X "$method" --data-binary "@$raw/request.body"); [ "$method" = HEAD ] && local_m=(--head)
     mc="$(jq -c '.mock_control // empty' <<<"$cell")"
-    [ -z "$mc" ] || [ "$mc" = "{}" ] || printf '%s' "$mc" >"$CONTROL"
+    if [ -n "$mc" ] && [ "$mc" != "{}" ]; then
+      oracle_write_control "$CONTROL" "$MOCK_PORT" "$mc" \
+        || { record "$id" FAIL "mock control write never landed" "wrote '${mc}' to ${CONTROL}"; continue; }
+    fi
     settle_then_snapshot "$raw/before" "$kid"
     ls "$WORK/egress" 2>/dev/null | sort >"$raw/egress.before"
     k=1
@@ -714,7 +720,10 @@ PY
   # a signed request already carries its Authorization (SigV4); a bearer cell gets the token here
   [ "$auth" = sigv4-signed ] || [ -z "$token" ] || hdr_args+=(-H "Authorization: Bearer ${token}")
 
-  [ "$outcome" != upstream_down ] || echo down >"$CONTROL"
+  if [ "$outcome" = upstream_down ]; then
+    oracle_write_control "$CONTROL" "$MOCK_PORT" "down" \
+      || { record "$id" FAIL "mock control write never landed" "wrote 'down' to ${CONTROL}"; continue; }
+  fi
   settle_then_snapshot "$raw/before" "$kid"
   ls "$WORK/egress" 2>/dev/null | sort >"$raw/egress.before"
   status="$(curl -sS -m 20 -N -X POST "http://127.0.0.1:${LISTEN_PORT}${path}" "${hdr_args[@]}" \
@@ -722,7 +731,7 @@ PY
   case "$curl_rc:$status" in 0:*|18:[1-5]??|56:[1-5]??) printf '%s\n' "$curl_rc" >"$raw/curl.rc" ;; *) status="000" ;; esac
   fi
   settle_then_snapshot "$raw/after" "$kid"
-  rm -f "$CONTROL"
+  oracle_clear_control "$CONTROL" "$MOCK_PORT" || true
   ls "$WORK/egress" 2>/dev/null | sort >"$raw/egress.after"
   egress_files=()
   while IFS= read -r f; do [ -n "$f" ] && egress_files+=("$WORK/egress/$f"); done < <(comm -13 "$raw/egress.before" "$raw/egress.after")
