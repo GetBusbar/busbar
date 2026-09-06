@@ -53,11 +53,15 @@ pub trait NonceSource {
     fn fill(&self, buf: &mut [u8; 16]);
 }
 
-/// The longest a group/parent name may be. `// contract:` in spirit (1.5.5 pins this in
-/// `busbar-core::admin::v1::service::MAX_GROUP_NAME_LEN`), kept as a plain constant here because
-/// the architecture document does not name it as a dual-controlled default and a mismatch would
-/// only ever be too strict, never a security gap.
-pub const MAX_GROUP_NAME_LEN: usize = 253;
+/// The longest a group/parent name may be. `// contract:` in spirit: 1.5.5 pins this in
+/// `busbar-core::admin::v1::service::MAX_GROUP_NAME_LEN`, and the number here is that number. The
+/// literal is repeated rather than imported because the source is `pub(crate)` and this crate
+/// depends on nothing that could hand it over.
+///
+/// It had drifted to 253 on the theory that a mismatch could only ever be too strict and so was
+/// harmless. Too strict IS the harm: a 254-, 255- or 256-character parent name that the shipped
+/// release accepted would have been refused, which is a served answer changing.
+pub const MAX_GROUP_NAME_LEN: usize = 256;
 
 /// The outcome of a verb call that minted or rotated a credential: the once-shown secret is a
 /// [`SecretOnce`] placeholder, never a plain string, so nothing downstream of this crate can hold
