@@ -1023,15 +1023,19 @@ impl ProtocolWriter for OpenAiWriter {
         }
 
         let mut choices_array: Vec<serde_json::Value> = Vec::new();
-        // The OpenAI chat.completion spec requires `finish_reason` to ALWAYS be present in a choice
-        // object — a valid enum string ("stop"/"length"/"tool_calls"/...) or JSON `null` when the
-        // upstream provided no stop reason (e.g. a cross-protocol Bedrock response whose
-        // `read_response` yields `stop_reason: None`). The prior code mapped `None` to "" and then
-        // omitted the key entirely; a missing `finish_reason` is not a valid choice shape and the
-        // Python SDK's Pydantic model raises a validation error on it. Emit null instead.
+        // The published BUFFERED choice schema requires `finish_reason` to always be present AND
+        // declares it a NON-NULLABLE enum over
+        // {stop, length, tool_calls, content_filter, function_call} — only the STREAM chunk's
+        // choice marks it nullable. So neither omitting the key (the original bug: `None` mapped to
+        // "" and the key dropped, which the Python SDK's Pydantic model rejects) nor emitting JSON
+        // null (which fixed the omission but is off-schema for a `chat.completion`) is valid here.
+        // A cross-protocol backend that supplied no stop reason (e.g. a Bedrock response whose
+        // `read_response` yields `stop_reason: None`) falls back to the spec's natural-stop token,
+        // `stop` — the value real OpenAI returns when the model hit a natural stop point, which is
+        // exactly what a response that completed without any other terminating condition did.
         let finish_reason: serde_json::Value = match resp.stop_reason {
             Some(r) => serde_json::json!(write_openai_stop_reason(r)),
-            None => serde_json::Value::Null,
+            None => serde_json::json!(FINISH_STOP),
         };
 
         let mut choice_obj = serde_json::Map::new();

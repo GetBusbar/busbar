@@ -2192,8 +2192,13 @@ fn every_write_response_event_carries_matching_top_level_type() {
             retry_after: None,
         }),
     ];
+    // ONE writer for the whole sequence: the writer now tracks which block indices it opened so a
+    // `content_block_stop` is emitted only for a block whose start it projected. A fresh
+    // `AnthropicWriter` per call (the const inlines an independent empty set at every use) would
+    // start each event with an empty open set and drop the stop.
+    let writer = AnthropicWriter;
     for ev in events {
-        let (event_type, data) = AnthropicWriter
+        let (event_type, data) = writer
             .write_response_event(&ev)
             .expect("event must serialize");
         let data_type = data

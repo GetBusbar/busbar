@@ -2179,9 +2179,12 @@ fn stream_error_shape_matches_write_error_shape() {
 // --- non-stream write_response always emits finish_reason ---
 
 #[test]
-fn write_response_emits_null_finish_reason_when_stop_reason_none() {
+fn write_response_falls_back_to_stop_when_stop_reason_none() {
     // A cross-protocol response whose upstream provided no stop reason (stop_reason: None) must
-    // still carry a `finish_reason` KEY, serialized as JSON null — never omitted.
+    // still carry a `finish_reason` KEY — and the BUFFERED choice schema declares it a
+    // NON-NULLABLE enum (only the stream chunk's choice is nullable), so the key carries the
+    // spec's natural-stop token rather than JSON null. This test previously pinned null, which
+    // fixed the earlier omission bug but was itself off-schema for a `chat.completion`.
     let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
@@ -2208,7 +2211,7 @@ fn write_response_emits_null_finish_reason_when_stop_reason_none() {
         choice.contains_key("finish_reason"),
         "finish_reason key must always be present"
     );
-    assert_eq!(choice["finish_reason"], serde_json::Value::Null);
+    assert_eq!(choice["finish_reason"], serde_json::json!("stop"));
 }
 
 #[test]
@@ -2225,7 +2228,9 @@ fn write_response_maps_finish_reason_enum_values() {
         (Some(S::Refusal), serde_json::json!("stop")),
         (Some(S::Error), serde_json::json!("stop")),
         (Some(S::PauseTurn), serde_json::json!("stop")),
-        (None, serde_json::Value::Null),
+        // No upstream stop reason at all: the buffered choice enum is non-nullable, so the
+        // natural-stop token stands in.
+        (None, serde_json::json!("stop")),
     ];
     for (stop_reason, want) in cases {
         let resp = crate::ir::IrResponse {

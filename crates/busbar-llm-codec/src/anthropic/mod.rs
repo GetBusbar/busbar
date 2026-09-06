@@ -339,6 +339,11 @@ const ERR_TYPE_AUTHENTICATION: &str = busbar_substrate_values::proto::ERR_TYPE_A
 const ERR_TYPE_RATE_LIMIT: &str = busbar_substrate_values::proto::ERR_TYPE_RATE_LIMIT;
 const ERR_TYPE_API_ERROR: &str = busbar_substrate_values::proto::ERR_TYPE_API_ERROR;
 const ERR_TYPE_TIMEOUT: &str = "timeout_error";
+/// The billing member of the published Anthropic `ErrorResponse.error` discriminator — the type a
+/// native client sees when the account cannot pay for the request. It has no cross-dialect alias in
+/// the substrate vocabulary (OpenAI names the same condition `insufficient_quota`), so it is spelled
+/// here, beside the other Anthropic-only type token.
+const ERR_TYPE_BILLING: &str = "billing_error";
 const ERR_TYPE_NOT_FOUND: &str = busbar_substrate_values::proto::ERR_TYPE_NOT_FOUND;
 const ERR_TYPE_PERMISSION: &str = busbar_substrate_values::proto::ERR_TYPE_PERMISSION;
 const ERR_TYPE_REQUEST_TOO_LARGE: &str = busbar_substrate_values::proto::ERR_TYPE_REQUEST_TOO_LARGE;
@@ -1950,8 +1955,71 @@ fn write_tool(tool: &crate::ir::IrTool) -> serde_json::Value {
 }
 
 /// Anthropic writer implementation.
-#[derive(Clone)]
-pub struct AnthropicWriter;
+///
+/// `open_block_indices` is the per-stream set of IR block indices this writer OPENED and therefore
+/// owes a closing `content_block_stop`. Being tracked does NOT mean a `content_block_start` was
+/// already emitted: a `redacted_thinking` block defers its start to the delta that carries the
+/// opaque bytes, and is tracked from its `BlockStart` all the same. What is NOT tracked is
+/// `IrBlockMeta::Image` — the published `ContentBlockStartEvent.content_block` discriminator has no
+/// `image` member (an assistant content block on the Anthropic response wire is never an image), so
+/// that block projects to NO frame at all, exactly as every sibling writer already does. The
+/// `BlockStop` arm carries only the integer index and no block kind, so without this set it cannot
+/// tell a suppressed index from an opened one and would close a block the client never saw opened.
+/// Mirrors `BedrockWriter`'s identically-shaped guard, down to the `Mutex` (which keeps the writer
+/// `Sync` as `ProtocolWriter` requires; a stream is single-threaded at any instant, so contention
+/// never happens in practice) and the poisoning degradation to a no-op / `false` rather than a panic
+/// on the request path.
+pub struct AnthropicWriter {
+    open_block_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
+}
+
+/// Value-namespace constructor for [`AnthropicWriter`], mirroring `BedrockWriter`'s and
+/// `CohereWriter`'s identically-shaped consts: `protocol_for` builds a FRESH `Protocol`, and
+/// therefore a fresh writer, per stream, so each use of this const inlines an independent empty set
+/// and per-writer state cannot leak across concurrent streams. `clippy::declare_interior_mutable_const`
+/// is suppressed deliberately: a shared `static` here WOULD leak one stream's open indices into
+/// another, which is exactly the bug this guard exists to prevent.
+#[allow(non_upper_case_globals)]
+#[allow(clippy::declare_interior_mutable_const)]
+pub const AnthropicWriter: AnthropicWriter = AnthropicWriter {
+    open_block_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+};
+
+impl Clone for AnthropicWriter {
+    fn clone(&self) -> Self {
+        // Carry the open-index set across a clone so a mid-stream `Protocol::clone` keeps the
+        // open/close correlation; a poisoned lock degrades to an empty set rather than panicking.
+        AnthropicWriter {
+            open_block_indices: std::sync::Mutex::new(
+                self.open_block_indices
+                    .lock()
+                    .map(|set| set.clone())
+                    .unwrap_or_default(),
+            ),
+        }
+    }
+}
+
+impl AnthropicWriter {
+    /// Record that IR block `index` was OPENED and so owes a closing `content_block_stop` (whether
+    /// or not its `content_block_start` has been emitted yet — a redacted-thinking block's start is
+    /// deferred to its delta). Lock poisoning degrades to a no-op rather than panicking.
+    fn mark_block_open(&self, index: usize) {
+        if let Ok(mut set) = self.open_block_indices.lock() {
+            set.insert(index);
+        }
+    }
+
+    /// Consume the open record for `index`, returning whether this writer opened it (and so owes
+    /// the closing frame). An untracked index is a block whose start had no Anthropic projection.
+    /// Lock poisoning degrades to `false` — closing nothing — rather than panicking.
+    fn take_block_open(&self, index: usize) -> bool {
+        self.open_block_indices
+            .lock()
+            .map(|mut set| set.remove(&index))
+            .unwrap_or(false)
+    }
+}
 
 /// Which native credential scheme a credential maps to. Anthropic accepts exactly one scheme per
 /// request, and a native client presents exactly one: an API-key client sends `x-api-key` and no

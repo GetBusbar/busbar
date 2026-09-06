@@ -473,7 +473,15 @@ pub fn write_openai_logprobs(lps: &[crate::ir::IrTokenLogprob]) -> serde_json::V
             })
         })
         .collect();
-    serde_json::json!({ "content": content })
+    // `refusal` is a REQUIRED member of the choice `logprobs` object in BOTH published schemas
+    // (`CreateChatCompletionResponse` and `CreateChatCompletionStreamResponse` each declare
+    // `required: ["content", "refusal"]`), nullable: the refusal-token list, or null when the model
+    // did not refuse. The IR carries no refusal tokens (a refusal arrives as message text), so emit
+    // explicit null — which is what real OpenAI returns for a non-refusing completion. Emitting only
+    // `content` failed strict spec validation and the Python SDK's Pydantic model, and was a proxy
+    // tell on every response that carried logprobs. The Responses writer lifts the `content` array
+    // out of this object for an `output_text` part's bare `LogProb[]`, so it is unaffected.
+    serde_json::json!({ "content": content, "refusal": serde_json::Value::Null })
 }
 
 /// Synthesize a protocol-correct OpenAI completion id (`"chatcmpl-<24 base62 chars>"`) for

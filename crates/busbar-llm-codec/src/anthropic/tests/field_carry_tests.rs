@@ -372,11 +372,15 @@ fn anthropic_response_usage_extras_carry() {
 /// each event type read into an `IrStreamEvent` and re-emitted, with a per-event assertion.
 #[test]
 fn anthropic_stream_event_roundtrip_carry() {
+    // ONE writer across the whole sequence: it tracks which block indices it opened so a
+    // `content_block_stop` closes only a block whose start it projected, and a per-call
+    // `AnthropicWriter` (the const inlines an independent empty set at every use) would lose that.
+    let writer = AnthropicWriter;
     let rw = |et: &str, data: serde_json::Value| -> (String, serde_json::Value) {
         let ev = AnthropicReader
             .read_response_event(et, &data)
             .unwrap_or_else(|| panic!("read event {et}"));
-        AnthropicWriter
+        writer
             .write_response_event(&ev)
             .unwrap_or_else(|| panic!("write event {et}"))
     };
