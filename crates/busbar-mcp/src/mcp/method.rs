@@ -2350,7 +2350,7 @@ fn upstream_ask_field(value: &serde_json::Value) -> Option<&'static str> {
 /// key-level and group-level caps still apply, which is what "the same budget plane" means. Naming
 /// the tool rather than a constant is what makes a future per-tool bucket expressible without
 /// re-plumbing anything.
-fn charge_round(
+pub(super) fn charge_round(
     ctx: &Ctx<'_>,
     namespaced: &str,
     rec: &RoundRecord,
