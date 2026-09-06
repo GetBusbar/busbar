@@ -50,6 +50,7 @@
 # failure -- the same fails-closed shape the script's rule already had. Windows genuinely cannot run
 # here; that is named as such, and the final line says so rather than letting "all pass" imply it.
 set -uo pipefail
+export RUSTFLAGS="-D warnings"   # same as CI env; --selftest asserts ci.yml's workflow-level RUSTFLAGS matches this
 
 CI_YML=".github/workflows/ci.yml"
 
@@ -481,6 +482,19 @@ if [ "${1:-}" = "--selftest" ]; then
     printf '  [ok]     the equality-ledger printer refuses a broken ledger (its selftest holds)\n'
   else
     printf '  [FAILED] scripts/capability-equality-summary.py --selftest failed -- the ledger line this script prints could lie\n'; bad=1
+  fi
+
+  # THIS SCRIPT'S OWN RUSTFLAGS MUST MATCH CI'S, or a local green is a green on a laxer flag set than
+  # the one CI actually enforces. Read straight from the real ci.yml (not whatever --dump-* pointed
+  # CI_YML at), so drift between the two `RUSTFLAGS: "..."` lines fails closed instead of quietly
+  # diverging.
+  ci_rustflags="$(grep -m1 '^[[:space:]]*RUSTFLAGS:' .github/workflows/ci.yml | sed -E 's/^[[:space:]]*RUSTFLAGS:[[:space:]]*"([^"]*)".*/\1/')"
+  if [ -z "$ci_rustflags" ]; then
+    printf '  [FAILED] could not find a workflow-level RUSTFLAGS in .github/workflows/ci.yml\n'; bad=1
+  elif [ "$ci_rustflags" = "$RUSTFLAGS" ]; then
+    printf '  [ok]     ci.yml RUSTFLAGS (%s) matches this script'"'"'s exported RUSTFLAGS\n' "$ci_rustflags"
+  else
+    printf '  [FAILED] ci.yml RUSTFLAGS is "%s" but this script exports "%s" -- a local green would not enforce what CI enforces\n' "$ci_rustflags" "$RUSTFLAGS"; bad=1
   fi
 
   [ "$bad" = 0 ] && { printf '\nfull-gate selftest: discovery, floors and skip-reasons all hold\n'; exit 0; }
