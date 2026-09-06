@@ -1855,6 +1855,7 @@ jobs:
       - service-image-pins
       - executable-config-lint
       - no-default-features
+      - deletion-test-matrix
       - no-plugins-gate
       - txn-guards
       - timing
@@ -1893,6 +1894,7 @@ jobs:
         migration-corpus|full|${{ needs.migration-corpus.result }}
         executable-config-lint|full|${{ needs.executable-config-lint.result }}
         no-default-features|full|${{ needs.no-default-features.result }}
+        deletion-test-matrix|full|${{ needs.deletion-test-matrix.result }}
         no-plugins-gate|full|${{ needs.no-plugins-gate.result }}
         txn-guards|full|${{ needs.txn-guards.result }}
         timing|full|${{ needs.timing.result }}
