@@ -8,7 +8,7 @@
 use busbar_contract::bounded::{
     Arena, ArenaBudget, ArenaBytes, BoundedVec, FactValue, Facts, Labels, SlabBytes, Span,
     ARENA_BYTES, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS, MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES,
-    MAX_RECORD_BYTES, MAX_SESSION_UPSTREAMS, MAX_STEPS, MAX_USAGE_LINES,
+    MAX_RECORD_BYTES, MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES,
 };
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::unit::Step;
@@ -17,7 +17,6 @@ use busbar_contract::unit::Step;
 #[test]
 fn the_constants_are_the_designs_numbers() {
     assert_eq!(MAX_KEYS, 32);
-    assert_eq!(MAX_STEPS, 16);
     assert_eq!(MAX_USAGE_LINES, 16);
     assert_eq!(MAX_RECORD_BYTES, 512);
     assert_eq!(MAX_CURSOR_BYTES, 64 * 1024);
@@ -28,11 +27,14 @@ fn the_constants_are_the_designs_numbers() {
     assert_eq!(ARENA_BYTES, 4 * 1024);
 }
 
-/// The ten steps of the loop fit inside the step ceiling, with room for the amendment rows.
+/// The loop's step vocabulary is closed, and it is the ten named steps.
+///
+/// There was a step ceiling here as well, asserted against its own literal. Nothing in the tree
+/// was a list of steps, so it bounded nothing and only read as though it did; it is gone, and this
+/// is what remains true — the vocabulary is closed at the ten the loop has.
 #[test]
-fn the_loop_fits_inside_the_step_ceiling() {
+fn the_loop_has_exactly_its_ten_named_steps() {
     assert_eq!(Step::ALL.len(), 10);
-    assert!(Step::ALL.len() <= MAX_STEPS);
 }
 
 /// The kernel seals the draft's facts onto the unit, and a later step reads them back unchanged.
@@ -191,29 +193,6 @@ fn a_unit_refuses_the_leg_reply_past_its_ceiling_and_hands_it_back() {
         unit.leg_results().len(),
         MAX_LEG_REPLIES,
         "the replies it already held are untouched"
-    );
-}
-
-/// The two answers a plane returns per frame stay small enough to return by value.
-///
-/// A fact map is a fixed array of MAX_KEYS entries — over a kilobyte — and both of these carried
-/// one (or two) inline. Every frame of every open unit crosses the dyn call returning one of them,
-/// so the kilobyte was memcpy'd on the hottest path in the node, twice per relayed frame, for a
-/// map that is usually a handful of keys. The payloads are behind a pointer now, and this is the
-/// number that says so: a future arm that embeds a fact map by value turns this red.
-#[test]
-fn the_per_frame_plane_answers_are_pointer_sized_payloads() {
-    use busbar_contract::plane::{Ingress, Progress};
-
-    assert!(
-        std::mem::size_of::<Ingress<'static>>() <= 128,
-        "an ingress answer is {} bytes",
-        std::mem::size_of::<Ingress<'static>>()
-    );
-    assert!(
-        std::mem::size_of::<Progress<'static>>() <= 128,
-        "a progress answer is {} bytes",
-        std::mem::size_of::<Progress<'static>>()
     );
 }
 
@@ -426,4 +405,68 @@ fn a_plane_that_declares_more_pointers_than_the_ceiling_is_capped_at_it() {
         .expect("the arena has room");
     assert_eq!(table.len(), MAX_KEYS);
     assert_eq!(table[MAX_KEYS - 1].0, pointers[MAX_KEYS - 1]);
+}
+
+/// The cursor stops at the ceiling its own documentation claims.
+///
+/// It counted what a plane had consumed and handed over every frame regardless, so the sentence
+/// "it never exposes more than the per-connection ceiling" was true of nothing. A plane that kept
+/// calling was handed as much as the connection had produced, which is the unbounded prefix the
+/// bound exists to refuse.
+#[test]
+fn the_frame_cursor_stops_at_the_per_connection_ceiling() {
+    use busbar_contract::wire::{Frame, FrameCursor, FrameMeta};
+    use busbar_contract::{Direction, StreamId};
+
+    // Sixteen frames of 8 KiB is 128 KiB — twice the ceiling, so exactly eight are readable.
+    let chunk: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![0u8; 8 * 1024].into_boxed_slice());
+    let frames: Vec<Frame> = (0..16)
+        .map(|i| Frame {
+            direction: Direction::Inbound,
+            stream: StreamId(i),
+            bytes: SlabBytes::new(chunk.clone()),
+            meta: FrameMeta {
+                bytes: 8 * 1024,
+                transport_units: None,
+                status: None,
+            },
+        })
+        .collect();
+
+    let mut cursor = FrameCursor::new(&frames);
+    let mut read = 0;
+    while cursor.next_frame().is_some() {
+        read += 1;
+        assert!(read <= frames.len(), "the cursor never stopped");
+    }
+
+    assert_eq!(read, MAX_CURSOR_BYTES / (8 * 1024));
+    assert_eq!(cursor.scanned_bytes(), MAX_CURSOR_BYTES);
+    // And it stays stopped: the frames are still there, and it still says no.
+    assert!(cursor.peek().is_none());
+    assert!(cursor.next_frame().is_none());
+    assert!(cursor.remaining() > 0);
+}
+
+/// The two answers a plane returns per frame stay small enough to return by value.
+///
+/// A fact map is a fixed array of MAX_KEYS entries — over a kilobyte — and both of these carried
+/// one (or two) inline. Every frame of every open unit crosses the dyn call returning one of them,
+/// so the kilobyte was memcpy'd on the hottest path in the node, twice per relayed frame, for a
+/// map that is usually a handful of keys. The payloads are behind a pointer now, and this is the
+/// number that says so: a future arm that embeds a fact map by value turns this red.
+#[test]
+fn the_per_frame_plane_answers_are_pointer_sized_payloads() {
+    use busbar_contract::plane::{Ingress, Progress};
+
+    assert!(
+        std::mem::size_of::<Ingress<'static>>() <= 128,
+        "an ingress answer is {} bytes",
+        std::mem::size_of::<Ingress<'static>>()
+    );
+    assert!(
+        std::mem::size_of::<Progress<'static>>() <= 128,
+        "a progress answer is {} bytes",
+        std::mem::size_of::<Progress<'static>>()
+    );
 }

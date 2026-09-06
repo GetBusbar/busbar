@@ -10,11 +10,12 @@ use core::fmt;
 /// The crate-graph section of the design pins this at thirty-two.
 pub const MAX_KEYS: usize = 32;
 
-/// The most steps one unit may record.
-///
-/// The loop has ten named steps; the ceiling leaves room for the amendment rows the audit section
-/// appends without letting a unit's step list grow without bound.
-pub const MAX_STEPS: usize = 16;
+// There is deliberately no step ceiling here. One was declared, and nothing in the tree carried
+// it: no type was a list of steps, so the number bounded nothing and only read as though it did,
+// which is worse than its absence — a reader takes it for a bound in force. The step vocabulary
+// itself is a closed const list on the unit type and its length is asserted against nothing else.
+// When the audit step grows an amendment list, that list arrives with a ceiling of its own, in the
+// type that carries it.
 
 /// The most usage lines one unit may settle.
 pub const MAX_USAGE_LINES: usize = 16;
@@ -78,11 +79,28 @@ impl<T, const N: usize> Default for BoundedVec<T, N> {
 }
 
 impl<T, const N: usize> BoundedVec<T, N> {
-    /// A new, empty list.
+    /// A new, empty list. Holds no allocation until something is pushed into it.
+    ///
+    /// A list that is built and never filled is the common case on this ABI — most of these are
+    /// fields of a default-constructed facts or patch value that a plugin never touches — so the
+    /// empty list costs nothing. The capacity arrives whole at the first push; see [`push`].
+    ///
+    /// [`push`]: BoundedVec::push
     #[must_use]
     pub fn new() -> Self {
         Self {
             items: Vec::with_capacity(0),
+        }
+    }
+
+    /// A new, empty list that has already reserved the whole capacity its type declares.
+    ///
+    /// For the caller that knows it is about to fill one: the allocation happens here rather than
+    /// at the first push.
+    #[must_use]
+    pub fn with_declared_capacity() -> Self {
+        Self {
+            items: Vec::with_capacity(N),
         }
     }
 
@@ -111,9 +129,18 @@ impl<T, const N: usize> BoundedVec<T, N> {
     }
 
     /// Append an item. Errors with the item handed back unchanged when the list is already full.
+    ///
+    /// The first push reserves the whole declared capacity at once. The capacity is part of the
+    /// type and the list can never exceed it, so the doubling a growable vector does on the way
+    /// there is pure waste: filling one of these to its eight legs was four allocations and three
+    /// copies to reach a size that was known before the first item existed. It is one allocation
+    /// now, and nothing reallocates after it.
     pub fn push(&mut self, item: T) -> Result<(), Overflow<T>> {
         if self.is_full() {
             return Err(Overflow { item, capacity: N });
+        }
+        if self.items.capacity() < N {
+            self.items.reserve_exact(N - self.items.len());
         }
         self.items.push(item);
         Ok(())
