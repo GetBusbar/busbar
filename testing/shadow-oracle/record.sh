@@ -51,6 +51,22 @@ case "$PLANE" in llm|core|all) ;; *) echo "record.sh: planes recorded natively: 
 
 LISTEN_PORT="${ORACLE_LISTEN_PORT:-48811}" ADMIN_PORT="${ORACLE_ADMIN_PORT:-48812}" MOCK_PORT="${ORACLE_MOCK_PORT:-48781}"
 
+# A RECORDING MAY NOT DEPEND ON WHERE IT WAS STARTED FROM. Some cells carry a REPO-RELATIVE path in
+# their own argv — every `config.migrate|*` cell runs `--migrate-config
+# tests/migration-corpus/from-tags/<v>_config.yaml` — so the binary resolved it against whatever
+# directory the operator happened to be in. Recorded from testing/shadow-oracle instead of the repo
+# root, all 78 of those cells recorded `busbar: cannot read '...': No such file or directory` with
+# exit 1 and the ledger said PASS for every one of them (their `why` accepts exit 0/1/2), i.e. a
+# golden re-recorded from the wrong directory is quietly a golden of the file-not-found path. The
+# effects.files class has the same exposure: capture.py watches THE PROCESS'S WORKING DIRECTORY.
+# So: absolutize the two paths the caller gave us and record from the repo root, always. (The
+# absolutize also makes a relative --out/--bin safe everywhere downstream, which the script-cell
+# path already had to re-derive for itself.)
+mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"
+BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
+cd "$repo" || { echo "record.sh: cannot cd to the repo root $repo" >&2; exit 2; }
+
 mkdir -p "$OUT/cells" "$OUT/raw"
 LEDGER="$OUT/ledger.tsv"; : >"$LEDGER"; export LEDGER
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/shadow-oracle-record.XXXXXX")"; export WORK
