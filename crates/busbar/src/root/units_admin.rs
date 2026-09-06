@@ -1895,7 +1895,7 @@ impl AdminNode {
                 };
                 let mut leases = busbar_kernel::slice::LeaseSet::new();
                 let meter = busbar_kernel::teller::AccrualMeter::new();
-                let _ended = busbar_kernel::teller::run_unit(
+                let ended = busbar_kernel::teller::run_unit(
                     &self.kernel,
                     &self.units,
                     &ctx,
@@ -1915,7 +1915,7 @@ impl AdminNode {
                     .admin
                     .units
                     .answer(key)
-                    .unwrap_or_else(refused_answer)
+                    .unwrap_or_else(|| refused_answer(&ended))
             }
         };
 
@@ -1929,13 +1929,57 @@ impl AdminNode {
 /// What a unit that never reached Route answers with.
 ///
 /// The plane's own error envelope, which is the previous release's: the caller is the same caller
-/// and the shape is pinned.
+/// and the shape is pinned. What is NOT pinned to one value is the status — the surface has ten of
+/// them and the loop knows which one this unit earned, so the ending is read rather than replaced
+/// by a single word.
 #[cfg(feature = "root-admin")]
-fn refused_answer() -> AdminAnswer {
+fn refused_answer(ended: &busbar_kernel::teller::Ended) -> AdminAnswer {
+    match ended {
+        busbar_kernel::teller::Ended::Settled { end, .. } => answer_for(end.outcome()),
+        // The node's own sweep took the hold first, which means this unit is not going to produce an
+        // answer at all. That is the node being unable to serve the request, not the caller being
+        // told no.
+        busbar_kernel::teller::Ended::AlreadySettled => unavailable_answer(),
+    }
+}
+
+/// The surface's answer for one ending.
+///
+/// The vocabulary is the previous release's admin envelope and nothing here invents a status: each
+/// arm is a reason the loop can end on paired with the status that release already gave the same
+/// condition. `forbidden` stays the answer for the two authorization endings AND for an ending this
+/// table does not name, so an ending nobody has mapped cannot quietly become a new status on a
+/// surface a caller has pinned.
+#[cfg(feature = "root-admin")]
+fn answer_for(outcome: Outcome) -> AdminAnswer {
+    let (status, code) = match outcome {
+        Outcome::Refused(_, reason) | Outcome::Failed(_, reason) => match reason {
+            // A body or a verb the plane could not read is a bad request, not a denied one.
+            ReasonCode::DecodeFailed => (400, "invalid_request"),
+            // Nothing on this surface answers that method and path.
+            ReasonCode::NoDestination => (404, "not_found"),
+            // The caller is inside its rights and the node is over a limit.
+            ReasonCode::OverBudget | ReasonCode::InFlightCap => (429, "rate_limited"),
+            // The node cannot record what the operation would do, so it does not do it. An
+            // administrative write that cannot be journalled is unavailability, not refusal.
+            ReasonCode::DurabilityUnavailable | ReasonCode::StaleSlice => (503, "unavailable"),
+            _ => (403, "forbidden"),
+        },
+        _ => (403, "forbidden"),
+    };
+    error_answer(status, code)
+}
+
+/// One error answer in the surface's envelope.
+///
+/// The single construction site, so a status and its code cannot be paired differently in two
+/// places — which is the shape the previous release's own admin error rendering has.
+#[cfg(feature = "root-admin")]
+fn error_answer(status: u16, code: &str) -> AdminAnswer {
     AdminAnswer {
-        status: 403,
+        status,
         headers: vec![("content-type".to_string(), "application/json".to_string())],
-        body: br#"{"error":{"code":"forbidden","message":"forbidden"}}"#.to_vec(),
+        body: format!(r#"{{"error":{{"code":"{code}","message":"{code}"}}}}"#).into_bytes(),
     }
 }
 
@@ -2009,7 +2053,10 @@ async fn call(inner: axum::Router, request: &AdminRequest) -> AdminAnswer {
         builder = builder.header(name.as_str(), value.as_str());
     }
     let Ok(http) = builder.body(axum::body::Body::from(request.body.clone())) else {
-        return refused_answer();
+        // A method, path or header the http types themselves will not carry. That is a request
+        // this surface cannot make sense of, which is the 400 answer and not the 403 one: nothing
+        // here was denied, it was unreadable.
+        return error_answer(400, "invalid_request");
     };
 
     // The router's own error type is uninhabited: a mounted axum router answers, and failing is not
@@ -2195,6 +2242,50 @@ mod tests {
         };
         let packed = answer.pack();
         assert_eq!(AdminAnswer::unpack(&packed), Some(answer));
+    }
+
+    /// A unit that reached no answer is rendered under the status its ending earned.
+    ///
+    /// One 403 for every ending told an operator that a journal it could not write, a body it could
+    /// not read and a scope it did not hold were the same thing, and told a client that a request
+    /// worth retrying was one that never would be. The two authorization endings keep the answer
+    /// they had, and so does an ending this table does not name.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn a_refused_units_status_is_the_one_its_ending_earned() {
+        let status = |reason| answer_for(Outcome::Refused(busbar_caps::StepName::Admit, reason));
+        assert_eq!(status(ReasonCode::DecodeFailed).status, 400);
+        assert_eq!(status(ReasonCode::NoDestination).status, 404);
+        assert_eq!(status(ReasonCode::InFlightCap).status, 429);
+        assert_eq!(status(ReasonCode::OverBudget).status, 429);
+        assert_eq!(status(ReasonCode::DurabilityUnavailable).status, 503);
+        assert_eq!(status(ReasonCode::ScopeDenied).status, 403);
+        assert_eq!(status(ReasonCode::Unauthenticated).status, 403);
+        assert_eq!(
+            status(ReasonCode::PlanePanic).status,
+            403,
+            "an ending nobody mapped keeps the pinned answer rather than inventing one"
+        );
+
+        // A failure past the door renders the same way a refusal before it does: what the caller is
+        // owed is the reason, and the side of the door it happened on is not the caller's business.
+        assert_eq!(
+            answer_for(Outcome::Failed(
+                busbar_caps::StepName::Route,
+                ReasonCode::DurabilityUnavailable
+            )),
+            error_answer(503, "unavailable")
+        );
+
+        // And the envelope is the surface's, whatever the status.
+        assert_eq!(
+            status(ReasonCode::NoDestination).body,
+            br#"{"error":{"code":"not_found","message":"not_found"}}"#.to_vec()
+        );
+        assert_eq!(
+            status(ReasonCode::NoDestination).headers,
+            vec![("content-type".to_string(), "application/json".to_string())]
+        );
     }
 
     /// The only producer of the framing is the packer. Anything else is this file being wrong, and
@@ -2594,7 +2685,7 @@ mod tests {
         );
         let refused = answer_under_denylist(true);
         assert_eq!(refused.status, 403);
-        assert_eq!(refused, refused_answer());
+        assert_eq!(refused, error_answer(403, "forbidden"));
     }
 
     // ── the five ledger views ───────────────────────────────────────────────────────────────────
