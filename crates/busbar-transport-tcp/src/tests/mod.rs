@@ -1,4 +1,5 @@
-//! The transport battery, for `tcp`: byte-exact round trip, half-close, cancel mid-frame, every
+//! The transport battery, for `tcp`: byte-exact round trip, close (this transport has no
+//! half-close: it exposes no shutdown-write call), cancel mid-frame, every
 //! `TransportError` mapped, backpressure, and the frame-meta honesty check (an inflating and a
 //! deflating fixture must fail it — the "must turn red" cell from the design's transport battery).
 
@@ -173,8 +174,20 @@ async fn byte_exact_round_trip_the_outbound_leg_too() {
     assert_eq!(frame.meta.bytes, reply.len() as u64);
 }
 
+/// A FULL close delivers the bytes already written, and then ends the peer's stream.
+///
+/// This cell used to be called `half_close_lets_the_other_side_keep_writing`, and nothing in it
+/// half-closes anything: `close` removes the connection from the registry and drops BOTH halves,
+/// and this transport exposes no shutdown-write call at all — there is no API here through which
+/// one side could stop writing and go on reading. The name promised a TCP half-close and the body
+/// proved the full-close path, so a regression that broke half-close (had there been one) would
+/// have been reported by a green test.
+///
+/// What the body does prove is worth keeping, and is what the name now says: bytes written before
+/// the close are not lost by it, and the peer's read side then sees a clean end-of-stream rather
+/// than an error.
 #[tokio::test]
-async fn half_close_lets_the_other_side_keep_writing() {
+async fn a_close_delivers_the_bytes_already_written_and_then_end_of_stream() {
     let (server, listener, client) = bounded("bound_pair()", bound_pair()).await;
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
@@ -193,9 +206,9 @@ async fn half_close_lets_the_other_side_keep_writing() {
     .unwrap();
     let server_conn = bounded("accept_fut", accept_fut).await.unwrap();
 
-    // The client closes (drops its write half via `close`); the server still sees the bytes the
-    // client sent before closing, and its read side then reaches a clean end-of-stream rather
-    // than an error.
+    // The client closes outright — `close` drops both halves, so this is the full-close path and
+    // not a half-close. The server still sees the bytes the client sent before closing, and its
+    // read side then reaches a clean end-of-stream rather than an error.
     bounded(
         "client .write(&client_conn, StreamId(0), ArenaBytes::new(...",
         client.write(&client_conn, StreamId(0), ArenaBytes::new(b"bye")),
