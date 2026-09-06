@@ -105,6 +105,34 @@ impl Node {
 
     /// Walk one pool with a context the caller keeps, so a test can read what was excluded.
     pub fn route_with(&self, pool: &str, ctx: &mut RequestCtx) -> RouteOutcome {
+        self.with_request(pool, |request| {
+            crate::race::block_on(crate::walk::walk(request, ctx))
+        })
+    }
+
+    /// Poll one walk exactly once and then drop the future, the way a client that goes away
+    /// part-way through leaves one. Nothing completes; the point of this is what the abandoned
+    /// future left behind it.
+    pub fn route_poll_once_then_drop(&self, pool: &str, ctx: &mut RequestCtx) {
+        use std::future::Future;
+        self.with_request(pool, |request| {
+            let mut future = Box::pin(crate::walk::walk(request, ctx));
+            let waker = std::task::Waker::noop();
+            let mut cx = std::task::Context::from_waker(waker);
+            assert!(
+                future.as_mut().poll(&mut cx).is_pending(),
+                "the walk was expected to park rather than finish on the first poll"
+            );
+            drop(future);
+        });
+    }
+
+    /// Build one route request over this node and hand it to `f`.
+    fn with_request<R>(
+        &self,
+        pool: &str,
+        f: impl FnOnce(&crate::walk::RouteRequest<'_>) -> R,
+    ) -> R {
         let plane_ctx = PlaneContext::new();
         let unit = test_unit();
         let keys = keys();
@@ -139,7 +167,7 @@ impl Node {
             stream: busbar_contract::StreamId(0),
             floor: &self.floor,
         };
-        crate::race::block_on(crate::walk::walk(&request, ctx))
+        f(&request)
     }
 }
 

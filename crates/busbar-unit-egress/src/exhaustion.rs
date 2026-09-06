@@ -16,7 +16,7 @@ use busbar_caps::{Route, UnitToken};
 
 use crate::attempt::{attempt, AttemptInput, AttemptOutcome, Hop};
 use crate::pool::{Member, OnExhausted, Pool};
-use crate::ports::{Breaker, DestinationId, Permit, Unavailable};
+use crate::ports::{Breaker, DestinationId, Permit, Telemetry, Unavailable};
 use crate::race;
 use crate::select::{pick_among, PickInput, ProbeGuard, RequestCtx};
 use crate::walk::RouteRequest;
@@ -329,6 +329,32 @@ async fn handle_least_bad<'a>(
 
 // ── the wait ────────────────────────────────────────────────────────────────────────────────────
 
+/// One parked waiter's place in the depth gauge, given back on drop.
+///
+/// The increment and the decrement sit either side of an await, and a future that is dropped
+/// part-way — a client that hung up while its request was parked — runs no code between them. A
+/// plain pair of calls therefore leaks a phantom waiter into the gauge on every abandoned request,
+/// and the gauge is what an operator reads to decide the pool is saturated. Tying the decrement to
+/// a drop makes the balance hold on every exit there is, including the one nobody writes.
+struct QueuedGuard<'a> {
+    telemetry: &'a dyn Telemetry,
+    pool: &'a str,
+}
+
+impl<'a> QueuedGuard<'a> {
+    /// Count one waiter in.
+    fn park(telemetry: &'a dyn Telemetry, pool: &'a str) -> Self {
+        telemetry.queued(pool, 1);
+        Self { telemetry, pool }
+    }
+}
+
+impl Drop for QueuedGuard<'_> {
+    fn drop(&mut self) {
+        self.telemetry.queued(self.pool, -1);
+    }
+}
+
 /// Wait a bounded time for a slot to free, dispatch on the member that freed one, else shed.
 ///
 /// It lives here, in the terminal, and never inside the pick — selection stays non-blocking, so
@@ -375,10 +401,8 @@ async fn handle_queue<'a>(
     let started = request.clock.now_millis();
     let bound_ms = max_ms.min(ctx.remaining_ms(started));
 
-    request.telemetry.queued(&pool.name, 1);
-    let outcome = queue_wait(request, ctx, pool, members, &mut waiting, started, bound_ms).await;
-    request.telemetry.queued(&pool.name, -1);
-    outcome
+    let _parked = QueuedGuard::park(request.telemetry, &pool.name);
+    queue_wait(request, ctx, pool, members, &mut waiting, started, bound_ms).await
 }
 
 #[allow(clippy::too_many_arguments)]
