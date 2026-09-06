@@ -316,7 +316,9 @@ pub struct CapRefused {
     /// The step the refusal is stamped at: arrival for a client unit, decode for every other
     /// origin, because that is where those units are constructed.
     pub step: StepName,
-    /// Always the in-flight cap.
+    /// The in-flight cap, or — for a key the table is already holding a unit under — the table
+    /// itself. The two are different refusals: the first says the node is full, the second says
+    /// this one key is taken.
     pub reason: ReasonCode,
     /// The hold the unit arrived with.
     pub hold: Hold,
@@ -458,6 +460,14 @@ impl InFlight {
     }
 
     /// Put a unit in the table, or hand its hold back with the refusal.
+    ///
+    /// A key the table is ALREADY holding a unit under is refused, and the claim it took goes
+    /// straight back — the same answer the session table gives an id it is already holding, and for
+    /// a sharper reason. A unit slot displaced out of the shard map is not merely forgotten: it is a
+    /// `HoldCell` with a hold in it that `snapshot` no longer reaches, so the sweep — the only other
+    /// holder of a key to that cell — can never take it, and the unit never posts. The claim the
+    /// duplicate took would stay taken too, ratcheting the count one unit closer to a cap it never
+    /// comes back down from.
     pub fn insert(&self, request: Enter) -> Result<Arc<UnitSlot>, CapRefused> {
         if !self.claim_slot(self.ceiling(&request)) {
             return Err(CapRefused {
@@ -466,22 +476,35 @@ impl InFlight {
                 hold: request.arrival,
             });
         }
-        let slot = Arc::new(UnitSlot {
-            key: request.key,
-            origin: request.origin,
-            session: request.session,
-            cell: HoldCell::new(request.arrival),
-            leases: LeaseCell::new(),
-            step: StepState::new(),
-            cancel: CancelToken::new(),
-            marked: AtomicBool::new(false),
-            last_progress: AtomicU64::new(request.now),
-        });
-        self.shard(request.key)
+        let mut shard = self
+            .shard(request.key)
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(request.key, Arc::clone(&slot));
-        Ok(slot)
+            .unwrap_or_else(|e| e.into_inner());
+        match shard.entry(request.key) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                self.count.fetch_sub(1, Ordering::AcqRel);
+                Err(CapRefused {
+                    step: cap_refusal_step(request.origin),
+                    reason: ReasonCode::InFlight,
+                    hold: request.arrival,
+                })
+            }
+            std::collections::hash_map::Entry::Vacant(vacant) => {
+                let slot = Arc::new(UnitSlot {
+                    key: request.key,
+                    origin: request.origin,
+                    session: request.session,
+                    cell: HoldCell::new(request.arrival),
+                    leases: LeaseCell::new(),
+                    step: StepState::new(),
+                    cancel: CancelToken::new(),
+                    marked: AtomicBool::new(false),
+                    last_progress: AtomicU64::new(request.now),
+                });
+                vacant.insert(Arc::clone(&slot));
+                Ok(slot)
+            }
+        }
     }
 
     /// Find a live unit.
