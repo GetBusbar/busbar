@@ -99,7 +99,21 @@ if ! git merge-base --is-ancestor "$ORIGIN_TO_SHA" "$SHA"; then
 fi
 
 REQUIRED_CHECKS_JSON="$(gh api "repos/${REPO}/branches/${TO}/protection/required_status_checks" --jq '.contexts')"
-mapfile -t REQUIRED_CHECKS < <(echo "$REQUIRED_CHECKS_JSON" | jq -r '.[]')
+# `mapfile` (a.k.a. `readarray`) IS BASH 4. macOS ships bash 3.2.57 as /bin/bash and has since
+# 2007, for licensing reasons that are not going to change, and this script's shebang is
+# `/usr/bin/env bash` -- which finds 3.2 first on a stock Mac. On 3.2 `mapfile` is not a builtin:
+# the line fails with "command not found", `set -e` aborts, and the promote dies before it has
+# said anything about the SHA. Worse on the branch below, had it survived: an UNSET array under
+# `set -u` makes `${#REQUIRED_CHECKS[@]}` an error too, so "no required checks found" -- the guard
+# that exists to refuse promoting blind -- could not have printed either.
+#
+# `while read` into an append is the bash-3.2 form and behaves identically here: check contexts are
+# single-line strings with no whitespace of consequence. `< <(...)` (process substitution) is 3.2.
+REQUIRED_CHECKS=()
+while IFS= read -r _ctx; do
+  [ -n "$_ctx" ] || continue
+  REQUIRED_CHECKS+=("$_ctx")
+done < <(printf '%s' "$REQUIRED_CHECKS_JSON" | jq -r '.[]')
 
 if [[ "${#REQUIRED_CHECKS[@]}" -eq 0 ]]; then
   echo "error: no required status checks found for '$TO'; refusing to promote blind" >&2
