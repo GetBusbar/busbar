@@ -150,6 +150,20 @@ pub enum MaskKind {
     BoundedPrefix,
 }
 
+impl MaskKind {
+    /// Every kind, in one place: the closed set the arrival gate switches on.
+    ///
+    /// The list is what makes the set closed to a reader as well as to the compiler, exactly as
+    /// [`SelectorForm::ALL`] does for the selector forms. A consumer matches these arms with no
+    /// catch-all, so a kind added here has to be answered everywhere before anything compiles.
+    pub const ALL: [MaskKind; 4] = [
+        MaskKind::SameLengthFill,
+        MaskKind::Nothing,
+        MaskKind::SignatureSpan,
+        MaskKind::BoundedPrefix,
+    ];
+}
+
 /// Which bytes a signature covers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum SignedOver {

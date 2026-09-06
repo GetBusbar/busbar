@@ -100,6 +100,83 @@ fn every_location_form_says_how_it_is_masked() {
     assert!(!ArrivalLocation::Header("x").needs_whole_body());
 }
 
+/// The mask kinds are a closed set, and the set says so out loud.
+///
+/// Every other closed set in the contract carries the same anchor: the list IS the enum, so a kind
+/// added without being named here changes the count and this fails. Without it the set was closed
+/// only by whoever happened to be reading the enum that day.
+#[test]
+fn the_mask_kinds_are_a_closed_set() {
+    assert_eq!(MaskKind::ALL.len(), 4, "the list is the whole enum");
+    let mut seen = MaskKind::ALL.to_vec();
+    seen.sort_by_key(|kind| format!("{kind:?}"));
+    seen.dedup();
+    assert_eq!(seen.len(), MaskKind::ALL.len(), "no kind is listed twice");
+    // Exhaustive, with no catch-all: a new kind stops compiling here rather than being masked by
+    // whatever arm happened to be last.
+    for kind in MaskKind::ALL {
+        match kind {
+            MaskKind::SameLengthFill
+            | MaskKind::Nothing
+            | MaskKind::SignatureSpan
+            | MaskKind::BoundedPrefix => {}
+        }
+    }
+}
+
+/// Every location form's mask kind is one of the closed set's members.
+#[test]
+fn every_location_form_masks_by_a_kind_the_closed_set_names() {
+    let forms = [
+        ArrivalLocation::Header("authorization"),
+        ArrivalLocation::Query("key"),
+        ArrivalLocation::PathSegment(0),
+        ArrivalLocation::FirstFrameJsonPointer("/token"),
+        ArrivalLocation::ClientCert,
+        ArrivalLocation::Signed {
+            over: SignedOver::Url,
+        },
+        ArrivalLocation::HandshakeFrames {
+            max_frames: 2,
+            max_bytes: 64,
+        },
+    ];
+    for form in forms {
+        assert!(
+            MaskKind::ALL.contains(&form.mask()),
+            "{form:?} masks by a kind the closed set does not name"
+        );
+    }
+}
+
+/// The bounded prefix masks the bound the location declared, and no more.
+///
+/// The bound is read off the location itself. It used to be read off a match with a catch-all
+/// arm that answered zero, so a location form that ever masked by bounded prefix without being
+/// named there would have masked NOTHING — a credential left in the cursor for every plane to
+/// read, with nothing failing to say so.
+#[test]
+fn a_bounded_prefix_masks_the_bound_the_location_declared() {
+    let mut cursor = b"hello world, and more".to_vec();
+    let before = cursor.len();
+    let whole = Span::new(0, before);
+    let mut slab = CredentialSlab::with_capacity(64);
+    let masked = slab
+        .mask_as(
+            &mut cursor,
+            whole,
+            &ArrivalLocation::HandshakeFrames {
+                max_frames: 1,
+                max_bytes: 5,
+            },
+        )
+        .expect("room in the slab");
+    assert_eq!(masked.len(), 5, "the declared bound, not the whole span");
+    assert_eq!(slab.read(masked), b"hello");
+    assert_eq!(cursor.len(), before);
+    assert_eq!(&cursor[5..], b" world, and more", "the rest is left alone");
+}
+
 #[test]
 fn a_client_certificate_masks_nothing_because_it_was_never_in_the_bytes() {
     let mut cursor = b"hello".to_vec();
