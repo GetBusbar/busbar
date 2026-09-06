@@ -66,6 +66,19 @@ concurrency:
   group: a2a-conformance-${{ github.ref }}
   cancel-in-progress: true
 
+# LEAST PRIVILEGE, STATED RATHER THAN INHERITED. With no `permissions:` block a workflow takes the
+# repository/org DEFAULT, which is a setting nobody can see from this file and which is write-all on
+# a repo that has never been narrowed. This workflow runs on EVERY branch push and on every pull
+# request, and it writes nothing: no release, no tag, no issue, no package, no commit. Every leg
+# either builds from the checkout or talks to a pinned third-party control on loopback. `contents:
+# read` is what a checkout needs; `actions: read` is for the artifact round-trips between legs.
+# Withholding the rest is the enforcement — a future step that tries to push or file something fails
+# on the API call rather than quietly working, which is the same reasoning verify-deploy.yml gives
+# for withholding `issues: write`.
+permissions:
+  contents: read
+  actions: read
+
 env:
   # NOT COSMETIC, AND NOT A PREFERENCE. a2a-go v2.4.0 serialises task status timestamps in the
   # HOST's local zone instead of UTC, violating SPEC 5.6.1. On a UTC host the offset is zero, the
