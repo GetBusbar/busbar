@@ -77,6 +77,19 @@ pub(super) fn transport_error(hop: &Hop<'_>, e: &EgressSendError) -> AttemptOutc
     }
 }
 
+/// One PROTOCOL-DECLARED relayed response header name, as a header name to emit under.
+///
+/// The names come from a protocol's own declaration, and a declaration is written the way the header
+/// is SPELLED in its vendor's documentation — `x-amzn-RequestId` is how the doc comments here and on
+/// the writer spell it. `HeaderName::from_static` PANICS on an uppercase byte, so spelling a declared
+/// name the way its vendor does would have aborted the worker on the error-relay path, on a request
+/// that had already reached an upstream. Parsing the bytes instead lowercases the name (the wire form
+/// is case-insensitive, and this is the same name the lookup just matched), and a name that is not a
+/// legal header at all is dropped rather than taking the process with it.
+fn relayed_header_name(name: &str) -> Option<axum::http::HeaderName> {
+    axum::http::HeaderName::from_bytes(name.as_bytes()).ok()
+}
+
 /// The captured upstream error response, read and ready to classify or relay.
 struct UpstreamError {
     status: StatusCode,
@@ -108,7 +121,7 @@ impl UpstreamError {
                 .iter()
                 .filter_map(|name| {
                     let v = r.headers().get(*name)?.clone();
-                    Some((axum::http::HeaderName::from_static(name), v))
+                    Some((relayed_header_name(name)?, v))
                 })
                 .collect()
         } else {
@@ -341,5 +354,48 @@ fn hard_down(
         disposition: Disposition::HardDown,
         err_type: DISPOSITION_HARD_DOWN,
         relay: hop.degraded.then(|| err.relay(hop)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relayed_header_name;
+
+    /// A protocol may declare its relayed header the way its vendor spells it.
+    ///
+    /// The wire form of a header name is case-insensitive and a declaration is documentation as much
+    /// as configuration, so a protocol that declares `x-amzn-RequestId` must be relayable. The name
+    /// is emitted lowercased, which is the same header.
+    #[test]
+    fn a_mixed_case_declared_name_is_relayable() {
+        let name = relayed_header_name("x-amzn-RequestId").expect("a legal header name");
+        assert_eq!(name.as_str(), "x-amzn-requestid");
+        // The all-lowercase spelling of the same header lands on the same name, so what a client
+        // receives does not depend on which spelling its protocol declared.
+        assert_eq!(
+            relayed_header_name("x-amzn-requestid").expect("a legal header name"),
+            name
+        );
+        // The name a lookup matched is the name emitted: a map keyed under one spelling answers the
+        // other, which is what makes parsing rather than panicking safe here.
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(name, axum::http::HeaderValue::from_static("req-1"));
+        assert_eq!(
+            headers
+                .get("x-amzn-RequestId")
+                .and_then(|v| v.to_str().ok()),
+            Some("req-1")
+        );
+    }
+
+    /// A name that is not a legal header at all is dropped, never relayed and never fatal.
+    #[test]
+    fn an_illegal_declared_name_is_dropped_rather_than_fatal() {
+        for illegal in ["x amzn requestid", "x-amzn-\u{1f600}", ""] {
+            assert!(
+                relayed_header_name(illegal).is_none(),
+                "{illegal:?} is not a header name and must not be relayed"
+            );
+        }
     }
 }
