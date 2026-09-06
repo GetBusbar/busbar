@@ -405,6 +405,36 @@ identically, and every 1.5.5 key and minted secret carries over.
   insert `none` for you: whether an upstream needs a credential is a fact about your deployment,
   not something a migration can read off the config file.
 
+One further breaking change is not in that register, because it moves no request, response or
+config byte: it changes how a persisted audit chain's digest is FRAMED.
+
+- 1.6.0 Breaking: the admin audit chain's digest is length-framed, and each entry names the framing
+  it was sealed under. The digest was the SHA-256 of `prev_hash`, `seq`, `ts`, `action`, `resource`,
+  `outcome` and `principal` joined by vertical bars. `resource` and `principal` are free text a
+  caller supplies and neither is validated, so a bar inside one shifted the field boundaries and two
+  different mutations produced one digest: a record of `resource` `hook:x`, `outcome` `rejected`,
+  `principal` `applied|mallory` joins to the same bytes as `resource` `hook:x|rejected`, `outcome`
+  `applied`, `principal` `mallory`. An attacker who could choose one of those fields could therefore
+  present a REJECTED mutation as APPLIED, or move the attribution onto someone who was not there,
+  and the chain verifier passed it — the digest really was the digest of those bytes. A log whose
+  digest can be made to agree with a lie is not evidence, so the framing is replaced rather than
+  narrowed: every field now carries its own big-endian length ahead of its bytes, under a leading
+  scheme tag that is itself digested, and no field's content can move a boundary. Entries carry a
+  `digest_scheme` naming which framing sealed them (1 = the legacy bar join, 2 = the length-framed
+  one), verification recomputes each entry under its OWN scheme, and every new entry is sealed under
+  scheme 2. The 1.6.0 audit-record chain gains the related fix: each optional field (the
+  destination, the parent unit, the two hook heads, the four control references, the refusal step
+  and the correlation hash) now digests a presence marker ahead of its value, so an ABSENT field and
+  an EMPTY or ZERO one are no longer the same bytes. **Migration:** none for an operator, and no
+  re-sealing. A chain written by 1.5.5 keeps verifying byte for byte: its entries carry no
+  `digest_scheme`, which reads as the legacy framing, and they re-encode to the same eight fields
+  they arrived as. A chain that spans the upgrade is legitimately MIXED — legacy entries then
+  length-framed ones, one sequence, linked — and verifies as one chain. What must change is any
+  EXTERNAL re-implementation of the digest: a SIEM, exporter or attestation tool that recomputed
+  `sha256(prev_hash|seq|ts|action|resource|outcome|principal)` itself must read each entry's
+  `digest_scheme` and use the length-framed encoding for scheme 2, or it will report every entry
+  written by 1.6.0 as tampered. Entries written before the upgrade need no change there either.
+
 Four retired 1.5.x spellings that were never the documented form are rewritten for you rather
 than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap
 `at: <stage>` key are rewritten by `busbar --migrate-config` and auto-migrated in a persisted
