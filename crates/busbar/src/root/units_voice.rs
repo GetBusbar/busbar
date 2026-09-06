@@ -3125,4 +3125,189 @@ mod tests {
             .expect("verifies");
         assert_eq!(replayed.len(), 2, "the posting, then the carry");
     }
+
+    // ── the decode step's own scaffolding ──────────────────────────────────────────────────────
+    //
+    // The production half of this file names no wire shape and no dialect, and it stays that way.
+    // But the decode step's whole content is the plane's reading of a frame, so a cell that drove
+    // it from a shape this module chose would be asserting its own answer. These build the four
+    // borrowed views and the one resource a plugin call is given, so the plane's own decoder can be
+    // handed a real frame.
+
+    /// A leaking arena. Test-only, run a bounded number of times per process: the trait's
+    /// allocators hand back borrowed slices, so an honest double either leaks or is unsafe.
+    struct CellArena;
+
+    impl busbar_contract::bounded::Arena for CellArena {
+        fn alloc_bytes<'a>(
+            &'a self,
+            src: &[u8],
+        ) -> Result<busbar_contract::bounded::ArenaBytes<'a>, busbar_contract::bounded::ArenaBudget>
+        {
+            let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
+            Ok(busbar_contract::bounded::ArenaBytes::new(leaked))
+        }
+
+        fn alloc_str<'a>(
+            &'a self,
+            src: &str,
+        ) -> Result<&'a str, busbar_contract::bounded::ArenaBudget> {
+            Ok(Box::leak(src.to_string().into_boxed_str()))
+        }
+
+        fn alloc_spans<'a>(
+            &'a self,
+            src: &[(&'a str, busbar_contract::bounded::Span)],
+        ) -> Result<
+            &'a [(&'a str, busbar_contract::bounded::Span)],
+            busbar_contract::bounded::ArenaBudget,
+        > {
+            Ok(Box::leak(src.to_vec().into_boxed_slice()))
+        }
+
+        fn remaining(&self) -> usize {
+            usize::MAX
+        }
+    }
+
+    struct CellConfig;
+
+    impl busbar_contract::unit::ConfigView for CellConfig {
+        fn get_str(&self, _key: &str) -> Option<&str> {
+            None
+        }
+        fn get_int(&self, _key: &str) -> Option<i64> {
+            None
+        }
+        fn get_bool(&self, _key: &str) -> Option<bool> {
+            None
+        }
+    }
+
+    /// The socket surface, composed the way a voice session arrives on it.
+    struct CellTransport;
+
+    impl busbar_contract::unit::TransportView for CellTransport {
+        fn key(&self) -> &'static str {
+            "ws"
+        }
+        fn chain(&self) -> &[&'static str] {
+            &["tcp", "tls", "http", "ws"]
+        }
+        fn fact(&self, _key: &str) -> Option<&str> {
+            None
+        }
+    }
+
+    /// One inbound frame carrying `body`.
+    fn one_frame(body: &str) -> Vec<busbar_contract::wire::Frame> {
+        vec![busbar_contract::wire::Frame {
+            direction: busbar_contract::wire::Direction::Inbound,
+            stream: busbar_contract::ids::StreamId(0),
+            bytes: busbar_contract::bounded::SlabBytes::new(std::sync::Arc::from(body.as_bytes())),
+            meta: busbar_contract::wire::FrameMeta::default(),
+        }]
+    }
+
+    /// A client event on an open session resolves to a turn or to a frame of the turn already open,
+    /// and a carrier frame this session's dialect cannot read resolves to neither.
+    ///
+    /// The decode step of this plane carries a shape the pump already read, so the question the step
+    /// answers is not "what are these bytes" — it is whether the class the loop goes on to price and
+    /// audit under is the class the plane's own reader produced. Three answers are driven.
+    ///
+    /// A first client event OPENS a turn: any client event does, not audio specifically, because a
+    /// session's first frame is routinely `session.update` and there is no reason to hold a session
+    /// without a unit to carry its facts and size its hold. A second event on the same session does
+    /// NOT open a second one — it relays onto the turn's own correlation, which is what "one open
+    /// unit per direction" means, and a tool result is exactly that kind of frame. And a frame the
+    /// session's dialect cannot read is refused at the step that read it, rather than opening a unit
+    /// under a class nobody decoded.
+    #[test]
+    fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
+        use busbar_caps::KernelSeal;
+        use busbar_contract::bounded::Labels;
+        use busbar_contract::plane::{Ingress, Plane, PlaneSessionState};
+        use busbar_contract::unit::{Clock, Ctx};
+        use busbar_contract::wire::FrameCursor;
+        use busbar_plane_voice::session::VoiceSessionState;
+
+        let seal = KernelSeal::acquire_for_kernel();
+        let arena = CellArena;
+        let config = CellConfig;
+        let transport = CellTransport;
+        let labels = Labels::new();
+        let clock = Clock {
+            unix_secs: 1_700_000_000,
+            monotonic_nanos: 0,
+        };
+        let plane = VoicePlane::new(UPSTREAMS);
+        let mut state =
+            PlaneSessionState::new(VoiceSessionState::for_dialect(Dialect::OpenaiRealtime));
+
+        // The first client event of the session. `session.update` is what a real client sends
+        // first, and it opens the turn.
+        let frames = one_frame(r#"{"type":"session.update","session":{}}"#);
+        let mut cursor = FrameCursor::new(&frames);
+        let pctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+        let ingress = plane
+            .decode_ingress(&mut cursor, Some(&mut state), &pctx)
+            .expect("a client event this dialect names is readable");
+        let Ingress::Open(draft) = ingress else {
+            panic!("the first client event opens a turn, got {ingress:?}");
+        };
+        let opened = draft.op;
+        let correlation = draft
+            .correlation_out
+            .expect("an opened turn mints the correlation its frames relay under");
+
+        // The class the plane produced is the class the step carries. Not "a" turn class — THE one,
+        // read off the plane's answer rather than restated, so a shape that drifted from the plane's
+        // own vocabulary goes red here instead of pricing under a name nothing declares.
+        let node = node(serviceable());
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        assert_eq!(
+            unit.decode(&UnitToken::mint(&seal), &ctx(1))
+                .into_result(&seal)
+                .expect("a turn proceeds"),
+            opened
+        );
+        // And it is a class this plane DECLARES. A step carrying a class outside the declared set
+        // would be a unit the audit record and the rate card have no row for.
+        for shape in [UnitShape::SessionOpen, UnitShape::Turn, UnitShape::ToolCall] {
+            assert!(
+                <VoicePlane as busbar_contract::plane::PlaneMeta>::OP_CLASSES
+                    .contains(&shape.op_class()),
+                "{shape:?} carries a class this plane never declared"
+            );
+        }
+
+        // A tool result on the same session. It is a client event like any other, and it relays
+        // onto the open turn under that turn's correlation rather than opening a second unit.
+        let frames = one_frame(
+            r#"{"type":"conversation.item.create","item":{"type":"function_call_output","call_id":"c-1","output":"42"}}"#,
+        );
+        let mut cursor = FrameCursor::new(&frames);
+        let pctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+        let ingress = plane
+            .decode_ingress(&mut cursor, Some(&mut state), &pctx)
+            .expect("a tool result is a client event this dialect names");
+        let Ingress::Frame { for_, .. } = ingress else {
+            panic!("a later client event relays, got {ingress:?}");
+        };
+        assert_eq!(for_, Some(correlation));
+
+        // A session bound to the telephony carrier, handed bytes that are not that carrier's shape.
+        // The refusal is raised at the step that read them, and no unit exists to have been given a
+        // class.
+        let mut telephony =
+            PlaneSessionState::new(VoiceSessionState::for_dialect(Dialect::TwilioMediaStreams));
+        let frames = one_frame("not a carrier frame at all");
+        let mut cursor = FrameCursor::new(&frames);
+        let pctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+        assert_eq!(
+            plane.decode_ingress(&mut cursor, Some(&mut telephony), &pctx),
+            Err(busbar_contract::wire::Decode::Malformed)
+        );
+    }
 }

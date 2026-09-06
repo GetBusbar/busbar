@@ -449,9 +449,10 @@
         "status": "mapped",
         "note": "testing/voice-conformance/legs/spec-per-dialect.sh; the per-dialect spec battery includes decode-shape checks",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-voice",
-          "note": "a session's wire dialect is settled at the door rather than decoded per unit, so no root-voice cell drives a decode-step refusal"
+          "test": "crates/busbar/src/root/units_voice.rs::a_client_event_opens_a_turn_and_a_later_one_relays_onto_it",
+          "note": "the dialect is settled at the door, but the per-frame read is not: a first client event on a realtime session opens a turn and mints the correlation, and the class the step carries is read off the plane's own answer rather than restated, so a shape that drifted from the plane's vocabulary goes red rather than pricing under a name nothing declares (every shape's class is asserted to be one the plane DECLARES). A tool result on the same session relays onto that turn's correlation instead of opening a second unit, which is what one-open-unit-per-direction means. A telephony-carried session handed bytes that are not that carrier's shape is refused Malformed at the step that read them, so no unit exists to have been given a class"
         }
       },
       "authenticate": {
