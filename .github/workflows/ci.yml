@@ -827,6 +827,44 @@ jobs:
       - name: Public-hygiene gate
         run: python3 scripts/public-hygiene-lint.py --root .
 
+  # SERVICE-IMAGE PINS. The durable-store QA cycle (docs/design/store-qa-cycle.md §2.1) rests on the
+  # four backend services being the SAME BYTES everywhere they are stood up. They were not: the
+  # service containers were provisioned in five places — this file's `check` and `coverage` jobs,
+  # release-stage.yml's `gate`, plugin-ci.yml's `build-test-signoff`, and scripts/release-check.sh.
+  # The four workflows agreed on a digest; release-check.sh, which is what the QA GATE runs, used
+  # floating tags. So the gate that decides a release was not pinned to the bytes CI was pinned to,
+  # and nothing said so out loud.
+  #
+  # testing/fleet-fixtures/service-images.tsv is now the one pinned list. Actions cannot read a file
+  # into a `services:` block, so the `image:` lines must stay literal and the pin cannot be enforced
+  # by construction — this lint is what enforces it instead. A digest bump lands in one commit and
+  # this job is what proves the fan-out was complete rather than three-quarters complete.
+  #
+  # FAST TIER, deliberately, for the same reason workspace-deps-lint is: a pin can drift on ANY
+  # branch push, the whole job is one python process over tracked files with no toolchain, and a
+  # drift first noticed on a dev merge is a drift that has already been reviewed as if it were
+  # pinned. Self-test runs FIRST — every rule is proven RED on a planted fixture (a bumped digest, a
+  # floating tag, an image with no row, a pin nobody uses, an empty scan) before the lint's verdict
+  # on the real tree is trusted, and it includes the ZERO-ROWS-IS-RED proof against the real
+  # testing/fleet-fixtures/verdict.sh.
+  service-image-pins:
+    name: service image pins (one pinned list, every workflow reads it)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Service-image lint self-test (every rule proven RED)
+        run: scripts/service-images-check.sh --selftest
+      - name: Service-image pin gate
+        run: scripts/service-images-check.sh
+      # The local store fixtures read the same table. Their self-test needs NO docker: it asserts the
+      # properties of the table and of the script's own rules — that the local port band stays
+      # disjoint from the shadow oracle's 487xx/488xx band, that a namespace token cannot reach DDL
+      # unvalidated, that a valkey namespace never lands on the index `url` hands out, that `down` is
+      # safe with nothing up. Each of those is a way this fixture could go quietly wrong on a laptop,
+      # where nobody is watching.
+      - name: Store-service fixtures self-test
+        run: testing/fleet-fixtures/store-services.sh --selftest
+
   # EXECUTABLE-CONFIG gate. Every config-grammar guard that existed before this one was scoped to
   # DOCS — `crates/busbar/tests/docs_examples.rs` reads `docs/**`, marketing's check-config-blocks.mjs
   # reads what it PUBLISHES. Nothing ever looked at the configs a MACHINE runs: the `cat > config.yaml
@@ -1814,6 +1852,7 @@ jobs:
       - config-stability
       - generated-artifact-drift
       - public-hygiene
+      - service-image-pins
       - executable-config-lint
       - no-default-features
       - no-plugins-gate
@@ -1846,6 +1885,7 @@ jobs:
         config-stability|fast|${{ needs.config-stability.result }}
         generated-artifact-drift|fast|${{ needs.generated-artifact-drift.result }}
         public-hygiene|fast|${{ needs.public-hygiene.result }}
+        service-image-pins|fast|${{ needs.service-image-pins.result }}
         shadow-oracle|fast|${{ needs.shadow-oracle.result }}
         llm-conformance|fast|${{ needs.llm-conformance.result }}
         design-bindings|fast|${{ needs.design-bindings.result }}

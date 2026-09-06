@@ -432,6 +432,35 @@ else
 fi
 end_group
 
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+begin_group "STORE-QA — the durable-store QA cycle's service pins hold, and its fixtures still work"
+# docs/design/store-qa-cycle.md is the standing loop that keeps busbar's four durable stores
+# (sqlite, postgres, mysql, valkey) proven run after run. Its foundation is that the backend
+# containers are the SAME BYTES everywhere they are stood up — and they were not: four workflows
+# agreed on a digest while scripts/release-check.sh, the script the qa gate runs, used floating
+# tags. testing/fleet-fixtures/service-images.tsv is the one pinned list; the lint is what keeps
+# every workflow reading it, since Actions cannot read a file into a `services:` block.
+#
+# This group is in the DONE readout because the cycle is a loop, not a task: a pin that drifts, or a
+# fixture whose port band creeps into the shadow oracle's, breaks a store proof quietly and much
+# later. Both self-tests run FIRST — a lint whose own rules have stopped firing is worse than none.
+if [ -f scripts/service-images-check.sh ]; then
+  step "service-images-check --selftest"      bash scripts/service-images-check.sh --selftest
+  step "service-images-check (every workflow image is the pinned digest)" bash scripts/service-images-check.sh
+else
+  absent_step "service image pin gate" "scripts/service-images-check.sh"
+fi
+if [ -f testing/fleet-fixtures/store-services.sh ]; then
+  # No docker needed: the fixture self-test asserts properties of the pinned table and of the
+  # script's own rules — the local port band stays disjoint from the oracle's 487xx/488xx band, a
+  # namespace token cannot reach DDL unvalidated, a valkey namespace never lands on the index `url`
+  # hands out, `down` is safe when nothing is up.
+  step "store-services fixtures --selftest"   bash testing/fleet-fixtures/store-services.sh --selftest
+else
+  absent_step "local store fixtures" "testing/fleet-fixtures/store-services.sh"
+fi
+end_group
+
 # ── THE ONE VERDICT ─────────────────────────────────────────────────────────────────────────────
 hdr "1.6.0 DONE-ORACLE READOUT"
 fail=0; green=0; total=0
