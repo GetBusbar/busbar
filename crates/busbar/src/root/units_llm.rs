@@ -200,6 +200,7 @@ impl LlmNode {
             provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: hold,
+            now: busbar_substrate::store::now_ms(),
         });
 
         match entered {
@@ -1550,6 +1551,7 @@ mod tests {
                 provider_of_open_session: false,
                 zero_hold_tick: false,
                 arrival: hold,
+                now: busbar_substrate::store::now_ms(),
             })
             .expect("the uncapped table takes the unit");
         let ctx = UnitCtx {

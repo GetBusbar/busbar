@@ -520,6 +520,7 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
             provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            now: 0,
         })
         .expect("the empty table takes the first unit");
 
@@ -623,5 +624,6 @@ fn client(key: u64) -> Enter {
         provider_of_open_session: false,
         zero_hold_tick: false,
         arrival: arrival_hold(&Kernel::new(), &TestDoor, principal()),
+        now: 0,
     }
 }

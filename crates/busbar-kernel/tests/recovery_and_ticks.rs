@@ -133,6 +133,7 @@ fn a_lost_task_is_settled_within_one_tick() {
             provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            now: 0,
         })
         .map_err(|_| ())
         .expect("under the cap");
@@ -191,6 +192,47 @@ fn a_lost_task_is_settled_within_one_tick() {
     .is_none());
 }
 
+/// A unit is idle from the moment it entered, not from the moment the node booted.
+///
+/// The slot's progress clock started at zero, so on a node that had been up longer than one unit's
+/// maximum duration every unit was born already over the bound: the first sweep after it entered
+/// called it stalled, took its hold, and settled a unit that had done nothing wrong. The clock
+/// starts when the unit does.
+#[test]
+fn a_unit_that_just_entered_is_never_already_stalled() {
+    let kernel = Kernel::new();
+    let table = InFlight::new(4, 0);
+    // A node that has been up for a day, and a unit arriving on it right now.
+    let now = 86_400_000;
+    let slot = table
+        .insert(Enter {
+            key: UnitKey::new(3),
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            now,
+        })
+        .map_err(|_| ())
+        .expect("under the cap");
+
+    assert_eq!(slot.idle_for(now), 0, "it has been here no time at all");
+    assert_eq!(
+        sweep(&slot, StepName::Route, now, 30_000, true),
+        Sweep::Running,
+        "the sweep swept a unit that had just arrived"
+    );
+    // And it is stalled once it has actually been quiet for the duration.
+    assert_eq!(
+        sweep(&slot, StepName::Route, now + 30_000, 30_000, true),
+        Sweep::Stalled {
+            at: StepName::Route
+        }
+    );
+}
+
 #[test]
 fn a_slow_unit_is_not_a_lost_one() {
     let kernel = Kernel::new();
@@ -204,6 +246,7 @@ fn a_slow_unit_is_not_a_lost_one() {
             provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            now: 0,
         })
         .map_err(|_| ())
         .expect("under the cap");

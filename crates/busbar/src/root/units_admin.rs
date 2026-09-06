@@ -1874,6 +1874,7 @@ impl AdminNode {
             provider_of_open_session: false,
             zero_hold_tick: false,
             arrival,
+            now: busbar_substrate::store::now_ms(),
         });
 
         let answer = match entered {

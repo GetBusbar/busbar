@@ -31,6 +31,7 @@ fn enter(kernel: &Kernel, key: u64, origin: OriginKind) -> Enter {
         provider_of_open_session: false,
         zero_hold_tick: false,
         arrival: arrival_hold(kernel, &TestDoor, principal()),
+        now: 0,
     }
 }
 

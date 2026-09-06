@@ -360,6 +360,9 @@ pub struct Enter {
     pub zero_hold_tick: bool,
     /// The arrival hold minted at the door of the table.
     pub arrival: Hold,
+    /// When the unit entered. The slot's progress clock starts here, so a unit is idle from the
+    /// moment it arrived and never from the moment the node booted.
+    pub now: Millis,
 }
 
 /// The node's live units.
@@ -460,7 +463,7 @@ impl InFlight {
             step: StepState::new(),
             cancel: CancelToken::new(),
             marked: AtomicBool::new(false),
-            last_progress: AtomicU64::new(0),
+            last_progress: AtomicU64::new(request.now),
         });
         self.shard(request.key)
             .lock()
