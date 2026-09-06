@@ -598,6 +598,17 @@ pub(crate) struct Runner {
     /// decision about THIS field as much as about retention.
     pub(crate) authorised: super::upstream::Authorised,
     pub(crate) arguments: serde_json::Value,
+    /// THE OPERATOR'S APPROVED `inputSchema`, carried so the runner can re-run the argument guard
+    /// over the arguments the gathered answers PRODUCE. `create_task` ran that guard (inside
+    /// `upstream::authorise`) over the arguments as the caller first sent them; the answers arrive
+    /// afterwards, through `tasks/update`, so without this the document that travels is not the
+    /// document that was screened. See `super::answers`.
+    pub(crate) input_schema: Option<serde_json::Value>,
+    /// Every key this capability's ask rounds — synchronous and task-scoped alike — declared, taken
+    /// from the operator's registration rather than from the caller-filtered `task_asks` below: what
+    /// an answer is ALLOWED to bind is the operator's declaration, and a round dropped because this
+    /// caller could not answer it must not thereby become a key the caller may smuggle.
+    pub(crate) declared_ask_keys: Vec<String>,
     pub(crate) server_id: String,
     pub(crate) max_rounds: u32,
     /// The rounds of input busbar asks its caller for from inside the task, already filtered to
@@ -755,11 +766,39 @@ async fn dispatch(task: Arc<McpTask>, runner: Runner) {
     }
     task.set_working(host.clock_now_ms());
 
-    // (2) THE ANSWERS BECOME ARGUMENTS. An `ask_caller`/`task_ask_caller` entry keyed `user_name`
-    // supplies the tool argument `user_name` — which is what an operator writing a confirmation
-    // gate means by it, and what makes the gathered answer observable in the task's own result
-    // rather than discarded at busbar.
-    let arguments = merge_answers(&runner.arguments, &task.answers());
+    // (2) THE ANSWERS BECOME ARGUMENTS — THROUGH THE SAME SCREEN THE SYNCHRONOUS PATH USES. An
+    // `ask_caller`/`task_ask_caller` entry keyed `user_name` supplies the tool argument
+    // `user_name`, which is what an operator writing a confirmation gate means by it.
+    //
+    // AND THE MERGE IS SCREENED HERE, NOT MERELY PERFORMED. `create_task` ran the whole guard set —
+    // the egress plan and the schema-aware URL/host walk inside `upstream::authorise` — over the
+    // arguments as the caller FIRST sent them. The answers arrive afterwards, through
+    // `tasks/update`, and used to be inserted verbatim over those arguments: a benign create naming
+    // a public `url` followed by an update rewriting `url` to a cloud-metadata address dispatched
+    // the rewritten call, because the screen had inspected one payload and a different one
+    // travelled. `answers::merge_guarded` is the one implementation both paths call.
+    //
+    // A REFUSAL FAILS THE TASK rather than dispatching a narrowed call: the caller has already been
+    // answered with a task id, so `status: "failed"` with the inlined reason is the only channel
+    // left, and it is the same channel a protocol error uses.
+    let arguments = match super::answers::merge_guarded(
+        &runner.server_id,
+        runner.declared_ask_keys.iter().map(String::as_str),
+        &runner.arguments,
+        &task.answers(),
+        runner.input_schema.as_ref(),
+        runner.authorised.policy,
+    ) {
+        Ok(merged) => merged,
+        Err(refusal) => {
+            task.fail(
+                TASK_PROTOCOL_ERROR_CODE,
+                refusal.to_string(),
+                host.clock_now_ms(),
+            );
+            return;
+        }
+    };
 
     // (3) THE UPSTREAM LEG, through the SAME bounded, per-round-gated loop the synchronous path
     // uses. Not a second dispatcher: an upstream's own `input_required` must terminate at busbar on
@@ -914,28 +953,6 @@ const TASK_PROTOCOL_ERROR_CODE: i64 = -32603;
 use super::inputreq::Outcome::Completed as Ok_;
 use super::inputreq::Outcome::Refused as Err_;
 use super::inputreq::Outcome::UpstreamFailed as Upstream_;
-
-/// Merge the caller's gathered ask answers into the tool arguments, under the operator's own keys.
-///
-/// A CLONE rather than a mutation of the request's arguments, because the arguments were already
-/// digested into the request-state seal before this ran: mutating them would make a retry's digest
-/// disagree with the one the seal was minted over.
-fn merge_answers(
-    arguments: &serde_json::Value,
-    answers: &serde_json::Map<String, serde_json::Value>,
-) -> serde_json::Value {
-    if answers.is_empty() {
-        return arguments.clone();
-    }
-    let mut merged = arguments
-        .as_object()
-        .cloned()
-        .unwrap_or_else(serde_json::Map::new);
-    for (key, value) in answers {
-        merged.insert(key.clone(), value.clone());
-    }
-    serde_json::Value::Object(merged)
-}
 
 /// The task-scoped ask rounds for a tool, filtered to what this caller declared it can answer.
 ///
