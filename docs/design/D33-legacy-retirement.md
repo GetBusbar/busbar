@@ -254,3 +254,43 @@ accumulate exactly where the migration has *succeeded*, so the naive reach count
 precisely where the work is finished. Any future legacy-reach number in this project should be taken
 with comments stripped (as `scripts/plane-purity-lint.sh` already does) or it will send the next
 agent to clean a crate that is already clean.
+
+## 6. Wave 0, executed — the proof
+
+Two cuts landed (the 13 diagnostics constants; the worker/detached/profile/protocol-decl/TLS-config
+spellings). Composition-root `busbar_core::` reach, code lines only, comments excluded:
+
+| | before | after |
+|---|---|---|
+| distinct `busbar_core::` symbols | 56 | **34** |
+| `busbar_core::` call sites across `main.rs` + `root/` | 70 | **38** |
+| of those, in `main.rs` | 26 | **20** |
+
+The residue is not spelling: `state::App`, `boot::*`, `plane_host::*`, `plane::registry::*`,
+`governance::GovState`, `cost::CostModel`, `egress::seam::CoreHostlessEgress`,
+`admin::planeverbs::CorePlaneAdminEnvelope`, `plane::config::config_sections`. Every one is either a
+core-owned implementation of a substrate trait, or blocked on a landing named in §3.
+
+Gates: `construction-gate.sh --summary` **byte-identical to the baseline** (the tree's six
+pre-existing red rows unchanged, no new one, every §1.1 ceiling unmoved).
+`plane-purity-lint.sh --strict` **byte-identical to the baseline** (RED on KEY 379/378, BACKWARDS
+33/29, test-reach llm 24/20 — all pre-existing, verified by running the lint against the base
+`main.rs` and diffing). `cargo build --workspace`, `cargo fmt --check`,
+`cargo clippy -p busbar --all-targets` clean.
+
+Oracle, 378 cells over `^(billing|llm|admin\.ops|boot|config)\|`, `--strict
+--allow-harness-skew`:
+
+- against the 1.5.5 golden: 371 PASS, **7 FAIL**, all `admin.ops` — `GetAudit /items/0/seq 7→8`,
+  `GetKeys /items/len 3→4`, `GetUsage /by_key/len 1→2`, `GetPools /members/0/ok 1→2`, `GetGroups`
+  content-length.
+- **the identical 7, with the identical values, on a release binary built from the unmodified base
+  `main.rs`.** They are an artefact of recording a 385-cell *filtered* subset against a golden
+  recorded over the full 885: the failing cells are exactly the ones whose value counts how many
+  earlier cells ran (`seq`, `len`, `ok`). Nothing to do with either cut.
+- **base recording vs cut recording, direct: 378 PASS, 0 FAIL, exit 0.** Byte-identical. The money
+  path is untouched, as it must be.
+
+The lesson for the next filtered oracle run: **a filter changes the answer for any cell that counts
+prior cells.** Diff a filtered candidate against a filtered *base*, never against the full golden,
+or seven cells will accuse an innocent commit.
