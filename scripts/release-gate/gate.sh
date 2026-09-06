@@ -263,6 +263,39 @@ STUB
     fi
   fi
 
+  # ── CASE 5: an EMPTY plugin expectation is refused, not matched ───────────────────────────────
+  # `grep -qw ""` matches any non-empty line, so a contract that lost expect_signature turned the
+  # one functional #52 row into "the alias appeared at all" and recorded PASS on a binary that
+  # refuses every signed plugin. This is the only case in the file whose old behaviour was PASS on
+  # a genuinely broken artifact.
+  local refusing_row="sqlite  1.0.4  sqlite  unsigned  refused  this build embeds no busbar release key"
+  if probe_row_matches "$refusing_row" "" ""; then
+    nope "an EMPTY signature/status expectation still MATCHED a row that says 'unsigned refused' — #52 would ship green"
+  else
+    ok "an empty signature/status expectation is refused rather than matching everything"
+  fi
+  if probe_row_matches "$refusing_row" "null" "null"; then
+    nope "a 'null' expectation (the shape jq -er prints for a key that is GONE) was treated as a real expectation"
+  else
+    ok "a 'null' expectation is refused rather than blamed on the artifact"
+  fi
+  local good_row="sqlite  1.0.4  sqlite  first-party  ready"
+  if probe_row_matches "$good_row" "first-party" "ready"; then
+    ok "a genuinely first-party/ready row still matches its real expectations"
+  else
+    nope "the matcher no longer accepts a real first-party/ready row — the fix broke the pass path"
+  fi
+  if probe_row_matches "$refusing_row" "first-party" "ready"; then
+    nope "an 'unsigned/refused' row matched first-party/ready"
+  else
+    ok "an unsigned/refused row does not match first-party/ready"
+  fi
+  if [ -n "$(probe_expectations_absent sqlite first-party '')" ]; then
+    ok "probe_expectations_absent names the field that went missing"
+  else
+    nope "probe_expectations_absent did not name an empty expect_status"
+  fi
+
   echo
   if [ "$rc_bad" = 0 ]; then echo "release-gate selftest: the gate's floors, the staged-record digests and the version anchors all hold"; return 0; fi
   echo "release-gate selftest: FAILED"; return 1
