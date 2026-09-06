@@ -55,6 +55,7 @@ for raw in "$d"/raw/*/; do
 done
 rm -f "$specs"
 echo "renormalized $n cells in $d ($kept with their recorded readback kept; $unknown not in cells.json, untouched)"
+
 # ZERO CELLS IS NOT SUCCESS, AND NEITHER IS A CELL THAT COULD NOT BE WRITTEN. The caller uses the
 # exit status to decide whether the recording it just re-normalized can be reviewed as one; a run
 # that touched nothing (wrong directory, a recording with no raw/ tree) or that skipped a cell it
@@ -65,5 +66,55 @@ if [ "$n" -eq 0 ]; then
 fi
 if [ "$failed" -ne 0 ]; then
   echo "renormalize.sh: ${failed} cell(s) could not be re-normalized (named above); the recording is not fully re-normalized" >&2
+  exit 1
+fi
+
+# ── THE RECORDING NOW SAYS WHICH HARNESS PRODUCED THE CELLS IT HOLDS ─────────────────────────────
+# renormalize.sh is itself in the harness-rev file set (it decides what a recording's cells say), so
+# a recording it has rewritten was NOT produced by the harness its meta.json still names. Left
+# unstamped, the recording carries the rev of the run that recorded it while holding cells this
+# revision of normalize.py wrote — and diff-cells' skew guard, whose entire job is to refuse a pair
+# of recordings made under different harnesses, compares the two stale stamps, finds them equal and
+# says nothing. The rewrite is invisible in exactly the field that exists to make it visible.
+#
+# So the rev is re-stamped here, and the OLD one is pushed onto harness_rev_history (the same place
+# a re-record puts it) with a note naming this script and how many cells it rewrote. Nothing else in
+# meta.json is touched: `recorded`, `at`, `binary_sha256` and `binary` still describe the recording
+# run, because that run is still what produced the raw captures.
+if [ -f "$d/meta.json" ]; then
+  # shellcheck source=harness-rev.sh
+  source "${here}/harness-rev.sh"
+  if ! python3 - "$d/meta.json" "$(harness_rev)" "$n" <<'PY'
+import json, sys, datetime
+p, rev, n = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(p, encoding="utf-8") as f:
+        m = json.load(f)
+except Exception as e:
+    sys.exit(f"renormalize.sh: {p} is not readable JSON ({e}); refusing to leave it half-stamped")
+old = m.get("harness_rev")
+if old == rev:
+    sys.exit(0)
+if old:
+    m.setdefault("harness_rev_history", []).append(old)
+m["harness_rev"] = rev
+note = (f"RE-NORMALIZED {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')} by renormalize.sh: "
+        f"{n} cell(s) rewritten from the recorded raw captures under this harness revision. No cell was "
+        f"re-recorded and the binary is unchanged; the rev moved because the code that decides what a "
+        f"normalized cell SAYS did.")
+m["harness_rev_note"] = f"{note} | {m['harness_rev_note']}" if m.get("harness_rev_note") else note
+with open(p + ".tmp", "w", encoding="utf-8") as f:
+    json.dump(m, f, indent=2)
+    f.write("\n")
+import os
+os.replace(p + ".tmp", p)
+print(f"renormalize: re-stamped harness_rev {(old or 'none')[:12]} -> {rev[:12]} in {p}")
+PY
+  then
+    echo "renormalize.sh: could not re-stamp harness_rev in $d/meta.json — the recording's cells were rewritten but it still claims the old harness" >&2
+    exit 1
+  fi
+else
+  echo "renormalize.sh: $d has no meta.json, so the rewritten cells carry no harness revision at all" >&2
   exit 1
 fi
