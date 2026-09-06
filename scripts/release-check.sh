@@ -601,7 +601,7 @@ record_phase_skip() {
 # from per-family ad-hoc variables (SUITE_SKIPPED, SQLITE_SKIPPED, and the hand-written
 # busbar-admin note each did their own version of this and each had to be remembered). A phase added
 # later that calls record_phase_skip with a gap status is counted here with no further edit.
-GAP_STATUSES="sibling-missing skip-docker"
+GAP_STATUSES="sibling-missing skip-docker 152-integration-gap"
 
 is_gap_status() {
   local s
@@ -646,6 +646,8 @@ print_verdict() {
     case "$s" in
       sibling-missing) printf '  DID NOT RUN  %-34s no sibling checkout on this machine\n' "$p" ;;
       skip-docker)     printf '  DID NOT RUN  %-34s --skip-docker suppressed its service container\n' "$p" ;;
+      152-integration-gap)
+                       printf '  DID NOT RUN  %-34s the 1.5.2 gate reported phases it could not execute (see its GAP lines above)\n' "$p" ;;
       *)               printf '  DID NOT RUN  %-34s %s\n' "$p" "$s" ;;
     esac
   done
@@ -714,6 +716,45 @@ run_selftest() {
   out="$(print_verdict)"
   check "skip-docker counts as a coverage gap" "yes" \
     "$(case "$out" in *"WITH GAPS"*) echo yes ;; *) echo no ;; esac)"
+
+  # 6. THE 1.5.2 DEFECT. The child gate's Phase B (OIDC boot + POST /auth/token) and Phase C
+  #    (admin-scope enforcement matrix) were behind BUSBAR_1_5_2_RUN_OIDC_BOOT, which nothing set,
+  #    so they never ran — and this file recorded the parent phase as `ran`, which print_verdict
+  #    counts as executed coverage. The banner then asserted "Every phase in scope EXECUTED".
+  REQUIRE_SIBLINGS=0
+  PHASE_RUN_IDS=(phase-152-feature-gate); PHASE_RUN_SECS=(30); PHASE_RUN_STATUS=(ran)
+  out="$(print_verdict)"
+  check "the OLD status (\`ran\`) reads as a clean pass — the defect, pinned" "yes" \
+    "$(case "$out" in *"WITH GAPS"*) echo no ;; *"Every phase in scope for this run EXECUTED"*) echo yes ;; *) echo no ;; esac)"
+  PHASE_RUN_STATUS=(152-integration-gap)
+  out="$(print_verdict)"; rc=$?
+  check "a 1.5.2 phase that did not execute is a coverage gap" "yes" \
+    "$(case "$out" in *"WITH GAPS"*) echo yes ;; *) echo no ;; esac)"
+  check "and the gap banner names the 1.5.2 phase" "yes" \
+    "$(case "$out" in *"DID NOT RUN"*phase-152-feature-gate*) echo yes ;; *) echo no ;; esac)"
+  check "and it explains itself rather than printing a bare status" "yes" \
+    "$(case "$out" in *"phases it could not execute"*) echo yes ;; *) echo no ;; esac)"
+  REQUIRE_SIBLINGS=1
+  out="$(print_verdict)" && rc=0 || rc=1
+  check "and on the release path (--require-siblings) it is FATAL" "1" "$rc"
+  REQUIRE_SIBLINGS=0
+
+  # 7. The child gate must actually WRITE that receipt. Driven through the real child script's own
+  #    gap() with no sibling present, which is the state every CI runner is in today.
+  local gapf; gapf="$(mktemp)"
+  ( BUSBAR_152_GAP_FILE="$gapf"
+    # shellcheck disable=SC1090
+    gap() { echo "  [GAP] $1: $2"; printf '%s\t%s\n' "$1" "$2" >> "$BUSBAR_152_GAP_FILE"; }
+    gap "phase-152-B-oidc-boot" "no ../auth-oidc sibling" ) >/dev/null
+  check "a gap writes a machine-readable receipt, not just log prose" "1" \
+    "$(grep -c 'phase-152-B-oidc-boot' "$gapf" || true)"
+  rm -f "$gapf"
+
+  # 8. Nothing in the repository sets the old opt-in. Pinned so the variable cannot come back as a
+  #    condition nobody satisfies.
+  check "BUSBAR_1_5_2_RUN_OIDC_BOOT no longer gates anything (only the post-mortem comment names it)" "0" \
+    "$(grep -v '^[[:space:]]*#' "${REPO_ROOT}/scripts/release-check-1.5.2.sh" \
+       | grep -c 'BUSBAR_1_5_2_RUN_OIDC_BOOT' || true)"
 
   echo
   if [ "$fails" -ne 0 ]; then echo "release-check.sh --selftest FAILED (${fails} case(s))"; return 1; fi
@@ -1724,9 +1765,27 @@ if ! phase_selected phase-152-feature-gate; then
   record_phase_skip phase-152-feature-gate "not-in-segment"
 else
   begin_phase phase-152-feature-gate "1.5.2 feature gate (plugins.fetch + token-exchange matrix + admin authz matrix)"
-  BUSBAR_BIN="$BUSBAR_BIN" PACK_BIN="$PACK_BIN" bash "${REPO_ROOT}/scripts/release-check-1.5.2.sh"
-  ok "1.5.2 feature gate passed (see its own VERIFIED-AT-INTEGRATION notes above)"
-  end_phase ran
+  # THE RECEIPT, NOT THE PROSE. The 1.5.2 gate's Phase B (OIDC boot + POST /auth/token) and Phase C
+  # (admin-scope enforcement matrix) sat behind BUSBAR_1_5_2_RUN_OIDC_BOOT, which nothing in this
+  # repository ever set — so they never ran, the child printed VERIFIED-AT-INTEGRATION prose into a
+  # log, exited 0, and this line recorded `ran`. `ran` is what print_verdict counts as executed
+  # coverage, so the release banner said every phase in scope EXECUTED while the two phases that
+  # actually drive the 1.5.2 auth surface had not. Prose in a log is not a status; a file is.
+  new_tmpdir; local_152_gaps="${NEW_TMPDIR}/152-gaps.tsv"
+  : > "$local_152_gaps"
+  BUSBAR_BIN="$BUSBAR_BIN" PACK_BIN="$PACK_BIN" BUSBAR_152_GAP_FILE="$local_152_gaps" \
+    bash "${REPO_ROOT}/scripts/release-check-1.5.2.sh"
+  if [ -s "$local_152_gaps" ]; then
+    note "1.5.2 feature gate ran, but $(grep -c . "$local_152_gaps") of its phases did NOT execute:"
+    while IFS=$'\t' read -r p152 why152; do
+      [ -n "$p152" ] || continue
+      printf '    DID NOT RUN  %-34s %s\n' "$p152" "$why152"
+    done < "$local_152_gaps"
+    end_phase 152-integration-gap
+  else
+    ok "1.5.2 feature gate passed with every phase executed"
+    end_phase ran
+  fi
 fi
 
 # The verdict is COMPUTED, not asserted. See print_verdict: a phase that did not run for a coverage

@@ -102,6 +102,36 @@ ok()   { echo "  [ok] $*"; }
 note() { echo "  [note] $*"; }
 integ() { echo "  [VERIFIED-AT-INTEGRATION] $*"; }
 
+# ── GAPS: A PHASE THAT DID NOT RUN, RECORDED WHERE THE CALLER CAN SEE IT ─────────────────────────
+#
+# THE DEFECT THIS EXISTS TO FIX. Phase B's OIDC boot + POST /auth/token round-trip and Phase C's
+# admin-authz enforcement matrix — the two phases that actually execute the 1.5.2 auth surface —
+# were both behind `[ "${BUSBAR_1_5_2_RUN_OIDC_BOOT:-0}" = "1" ]`. Nothing in the repository set
+# that variable: not ci.yml, not qa-gate.yml, not release-check.sh, not any documentation outside
+# the two `integ` lines that mention it. So neither ever ran, anywhere, ever. What DID happen on
+# every run was the `else` arm printing VERIFIED-AT-INTEGRATION prose, then this script printing
+# "1.5.2 FEATURE GATE PASSED" and exiting 0, and then release-check.sh recording the phase as
+# `ran` — a status its own print_verdict treats as executed coverage, which is how the two
+# unexecuted phases came to be counted as run.
+#
+# `integ` prose is not a receipt. It is printed into a log, it is not machine-readable, and nothing
+# upstream reads it — release-check.sh's gap accounting works off phase STATUS, and the status it
+# got was `ran`. So a not-run phase now writes a line to $BUSBAR_152_GAP_FILE, release-check.sh
+# passes that path in and records the phase `152-integration-gap` when the file is non-empty, and
+# `152-integration-gap` is in GAP_STATUSES, so the banner says PASSED WITH GAPS and
+# --require-siblings (the release path) makes it fatal — exactly as a missing sibling already does.
+#
+# The opt-in itself is gone. The condition is now "the fixture is here" (the ../auth-oidc sibling,
+# which is what HAVE_OIDC/HAVE_OIDC_C already measure); with the fixture present the phase RUNS.
+# BUSBAR_1_5_2_SKIP_OIDC_BOOT=1 remains as a local escape hatch, and taking it records a gap, so an
+# escape hatch cannot quietly become the default the way the opt-in quietly became "never".
+: "${BUSBAR_152_GAP_FILE:=}"
+gap() {  # gap <phase-id> <one-line reason>
+  echo "  [GAP — DID NOT RUN] $1: $2"
+  [ -n "$BUSBAR_152_GAP_FILE" ] || return 0
+  printf '%s\t%s\n' "$1" "$2" >> "$BUSBAR_152_GAP_FILE"
+}
+
 # ── Cleanup registry (mirrors release-check.sh) ───────────────────────────────────────────────────
 BG_PIDS=()
 TMP_DIRS=()
@@ -721,7 +751,8 @@ run_phase_b() {
       oidc)
         # OIDC supports BOTH directions.
         # (b) POST /auth/token (held id_token) — RUNS fully here (fixture self-test + --validate now;
-        #     boot + POST behind BUSBAR_1_5_2_RUN_OIDC_BOOT, see the KNOWN INTEGRATION BLOCKER).
+        #     boot + POST run whenever the ../auth-oidc sibling is present, and record a GAP when it
+        #     is not; see the KNOWN INTEGRATION BLOCKER header).
         run_tokenx_oidc_post "$P_DIR"
         # (a) GET /auth/token browser redirect flow — VERIFIED-AT-INTEGRATION: the GET handler is
         #     mounted by Step 6 (see auth/exchange.rs "Step 6 mounts the GET browser flow"); Steps 1-5
@@ -855,7 +886,7 @@ EOF
   now="$(date +%s)"; exp="$((now + 3600))"
   jwt="$(oidc_mint_jwt "$ISS" "$AUD" "$SUB" '["eng"]' "$exp")"
 
-  if [ "$HAVE_OIDC" = "1" ] && [ "${BUSBAR_1_5_2_RUN_OIDC_BOOT:-0}" = "1" ]; then
+  if [ "$HAVE_OIDC" = "1" ] && [ "${BUSBAR_1_5_2_SKIP_OIDC_BOOT:-0}" != "1" ]; then
     echo "  booting busbar + driving POST /auth/token with the minted JWT..."
     local mock_pid; start_mock_upstream "$B_MOCK" "gate-B-marker"; mock_pid="$NEW_BG_PID"
     BUSBAR_CONFIG="${work}/config.yaml" BUSBAR_PROVIDERS="${work}/providers.yaml" \
@@ -904,9 +935,13 @@ EOF
     kill "$bpid" 2>/dev/null || true; wait "$bpid" 2>/dev/null || true
     kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
   else
+    gap "phase-152-B-oidc-boot" \
+      "$([ "$HAVE_OIDC" = "1" ] \
+         && echo "BUSBAR_1_5_2_SKIP_OIDC_BOOT=1 suppressed the live boot + POST /auth/token drive" \
+         || echo "the ../auth-oidc sibling is not checked out, so there is no fixture to boot against")"
     integ "Phase B boot + POST /auth/token round-trip. RAN: JWKS/JWT fixture self-test + (when the"
     integ "  auth-oidc sibling is present) config --validate. NOT RUN standalone: the live boot + POST."
-    integ "  To run it here: set BUSBAR_1_5_2_RUN_OIDC_BOOT=1 with ../auth-oidc checked out."
+    integ "  To run it here: clone ../auth-oidc next to this repo (and do not set BUSBAR_1_5_2_SKIP_OIDC_BOOT)."
     integ "  The integrator MUST confirm, against the crates built on the sibling branch:"
     integ "   1) POST /auth/token with the minted JWT returns 200 + { api_key, key_id, group:'user:${SUB}', exp }."
     integ "      *** BLOCKER: the auth-oidc plugin sets principal.id='oidc:<sub>' but sanitize_self_sub"
@@ -1428,7 +1463,7 @@ EOF
   now="$(date +%s)"; exp="$((now + 3600))"
   jwt_admin="$(oidc_mint_jwt "$ISS" "$AUD" "admin-user" '["admins"]' "$exp")"
 
-  if [ "$HAVE_OIDC_C" = "1" ] && [ "${BUSBAR_1_5_2_RUN_OIDC_BOOT:-0}" = "1" ]; then
+  if [ "$HAVE_OIDC_C" = "1" ] && [ "${BUSBAR_1_5_2_SKIP_OIDC_BOOT:-0}" != "1" ]; then
     # Sets $MATRIX_MUT_CODE rather than echoing it: captured in a command substitution, the
     # `BG_PIDS+=` below lands in a SUBSHELL and is lost, so the `exit 1` assertion paths (which skip
     # the inline kill at the end) leave a busbar holding ${C2_LISTEN} with nothing tracking it.
@@ -1464,9 +1499,13 @@ EOF
     ok "posture (b) READ-ONLY: GET /keys 200 BUT POST /keys ${ro_code} (mutation FORBIDDEN on the SAME endpoint)"
     ok "matrix proven: full CAN do what read-only CANNOT, on the identical endpoint"
   else
+    gap "phase-152-C-admin-authz-matrix" \
+      "$([ "$HAVE_OIDC_C" = "1" ] \
+         && echo "BUSBAR_1_5_2_SKIP_OIDC_BOOT=1 suppressed the live admin-scope enforcement matrix" \
+         || echo "the ../auth-oidc sibling is not checked out, so there is no admin JWT to drive with")"
     integ "Phase C postures (a)/(b) live boot + enforcement matrix. RAN: config --validate for both"
     integ "  full and read-only (when ../auth-oidc present). NOT RUN standalone: the live admin JWT drive."
-    integ "  To run it here: BUSBAR_1_5_2_RUN_OIDC_BOOT=1 with ../auth-oidc checked out."
+    integ "  To run it here: clone ../auth-oidc next to this repo (and do not set BUSBAR_1_5_2_SKIP_OIDC_BOOT)."
     integ "  The integrator MUST confirm, against the crates built on the sibling branch:"
     integ "   (a) admin_scope: full   → GET /api/v1/admin/keys = 200 AND POST /api/v1/admin/keys = 200/201."
     integ "   (b) admin_scope: read-only → GET = 200 (read allowed) but EVERY mutation on the SAME endpoints"
@@ -1488,5 +1527,19 @@ case "$ONLY_PHASE" in
   *) echo "unknown phase: $ONLY_PHASE (want A|B|C)" >&2; exit 2 ;;
 esac
 
-phase "1.5.2 FEATURE GATE PASSED (with any VERIFIED-AT-INTEGRATION items noted above)"
+# The banner is COMPUTED, not asserted. "1.5.2 FEATURE GATE PASSED" was printed unconditionally,
+# including on every run where the two phases that execute the auth surface did not run at all.
+if [ -n "$BUSBAR_152_GAP_FILE" ] && [ -s "$BUSBAR_152_GAP_FILE" ]; then
+  phase "1.5.2 FEATURE GATE PASSED WITH GAPS: $(grep -c . "$BUSBAR_152_GAP_FILE") PHASE(S) DID NOT RUN"
+  echo "NOT A CLEAN PASS. Nothing failed, but these did not execute, so this run says NOTHING"
+  echo "about whether their subjects work:"
+  while IFS=$'\t' read -r pid why; do
+    [ -n "$pid" ] || continue
+    printf '  DID NOT RUN  %-34s %s\n' "$pid" "$why"
+  done < "$BUSBAR_152_GAP_FILE"
+  echo
+  echo "The caller (release-check.sh) records this phase as a coverage gap, not as 'ran'."
+else
+  phase "1.5.2 FEATURE GATE PASSED (with any VERIFIED-AT-INTEGRATION items noted above)"
+fi
 echo "Total elapsed: ${SECONDS}s"
