@@ -45,6 +45,7 @@ import json
 import os
 import re
 import subprocess
+import shutil
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -142,15 +143,43 @@ def verdict_byte_identity(root, run_cargo):
     ]
     # The golden corpus is pinned on-disk; enumeration is a filesystem fact. Whether the byte-identity
     # ASSERT passed requires running the parity tests -- honest `unknown` unless --run-cargo.
+    golden_note = None
     if run_cargo:
-        code, _ = run(
-            ["cargo", "test", "-p", "busbar-llm", "--lib", "translate_parity"],
+        code, out = run(
+            ["cargo", "test", "-p", GOLDEN_CRATE, "--lib", "translate_parity"],
             cwd=root,
             timeout=3600,
         )
-        golden_status = "pass" if code == 0 else "fail"
+        # A FILTER THAT MATCHES NOTHING EXITS 0. cargo prints `running 0 tests` and reports success,
+        # so `code == 0` alone cannot distinguish "every parity test passed" from "the filter, or
+        # the crate name, no longer selects any test". Require that it says it ran some.
+        ran = 0
+        for m in re.finditer(r"^running (\d+) tests?$", out, re.MULTILINE):
+            ran += int(m.group(1))
+        if code != 0:
+            golden_status = "fail"
+        elif ran == 0:
+            golden_status = "fail"
+            golden_note = (f"`cargo test -p {GOLDEN_CRATE} --lib translate_parity` exited 0 having "
+                           f"run ZERO tests. cargo treats a filter that matches nothing as success, "
+                           f"so this is a filter/crate-name drift, not a green corpus.")
+        else:
+            golden_status = "pass"
+            golden_note = f"{ran} parity test(s) executed"
     else:
         golden_status = "unknown"
+
+    # ── THE EVIDENCE FLOOR ──────────────────────────────────────────────────────────────────────
+    # A verdict is `pass` only if something was actually compared. `total` is a filesystem fact, so
+    # an empty or missing corpus directory is indistinguishable from a corpus that moved — and both
+    # mean this class has no evidence behind it, whatever the test runner said.
+    if total < GOLDEN_MIN:
+        golden_status = "fail"
+        golden_note = (f"the golden corpus at {GOLDEN_DIR} yielded {total} byte-pair(s); the floor "
+                       f"is {GOLDEN_MIN}. A byte-identity verdict over zero pairs compares nothing, "
+                       f"and publishing it as a pass is the failure this floor exists to stop. Fix: "
+                       f"the corpus moved once already (busbar-llm -> busbar-llm-codec); check "
+                       f"GOLDEN_DIR in this file against where it lives now.")
 
     sources = [
         {
@@ -160,20 +189,41 @@ def verdict_byte_identity(root, run_cargo):
             "count": total,
             "total": total,
             "lane_count": len(lane_matrix),
+            # The evidence this source stands on, named. `mark_sources()` refuses to stamp a pass
+            # onto a source whose own evidence is not there.
+            "evidence": GOLDEN_DIR,
+            "evidence_present": total >= GOLDEN_MIN,
+            "note": golden_note,
             "drilldown": {
                 "type": "lane-matrix",
-                "path": "crates/busbar-llm/src/tests/proto/golden/",
+                "path": GOLDEN_DIR + "/",
                 "lanes": lane_matrix,
             },
         }
     ]
-    # The five money-path oracle tests (byte-identity of the delivery/billing/egress path).
+    # ── The five money-path oracle tests, EACH WITH ITS OWN EVIDENCE ────────────────────────────
+    #
+    # ci.yml stamps all five of these — and translate-parity-cross-pairs above, six in total — from
+    # ONE value, `${CHECK_RESULT}`, the result of the single `check` job. That is defensible as far
+    # as it goes: the job that runs them either passed or did not. What is not defensible is what
+    # the manifest then says, which is six independent verdicts of `pass`, one per named oracle, as
+    # though six things had been established. And two of the six named a test file THAT DOES NOT
+    # EXIST — `crossproto_delivery_billing_tests.rs` moved from `engine/tests/` to
+    # `engine/engine_tests/`, and `usage-decode-tap` pointed at
+    # `crates/busbar-core/src/ingress/tests/tests.rs`, a path with no file in it — so a green `check`
+    # job published `"status": "pass"` for two oracles with nothing behind them at all. The old code
+    # even computed `present` and put the answer in a human-readable `note`, where nothing consumed
+    # it; the mark overwrote the status regardless.
+    #
+    # So every source now carries its OWN evidence path and whether that path is there, and
+    # `mark_sources()` refuses to stamp a pass onto a source whose evidence is absent — it marks it
+    # `unknown` with the reason instead. A claim maps to its own evidence, or it is not a claim.
     oracles = [
         ("egress-differential", "crates/busbar-llm/src/engine/tests/egress_differential_tests.rs"),
-        ("crossproto-billing", "crates/busbar-llm/src/engine/tests/crossproto_delivery_billing_tests.rs"),
+        ("crossproto-billing", "crates/busbar-llm/src/engine/engine_tests/crossproto_delivery_billing_tests.rs"),
         ("on-exhausted", "crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs"),
         ("pool-upstream-creds", "crates/busbar-llm/src/engine/tests/pool_upstream_creds_tests.rs"),
-        ("usage-decode-tap", "crates/busbar-core/src/ingress/tests/tests.rs"),
+        ("usage-decode-tap", "crates/busbar-llm-codec/src/tests/proto/tests.rs"),
     ]
     for oid, opath in oracles:
         present = (root / opath).exists()
@@ -181,7 +231,9 @@ def verdict_byte_identity(root, run_cargo):
             "id": oid,
             "kind": "oracle",
             "status": "unknown",  # cargo-backed; not executed in scrape mode
-            "note": "present" if present else "test file not found",
+            "evidence": opath,
+            "evidence_present": present,
+            "note": "present" if present else "test file not found at " + opath,
             "drilldown": {"type": "test", "path": opath},
         })
     return {
@@ -778,7 +830,12 @@ def selftest(root):
 
 
 def main():
+    if "--selftest" in sys.argv[1:]:
+        root = Path(__file__).resolve().parent.parent
+        return selftest(root)
     ap = argparse.ArgumentParser(description="Collate the Build Proof Dashboard manifest.")
+    ap.add_argument("--selftest", action="store_true",
+                    help="prove the collator refuses to publish a claim with no evidence")
     ap.add_argument("--version", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--repo-root", default=None)
@@ -851,28 +908,7 @@ def main():
         verdict_conformance(root, reports_dir),
     ]
 
-    # Honest cross-job capture: stamp a source's verdict from the sibling CI job that actually ran it.
-    # A GitHub job result of "success" -> pass; anything else -> fail; empty/skip -> left unknown.
-    marks = {}
-    for spec in args.mark:
-        if "=" not in spec:
-            continue
-        sid, res = spec.split("=", 1)
-        res = res.strip().lower()
-        if res == "":
-            continue
-        marks[sid.strip()] = "pass" if res == "success" else ("pass" if res == "pass" else "fail")
-    if marks:
-        for v in verdicts:
-            for s in v.get("sources", []):
-                if s.get("id") in marks:
-                    st = marks[s["id"]]
-                    s["status"] = st
-                    s["note"] = "captured from the sibling ci.yml job result"
-                    for mapkey in ("planes", "legs", "dialects"):
-                        if isinstance(s.get(mapkey), dict):
-                            s[mapkey] = {k: st for k in s[mapkey]}
-            v["status"] = class_status(v.get("sources", []))
+    mark_sources(verdicts, args.mark)
 
     manifest = {
         "schema_version": "1",
@@ -952,4 +988,4 @@ def write_index(proof_dir):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
