@@ -465,6 +465,14 @@ impl Drop for TestPermit {
 pub struct TestCapacity {
     ceilings: Mutex<HashMap<DestinationId, usize>>,
     held: Arc<Mutex<HashMap<DestinationId, usize>>>,
+    /// Slots that are released at the moment a waiter first asks for one, and not before.
+    ///
+    /// This is the only way to model "a slot freed while the request was parked" honestly: a slot
+    /// dropped before the route runs is free at the PICK, so the walk dispatches on it and the wait
+    /// terminal is never entered at all. Holding it until `acquire_any` is polled puts the release
+    /// strictly after the pick recorded its at-capacity exclusions and after the depth gauge counted
+    /// the waiter in.
+    free_on_wait: Mutex<Vec<Permit>>,
 }
 
 impl TestCapacity {
@@ -484,6 +492,16 @@ impl TestCapacity {
     pub fn saturate(&self, destination: DestinationId) -> Permit {
         self.try_acquire(destination)
             .expect("the member had a free slot to saturate")
+    }
+
+    /// Take a slot now and give it back the first time a waiter asks for one — the member is at
+    /// capacity at the pick and free by the time the wait terminal reaches the store.
+    pub fn saturate_until_waited(&self, destination: DestinationId) {
+        let permit = self.saturate(destination);
+        self.free_on_wait
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(permit);
     }
 }
 
@@ -514,6 +532,11 @@ impl Capacity for TestCapacity {
         destinations: &'a [DestinationId],
     ) -> BoxFut<'a, Option<(DestinationId, Permit)>> {
         Box::pin(async move {
+            // A waiter has reached the store: anything held only until the wait began is released
+            // here, at the first poll, which is strictly after the park.
+            let released: Vec<Permit> =
+                std::mem::take(&mut *self.free_on_wait.lock().unwrap_or_else(|e| e.into_inner()));
+            drop(released);
             for destination in destinations {
                 if let Some(permit) = self.try_acquire(*destination) {
                     return Some((*destination, permit));

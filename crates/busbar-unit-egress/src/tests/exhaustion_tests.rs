@@ -526,18 +526,41 @@ fn the_wait_dispatches_on_the_member_that_freed_a_slot() {
     let node = queue_node(250);
     node.capacity.set_ceiling(DestinationId::new(0), 1);
     node.capacity.set_ceiling(DestinationId::new(1), 1);
+    // Both members are at capacity when the pick runs. `a` stays held for the whole route; `b`'s
+    // slot is given back at the moment the wait terminal reaches the permit store — after the pick
+    // recorded its at-capacity exclusions and after the depth gauge counted the waiter in. Freeing
+    // a slot before the route instead leaves it free at the PICK, so the walk dispatches on the
+    // ordered path and the wait terminal is never entered at all.
     let held_a = node.capacity.saturate(DestinationId::new(0));
-    let held_b = node.capacity.saturate(DestinationId::new(1));
+    node.capacity.saturate_until_waited(DestinationId::new(1));
 
-    // Both members are at capacity when the pick runs; one frees while the request is parked.
     let mut ctx = node.request_ctx();
-    let plan = {
-        // Run the pick first so the at-capacity exclusions are recorded, then free a slot.
-        drop(held_a);
-        drop(held_b);
-        node.route_with("primary", &mut ctx)
-    };
+    let plan = node.route_with("primary", &mut ctx);
+
     assert!(plan.is_delivered(), "{plan:?}");
+    assert_eq!(
+        *node.telemetry.queue_parks.lock().unwrap(),
+        1,
+        "the request reached the answer by parking, not by the ordered walk"
+    );
+    let RouteOutcome::Delivered(delivered) = &plan else {
+        unreachable!("just asserted delivered");
+    };
+    assert_eq!(
+        delivered.destination,
+        DestinationId::new(1),
+        "the answer came off the member that freed a slot"
+    );
+    assert!(
+        delivered.degraded,
+        "an answer served out of the wait terminal is a degraded one"
+    );
+    assert_eq!(
+        *node.telemetry.queue_depth.lock().unwrap(),
+        0,
+        "the waiter is counted back out on the dispatching exit too"
+    );
+    drop(held_a);
 }
 
 #[test]
