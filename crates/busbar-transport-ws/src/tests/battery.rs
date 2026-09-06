@@ -769,6 +769,17 @@ async fn a_handoff_from_an_undeclared_layer_is_a_mismatch() {
     assert_eq!(err, TransportError::HandoffMismatch);
 }
 
+/// One refusal, for the cells that need any refusal at all and nothing about which.
+fn test_refusal() -> busbar_contract::unit::Refusal<'static> {
+    busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    }
+}
+
 /// A refusal is the last thing this transport says on a connection: the peer is told, and then the
 /// connection is finalised. Both halves are the claim — a refusal that wrote its bytes and left the
 /// connection live is one the kernel would go on being handed frames for.
