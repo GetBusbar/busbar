@@ -754,8 +754,24 @@ selftest() {
     say "  MISS: the in-house battery is not at $DEFAULT_BATTERY_DIR"; failures=$((failures+1)); }
   [ -d "$DEFAULT_BATTERY_DIR" ] && say "  ok: the in-house battery is in-repo at $DEFAULT_BATTERY_DIR"
 
+  # ---------------------------------------------------------------------------------------------
+  # AND THE BATTERY'S OWN INVENTORY, driven the same way. `assert_covered` above proves the OFFICIAL
+  # suite executed the revision's whole required set; nothing here proved the IN-HOUSE battery still
+  # contains the suites it claims to. Its five suites were five bare `import` lines nobody checked,
+  # so deleting one deleted its scenarios from every number the battery prints with no SKIP, no FAIL
+  # and no trace — the same false green as an unarmed role, minus the name in the report. The check
+  # lives with the battery; it is DRIVEN from here so one `--selftest` still answers for the gate.
+  if bash "$DEFAULT_BATTERY_DIR/scripts/registry-selftest.sh"; then
+    say "  ok: the battery's suite registry is held to its own tree, in both directions"
+  else
+    say "  MISS: the battery's suite-registry self-test did not behave as declared"
+    failures=$((failures+1))
+  fi
+
   [ "$failures" -eq 0 ] || die "$failures self-test fixture(s) did not behave as declared"
-  say "  self-test: 14 fixture(s) passed"
+  # Counted from the fixtures above rather than restated: a literal here is a second thing that can
+  # drift, and it drifts in the direction of claiming coverage nobody ran.
+  say "  self-test: 15 fixture group(s) passed"
 }
 
 case "${1:---help}" in
