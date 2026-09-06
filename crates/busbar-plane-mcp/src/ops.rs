@@ -260,15 +260,40 @@ pub const METHODS: &[MethodRow] = &[
 /// a journal row for the discovery fetch is not a row with the method fact missing.
 pub const METHOD_METADATA: &str = "well-known/protected-resource-metadata";
 
-/// The notification names this plane recognises.
+/// One notice this plane recognises, and which side of the exchange sends it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoticeRow {
+    /// The notice name exactly as it appears on the wire.
+    pub method: &'static str,
+    /// Who sends it. A notice is neither answered nor refused, but it is still SENT by one side, and
+    /// which side that is decides which leg may admit it.
+    pub sender: Sender,
+}
+
+/// The notices this plane recognises, and who sends each.
 ///
 /// A notification obliges no answer, so recognising one is only about knowing whether to act on it.
 /// One this plane does not recognise is DROPPED rather than refused, which is what the specification
 /// requires and what the codec already does.
-pub const NOTIFICATIONS: &[&str] = &[
-    "notifications/roots/list_changed",
-    "notifications/tools/list_changed",
-    "notifications/resources/updated",
+///
+/// The SENDER column is not decoration. Two of these three are server-originated — the codec's own
+/// notification half says so in as many words — and acting on one opens a unit whose plan writes the
+/// catalogue. A list with no sender let either side send either notice, so a CALLER could tell this
+/// node that the server it fronts had changed its tools, and the party being catalogued was no longer
+/// the party deciding when its catalogue is stale.
+pub const NOTICES: &[NoticeRow] = &[
+    NoticeRow {
+        method: "notifications/roots/list_changed",
+        sender: Sender::Client,
+    },
+    NoticeRow {
+        method: "notifications/tools/list_changed",
+        sender: Sender::Provider,
+    },
+    NoticeRow {
+        method: "notifications/resources/updated",
+        sender: Sender::Provider,
+    },
 ];
 
 /// The row for one method name, if this plane carries that method at all.
@@ -277,15 +302,21 @@ pub fn row_for(method: &str) -> Option<&'static MethodRow> {
     METHODS.iter().find(|r| r.method == method)
 }
 
-/// Whether a name is a notification this plane recognises.
+/// The row for one notice name, if this plane recognises that notice at all.
+#[must_use]
+pub fn notice_for(method: &str) -> Option<&'static NoticeRow> {
+    NOTICES.iter().find(|r| r.method == method)
+}
+
+/// Whether a name is a notification this plane recognises, whoever sends it.
 #[must_use]
 pub fn is_known_notification(method: &str) -> bool {
-    NOTIFICATIONS.contains(&method)
+    notice_for(method).is_some()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_known_notification, row_for, Sender, METHODS, NOTIFICATIONS, OP_CLASSES};
+    use super::{is_known_notification, notice_for, row_for, Sender, METHODS, NOTICES, OP_CLASSES};
 
     /// Every method maps to a class the plane declares.
     #[test]
@@ -342,8 +373,12 @@ mod tests {
     /// The two lists must not overlap: a name in both would be answered and not answered at once.
     #[test]
     fn the_two_lists_do_not_overlap() {
-        for name in NOTIFICATIONS {
-            assert!(row_for(name).is_none(), "{name} is in both lists");
+        for notice in NOTICES {
+            assert!(
+                row_for(notice.method).is_none(),
+                "{} is in both lists",
+                notice.method
+            );
         }
         for row in METHODS {
             assert!(
@@ -352,6 +387,52 @@ mod tests {
                 row.method
             );
         }
+    }
+
+    /// Every notice names a side, and no notice is listed twice.
+    ///
+    /// A notice with no sender is one either side may send, and one of these three opens a unit whose
+    /// plan writes the catalogue. `Notice` is the third arm of the sender kind and it is the one
+    /// answer this column may NOT carry: it would mean exactly the "either side" this column exists
+    /// to stop.
+    #[test]
+    fn every_notice_names_the_side_that_sends_it() {
+        for (i, notice) in NOTICES.iter().enumerate() {
+            assert!(
+                !NOTICES[..i].iter().any(|n| n.method == notice.method),
+                "the notice {} is listed twice",
+                notice.method
+            );
+            assert_ne!(
+                notice.sender,
+                Sender::Notice,
+                "the notice {} names no side",
+                notice.method
+            );
+            assert_eq!(notice_for(notice.method), Some(notice));
+        }
+        assert_eq!(notice_for("notifications/something/else"), None);
+    }
+
+    /// The notices a SERVER originates are the two the codec's own notification half carries.
+    ///
+    /// The roots list is the caller's own, because roots are the caller's; the other two are the
+    /// server describing its own catalogue. Pinned by value so a row added later has to say which
+    /// side it came from and be right about it.
+    #[test]
+    fn the_server_originated_notices_are_the_two() {
+        let from_the_server: Vec<&str> = NOTICES
+            .iter()
+            .filter(|n| n.sender == Sender::Provider)
+            .map(|n| n.method)
+            .collect();
+        assert_eq!(
+            from_the_server,
+            vec![
+                "notifications/tools/list_changed",
+                "notifications/resources/updated"
+            ]
+        );
     }
 
     /// Every method the codec's own dispatch table names is one this plane carries.

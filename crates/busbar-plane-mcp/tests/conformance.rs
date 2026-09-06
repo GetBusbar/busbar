@@ -236,17 +236,53 @@ fn only_the_held_stream_opens_a_unit() {
     }
 }
 
-/// A notice this plane recognises opens a unit that answers nothing.
+/// A notice a CALLER sends, and this plane recognises, opens a unit that answers nothing.
 #[test]
 fn a_recognised_notice_opens_a_unit_that_answers_nothing() {
     let plane = McpPlane::EMPTY;
-    for name in ops::NOTIFICATIONS {
-        let draft = draft_of(decode(&plane, &notification(name)).expect("a notice decodes"));
+    let mut seen = 0usize;
+    for notice in ops::NOTICES
+        .iter()
+        .filter(|n| n.sender == ops::Sender::Client)
+    {
+        let draft =
+            draft_of(decode(&plane, &notification(notice.method)).expect("a notice decodes"));
         assert_eq!(draft.op, ops::OP_NOTIFICATION);
         // Nothing correlates: a notice obliges no answer, so there is nothing to answer it with.
         assert!(draft.correlation_out.is_none());
         assert!(draft.correlates.is_none());
+        seen += 1;
     }
+    assert!(seen > 0, "no notice of the caller's own was exercised");
+}
+
+/// A notice only a SERVER sends is DROPPED when a caller sends it, never acted on.
+///
+/// The notice list carried no sender, so the ingress leg admitted all three. Two of them are the
+/// server describing its own catalogue, and the class they decode to is routed to a catalogue write
+/// — so a caller could tell this node that the server it fronts had changed its tools, and the party
+/// being catalogued stopped being the party that decides when its catalogue is stale. It is dropped
+/// rather than refused because the specification forbids answering a notice, and a refusal is an
+/// answer.
+#[test]
+fn a_caller_cannot_send_a_servers_notice() {
+    let plane = McpPlane::EMPTY;
+    let mut seen = 0usize;
+    for notice in ops::NOTICES
+        .iter()
+        .filter(|n| n.sender == ops::Sender::Provider)
+    {
+        assert_eq!(
+            decode(&plane, &notification(notice.method)),
+            Ok(Ingress::Discard {
+                reason: DiscardCode::Unsupported
+            }),
+            "a caller was allowed to send {}",
+            notice.method
+        );
+        seen += 1;
+    }
+    assert!(seen > 0, "no notice of the server's own was exercised");
 }
 
 /// A notice this plane does not recognise is dropped, never refused.
