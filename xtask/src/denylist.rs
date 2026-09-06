@@ -230,17 +230,38 @@ struct Metadata {
 }
 
 fn run_cargo_metadata(manifest_path: &Path) -> Value {
-    let out = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
-        .arg("metadata")
-        .arg("--format-version=1")
-        // The lockfile is already resolved (checked in); a denylist audit reads it, it never has
-        // a reason to touch the network, and a flaky/offline registry must never turn a source
-        // audit into a network-dependent step.
-        .arg("--offline")
-        .arg("--manifest-path")
-        .arg(manifest_path)
-        .output()
-        .unwrap_or_else(|e| panic!("xtask denylist: failed to run `cargo metadata`: {e}"));
+    // OFFLINE FIRST, BUT NEVER OFFLINE-ONLY. The lockfile is already resolved (checked in) and a
+    // denylist audit reads it, so the ordinary run has no reason to touch the network and a flaky
+    // registry must not turn a source audit into a network-dependent step.
+    //
+    // It cannot be the ONLY attempt, though, and that is not a preference. `cargo metadata` with no
+    // `--filter-platform` resolves for EVERY target platform, so it wants the `.crate` files of
+    // packages this workspace never builds on any host it is built on -- the android and windows
+    // shims a transitive dependency declares. `cargo build` and `cargo test` never download those,
+    // so a machine's registry cache is missing them until something asks for the whole graph, and
+    // `--offline` then fails hard. On a runner that installs a toolchain but has no warm registry
+    // this is DETERMINISTIC: every run panicked, the caller read the panic as "the tool did not
+    // answer", and all nine source-denylist rows reported UNPROVEN -- an audit reporting silence as
+    // an absence of findings, which is the one outcome a gate must never produce.
+    //
+    // `--filter-platform` would silence the download by narrowing the audit to one platform, which
+    // changes what "the transitive closure" means. So the closure stays whole and the fetch is
+    // allowed exactly when the cache cannot answer.
+    let run = |offline: bool| {
+        let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+        cmd.arg("metadata").arg("--format-version=1");
+        if offline {
+            cmd.arg("--offline");
+        }
+        cmd.arg("--manifest-path")
+            .arg(manifest_path)
+            .output()
+            .unwrap_or_else(|e| panic!("xtask denylist: failed to run `cargo metadata`: {e}"))
+    };
+    let mut out = run(true);
+    if !out.status.success() {
+        out = run(false);
+    }
     if !out.status.success() {
         panic!(
             "xtask denylist: `cargo metadata` exited {}: {}",
