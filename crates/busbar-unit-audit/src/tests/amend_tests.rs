@@ -172,6 +172,54 @@ fn removing_an_amendment_from_the_middle_is_caught() {
     assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
 }
 
+/// A DELTA THAT WOULD OVERRUN THE SIGNED RANGE PINS AT THE EXTREME, rather than panicking in a
+/// debug build or wrapping — into a correction in the opposite direction — in a release one.
+///
+/// The two figures themselves are what the chain digests and what a reader answers questions from;
+/// this is a convenience over them, so saturating costs nothing and wrapping would mislead.
+#[test]
+fn a_delta_too_large_for_the_range_saturates_instead_of_wrapping() {
+    let far_apart = correction(
+        "e",
+        Subject::Aggregate,
+        i128::MIN,
+        i128::MAX,
+        "operator",
+        "a pair no meter could report",
+        1,
+    );
+    match &far_apart {
+        AmendBody::Adjust(a) => assert_eq!(a.delta(), i128::MAX),
+        other => panic!("expected a correction, got {other:?}"),
+    }
+    // And the other way round, which is the one that would have read as an INCREASE.
+    match &correction(
+        "e",
+        Subject::Aggregate,
+        i128::MAX,
+        i128::MIN,
+        "operator",
+        "the same pair, reversed",
+        1,
+    ) {
+        AmendBody::Adjust(a) => assert_eq!(a.delta(), i128::MIN),
+        other => panic!("expected a correction, got {other:?}"),
+    }
+}
+
+/// A correction DOWNWARD is the commonest one there is, so `was` exceeding `now` is an ordinary
+/// amendment and not something to refuse.
+#[test]
+fn a_correction_downward_is_an_ordinary_amendment() {
+    match &a_correction() {
+        AmendBody::Adjust(a) => {
+            assert!(a.was > a.now);
+            assert_eq!(a.delta(), -200);
+        }
+        other => panic!("expected a correction, got {other:?}"),
+    }
+}
+
 /// CUTTING THE HEAD OFF A CORRECTION HISTORY IS CAUGHT.
 ///
 /// The survivors link perfectly to each other — every one still names the amendment before it — so

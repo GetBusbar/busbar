@@ -116,8 +116,19 @@ pub struct Adjust {
 
 impl Adjust {
     /// How much the figure moved by.
+    ///
+    /// SATURATING, not refusing: a correction that moves a figure DOWN is the commonest one there
+    /// is — a duplicate charge on a retried request is exactly `was` greater than `now` — so "was
+    /// exceeds now" is a normal amendment and not a rule to enforce. What is not normal is a pair
+    /// far enough apart to overrun the signed range, which takes a figure no meter could report,
+    /// and the plain subtraction answers that by panicking in a debug build and silently wrapping in
+    /// a release one. A wrapped delta is the worst of the three: it reads as a correction in the
+    /// OPPOSITE direction. Saturating pins it at the extreme instead, where it is visibly not a real
+    /// figure, and the amendment still carries `was` and `now` themselves, so nothing is lost —
+    /// this is a convenience over two fields the chain digests separately, never the source of
+    /// either.
     pub fn delta(&self) -> i128 {
-        self.now - self.was
+        self.now.saturating_sub(self.was)
     }
 }
 
