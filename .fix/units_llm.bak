@@ -2386,6 +2386,120 @@ mod tests {
         );
     }
 
+    /// **THE CARD THE ROOT BUILDS.** Four configured tiers reach four card cells, each its own.
+    ///
+    /// The one place a deployment's configured rates become the integer rates every posting on this
+    /// plane is priced at, and it had no test of its own. What it does is a nested loop over a fixed
+    /// list of `(class, rate)` pairs, which is exactly the shape a transposition hides in: swap two
+    /// entries of that list and every lane prices its output at its input's rate, forever, with no
+    /// type to object and no other test to notice — the drives above would still post a number, just
+    /// the wrong one.
+    ///
+    /// So each tier is asserted at its own configured figure, the figures are all different, and the
+    /// two tiers no rig's traffic reaches — the cache pair — are asserted here BECAUSE this is where
+    /// they are reachable. Two lanes, not one, because a card is a map and a single-lane card cannot
+    /// tell a per-lane table from a global one.
+    #[test]
+    fn the_root_card_prices_every_configured_tier_at_its_own_rate() {
+        let other = "m1";
+        // Deliberately unlike the first lane's, tier for tier, so a card that returned one lane's
+        // rates for the other is a different number rather than the same one.
+        let second = busbar_core::config::RateEntryCfg {
+            input_utok: 11.0,
+            output_utok: 13.0,
+            cache_read_utok: 17.0,
+            cache_write_utok: 19.0,
+        };
+        let card = card_from_config(
+            [
+                (LANE, rate_entry().raw_tier_rates()),
+                (other, second.raw_tier_rates()),
+            ],
+            FEE_CENTS,
+            true,
+        );
+
+        assert!(card.pricing_enabled(), "a present card prices");
+        assert_eq!(card.version().as_str(), "root-llm");
+        assert_eq!(card.per_request_fee_cents(), FEE_CENTS);
+
+        // A configured micro-unit rate is a thousand nano-units, converted once. Spelled per tier.
+        let expect = |lane: &str, cfg: &busbar_core::config::RateEntryCfg| {
+            let rates = card
+                .lane_rates(lane)
+                .unwrap_or_else(|| panic!("the card names {lane}"));
+            for (class, micro) in [
+                (busbar_api::UNIT_INPUT, cfg.input_utok),
+                (busbar_api::UNIT_OUTPUT, cfg.output_utok),
+                (busbar_api::UNIT_CACHE_READ, cfg.cache_read_utok),
+                (busbar_api::UNIT_CACHE_WRITE, cfg.cache_write_utok),
+            ] {
+                assert!(
+                    rates.class_priced(class),
+                    "{lane}/{class} is not priced by name"
+                );
+                assert_eq!(
+                    rates.nanos_per_unit(class),
+                    (micro * 1_000.0) as u64,
+                    "{lane}/{class} did not resolve to its own configured rate"
+                );
+            }
+        };
+        expect(LANE, &rate_entry());
+        expect(other, &second);
+
+        // The four rates of one lane are four DIFFERENT numbers, which is what makes the assertions
+        // above able to see a transposition at all.
+        let distinct: std::collections::BTreeSet<u64> = [
+            busbar_api::UNIT_INPUT,
+            busbar_api::UNIT_OUTPUT,
+            busbar_api::UNIT_CACHE_READ,
+            busbar_api::UNIT_CACHE_WRITE,
+        ]
+        .into_iter()
+        .map(|c| {
+            card.lane_rates(LANE)
+                .expect("the card names the lane")
+                .nanos_per_unit(c)
+        })
+        .collect();
+        assert_eq!(distinct.len(), 4, "two tiers share a rate; a swap would hide");
+
+        // A LANE THE CARD DOES NOT NAME fails closed, which is the posture the whole card carries.
+        assert!(card.lane_unpriced("nobody"));
+        assert!(card.lane_rates("nobody").is_none());
+    }
+
+    /// AND THE DEPLOYMENT THAT CONFIGURED NO CARD gets one that is absent rather than one of zeros.
+    ///
+    /// The distinction is the whole of the no-pricing posture: with no card nothing is UNPRICED,
+    /// because there is nothing to be missing from, so a lane the operator never wrote a rate for is
+    /// served for attribution rather than refused. A card of zeros would refuse nothing and price
+    /// nothing while REPORTING that it had priced, which reads the same from every surface.
+    #[test]
+    fn no_configured_card_resolves_to_an_absent_one_and_not_to_a_card_of_zeros() {
+        let card = card_from_config(
+            [(LANE, rate_entry().raw_tier_rates())],
+            FEE_CENTS,
+            false,
+        );
+        assert!(!card.pricing_enabled(), "nothing was configured");
+        assert_eq!(card.version().as_str(), "root-llm");
+        // The FLAT FEE survives the absence: it is configured separately and still posts.
+        assert_eq!(card.per_request_fee_cents(), FEE_CENTS);
+        // No lane is unpriced and every class prices at nothing — attribution only.
+        assert!(!card.lane_unpriced(LANE));
+        assert!(!card.lane_unpriced("nobody"));
+        let rates = card.lane_rates("nobody").expect("no card prices every lane");
+        assert_eq!(rates.nanos_per_unit(busbar_api::UNIT_INPUT), 0);
+        assert!(rates.class_priced(busbar_api::UNIT_INPUT));
+        // And the rates handed in are NOT on it: an absent card that carried them would be a present
+        // card wearing the absent one's flag.
+        assert!(card
+            .lane_rates(LANE)
+            .is_some_and(|r| r.nanos_per_unit(busbar_api::UNIT_OUTPUT) == 0));
+    }
+
     /// **THE LATE ACCRUAL, END TO END.** A drained answer's money reaches the root's book.
     ///
     /// The figure this plane bills is not known at the unit's terminal: the response's completion tap
