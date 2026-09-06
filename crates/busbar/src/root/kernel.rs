@@ -61,6 +61,7 @@ use busbar_caps::{
     Verify,
 };
 use busbar_kernel::inflight::ArrivalDoor;
+use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
 use busbar_unit_admission::{Door, InMemoryCells};
 use busbar_unit_auth::{Auth, AuthChain};
@@ -476,6 +477,9 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
+        // The administrative surface charges through no configured group — a kernel verb is exempt
+        // from the gauge entirely — so this door names none.
+        _leases: &GroupLeaseSlip,
     ) -> Decision<Admit> {
         #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {

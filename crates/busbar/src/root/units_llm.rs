@@ -86,6 +86,7 @@ use busbar_caps::{
     TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
 };
 use busbar_contract::{LaneId, Registration, UnitKey};
+use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_llm::unit::walk::{Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
@@ -693,6 +694,10 @@ impl Units for LlmUnit<'_> {
         _ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
+        // This plane's door is the shipped release's, which keeps its group gauges on its own
+        // registration and names none of them here. The unit is counted on the node-wide gauge
+        // exactly as it always has been.
+        _leases: &GroupLeaseSlip,
     ) -> Decision<Admit> {
         let model = self.model();
         // THE DOOR, taken without its terminal: `admission_check` is the check-and-charge that

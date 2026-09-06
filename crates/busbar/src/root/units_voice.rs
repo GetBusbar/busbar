@@ -131,6 +131,7 @@ use busbar_contract::dest::ClientMode;
 use busbar_contract::ids::{CorrelationRef, CorrelationValue, LaneId};
 use busbar_contract::ClaimKey;
 use busbar_kernel::reply::{AwaitingReplies, NotWaiting};
+use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_kernel::Millis;
 use busbar_plane_voice::claims::Dialect;
@@ -1380,6 +1381,7 @@ impl Units for VoiceUnit<'_> {
         _ctx: &UnitCtx,
         principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
+        leases: &GroupLeaseSlip,
     ) -> Decision<Admit> {
         // A SESSION WHOSE LEASE RAN DRY GETS NO FURTHER FRAME. The turn that emptied it was
         // delivered and settled — this is the one after it — and the refusal is raised at the door
@@ -1431,7 +1433,13 @@ impl Units for VoiceUnit<'_> {
             self.dialect.name(),
             self.epoch,
         );
-        unit.admit(&estimate, principal, &chain, admit, token)
+        let decision = unit.admit(&estimate, principal, &chain, admit, token);
+        // What the door counted, said out loud, so the loop can record one lease per capped group on
+        // this unit's slot. The names are the root's interned ones; a refusal names nothing.
+        for group in unit.group_leases() {
+            leases.counted(group);
+        }
+        decision
     }
 
     fn route(
@@ -2443,7 +2451,7 @@ mod tests {
         ));
         let gauge = ConcurrencyGauge::new();
         let canary = Canary::new();
-        let mut leases = LeaseSet::new();
+        let leases = busbar_kernel::slice::LeaseCell::new();
         let meter = AccrualMeter::new();
         run_unit(
             kernel,
@@ -2452,7 +2460,7 @@ mod tests {
             Run {
                 cell: &cell,
                 parent: None,
-                leases: &mut leases,
+                leases: &leases,
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
@@ -2939,6 +2947,7 @@ mod tests {
                 &ctx(1),
                 &PrincipalId::new("acct:voice"),
                 &[],
+                &GroupLeaseSlip::new(),
             )
             .into_result(&seal)
             .expect("the empty chain admits");

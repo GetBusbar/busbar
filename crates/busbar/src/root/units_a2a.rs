@@ -76,6 +76,7 @@ use busbar_caps::{
 use busbar_contract::dest::{DestinationFacts, Leg};
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
 use busbar_contract::unit::{FinishClass, ResourceLocator};
+use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
 use busbar_plane_a2a::{ops, records};
 use busbar_unit_admission::{Admission as _, AdmissionUnit, CellStore, Door, Estimate, Pricer};
@@ -989,6 +990,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         _ctx: &UnitCtx,
         principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
+        leases: &GroupLeaseSlip,
     ) -> Decision<Admit> {
         // The decision is the shipped release's, evaluated by the unit that owns it: pass one
         // checks every bucket of the pool-filtered chain and charges nothing, pass two charges. The
@@ -1001,7 +1003,15 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             self.bindings.pool,
             self.bindings.now,
         );
-        unit.admit(&self.estimate(), principal, &chain, admit, token)
+        let decision = unit.admit(&self.estimate(), principal, &chain, admit, token);
+        // What the door counted, said out loud. The names are the interned ones the root handed the
+        // chain's groups at registration; the loop records one lease per name on this unit's slot,
+        // where its end and the node's sweep can both give them back. Empty on a refusal, and empty
+        // for a chain with no capped group — this crate does not decide either.
+        for group in unit.group_leases() {
+            leases.counted(group);
+        }
+        decision
     }
 
     fn route(

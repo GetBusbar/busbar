@@ -335,6 +335,7 @@ fn the_sweep_gives_back_the_group_leases_of_a_lost_task_too() {
             admin_listener: false,
             provider_of_open_session: false,
             zero_hold_tick: false,
+            now: 0,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
         })
         .map_err(|_| ())

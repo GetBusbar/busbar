@@ -72,6 +72,13 @@ pub struct ConfigKeys {
     pub unpriced_messages: Vec<String>,
     /// One fingerprint per provisioned transport-key slot.
     pub slot_fingerprints: Vec<String>,
+    /// Every configured group name a principal can charge through.
+    ///
+    /// The door works in `String`s, because a group name is configuration and nothing else. What
+    /// needs the static one is the kernel's reading of what the node is running: a lease per
+    /// capped-`concurrent` group, recorded on the unit's slot and held for the life of the unit, in
+    /// a vocabulary that outlives every request. This is where the two meet.
+    pub groups: Vec<String>,
     /// Every window name a configured group bucket is declared over.
     pub bucket_windows: Vec<String>,
 }
@@ -94,6 +101,7 @@ impl ConfigKeys {
             .chain(&self.egress_auth_fields)
             .chain(&self.unpriced_messages)
             .chain(&self.slot_fingerprints)
+            .chain(&self.groups)
             .chain(&self.bucket_windows)
             .map(String::as_str)
     }
@@ -206,6 +214,7 @@ mod tests {
             ],
             unpriced_messages: vec!["no configured rate for pool-main".into()],
             slot_fingerprints: vec!["fingerprint-0".into()],
+            groups: vec!["tenant-acme".into(), "team-platform".into()],
             bucket_windows: vec!["60s".into()],
         }
     }
@@ -219,10 +228,31 @@ mod tests {
         let interned = vocabulary.intern_all(&keys);
 
         assert_eq!(interned.len(), keys.all().count());
-        assert_eq!(vocabulary.len(), 17);
+        assert_eq!(vocabulary.len(), 19);
         for (name, value) in interned.iter().zip(keys.all()) {
             assert_eq!(*name, value);
         }
+    }
+
+    /// A group's name goes through the one interning every other config key does. That is what lets
+    /// the composition root hand the door a static name at registration, and the kernel count a
+    /// concurrency lease under it for the life of a unit — neither can hold a `String` the config
+    /// owns, and neither may leak one per request.
+    #[test]
+    fn a_group_name_is_interned_like_every_other_config_key() {
+        let keys = a_configured_deployment();
+        let mut vocabulary = Vocabulary::new();
+        let interned = vocabulary.intern_all(&keys);
+
+        let at = keys
+            .all()
+            .position(|n| n == "team-platform")
+            .expect("the group is in the walk");
+        assert_eq!(interned[at], "team-platform");
+        assert!(
+            std::ptr::eq(interned[at], vocabulary.key("team-platform")),
+            "a group name is leaked once, so the door's name and the kernel's are one name"
+        );
     }
 
     /// The same configuration read twice — a reload that changes nothing — leaks nothing the second
