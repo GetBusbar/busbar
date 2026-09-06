@@ -136,6 +136,37 @@ pub fn run(
     })
 }
 
+/// THE BOOT STEP: seal the opening on the node's own book, in the one slot the preamble names.
+///
+/// [`run`] takes the two seams; this takes the two objects the boot has — the store adapter and the
+/// node's one book — and joins them, which is the composition root's job and not the ledger unit's.
+/// Splitting it out from `run` is what lets the ordering rule be exercised over the real journal
+/// while `run` stays testable against a records double.
+///
+/// The marker goes on the journal under the metering step, because sealing the opening IS a
+/// metering-side write: it is the balance every later meter reading is measured from.
+///
+/// # Errors
+///
+/// As [`run`]. A degraded read is NOT an error and never refuses a boot — it comes back on
+/// [`Migration::key_rows_unreadable`]. What does come back here is the small set where continuing
+/// would be worse than stopping: the opening could not be signed, the ledger's own records could
+/// not be read or written, or the previous release's figures do not fit in a ledger figure. A node
+/// that served on any of those would be measuring its reconciliation identity from a checkpoint it
+/// never sealed, and the identity would report every row as out for the life of the deployment.
+pub fn at_boot(
+    adapter: &StoreAdapter,
+    book: &std::sync::Arc<std::sync::Mutex<crate::root::durability::Durability>>,
+    token: &busbar_caps::DurabilityToken,
+    cfg: &MigrationConfig,
+    wall: u64,
+    secret: Option<&dyn CheckpointSecret>,
+) -> Result<Migration, MigrationError> {
+    let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
+    let mut records = durability.migration_records(token, busbar_caps::StepName::Meter);
+    run(adapter, &mut records, cfg, wall, secret)
+}
+
 /// The seal itself, over the two seams and nothing else.
 ///
 /// Separate from [`run`] because [`run`]'s job is to decide what gets read and this one's job is to
