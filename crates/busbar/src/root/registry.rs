@@ -843,7 +843,12 @@ mod tests {
                 .registered
                 .iter()
                 .find(|r| r.key == key)
-                .unwrap_or_else(|| panic!("claim of plane `{}` names unregistered `{key}`", claim.plane));
+                .unwrap_or_else(|| {
+                    panic!(
+                        "claim of plane `{}` names unregistered `{key}`",
+                        claim.plane
+                    )
+                });
             let over_the_capped_instance =
                 key == HttpTransport::KEY || row.composed_over == Some(HttpTransport::KEY);
             assert!(

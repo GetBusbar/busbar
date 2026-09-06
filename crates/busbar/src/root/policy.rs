@@ -177,8 +177,13 @@ pub fn pools_without_expansion(cfg: &MeterPolicyConfig, policy: &MeterPolicyHand
 /// compatibility shim.
 #[must_use]
 pub fn client_settings(limits: &LimitsResolved) -> ClientSettings {
-    let _ = limits;
-    ClientSettings::default()
+    ClientSettings {
+        pool_max_idle_per_host: limits.pool_max_idle_per_host,
+        pool_idle_timeout_secs: limits.pool_idle_timeout_secs,
+        upstream_http1_only: limits.upstream_http1_only,
+        upstream_h2_prior_knowledge: limits.upstream_h2_prior_knowledge,
+        request_body_max_bytes: limits.request_body_max_bytes,
+    }
 }
 
 /// The scope unit's policy view, over what the deployment's policy actually declared.
