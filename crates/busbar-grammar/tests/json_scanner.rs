@@ -180,3 +180,18 @@ fn the_scanner_meets_its_budget_on_a_mebibyte() {
         "{per_kib_ns:.0} ns per KiB is ten times the budget"
     );
 }
+
+#[test]
+fn an_array_index_is_the_pointer_grammars_index_and_not_whatever_parses() {
+    // The pointer grammar's array index is a single `0`, or a digit string with no leading zero.
+    // Rust's integer parse is more generous than that — it takes a leading `+`, and any number of
+    // leading zeroes — so a token the grammar says names nothing would otherwise resolve to an
+    // element, and two spellings would name one value where the grammar admits only one of them.
+    let body = br#"{"items":[10,20,30]}"#;
+    assert_eq!(found(body, "/items/1"), b"20");
+    assert_eq!(resolve_pointer(body, "/items/01"), Resolved::Missing);
+    assert_eq!(resolve_pointer(body, "/items/+1"), Resolved::Missing);
+    assert_eq!(resolve_pointer(body, "/items/007"), Resolved::Missing);
+    // Zero on its own is the one index that may start with a zero.
+    assert_eq!(found(body, "/items/0"), b"10");
+}

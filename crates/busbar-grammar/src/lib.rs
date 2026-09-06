@@ -205,6 +205,19 @@ fn member(b: &[u8], at: usize, key: &str, depth: usize) -> Result<Option<Span>, 
 
 /// Find element `index` in the array that starts at `at`.
 fn element(b: &[u8], at: usize, index: &str, depth: usize) -> Result<Option<Span>, ScanErr> {
+    // The pointer grammar's array index is a single `0` or a digit string with no leading zero.
+    // An integer parse is looser than that — it takes a leading `+` and any run of leading zeroes
+    // — so the token is checked against the grammar first and a token that is not an index names
+    // nothing, exactly as a member name the object does not carry names nothing.
+    let token = index.as_bytes();
+    let is_index = match token {
+        [b'0'] => true,
+        [first, ..] => first.is_ascii_digit() && *first != b'0',
+        [] => false,
+    };
+    if !is_index {
+        return Ok(None);
+    }
     let wanted: usize = match index.parse() {
         Ok(n) => n,
         Err(_) => return Ok(None),
