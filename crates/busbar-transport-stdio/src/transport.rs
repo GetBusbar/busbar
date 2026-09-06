@@ -413,6 +413,17 @@ impl Transport for StdioTransport {
             // The arena slice outlives every await here, so there is nothing to copy it into.
             let payload = bytes.as_slice();
             let n = payload.len();
+            // A newline anywhere in the payload is the byte that ENDS a frame on this wire, and
+            // `write` is what appends it. Writing one through hands the caller the choice of where
+            // this transport's frame ends and what follows it: a payload of
+            // `{"id":1}\n{"method":"admin"}` is not one frame, it is two, and the round trip stops
+            // being injective. A trailing carriage return goes the same way for the narrower
+            // reason that the reader strips one before the newline, so it would come back a byte
+            // short of what was written and of what this call reported. The check is before the
+            // lock and before the first byte, so nothing half-written ever reaches the peer.
+            if payload.contains(&b'\n') || payload.last() == Some(&b'\r') {
+                return Err(TransportError::Framing);
+            }
             // The lock FIRST, and only then the fence. A write still queued behind another writer
             // has put nothing on the wire, so a caller who drops it there has left nothing in
             // doubt — arming before the lock would fence a connection over a write that never
@@ -447,6 +458,12 @@ impl Transport for StdioTransport {
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
     ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+        // The same two bytes `write` refuses, refused here too: a body spelling this wire's own
+        // delimiter cannot be expressed as ONE frame, and answering the plane at the point it
+        // builds the frame says so where the plane can still do something about it.
+        if body.contains(&b'\n') || body.last() == Some(&b'\r') {
+            return Err(busbar_contract_transport::wire::Encode::Unrepresentable);
+        }
         arena
             .alloc_bytes(body)
             .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)

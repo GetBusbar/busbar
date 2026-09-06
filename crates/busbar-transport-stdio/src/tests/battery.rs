@@ -66,6 +66,57 @@ async fn round_trip_byte_exact() {
     assert_eq!(frame.meta.status, None, "STATUS_CLASS is None for stdio");
 }
 
+/// A payload carrying the delimiter is refused, not written through and split at the peer.
+///
+/// This transport's whole framing is one frame per line, and `write` is what appends the newline.
+/// A payload that contains one therefore chooses where this transport's frame ends and what comes
+/// after it: `{"id":1}\n{"method":"admin"}` is not one frame, it is two, injected by whoever
+/// supplied the bytes. The round trip is not even injective — what the peer reads back is not what
+/// was written. The sibling `http` transport refuses a line ending in an envelope for exactly this
+/// reason; a transport whose delimiter a caller can spell is one with no framing at all.
+///
+/// A trailing carriage return goes the same way, for the narrower reason that the reader strips one
+/// before the newline: a payload ending in `\r` comes back a byte shorter than it went out, and a
+/// `write` that reported the full length would have reported a delivery that did not happen.
+#[tokio::test]
+async fn a_payload_carrying_the_delimiter_is_refused_rather_than_split_at_the_peer() {
+    let t = StdioTransport::new();
+    let (a, b) = pair(&t, 64 * 1024);
+
+    let injected = b"{\"id\":1}\n{\"method\":\"admin\"}".to_vec();
+    let err = t
+        .write(&a, busbar_contract::StreamId(0), ArenaBytes::new(&injected))
+        .await
+        .expect_err("a payload spelling the frame delimiter must not go on the wire");
+    assert_eq!(err, TransportError::Framing);
+
+    let trailing_cr = b"payload\r".to_vec();
+    let err = t
+        .write(
+            &a,
+            busbar_contract::StreamId(0),
+            ArenaBytes::new(&trailing_cr),
+        )
+        .await
+        .expect_err("a payload the reader would strip a byte off is not one this can carry");
+    assert_eq!(err, TransportError::Framing);
+
+    // Nothing was written, so the peer has nothing to read: a refusal that had already put the
+    // first half on the wire would have injected the frame it claimed to refuse.
+    let mut frames = t.frames(b);
+    let nothing = tokio::time::timeout(Duration::from_millis(200), frames.next()).await;
+    assert!(
+        nothing.is_err(),
+        "a refused write must leave the wire untouched, not half-written"
+    );
+
+    // And a carriage return that is not the last byte still travels, byte-exact.
+    let inner_cr = b"a\rb".to_vec();
+    t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(&inner_cr))
+        .await
+        .expect("only the delimiter and the byte the reader strips are refused");
+}
+
 #[tokio::test]
 async fn multiple_frames_in_order_no_data_loss() {
     // Regression coverage for the bug this crate's own report calls out: recreating a `BufReader`
