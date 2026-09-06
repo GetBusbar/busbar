@@ -666,13 +666,24 @@ impl Sessions {
     }
 
     /// Open a session, at unit zero. Refused when the node's session budget is spent.
+    ///
+    /// The slot is CLAIMED in one atomic step, exactly as the in-flight table claims its own: two
+    /// connections that both read "there is room" and then both opened is how a node ends up
+    /// holding more sessions than the budget it computes its exposure from. An id already in the
+    /// table takes no new slot, so the claim is handed straight back rather than leaked.
     pub fn open(
         &self,
         id: SessionId,
         binding: Binding,
         now: Millis,
     ) -> Result<Arc<SessionSlot>, ReasonCode> {
-        if self.len() >= self.budget {
+        if self
+            .count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < self.budget).then_some(n + 1)
+            })
+            .is_err()
+        {
             return Err(ReasonCode::SessionBudget);
         }
         let slot = Arc::new(SessionSlot {
@@ -684,11 +695,14 @@ impl Sessions {
             last_non_tick: AtomicU64::new(now),
             closed: AtomicBool::new(false),
         });
-        self.shard(id)
+        let displaced = self
+            .shard(id)
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, Arc::clone(&slot));
-        self.count.fetch_add(1, Ordering::AcqRel);
+        if displaced.is_some() {
+            self.count.fetch_sub(1, Ordering::AcqRel);
+        }
         Ok(slot)
     }
 

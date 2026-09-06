@@ -621,6 +621,35 @@ fn the_session_budget_bounds_the_table() {
     );
 }
 
+/// The session budget is a bound, so asking it and spending it have to be one step.
+///
+/// The table's own cap already took its slot atomically; the session table asked "is there room?",
+/// built the slot, and only then counted it, which is three steps a peer can arrive in the middle
+/// of. Sixteen connections racing for four session slots must open four, however they interleave —
+/// a node that opens more sessions than its budget is a node whose budget is a suggestion.
+#[test]
+fn the_session_budget_holds_when_everything_connects_at_once() {
+    let kernel = Kernel::new();
+    for _ in 0..200 {
+        let sessions = std::sync::Arc::new(Sessions::new(4));
+        let mut racers = Vec::new();
+        for id in 0..16u64 {
+            let sessions = std::sync::Arc::clone(&sessions);
+            let session = kernel.session_id(id);
+            racers.push(std::thread::spawn(move || {
+                sessions.open(session, Binding::Bound, 0).is_ok()
+            }));
+        }
+        let opened = racers
+            .into_iter()
+            .map(|racer| racer.join().expect("the thread finished"))
+            .filter(|ok| *ok)
+            .count();
+        assert_eq!(opened, 4, "the node opened {opened} sessions over 4");
+        assert_eq!(sessions.len(), 4);
+    }
+}
+
 #[test]
 fn a_canary_over_the_table_is_still_balanced_when_nothing_ran() {
     let canary = Canary::new();
