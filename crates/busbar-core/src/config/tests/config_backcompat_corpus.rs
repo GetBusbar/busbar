@@ -193,7 +193,12 @@ fn render_limit(l: &super::LimitCfg) -> String {
 fn snapshot_for(config_path: &Path) -> String {
     let yaml = std::fs::read_to_string(config_path)
         .unwrap_or_else(|e| panic!("read corpus config {}: {e}", config_path.display()));
-    let deploy: DeployCfg = serde_yaml::from_str(&yaml)
+    // Read through the PREPASS, which is the reader boot uses (`load_config_from_disk`). A plain
+    // `serde_yaml::from_str::<DeployCfg>` skips the 1.6.0 key lift, so the corpus was proving the
+    // stability of a document nobody parses that way: a config whose verdict depended on the lift
+    // would have resolved differently here than at boot, in either direction, and the gate would
+    // have reported byte-stability for the wrong pipeline.
+    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(&yaml)
         .unwrap_or_else(|e| panic!("parse corpus config {}: {e}", config_path.display()));
     let defs = defs_for(&deploy);
     let cfg = resolve(&deploy, &defs).unwrap_or_else(|errs| {
@@ -225,6 +230,17 @@ fn resolved_billing_and_limits_config_is_byte_stable() {
         "the back-compat corpus looks empty or truncated ({} configs). It should hold the \
          representative billing/limits configs in tests/backcompat-corpus/.",
         configs.len()
+    );
+
+    // AND AT LEAST ONE OF THEM MUST CARRY `pools:`. The corpus had it in ZERO of five members, so
+    // the one part of the money surface decided per pool — a pool-scoped group limit, a member's
+    // `context_max`, which priced lane a weight sends a request to — was resolved by this gate
+    // never. Asserted rather than left to the file list, so the coverage cannot be deleted by
+    // deleting a fixture.
+    assert!(
+        configs.iter().any(|c| std::fs::read_to_string(c)
+            .is_ok_and(|y| y.lines().any(|l| l.trim_end() == "pools:"))),
+        "the corpus must hold at least one config with a `pools:` section"
     );
 
     let bless = std::env::var_os("BLESS_BACKCOMPAT_CORPUS").is_some();
