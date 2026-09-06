@@ -20,13 +20,15 @@ use busbar_caps::UsageLine;
 /// is where you will hear about it.
 ///
 /// Multiply by a thousand and round to nearest, half away from zero, exactly once. A value that is
-/// not finite, or not positive, becomes zero: config validation should already have refused it, and
-/// a rate of zero is the safe reading of a value nobody can price. The test that a bare cast would
-/// pass is the infinite one — casting a non-finite float to an integer saturates to the largest
-/// integer there is, which would be a garbage rate rather than the intended defence.
+/// not finite, not positive, or too large for a `u64` to hold becomes zero: config validation should
+/// already have refused it, and a rate of zero is the safe reading of a value nobody can price. The
+/// test that a bare cast would pass is the infinite one and the finite-but-overflowing one alike —
+/// casting a float outside the target range to an integer SATURATES to the largest integer there is,
+/// which would be a garbage rate (an astronomical overcharge) rather than the intended defence,
+/// whether the float that produced it was infinite or merely a config typo with too many zeros.
 pub fn nano_rate(micro_per_unit: f64) -> u64 {
     let v = (micro_per_unit * 1000.0).round();
-    if v.is_finite() && v > 0.0 {
+    if v.is_finite() && v > 0.0 && v <= u64::MAX as f64 {
         v as u64
     } else {
         0
