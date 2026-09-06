@@ -609,16 +609,32 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
     assert_eq!(scheduler.one_shots(), 2);
 }
 
+/// The pool REFUSES at its cap rather than making anyone wait, and the refusal is counted.
+///
+/// This cell used to be called `k_parents_blocked_on_children_wait_rather_than_deadlock`, and
+/// every word of that was wrong about what runs here. `NestedPool::enter` is a non-blocking
+/// try-acquire: it either takes a permit or returns `Err` immediately, on the caller's own thread,
+/// with nothing to park on. Nothing in this cell waits, no parent is ever blocked on a child, and
+/// deadlock is not a state this type HAS — there is no lock, no queue and no await anywhere in it.
+/// A name promising a liveness property over a data structure that cannot violate one is a green
+/// test standing in for a check nobody wrote.
+///
+/// What is actually proved, and what the name now says: at the cap `enter` refuses with
+/// `InFlightCap`; the refusal counter only counts refusals (a permit coming back does not
+/// un-refuse one), so it is a monotonic counter and not a gauge of parents waiting; every permit
+/// returns, so the pool is whole again however many refusals it made; and a depth past the bound is
+/// `ScopeDenied` — a different refusal, which does not touch the pool's count at all.
 #[test]
-fn k_parents_blocked_on_children_wait_rather_than_deadlock() {
+fn the_pool_refuses_at_its_cap_and_counts_the_refusal() {
     let pool = NestedPool::new(2, 4);
     let first = pool.enter(0).expect("a permit");
     let second = pool.enter(0).expect("a permit");
     assert_eq!(pool.available(), 0);
 
-    // Two more parents want children and there are none to be had. Neither deadlocks, and both
-    // refusals are COUNTED — a refusal is a thing that happened, not a parent still standing in
-    // the pool: the refused parent is already back with its caller and will never call `leave`.
+    // Two more parents want children and there are none to be had. Neither WAITS — `enter` is a
+    // try-acquire and answers on the spot — and both refusals are COUNTED: a refusal is a thing
+    // that happened, not a parent still standing in the pool, because the refused parent is
+    // already back with its caller and will never call `leave`.
     // Counted as a gauge it only ever went up, and the number an operator reads as "the pool is
     // the bottleneck right now" was really "the pool has ever been the bottleneck".
     assert_eq!(pool.enter(0), Err(ReasonCode::InFlightCap));
