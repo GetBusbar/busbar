@@ -3,11 +3,11 @@
   "version": "busbar 1.5.5",
   "recorded": 885,
   "binary_sha256": "48e2800cc1fbf229104d73c23039ba4d4a703c0a8db9e7872e22fec33f9b1e48",
-  "harness_rev": "a222fabaf9699056838284847bbffb512866095e20aef1c89bb1c884545f4986",
+  "harness_rev": "028cb0d282e3b5e218513627dc30643a29ca4eb78fd17e162d378f3d6a5bcca2",
   "host_triple": "aarch64-apple-darwin",
-  "at": "2026-09-05T20:47:40Z",
+  "at": "2026-09-06T00:22:48Z",
   "harness_rev_recorded": "434f297637d9c9e898ef9cdd354b18a53a509de36e41b530f27e8b8bee7b4200",
-  "harness_rev_note": "re-stamped: cells.json grew (A10b script cells); normalize.py unchanged",
+  "harness_rev_note": "3 cells hand-replaced from fresh single-cell recordings against the SAME golden binary (48e2800c...) after two harness fixes: (1) scripts/documented-validate-checks.sh resolved BUSBAR_BIN and RAW to absolute paths before step4's `cd \"$W/s4\"` -- previously a relative --bin or --out made step4's own `busbar --validate` invocation (or its stdout/stderr redirects) fail before/without ever running busbar, which is why the old golden's step4_bare_path_exit was \"1\" with EMPTY stderr; the real 1.5.5 behavior is exit 0 with the BUSBAR_PROVIDERS deprecation warning, now reflected in documented|changelog|validate-checks; (2) normalize.py gained a `ts.usage-window` rule (window.start/window.end under a `window` object -> 0) so admin.ops|GetUsage|ok and admin.ops|GetUsage|no-usage-after-mutation no longer pin the UTC-day boundary the recording happened to be made on. renormalize.sh could not be used because this golden's raw/ captures are not checked in; each of the 3 cells was replaced by hand from `record.sh --filter <cell-id>` output. The other 882 cells are untouched and still reflect harness_rev_recorded.",
   "merged_from": [
     {
       "part": "golden",
@@ -18,10 +18,21 @@
       "part": "golden-a10b",
       "recorded": 8,
       "at": "2026-09-05T20:47:40Z"
+    },
+    {
+      "part": "golden-fix-1788654096 (documented|changelog|validate-checks)",
+      "recorded": 1,
+      "at": "2026-09-06T00:22:48Z"
+    },
+    {
+      "part": "golden-fix-1788654096-usage (admin.ops|GetUsage|ok, admin.ops|GetUsage|no-usage-after-mutation)",
+      "recorded": 2,
+      "at": "2026-09-06T00:22:48Z"
     }
   ],
   "harness_rev_history": [
     "b47661cbb9ebe50c000984b40c96e7ffc1aeeffdcdaa649de786e09dcae362e1",
-    "04e3c755517f4b9d660f1acc972c3b0ca6112ee330f62919f9121b9ae5bacfc3"
+    "04e3c755517f4b9d660f1acc972c3b0ca6112ee330f62919f9121b9ae5bacfc3",
+    "a222fabaf9699056838284847bbffb512866095e20aef1c89bb1c884545f4986"
   ]
 }

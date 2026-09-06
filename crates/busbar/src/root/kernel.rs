@@ -148,7 +148,14 @@ pub struct ProductionUnits {
     /// Behind one lock because all four are append-only and a unit's settlement touches more than
     /// one of them: the record is sealed, the ledger moves and the journal takes the batch, and a
     /// reader that saw two of the three would be reading a half-settled unit.
-    pub durability: Mutex<crate::root::durability::Durability>,
+    /// Behind an `Arc` as well as the lock, because the five ledger views read the same four things
+    /// this node writes. They hold a handle to THIS value rather than a copy of it taken at boot: a
+    /// view over a copy would serve the figures the node had when it started listening, which is a
+    /// worse answer than no figures at all because it looks like a current one. What the views take
+    /// at request time is a snapshot under this lock, which is the same lock a settlement holds — so
+    /// no read can see a unit half-settled, and no reader can write, because what crosses the seam
+    /// is a value and never the ledger.
+    pub durability: Arc<Mutex<crate::root::durability::Durability>>,
     /// What the usage unit meters against — built from the configured rate cards, never from the
     /// unit's own default, because an empty lane expansion disputes every pooled posting.
     pub meter_policy: crate::root::policy::MeterPolicyHandle,
@@ -216,7 +223,7 @@ impl ProductionUnits {
             auth_bindings: auth_bindings::AuthBindings::without_directory(),
             trust: Trust,
             arrival_door: AdmissionDoor,
-            durability: Mutex::new(durability),
+            durability: Arc::new(Mutex::new(durability)),
             meter_policy,
             scope_policy,
             admin,
@@ -243,15 +250,37 @@ impl ProductionUnits {
     #[cfg(feature = "root-admin")]
     #[must_use]
     pub fn admin_only(dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>) -> Self {
+        // One value, two halves. The ledger is handed the write half and keeps it for the life of
+        // the node; the read half stays here so the ledger views have somewhere to read the
+        // previous release's rows from. They are the same rows because they are the same value —
+        // a second recorder would be a second answer to what the dual write wrote.
+        let rows = busbar_unit_ledger::legacy::RecordingRows::new();
+        ProductionUnits::admin_only_over(dispatch, Box::new(rows.clone()), Arc::new(rows))
+    }
+
+    /// The same composition, over legacy rows the caller supplies both halves of.
+    ///
+    /// Split out because the two halves are one obligation: whatever the ledger dual-writes onto is
+    /// what the reconciliation view has to read back, and a constructor that took only the write
+    /// half would leave the view reading a different set of rows from the one the node writes. A
+    /// caller passing two halves of different values is making that mistake explicitly rather than
+    /// inheriting it.
+    #[cfg(feature = "root-admin")]
+    #[must_use]
+    pub fn admin_only_over(
+        dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
+        write: Box<dyn busbar_unit_ledger::legacy::LegacyRows>,
+        read: Arc<dyn crate::root::units_admin::LegacyRowsRead>,
+    ) -> Self {
         let kernel = new_kernel();
         let durability = crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             Box::new(busbar_unit_wal::NullShipper::new()),
-            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+            write,
         )
         .expect("a memory-buffered journal cannot fail to open");
 
-        ProductionUnits::new(
+        let mut units = ProductionUnits::new(
             &kernel,
             AuthChain::new(Vec::new(), false),
             durability,
@@ -260,7 +289,16 @@ impl ProductionUnits {
             crate::root::policy::ScopePolicy::new(),
             crate::root::units_admin::AdminBinding::new(dispatch),
             Arc::new(crate::root::units_admin::RefusingStore),
-        )
+        );
+        // The views are bound after the units are assembled rather than through the constructor,
+        // because what they read is the durability the constructor took ownership of — the handle
+        // does not exist until it has. Binding it here is what makes the served figures this node's
+        // rather than an empty table that looks like a balanced one.
+        units.admin.ledger = Arc::new(crate::root::units_admin::NodeLedger::new(
+            Arc::clone(&units.durability),
+            read,
+        ));
+        units
     }
 
     /// Bind the authenticate step's three seams to a node's virtual-key directory.
@@ -323,7 +361,13 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
         if self.is_admin(ctx) {
-            return crate::root::units_admin::authenticate(&self.auth, &self.admin, token, ctx);
+            return crate::root::units_admin::authenticate(
+                &self.auth,
+                &self.admin,
+                &self.auth_bindings,
+                token,
+                ctx,
+            );
         }
         Decision::refuse(
             token,

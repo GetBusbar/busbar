@@ -2,11 +2,16 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! OpenAI-family citation `annotations` — the `url_citation` ↔ IR-citation mapping shared by the
-//! Chat and Responses codecs (both wires use the same shape). This is LLM-dialect codec logic; it
-//! lives beside the openai readers/writers that use it, and the neutral router never names it.
+//! Chat and Responses codecs. This is LLM-dialect codec logic; it lives beside the openai
+//! readers/writers that use it, and the neutral router never names it.
+//!
+//! The two wires DIFFER in shape and each has its own builder here: Responses flattens the citation
+//! onto the entry (`UrlCitationBody`), Chat nests it under a `url_citation` object
+//! (`ChatCompletionResponseMessage.annotations`). The citation rules — which sources qualify, how a
+//! span is resolved — are shared, so only the shape differs.
 
-/// Build an OpenAI `annotations` array from the IR citations that annotate a span of assistant
-/// text. Shared by the Chat and Responses writers, which use the same `url_citation` shape.
+/// Build a RESPONSES `annotations` array from the IR citations that annotate a span of assistant
+/// text — the flat `UrlCitationBody` shape. See [`chat_url_annotations`] for the Chat wire.
 ///
 /// `text` is the ONE block the citations annotate, and `base` is where that block starts inside the
 /// message's full content string — Chat joins every text block into one string, while Responses
@@ -41,46 +46,96 @@ pub fn url_annotations(
         let Some(url) = c.url.as_deref().filter(|u| !u.is_empty()) else {
             continue;
         };
-        let span = match (c.start_index, c.end_index) {
-            // `saturating_add` (not `+`): `s`/`e` are upstream-controlled `i64` (only sign-checked
-            // above), so `i64::MAX + base` would panic in debug / wrap in release — an
-            // upstream-triggered crash on the response path. Same cure `billable_tokens` already
-            // establishes for upstream-controlled counts (`ir/mod.rs`).
-            (Some(s), Some(e)) if s >= 0 && e >= s => {
-                Some((s.saturating_add(base as i64), e.saturating_add(base as i64)))
-            }
-            // Recover the span from the quote when the source carried no offsets, but only when it
-            // occurs exactly once — two matches make the anchor ambiguous.
-            _ => c
-                .cited_text
-                .as_deref()
-                .filter(|q| !q.is_empty())
-                .and_then(|q| {
-                    // `str::find` and `q.len()` are BYTE offsets/lengths; the IR contract is
-                    // CHARACTERS, not bytes (see `IrCitation::start_index`). `find` always returns
-                    // a char boundary, so the byte slice below stays valid — only the emitted span
-                    // needs converting.
-                    let first = text.find(q)?;
-                    if text[first + q.len()..].contains(q) {
-                        return None;
-                    }
-                    let start_ch = text[..first].chars().count();
-                    let len_ch = q.chars().count();
-                    Some(((base + start_ch) as i64, (base + start_ch + len_ch) as i64))
-                }),
-        };
-        let Some((start, end)) = span else {
+        let Some((start, end)) = citation_span(text, base, c) else {
             continue;
         };
         out.push(serde_json::json!({
             "type": "url_citation",
             "url": url,
-            "title": c.title.as_deref().filter(|t| !t.is_empty()).unwrap_or(url),
+            "title": citation_title(c, url),
             "start_index": start,
             "end_index": end,
         }));
     }
     out
+}
+
+/// Build a CHAT `annotations` array. Same citation rules as [`url_annotations`], different wire
+/// shape: `ChatCompletionResponseMessage.annotations` items nest the citation under a
+/// `url_citation` object rather than flattening its fields onto the entry. The flat form belongs to
+/// the Responses API's `UrlCitationBody`, so the two must not be interchanged — and [`read_url_annotations`]
+/// only recognizes the nested one, which is what makes a Chat write→read hop lossless.
+///
+/// Used by BOTH chat arms. The streaming arm has no assembled text to resolve a span against, so it
+/// passes an empty `text` and a `base` of 0; a citation whose span cannot be resolved is emitted
+/// WITHOUT one rather than with a fabricated one, since the span is the one part of the shape that
+/// can be honestly omitted.
+pub fn chat_url_annotations(
+    text: &str,
+    base: usize,
+    citations: &[crate::ir::IrCitation],
+) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for c in citations {
+        let Some(url) = c.url.as_deref().filter(|u| !u.is_empty()) else {
+            continue;
+        };
+        let mut uc = serde_json::Map::new();
+        uc.insert("url".to_string(), serde_json::json!(url));
+        uc.insert(
+            "title".to_string(),
+            serde_json::json!(citation_title(c, url)),
+        );
+        if let Some((start, end)) = citation_span(text, base, c) {
+            uc.insert("start_index".to_string(), serde_json::json!(start));
+            uc.insert("end_index".to_string(), serde_json::json!(end));
+        }
+        out.push(serde_json::json!({
+            "type": "url_citation",
+            "url_citation": serde_json::Value::Object(uc),
+        }));
+    }
+    out
+}
+
+/// `title` falls back to the url — the same datum re-presented, not a fabricated one, and what a
+/// client renders anyway when a source has no title.
+fn citation_title<'a>(c: &'a crate::ir::IrCitation, url: &'a str) -> &'a str {
+    c.title.as_deref().filter(|t| !t.is_empty()).unwrap_or(url)
+}
+
+/// Resolve a citation's character span within `text`, shifted by `base`. Shared by both shapes so
+/// the offset rules cannot drift apart between them. `None` when the source genuinely carries no
+/// usable span; each caller decides what that means for its shape.
+fn citation_span(text: &str, base: usize, c: &crate::ir::IrCitation) -> Option<(i64, i64)> {
+    match (c.start_index, c.end_index) {
+        // `saturating_add` (not `+`): `s`/`e` are upstream-controlled `i64` (only sign-checked
+        // above), so `i64::MAX + base` would panic in debug / wrap in release — an
+        // upstream-triggered crash on the response path. Same cure `billable_tokens` already
+        // establishes for upstream-controlled counts (`ir/mod.rs`).
+        (Some(s), Some(e)) if s >= 0 && e >= s => {
+            Some((s.saturating_add(base as i64), e.saturating_add(base as i64)))
+        }
+        // Recover the span from the quote when the source carried no offsets, but only when it
+        // occurs exactly once — two matches make the anchor ambiguous.
+        _ => c
+            .cited_text
+            .as_deref()
+            .filter(|q| !q.is_empty())
+            .and_then(|q| {
+                // `str::find` and `q.len()` are BYTE offsets/lengths; the IR contract is
+                // CHARACTERS, not bytes (see `IrCitation::start_index`). `find` always returns
+                // a char boundary, so the byte slice below stays valid — only the emitted span
+                // needs converting.
+                let first = text.find(q)?;
+                if text[first + q.len()..].contains(q) {
+                    return None;
+                }
+                let start_ch = text[..first].chars().count();
+                let len_ch = q.chars().count();
+                Some(((base + start_ch) as i64, (base + start_ch + len_ch) as i64))
+            }),
+    }
 }
 
 /// Read an OpenAI-family `annotations` array (`url_citation` entries) into IR citations. Shared by

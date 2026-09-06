@@ -246,6 +246,24 @@ impl Book {
         self.totals.is_empty()
     }
 
+    /// Retire every window that opened before `window`, and say how many balances went.
+    ///
+    /// The book is otherwise append-only — every accrual on a new window adds a row that stays for
+    /// the life of the ledger — so without this an integrator's only way to bound it is to throw the
+    /// whole ledger away. The retirement boundary is the checkpoint: a window sealed into one has
+    /// been signed and shipped, and the book is no longer the record of it. Retiring a window that
+    /// has NOT been sealed loses balances nobody else holds, which is why this is the owner's call
+    /// and not something the book does for itself.
+    ///
+    /// A retired window reads back as zeros through [`Book::get`], exactly like one never touched,
+    /// and the survivors keep the order [`Book::iter`] and [`Book::snapshot`] already gave them — the
+    /// order a checkpoint body is hashed in.
+    pub fn retain_from(&mut self, window: WindowStart) -> usize {
+        let before = self.totals.len();
+        self.totals.retain(|(_, at), _| *at >= window);
+        before - self.totals.len()
+    }
+
     /// The book as a plain map, for a checkpoint to seal.
     pub fn snapshot(&self) -> BTreeMap<(TotalsKey, WindowStart), Totals> {
         self.totals.clone()

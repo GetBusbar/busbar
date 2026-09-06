@@ -8,14 +8,15 @@
 //! names by name (`verify`, `plane_facts`, `plane_record_write`, `set_operator_key`, `set_escrow`,
 //! `chain_break`, `store_restore`, `reseal_epoch_floor`, `set_dual_control`, `set_overdraft_ceiling`,
 //! `set_dispute_max_age`, `commit_upgrade`, `resolve_dispute`, `resolve_slice`, `adjust`,
-//! `export_keyset`, `approve`). Every one of those 83 operations is a `KernelVerb` destination this
+//! `export_keyset`, `approve`), and the 5 1.6.0 ledger views (the read-only
+//! `/api/v1/admin/ledger/*` surface). Every one of those operations is a `KernelVerb` destination this
 //! plane names; none of them is EXECUTED here. `busbar-unit-verbs`, on the far side of the kernel
 //! from this plane, holds the admin credential and mints every one-time secret this surface ever
 //! reveals (a rotated key, an exported keyset); this crate never sees one.
 //!
 //! ## What this crate is NOT — an explicit scope boundary
 //!
-//! The design's admin section pins the closed 66+17 table AND separately names five 1.5.5 surfaces
+//! The design's admin section pins the closed 66+17+5 table AND separately names five 1.5.5 surfaces
 //! that live outside it, each pinned by its own handler rather than by this table: the self-serve
 //! token exchange (`POST /auth/token` and its browser-facing `GET` twin), the governance-scoped
 //! model listings (`GET /v1/models`, `/v1beta/models`), `/stats`, the unconditional-bypass

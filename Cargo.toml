@@ -170,6 +170,11 @@ jsonschema = "0.49"
 libc = "0.2"
 libloading = "0.9"
 loom = "0.7"
+# THE BYTE SEARCH the stream transports scan their framing terminators with. Already in the lock
+# through hyper's own tree, so this adds no crate name to the graph — it names the edge the
+# transports rely on directly instead of reaching it by accident. Pure computation: no allocator,
+# no I/O, no platform surface beyond the SIMD it selects at runtime.
+memchr = "2"
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 metrics-util = { version = "0.20.4", default-features = false }

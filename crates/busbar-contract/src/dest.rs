@@ -384,7 +384,7 @@ pub enum AuthDecoration<'u> {
     /// Fields, a body signature and slots, applied in one pass.
     Decorate {
         /// Envelope fields to set, from the closed allow-list; never a lane-locator field.
-        envelope_fields: BoundedVec<crate::wire::EnvelopeField<'u>, { crate::bounded::MAX_KEYS }>,
+        envelope_fields: crate::kinds::EnvelopeFields<'u>,
         /// A signature over the body, where the scheme signs one.
         body_signature: Option<ArenaBytes<'u>>,
         /// Placeholders the egress-auth unit substitutes secrets into.

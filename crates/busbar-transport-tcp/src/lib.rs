@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::{
@@ -59,11 +59,27 @@ pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 
 /// One connection's live state. Never reachable from the opaque [`Conn`] handle directly; only
 /// through this transport's own registry, keyed by [`ConnHandle::id`].
+/// A connection's read half and the buffer every read on it fills.
+///
+/// The buffer is allocated once, when the connection is registered, and reused for the life of the
+/// connection: a fresh `READ_CHUNK_BYTES` `Vec` per read syscall is an allocation and a zero-fill
+/// on the frame path, for every read, for the life of every streaming connection. Keeping it behind
+/// the same lock as the read half is what makes the reuse sound — a connection is read by one pump
+/// at a time, so there is never a second reader to see a half-filled buffer.
+struct ReadSide {
+    half: OwnedReadHalf,
+    scratch: Vec<u8>,
+}
+
 struct Inner {
     peer: SocketAddr,
     local_port: u16,
-    read: AsyncMutex<OwnedReadHalf>,
+    read: AsyncMutex<ReadSide>,
     write: AsyncMutex<OwnedWriteHalf>,
+    /// Set once the kernel has finalised this connection. A frame stream captured its own clone of
+    /// this state before the close, so the registry removal alone would not reach it; this is the
+    /// flag that stream checks so it ends at the next poll and the socket halves actually drop.
+    closed: AtomicBool,
 }
 
 /// The opaque handle the kernel is actually given. Carries nothing but what
@@ -132,8 +148,12 @@ impl TcpTransport {
         let inner = Arc::new(Inner {
             peer,
             local_port,
-            read: AsyncMutex::new(read),
+            read: AsyncMutex::new(ReadSide {
+                half: read,
+                scratch: vec![0_u8; READ_CHUNK_BYTES],
+            }),
             write: AsyncMutex::new(write),
+            closed: AtomicBool::new(false),
         });
         self.conns
             .lock()
@@ -169,13 +189,25 @@ impl TcpTransport {
             .expect("conn registry poisoned")
             .remove(&conn.id())?;
         let inner = Arc::try_unwrap(inner).ok()?;
-        let read = inner.read.into_inner();
+        let read = inner.read.into_inner().half;
         let write = inner.write.into_inner();
         let stream = read.reunite(write).ok()?;
         Some((stream, inner.peer))
     }
 
-    fn map_connect_err(e: &io::Error) -> TransportError {
+    /// The address of the buffer a connection reads through, for the test that pins one buffer per
+    /// connection rather than one per read.
+    #[cfg(test)]
+    pub(crate) async fn scratch_addr(&self, id: u64) -> Option<usize> {
+        let inner = self.inner(id)?;
+        let guard = inner.read.lock().await;
+        Some(guard.scratch.as_ptr() as usize)
+    }
+
+    /// Named for what it does rather than where it was first used: every I/O path in this crate —
+    /// the dial, the frame reads, the writes and the refusal — maps its errors through it, matching
+    /// the sibling `http` and `tls` crates' function of the same shape.
+    fn map_io_err(e: &io::Error) -> TransportError {
         match e.kind() {
             io::ErrorKind::ConnectionRefused => TransportError::Refused,
             io::ErrorKind::TimedOut => TransportError::Timeout,
@@ -272,7 +304,7 @@ impl Transport for TcpTransport {
                 .await
                 .map_err(|_| TransportError::Closed)?;
             self.register(stream, peer)
-                .map_err(|e| Self::map_connect_err(&e))
+                .map_err(|e| Self::map_io_err(&e))
         })
     }
 
@@ -293,9 +325,9 @@ impl Transport for TcpTransport {
                 .map_err(|_| TransportError::AddressRefused)?;
             let stream = TcpStream::connect(addr)
                 .await
-                .map_err(|e| Self::map_connect_err(&e))?;
+                .map_err(|e| Self::map_io_err(&e))?;
             self.register(stream, addr)
-                .map_err(|e| Self::map_connect_err(&e))
+                .map_err(|e| Self::map_io_err(&e))
         })
     }
 
@@ -306,14 +338,18 @@ impl Transport for TcpTransport {
         let inner = self.inner(conn.id());
         Box::pin(futures::stream::unfold(inner, move |inner| async move {
             let inner = inner?;
-            let mut buf = vec![0_u8; READ_CHUNK_BYTES];
+            if inner.closed.load(Ordering::Acquire) {
+                return None;
+            }
             let mut guard = inner.read.lock().await;
-            match guard.read(&mut buf).await {
+            let side = &mut *guard;
+            match side.half.read(&mut side.scratch).await {
                 Ok(0) => None,
                 Ok(n) => {
+                    // Copied out to exactly this frame's length; the scratch keeps whatever the
+                    // read left in it, which nothing else ever looks at.
+                    let bytes: Arc<[u8]> = Arc::from(&side.scratch[..n]);
                     drop(guard);
-                    buf.truncate(n);
-                    let bytes: Arc<[u8]> = buf.into();
                     let frame = Frame {
                         direction: Direction::Inbound,
                         stream: StreamId(0),
@@ -328,7 +364,7 @@ impl Transport for TcpTransport {
                 }
                 Err(e) => {
                     drop(guard);
-                    Some((Err(TcpTransport::map_connect_err(&e)), None))
+                    Some((Err(TcpTransport::map_io_err(&e)), None))
                 }
             }
         }))
@@ -346,8 +382,8 @@ impl Transport for TcpTransport {
             guard
                 .write_all(bytes.as_slice())
                 .await
-                .map_err(|e| Self::map_connect_err(&e))?;
-            guard.flush().await.map_err(|e| Self::map_connect_err(&e))?;
+                .map_err(|e| Self::map_io_err(&e))?;
+            guard.flush().await.map_err(|e| Self::map_io_err(&e))?;
             Ok(bytes.len())
         })
     }
@@ -394,11 +430,18 @@ impl Transport for TcpTransport {
 
     fn close(&self, conn: Conn, _reason: CloseReason) {
         // Dropping the halves closes the socket (sends FIN); nothing here is fallible in a way
-        // the caller can act on, so this stays synchronous per the trait's own shape.
-        self.conns
+        // the caller can act on, so this stays synchronous per the trait's own shape. A frame
+        // stream holds its own clone of the state, so removing the registry entry is not enough
+        // to drop the halves: the flag is what ends that stream at its next poll, after which the
+        // last clone goes and the socket really does close.
+        let inner = self
+            .conns
             .lock()
             .expect("conn registry poisoned")
             .remove(&conn.id());
+        if let Some(inner) = inner {
+            inner.closed.store(true, Ordering::Release);
+        }
     }
 
     fn unit0_refusal<'a>(
@@ -413,11 +456,7 @@ impl Transport for TcpTransport {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
             {
                 let mut guard = inner.write.lock().await;
-                guard
-                    .write_all(bytes.as_slice())
-                    .await
-                    .map_err(|e| Self::map_connect_err(&e))?;
-                let _ = guard.flush().await;
+                deliver_refusal(&mut *guard, bytes.as_slice()).await?;
             }
             self.conns
                 .lock()
@@ -426,6 +465,22 @@ impl Transport for TcpTransport {
             Ok(())
         })
     }
+}
+
+/// Put a Unit 0 refusal's bytes on the wire and report whether they actually left.
+///
+/// `write_all` only proves the bytes reached the writer's own buffer. The kernel is told a refusal
+/// was delivered, and a refusal is the client-visible answer to an authentication failure, so the
+/// flush is the evidence and its failure is reported the same way the ordinary write path reports
+/// one rather than being swallowed.
+async fn deliver_refusal<W>(w: &mut W, bytes: &[u8]) -> Result<(), TransportError>
+where
+    W: tokio::io::AsyncWrite + Unpin + ?Sized,
+{
+    w.write_all(bytes)
+        .await
+        .map_err(|e| TcpTransport::map_io_err(&e))?;
+    w.flush().await.map_err(|e| TcpTransport::map_io_err(&e))
 }
 
 #[cfg(test)]

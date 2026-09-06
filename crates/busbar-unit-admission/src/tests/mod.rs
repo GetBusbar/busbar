@@ -20,6 +20,7 @@ use crate::window::{WINDOW_DAY, WINDOW_HOUR, WINDOW_MINUTE, WINDOW_MONTH, WINDOW
 use crate::{BucketChain, InMemoryCells};
 
 mod cells;
+mod hold;
 mod ported;
 
 /// Which counter a limit caps.

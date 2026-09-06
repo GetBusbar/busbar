@@ -483,6 +483,72 @@ fn twilio_media_with_a_forged_stream_sid_is_discarded() {
     ));
 }
 
+#[test]
+fn twilio_dtmf_decodes_and_is_discarded_as_unsupported() {
+    static UPSTREAMS: &[Upstream] = &[Upstream {
+        lane: LaneId::new("realtime"),
+        host: "api.openai.com",
+        dialect: Dialect::OpenaiRealtime,
+    }];
+    let plane = VoicePlane::new(UPSTREAMS);
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/twilio/call-123");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::TwilioMediaStreams,
+    ));
+
+    let dtmf = serde_json::to_vec(&json!({
+        "event": "dtmf",
+        "streamSid": "MZ123",
+        "sequenceNumber": "5",
+        "dtmf": { "track": "inbound_track", "digit": "5" },
+    }))
+    .unwrap();
+    let frames = [frame(&dtmf)];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("dtmf decodes, not malformed");
+    assert!(matches!(
+        ingress,
+        Ingress::Discard {
+            reason: busbar_contract::wire::DiscardCode::Unsupported
+        }
+    ));
+}
+
+#[test]
+fn twilio_unknown_event_fails_closed() {
+    static UPSTREAMS: &[Upstream] = &[Upstream {
+        lane: LaneId::new("realtime"),
+        host: "api.openai.com",
+        dialect: Dialect::OpenaiRealtime,
+    }];
+    let plane = VoicePlane::new(UPSTREAMS);
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/twilio/call-123");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::TwilioMediaStreams,
+    ));
+
+    let unknown = serde_json::to_vec(&json!({
+        "event": "teleport",
+        "streamSid": "MZ123",
+    }))
+    .unwrap();
+    let frames = [frame(&unknown)];
+    let mut cursor = FrameCursor::new(&frames);
+    assert!(plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .is_err());
+}
+
 /// A tiny standard base64 encoder, independent of the one this crate's `twilio` module carries, so
 /// the test fixtures above do not depend on that module's own correctness to construct their input.
 fn base64_of(bytes: &[u8]) -> String {

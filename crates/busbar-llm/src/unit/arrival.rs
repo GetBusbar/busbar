@@ -175,6 +175,29 @@ pub struct PathArrival {
     pub parsed: LazyBody,
 }
 
+impl PathArrival {
+    /// THE PATH-MODEL ARRIVAL, AS THE CARRY HOLDS ONE.
+    ///
+    /// The two shapes differ in exactly one way that matters downstream: a body-model arrival hands
+    /// on the bytes the client sent and the head projection taken off them, and a path-model arrival
+    /// hands on the bytes it WROTE and the document it wrote them from. Everything past step 1 wants
+    /// the same two things — the bytes to forward and the projection to read — so the path shape is
+    /// stated in the body shape's vocabulary here, once, rather than by every caller assembling one.
+    ///
+    /// The content type is the arrival's own header value, carried because step 1's ladder asks it
+    /// whether these bytes are multipart. On this path the answer never decides anything — the URL
+    /// already named the model — and it is carried anyway, because a field that is sometimes filled
+    /// in is a field nobody can read with confidence.
+    #[must_use]
+    pub fn into_arrival(self, content_type: String) -> BodyArrival {
+        BodyArrival {
+            content_type,
+            body: self.injected,
+            parsed: Some(self.parsed),
+        }
+    }
+}
+
 // Same reason as `BodyArrival`'s: the shape, never the content.
 impl std::fmt::Debug for PathArrival {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -189,7 +212,7 @@ impl std::fmt::Debug for PathArrival {
 /// Absent, or present and not UTF-8, both read as the empty string — which is the value the JSON
 /// arm below treats as "assume JSON". That is deliberate and it is 1.5.5's: a client that sends a
 /// JSON body with no content type is served, not refused.
-fn content_type(headers: &HeaderMap) -> &str {
+pub fn content_type(headers: &HeaderMap) -> &str {
     headers
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())

@@ -63,8 +63,8 @@ pub mod migration;
 pub mod policy;
 pub mod registry;
 pub mod transports;
-pub mod units_admin;
 pub mod units_a2a;
+pub mod units_admin;
 #[cfg(feature = "root-llm")]
 pub mod units_llm;
 #[cfg(feature = "root-mcp")]

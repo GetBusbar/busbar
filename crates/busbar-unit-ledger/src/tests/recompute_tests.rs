@@ -254,6 +254,84 @@ fn the_tier_multiplies_before_it_divides() {
     assert_eq!(apply_tier(-10_000, 9_000), -9_000);
 }
 
+/// A figure too large to hold is a DISAGREEMENT, not a wrap.
+///
+/// The recompute is the alarm the rest of the money path is checked against, so it is the last place
+/// that may answer with a wrapped number: a product of a hostile quantity and an absurd price that
+/// wrapped into the posted figure would report a clean pass over a posting that is wrong. It
+/// saturates instead, exactly as the pricing path it is checking already does, and a saturated
+/// figure can only ever disagree.
+#[test]
+fn a_figure_too_large_to_hold_is_reported_rather_than_wrapped() {
+    let mut prices = BTreeMap::new();
+    prices.insert("tokens_in".to_string(), i128::MAX / 2);
+    let card = RateCard {
+        version: 1,
+        prices,
+        per_request_fee: i128::MAX / 2,
+    };
+    let mut cards = BTreeMap::new();
+    cards.insert(1, card);
+    let mut archive = BTreeMap::new();
+    archive.insert(
+        7,
+        SealedPolicy {
+            epoch: 7,
+            cards,
+            tiers: BTreeMap::new(),
+        },
+    );
+
+    let posting = Posting {
+        node: 1,
+        node_seq: 1,
+        key: key("b"),
+        window_start: 1,
+        policy_epoch: 7,
+        rate_card_version: 1,
+        lines: vec![
+            PricedLine {
+                class: MeterClassId::new("tokens_in"),
+                quantity: u64::MAX,
+            },
+            PricedLine {
+                class: MeterClassId::new("tokens_in"),
+                quantity: u64::MAX,
+            },
+        ],
+        fee_count: u32::MAX,
+        tier_bp: BASIS_POINTS,
+        pre_tier_amount: 0,
+        priced_amount: 0,
+        origin: PostingOrigin::Client,
+    };
+
+    let found = recheck(&posting, &archive);
+    assert!(
+        found.iter().any(
+            |d| matches!(d, Divergence::PreTier { recomputed, .. } if *recomputed == i128::MAX)
+        ),
+        "the pre-tier figure saturates and is reported as a disagreement, got {found:?}"
+    );
+}
+
+/// The tier multiplier saturates too, so a pre-tier figure at the ceiling does not wrap on the way
+/// through the multiply-before-divide.
+#[test]
+fn the_tier_multiplier_saturates_rather_than_wrapping() {
+    // A wrap here flips the sign, which is how a ceiling figure would come back as a credit.
+    assert_eq!(
+        apply_tier(i128::MAX, BASIS_POINTS),
+        i128::MAX / i128::from(BASIS_POINTS)
+    );
+    assert_eq!(
+        apply_tier(i128::MIN, BASIS_POINTS),
+        i128::MIN / i128::from(BASIS_POINTS)
+    );
+    // And the ordinary figures are untouched.
+    assert_eq!(apply_tier(10_000, 9_999), 9_999);
+}
+
 #[test]
 fn a_run_across_two_nodes_orders_by_node_then_sequence() {
     let mut postings = Vec::new();

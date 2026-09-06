@@ -205,11 +205,42 @@ impl Audited {
 /// are the kernel's own vocabulary, named at `busbar-caps` where a plugin may name it.
 pub type AuditStep = for<'a> fn(&UnitToken<Audit>, &AuditCtx<'a>, Response, bool) -> Audited;
 
-/// How the plane says a unit ended, read off the bytes the client is actually given.
+/// How the plane says a unit ended.
 ///
-/// The client-facing status and nothing else: an upstream that answered 200 into a client-facing
-/// 502 ended in error, because the end a record seals is the end the caller experienced.
+/// TWO SOURCES, and the order between them is the whole of this function. The first is the WALK'S
+/// OWN TAP, riding back on the response in the cell the walk handed it: where the tap has reported,
+/// it is the only thing that knows the difference between an answer that finished and one that
+/// stopped — a stream is served on 2xx headers and can still die mid-body, so the status line says
+/// `Complete` and the truth is `Partial`. The second is the client-facing status, which is what a
+/// response without a tap can say and all the older release ever said: an upstream that answered 200
+/// into a client-facing 502 ended in error, because the end a record seals is the end the CALLER
+/// experienced.
+///
+/// The tap is empty while a response is still in flight, and then this reads the status exactly as
+/// it always has — so the terminal's timing and its bytes are unchanged, and what the tap adds is a
+/// truer class on every end that has already happened by the time the record is written.
+///
+/// [`FinishClass::TurnComplete`] is never answered here. It names one turn of a duplex exchange
+/// whose session continues, and no dialect this plane speaks has one: a completion's end is the
+/// unit's end.
 fn finish_of(resp: &Response) -> FinishClass {
+    if let Some(finish) = resp
+        .extensions()
+        .get::<crate::engine::TapCell>()
+        .and_then(|cell| cell.get())
+        .map(|report| report.finish)
+    {
+        // THE ONE MAPPING between the engine's own three-class ending and the loop's four. It is
+        // written here because this file is the only one on this plane that speaks the loop's
+        // vocabulary; the engine spells its own so the default build does not depend on the waist's
+        // flag. `TurnComplete` has no source: nothing below can produce it, and nothing on this
+        // plane should.
+        return match finish {
+            crate::engine::TapFinish::Complete => FinishClass::Complete,
+            crate::engine::TapFinish::Partial => FinishClass::Partial,
+            crate::engine::TapFinish::Error => FinishClass::Error,
+        };
+    }
     if resp.status().is_success() {
         FinishClass::Complete
     } else {
@@ -255,11 +286,7 @@ pub fn audit(
 /// bytes agreed and the record did not. A caller that genuinely has no destination yet — a refusal
 /// taken before the model was ever read — passes [`crate::engine::POOL_LABEL_UNRESOLVED`], which
 /// the bound maps to itself because no deployment may configure a pool by that name.
-pub fn audit_refused(
-    unit_token: &UnitToken<Audit>,
-    ctx: &AuditCtx<'_>,
-    resp: Response,
-) -> Audited {
+pub fn audit_refused(unit_token: &UnitToken<Audit>, ctx: &AuditCtx<'_>, resp: Response) -> Audited {
     // A refusal is never a completion, whatever status it wears.
     let facts = AuditFacts {
         op_class: ctx.op_class,
@@ -632,6 +659,83 @@ mod tests {
         // And the bound still holds on the way out: a name no deployment configured cannot open a
         // series of its own on this door any more than on the other.
         assert_eq!(host.pool_label("no-such-pool"), POOL_LABEL_UNRESOLVED);
+    }
+
+    /// THE FOUR ENDS THE TERMINAL CAN SEAL, and where each comes from.
+    ///
+    /// Without a tap the class is the client-facing status and only two values are reachable — which
+    /// is the whole of what this step could say before, and is still what it says while a response is
+    /// in flight. With a tap the class is the tap's, and a 2xx stream that died mid-body seals
+    /// `Partial` rather than the `Complete` its status line claims. `TurnComplete` appears in neither
+    /// column: it names one turn of a duplex exchange whose session continues, and no dialect this
+    /// plane speaks has one.
+    #[tokio::test]
+    async fn the_sealed_end_is_the_taps_where_there_is_one_and_the_status_where_there_is_not() {
+        crate::testkit::install_test_seams();
+        busbar_core::metrics::init();
+        let (app, keys) = governed([&unique("finish-a"), &unique("finish-b")]);
+        let (host, _rt) = crate::engine::test_host_rt(&app);
+        let at = busbar_substrate::store::now();
+        let gov = busbar_api::PlaneRequestCtx {
+            key: Some(Arc::new(keys[0].clone())),
+        };
+        let (seal, token) = tokens();
+
+        // A report the tap could have made, on a response the status line calls a success. One cell
+        // per case, because a cell is filled once and a second report is a no-op by design.
+        let tapped = |finish| {
+            let cell = crate::engine::TapCell::new();
+            cell.report(crate::engine::TapReport {
+                lane: 0,
+                usage: None,
+                billing_failed: !matches!(finish, crate::engine::TapFinish::Complete),
+                finish,
+            });
+            let mut resp = (StatusCode::OK, "ok").into_response();
+            resp.extensions_mut().insert(cell);
+            resp
+        };
+
+        for (resp, want, why) in [
+            (
+                tapped(crate::engine::TapFinish::Complete),
+                FinishClass::Complete,
+                "the whole answer arrived",
+            ),
+            (
+                tapped(crate::engine::TapFinish::Partial),
+                FinishClass::Partial,
+                "a 2xx stream that died mid-body — the end no status line can name",
+            ),
+            (
+                tapped(crate::engine::TapFinish::Error),
+                FinishClass::Error,
+                "a transfer that failed after the upstream's 2xx headers",
+            ),
+            (
+                (StatusCode::OK, "ok").into_response(),
+                FinishClass::Complete,
+                "no tap: the client-facing status, exactly as before",
+            ),
+            (
+                (StatusCode::BAD_GATEWAY, "no").into_response(),
+                FinishClass::Error,
+                "no tap, non-2xx: still the status",
+            ),
+        ] {
+            let audited = audit(&token, &ctx(&host, &gov, "p", at), resp, true);
+            let facts = audited
+                .decision
+                .into_result(&seal)
+                .expect("the terminal seals rather than refuses");
+            assert_eq!(facts.finish, want, "{why}");
+            assert_ne!(
+                facts.finish,
+                FinishClass::TurnComplete,
+                "{why}: this plane opens no session, so no unit of it ends a turn of one"
+            );
+            let _ = axum::body::to_bytes(audited.response.into_body(), usize::MAX).await;
+        }
     }
 
     /// The step is the `Units::audit` row's shape, as a value: a mismatch in the token, the context

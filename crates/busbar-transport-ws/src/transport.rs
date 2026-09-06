@@ -30,12 +30,38 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::conn::{ConnState, LowerIo, Sock, WsConnHandle};
 
+/// How long a courtesy Close frame may take to reach the peer before this transport gives up on
+/// it. A peer whose receive window is full can never accept one, and a send with no bound would
+/// hold the writer lock — and the socket — for the process's lifetime, because `close` has already
+/// dropped the only handle that could cancel it.
+pub(crate) const CLOSE_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The `'static` view of a dial address, allocated at most once per distinct string.
+///
+/// The sealed destination's address shape is already `'static`, but a `ws://` dial target is a URL:
+/// the `host:port` this transport hands the layer below, and the certificate name it offers, are
+/// derived from it and may name a port the URL never spelled, so neither is a slice of anything
+/// that already lives forever. Allocating one per dial would grow the process without bound against
+/// a flapping upstream; interning makes it leak-once, the same posture the boot-time lane names
+/// take, so a redial reuses what the first dial allocated.
+pub(crate) fn intern(s: &str) -> &'static str {
+    static INTERNED: std::sync::LazyLock<SyncMutex<std::collections::HashSet<&'static str>>> =
+        std::sync::LazyLock::new(|| SyncMutex::new(std::collections::HashSet::new()));
+    let mut table = INTERNED.lock().expect("ws address intern table poisoned");
+    if let Some(already) = table.get(s) {
+        return already;
+    }
+    let once: &'static str = Box::leak(s.to_string().into_boxed_str());
+    table.insert(once);
+    once
+}
+
 type FrameStream =
     std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
 
 /// One `ws://`/`wss://` URL, hand-parsed into `(secure, host, port, path)`. Deliberately strict
 /// rather than permissive: this is an operator/runtime target, not free text.
-fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), TransportError> {
+pub(crate) fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), TransportError> {
     let (secure, rest) = if let Some(r) = url.strip_prefix("wss://") {
         (true, r)
     } else if let Some(r) = url.strip_prefix("ws://") {
@@ -51,7 +77,11 @@ fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), TransportError
         return Err(TransportError::AddressRefused);
     }
     let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) if !h.ends_with(']') && !p.contains(']') => {
+        // The last colon separates a port only when nothing after it is inside the brackets: that
+        // one condition tells `[::1]:8080` (a port) from `[::1]` (an address whose own colons the
+        // brackets are there to hide). A rule that also demanded the host not end in `]` rejected
+        // exactly the bracketed-with-a-port case the brackets exist for.
+        Some((h, p)) if !p.contains(']') => {
             let port: u16 = p.parse().map_err(|_| TransportError::AddressRefused)?;
             (h.to_string(), port)
         }
@@ -293,7 +323,7 @@ impl Transport for WsTransport {
             };
             let url = address.authority().ok_or(TransportError::AddressRefused)?;
             let (secure, host_name, port, path) = split_ws_url(url)?;
-            let authority: &'static str = Box::leak(format!("{host_name}:{port}").into_boxed_str());
+            let authority: &'static str = intern(&format!("{host_name}:{port}"));
 
             // The socket is the layer below's, dialled against the address this destination already
             // carries — no name is resolved here, which is what puts the network guard in front of
@@ -306,7 +336,7 @@ impl Transport for WsTransport {
                     busbar_contract_transport::dest::UpstreamAddress::Socket {
                         authority,
                         sni: address.sni().or(if secure {
-                            Some(Box::leak(host_name.clone().into_boxed_str()) as &'static str)
+                            Some(intern(&host_name))
                         } else {
                             None
                         }),
@@ -341,9 +371,19 @@ impl Transport for WsTransport {
                 if done || state.is_poisoned() {
                     return None;
                 }
-                let mut guard = state.reader.lock().await;
-                let mut reader = guard.take()?;
-                drop(guard);
+                let mut slot = state.reader.lock().await;
+                let taken = slot.take()?;
+                drop(slot);
+                // The reader belongs to the connection, not to this future. Holding it in a guard
+                // is what makes a cancelled read the same non-event a cancelled poll of any other
+                // stream is: the guard's `Drop` runs whether this future completes or is dropped
+                // mid-read, so the next pump reads on rather than seeing a reader-shaped hole it
+                // would report as a clean end of session.
+                let mut held = ReaderGuard {
+                    state: state.clone(),
+                    reader: Some(taken),
+                };
+                let reader = held.reader.as_mut().expect("held for the guard's lifetime");
                 let item = loop {
                     match reader.next().await {
                         None => break None, // the peer closed the socket
@@ -395,7 +435,7 @@ impl Transport for WsTransport {
                         Some(Err(_)) => break Some(Err(TransportError::Reset)),
                     }
                 };
-                *state.reader.lock().await = Some(reader);
+                drop(held);
                 match item {
                     None => None,
                     Some(result) => {
@@ -490,9 +530,16 @@ impl Transport for WsTransport {
     fn close(&self, conn: Conn, _reason: CloseReason) {
         let id = conn.id();
         if let Some(state) = self.conns.lock().unwrap().remove(&id) {
+            // The Close frame is a courtesy, and the connection is already finalised: the state has
+            // left the registry, so nothing can cancel the task that sends it. It therefore cancels
+            // itself. A peer whose receive window is full never accepts the frame, and without this
+            // budget the task, the writer lock and the socket would outlive the connection.
             tokio::spawn(async move {
-                let mut w = state.writer.lock().await;
-                let _ = futures::SinkExt::send(&mut *w, Message::Close(None)).await;
+                let _ = tokio::time::timeout(CLOSE_BUDGET, async {
+                    let mut w = state.writer.lock().await;
+                    let _ = futures::SinkExt::send(&mut *w, Message::Close(None)).await;
+                })
+                .await;
             });
         }
     }
@@ -520,6 +567,31 @@ impl Transport for WsTransport {
     }
 }
 
+/// The read-side counterpart of [`PoisonGuard`]: the reader is put back where the connection keeps
+/// it however this future ends, including a drop mid-read.
+///
+/// Without it a cancelled read left the slot empty and the next `frames()` call read that hole as a
+/// clean end of session — on a session transport, the same answer as the peer closing. The slot's
+/// lock is free by construction here (the guard is built after the lock is released and the reader
+/// is put back before anything else can take it), so a `try_lock` that somehow failed would mean a
+/// second pump held the connection, and fencing is the honest answer to that rather than dropping
+/// the reader on the floor.
+struct ReaderGuard {
+    state: Arc<ConnState>,
+    reader: Option<futures::stream::SplitStream<Sock>>,
+}
+
+impl Drop for ReaderGuard {
+    fn drop(&mut self) {
+        if let Some(reader) = self.reader.take() {
+            match self.state.reader.try_lock() {
+                Ok(mut slot) => *slot = Some(reader),
+                Err(_) => self.state.poisoned.store(true, Ordering::Release),
+            }
+        }
+    }
+}
+
 /// See `busbar-transport-stdio`'s identical guard: a write that does not reach a clean completion
 /// — an error, or this future being dropped mid-send — fences the connection rather than risk a
 /// half-written WS frame being resumed later.
@@ -543,7 +615,7 @@ impl Drop for PoisonGuard<'_> {
 /// naming no slot is the honest way to say that rather than passing one this layer never reads.
 static NO_KEYS: std::sync::LazyLock<TransportKeyHandle> = std::sync::LazyLock::new(|| {
     struct NoKeySeal;
-    impl busbar_contract::KernelSeal for NoKeySeal {
+    impl busbar_contract::plugin::KernelSeal for NoKeySeal {
         fn seal_origin(&self) -> &'static str {
             "busbar-transport-ws: an upgrade reads no key of its own"
         }

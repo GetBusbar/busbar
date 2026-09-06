@@ -29,7 +29,7 @@ use super::proto_codec::*;
 // THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate_values::proto::*` re-export.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub mod handler;
 mod reader;
@@ -345,8 +345,8 @@ fn synthesize_item_id(prefix: &str) -> String {
 // THE CREATION TIME IS AN INPUT, NOT A CLOCK READ.
 //
 // This writer used to call `SystemTime::now()` for the `created_at` it stamps when the answer it is
-// writing carries none — the only clock read in the codecs, and the thing that made this writer's
-// output different on two identical calls. A codec that reads a clock cannot be checked against a
+// writing carries none — the thing that made this writer's output different on two identical calls.
+// A codec that fabricates a timestamp cannot be checked against a
 // frozen output and cannot live in a pure kind, so the reading became a value the caller supplies:
 //
 //   * the buffered path fills `IrResponse::created` in the answer-normalization pass
@@ -356,7 +356,12 @@ fn synthesize_item_id(prefix: &str) -> String {
 //     (`ResponsesWriter::stamped_at`), set once by whoever opened the stream.
 //
 // With neither supplied the writer stamps `UNSTAMPED_CREATED_AT`, which is what a caller that never
-// offered a time asked for. Nothing here reads a clock.
+// offered a time asked for.
+//
+// The rule is about FABRICATING a time, not about clocks as such. The crate does read a monotonic
+// clock in two places — the Bedrock writer and the stream framer both start an `Instant` to MEASURE
+// elapsed latency for the metrics they report. That is a duration of something that really
+// happened, not a timestamp invented to fill a field, and it stays.
 
 /// Build the Responses API `usage` object from the neutral [`crate::ir::IrUsage`] with ALL fields the
 /// official SDKs require. `openai-python`'s `ResponseUsage` and `openai-node`'s
@@ -437,14 +442,21 @@ fn fill_required_response_members(
     obj: &mut serde_json::Map<String, serde_json::Value>,
     echo: Option<&serde_json::Value>,
 ) {
-    let echoed = |key: &str| echo.and_then(|e| e.get(key)).filter(|v| !v.is_null()).cloned();
+    let echoed = |key: &str| {
+        echo.and_then(|e| e.get(key))
+            .filter(|v| !v.is_null())
+            .cloned()
+    };
     let defaults: [(&str, serde_json::Value); 8] = [
         ("incomplete_details", serde_json::Value::Null),
         (
             "instructions",
             echoed("instructions").unwrap_or(serde_json::Value::Null),
         ),
-        ("tools", echoed("tools").unwrap_or_else(|| serde_json::json!([]))),
+        (
+            "tools",
+            echoed("tools").unwrap_or_else(|| serde_json::json!([])),
+        ),
         (
             "tool_choice",
             echoed("tool_choice").unwrap_or_else(|| serde_json::json!("auto")),
@@ -461,7 +473,10 @@ fn fill_required_response_members(
             "temperature",
             echoed("temperature").unwrap_or_else(|| serde_json::json!(1.0)),
         ),
-        ("top_p", echoed("top_p").unwrap_or_else(|| serde_json::json!(1.0))),
+        (
+            "top_p",
+            echoed("top_p").unwrap_or_else(|| serde_json::json!(1.0)),
+        ),
     ];
     for (key, value) in defaults {
         obj.entry(key.to_string()).or_insert(value);
@@ -644,9 +659,8 @@ fn class_for_response_failed(signal: &str) -> StatusClass {
     match signal {
         CODE_INVALID_API_KEY | ERR_TYPE_AUTHENTICATION => StatusClass::Auth,
         ERR_CODE_RATE_LIMIT | ERR_TYPE_INSUFFICIENT_QUOTA => StatusClass::RateLimit,
-        busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH | ERR_CODE_STRING_ABOVE_MAX => {
-            StatusClass::ContextLength
-        }
+        busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH
+        | ERR_CODE_STRING_ABOVE_MAX => StatusClass::ContextLength,
         ERR_TYPE_SERVER_ERROR | ERR_TYPE_OVERLOADED => StatusClass::ServerError,
         other => {
             // Unrecognized provider signal: default to the transient ServerError bucket so the lane
@@ -1113,6 +1127,15 @@ pub struct ResponsesWriter {
     /// `AtomicU64` (not `Cell`) so the writer stays `Sync` as the `ProtocolWriter` trait requires;
     /// the stream is single-threaded at any instant, so `Relaxed` ordering is sufficient.
     sequence: AtomicU64,
+    /// Whether this stream's opening `MessageStart` has already been written. The per-stream reset
+    /// belongs to the FIRST one only, but the writer cannot assume it sees exactly one: five of the
+    /// six readers gate `MessageStart` on `state.started`, while the Anthropic reader emits it 1:1
+    /// with the upstream `message_start` frame. So a responses-egress stream fed from an Anthropic
+    /// ingress can carry a duplicate, and an ungated reset rewinds `sequence_number` to 0, mints a
+    /// different `response.id` between `response.created` and `response.completed`, and clears the
+    /// open-text set out from under an item that is still open. Latching here makes the reset
+    /// idempotent per stream. `AtomicBool` (not `Cell`) for the same `Sync` reason as `sequence`.
+    started: AtomicBool,
     /// Per-stream `response.id`. Captured on the opening `MessageStart` (the synthesized-or-
     /// forwarded id written into `response.created`) and replayed verbatim onto EVERY subsequent
     /// lifecycle event (`response.completed`/`response.incomplete`/`response.failed`). A native
@@ -1286,6 +1309,7 @@ struct ToolCallAccum {
 #[allow(clippy::declare_interior_mutable_const)]
 pub const ResponsesWriter: ResponsesWriter = ResponsesWriter {
     sequence: AtomicU64::new(0),
+    started: AtomicBool::new(false),
     response_id: std::sync::Mutex::new(None),
     created_at: std::sync::Mutex::new(None),
     stamped_created_at: UNSTAMPED_CREATED_AT,
@@ -1312,6 +1336,9 @@ impl Clone for ResponsesWriter {
         // panicking on the request path.
         ResponsesWriter {
             sequence: AtomicU64::new(self.sequence.load(Ordering::Relaxed)),
+            // Carry the started latch too: a mid-stream `Protocol::clone` is still the SAME stream,
+            // so a duplicate `MessageStart` arriving after the clone must not reset it either.
+            started: AtomicBool::new(self.started.load(Ordering::Relaxed)),
             stamped_created_at: self.stamped_created_at,
             response_id: std::sync::Mutex::new(
                 self.response_id.lock().map(|id| id.clone()).unwrap_or(None),
@@ -1439,6 +1466,15 @@ impl ResponsesWriter {
             map.clear();
         }
         if let Ok(mut map) = self.output_items.lock() {
+            map.clear();
+        }
+        // Clear the per-stream citation and logprob buffers for the same reason: an entry left under
+        // an index the new stream reuses would attach a previous stream's sources and token
+        // logprobs to this stream's text part.
+        if let Ok(mut map) = self.citation_accum.lock() {
+            map.clear();
+        }
+        if let Ok(mut map) = self.logprob_accum.lock() {
             map.clear();
         }
         // Clear the per-stream reasoning open-set and text accumulator so a reused/cloned writer does

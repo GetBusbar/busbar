@@ -238,6 +238,10 @@ timing = ["busbar-timing/timing"]
 # keeps the full plane suite in the exact command CI runs, with the dual-compile gone.
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support", "auth-admin-tokens"] }
 busbar-mcp = { path = "../busbar-mcp", features = ["test-support", "auth-admin-tokens"] }
+# The a2a codec's own test-support suite (RFC 8785 canonicalization vectors, meter and anomaly
+# cells) is reached by `cargo test --workspace` only through this edge; the plane's feature does
+# not forward it on purpose, so without this line CI never ran those tests.
+busbar-a2a-codec = { path = "../busbar-a2a-codec", features = ["test-support"] }
 # THE LLM PLANE crate, on the SAME dev-dependency back-edge as MCP/A2A above: core's own test binary
 # names `busbar_llm::PLANE_DECL` (the `#[cfg(test)]` row in `plane::registry::BUILTIN_PLANE_DECLS`) so
 # the process plane list its registry/plane tests drive is the same `[llm, mcp, a2a]` the shipped

@@ -9,3 +9,4 @@ mod identity_tests;
 mod migration_tests;
 mod recompute_tests;
 mod settle_tests;
+mod totals_tests;

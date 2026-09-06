@@ -50,7 +50,8 @@ pub struct RawMessage {
 
 /// Split `bytes` into a start line, headers and body. `bytes` may end exactly at the header
 /// terminator (body empty) or carry the body already appended. Returns `None` on anything that
-/// does not look like an HTTP/1.x message (no CRLF-terminated start line, or unparsable headers).
+/// does not look like an HTTP/1.x message (no CRLF-terminated start line, a header line with no
+/// colon, or whitespace between a field name and its colon — which the wire forbids outright).
 #[must_use]
 pub fn parse_message(bytes: &[u8]) -> Option<RawMessage> {
     let text_end = bytes
@@ -73,7 +74,14 @@ pub fn parse_message(bytes: &[u8]) -> Option<RawMessage> {
     let mut headers = Vec::new();
     for line in lines {
         let (name, value) = line.split_once(':')?;
-        headers.push((name.trim().to_string(), value.trim().to_string()));
+        // No whitespace is allowed between a field name and its colon. Trimming it here would
+        // normalise a header no compliant peer would honour into one this transport does, and the
+        // disagreement that opens between an intermediary and its upstream is exactly the
+        // request-smuggling surface the rule exists to close. So: refuse the message.
+        if name != name.trim() {
+            return None;
+        }
+        headers.push((name.to_string(), value.trim().to_string()));
     }
 
     Some(RawMessage {
@@ -114,21 +122,59 @@ pub fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str
 
 /// Whether a header block declares a chunked body.
 ///
-/// `Transfer-Encoding` may name a list; `chunked` is the last one when present, and it is the only
-/// coding this transport reads. A message that declares one it does not carry is a framing error
-/// rather than a body, which is why this is a question asked of the headers and not of the bytes.
+/// `Transfer-Encoding` may name a list, and this asks the POSITIONAL question the wire asks:
+/// `chunked` must be the FINAL coding. A sender applying any other coding must apply `chunked` last
+/// so the message stays framable, and a list where it is not last leaves the body length
+/// undeterminable — so `chunked, gzip` is not a chunked body, it is a message to refuse. `chunked`
+/// is also the only coding this transport reads, which is why this is a question asked of the
+/// headers and not of the bytes.
 #[must_use]
 pub fn is_chunked(headers: &[(String, String)]) -> bool {
     header(headers, "transfer-encoding").is_some_and(|v| {
         v.split(',')
-            .any(|c| c.trim().eq_ignore_ascii_case("chunked"))
+            .next_back()
+            .is_some_and(|c| c.trim().eq_ignore_ascii_case("chunked"))
     })
 }
 
-/// The declared body length, where the message declares one.
+/// Whether a header block declares a transfer coding at all, chunked or otherwise.
+///
+/// The companion question to [`is_chunked`]: a message that names a coding this transport cannot
+/// frame is a framing error, and telling that apart from a message that names none is what lets a
+/// caller refuse the first without refusing the second.
 #[must_use]
-pub fn content_length(headers: &[(String, String)]) -> Option<usize> {
-    header(headers, "content-length").and_then(|v| v.trim().parse().ok())
+pub fn has_transfer_encoding(headers: &[(String, String)]) -> bool {
+    header(headers, "transfer-encoding").is_some()
+}
+
+/// The declared body length, where the message declares one.
+///
+/// `Ok(None)` when no `Content-Length` header is present. `Err(())` when one is present and is not
+/// exactly `1*DIGIT` fitting a `usize` — a leading sign, a non-decimal digit, an overflowing value,
+/// or a second `Content-Length` disagreeing with the first. RFC 9112 6.3: an unparsable
+/// `Content-Length` with no `Transfer-Encoding` is unrecoverable framing, never a body-less
+/// message. RFC 9110 8.6 allows treating identical duplicate values as one, which this does.
+///
+/// # Errors
+///
+/// Returns `Err(())` when the header is present but does not name a single valid body length.
+pub fn content_length(headers: &[(String, String)]) -> Result<Option<usize>, ()> {
+    let mut values = headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+        .map(|(_, v)| v.trim());
+    let Some(first) = values.next() else {
+        return Ok(None);
+    };
+    for other in values {
+        if other != first {
+            return Err(());
+        }
+    }
+    if first.is_empty() || !first.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(());
+    }
+    first.parse::<usize>().map(Some).map_err(|_| ())
 }
 
 /// A chunked-transfer-encoding reader, fed whatever bytes have arrived so far.
@@ -317,11 +363,58 @@ mod tests {
             ("CONTENT-length".to_string(), " 12 ".to_string()),
             ("Transfer-Encoding".to_string(), "gzip, Chunked".to_string()),
         ];
-        assert_eq!(content_length(&headers), Some(12));
+        assert_eq!(content_length(&headers), Ok(Some(12)));
         assert!(is_chunked(&headers));
         assert!(!is_chunked(&[(
             "Transfer-Encoding".to_string(),
             "gzip".to_string()
+        )]));
+    }
+
+    /// Whitespace between a field name and its colon is refused, not normalised away.
+    ///
+    /// RFC 9112 is explicit that a server MUST reject such a message: the historical divergence in
+    /// how intermediaries handled it is a request-smuggling surface, and trimming the name turns a
+    /// header no compliant peer would honour into one this transport does.
+    #[test]
+    fn whitespace_before_the_colon_is_refused_rather_than_trimmed() {
+        assert_eq!(
+            parse_message(b"GET / HTTP/1.1\r\nContent-Length : 5\r\n\r\n"),
+            None
+        );
+        assert_eq!(
+            parse_message(b"GET / HTTP/1.1\r\nTransfer-Encoding\t: chunked\r\n\r\n"),
+            None
+        );
+        // The legal shape still parses, value whitespace and all.
+        let ok = parse_message(b"GET / HTTP/1.1\r\nContent-Length:  5 \r\n\r\n").unwrap();
+        assert_eq!(ok.headers[0].1, "5");
+    }
+
+    /// `chunked` is the LAST coding or the message is not chunked at all.
+    ///
+    /// A sender that applies any other coding must apply `chunked` as the final one, precisely so
+    /// the message stays framable; a `Transfer-Encoding` where it is not final leaves the body
+    /// length undeterminable, and a reader that took it for chunked anyway would be decoding a
+    /// framing the sender never wrote.
+    #[test]
+    fn chunked_counts_only_as_the_final_transfer_coding() {
+        assert!(is_chunked(&[(
+            "Transfer-Encoding".to_string(),
+            "gzip, chunked".to_string()
+        )]));
+        assert!(!is_chunked(&[(
+            "Transfer-Encoding".to_string(),
+            "chunked, gzip".to_string()
+        )]));
+        // And a coding list that names one at all is still a declared coding, chunked or not.
+        assert!(has_transfer_encoding(&[(
+            "Transfer-Encoding".to_string(),
+            "chunked, gzip".to_string()
+        )]));
+        assert!(!has_transfer_encoding(&[(
+            "Content-Length".to_string(),
+            "5".to_string()
         )]));
     }
 

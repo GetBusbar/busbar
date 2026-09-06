@@ -15,6 +15,13 @@
 //! into the policy journal and read back, which is what makes a resolved pointer a value the kernel
 //! can compare rather than a number someone remembers.
 //!
+//! It locates values; it does not validate them. Structure is read strictly — brackets have to
+//! match, punctuation has to be where punctuation goes — but number and string grammar is not
+//! checked against the RFC, so `01.2.3e` and a raw control byte inside a string are located rather
+//! than refused. Nothing downstream needs a well-formedness verdict from here: the body busbar
+//! forwards is parsed by the provider, whose strictness is the one that counts. Reading a resolved
+//! span as "this document is valid JSON" is reading something the scanner never said.
+//!
 //! The scanner is the hot one. It never builds a tree, never unescapes into a buffer it owns, and
 //! never looks at a byte twice. Skipping a value it does not care about is a byte loop; matching a
 //! key decodes escapes on both sides a character at a time through the stack. Its budget is under a
@@ -81,7 +88,11 @@ pub enum Resolved {
     NeedMore,
     /// The document is well-formed as far as it was read, and the pointer is not in it.
     Missing,
-    /// The bytes are not JSON.
+    /// The bytes cannot be read as JSON structure.
+    ///
+    /// A structural reading, not a verdict on the document: the scanner found a byte where no value,
+    /// key, separator or matching bracket could go. A [`Resolved::Found`] is the converse — where
+    /// the value is — and never a claim that what is in the span is well-formed.
     Malformed,
 }
 
@@ -145,11 +156,22 @@ fn descend(b: &[u8], at: usize, tokens: &str, depth: usize) -> Result<Option<Spa
 }
 
 /// Find `key` in the object that starts at `at`.
+///
+/// A member spelled twice answers the LAST one. JSON says nothing about repeated names, so what
+/// counts is what reads the body after this does: serde_json takes the last, and so do the
+/// providers' own parsers. Answering the first would let a body price and permit one model while
+/// the upstream serves another — the divergence is the author of the body's to choose, not the
+/// operator's — so the walk keeps the latest match rather than returning on the first.
+///
+/// The object is still walked exactly once, so the budget is the budget it always was; the answer
+/// simply is not final until the closing brace, which is also why a truncated object asks for more
+/// instead of handing back a match a later duplicate could still replace.
 fn member(b: &[u8], at: usize, key: &str, depth: usize) -> Result<Option<Span>, ScanErr> {
     let mut i = skip_ws(b, at + 1);
     if b.get(i) == Some(&b'}') {
         return Ok(None);
     }
+    let mut latest: Option<Span> = None;
     loop {
         if b.get(i) != Some(&b'"') {
             return Err(if i >= b.len() {
@@ -173,13 +195,15 @@ fn member(b: &[u8], at: usize, key: &str, depth: usize) -> Result<Option<Span>, 
             return Err(ScanErr::NeedMore);
         }
         let value_end = skip_value(b, value_start, depth + 1)?;
-        if matched {
-            return Ok(Some(Span::new(value_start, value_end)));
-        }
         i = skip_ws(b, value_end);
+        if matched {
+            latest = Some(Span::new(value_start, value_end));
+        }
+        // What follows the value has to be this object's own punctuation. Walking on without that
+        // look would hand back a span out of a document closed by the wrong bracket.
         match b.get(i) {
             Some(b',') => i = skip_ws(b, i + 1),
-            Some(b'}') => return Ok(None),
+            Some(b'}') => return Ok(latest),
             None => return Err(ScanErr::NeedMore),
             Some(_) => return Err(ScanErr::Malformed),
         }
@@ -188,6 +212,19 @@ fn member(b: &[u8], at: usize, key: &str, depth: usize) -> Result<Option<Span>, 
 
 /// Find element `index` in the array that starts at `at`.
 fn element(b: &[u8], at: usize, index: &str, depth: usize) -> Result<Option<Span>, ScanErr> {
+    // The pointer grammar's array index is a single `0` or a digit string with no leading zero.
+    // An integer parse is looser than that — it takes a leading `+` and any run of leading zeroes
+    // — so the token is checked against the grammar first and a token that is not an index names
+    // nothing, exactly as a member name the object does not carry names nothing.
+    let token = index.as_bytes();
+    let is_index = match token {
+        [b'0'] => true,
+        [first, ..] => first.is_ascii_digit() && *first != b'0',
+        [] => false,
+    };
+    if !is_index {
+        return Ok(None);
+    }
     let wanted: usize = match index.parse() {
         Ok(n) => n,
         Err(_) => return Ok(None),
@@ -202,11 +239,15 @@ fn element(b: &[u8], at: usize, index: &str, depth: usize) -> Result<Option<Span
             return Err(ScanErr::NeedMore);
         }
         let end = skip_value(b, i, depth + 1)?;
+        let element_start = i;
+        i = skip_ws(b, end);
         if seen == wanted {
-            return Ok(Some(Span::new(i, end)));
+            return match b.get(i) {
+                Some(b',') | Some(b']') | None => Ok(Some(Span::new(element_start, end))),
+                Some(_) => Err(ScanErr::Malformed),
+            };
         }
         seen += 1;
-        i = skip_ws(b, end);
         match b.get(i) {
             Some(b',') => i = skip_ws(b, i + 1),
             Some(b']') => return Ok(None),
@@ -244,21 +285,35 @@ fn skip_value(b: &[u8], i: usize, depth: usize) -> Result<usize, ScanErr> {
     }
 }
 
-/// Skip a whole object or array, counting brackets and stepping over strings so a brace inside a
-/// string never confuses the count.
+/// Skip a whole object or array, matching brackets and stepping over strings so a brace inside a
+/// string never confuses the walk.
+///
+/// The open brackets are held on a stack bounded by the depth ceiling rather than merely counted: a
+/// closer that does not match the opener it would close is malformed, not a level down. Counting
+/// alone would answer a span ending at the wrong bracket, which is bytes that are not a value.
 fn skip_container(b: &[u8], start: usize, depth: usize) -> Result<usize, ScanErr> {
+    let mut stack = [0u8; MAX_JSON_DEPTH];
     let mut level = 0usize;
     let mut i = start;
     while let Some(c) = b.get(i) {
         match c {
             b'{' | b'[' => {
-                level += 1;
-                if depth + level > MAX_JSON_DEPTH {
+                if depth + level + 1 > MAX_JSON_DEPTH {
                     return Err(ScanErr::Malformed);
                 }
+                stack[level] = *c;
+                level += 1;
                 i += 1;
             }
             b'}' | b']' => {
+                let opener = match level.checked_sub(1) {
+                    Some(below) => stack[below],
+                    None => return Err(ScanErr::Malformed),
+                };
+                let wanted = if *c == b'}' { b'{' } else { b'[' };
+                if opener != wanted {
+                    return Err(ScanErr::Malformed);
+                }
                 level -= 1;
                 i += 1;
                 if level == 0 {
@@ -312,10 +367,30 @@ fn literal(b: &[u8], i: usize, word: &[u8]) -> Result<usize, ScanErr> {
     }
 }
 
+/// One step of a decode: a character, the end of the side, or bytes that spell no character.
+///
+/// The third arm is the whole point. Folding "nothing left to read" together with "what is left
+/// cannot be read" makes a key whose decoded prefix is the token compare EQUAL to it once the
+/// remainder is a broken escape, which hands whoever wrote the body the choice of which member the
+/// kernel reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Decoded {
+    Char(char),
+    End,
+    Malformed,
+}
+
 /// Compare a raw JSON key against a pointer token, decoding both sides as it goes.
 ///
 /// Neither side is unescaped into a buffer: each step decodes one character from each and compares
 /// them, so a key with an escape in it costs a few instructions and no memory.
+///
+/// An undecodable character on either side is a MISMATCH here and not a [`Resolved::Malformed`] for
+/// the document, because the two say different things. Malformed is the structural reading — a byte
+/// where no value, key, separator or bracket could go — and a broken escape inside a well-delimited
+/// string is string grammar, which this crate locates rather than validates, exactly as it locates
+/// `01.2.3e` and a raw control byte. So the object is still walked and its other members still
+/// resolve; only the key that cannot be read is not the key that was asked for.
 fn key_eq(raw: &[u8], token: &str) -> bool {
     let mut r = 0usize;
     let mut t = token.as_bytes();
@@ -323,32 +398,41 @@ fn key_eq(raw: &[u8], token: &str) -> bool {
         let left = next_json_char(raw, &mut r);
         let right = next_token_char(&mut t);
         match (left, right) {
-            (None, None) => return true,
-            (Some(a), Some(c)) if a == c => continue,
+            (Decoded::End, Decoded::End) => return true,
+            (Decoded::Char(a), Decoded::Char(c)) if a == c => continue,
             _ => return false,
         }
     }
 }
 
 /// One character of a JSON string body, escapes decoded.
-fn next_json_char(raw: &[u8], at: &mut usize) -> Option<char> {
-    let c = *raw.get(*at)?;
+fn next_json_char(raw: &[u8], at: &mut usize) -> Decoded {
+    let Some(&c) = raw.get(*at) else {
+        return Decoded::End;
+    };
     if c != b'\\' {
-        // The key is UTF-8 by definition of the format; a malformed byte compares unequal, which is
+        // The key is UTF-8 by definition of the format; a malformed byte is undecodable, which is
         // the safe answer for a lookup. Only the ONE character's own bytes are validated: reading
         // the whole remainder here would make matching a key quadratic in its length, and "never
         // looks at a byte twice" is the scanner's budget, not a figure of speech.
-        let width = utf8_width(c)?;
-        let ch = std::str::from_utf8(raw.get(*at..*at + width)?)
-            .ok()?
-            .chars()
-            .next()?;
+        let Some(width) = utf8_width(c) else {
+            return Decoded::Malformed;
+        };
+        let decoded = raw
+            .get(*at..*at + width)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .and_then(|s| s.chars().next());
+        let Some(ch) = decoded else {
+            return Decoded::Malformed;
+        };
         *at += width;
-        return Some(ch);
+        return Decoded::Char(ch);
     }
-    let esc = *raw.get(*at + 1)?;
+    let Some(&esc) = raw.get(*at + 1) else {
+        return Decoded::Malformed;
+    };
     *at += 2;
-    Some(match esc {
+    Decoded::Char(match esc {
         b'"' => '"',
         b'\\' => '\\',
         b'/' => '/',
@@ -358,22 +442,36 @@ fn next_json_char(raw: &[u8], at: &mut usize) -> Option<char> {
         b'r' => '\r',
         b't' => '\t',
         b'u' => {
-            let first = hex4(raw, *at)?;
+            let Some(first) = hex4(raw, *at) else {
+                return Decoded::Malformed;
+            };
             *at += 4;
             let code = if (0xD800..0xDC00).contains(&first) {
                 // A surrogate pair: the low half follows as a second escape.
                 if raw.get(*at) != Some(&b'\\') || raw.get(*at + 1) != Some(&b'u') {
-                    return None;
+                    return Decoded::Malformed;
                 }
-                let low = hex4(raw, *at + 2)?;
+                let Some(low) = hex4(raw, *at + 2) else {
+                    return Decoded::Malformed;
+                };
+                // The second escape has to be the low half. Anything else is not a character, the
+                // same answer every other malformed escape here gives — and taking it on trust would
+                // run the combining arithmetic below off the bottom of its range.
+                if !(0xDC00..0xE000).contains(&low) {
+                    return Decoded::Malformed;
+                }
                 *at += 6;
                 0x10000 + ((first as u32 - 0xD800) << 10) + (low as u32 - 0xDC00)
             } else {
                 first as u32
             };
-            return char::from_u32(code);
+            // A lone low half lands here, and `char::from_u32` refuses it.
+            return match char::from_u32(code) {
+                Some(ch) => Decoded::Char(ch),
+                None => Decoded::Malformed,
+            };
         }
-        _ => return None,
+        _ => return Decoded::Malformed,
     })
 }
 
@@ -400,24 +498,36 @@ fn hex4(raw: &[u8], at: usize) -> Option<u16> {
 }
 
 /// One character of a pointer token, with the pointer's own two escapes decoded.
-fn next_token_char(token: &mut &[u8]) -> Option<char> {
-    let c = *token.first()?;
+fn next_token_char(token: &mut &[u8]) -> Decoded {
+    let Some(&c) = token.first() else {
+        return Decoded::End;
+    };
     if c == b'~' {
-        let next = *token.get(1)?;
+        // The pointer's escape grammar is exactly `~0` and `~1`. A bare tilde at the end of a token,
+        // or a tilde followed by anything else, spells no character — so the token is not the key
+        // spelled with the part in front of it.
+        let Some(&next) = token.get(1) else {
+            return Decoded::Malformed;
+        };
         *token = &token[2..];
         return match next {
-            b'0' => Some('~'),
-            b'1' => Some('/'),
-            _ => None,
+            b'0' => Decoded::Char('~'),
+            b'1' => Decoded::Char('/'),
+            _ => Decoded::Malformed,
         };
     }
-    let width = utf8_width(c)?;
-    let ch = std::str::from_utf8(token.get(..width)?)
-        .ok()?
-        .chars()
-        .next()?;
+    let Some(width) = utf8_width(c) else {
+        return Decoded::Malformed;
+    };
+    let decoded = token
+        .get(..width)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(|s| s.chars().next());
+    let Some(ch) = decoded else {
+        return Decoded::Malformed;
+    };
     *token = &token[width..];
-    Some(ch)
+    Decoded::Char(ch)
 }
 
 /// How far the scanner got before it ran out of bytes.

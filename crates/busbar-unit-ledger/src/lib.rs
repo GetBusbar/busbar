@@ -77,7 +77,7 @@ pub use recompute::{
     apply_tier, recheck, recompute, Divergence, Finding as RecomputeFinding, Pass, PolicyArchive,
     Posting, PostingOrigin, PricedLine, RateCard, SealedPolicy, Watermark, BASIS_POINTS,
 };
-pub use settle::Ledger;
+pub use settle::{Ledger, Overdraft, Settlement};
 pub use totals::{Book, BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart};
 pub use verify::{
     sequences_are_monotonic, verify, AllWindowsOpen, Finding as VerifyFinding, WindowState,

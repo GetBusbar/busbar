@@ -138,7 +138,7 @@ impl busbar_substrate_values::ir::facts::IrFacts for EmbeddingsReq {
                     });
                 }
             }
-            // Image references embed as binary/opaque input (MINOR-7): present-but-unscreenable.
+            // Image references embed as binary/opaque input: present-but-unscreenable.
             EmbInput::Images(images) => {
                 for _ in images {
                     out.push(ContentItem::Opaque {
@@ -150,7 +150,7 @@ impl busbar_substrate_values::ir::facts::IrFacts for EmbeddingsReq {
                 }
             }
         }
-        // FATAL-3: the Gemini RETRIEVAL_DOCUMENT title is caller free-text, read+written on the
+        // The Gemini RETRIEVAL_DOCUMENT title is caller free-text, read+written on the
         // Gemini retrieval path, so a gate must see it.
         if let Some(title) = &self.title {
             out.push(ContentItem::Text {

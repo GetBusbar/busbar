@@ -6,6 +6,12 @@
 //!   Must be GREEN.
 //! * `xtask-fixture-dirty-dep` — a pure crate that depends directly on `libc` (one of section
 //!   1.2's named banned crates). Must be RED, naming `libc`.
+//! * `xtask-fixture-dirty-dep-hyphenated` — a pure crate that depends directly on two banned
+//!   crates whose PUBLISHED names are hyphenated (`async-std`, `hyper-util`), where
+//!   `cargo metadata`'s resolve-graph edge name is the underscored extern-crate identifier
+//!   (`async_std`, `hyper_util`) and the banned set holds the hyphenated form. Must be RED on
+//!   both, naming them hyphenated — every other fixture here uses `libc`, whose two name forms
+//!   coincide, so nothing else can catch a walk that compares the two forms directly.
 //! * `xtask-fixture-dirty-src` — a pure crate with no unusual dependency at all, whose own
 //!   `src/lib.rs` calls `std::fs::read` in production code (and, to prove the test-code
 //!   exclusion, `std::env::var` inside a `#[cfg(test)] mod`). Must be RED on `std::fs` only —
@@ -135,6 +141,13 @@ pub fn run() -> bool {
         &mut fails,
     );
     check(
+        "pure crate with banned hyphenated-name direct dependencies",
+        "dirty-dep-hyphenated",
+        "xtask-fixture-dirty-dep-hyphenated",
+        &["async-std", "hyper-util"],
+        &mut fails,
+    );
+    check(
         "pure crate with a banned own-src path",
         "dirty-src",
         "xtask-fixture-dirty-src",
@@ -159,6 +172,7 @@ pub fn run() -> bool {
         &mut fails,
     );
     check_via_multi(&mut fails);
+    check_vacuous_config_is_red(&mut fails);
 
     if fails.is_empty() {
         println!("\nxtask denylist --selftest: ALL GREEN");
@@ -362,5 +376,36 @@ fn check_via_multi(fails: &mut Vec<String>) {
             "  GREEN  via-multi: `libc` fully waived by `via = \"xtask-fixture-via-multi-a, \
              xtask-fixture-via-multi-b\"`"
         );
+    }
+}
+
+/// A GATE WHOSE OWN INPUT VANISHED MUST NOT ANSWER GREEN.
+///
+/// Both fixtures here are trees where the denylist has nothing to work from: one has the
+/// `[rules.source-denylist]` table renamed out of `qa/construction.toml` (so the kind list is
+/// empty), the other has no `crates/` directory at all (so the listing errors). Either way the tool
+/// scans zero crates — and "0 crates scanned, 0 hits" printed as OK is a proof of nothing, dressed
+/// as a proof of purity. The renamed-table fixture carries a genuinely `libc`-dependent plane crate
+/// underneath, so the vacuous pass is hiding a real violation, not an empty tree.
+fn check_vacuous_config_is_red(fails: &mut Vec<String>) {
+    for (label, fixture) in [
+        (
+            "vacuous config: [rules.source-denylist] renamed away",
+            "renamed-rule-table",
+        ),
+        ("vacuous config: no crates/ directory", "no-crates-dir"),
+    ] {
+        let root = fixtures_dir().join(fixture);
+        let report = denylist::run(&root);
+        if denylist::print_report(&report) {
+            fails.push(format!(
+                "{label}: the run answered GREEN over {} crate(s) scanned and {} hit(s) — a \
+                 denylist that lost its own input must report RED, not a vacuous pass",
+                report.crates_scanned,
+                report.hits.len()
+            ));
+        } else {
+            println!("  RED    {label}: reported as a failure rather than a vacuous pass");
+        }
     }
 }

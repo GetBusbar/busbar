@@ -9,6 +9,7 @@ use crate::{
     fee_count, requests_settled, settle, Evidence, FeeInputs, Finish, SettleFlag, StatusClass,
     UnitEndKind,
 };
+use busbar_contract::{DestinationFacts, LaneId, UpstreamAddress};
 
 fn evidence<'a>() -> Evidence<'a> {
     Evidence::default()
@@ -238,11 +239,65 @@ fn the_estimated_mark_travels_from_the_report_onto_the_settlement() {
 fn fee(client: bool, upstream: bool, relayed: bool) -> FeeInputs {
     FeeInputs {
         client_open_or_oneshot: client,
-        upstream_leg_selected: upstream,
+        selected_destination: Some(if upstream {
+            upstream_destination()
+        } else {
+            DestinationFacts::KernelVerb { verb: "health" }
+        }),
         first_response_frame_relayed: relayed,
         status_class: None,
         finish: None,
     }
+}
+
+fn upstream_destination() -> DestinationFacts {
+    DestinationFacts::Upstream {
+        transport: "http",
+        address: UpstreamAddress::socket("api.example:443"),
+        lane: LaneId::new("gold"),
+    }
+}
+
+/// Which side of the fee line a route landed on is the DESTINATION KIND's answer, read from the
+/// contract's own predicate rather than restated here. A second spelling of a money rule is a
+/// second place it can drift.
+#[test]
+fn the_fee_follows_the_destination_kind_the_route_selected() {
+    let posts = |dest| {
+        fee_count(&FeeInputs {
+            selected_destination: Some(dest),
+            status_class: Some(StatusClass::Success),
+            finish: Some(Finish::Complete),
+            ..fee(true, true, true)
+        })
+    };
+    assert_eq!(posts(upstream_destination()), (1, false));
+    assert_eq!(
+        posts(DestinationFacts::SessionUpstream {
+            upstream: busbar_contract::UpstreamIdx(0),
+            stream: None,
+            lane: LaneId::new("gold"),
+        }),
+        (1, false),
+        "a session upstream is an upstream for the fee"
+    );
+    for other in [
+        DestinationFacts::KernelVerb { verb: "health" },
+        DestinationFacts::SessionAccrual {
+            lane: LaneId::new("gold"),
+        },
+        DestinationFacts::Upgrade { to: "ws" },
+    ] {
+        assert_eq!(posts(other), (0, false), "{other:?} carries no fee");
+    }
+    // No route, no leg, no fee.
+    assert_eq!(
+        fee_count(&FeeInputs {
+            selected_destination: None,
+            ..fee(true, true, true)
+        }),
+        (0, false)
+    );
 }
 
 /// The fee posts for a client request that selected an upstream leg and had its first response

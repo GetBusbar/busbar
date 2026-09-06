@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! LAYER 2 — CONTROL / CONFIG (translatable; bites only cross-dialect). Design `plane4-duplex-session.md` §2.3.
+//! LAYER 2 — CONTROL / CONFIG (translatable; bites only cross-dialect). Design `plane4-duplex-session.md`.
 //!
 //! The session-control events are IR-translatable, but the translation only MATTERS cross-dialect
 //! (OpenAI Realtime ⇄ Gemini Live). Same-dialect they are verbatim carriage (Layer-3 discipline). Two
@@ -72,7 +72,7 @@ pub enum IrVad {
     },
 }
 
-/// THE NEUTRAL CONTROL / CONFIG IR (`plane4-duplex-session.md` §2.3). Translatable, but same-dialect it is verbatim carriage.
+/// THE NEUTRAL CONTROL / CONFIG IR (`plane4-duplex-session.md`). Translatable, but same-dialect it is verbatim carriage.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrDuplexControl {
     /// Configure the session — the authoritative copy the plane holds server-side and re-applies; a
@@ -106,7 +106,7 @@ pub enum IrDuplexControl {
         /// The item to delete.
         item_ref: String,
     },
-    /// Barge-in bookkeeping (`plane4-duplex-session.md` §2.3): truncate a played item at the audio the user ACTUALLY heard —
+    /// Barge-in bookkeeping (`plane4-duplex-session.md`): truncate a played item at the audio the user ACTUALLY heard —
     /// `conversation.item.truncate`. `audio_played_ms` is plane-computed state (busbar tracks playback
     /// position on WebSocket, where the server emits audio faster than realtime), NOT a field copied
     /// off the wire; it maps to/from the wire's `audio_end_ms`.

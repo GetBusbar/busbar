@@ -64,7 +64,7 @@ fn speech_body_projects_input_and_instructions() {
     assert!(view.contains("SPEAK-THIS"));
     assert!(
         view.contains("STYLE-INSTRUCTIONS"),
-        "FATAL-2: instructions must be screened"
+        "instructions must be screened"
     );
 }
 
@@ -81,7 +81,7 @@ fn moderation_body_projects_text_and_marks_image_url_opaque() {
     let f = seam(&v, "openai", Operation::MODERATION);
     let view = gate_view(&f);
     assert!(view.contains("SCREEN-THIS-TEXT"));
-    // MAJOR-5: the ImageUrl is present-but-unscreenable, shown as the marker — not empty, not leaked.
+    // The ImageUrl is present-but-unscreenable, shown as the marker — not empty, not leaked.
     assert!(view.contains(busbar_substrate::ir::facts::OPAQUE_CONTENT_MARKER));
     assert!(!view.contains("x.test"));
 }
@@ -115,7 +115,7 @@ fn subscribe_body_projects_its_target() {
     assert!(gate_view(&f).contains("SECRET-TARGET"));
 }
 
-/// FATAL-1: a multipart transcription body reaches the seam as a NON-object (its DOM is `Value::Null`
+/// A multipart transcription body reaches the seam as a NON-object (its DOM is `Value::Null`
 /// / absent), so the caller `prompt` is reachable ONLY through the byte reader. The seam must thread
 /// the raw bytes + content-type and project the prompt — the `&Value` path physically cannot.
 #[test]

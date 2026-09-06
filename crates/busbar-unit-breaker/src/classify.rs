@@ -201,21 +201,26 @@ impl RawUpstreamError {
 /// hand-copying the literal, is how the spelling stays single-sourced.
 pub const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
 
-/// Parse an RFC 9110 §10.2.3 `Retry-After` header VALUE. Both normative forms are accepted:
-/// `delay-seconds` (an integer) and an HTTP-date, which floors at 0 when it is already in the past.
-pub fn parse_retry_after(value: &str) -> Option<u64> {
+/// Parse an RFC 9110 `Retry-After` header VALUE against the caller's `now`. Both normative forms
+/// are accepted: `delay-seconds` (an integer, which ignores `now`) and an HTTP-date, converted to
+/// the seconds remaining until that instant and floored at 0 when it is already in the past.
+///
+/// `now` is a PARAMETER because "how long until that instant" is a question about a clock, and a
+/// unit crate does not own one: the kernel that read the response also read the time, and handing
+/// that same value down is what makes this answer replayable rather than a re-measurement.
+pub fn parse_retry_after(value: &str, now: u64) -> Option<u64> {
     let s = value.trim();
     if let Ok(n) = s.parse::<u64>() {
         return Some(n);
     }
-    parse_imf_fixdate_retry_after(s)
+    parse_imf_fixdate_retry_after(s, now)
 }
 
 /// Parse the value as an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`, the sole HTTP-date form RFC
 /// 9110 recommends generating, though obsolete forms are permitted for parsing — this parser
 /// accepts only the recommended form, matching every provider observed in practice) and return the
 /// whole seconds remaining until it, floored at 0 for a date already in the past.
-fn parse_imf_fixdate_retry_after(s: &str) -> Option<u64> {
+fn parse_imf_fixdate_retry_after(s: &str, now: u64) -> Option<u64> {
     // "Www, dd Mon yyyy HH:MM:SS GMT" — fixed-width, so a byte-length check plus field slicing is
     // enough; no general calendar library is warranted for one wire format.
     let bytes = s.as_bytes();
@@ -232,7 +237,6 @@ fn parse_imf_fixdate_retry_after(s: &str) -> Option<u64> {
         return None;
     }
     let epoch_secs = civil_to_epoch_secs(year, month, day, hour, minute, second)?;
-    let now = crate::clock::unix_time_secs();
     Some(epoch_secs.saturating_sub(now))
 }
 

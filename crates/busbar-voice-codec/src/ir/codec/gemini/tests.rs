@@ -154,6 +154,101 @@ fn setup_reencode_produces_gemini_shape() {
     );
 }
 
+/// VAD TIMINGS THAT DO NOT FIT MUST NOT BECOME DIFFERENT, PLAUSIBLE TIMINGS.
+///
+/// `prefixPaddingMs` / `silenceDurationMs` come off an upstream `setup` — untrusted bytes. `as u32`
+/// turns `4294967296` into `0`, i.e. "no padding at all", which is a working configuration that
+/// nobody asked for. A value that does not fit is a value that was not usable, so it takes the same
+/// documented default an ABSENT field takes.
+#[test]
+fn out_of_range_vad_timings_fall_back_to_their_documented_defaults() {
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let mut setup = gemini_setup();
+    setup["setup"]["realtimeInputConfig"]["automaticActivityDetection"]["prefixPaddingMs"] =
+        json!(4_294_967_296u64);
+    setup["setup"]["realtimeInputConfig"]["automaticActivityDetection"]["silenceDurationMs"] =
+        json!(u64::MAX);
+    let ir = codec.read_up(wire(&setup.to_string()), &mut st);
+    let IrClientEvent::Control(IrDuplexControl::SessionConfigure { config }) = &ir[0] else {
+        panic!("expected SessionConfigure");
+    };
+    let Some(IrVad::ServerVad {
+        prefix_padding_ms,
+        silence_duration_ms,
+        ..
+    }) = config.turn_detection
+    else {
+        panic!("expected server VAD");
+    };
+    assert_eq!(
+        prefix_padding_ms, 300,
+        "an unrepresentable prefixPaddingMs takes the documented default, not a wrapped 0"
+    );
+    assert_eq!(
+        silence_duration_ms, 200,
+        "an unrepresentable silenceDurationMs takes the documented default, not a wrapped 0"
+    );
+}
+
+/// The Gemini `usageMetadata` sums add the same untrusted upstream counts the OpenAI re-frame does,
+/// and must pin at the ceiling for the same reason: a wrapped total is a small number that is false.
+#[test]
+fn usage_metadata_totals_saturate_rather_than_wrap() {
+    let u = IrDuplexUsage {
+        audio_in: u64::MAX,
+        audio_out: u64::MAX,
+        text_in: 1,
+        text_out: 1,
+        cached: 0,
+    };
+    let meta = usage_to_metadata(&u);
+    assert_eq!(meta["promptTokenCount"].as_u64(), Some(u64::MAX));
+    assert_eq!(meta["responseTokenCount"].as_u64(), Some(u64::MAX));
+    assert_eq!(meta["totalTokenCount"].as_u64(), Some(u64::MAX));
+}
+
+/// Gemini's two audio read paths — the uplink `realtimeInput` blob and the downlink
+/// `serverContent.modelTurn` inline data — must drop an undecodable payload rather than relay an
+/// empty frame, the same answer the OpenAI paths give.
+#[test]
+fn an_undecodable_gemini_audio_payload_emits_no_frame() {
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let up = codec.read_up(
+        wire(
+            &json!({
+                "realtimeInput": { "audio": { "mimeType": "audio/pcm;rate=16000", "data": "!!!!" } }
+            })
+            .to_string(),
+        ),
+        &mut st,
+    );
+    assert!(up.is_empty(), "expected no uplink frame, got {up:?}");
+    let down = codec.read_down(
+        wire(
+            &json!({
+                "serverContent": { "modelTurn": { "parts": [
+                    { "inlineData": { "mimeType": "audio/pcm;rate=24000", "data": "!!!!" } }
+                ] } }
+            })
+            .to_string(),
+        ),
+        &mut st,
+    );
+    assert!(
+        !down
+            .iter()
+            .any(|e| matches!(e, IrServerEvent::AudioFrame(_))),
+        "expected no downlink audio frame, got {down:?}"
+    );
+    assert_eq!(
+        st.played_ms(),
+        0,
+        "a payload that never decoded must not advance the barge-in playback clock"
+    );
+}
+
 #[test]
 fn setup_adopts_pcm16_output_format() {
     let codec = GeminiLiveCodec;
@@ -578,7 +673,7 @@ fn tool_response_maps_to_call_result_and_roundtrips() {
     assert_eq!(back, src, "toolResponse round-trip is byte-stable");
 }
 
-// ── usageMetadata extraction (`plane4-duplex-session.md` §2.5) ──────────────────────────────────────────────────────────────
+// ── usageMetadata extraction (`plane4-duplex-session.md`) ──────────────────────────────────────────────────────────────
 
 #[test]
 fn usage_metadata_extracts_split_token_classes() {
@@ -612,6 +707,52 @@ fn usage_metadata_extracts_split_token_classes() {
     // Re-encode is byte-stable against the canonical Gemini shape.
     let back = as_value(&codec.write_down(ir[0].clone()));
     assert_eq!(back, src);
+}
+
+#[test]
+fn cached_content_tokens_are_not_billed_twice() {
+    // Gemini reports `cachedContentTokenCount` as a SUBSET of `promptTokenCount` (cached content IS
+    // part of the prompt), and `promptTokensDetails` is that same prompt broken out by modality. So
+    // the billing fold must bill the UNCACHED remainder as `input` and the cached portion as
+    // `cache_read` — the same netting the OpenAI dialect needs, not a per-dialect divergence.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "usageMetadata": {
+            "promptTokenCount": 1000,
+            "responseTokenCount": 0,
+            "totalTokenCount": 1000,
+            "cachedContentTokenCount": 800,
+            "promptTokensDetails": [
+                { "modality": "AUDIO", "tokenCount": 1000 },
+                { "modality": "TEXT", "tokenCount": 0 }
+            ],
+            "responseTokensDetails": []
+        }
+    });
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    let IrServerEvent::Usage(u) = &ir[0] else {
+        panic!("expected Usage");
+    };
+    // Extraction stays wire-faithful.
+    assert_eq!(u.audio_in, 1000);
+    assert_eq!(u.cached, 800);
+    let billed = u.to_billing_usage();
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        Some(200),
+        "input bills the UNCACHED remainder of the prompt (1000 - 800)"
+    );
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_CACHE_READ).copied(),
+        Some(800),
+        "the cached subset bills once, on the cache-read lane"
+    );
+    assert_eq!(
+        billed.usage_units.values().sum::<u64>(),
+        1000,
+        "the billed lanes sum to the turn's prompt, never to 1800"
+    );
 }
 
 // ── audio-format mime probe ──────────────────────────────────────────────────────────────────────

@@ -1,0 +1,342 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Busbar administrative API — 1.6.0 additive operations",
+    "version": "1.6.0",
+    "description": "The operations 1.6.0 adds to the administrative surface, described in a document of their own.\n\nThis is not a replacement for `GET /api/v1/admin/openapi.json`, and it does not repeat a single path from it. That document describes the 66 operations the 1.5.5 tag pinned and its bytes are fixed: a client that fetched it before the upgrade and after it receives the same bytes, so nothing which reads it can be surprised by a path it does not know. The new operations are reached by asking for this document, at `GET /api/v1/admin/ledger/openapi.json`, by name.\n\nScope: the five read-only ledger views. The 1.6.0 money-governance verbs (`adjust`, `approve`, `resolve_dispute` and the rest of that set) are deliberately absent — their HTTP bindings are not yet fixed, and describing a binding this document is not entitled to fix would make the document wrong rather than incomplete.\n\nHow figures are typed. Every money figure is a JSON string holding a decimal integer, and every count is a JSON number. The ledger keeps money in 128-bit integers; JSON's number is a double, exact only to 2^53, and a nano-unit total passes that on a busy day. A figure that silently lost its last digits would still look like money, so money is carried as text and the reader does the arithmetic.\n\nAuthorization. Every operation here is a read and requires the `read-only` scope — the same scope, presented the same way, as the legacy `GET /api/v1/admin/usage` that reads the same money from the other side.",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    }
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "The administrative listener."
+    }
+  ],
+  "tags": [
+    {
+      "name": "ledger",
+      "description": "Read-only views of what the ledger holds."
+    }
+  ],
+  "paths": {
+    "/api/v1/admin/ledger/totals": {
+      "get": {
+        "operationId": "GetLedgerTotals",
+        "tags": ["ledger"],
+        "summary": "What the ledger posted, per bucket, day, lane and provider.",
+        "description": "The row width is the reconciliation's row width, so a discrepancy found on one endpoint can be looked up on the other by the same four-part name.",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0",
+        "security": [{ "adminToken": [] }],
+        "responses": {
+          "200": {
+            "description": "The rows, in bucket, day, lane and provider order.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LedgerTotals" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/v1/admin/ledger/checkpoints": {
+      "get": {
+        "operationId": "GetLedgerCheckpoints",
+        "tags": ["ledger"],
+        "summary": "The sealed checkpoint figures.",
+        "description": "A checkpoint's `body_hash` is what an auditor re-derives independently; `body_hash_verifies` is this node's own answer to the same question. Both are served so the two can be compared rather than one trusted. A signature's presence is reported and its bytes are not: a checkpoint nobody signed and a checkpoint whose signature this response withheld would otherwise look the same.",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0",
+        "security": [{ "adminToken": [] }],
+        "responses": {
+          "200": {
+            "description": "The sealed checkpoints, oldest first.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LedgerCheckpoints" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/v1/admin/ledger/reconciliation": {
+      "get": {
+        "operationId": "GetLedgerReconciliation",
+        "tags": ["ledger"],
+        "summary": "The residual of the ledger's postings against the previous release's rows.",
+        "description": "For every row either side carries, two figures have to agree: the ledger's summed priced amount projected once to micro-units against the row's spend, and the ledger's summed fee count against the row's billable requests. They are checked separately because they fail separately. An empty `discrepancies` list with `holds: true` is the good answer; a residual names the row it is about and the amount it is out by, and its sign says which side is missing it.",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0",
+        "security": [{ "adminToken": [] }],
+        "responses": {
+          "200": {
+            "description": "Whether the identity holds, and every row on which it does not.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LedgerReconciliation" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/v1/admin/ledger/migration": {
+      "get": {
+        "operationId": "GetLedgerMigration",
+        "tags": ["ledger"],
+        "summary": "The marker the first boot after the upgrade sealed.",
+        "description": "`migrated` is a field of its own rather than something a reader infers from a null marker, because the two questions an operator is asking — whether this deployment has opened its balances, and what it opened them at — fail separately.",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0",
+        "security": [{ "adminToken": [] }],
+        "responses": {
+          "200": {
+            "description": "Whether this deployment has migrated, and the marker if it has.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LedgerMigration" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/v1/admin/ledger/openapi.json": {
+      "get": {
+        "operationId": "GetLedgerOpenapiJson",
+        "tags": ["ledger"],
+        "summary": "This document.",
+        "description": "Served verbatim from the committed artefact, so the description an operator reads and the description the repository reviews are the same bytes.",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0",
+        "security": [{ "adminToken": [] }],
+        "responses": {
+          "200": {
+            "description": "This document.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "adminToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The administrative credential, presented exactly as every legacy admin operation takes it."
+      }
+    },
+    "responses": {
+      "Unauthenticated": {
+        "description": "No credential, or one the node does not recognise.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "A credential that does not hold the scope this operation requires.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Amount": {
+        "type": "string",
+        "pattern": "^-?[0-9]+$",
+        "description": "A money figure as a decimal integer in text. See the document description for why money is not a JSON number."
+      },
+      "Hash": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$",
+        "description": "A 32-byte digest as lower-case hex."
+      },
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      },
+      "LedgerTotals": {
+        "type": "object",
+        "required": ["rows"],
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/LedgerTotalsRow" }
+          }
+        }
+      },
+      "LedgerTotalsRow": {
+        "type": "object",
+        "required": ["bucket", "day", "lane", "provider", "priced_nanos", "priced_micros", "fee_count"],
+        "properties": {
+          "bucket": { "type": "string", "description": "Whose budget the usage was attributed to." },
+          "day": { "type": "integer", "format": "int64", "description": "The UTC-day bucket, as the unix second it opens at." },
+          "lane": { "type": "string", "description": "The serving lane's configured model name." },
+          "provider": { "type": "string", "description": "The serving lane's provider." },
+          "priced_nanos": { "$ref": "#/components/schemas/Amount", "description": "The summed post-tier priced amount of every posting on this row, in nano-units." },
+          "priced_micros": { "$ref": "#/components/schemas/Amount", "description": "The same figure in micro-units: ONE truncating divide over the summed nano-units, never a sum of per-posting divides." },
+          "fee_count": { "type": "integer", "format": "int64", "description": "One per billable client request on this row." }
+        }
+      },
+      "LedgerCheckpoints": {
+        "type": "object",
+        "required": ["checkpoints"],
+        "properties": {
+          "checkpoints": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Checkpoint" }
+          }
+        }
+      },
+      "Checkpoint": {
+        "type": "object",
+        "required": ["checkpoint_seq", "node", "wall", "backup_watermark", "store_seq_high_water", "body_hash", "body_hash_verifies", "signed", "heads", "totals"],
+        "properties": {
+          "checkpoint_seq": { "type": "integer", "format": "int64" },
+          "node": { "type": "integer", "format": "int64" },
+          "wall": { "type": "integer", "format": "int64", "description": "When it was sealed, in whole seconds." },
+          "backup_watermark": { "type": "integer", "format": "int64" },
+          "store_seq_high_water": { "type": "integer", "format": "int64" },
+          "body_hash": { "$ref": "#/components/schemas/Hash" },
+          "body_hash_verifies": { "type": "boolean", "description": "This node's own answer to whether the sealed body re-hashes to `body_hash`." },
+          "signed": { "type": "boolean", "description": "Whether a signature is present. The signature's bytes are never served." },
+          "heads": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ChainHead" }
+          },
+          "totals": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/TotalsCell" }
+          }
+        }
+      },
+      "ChainHead": {
+        "type": "object",
+        "required": ["node", "node_seq", "hash"],
+        "properties": {
+          "node": { "type": "integer", "format": "int64" },
+          "node_seq": { "type": "integer", "format": "int64" },
+          "hash": { "$ref": "#/components/schemas/Hash" }
+        }
+      },
+      "TotalsCell": {
+        "type": "object",
+        "required": ["bucket", "dimension", "scope", "window", "budget", "drawn", "released", "settled", "open_holds", "open_slice_remainders", "adjustments", "unreconciled", "overdraft_carried_in", "overdraft_carried_out", "cross_window_transfers", "disputed", "oldest_open_hold_age_secs", "open_dispute_count", "oldest_dispute_age_secs"],
+        "properties": {
+          "bucket": { "type": "string" },
+          "dimension": { "type": "string" },
+          "scope": { "type": "string" },
+          "window": { "type": "integer", "format": "int64", "description": "The window's opening instant, in whole seconds." },
+          "budget": { "$ref": "#/components/schemas/Amount" },
+          "drawn": { "$ref": "#/components/schemas/Amount" },
+          "released": { "$ref": "#/components/schemas/Amount" },
+          "settled": { "$ref": "#/components/schemas/Amount" },
+          "open_holds": { "$ref": "#/components/schemas/Amount" },
+          "open_slice_remainders": { "$ref": "#/components/schemas/Amount" },
+          "adjustments": { "$ref": "#/components/schemas/Amount" },
+          "unreconciled": { "$ref": "#/components/schemas/Amount" },
+          "overdraft_carried_in": { "$ref": "#/components/schemas/Amount" },
+          "overdraft_carried_out": { "$ref": "#/components/schemas/Amount" },
+          "cross_window_transfers": { "$ref": "#/components/schemas/Amount" },
+          "disputed": { "$ref": "#/components/schemas/Amount" },
+          "oldest_open_hold_age_secs": { "type": "integer", "format": "int64" },
+          "open_dispute_count": { "type": "integer", "format": "int64" },
+          "oldest_dispute_age_secs": { "type": "integer", "format": "int64" }
+        }
+      },
+      "LedgerReconciliation": {
+        "type": "object",
+        "required": ["holds", "discrepancies"],
+        "properties": {
+          "holds": { "type": "boolean", "description": "True when every row reconciles. `discrepancies` is then empty." },
+          "discrepancies": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Discrepancy" }
+          }
+        }
+      },
+      "Discrepancy": {
+        "type": "object",
+        "required": ["bucket", "day", "lane", "provider", "residual", "ledger_fee_count", "legacy_billable_requests"],
+        "properties": {
+          "bucket": { "type": "string" },
+          "day": { "type": "integer", "format": "int64" },
+          "lane": { "type": "string" },
+          "provider": { "type": "string" },
+          "residual": { "$ref": "#/components/schemas/Residual" },
+          "ledger_fee_count": { "type": "integer", "format": "int64", "description": "What the ledger's postings charged fees for on this row." },
+          "legacy_billable_requests": { "type": "integer", "format": "int64", "description": "What the previous release's row says was billable." }
+        }
+      },
+      "Residual": {
+        "type": "object",
+        "required": ["accounted", "drawn", "amount"],
+        "properties": {
+          "accounted": { "$ref": "#/components/schemas/Amount", "description": "Where the value the ledger drew is now." },
+          "drawn": { "$ref": "#/components/schemas/Amount", "description": "What the previous release's row records as taken." },
+          "amount": { "$ref": "#/components/schemas/Amount", "description": "`accounted` minus `drawn`. Zero is the good answer; the sign says which side is missing the difference." }
+        }
+      },
+      "LedgerMigration": {
+        "type": "object",
+        "required": ["migrated", "marker"],
+        "properties": {
+          "migrated": { "type": "boolean" },
+          "marker": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/MigrationMarker" },
+              { "type": "null" }
+            ]
+          }
+        }
+      },
+      "MigrationMarker": {
+        "type": "object",
+        "required": ["checkpoint_seq", "node", "sealed_at", "body_hash", "balances", "cells_read", "rate_card_version"],
+        "properties": {
+          "checkpoint_seq": { "type": "integer", "format": "int64", "description": "The checkpoint the migration sealed." },
+          "node": { "type": "integer", "format": "int64", "description": "Which node sealed it." },
+          "sealed_at": { "type": "integer", "format": "int64", "description": "When, in whole seconds." },
+          "body_hash": { "$ref": "#/components/schemas/Hash" },
+          "balances": { "type": "integer", "format": "int64", "description": "How many balances the opening carries." },
+          "cells_read": { "type": "integer", "format": "int64", "description": "How many of the previous release's cells were read to arrive at them." },
+          "rate_card_version": { "type": "integer", "format": "int64", "description": "Which card version the opening entries were priced under." }
+        }
+      }
+    }
+  }
+}

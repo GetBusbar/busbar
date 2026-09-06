@@ -511,6 +511,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "busbar-a2a",
+ "busbar-a2a-codec",
  "busbar-api",
  "busbar-auth-admin-tokens",
  "busbar-hooks-ranking",
@@ -727,6 +728,7 @@ name = "busbar-mcp-codec"
 version = "1.6.0"
 dependencies = [
  "busbar-api",
+ "busbar-grammar",
  "busbar-substrate-values",
  "bytes",
  "http",
@@ -961,6 +963,7 @@ dependencies = [
  "hmac",
  "http",
  "httpdate",
+ "memchr",
  "metrics",
  "serde",
  "serde_json",
@@ -1012,6 +1015,7 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
+ "memchr",
  "rustls",
  "rustls-pki-types",
  "tokio",
@@ -1024,10 +1028,12 @@ dependencies = [
 name = "busbar-transport-sse"
 version = "1.6.0"
 dependencies = [
+ "busbar-caps",
  "busbar-contract",
  "busbar-contract-transport",
  "busbar-transport-http",
  "futures",
+ "memchr",
  "tokio",
 ]
 

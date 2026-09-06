@@ -32,6 +32,11 @@ pub const MAX_CURSOR_BYTES: usize = 64 * 1024;
 ///
 /// This bounds handshake framing only. Body-chunk spooling is charged to the node-global spill
 /// budget instead, so a large request body is never refused by this number.
+///
+/// The run counted is a CONSECUTIVE one, kept per session by the pump: a frame that is something
+/// forgives every "not yet" before it, and the frame past this number is refused as a stall while
+/// the session stays open to be told so. A peer that never finishes a frame otherwise holds its
+/// session slot for as long as it cares to.
 pub const MAX_NEEDMORE_FRAMES: usize = 256;
 
 /// The most upstream connections one session may pair with itself.

@@ -106,7 +106,20 @@ pub fn parse(path: &Path) -> Document {
         }
     };
 
+    // Inside the body of a `key = """ .. """` block whose closing delimiter has not been seen yet.
+    let mut in_multiline_string = false;
+
     for raw_line in raw.lines() {
+        if in_multiline_string {
+            // Scanned on the RAW line, not the comment-stripped one: `#` inside prose is ordinary
+            // text, and stripping from it would hide a closing delimiter that follows on the same
+            // line and leave the parser swallowing the rest of the file.
+            if raw_line.contains("\"\"\"") {
+                in_multiline_string = false;
+            }
+            continue;
+        }
+
         let line = strip_comment(raw_line);
         let trimmed = line.trim();
 
@@ -163,10 +176,17 @@ pub fn parse(path: &Path) -> Document {
                     pending_key = Some(key);
                     pending_buf = rest.to_string();
                 }
-            } else if value.starts_with("\"\"\"") {
-                // A triple-quoted `why =` prose field: this tool never reads one, so it is
-                // dropped as a single-line opaque scalar rather than taught to span lines.
+            } else if let Some(rest) = value.strip_prefix("\"\"\"") {
+                // A triple-quoted `why =` prose field: this tool never reads the text, so it is
+                // recorded as an opaque empty scalar. Its BODY still has to be consumed to the
+                // closing delimiter, though — otherwise every prose line falls through to this
+                // same `key = value` arm, and any sentence containing an `=` is recorded as a key
+                // of the enclosing table. That silently invents settings the file never declared,
+                // and a prose line reading `max_hits = 0` would be obeyed as configuration.
                 cur_table.values.insert(key, vec![String::new()]);
+                if !rest.contains("\"\"\"") {
+                    in_multiline_string = true;
+                }
             } else {
                 cur_table.values.insert(key, vec![unquote(value)]);
             }
@@ -174,4 +194,97 @@ pub fn parse(path: &Path) -> Document {
     }
     commit_table(&mut doc, &cur_path, cur_is_array, cur_table);
     doc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Write `body` to a uniquely-named temp file and parse it.
+    fn parse_str(tag: &str, body: &str) -> Document {
+        let path = std::env::temp_dir().join(format!(
+            "busbar-toml-lite-{tag}-{}.toml",
+            std::process::id()
+        ));
+        fs::write(&path, body).expect("write temp toml");
+        let doc = parse(&path);
+        let _ = fs::remove_file(&path);
+        doc
+    }
+
+    /// The prose inside a `"""` block is text, not configuration. A reader that records the block
+    /// as an empty scalar and then keeps parsing its body line by line turns any sentence holding
+    /// an `=` into a key of the enclosing table — so a `why` paragraph that happens to say
+    /// `max_hits = 0` would be obeyed as a setting the file never declared. Nothing inside the
+    /// block may reach the table, and the keys after the block must still be read normally.
+    #[test]
+    fn multiline_string_body_is_not_parsed_as_keys() {
+        let doc = parse_str(
+            "multiline",
+            r#"
+[rules.demo]
+why = """This rule is here because a run that reports max_hits = 0 has
+proven nothing at all. severity = "advisory" would be worse still.
+patterns = [ 'not-a-pattern' ]"""
+patterns = [ 'libc' ]
+severity = "error"
+"#,
+        );
+        let t = doc.table("rules.demo");
+
+        assert_eq!(
+            t.get_one("why"),
+            Some(""),
+            "the block itself should still be recorded as an opaque empty scalar"
+        );
+        assert_eq!(
+            t.get_one("max_hits"),
+            None,
+            "a prose line inside the block was recorded as a key of the table"
+        );
+        assert_eq!(
+            t.get_one("severity"),
+            Some("error"),
+            "the real key after the block must win over the one quoted inside its prose"
+        );
+        assert_eq!(
+            t.get_list("patterns"),
+            vec!["libc".to_string()],
+            "the real `patterns` after the block must win over the one quoted inside its prose"
+        );
+    }
+
+    /// A `"""` block opened and closed on ONE line must not put the reader into multi-line mode —
+    /// doing so would swallow every key after it to the end of the file.
+    #[test]
+    fn single_line_triple_quoted_value_does_not_swallow_the_rest() {
+        let doc = parse_str(
+            "single-line",
+            r#"
+[rules.demo]
+why = """short reason"""
+patterns = [ 'libc' ]
+"#,
+        );
+        let t = doc.table("rules.demo");
+        assert_eq!(t.get_one("why"), Some(""));
+        assert_eq!(t.get_list("patterns"), vec!["libc".to_string()]);
+    }
+
+    /// A `#` inside the prose is ordinary text. The closing-delimiter scan runs on the raw line
+    /// precisely so a comment-strip cannot hide a `"""` that follows one.
+    #[test]
+    fn hash_before_the_closing_delimiter_still_closes_the_block() {
+        let doc = parse_str(
+            "hash",
+            r#"
+[rules.demo]
+why = """a reason
+mentioning #1 and then closing """
+patterns = [ 'libc' ]
+"#,
+        );
+        let t = doc.table("rules.demo");
+        assert_eq!(t.get_list("patterns"), vec!["libc".to_string()]);
+    }
 }

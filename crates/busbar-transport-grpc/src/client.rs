@@ -86,15 +86,18 @@ pub(crate) async fn open_stream(
     // this fix.
     let mut grpc = tonic::client::Grpc::with_origin(dialer, origin);
     grpc.ready().await.map_err(|_| TransportError::Refused)?;
-    let path = PathAndQuery::from_static(method);
+    let path = PathAndQuery::try_from(method).map_err(|_| TransportError::AddressRefused)?;
     let response = grpc
         .streaming(tonic::Request::new(InStream(out_rx)), path, RawCodec)
         .await
         .map_err(|_| TransportError::Refused)?;
     let stream = response.into_inner();
-    tokio::spawn(crate::server::forward_inbound(
-        state, stream_id, stream, true,
-    ));
+    tokio::spawn(async move {
+        crate::server::forward_inbound(state.clone(), stream_id, stream, true).await;
+        // The upstream's answer has ended, trailer and all: this call is over, and the sender the
+        // connection registered for it is one nothing will drain again.
+        state.outbound.lock().unwrap().remove(&stream_id.0);
+    });
     Ok(out_tx)
 }
 

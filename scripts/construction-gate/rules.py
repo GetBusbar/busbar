@@ -1368,6 +1368,34 @@ _UNSAFE_ATTR_RX = {
 }
 
 
+def rule_kernel_seal_impls(tree, cfg):
+    """The contract's sealing trait is implemented only inside busbar-caps.
+
+    Scans test code as well as production: every forging impl in the tree lives in a test module,
+    so the default production-only reading would be vacuous. `known_sites` is a ratchet of files
+    that carry one today and are somebody else's to move; a site anywhere else fails immediately.
+    """
+    c = cfg["rules"]["kernel-seal-impls"]
+    root = c["allowed_root"].rstrip("/") + os.sep
+    known = set(c.get("known_sites", []))
+    offenders, tracked = [], []
+    for rel, l in tree.grep(c["pattern"], production_only=False):
+        if rel.startswith(root):
+            continue
+        (tracked if rel in known else offenders).append(f"{rel}:{l.no}")
+    current = len(offenders)
+    parts = []
+    if offenders:
+        parts.append("forging the contract's seal: " + "; ".join(offenders))
+    if tracked:
+        parts.append("tracked debt (qa/construction.toml known_sites): " + "; ".join(tracked))
+    detail = (f"{current} impl(s) of the contract's KernelSeal outside {c['allowed_root']} "
+              f"(ceiling {c['max_sites']}): " + ("; ".join(parts) if parts else "none"))
+    return [row("kernel-seal-impls", current <= c["max_sites"],
+                "the contract's sealing trait is implemented only inside busbar-caps",
+                detail, current, c["max_sites"], c["why"], offenders)]
+
+
 def rule_forbid_unsafe(tree, cfg):
     c = cfg["rules"]["forbid-unsafe"]
     rows = []
@@ -1400,6 +1428,131 @@ def rule_forbid_unsafe(tree, cfg):
     return rows
 
 
+def rule_hold_escapes(tree, cfg):
+    """The deliberate ways a hold can be made to disappear, scanned for workspace-wide.
+
+    busbar-caps writes the escape list down as data and its honesty table says CI scans for it.
+    This is that scan. The symbols and their scopes mirror the fixture's `HOLD_ESCAPES` — a test in
+    that crate asserts this table names every one of them — and each is looked for as a literal
+    substring over every crate's production sources: no parsing, nothing to argue with in review.
+    `known_sites` is the reviewed-escape ratchet: `path::function` excuses one function, a bare
+    path one file, and a path ending in `/` one directory.
+    """
+    c = cfg["rules"]["hold-escapes"]
+    files = [rel for d in _dirs_for_globs(tree.root, c["scan_globs"])
+             for rel in tree.files if rel.startswith(os.path.relpath(d, tree.root) + os.sep)]
+    known = list(c.get("known_sites", []))
+
+    def reviewed(rel, fname):
+        for entry in known:
+            if entry.endswith("/"):
+                if rel.startswith(entry):
+                    return True
+            elif "::" in entry:
+                path, _, want = entry.partition("::")
+                if rel == path and fname == want:
+                    return True
+            elif rel == entry:
+                return True
+        return False
+
+    offenders, tracked = [], []
+    for spec in c["symbols"].values():
+        symbol = spec["symbol"]
+        for rel, l in tree.grep(re.escape(symbol), files=files):
+            confined = spec["confined_to"]
+            if confined and confined in rel:
+                continue
+            f = tree.enclosing_fn(rel, l.no)
+            where = f"`{symbol}` at {rel}:{l.no} ({spec['because']})"
+            (tracked if reviewed(rel, f.name if f else "") else offenders).append(where)
+    current = len(offenders)
+    parts = []
+    if offenders:
+        parts.append("; ".join(offenders))
+    if tracked:
+        parts.append("reviewed escapes (qa/construction.toml known_sites): " + "; ".join(tracked))
+    detail = (f"{current} deliberate hold escape(s) in production source (ceiling {c['max_sites']}): "
+              + ("; ".join(parts) if parts else "none"))
+    return [row("hold-escapes", current <= c["max_sites"],
+                "no production source deliberately forgets, leaks or unwind-smuggles a hold",
+                detail, current, c["max_sites"], c["why"], offenders)]
+
+
+def rule_secret_carrier_debug(tree, cfg):
+    """A type that carries secret bytes hand-rolls its `Debug`; it never derives one.
+
+    A derived `Debug` on a secret carrier is a leak waiting for its first `{:?}`, and on the plugin
+    ABI the code that formats it is code this tree cannot read. Each named carrier is looked up by
+    its declaration and the derive attributes attached to it are read: `Debug` among them is the
+    finding."""
+    c = cfg["rules"]["secret-carrier-debug"]
+    offenders = []
+    checked = 0
+    for name in c["carriers"]:
+        decl_rx = re.compile(r"(?:^|[^A-Za-z0-9_])(?:struct|enum)\s+" + re.escape(name)
+                             + r"(?![A-Za-z0-9_])")
+        for rel, l in tree.grep(decl_rx.pattern):
+            checked += 1
+            lines = tree.files[rel]
+            # Walk back over the attribute block sitting directly on the declaration, joining it so
+            # a derive list spread over several lines reads the same as one on a single line. A
+            # blank line (which is also what a doc comment strips to) or the end of the item above
+            # stops the walk, so no other item's derives are read as this one's.
+            attrs = []
+            i = l.no - 2
+            while i >= 0:
+                above = lines[i].code.strip()
+                if not above or re.search(r"[};]|(?:^|[^A-Za-z0-9_])(?:struct|enum|fn)"
+                                          r"(?![A-Za-z0-9_])", above):
+                    break
+                attrs.append(above)
+                i -= 1
+            if re.search(r"derive\s*\([^)]*\bDebug\b", " ".join(reversed(attrs))):
+                offenders.append(f"`{name}` derives Debug at {rel}:{l.no}")
+    current = len(offenders)
+    if checked == 0:
+        detail = VACUOUS + "no named secret carrier is declared in the scanned tree"
+    else:
+        detail = (f"{current} secret carrier(s) with a derived Debug (ceiling {c['max_derived']}): "
+                  + ("; ".join(offenders) if offenders else "none"))
+    return [row("secret-carrier-debug", current <= c["max_derived"],
+                "a type carrying secret bytes hand-rolls its Debug",
+                detail, current, c["max_derived"], c["why"], offenders)]
+
+
+_ESCAPED_NEWLINE_DOC_RX = re.compile(r"\\n//[!/]")
+
+
+def rule_no_escaped_newline_doc_comment(tree, cfg):
+    """A relocation script's escape bug leaves a literal two-character `\\n` sitting where a real
+    line break belongs, immediately before a `//!` or `///` doc-comment prefix on the SAME raw
+    line — the tell that distinguishes it from the many legitimate mentions of `\\n` in backtick'd
+    prose (SSE terminator docs) elsewhere in the tree, which are never followed by that prefix.
+    Scanned on the RAW file text (not the comment-stripped view every other rule reads) because the
+    escape sequence lives inside the doc comment itself."""
+    c = cfg["rules"]["no-escaped-newline-doc-comment"]
+    root = "crates" + os.sep
+    offenders = []
+    for rel in sorted(tree.files):
+        if not rel.startswith(root):
+            continue
+        try:
+            with open(os.path.join(tree.root, rel), encoding="utf-8", errors="replace") as fh:
+                for lineno, raw in enumerate(fh, start=1):
+                    if _ESCAPED_NEWLINE_DOC_RX.search(raw):
+                        offenders.append(f"{rel}:{lineno}")
+        except OSError:
+            continue
+    current = len(offenders)
+    detail = (f"{current} line(s) under crates/ carrying a literal backslash-n immediately before "
+              f"`//!`/`///` (ceiling {c['max_hits']}): "
+              + ("; ".join(offenders) if offenders else "none"))
+    return [row("no-escaped-newline-doc-comment", current <= c["max_hits"],
+                "no doc comment carries a literal backslash-n instead of a real line break",
+                detail, current, c["max_hits"], c["why"], offenders)]
+
+
 def evaluate(tree, cfg, hits_path):
     rows = []
     rows += rule_one_attempt_seam(tree, cfg)
@@ -1422,7 +1575,11 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_no_default_bodies(tree, cfg)
     rows += rule_sealed_unit_traits(tree, cfg)
     rows += rule_hold_discipline(tree, cfg)
+    rows += rule_hold_escapes(tree, cfg)
+    rows += rule_kernel_seal_impls(tree, cfg)
     rows += rule_forbid_unsafe(tree, cfg)
+    rows += rule_secret_carrier_debug(tree, cfg)
+    rows += rule_no_escaped_newline_doc_comment(tree, cfg)
     return rows
 
 
@@ -1530,6 +1687,7 @@ def calibrate(rows, cfg, path):
     for key in rules["loc-ceilings"]["kernel_files"]:
         rules["loc-ceilings"]["kernel_files"][key]["ceiling"] = by_id[f"loc-ceilings:kernel:{key}"]["current"]
     rules["sealed-unit-traits"]["max_unsealed"] = by_id["sealed-unit-traits"]["current"]
+    rules["hold-escapes"]["max_sites"] = by_id["hold-escapes"]["current"]
     for rid in ("forbid-unsafe", "forbid-unsafe-deny"):
         missing_field = "known_missing_forbid" if rid == "forbid-unsafe" else "known_missing_deny"
         rules["forbid-unsafe"][missing_field] = sorted(

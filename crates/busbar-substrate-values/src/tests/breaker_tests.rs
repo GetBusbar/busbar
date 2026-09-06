@@ -254,3 +254,109 @@ fn status_class_from_str_maps_known_values_and_rejects_unknown() {
     assert!(status_class_from_str("not_a_class").is_none());
     assert!(status_class_from_str("").is_none());
 }
+
+/// The live `error_map` typo warning must carry its registered diagnostic code, not just its text:
+/// the catalog documents this exact condition under `CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED`, and an
+/// operator greps the code. Two DISTINCT unrecognized values are fed because the dedupe latch is
+/// process-global (each value warns at most once for the life of the test binary) and because a
+/// warn callsite's interest is cached process-wide — the second emission always follows the rebuilt
+/// interest, so the capture is deterministic.
+#[test]
+fn test_unrecognized_error_map_value_warn_carries_diag_code() {
+    use crate::diagnostics::CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED;
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        for value in ["rate_limt_diagprobe_warm", "rate_limt_diagprobe_assert"] {
+            let raw = RawUpstreamError {
+                http_status: 503,
+                provider_code: Some("probe_code".to_string()),
+                structured_type: None,
+                retry_after_secs: None,
+            };
+            let map = err_map(&[("probe_code", value)]);
+            let _ = normalize_raw_error(&raw, &map);
+        }
+    });
+
+    let banner = CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED.banner().to_string();
+    assert!(
+        cap.contains(&banner),
+        "the unrecognized-error_map-value warning must carry diag={banner}; captured: {:?}",
+        cap.messages()
+    );
+    assert!(
+        cap.contains("rate_limt_diagprobe_assert"),
+        "the offending value stays on the line; captured: {:?}",
+        cap.messages()
+    );
+}
+
+/// EVERY operator-facing warn/error in this crate carries a `BUSBAR-NNNN` code. The diagnostics
+/// module states that policy unconditionally; this scan makes the next uncoded `tracing::warn!` /
+/// `tracing::error!` fail the build rather than quietly drift the docs away from the logs.
+///
+/// A line is CODED when the emission carries a `diag = ` field — either written through
+/// `diag_warn!`/`diag_error!` (which prepend it) or spelled out at a site that branches between
+/// warn and debug. The module that DEFINES those macros is the one place the bare macros are
+/// legitimately named, so it is excluded; so are the test-only trees.
+#[test]
+fn test_no_bare_tracing_warn_or_error_in_crate_sources() {
+    fn scan(dir: &std::path::Path, offenders: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).expect("read crate source dir") {
+            let path = entry.expect("dir entry").path();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if path.is_dir() {
+                if matches!(name.as_str(), "tests" | "test_support" | "testkit") {
+                    continue;
+                }
+                scan(&path, offenders);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            // The macro definitions themselves, and any co-located test source.
+            if path.ends_with("diagnostics/mod.rs") || name.ends_with("_tests.rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).expect("read source file");
+            let lines: Vec<&str> = src.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue; // prose about the macros is not an emission
+                }
+                if !(line.contains("tracing::warn!") || line.contains("tracing::error!")) {
+                    continue;
+                }
+                let coded = line.contains("diag = ")
+                    || lines[i + 1..]
+                        .iter()
+                        .find(|l| !l.trim().is_empty())
+                        .is_some_and(|l| l.trim_start().starts_with("diag = "));
+                if !coded {
+                    offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+                }
+            }
+        }
+    }
+
+    let mut offenders = Vec::new();
+    scan(
+        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+        &mut offenders,
+    );
+    assert!(
+        offenders.is_empty(),
+        "bare tracing::warn!/error! (no BUSBAR-NNNN code) in this crate's sources — emit through \
+         diag_warn!/diag_error! with a registered Diagnostic:\n{}",
+        offenders.join("\n")
+    );
+}

@@ -200,6 +200,13 @@ RULES = [
             # needs no heuristic — the phrasing already says it is a reference to an audit the reader
             # has never seen.
             Pat(r"\bauditor\s+[A-Za-z]{1,4}[-\s]?\d", flags=re.I),
+            # SEVERITY-PREFIXED ids need no surrounding phrasing to give them away: the severity
+            # word IS the citation. `MAJOR-5`, `FATAL-1`, `MINOR-7`, `CRIT-2` name a row in an audit
+            # the reader has never seen, and they carry none of the ambiguity the shape-based
+            # patterns above have to hedge against — no real technical prose writes `FATAL-1` to
+            # mean anything but a finding. The rationale sentence beside such an id is the part
+            # worth keeping; the id itself is the part that means nothing outside its audit.
+            Pat(r"\b(?:MAJOR|MINOR|FATAL|CRIT)-\d+\b", flags=0),
         ],
     ),
     Rule(

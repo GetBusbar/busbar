@@ -90,3 +90,18 @@ fn image_output_is_additive_b64_and_url_coexist() {
     assert!(img.has_payload());
     assert!(!ImageOutput::default().has_payload());
 }
+
+/// The compile-time reverse table must be exactly what the per-call loop it replaced would have
+/// built: same 6-bit value for every base64 digit, `255` (reject) for every other byte. A hoisted
+/// table that drifted from the alphabet would decode payloads wrongly rather than loudly.
+#[test]
+fn base64_reverse_table_matches_the_alphabet_it_is_built_from() {
+    let mut expected = [255u8; 256];
+    for (i, &c) in B64_ALPHABET.iter().enumerate() {
+        expected[c as usize] = i as u8;
+    }
+    assert_eq!(
+        B64_REVERSE, expected,
+        "the base64 reverse table must be the exact inverse of B64_ALPHABET"
+    );
+}

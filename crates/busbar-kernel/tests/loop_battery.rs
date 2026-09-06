@@ -6,11 +6,21 @@
 
 mod common;
 
-use busbar_caps::{Abort, Canary, Outcome, PostingFlags, ReasonCode, StepName};
-use busbar_kernel::slice::{ConcurrencyGauge, LeaseSet};
-use busbar_kernel::teller::{exit, run_unit, AccrualMeter, Ended, Evidence, Kernel, Run};
+use std::future::Future;
+use std::ops::Not;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Waker};
 
-use common::{cell, ctx, Door, TestUnits};
+use busbar_caps::{
+    Abort, Canary, HoldCellState, OriginKind, Outcome, PostingFlags, ReasonCode, StepName, UnitKey,
+};
+use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
+use busbar_kernel::slice::{ConcurrencyGauge, LeaseSet};
+use busbar_kernel::teller::{
+    exit, run_unit, run_unit_async, AccrualMeter, Ended, Evidence, Kernel, Run,
+};
+
+use common::{cell, ctx, principal, Door, NeverRoutes, TestDoor, TestUnits};
 
 /// The ten steps, in the one order they are ever called in.
 const ORDER: [StepName; 10] = [
@@ -469,4 +479,143 @@ fn the_loop_has_no_early_exits() {
         !body.contains("return "),
         "the loop returns early from somewhere"
     );
+}
+
+/// THE CLIENT THAT WENT AWAY.
+///
+/// The loop awaits in one place — the Route leg — so a caller that drops it drops it there, with the
+/// hold in the cell, the lease drawn and the unit's slot occupied. Nothing about that end is
+/// special: it leaves through the charged audit door like every admitted unit, the exit takes the
+/// hold out of the cell, the lease goes back to the gauge and the slot is free for the next arrival.
+///
+/// What this cell also pins is that cancellation REACHES THE UPSTREAM. A loop that merely stopped
+/// polling would leave the upstream's future alive somewhere; the flag below is set by that future's
+/// own `Drop`, so the only way it is true is if the loop let go of it.
+#[test]
+fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
+    let kernel = Kernel::new();
+    let units = TestUnits::passing();
+    let dropped = AtomicBool::new(false);
+    let route = NeverRoutes {
+        units: &units,
+        dropped: &dropped,
+    };
+
+    // A table with room for exactly one unit, so the slot this unit occupies IS the node's in-flight
+    // ceiling: a second arrival is refused while it is held and admitted the moment it is not.
+    let table = InFlight::new(1, 0);
+    let key = UnitKey::new(11);
+    let slot = table
+        .insert(Enter {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: arrival_hold(&kernel, &TestDoor, principal()),
+        })
+        .expect("the empty table takes the first unit");
+
+    let gauge = ConcurrencyGauge::new();
+    let bucket = busbar_kernel::slice::bucket_all("team");
+    gauge.acquire(&bucket, 4).expect("room in the gauge");
+    let mut leases = LeaseSet::new();
+    leases.take(bucket);
+    let canary = Canary::new();
+    let meter = AccrualMeter::new();
+
+    let unit = ctx(11);
+    {
+        let mut running = std::pin::pin!(run_unit_async(
+            &kernel,
+            &units,
+            &unit,
+            Run {
+                cell: slot.cell(),
+                parent: None,
+                leases: &mut leases,
+                gauge: &gauge,
+                canary: &canary,
+                meter: &meter,
+            },
+            &route,
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(
+            running.as_mut().poll(&mut cx).is_pending(),
+            "an upstream that has not answered leaves the loop waiting at its one await"
+        );
+        assert_eq!(
+            slot.cell().state(),
+            HoldCellState::Admitted,
+            "the door's hold is in the cell for as long as the unit is in flight"
+        );
+        assert_eq!(gauge.count(&bucket), 1, "the lease is drawn while it waits");
+        assert!(!dropped.load(Ordering::Acquire), "the leg is still alive");
+        assert!(
+            table.admits(&client(12)).not(),
+            "the waiting unit occupies the node's one in-flight slot"
+        );
+    }
+    // The client goes away: the loop's future is dropped, and with it the leg it was awaiting.
+
+    assert!(
+        dropped.load(Ordering::Acquire),
+        "the upstream's own future is dropped with the loop's — cancellation reached it"
+    );
+    assert_eq!(
+        slot.cell().state(),
+        HoldCellState::Taken,
+        "the hold came out of the cell at the one exit; the sweep has nothing left to settle"
+    );
+    assert_eq!(gauge.count(&bucket), 0, "the lease went back to the gauge");
+    assert!(
+        leases.is_empty(),
+        "the unit holds no lease it never gave back"
+    );
+    assert_eq!(
+        units.called(),
+        vec![
+            StepName::Arrival,
+            StepName::Decode,
+            StepName::Authenticate,
+            StepName::Verify,
+            StepName::Approve,
+            StepName::Admit,
+            StepName::Route,
+            StepName::Audit,
+            StepName::Encode,
+        ],
+        "an abandoned unit runs every step it reached and stops at the one it was waiting on"
+    );
+    assert_eq!(
+        units.doors(),
+        (false, true),
+        "it left through the charged audit door, because it passed the door"
+    );
+
+    // The slot is released by the caller that took it, and the ceiling is a table's again rather
+    // than a thread pool's: with the unit gone, the next arrival is admitted.
+    table.remove(key);
+    assert!(
+        table.admits(&client(12)),
+        "the next unit is admitted once the abandoned one is out of the table"
+    );
+    canary
+        .balanced()
+        .expect("one draft, one hold, one settlement — an abandoned unit still balances");
+}
+
+/// One client arrival, as the table weighs it against the cap.
+fn client(key: u64) -> Enter {
+    Enter {
+        key: UnitKey::new(key),
+        origin: OriginKind::Client,
+        session: None,
+        admin_listener: false,
+        provider_of_open_session: false,
+        zero_hold_tick: false,
+        arrival: arrival_hold(&Kernel::new(), &TestDoor, principal()),
+    }
 }

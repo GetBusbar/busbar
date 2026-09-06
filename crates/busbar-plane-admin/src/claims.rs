@@ -1,6 +1,6 @@
 //! The claim this plane makes over arriving bytes.
 //!
-//! Every one of the 66+17 verbs is mounted under one prefix, and this crate names it:
+//! Every one of the table's verbs ismounted under one prefix, and this crate names it:
 //! [`busbar_contract::surface::ADMIN_PREFIX`]. The prefix used to be transcribed here as a literal,
 //! with a hand-written assertion over the copy that could not check the original, because a plugin
 //! may name `busbar-contract` and nothing else in the workspace and the literal lived in a
@@ -48,7 +48,7 @@ const _: () = assert!(matches!(ADMIN_PREFIX.as_bytes(), b"/api/v1/admin"));
 
 /// This plane's one claim.
 ///
-/// One claim is enough: every one of the 66+17 verbs is reached under the same prefix, decoded by
+/// One claim is enough: every one of the table's verbs isreached under the same prefix, decoded by
 /// method-and-path dispatch inside `decode_ingress` rather than by a separate claim per operation.
 /// Splitting the claim per verb would buy nothing — the kernel's overlap check is about which PLANE
 /// a request routes to, not which operation, and every admin operation is unambiguously this plane's.

@@ -406,6 +406,37 @@ fn cloud_metadata_is_refused_unconditionally_and_as_metadata() {
     assert!(judge_address("h", ip("10.0.0.1"), private_ok()).is_ok());
 }
 
+/// THE WHOLE LINK-LOCAL /16 IS METADATA, not just the five literals a list can name.
+///
+/// Clouds put their instance-metadata service anywhere inside `169.254.0.0/16` (Tencent answers on
+/// `169.254.0.23`, AWS's IPv6-era ECS endpoint on `169.254.170.3`, the IMDS v6 alias on
+/// `169.254.169.253`), and nothing legitimate runs on link-local at all. An address-side predicate
+/// that enumerates literals leaves every other link-local address to the internal-range arm, which
+/// `allow_private: true` switches off — so the operator flag that says "our upstream is on the
+/// internal network" would pin and dial an unlisted metadata endpoint. The config-side predicate in
+/// this same module already asks the RANGE question; the address side must ask the same one.
+#[test]
+fn unlisted_link_local_metadata_is_refused_as_metadata_under_allow_private() {
+    let unlisted = [
+        ("Tencent IMDS", "169.254.0.23"),
+        ("IMDS v6-alias endpoint", "169.254.169.253"),
+        ("ECS task metadata (v6-era)", "169.254.170.3"),
+        // The IPv4-COMPATIBLE spelling reaches the same target through `to_ipv4()`.
+        ("IPv4-COMPATIBLE Tencent", "::169.254.0.23"),
+        ("IPv4-MAPPED Tencent", "::ffff:169.254.0.23"),
+    ];
+    for (what, a) in unlisted {
+        for policy in [strict(), private_ok()] {
+            let err = judge_address("meta", ip(a), policy)
+                .expect_err("link-local metadata is refused under every policy");
+            assert!(
+                matches!(err, AddressRefusal::CloudMetadataAddress { .. }),
+                "{what} ({a}) must be refused AS METADATA, not merely as internal: {err:?}"
+            );
+        }
+    }
+}
+
 // ══ THE STRUCTURAL REFUSALS ══════════════════════════════════════════════════════════════════════
 
 /// The metadata NAMES are refused before any resolver is consulted, and `allow_private` does not
@@ -441,6 +472,36 @@ fn the_metadata_names_are_refused_under_every_policy_and_localhost_only_by_defau
         );
     }
     assert!(judge_host_name("a2a.vendor", strict()).is_ok());
+}
+
+/// THERE IS ONE METADATA-NAME LIST, and both name guards read it.
+///
+/// The module-level list and the one the config-side SSRF check kept privately had drifted to two
+/// and six entries: a name an operator could not reach through config validation was reachable
+/// through the resolved-name guard, purely because the second list was declared inside a function.
+/// Every name on the list must be refused by BOTH arms, under every policy — `allow_private` speaks
+/// for the `localhost` family and never for metadata.
+#[test]
+fn every_metadata_name_is_refused_by_both_the_name_guard_and_the_config_guard() {
+    assert_eq!(
+        METADATA_HOSTS.len(),
+        6,
+        "the metadata-name list must not shrink"
+    );
+    for name in METADATA_HOSTS {
+        for policy in [strict(), private_ok()] {
+            assert_eq!(
+                judge_host_name(name, policy),
+                Err(AddressRefusal::MetadataName((*name).to_string())),
+                "`{name}` is a cloud-metadata name and `allow_private` may not reach it"
+            );
+        }
+        assert_eq!(
+            ssrf_blocked_host(&format!("https://{name}/"), &[], false, &[]),
+            Some((*name).to_string()),
+            "`{name}` must still be blocked by the config-side guard"
+        );
+    }
 }
 
 #[test]
@@ -659,16 +720,20 @@ fn the_pin_carries_the_first_admissible_address_and_the_scheme_it_was_judged_und
 //   THE CHECK OVER A SEALED DESTINATION: the precedence rule, the denylist, the base+path re-check.
 // =================================================================================================
 
+/// The seal these tests build sealed values with: the capability crate's own trust token.
+///
+/// A test that declared a private type and implemented the contract's sealing trait on it was
+/// forging kernel evidence to test something else, and it read as if that were the ordinary way in.
+/// The token is the ordinary way in — the loop lends one to the trust unit for the length of a
+/// verify call — so a test that seals with one is testing the seam the deployment uses.
+fn trust_token() -> busbar_caps::TrustToken {
+    busbar_caps::TrustToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel())
+}
+
 /// A sealed destination naming `authority`, as a plane proposed it and the trust unit sealed it.
 fn dest(authority: &'static str) -> busbar_contract::VerifiedDestination {
-    struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
-        fn seal_origin(&self) -> &'static str {
-            "busbar-unit-trust network guard test"
-        }
-    }
     busbar_contract::VerifiedDestination::seal(
-        &Seal,
+        &trust_token(),
         busbar_contract::DestinationFacts::Upstream {
             transport: "https",
             address: busbar_contract_transport::dest::UpstreamAddress::socket(authority),
@@ -853,14 +918,8 @@ fn a_bare_authority_is_judged_as_a_secure_one() {
 /// pinned, rather than a guard being run over an address that does not exist.
 #[test]
 fn a_program_destination_has_no_address_to_judge() {
-    struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
-        fn seal_origin(&self) -> &'static str {
-            "busbar-unit-trust network guard test"
-        }
-    }
     let program = busbar_contract::VerifiedDestination::seal(
-        &Seal,
+        &trust_token(),
         busbar_contract::DestinationFacts::Upstream {
             transport: "stdio",
             address: busbar_contract_transport::dest::UpstreamAddress::Program {
@@ -902,14 +961,8 @@ fn a_destination_is_resolved_exactly_once_and_the_pin_is_what_was_judged() {
 /// Only an upstream is dialled at an address; every other destination kind is answered elsewhere.
 #[test]
 fn a_destination_that_is_not_an_upstream_has_no_address_check() {
-    struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
-        fn seal_origin(&self) -> &'static str {
-            "busbar-unit-trust network guard test"
-        }
-    }
     let verb = busbar_contract::VerifiedDestination::seal(
-        &Seal,
+        &trust_token(),
         busbar_contract::DestinationFacts::KernelVerb { verb: "status" },
         "http",
         None,
@@ -918,4 +971,57 @@ fn a_destination_that_is_not_an_upstream_has_no_address_check() {
         check_destination(&verb, &[], &NeverAsked, strict(), &Denylist::default()),
         Err(NetworkRefusal::NotAnUpstream)
     );
+}
+
+/// The sealed door and the facts door are one implementation, not two that agree today.
+///
+/// `check_destination` is a projection onto `check_destination_facts`, so this cannot drift the way
+/// the composition root's own copy did. It is asserted rather than assumed because "these two agree"
+/// is exactly the claim that was false before the projection existed.
+///
+/// The metadata row is spelled as a URL on purpose: the denylist's host extraction strips a scheme
+/// first and answers `None` for a string that carries none, so a schemeless `169.254.169.254:80`
+/// would pass that arm and prove nothing about the arm under test.
+#[test]
+fn the_sealed_door_and_the_facts_door_are_one_implementation() {
+    let cases: [busbar_contract::DestinationFacts; 4] = [
+        busbar_contract::DestinationFacts::Upstream {
+            transport: "https",
+            address: busbar_contract_transport::dest::UpstreamAddress::socket(
+                "https://169.254.169.254/latest/meta-data",
+            ),
+            lane: busbar_contract::LaneId::new("test"),
+        },
+        busbar_contract::DestinationFacts::Upstream {
+            transport: "https",
+            address: busbar_contract_transport::dest::UpstreamAddress::socket(
+                "https://private.example/",
+            ),
+            lane: busbar_contract::LaneId::new("test"),
+        },
+        busbar_contract::DestinationFacts::Upstream {
+            transport: "stdio",
+            address: busbar_contract_transport::dest::UpstreamAddress::Program {
+                path: "/usr/local/bin/server",
+                args: &[],
+                env: &[],
+            },
+            lane: busbar_contract::LaneId::new("test"),
+        },
+        busbar_contract::DestinationFacts::KernelVerb { verb: "status" },
+    ];
+    for facts in cases {
+        let sealed =
+            busbar_contract::VerifiedDestination::seal(&trust_token(), facts, "https", None);
+        let resolver = ScriptedResolver::new(vec![Ok(vec![ip("127.0.0.1")])]);
+        let through_the_seal =
+            check_destination(&sealed, &[], &resolver, strict(), &Denylist::default());
+        let facts_resolver = ScriptedResolver::new(vec![Ok(vec![ip("127.0.0.1")])]);
+        let through_the_facts =
+            check_destination_facts(&facts, &[], &facts_resolver, strict(), &Denylist::default());
+        assert_eq!(
+            through_the_seal, through_the_facts,
+            "the two doors disagree about {facts:?}"
+        );
+    }
 }

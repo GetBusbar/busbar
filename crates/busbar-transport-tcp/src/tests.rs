@@ -33,7 +33,7 @@ impl TransportConfigView for TestCfg {
 /// A fixture-only key handle: no real transport-key unit exists in this crate's tests, so tests
 /// build the opaque handle through the seal every production caller would use instead.
 struct FixtureSeal;
-impl busbar_contract::KernelSeal for FixtureSeal {
+impl busbar_contract::plugin::KernelSeal for FixtureSeal {
     fn seal_origin(&self) -> &'static str {
         "busbar-transport-tcp test fixture"
     }
@@ -186,6 +186,41 @@ async fn cancel_mid_frame_leaves_the_connection_usable() {
 }
 
 #[tokio::test]
+async fn close_ends_a_live_frame_stream() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key())
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let mut frames = server.frames(server_conn.clone());
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .await
+        .unwrap();
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"first");
+
+    // The kernel finalises the connection. A stream still pumping it must end, and the socket
+    // must drop: bytes the peer writes afterwards are never yielded.
+    server.close(server_conn, CloseReason::Normal);
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after close"))
+        .await
+        .unwrap();
+    assert!(
+        frames.next().await.is_none(),
+        "a closed connection's frame stream must end, not keep yielding inbound frames"
+    );
+}
+
+#[tokio::test]
 async fn every_transport_error_is_mapped() {
     // Refused: nothing listens on this port.
     let client = TcpTransport::new();
@@ -217,6 +252,32 @@ async fn every_transport_error_is_mapped() {
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::Closed);
+}
+
+/// One synthetic `io::Error` per `map_io_err` arm, so swapping two arms is caught here rather than
+/// only by whichever live-dial cell happens to provoke that kind. Ported from `busbar-transport-
+/// http`'s identical table cell, minus the arm `http` alone carries.
+#[test]
+fn every_io_error_kind_maps_through_the_table() {
+    for (kind, expected) in [
+        (io::ErrorKind::ConnectionRefused, TransportError::Refused),
+        (io::ErrorKind::TimedOut, TransportError::Timeout),
+        (io::ErrorKind::ConnectionReset, TransportError::Reset),
+        (io::ErrorKind::ConnectionAborted, TransportError::Reset),
+        (
+            io::ErrorKind::AddrNotAvailable,
+            TransportError::AddressRefused,
+        ),
+        (io::ErrorKind::InvalidInput, TransportError::AddressRefused),
+        (io::ErrorKind::BrokenPipe, TransportError::Closed),
+        (io::ErrorKind::NotFound, TransportError::Closed),
+    ] {
+        let mapped = TcpTransport::map_io_err(&io::Error::new(kind, "fixture"));
+        assert_eq!(
+            mapped, expected,
+            "io::ErrorKind::{kind:?} maps to {expected:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -305,5 +366,99 @@ fn inflating_and_deflating_fixtures_are_red() {
     assert!(
         !frame_is_honest(&deflated),
         "a deflating fixture must fail the honesty check"
+    );
+}
+
+/// A writer that accepts every byte and then fails to flush: the exact shape a Unit 0 refusal must
+/// not be able to report as delivered. `write_all` succeeds, so only the flush leg can catch it.
+struct FlushFailsWriter {
+    written: Vec<u8>,
+}
+
+impl tokio::io::AsyncWrite for FlushFailsWriter {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        self.written.extend_from_slice(buf);
+        std::task::Poll::Ready(Ok(buf.len()))
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        std::task::Poll::Ready(Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "the peer went away before the refusal reached it",
+        )))
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn an_undelivered_unit0_refusal_is_an_error() {
+    let mut w = FlushFailsWriter {
+        written: Vec::new(),
+    };
+    let err = deliver_refusal(&mut w, b"refused")
+        .await
+        .expect_err("a refusal whose flush failed was never delivered and must not report Ok");
+    assert_eq!(err, TransportError::Reset);
+    assert_eq!(w.written.as_slice(), b"refused");
+}
+
+/// The read buffer is per-connection and reused across polls, so the byte-exactness cell has a new
+/// way to fail: a short frame following a long one must not carry the tail of its predecessor, and
+/// the buffer a connection reads through must be the same allocation each time rather than a fresh
+/// `READ_CHUNK_BYTES` one per read syscall.
+#[tokio::test]
+async fn one_read_buffer_per_connection_reused_without_leaking_bytes_between_frames() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key())
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let mut frames = server.frames(server_conn.clone());
+    let long = vec![b'L'; 4096];
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(&long))
+        .await
+        .unwrap();
+    let mut got = Vec::new();
+    while got.len() < long.len() {
+        let (_s, frame) = frames.next().await.unwrap().unwrap();
+        got.extend_from_slice(frame.bytes.as_slice());
+    }
+    assert_eq!(got, long);
+    let first_buffer = server.scratch_addr(server_conn.id()).await.unwrap();
+
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"short"))
+        .await
+        .unwrap();
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(
+        frame.bytes.as_slice(),
+        b"short",
+        "no residue from the longer frame before it"
+    );
+    assert_eq!(frame.meta.bytes, 5, "honest frame meta on a reused buffer");
+    assert_eq!(
+        server.scratch_addr(server_conn.id()).await.unwrap(),
+        first_buffer,
+        "one buffer per connection, not one per read"
     );
 }

@@ -474,7 +474,14 @@ fn responses_request_reasoning_items_survive_roundtrip() {
             "encrypted_content": "ENC_BLOB_MARK"
         }]
     });
-    let out = roundtrip_req(&body);
+    // Driven through `with_warns` NOT because this test asserts on a warn, but for HERMETICITY: the
+    // fixture carries a reasoning-item `id`, so the read hits the same drop-warn callsite
+    // `responses_request_reasoning_id_dropped_with_warn` asserts on. `tracing` caches callsite
+    // interest PROCESS-GLOBALLY, so executing that callsite from a parallel test that holds no
+    // capture can leave it cached "disabled" under the sibling's thread-local subscriber and hand
+    // that sibling an empty capture — an order-dependent flake. Taking the capture fixture's
+    // reentrant gate here serialises the two, so neither ordering can produce it.
+    let (out, _cap) = with_warns(|| roundtrip_req(&body));
 
     // A reasoning item is a top-level `input` entry (a sibling of the message), not nested in a
     // message's content — find it directly rather than via the content-flattening helper.
@@ -1053,6 +1060,146 @@ fn responses_stream_events_emitted_by_writer() {
         assert!(
             seen.iter().any(|n| n == expected),
             "stream event {expected} must be emitted; saw {seen:?}"
+        );
+    }
+}
+
+/// A duplicate `MessageStart` must not restart the stream. Five of the six readers gate
+/// `MessageStart` on `state.started`, but the Anthropic reader emits it 1:1 with the upstream
+/// `message_start` frame, so a responses-egress stream fed from an Anthropic ingress can see two.
+/// The second one must not rewind `sequence_number`, must not change `response.id` between
+/// `response.created` and `response.completed`, and must not drop the open text item.
+#[test]
+fn responses_duplicate_message_start_does_not_restart_stream() {
+    let w = ResponsesWriter;
+    let start = || crate::ir::IrStreamEvent::MessageStart {
+        role: crate::ir::IrRole::Assistant,
+        usage: None,
+        id: Some("resp_dup".to_string()),
+        created: Some(1_700_000_000),
+        model: Some("gpt-dup".to_string()),
+    };
+
+    let mut frames: Vec<(String, serde_json::Value)> = Vec::new();
+    frames.extend(w.write_response_events(&start()));
+    frames.extend(
+        w.write_response_events(&crate::ir::IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::ir::IrBlockMeta::Text,
+        }),
+    );
+    frames.extend(
+        w.write_response_events(&crate::ir::IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::ir::IrDelta::TextDelta("hi".to_string()),
+        }),
+    );
+    // The duplicate. Everything after it must continue the SAME stream.
+    frames.extend(w.write_response_events(&start()));
+    frames.extend(w.write_response_events(&crate::ir::IrStreamEvent::BlockStop { index: 0 }));
+    frames.extend(
+        w.write_response_events(&crate::ir::IrStreamEvent::MessageDelta {
+            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_sequence: None,
+            usage: usage(1, 1),
+        }),
+    );
+
+    let seqs: Vec<u64> = frames
+        .iter()
+        .filter_map(|(_, d)| d["sequence_number"].as_u64())
+        .collect();
+    assert!(
+        seqs.windows(2).all(|w| w[0] < w[1]),
+        "sequence_number must be strictly increasing across the whole stream: {seqs:?}"
+    );
+
+    let created_id = frames
+        .iter()
+        .find(|(n, _)| n == EVT_RESPONSE_CREATED)
+        .map(|(_, d)| d["response"]["id"].clone())
+        .expect("response.created must be emitted");
+    let completed_id = frames
+        .iter()
+        .find(|(n, _)| n == EVT_RESPONSE_COMPLETED)
+        .map(|(_, d)| d["response"]["id"].clone())
+        .expect("response.completed must be emitted");
+    assert_eq!(
+        created_id, completed_id,
+        "the terminal event must replay the id response.created carried"
+    );
+
+    assert!(
+        frames.iter().any(|(n, _)| n == EVT_OUTPUT_TEXT_DONE),
+        "the text item opened before the duplicate must still close: {:?}",
+        frames.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+}
+
+/// The per-stream reset clears every accumulator a reused or cloned writer could otherwise leak
+/// into the next stream — including the citation and logprob buffers, which it used to skip. A
+/// stale entry under an index the new stream reuses would attach a previous stream's sources and
+/// token logprobs to this stream's text part.
+#[test]
+fn responses_reset_clears_citation_and_logprob_accumulators() {
+    let w = ResponsesWriter;
+    // State left over from a previous stream, under the index the new stream will reuse.
+    w.append_citations(
+        0,
+        &[crate::ir::IrCitation {
+            kind: Some("web_search_result_location".to_string()),
+            cited_text: None,
+            title: Some("stale".to_string()),
+            url: Some("https://stale".to_string()),
+            document_index: None,
+            start_index: Some(0),
+            end_index: Some(2),
+            encrypted_index: None,
+            raw: None,
+        }],
+    );
+    w.append_logprobs(
+        0,
+        &[crate::ir::IrTokenLogprob {
+            token: "stale".into(),
+            logprob: -0.25,
+            bytes: None,
+            top: Vec::new(),
+        }],
+    );
+
+    // The new stream opens, which is what performs the reset.
+    let mut frames: Vec<(String, serde_json::Value)> =
+        w.write_response_events(&crate::ir::IrStreamEvent::MessageStart {
+            role: crate::ir::IrRole::Assistant,
+            usage: None,
+            id: Some("resp_reset".to_string()),
+            created: Some(1_700_000_000),
+            model: Some("gpt-reset".to_string()),
+        });
+    frames.extend(
+        w.write_response_events(&crate::ir::IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::ir::IrBlockMeta::Text,
+        }),
+    );
+    frames.extend(
+        w.write_response_events(&crate::ir::IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::ir::IrDelta::TextDelta("fresh".to_string()),
+        }),
+    );
+    frames.extend(w.write_response_events(&crate::ir::IrStreamEvent::BlockStop { index: 0 }));
+
+    for (name, data) in &frames {
+        let blob = data.to_string();
+        assert!(
+            !blob.contains("https://stale"),
+            "a previous stream's citation must not reach {name}: {data}"
+        );
+        assert!(
+            !blob.contains("\"stale\""),
+            "a previous stream's logprob token must not reach {name}: {data}"
         );
     }
 }

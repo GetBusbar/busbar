@@ -67,17 +67,27 @@ impl OutcomeWindow {
         self.entries.push_back((ts, is_error));
     }
 
-    fn count_in_window(&self, now: u64, window_s: u64) -> usize {
+    /// How many outcomes fall inside the window, and how many of those were errors — in ONE pass.
+    ///
+    /// The two figures are only ever wanted together (the error rate is their ratio), and asking
+    /// separately walked the same deque twice under the same lock to apply the same `ts >= start`
+    /// cut. Returning the pair also makes it impossible for the two to be read against different
+    /// window starts.
+    ///
+    /// Counted on demand rather than kept as running counters: the window slides, so a counter
+    /// would have to be decremented as entries age out, and an entry ages out at a time nothing
+    /// calls the cell. The deque is bounded by `capacity`.
+    fn outcomes_in_window(&self, now: u64, window_s: u64) -> (usize, usize) {
         let start = now.saturating_sub(window_s);
-        self.entries.iter().filter(|(ts, _)| *ts >= start).count()
-    }
-
-    fn error_count_in_window(&self, now: u64, window_s: u64) -> usize {
-        let start = now.saturating_sub(window_s);
-        self.entries
-            .iter()
-            .filter(|(ts, is_error)| *ts >= start && *is_error)
-            .count()
+        let mut total = 0;
+        let mut errors = 0;
+        for (ts, is_error) in self.entries.iter() {
+            if *ts >= start {
+                total += 1;
+                errors += usize::from(*is_error);
+            }
+        }
+        (total, errors)
     }
 
     fn clear(&mut self) {
@@ -179,6 +189,39 @@ pub enum ProbeAdmit {
     ProbeWon(u64),
 }
 
+/// What a recorded failure actually did to a cell ([`BreakerCell::record_failure`]).
+///
+/// The arm is decided under the cell's transition lock and reported from there, so a caller never
+/// has to infer it from a state read taken before the call — a read a concurrent transition can
+/// invalidate. Two different callers need two different facts out of the same event: a trip metric
+/// counts a fresh trip, and the probe journal records a reopen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureEffect {
+    /// A Closed cell reached its trip threshold and opened. The logical trip a metric counts.
+    Tripped,
+    /// A HalfOpen cell's recovery probe failed, so the cell reopened with a fresh cooldown. Not a
+    /// fresh trip: the cell was already tripped.
+    Reopened,
+    /// A Closed cell stayed closed but was benched for a cooldown, below the trip threshold.
+    Benched,
+    /// Nothing changed: an already-Open cell, or a sub-threshold failure on a cell that does not
+    /// bench below the threshold.
+    Nothing,
+}
+
+impl FailureEffect {
+    /// Whether this was a logical Closed→Open trip — the boolean a trip metric counts.
+    pub fn tripped(self) -> bool {
+        matches!(self, FailureEffect::Tripped)
+    }
+
+    /// Whether this reopened a cell whose recovery probe failed — the event the probe journal
+    /// records.
+    pub fn reopened(self) -> bool {
+        matches!(self, FailureEffect::Reopened)
+    }
+}
+
 impl BreakerCell {
     /// THE single decoder of a cell's breaker situation. Read-only — no Open→HalfOpen transition,
     /// no probe CAS. Every "is the breaker open" question resolves here so the notions can never
@@ -234,11 +277,10 @@ impl BreakerCell {
         let window = lock_recover(&self.outcome_window);
         match cfg.trip.mode {
             TripMode::ErrorRate => {
-                let count = window.count_in_window(now, cfg.trip.window_s);
+                let (count, errors) = window.outcomes_in_window(now, cfg.trip.window_s);
                 if count < cfg.trip.min_requests {
                     return false;
                 }
-                let errors = window.error_count_in_window(now, cfg.trip.window_s);
                 (errors as f64 / count as f64) >= cfg.trip.threshold
             }
             TripMode::Consecutive => self.streak.load(Ordering::Relaxed) >= cfg.trip.consecutive_n,
@@ -254,9 +296,12 @@ impl BreakerCell {
     ///
     /// ±10% jitter is then applied on EVERY trip, including the `streak == 0` base — a fleet of
     /// lanes tripping on the same base would otherwise get an identical cooldown and a synchronized
-    /// thundering herd of half-open probes. The jitter seed mixes the wall clock, this cell's
+    /// thundering herd of half-open probes. The jitter seed mixes the caller's `now`, this cell's
     /// address, and the streak (FNV-1a) so lanes failing within nanoseconds of each other still
-    /// decorrelate. The result is clamped to `[(duration/2).max(1), max_cooldown_secs]` — the
+    /// decorrelate — it is the CELL ADDRESS that does the decorrelating, since sibling lanes tripping
+    /// together share the `now`. `now` is the value the caller already holds, not a clock this crate
+    /// reads: a decision replayed from the same inputs must arm the same cooldown, and a unit crate
+    /// does not own a clock. The result is clamped to `[(duration/2).max(1), max_cooldown_secs]` — the
     /// `.max(1)` floor exists so `base_cooldown_secs == 1` can never jitter down to a zero cooldown
     /// (an instantly-re-admitting "tripped" cell).
     ///
@@ -267,6 +312,7 @@ impl BreakerCell {
     /// overflow `now + duration`.
     pub fn compute_cooldown_with_retry_after(
         &self,
+        now_time: u64,
         cfg: &BreakerCfg,
         retry_after: Option<u64>,
         max_honored_retry_after_secs: u64,
@@ -285,7 +331,7 @@ impl BreakerCell {
 
         {
             let jitter_range = (duration / 10).max(1);
-            let time_seed = crate::clock::unix_time_secs() as u128;
+            let time_seed = now_time as u128;
             let cell_id = self as *const _ as *const () as usize as u128;
             let mut seed = FNV1A_OFFSET_BASIS as u128;
             for part in [time_seed, cell_id, streak as u128] {
@@ -319,8 +365,12 @@ impl BreakerCell {
         retry_after: Option<u64>,
         max_honored_retry_after_secs: u64,
     ) {
-        let duration =
-            self.compute_cooldown_with_retry_after(cfg, retry_after, max_honored_retry_after_secs);
+        let duration = self.compute_cooldown_with_retry_after(
+            now_time,
+            cfg,
+            retry_after,
+            max_honored_retry_after_secs,
+        );
         // saturating_add: `duration` may carry a server-supplied Retry-After (already clamped
         // above, but defense in depth) — never wrap `now + duration`, which would land
         // `cooldown_until` in the past and instantly re-ready a tripped cell.
@@ -450,16 +500,21 @@ impl BreakerCell {
     /// Record a failure (transient or rate-limit — identical breaker handling) against the cell:
     /// push the outcome, bump the error count and streak, then trip or extend the cooldown.
     ///
-    /// Returns `true` IFF this failure drove a logical Closed→Open trip. A HalfOpen→Open reopen
-    /// (a failed recovery probe) is NOT counted as a fresh trip — the cell was already tripped and
-    /// is merely re-arming its cooldown — nor is an already-Open no-op.
+    /// Reports which arm it took, decided under the transition lock rather than from a state a
+    /// caller read beforehand: between such a read and this call the cell can move, and a caller
+    /// that guessed would journal a probe failure for a fresh trip, or miss one for a reopen it did
+    /// not know it was doing.
+    ///
+    /// [`FailureEffect::tripped`] is the logical Closed→Open trip a trip metric counts. A
+    /// HalfOpen→Open reopen (a failed recovery probe) is NOT a fresh trip — the cell was already
+    /// tripped and is merely re-arming its cooldown — nor is an already-Open no-op.
     pub fn record_failure(
         &self,
         now_time: u64,
         cfg: &BreakerCfg,
         retry_after: Option<u64>,
         max_honored_retry_after_secs: u64,
-    ) -> bool {
+    ) -> FailureEffect {
         lock_recover(&self.outcome_window).push(now_time, true);
         self.err.fetch_add(1, Ordering::Relaxed);
 
@@ -469,7 +524,7 @@ impl BreakerCell {
                 self.streak.fetch_add(1, Ordering::Relaxed);
                 if self.should_trip(now_time, cfg) {
                     self.open_locked(now_time, cfg, retry_after, max_honored_retry_after_secs);
-                    true
+                    FailureEffect::Tripped
                 } else if !cfg.bench_below_trip_threshold {
                     // A degenerate single-member cell: there is no sibling to fail over to, so a
                     // sub-threshold failure benches nothing — it has not earned a cooldown. An
@@ -483,16 +538,17 @@ impl BreakerCell {
                             );
                         }
                     }
-                    false
+                    FailureEffect::Nothing
                 } else {
                     let duration = self.compute_cooldown_with_retry_after(
+                        now_time,
                         cfg,
                         retry_after,
                         max_honored_retry_after_secs,
                     );
                     self.cooldown_until
                         .store(now_time.saturating_add(duration), Ordering::Release);
-                    false
+                    FailureEffect::Benched
                 }
             }
             // The probe failed → reopen. The cell was already tripped (Open) and won the half-open
@@ -500,12 +556,12 @@ impl BreakerCell {
             ST_HALF_OPEN => {
                 self.streak.fetch_add(1, Ordering::Relaxed);
                 self.open_locked(now_time, cfg, retry_after, max_honored_retry_after_secs);
-                false
+                FailureEffect::Reopened
             }
             // Already Open: an intentional no-op. The cooldown is already armed; a failure while
             // Open does not re-escalate on every request during the cooldown.
-            ST_OPEN => false,
-            _ => false, // fail safe on an unreachable encoding
+            ST_OPEN => FailureEffect::Nothing,
+            _ => FailureEffect::Nothing, // fail safe on an unreachable encoding
         }
     }
 

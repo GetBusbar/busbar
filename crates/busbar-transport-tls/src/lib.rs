@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::{
@@ -82,13 +82,29 @@ struct Inner {
     /// transport opened itself stands on its own socket; an adopted one stands on whatever the
     /// layer below it was already standing on, which is why this is carried rather than assumed.
     chain: Vec<&'static str>,
-    read: AsyncMutex<InnerRead>,
+    read: AsyncMutex<ReadSide>,
     write: AsyncMutex<InnerWrite>,
+    /// Set once the kernel has finalised this connection. A frame stream captured its own clone of
+    /// this state before the close, so the registry removal alone would not reach it; this is the
+    /// flag that stream checks so it ends at the next poll and the TLS stream actually drops.
+    closed: AtomicBool,
 }
 
 enum InnerRead {
     Server(ReadHalf<ServerStream>),
     Client(ReadHalf<ClientStream>),
+}
+
+/// A connection's read half and the buffer every read on it fills.
+///
+/// The buffer is allocated once, when the connection is registered, and reused for the life of the
+/// connection: a fresh `READ_CHUNK_BYTES` `Vec` per read is an allocation and a zero-fill on the
+/// frame path, for every read, for the life of every streaming connection. Keeping it behind the
+/// same lock as the read half is what makes the reuse sound — a connection is read by one pump at
+/// a time, so there is never a second reader to see a half-filled buffer.
+struct ReadSide {
+    half: InnerRead,
+    scratch: Vec<u8>,
 }
 
 enum InnerWrite {
@@ -193,6 +209,8 @@ impl TlsTransport {
         let sni = server_conn.server_name().map(str::to_string);
         let peer_cert = server_conn.peer_certificates().and_then(|certs| {
             certs.first().map(|c| CertFacts {
+                // Not parsed: see the SELECTOR_FORMS note. The fingerprint below is the fact this
+                // transport really does read off the presented certificate.
                 subject: "peer".to_string(),
                 issuer: "peer".to_string(),
                 fingerprint: format!("{:x?}", ring_fingerprint(c.as_ref())),
@@ -205,8 +223,12 @@ impl TlsTransport {
             alpn,
             peer_cert,
             chain,
-            read: AsyncMutex::new(InnerRead::Server(read)),
+            read: AsyncMutex::new(ReadSide {
+                half: InnerRead::Server(read),
+                scratch: vec![0_u8; READ_CHUNK_BYTES],
+            }),
             write: AsyncMutex::new(InnerWrite::Server(write)),
+            closed: AtomicBool::new(false),
         });
         self.conns.lock().expect("poisoned").insert(id, inner);
         Conn::new(Arc::new(TlsConnHandle {
@@ -230,6 +252,8 @@ impl TlsTransport {
         // which slot it was supposed to serve.
         let peer_cert = client_conn.peer_certificates().and_then(|certs| {
             certs.first().map(|c| CertFacts {
+                // Not parsed: see the SELECTOR_FORMS note. The fingerprint below is the fact this
+                // transport really does read off the presented certificate.
                 subject: "peer".to_string(),
                 issuer: "peer".to_string(),
                 fingerprint: format!("{:x?}", ring_fingerprint(c.as_ref())),
@@ -242,14 +266,27 @@ impl TlsTransport {
             alpn,
             peer_cert,
             chain,
-            read: AsyncMutex::new(InnerRead::Client(read)),
+            read: AsyncMutex::new(ReadSide {
+                half: InnerRead::Client(read),
+                scratch: vec![0_u8; READ_CHUNK_BYTES],
+            }),
             write: AsyncMutex::new(InnerWrite::Client(write)),
+            closed: AtomicBool::new(false),
         });
         self.conns.lock().expect("poisoned").insert(id, inner);
         Conn::new(Arc::new(TlsConnHandle {
             id,
             peer: peer.to_string(),
         }))
+    }
+
+    /// The address of the buffer a connection reads through, for the test that pins one buffer per
+    /// connection rather than one per read.
+    #[cfg(test)]
+    pub(crate) async fn scratch_addr(&self, id: u64) -> Option<usize> {
+        let inner = self.inner(id)?;
+        let guard = inner.read.lock().await;
+        Some(guard.scratch.as_ptr() as usize)
     }
 
     fn map_io_err(e: &io::Error) -> TransportError {
@@ -268,9 +305,6 @@ impl TlsTransport {
     }
 }
 
-/// A stand-in fingerprint: the SHA-256 of the DER bytes, formatted for [`CertFacts`]. Not a trust
-/// decision — the trust decision already happened inside the rustls handshake; this is evidence
-/// carried alongside it.
 impl busbar_unit_transport_key::TlsConfigSink for TlsTransport {
     fn register_server_config(&self, slot: u64, cfg: Arc<rustls::ServerConfig>) {
         TlsTransport::register_server_config(self, slot, cfg);
@@ -281,6 +315,9 @@ impl busbar_unit_transport_key::TlsConfigSink for TlsTransport {
     }
 }
 
+/// A stand-in fingerprint: the SHA-256 of the DER bytes, formatted for [`CertFacts`]. Not a trust
+/// decision — the trust decision already happened inside the rustls handshake; this is evidence
+/// carried alongside it.
 fn ring_fingerprint(der: &[u8]) -> Vec<u8> {
     use ring::digest;
     digest::digest(&digest::SHA256, der).as_ref().to_vec()
@@ -300,9 +337,14 @@ impl Plugin for TlsTransport {
 
 impl TransportMeta for TlsTransport {
     const KEY: &'static str = "tls";
+    // `ClientCertSubject` is deliberately absent. The form reads a distinguished name off the
+    // presented certificate, and this transport does not parse one: what it records is the
+    // certificate's fingerprint, a real fact the handshake already established. Advertising the
+    // form on a constant subject would mean every client certificate compares equal, so a
+    // cert-subject distinction would collapse silently rather than fail — the form goes back on
+    // this row the day the DN is parsed, and not before.
     const SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[
         busbar_contract::SelectorForm::Sni,
-        busbar_contract::SelectorForm::ClientCertSubject,
         busbar_contract::SelectorForm::Alpn,
     ];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
@@ -443,18 +485,22 @@ impl Transport for TlsTransport {
         let inner = self.inner(conn.id());
         Box::pin(futures::stream::unfold(inner, move |inner| async move {
             let inner = inner?;
-            let mut buf = vec![0_u8; READ_CHUNK_BYTES];
+            if inner.closed.load(Ordering::Acquire) {
+                return None;
+            }
             let mut guard = inner.read.lock().await;
-            let result = match &mut *guard {
-                InnerRead::Server(r) => r.read(&mut buf).await,
-                InnerRead::Client(r) => r.read(&mut buf).await,
+            let side = &mut *guard;
+            let result = match &mut side.half {
+                InnerRead::Server(r) => r.read(&mut side.scratch).await,
+                InnerRead::Client(r) => r.read(&mut side.scratch).await,
             };
             match result {
                 Ok(0) => None,
                 Ok(n) => {
+                    // Copied out to exactly this frame's length; the scratch keeps whatever the
+                    // read left in it, which nothing else ever looks at.
+                    let bytes: Arc<[u8]> = Arc::from(&side.scratch[..n]);
                     drop(guard);
-                    buf.truncate(n);
-                    let bytes: Arc<[u8]> = buf.into();
                     let frame = Frame {
                         direction: Direction::Inbound,
                         stream: StreamId(0),
@@ -560,7 +606,7 @@ impl Transport for TlsTransport {
         let inner = self.conns.lock().expect("poisoned").remove(&conn.id())?;
         let peer = conn.peer();
         let inner = Arc::try_unwrap(inner).ok()?;
-        let stream: BoxedIo = match (inner.read.into_inner(), inner.write.into_inner()) {
+        let stream: BoxedIo = match (inner.read.into_inner().half, inner.write.into_inner()) {
             (InnerRead::Server(r), InnerWrite::Server(w)) => Box::new(r.unsplit(w)),
             (InnerRead::Client(r), InnerWrite::Client(w)) => Box::new(r.unsplit(w)),
             // The halves of one connection are always the same side; a mismatch would mean the
@@ -582,7 +628,13 @@ impl Transport for TlsTransport {
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {
-        self.conns.lock().expect("poisoned").remove(&conn.id());
+        // A frame stream holds its own clone of the state, so removing the registry entry is not
+        // enough to drop the TLS stream: the flag is what ends that stream at its next poll, after
+        // which the last clone goes and the socket really does close.
+        let inner = self.conns.lock().expect("poisoned").remove(&conn.id());
+        if let Some(inner) = inner {
+            inner.closed.store(true, Ordering::Release);
+        }
     }
 
     fn unit0_refusal<'a>(
@@ -597,11 +649,10 @@ impl Transport for TlsTransport {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
             {
                 let mut guard = inner.write.lock().await;
-                let result = match &mut *guard {
-                    InnerWrite::Server(w) => w.write_all(bytes.as_slice()).await,
-                    InnerWrite::Client(w) => w.write_all(bytes.as_slice()).await,
-                };
-                result.map_err(|e| Self::map_io_err(&e))?;
+                match &mut *guard {
+                    InnerWrite::Server(w) => deliver_refusal(w, bytes.as_slice()).await?,
+                    InnerWrite::Client(w) => deliver_refusal(w, bytes.as_slice()).await?,
+                }
             }
             self.conns.lock().expect("poisoned").remove(&conn.id());
             Ok(())
@@ -638,6 +689,23 @@ fn split_address(
         }
         None => Err(TransportError::AddressRefused),
     }
+}
+
+/// Put a Unit 0 refusal's bytes on the wire and report whether they actually left.
+///
+/// `write_all` on a TLS stream only proves the plaintext reached rustls's own buffer; the ciphertext
+/// may never have reached the socket. The kernel is told a refusal was delivered, and a refusal is
+/// the client-visible answer to an authentication failure, so the flush is the evidence — the same
+/// evidence the ordinary write path already takes — and its failure is reported rather than
+/// swallowed.
+async fn deliver_refusal<W>(w: &mut W, bytes: &[u8]) -> Result<(), TransportError>
+where
+    W: tokio::io::AsyncWrite + Unpin + ?Sized,
+{
+    w.write_all(bytes)
+        .await
+        .map_err(|e| TlsTransport::map_io_err(&e))?;
+    w.flush().await.map_err(|e| TlsTransport::map_io_err(&e))
 }
 
 #[cfg(test)]

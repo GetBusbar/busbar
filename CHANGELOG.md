@@ -82,6 +82,14 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   case here; only bookkeeping and metrics moved. The one exception — an upstream auth/billing
   hard-down on a degraded hop — is a billing- and body-affecting change and is named under
   [Breaking](#breaking) below.
+- **A failed request's flat fee is refunded even when its window rolled under it.** A request
+  charged just before a limit window rolls is charged in place on the cell a concurrent admission
+  already rolled forward; 1.5.5 then resolved its refund on window equality alone, so if that
+  request produced no usable upstream result its fee was never returned and the derived spend the
+  budget cap reads stayed one fee too high for the rest of that window — a caller under its budget
+  refused as though it were not. The refund now resolves the same cell the charge did. Strictly in
+  the caller's favour, reachable only on a boundary straddle, and the admission `requests` slot is
+  still never refunded.
 
 ### Breaking
 

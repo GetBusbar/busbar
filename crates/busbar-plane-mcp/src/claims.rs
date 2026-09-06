@@ -169,7 +169,10 @@ mod tests {
         );
         // And the protocol declaration names the same thing, so the two halves of the codec agree
         // with the plane and with each other.
-        assert_eq!(busbar_mcp_codec::PROTO_DECL.name, busbar_mcp_codec::PLANE_KEY);
+        assert_eq!(
+            busbar_mcp_codec::PROTO_DECL.name,
+            busbar_mcp_codec::PLANE_KEY
+        );
     }
 
     /// Every claim names one of the three declared transports and nothing else.

@@ -4,7 +4,9 @@
 //! THE TWILIO MEDIA STREAMS ENVELOPE for the telephony topology (behind the `runtime` feature).
 //!
 //! Twilio speaks a JSON-over-WS protocol on its Media Streams leg: lifecycle events (`connected`,
-//! `start`, `mark`, `stop`) plus per-frame `media` events whose `payload` is base64 8 kHz µ-law. The
+//! `start`, `mark`, `dtmf`, `stop` — the whole set Twilio sends TO the socket, because an event
+//! this codec does not model is a decode REFUSAL to everything downstream) plus per-frame `media`
+//! events whose `payload` is base64 8 kHz µ-law. The
 //! generic [`crate::topology::telephony::TelephonyProxy`] bridge already carries raw `Vec<u8>` on its
 //! `client_in`/`client_out` halves, so the only carrier-specific work is this thin, stateless codec
 //! that:
@@ -20,6 +22,13 @@
 //!   connection cannot inject audio into a session it does not own before any byte is admitted.
 
 use serde::Serialize;
+
+// The crate's ONE base64 implementation. This module used to carry its own copy, justified as
+// keeping the envelope free of a new dependency — a justification the crate split retired:
+// `busbar-substrate-values` is already an unconditional dependency and `ir/codec` already decodes
+// audio through it. Two implementations of one wire primitive in one crate is a drift hazard with
+// nothing bought for it, and this is the primitive that turns bytes on a phone call into audio.
+use busbar_substrate_values::media::{base64_decode, base64_encode};
 
 /// Twilio's negotiated µ-law encoding string on the `start` event's media format.
 pub const TWILIO_MULAW_ENCODING: &str = "audio/x-mulaw";
@@ -126,6 +135,16 @@ pub enum TwilioEvent {
         /// The mark name the outbound side chose.
         name: String,
     },
+    /// A touch-tone keypress heard on the inbound track — sent only when the stream has DTMF
+    /// enabled. It carries no session audio: the adapter discards it exactly like [`Self::Mark`].
+    /// It is modelled rather than left unknown because an unmodelled event is a decode ERROR, and a
+    /// caller pressing a key must not be handled as a garbled or forged frame.
+    Dtmf {
+        /// The connection's `streamSid`.
+        stream_sid: String,
+        /// The key that was pressed (`0`-`9`, `*`, `#`, `A`-`D`), or empty when Twilio omits it.
+        digit: String,
+    },
     /// The terminal event; the adapter closes `client_in` on it.
     Stop,
 }
@@ -192,7 +211,9 @@ impl TwilioEnvelope {
                     .and_then(|m| m.get("payload"))
                     .and_then(serde_json::Value::as_str)
                     .ok_or(TwilioError::Malformed)?;
-                let payload = base64_decode(payload_b64).ok_or(TwilioError::BadPayload)?;
+                let payload = base64_decode(payload_b64)
+                    .ok_or(TwilioError::BadPayload)?
+                    .to_vec();
                 Ok(TwilioEvent::Media {
                     stream_sid,
                     payload,
@@ -211,6 +232,20 @@ impl TwilioEnvelope {
                     .unwrap_or_default()
                     .to_string();
                 Ok(TwilioEvent::Mark { stream_sid, name })
+            }
+            "dtmf" => {
+                let stream_sid = v
+                    .get("streamSid")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let digit = v
+                    .get("dtmf")
+                    .and_then(|d| d.get("digit"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                Ok(TwilioEvent::Dtmf { stream_sid, digit })
             }
             "stop" => Ok(TwilioEvent::Stop),
             other => Err(TwilioError::UnknownEvent(other.to_string())),
@@ -349,68 +384,6 @@ fn xml_escape(s: &str) -> String {
         }
     }
     out
-}
-
-// ── Standard base64 (RFC 4648) — self-contained so the envelope pulls no new dependency. ─────────────
-
-const B64_ENCODE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn base64_encode(data: &[u8]) -> String {
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = u32::from(chunk[0]);
-        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
-        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(B64_ENCODE[((n >> 18) & 63) as usize] as char);
-        out.push(B64_ENCODE[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            B64_ENCODE[((n >> 6) & 63) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            B64_ENCODE[(n & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
-fn base64_sextet(c: u8) -> Option<u32> {
-    match c {
-        b'A'..=b'Z' => Some(u32::from(c - b'A')),
-        b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
-        b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
-}
-
-fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    let sextets: Vec<u8> = s
-        .bytes()
-        .filter(|&b| b != b'=' && !b.is_ascii_whitespace())
-        .collect();
-    let mut out = Vec::with_capacity(sextets.len() / 4 * 3);
-    for chunk in sextets.chunks(4) {
-        if chunk.len() < 2 {
-            return None;
-        }
-        let mut n = 0u32;
-        for &c in chunk {
-            n = (n << 6) | base64_sextet(c)?;
-        }
-        let missing = 4 - chunk.len();
-        n <<= 6 * missing as u32;
-        let be = n.to_be_bytes();
-        for byte in be.iter().take(1 + (chunk.len() - 1)).skip(1) {
-            out.push(*byte);
-        }
-    }
-    Some(out)
 }
 
 #[cfg(test)]

@@ -164,6 +164,28 @@ pub fn records(node: u64, first_seq: u64, n: u64, body_len: usize) -> Vec<Record
         .collect()
 }
 
+/// The names in the process's current directory that look like something THIS crate wrote: the
+/// `<index>.wal` segments `DirectoryFactory` hands out.
+///
+/// Compared as a NAME SET rather than as a count. The cwd is shared by every test in the binary and
+/// by whatever the toolchain is doing beside them, so a count changes for reasons that have nothing
+/// to do with the log — a lock file appearing, a sibling test's fixture arriving or leaving — and a
+/// count that happens to be unchanged also hides one file replacing another. Restricting the set to
+/// the log's own naming is what makes a difference here mean "the log wrote a segment where no data
+/// directory was configured", which is the only thing the assertion is for. The TempDir walk beside
+/// it stays the primary evidence: it is a directory nothing else touches, so it is asserted empty
+/// outright.
+pub fn cwd_segment_names() -> std::collections::BTreeSet<String> {
+    let Ok(entries) = std::fs::read_dir(".") else {
+        return std::collections::BTreeSet::new();
+    };
+    entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".wal"))
+        .collect()
+}
+
 /// A directory nothing else is using, removed when the test ends.
 pub struct TempDir {
     path: std::path::PathBuf,

@@ -78,8 +78,9 @@
 //! consumed by exactly this function" is not expressible. Four partial mechanisms cover it instead,
 //! and it is worth being exact about which does what. `#[must_use]` catches the accident above. The
 //! cell catches the double take. The canary catches the omission, after the fact, in arithmetic.
-//! The deliberate escape is caught by a source scan, and the symbols it looks for are written down
-//! in the crate's `fixtures/lint_rules.rs` rather than left to a reviewer to remember.
+//! The deliberate escape is caught by a source scan — the construction gate's `hold-escapes` rule
+//! — and the symbols it looks for are written down in the crate's `fixtures/lint_rules.rs` rather
+//! than left to a reviewer to remember; a test in this crate holds the two tables to each other.
 
 use crate::step::{PrincipalId, Step};
 use crate::token::{AdmitToken, ExitToken, LedgerToken, RecoveryToken};
@@ -137,6 +138,21 @@ pub enum Accrual {
         /// How much of the spend went past the reservation.
         shortfall: u64,
     },
+}
+
+/// What one spend did to the reservation.
+///
+/// Three figures rather than an outcome enum, because all three can be non-zero at once: a spend
+/// that runs past the end is part covered by a top-up and part carried, and a report that named only
+/// the larger half would be a report the identity cannot close against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Spend {
+    /// What was spent, in full. Always the amount asked for: a spend is never trimmed.
+    pub accrued: u64,
+    /// How much the reservation grew by to cover it.
+    pub topped_up: u64,
+    /// How much of it nothing could back, and the unit therefore carries out.
+    pub overdraft: u64,
 }
 
 impl Hold {
@@ -210,6 +226,41 @@ impl Hold {
         }
     }
 
+    /// Spend `amount` against the reservation, growing the reservation to cover it as far as
+    /// `headroom` allows and recording whatever nothing could back.
+    ///
+    /// This is the whole accounting act in one call, and it has no failure arm on purpose. The door
+    /// has already said yes; the reservation is the size of a guess, and a guess being too small is
+    /// not a reason to take back an admission. So the spend always lands: it accrues in full, the
+    /// reservation grows by whatever the caller says is still drawable, and the remainder is an
+    /// overdraft the unit carries out. `headroom` is what the admission unit found left in the
+    /// principal's slice — `u64::MAX` where no cap applies, zero where the window is spent.
+    pub fn spend(&mut self, amount: u64, headroom: u64) -> Spend {
+        let already = self.overdraft;
+        let mut spend = Spend {
+            accrued: amount,
+            topped_up: 0,
+            overdraft: 0,
+        };
+        if let Accrual::Exhausted { shortfall } = self.accrue(amount) {
+            // The shortfall is cumulative, so what THIS spend left unbacked is whatever of it is
+            // not already carried. Subtracting first is what keeps a second spend past the end from
+            // recording the first one's overdraft a second time.
+            let uncovered = shortfall.saturating_sub(already);
+            let drawn = uncovered.min(headroom);
+            if drawn > 0 {
+                self.top_up(drawn);
+                spend.topped_up = drawn;
+            }
+            let unbacked = uncovered.saturating_sub(drawn);
+            if unbacked > 0 {
+                self.record_overdraft(unbacked);
+                spend.overdraft = unbacked;
+            }
+        }
+        spend
+    }
+
     /// Add a slice draw to the reservation. Returns what is now left.
     pub fn top_up(&mut self, amount: u64) -> u64 {
         self.topped_up = self.topped_up.saturating_add(amount);
@@ -250,6 +301,7 @@ impl std::fmt::Debug for Hold {
 pub struct HoldAccrual {
     principal: PrincipalId,
     amount: u64,
+    overdraft: u64,
 }
 
 impl HoldAccrual {
@@ -261,6 +313,15 @@ impl HoldAccrual {
     /// How much.
     pub fn amount(&self) -> u64 {
         self.amount
+    }
+
+    /// How much of that amount ran past the parent's reservation and nothing could back.
+    ///
+    /// The cell holds no slice of the principal's window, so it can top the parent's reservation up
+    /// by nothing; whatever a child spends past the end is carried, and this is the child's half of
+    /// that figure — what it drew against nothing, as against [`HoldAccrual::amount`], what it drew.
+    pub fn overdraft(&self) -> u64 {
+        self.overdraft
     }
 }
 
@@ -432,15 +493,57 @@ impl HoldCell {
                 if parent.principal() != principal {
                     return Err(AccrualRefused::PrincipalMismatch);
                 }
-                parent.accrue(amount);
+                // The verdict has to land on the parent's hold, inside this same guard. Accruing
+                // and throwing the answer away leaves a child that spent past the end of every
+                // reservation posting clean: the parent settles with no flag and no figure, and
+                // the child's own posting says it drew against something.
+                //
+                // The cell holds no slice of the principal's window and can draw none from here,
+                // so the headroom is zero and the whole shortfall is carried. `Hold::spend` is
+                // what subtracts the overdraft the hold already carries, which is what keeps two
+                // children past the same end from recording the first one's shortfall twice.
+                let spend = parent.spend(amount, 0);
                 self.accruals.fetch_add(1, Ordering::Relaxed);
                 Ok(HoldAccrual {
                     principal: principal.clone(),
-                    amount,
+                    amount: spend.accrued,
+                    overdraft: spend.overdraft,
                 })
             }
             Slot::Arrival(_) => Err(AccrualRefused::ParentNotAdmitted),
             Slot::Taken => Err(AccrualRefused::ParentExited),
+        }
+    }
+
+    /// Write a child's posting into this cell's admission, under one guard.
+    ///
+    /// The state that decides the answer and the answer itself come out of the same critical
+    /// section. Asking the cell what state it is in and then building the posting from what the
+    /// answer used to be leaves a gap, and the take key is held by two callers — the exit path and
+    /// the node's sweep — so the gap is one a real thread lands in: a clean in-parent posting
+    /// written against a slot that had already been emptied. Here there is no gap to land in.
+    ///
+    /// The refusal hands the accrual back rather than consuming it, because a child that missed
+    /// its parent still has to post; it posts late, on its own, against a synchronous draw.
+    pub fn post_child(
+        &self,
+        accrual: HoldAccrual,
+        _token: &LedgerToken,
+    ) -> Result<Posted, HoldAccrual> {
+        let slot = self.slot();
+        match &*slot {
+            Slot::Admitted(_) => Ok(Posted {
+                principal: accrual.principal,
+                reserved: 0,
+                settled: accrual.amount,
+                overdraft: accrual.overdraft,
+                flags: if accrual.overdraft > 0 {
+                    PostingFlags::OVERDRAFT
+                } else {
+                    PostingFlags::NONE
+                },
+            }),
+            Slot::Arrival(_) | Slot::Taken => Err(accrual),
         }
     }
 
@@ -528,11 +631,15 @@ impl Posted {
         if usage.is_estimated() {
             flags = flags.with(PostingFlags::ESTIMATED);
         }
+        // Read the two figures out before the principal moves: the hold is owned here, has no
+        // Drop, and its two sibling constructors both move theirs.
+        let reserved = hold.reserved();
+        let overdraft = hold.overdraft();
         Posted {
-            principal: hold.principal.clone(),
-            reserved: hold.reserved(),
+            principal: hold.principal,
+            reserved,
             settled: usage.total(),
-            overdraft: hold.overdraft(),
+            overdraft,
             flags,
         }
     }
@@ -540,32 +647,38 @@ impl Posted {
     /// Post a child's spend that landed inside its parent's admission.
     ///
     /// The parent's hold already carries the amount — the accrual added it at the door — so what
-    /// this writes is the child's OWN posting: it reserved nothing, it settled what it spent, and
-    /// it has no overdraft, because the reservation behind it is the parent's. That is what lets a
-    /// child end like every other unit, with one posting and one sealed end, instead of ending in
-    /// a shape the record has no room for.
+    /// this writes is the child's OWN posting: it reserved nothing, and it settled what it spent,
+    /// because the reservation behind it is the parent's. That is what lets a child end like every
+    /// other unit, with one posting and one sealed end, instead of ending in a shape the record has
+    /// no room for.
+    ///
+    /// A child that ran past the end of that reservation carries the part nothing backed, and the
+    /// flag that says so. Zero for every child that fitted, which is nearly all of them; the parent
+    /// carries the same figure on its own settlement, so the two agree rather than one of them
+    /// reporting a clean spend the other calls an overdraft.
     ///
     /// A parent that exited between the door and here hands the accrual back, and the caller posts
     /// it late against a synchronous draw.
+    ///
+    /// The work is the cell's own [`HoldCell::post_child`], because the state and the posting have
+    /// to come out of one guard; this is the caller-facing spelling of it.
     pub fn into_parent(
         accrual: HoldAccrual,
         parent: &HoldCell,
-        _token: &LedgerToken,
+        token: &LedgerToken,
     ) -> Result<Self, HoldAccrual> {
-        if parent.state() != HoldCellState::Admitted {
-            return Err(accrual);
-        }
-        Ok(Posted {
-            principal: accrual.principal,
-            reserved: 0,
-            settled: accrual.amount,
-            overdraft: 0,
-            flags: PostingFlags::NONE,
-        })
+        parent.post_child(accrual, token)
     }
 
-    /// Post a child's spend that missed its parent — always posted, backed by a synchronous slice
-    /// draw, flagged late.
+    /// Post a child's spend that missed its parent: always posted, wholly overdrawn, flagged late.
+    ///
+    /// The parent's reservation went back to the slice at the parent's exit, so by the time the
+    /// child's spend arrives there is nothing held back for it. That is why the whole amount books
+    /// as overdraft and `reserved` is zero — the posting is saying, in the two figures the
+    /// reconciliation reads, that value moved with no reservation behind it. Recovering it from
+    /// the slice is a draw the caller makes against the principal's bucket; this constructor holds
+    /// no slice and makes none, which is exactly what the `LATE_ACCRUAL` and `OVERDRAFT` flags
+    /// together are for.
     pub fn settle_late(accrual: HoldAccrual, _token: &LedgerToken) -> Self {
         Posted {
             principal: accrual.principal,
@@ -600,6 +713,12 @@ impl Posted {
     /// How much of what was posted had no reservation behind it.
     pub fn overdraft(&self) -> u64 {
         self.overdraft
+    }
+
+    /// The residual: reserved and never used, and therefore released back to the slice it was drawn
+    /// from. A hold that ran past its reservation releases nothing, which is what the floor says.
+    pub fn released(&self) -> u64 {
+        self.reserved.saturating_sub(self.settled)
     }
 
     /// How far the posting is believed.

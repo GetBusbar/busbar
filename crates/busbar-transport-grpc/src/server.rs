@@ -61,15 +61,15 @@ async fn handle_one_rpc(
     state: Arc<ConnState>,
     req: hyper::Request<Incoming>,
 ) -> hyper::Response<tonic::body::Body> {
-    state
-        .served_paths
-        .lock()
-        .unwrap()
-        .push(req.uri().path().to_string());
+    state.record_served_path(req.uri().path().to_string());
     let local = state.next_local_stream.fetch_add(1, Ordering::Relaxed);
     let stream_id = StreamId(local);
     let (out_tx, out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    state.outbound.lock().unwrap().insert(local, out_tx);
+    state
+        .outbound
+        .lock()
+        .unwrap()
+        .insert(local, crate::conn::opened(out_tx));
 
     let mut grpc = tonic::server::Grpc::new(RawCodec);
     let handler = RpcHandler {
@@ -106,12 +106,12 @@ impl tower::Service<Request<tonic::Streaming<Vec<u8>>>> for RpcHandler {
             // `is_response = false`: this is the REQUEST body, which carries no `grpc-status`
             // trailer — only a gRPC response does. See `forward_inbound`'s own note.
             tokio::spawn(forward_inbound(
-                state,
+                state.clone(),
                 stream_id,
                 request.into_inner(),
                 false,
             ));
-            Ok(Response::new(OutStream(out_rx)))
+            Ok(Response::new(OutStream::new(out_rx, state, stream_id)))
         })
     }
 }
@@ -147,7 +147,7 @@ pub(crate) async fn forward_inbound(
                     bytes: slab,
                     meta,
                 };
-                if state.inbound_tx.send(Ok((stream_id, frame))).is_err() {
+                if state.send_inbound(Ok((stream_id, frame))).await.is_err() {
                     return; // the connection's frame pump has gone away
                 }
             }
@@ -171,15 +171,15 @@ pub(crate) async fn forward_inbound(
             bytes: SlabBytes::new(Arc::from([])),
             meta,
         };
-        let _ = state.inbound_tx.send(Ok((stream_id, frame)));
+        let _ = state.send_inbound(Ok((stream_id, frame))).await;
     } else if final_status.is_some() {
-        let _ = state.inbound_tx.send(Err(TransportError::Reset));
+        let _ = state.send_inbound(Err(TransportError::Reset)).await;
     }
 }
 
 /// The transport's own honest reading of the `grpc-status` trailer, into the closed
 /// [`busbar_contract_transport::wire::StatusClass`] — never a judgement about what the RPC's bytes meant.
-fn map_status(status: &Status) -> busbar_contract_transport::wire::StatusClass {
+pub(crate) fn map_status(status: &Status) -> busbar_contract_transport::wire::StatusClass {
     use busbar_contract_transport::wire::StatusClass;
     use tonic::Code;
     match status.code() {
@@ -200,11 +200,46 @@ fn map_status(status: &Status) -> busbar_contract_transport::wire::StatusClass {
 }
 
 /// The outbound message stream `write()` feeds, one message per queued `Vec<u8>`.
-pub(crate) struct OutStream(pub(crate) mpsc::UnboundedReceiver<Vec<u8>>);
+///
+/// It carries the connection and the call's id as well as the channel because this stream's life IS
+/// the call's: hyper drops it when the RPC ends, and that is the moment the connection's outbound
+/// map should stop holding a sender nothing will ever drain again.
+pub(crate) struct OutStream {
+    rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    state: Arc<ConnState>,
+    stream_id: StreamId,
+}
+
+impl OutStream {
+    pub(crate) fn new(
+        rx: mpsc::UnboundedReceiver<Vec<u8>>,
+        state: Arc<ConnState>,
+        stream_id: StreamId,
+    ) -> Self {
+        Self {
+            rx,
+            state,
+            stream_id,
+        }
+    }
+}
+
+/// The call is over when its outbound stream is: the entry the connection registered for it goes
+/// with it, so a connection serving many short calls holds senders for the ones still open and no
+/// others.
+impl Drop for OutStream {
+    fn drop(&mut self) {
+        self.state
+            .outbound
+            .lock()
+            .unwrap()
+            .remove(&self.stream_id.0);
+    }
+}
 
 impl Stream for OutStream {
     type Item = Result<Vec<u8>, Status>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.0.poll_recv(cx).map(|opt| opt.map(Ok))
+        self.rx.poll_recv(cx).map(|opt| opt.map(Ok))
     }
 }

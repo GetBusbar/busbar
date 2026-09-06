@@ -85,7 +85,7 @@ fn transcription_projects_prompt_as_text_and_audio_as_opaque() {
     assert!(IrFacts::wants_stream(&req));
     let items = req.content();
     // The audio blob is opaque (present-but-unscreenable); the caller `prompt` is screenable text —
-    // reachable only through the byte-aware hook seam (FATAL-1), and it must not read as empty.
+    // reachable only through the byte-aware hook seam, and it must not read as empty.
     assert!(matches!(items[0], ContentItem::Opaque { .. }));
     assert_eq!(items[0].screenable_text(), OPAQUE_CONTENT_MARKER);
     assert!(screened(&items)
@@ -106,7 +106,7 @@ fn speech_projects_input_instructions_and_speaker_names() {
     };
     assert_eq!(IrFacts::verb(&req), Operation::SPEECH);
     let screened = screened(&req.content());
-    // FATAL-2: `instructions` is caller free-text forwarded verbatim; it must be screenable.
+    // `instructions` is caller free-text forwarded verbatim; it must be screenable.
     assert!(screened.iter().any(|t| t == "hello world"));
     assert!(screened.iter().any(|t| t == "speak cheerfully"));
     assert!(screened.iter().any(|t| t == "Dr. Smith"));
@@ -116,7 +116,7 @@ fn speech_projects_input_instructions_and_speaker_names() {
 
 #[test]
 fn speech_instructions_alone_are_screened() {
-    // Forcing-function witness for FATAL-2: a request whose ONLY extra field is `instructions`
+    // Forcing-function witness for this: a request whose ONLY extra field is `instructions`
     // surfaces it — a projection that dropped the field would fail here.
     let req = SpeechReq {
         input: "x".into(),

@@ -10,6 +10,7 @@
 
 mod harness;
 
+mod allocation_tests;
 mod deadline_tests;
 mod exhaustion_tests;
 mod pick_order_tests;

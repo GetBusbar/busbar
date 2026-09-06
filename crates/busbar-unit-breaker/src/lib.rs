@@ -54,9 +54,14 @@ use journal::{JournalSink, NoopJournal, ProbeEvent};
 pub use busbar_contract::DestinationId;
 
 /// The at-capacity Retry-After floor in whole seconds — the answer when no admissible pool member
-/// reports a genuine cooldown to wait out. Matches the 1.5.5 constant (`AT_CAPACITY_RETRY_AFTER_SECS
-/// = AT_CAPACITY_RECOVERY_FLOOR_MS / 1000 = 2`); the breaker unit is the one owner of this value so
-/// the egress unit's walk and this crate's tests can never disagree about it.
+/// reports a genuine cooldown to wait out. Pinned to the 1.5.5 constant
+/// (`AT_CAPACITY_RETRY_AFTER_SECS = AT_CAPACITY_RECOVERY_FLOOR_MS / 1000 = 2`).
+///
+/// The egress unit mirrors this value in its own crate rather than importing it, because unit
+/// crates do not depend on one another — the breaker reaches that unit through its `ports::Breaker`
+/// seam alone, and the composition root binds the two. The mirror is deliberate, not an oversight;
+/// what keeps the two honest is an assertion in the egress unit's own tests, where the breaker is a
+/// dev-dependency, that the two constants are still the same number.
 pub const AT_CAPACITY_RETRY_AFTER_SECS: u64 = 2;
 
 /// The default sticky cooldown applied by a hard-down trip (1.5.5's `DEFAULT_HARD_DOWN_COOLDOWN_SECS`).
@@ -502,10 +507,13 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
             }
             Outcome::Transient { retry_after } => {
                 let cell = self.cell(pool, destination);
-                let was_probe = matches!(cell.state(), CellState::HalfOpen);
-                let tripped =
+                // Gated on what the call REPORTS, not on a state read before it — the same way the
+                // Success arm gates on record_success's own answer. A state read here can be stale
+                // by the time record_failure takes the transition lock, and the journal would then
+                // name a probe failure for a fresh trip, or miss one for a reopen.
+                let effect =
                     cell.record_failure(now, cfg, retry_after, self.max_honored_retry_after_secs);
-                if was_probe {
+                if effect.reopened() {
                     let cooldown_until = match cell.state() {
                         CellState::Open { until } => until,
                         _ => now,
@@ -517,7 +525,7 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
                         now,
                     });
                 }
-                tripped
+                effect.tripped()
             }
         }
     }

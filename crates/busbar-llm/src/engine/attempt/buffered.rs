@@ -48,6 +48,20 @@ impl Drop for BudgetSpendGuard<'_> {
     }
 }
 
+/// The token figures out of a delivery's neutral billing carrier, for the report-back.
+///
+/// A flat-fee operation reports a non-token `Billing` (or none at all) and answers `None` here, which
+/// is the honest report: that response consumed no tokens to account for, and the metering series
+/// still counts its request through the accrual seam.
+fn token_usage_of(
+    usage: &Option<busbar_substrate::billing::Billing>,
+) -> Option<busbar_substrate::billing::TokenUsage> {
+    match usage {
+        Some(busbar_substrate::billing::Billing::Tokens(t)) => Some(t.clone()),
+        _ => None,
+    }
+}
+
 /// Where a translated body goes and how it is labelled: the parts every delivery exit shares.
 struct Delivery<'a> {
     rt: &'a Arc<NativeRuntime>,
@@ -114,8 +128,23 @@ pub(crate) async fn translate_response_cross_protocol(
     // answer with the client's actual values instead of the spec's bare defaults. `None` when the
     // caller has no parsed ingress body.
     ingress_request_body: Option<Value>,
+    // THE REPORT-BACK CELL, filled at whichever exit below actually ends this response. A buffered
+    // body is read whole before it is translated, so unlike the streaming tap this one has finished
+    // by the time the caller returns — the lane, the usage and the finish class are all known here.
+    tap: &TapCell,
 ) -> Response {
     let egress_name = EngineTables::new(rt).lanes()[i].protocol;
+    // Every exit below that is NOT a delivery is a transfer that FAILED after the upstream's 2xx
+    // headers, and every one of them bills zero (the not-billed arms the older release already had).
+    // The client is handed an ingress-native error and no completion at all, so the end is `Error`
+    // rather than `Partial`: nothing of the answer was ever relayed. Named once so the four failure
+    // exits report one end rather than four spellings of it.
+    let failed_transfer = || TapReport {
+        lane: i,
+        usage: None,
+        billing_failed: true,
+        finish: TapFinish::Error,
+    };
 
     // Size-capped buffer under the COMPLETION cap (a legitimate 2xx can far exceed the error-body
     // cap and must be buffered WHOLE to parse+translate). `truncated` distinguishes "too large to
@@ -153,6 +182,7 @@ pub(crate) async fn translate_response_cross_protocol(
         if tripped {
             emit_breaker_trip(host, rt, pool, i);
         }
+        tap.report(failed_transfer());
         return ingress_error(
             ingress_protocol,
             StatusCode::BAD_GATEWAY,
@@ -172,6 +202,7 @@ pub(crate) async fn translate_response_cross_protocol(
              cannot translate, not charging tokens, returning ingress-native error"
         );
         budget_guard.disarm();
+        tap.report(failed_transfer());
         return ingress_error(
             ingress_protocol,
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -221,6 +252,16 @@ pub(crate) async fn translate_response_cross_protocol(
                     if let busbar_substrate::wire::TranslatedResponse::Typed(wire) = delivered {
                         // Delivered: bill and keep the lane unit (never refund out from under an
                         // already-billed request).
+                        // THE REPORT-BACK, on the opaque delivery: the whole answer is in hand and
+                        // is about to be relayed, so the tap knows all four figures before the
+                        // client has any of them. Read from the SAME `usage` the accrual is made
+                        // from, before it moves.
+                        tap.report(TapReport {
+                            lane: i,
+                            usage: token_usage_of(&usage),
+                            billing_failed: false,
+                            finish: TapFinish::Complete,
+                        });
                         record_resp_usage(
                             host,
                             usage,
@@ -253,6 +294,7 @@ pub(crate) async fn translate_response_cross_protocol(
                 egress_name,
                 degraded,
                 ingress_request_body.as_ref(),
+                tap,
             ) {
                 return resp;
             }
@@ -288,6 +330,7 @@ pub(crate) async fn translate_response_cross_protocol(
     if tripped {
         emit_breaker_trip(host, rt, pool, i);
     }
+    tap.report(failed_transfer());
     ingress_error(
         ingress_protocol,
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -313,6 +356,7 @@ fn deliver_json(
     egress_name: &str,
     degraded: bool,
     ingress_request_body: Option<&Value>,
+    tap: &TapCell,
 ) -> Option<Response> {
     let (rt, i, ingress_protocol) = (d.rt, d.i, d.ingress_protocol);
     // One elapsed read for the wants-stream frame-synthesis fork (a Bedrock ConverseStream client
@@ -361,6 +405,16 @@ fn deliver_json(
             | busbar_substrate::wire::TranslatedResponse::Typed(_)
             | busbar_substrate::wire::TranslatedResponse::Json(_)
     ) {
+        // THE REPORT-BACK, on the JSON delivery, gated by the SAME predicate the accrual is: an
+        // exit that hands the client bytes is `Complete` and bills, and the two that hand it an
+        // error (`IngressUnsupported`, `Untranslatable`) fall through to the caller's failed-transfer
+        // report instead. One predicate, so the charge and the recorded end can never disagree.
+        tap.report(TapReport {
+            lane: i,
+            usage: token_usage_of(&usage),
+            billing_failed: false,
+            finish: TapFinish::Complete,
+        });
         record_resp_usage(
             host,
             usage,
@@ -379,12 +433,23 @@ fn deliver_json(
                 frames,
             ),
         ),
-        busbar_substrate::wire::TranslatedResponse::IngressUnsupported => Some(ingress_error(
-            ingress_protocol,
-            StatusCode::NOT_FOUND,
-            KIND_NOT_FOUND,
-            DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
-        )),
+        busbar_substrate::wire::TranslatedResponse::IngressUnsupported => {
+            // The caller's dialect has no shape for this operation at all: no completion is
+            // relayed, nothing is billed, and the end the record seals is an error rather than a
+            // truncated answer.
+            tap.report(TapReport {
+                lane: i,
+                usage: None,
+                billing_failed: true,
+                finish: TapFinish::Error,
+            });
+            Some(ingress_error(
+                ingress_protocol,
+                StatusCode::NOT_FOUND,
+                KIND_NOT_FOUND,
+                DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
+            ))
+        }
         // The ingress dialect's response is not JSON (binary speech): relay bytes + their CT.
         busbar_substrate::wire::TranslatedResponse::Typed(wire) => {
             Some(d.respond(wire.content_type, wire.bytes))

@@ -1,0 +1,22 @@
+# FIXTURE: the rule table is intact, but the tree it names has no `crates/` directory at all — the
+# shape a wrong `--root`, a partial checkout or a moved directory produces.
+#
+# `read_dir("crates")` errors, and an errored directory listing must not read as "there was nothing
+# to scan". Same class as the renamed-rule-table fixture beside it: the input vanished, so the only
+# honest answer is RED.
+[gate]
+test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
+
+[gate.plugin_kinds]
+plane = ["crates/busbar-plane-*"]
+hook = ["crates/hook*"]
+pure_auth = ["crates/auth-*"]
+egress_auth = ["crates/egress-auth-*"]
+
+[rules.source-denylist]
+patterns = [
+  'std::net', 'std::fs', 'std::process', 'std::os', 'std::env',
+  'tokio::net', 'tokio::fs', 'tokio::process',
+  'async_std', 'libc', 'reqwest', 'hyper',
+]
+kinds = ["plane", "hook", "pure_auth", "egress_auth"]

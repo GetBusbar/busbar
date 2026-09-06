@@ -87,7 +87,6 @@ use busbar_unit_ledger::totals::CapDimension;
 use busbar_unit_verbs::store::{Store as VerbStore, StoreError as VerbStoreError};
 use busbar_unit_wal::{Record, ShipError, Shipper};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// The store payload schema at which the ten operations this release adds gain a wire.
@@ -115,7 +114,9 @@ pub fn speaks_new_ops(abi_version: u32) -> bool {
 pub struct ShimState {
     /// Slices reserved and not yet released.
     pub slices_outstanding: usize,
-    /// Total units granted across every reservation, released or not.
+    /// Units granted and NOT given back — granted minus the unspent part every `release` returned.
+    /// A net figure, not a running total: it describes what the outstanding reservations above are
+    /// holding, and a restore that clears them zeroes it too.
     pub slices_granted: u64,
     /// Keys the sealed replay cache is holding, reserved or committed.
     pub replay_slots: usize,
@@ -158,12 +159,23 @@ struct Shim {
     slices: Mutex<Slices>,
     replay: Mutex<ReplaySlots>,
     recovery: Mutex<Recovery>,
-    /// Records acknowledged by the shipper. A count, not a copy — see the module preamble.
-    records_shipped: AtomicU64,
+    /// What the shipper acknowledged. Records are counted, not copied — see the module preamble —
+    /// and the count travels WITH the identity it ends at, under one lock: "n acknowledged, ending
+    /// here" is one answer, and the preamble supports two logs shipping through one adapter, so
+    /// advancing the halves separately would let a reader pair one shipper's count with the other's
+    /// head.
+    shipped: Mutex<Shipped>,
     /// The migration's marker: the record that this deployment has sealed its opening balances.
     migration: Mutex<Option<MigrationMarker>>,
+}
+
+/// The shipper's two-part answer, kept as one value so it moves as one.
+#[derive(Default)]
+struct Shipped {
+    /// Records acknowledged.
+    count: u64,
     /// The identity of the last record acknowledged, which is what a `heads` read would want.
-    head: Mutex<Option<(u64, u64)>>,
+    head: Option<(u64, u64)>,
 }
 
 #[derive(Default)]
@@ -251,7 +263,7 @@ impl StoreAdapter {
             slices_granted: slices.granted_total,
             replay_slots: replay.len(),
             replay_committed: replay.values().filter(|v| v.is_some()).count(),
-            records_shipped: self.inner.shim.records_shipped.load(Ordering::Relaxed),
+            records_shipped: self.inner.shim.shipped().count,
             chain_breaks: recovery.chain_breaks,
             restores: recovery.restores,
             epoch_floor: recovery.epoch_floor,
@@ -260,7 +272,7 @@ impl StoreAdapter {
 
     /// The identity of the last record the shipper acknowledged, or `None` if none has been.
     pub fn head(&self) -> Option<(u64, u64)> {
-        *self.inner.shim.head()
+        self.inner.shim.shipped().head
     }
 
     /// The backup reference the last restore named, if one was asked for.
@@ -315,6 +327,11 @@ impl StoreAdapter {
     pub fn legacy_cells_read(&self, plan: &LegacyReadPlan) -> LegacyCells {
         let store = self.store();
         let mut cells = LegacyCells::default();
+        // Where each bucket's balance already sits in `cells.balances`. The vector's ORDER is the
+        // plan's order and stays that way — this index only replaces the scan that found the slot,
+        // which grew with the square of a deployment's virtual-key count on the one read that runs
+        // before the node serves anything.
+        let mut balance_at: HashMap<&str, usize> = HashMap::new();
         for (bucket, window) in &plan.windows {
             match store.get_usage(bucket, *window) {
                 Err(e) => cells
@@ -358,9 +375,12 @@ impl StoreAdapter {
                     // rows below are the observability view of the same consumption, and adding
                     // them here would report a bucket as having consumed twice what it did.
                     let total = i128::from(ledger.total_tokens());
-                    match cells.balances.iter_mut().find(|(b, _)| b == bucket) {
-                        Some((_, held)) => *held += total,
-                        None => cells.balances.push((bucket.clone(), total)),
+                    match balance_at.get(bucket.as_str()) {
+                        Some(at) => cells.balances[*at].1 += total,
+                        None => {
+                            balance_at.insert(bucket.as_str(), cells.balances.len());
+                            cells.balances.push((bucket.clone(), total));
+                        }
                     }
                 }
             }
@@ -593,8 +613,8 @@ impl Shim {
         self.recovery.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn head(&self) -> MutexGuard<'_, Option<(u64, u64)>> {
-        self.head.lock().unwrap_or_else(|p| p.into_inner())
+    fn shipped(&self) -> MutexGuard<'_, Shipped> {
+        self.shipped.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     fn migration(&self) -> MutexGuard<'_, Option<MigrationMarker>> {
@@ -657,9 +677,16 @@ impl VerbStore for StoreAdapter {
         let mut recovery = self.inner.shim.recovery();
         recovery.restores = recovery.restores.saturating_add(1);
         recovery.last_restore = Some(backup_ref.to_string());
-        drop(recovery);
+        // The slices guard is taken BEFORE the recovery one is released, so the reseal is one
+        // critical section: a `reserve` landing between them would otherwise be recorded and then
+        // erased. Recovery-then-slices is the fixed order, and this is the only place both are
+        // held. `granted_total` is zeroed beside the map it describes — the counter is net units
+        // held by the outstanding reservations, and there are about to be none.
         let mut slices = self.inner.shim.slices();
         slices.outstanding.clear();
+        slices.granted_total = 0;
+        drop(slices);
+        drop(recovery);
         Ok(())
     }
 
@@ -711,12 +738,12 @@ impl Shipper for StoreAdapter {
         if records.is_empty() {
             return Ok(());
         }
-        self.inner
-            .shim
-            .records_shipped
-            .fetch_add(records.len() as u64, Ordering::Relaxed);
+        // One critical section for both halves: a reader must never see a count that has moved
+        // beside a head that has not.
+        let mut shipped = self.inner.shim.shipped();
+        shipped.count = shipped.count.saturating_add(records.len() as u64);
         if let Some(last) = records.last() {
-            *self.inner.shim.head() = Some(last.identity());
+            shipped.head = Some(last.identity());
         }
         Ok(())
     }

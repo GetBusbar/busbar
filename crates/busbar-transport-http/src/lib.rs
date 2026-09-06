@@ -23,7 +23,11 @@
 //! at `write`/`frames`, because the trait carries no request payload at dial time. A body is not
 //! one call's worth of bytes, though: the large-body design is a HEAD frame followed by body-chunk
 //! frames, and a request body is accepted up to the configured maximum regardless of how many
-//! chunks it took.
+//! chunks it took. That maximum is [`ClientSettings::request_body_max_bytes`], carried here from
+//! the operator's own `limits.request_body_max_bytes` — the SAME knob the served door's body limit
+//! is built from, so the two caps cannot disagree about what this gateway accepts. Both
+//! accumulators are held to it: the ingress reader refuses a declared length past it without
+//! reading the body behind it, and `write`'s pending buffer refuses to grow past it.
 //!
 //! So `write` ACCUMULATES. Each call appends to the connection's pending message, and the exchange
 //! runs when the message is complete and not before — at the declared `Content-Length`, or at the
@@ -32,6 +36,21 @@
 //! decodes a chunked one across as many reads as it arrives in, emits one body frame per chunk the
 //! sender wrote, and hands the trailer section up as its own final frame rather than folding it
 //! into the body.
+//!
+//! ## The response leaves as it arrives
+//!
+//! The answer to that exchange is a STREAM, and it is handed up as one: the HEAD frame goes out as
+//! soon as the response head is in hand, and each body chunk as hyper yields it. That is what makes
+//! anything composable over this transport — `sse` re-segments the bytes `http` gives it, so a body
+//! withheld until the upstream closed would be one `sse` could not segment until then either, and a
+//! stream that never closes would deliver nothing at all. It is also why `write` answers on the
+//! head: the caller's write deadline is a deadline on the exchange STARTING, not on an upstream
+//! choosing to stop talking.
+//!
+//! The response body carries a cap of its own, [`ClientSettings::response_body_max_bytes`]. The
+//! request cap has the served door above it; a response has nothing above it, and declares no total
+//! when it streams — so the cap is held against the bytes that actually arrive, and an upstream past
+//! it ends the frame stream rather than growing this node's heap.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -92,7 +111,29 @@ pub struct ClientSettings {
     pub upstream_http1_only: bool,
     /// Force cleartext HTTP/2 prior-knowledge.
     pub upstream_h2_prior_knowledge: bool,
+    /// The largest body this transport will accumulate, in bytes, on either side.
+    ///
+    /// This is the operator's `limits.request_body_max_bytes`, not a constant of this crate's own:
+    /// the same knob the served door's inbound body limit and the egress translate cap are built
+    /// from. Feeding all three from one value is what makes it impossible for the transport to
+    /// accept a body the door refused, or refuse one the door accepted. The default here is the
+    /// same historical 32 MiB the config layer falls back to when no limit is installed.
+    pub request_body_max_bytes: usize,
+    /// The largest RESPONSE body this transport will carry for one exchange, in bytes.
+    ///
+    /// The request cap above is the operator's own, shared with the served door. A response body
+    /// has no such layer above it: the door's inbound limit does not reach what an upstream answers
+    /// with, and the response arrives as a stream that declares no total. So the cap is held
+    /// against the bytes that actually arrive, and an upstream — or anything wearing one's address
+    /// — that answers past it ends the frame stream instead of growing this node's heap. Defaults
+    /// to the same value as the request cap.
+    pub response_body_max_bytes: usize,
 }
+
+/// The uninstalled-config fallback for [`ClientSettings::request_body_max_bytes`] — the same
+/// historical value the config layer resolves `limits.request_body_max_bytes` to when no operator
+/// limit is installed, named here so the two never drift apart silently.
+pub const DEFAULT_REQUEST_BODY_MAX_BYTES: usize = 32 * 1024 * 1024;
 
 impl Default for ClientSettings {
     fn default() -> Self {
@@ -101,6 +142,8 @@ impl Default for ClientSettings {
             pool_idle_timeout_secs: 4,
             upstream_http1_only: false,
             upstream_h2_prior_knowledge: false,
+            request_body_max_bytes: DEFAULT_REQUEST_BODY_MAX_BYTES,
+            response_body_max_bytes: DEFAULT_REQUEST_BODY_MAX_BYTES,
         }
     }
 }
@@ -135,6 +178,11 @@ enum Inner {
         /// calls as the plane chose to write it in, and the exchange runs when the message is
         /// whole — never on a prefix of one.
         pending: AsyncMutex<Vec<u8>>,
+        /// The parsed header block of that pending message, once its terminator has arrived, the
+        /// decoder reading its body, and this connection's own counts of both. Behind a box: it is
+        /// the per-message working set, and the accepted variant of this enum has no use for a
+        /// byte of it.
+        head: Box<AsyncMutex<EgressHead>>,
     },
 }
 
@@ -166,6 +214,10 @@ pub struct HttpTransport {
     conns: Mutex<HashMap<u64, Arc<Inner>>>,
     listeners: Mutex<HashMap<String, Arc<TcpListener>>>,
     egress_client: Arc<EgressClient>,
+    /// The operator's body cap, carried from [`ClientSettings`] and applied to both accumulators.
+    max_body_bytes: usize,
+    /// The cap on one exchange's response body, carried from [`ClientSettings`].
+    max_response_bytes: usize,
 }
 
 impl std::fmt::Debug for HttpTransport {
@@ -184,6 +236,8 @@ impl HttpTransport {
             conns: Mutex::new(HashMap::new()),
             listeners: Mutex::new(HashMap::new()),
             egress_client: Arc::new(build_egress_client(&settings)),
+            max_body_bytes: settings.request_body_max_bytes,
+            max_response_bytes: settings.response_body_max_bytes,
         }
     }
 
@@ -388,6 +442,7 @@ impl Transport for HttpTransport {
                 resp_tx: Mutex::new(Some(tx)),
                 resp_rx: AsyncMutex::new(rx),
                 pending: AsyncMutex::new(Vec::new()),
+                head: Box::new(AsyncMutex::new(EgressHead::default())),
             });
             self.conns.lock().expect("poisoned").insert(id, inner);
             Ok(Conn::new(Arc::new(HttpConnHandle {
@@ -402,6 +457,7 @@ impl Transport for HttpTransport {
         conn: Conn,
     ) -> Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>> {
         let inner = self.inner(conn.id());
+        let max_body_bytes = self.max_body_bytes;
         // State: the connection (once — `None` after the HEAD/body pair or the response has been
         // fully drained) and a small queue of already-computed frames not yet handed out. The
         // queue is what lets one read (ingress: HEAD + one body chunk; egress: nothing buffered,
@@ -426,7 +482,7 @@ impl Transport for HttpTransport {
                         };
                         item.map(|item| (item, (Some(inner), queue)))
                     }
-                    false => match read_ingress_message(&inner).await {
+                    false => match read_ingress_message(&inner, max_body_bytes).await {
                         Ok(Some(mut frames)) => {
                             if frames.is_empty() {
                                 return None;
@@ -467,18 +523,34 @@ impl Transport for HttpTransport {
                     client,
                     resp_tx,
                     pending,
+                    head,
                     ..
                 } => {
                     let queued = bytes.len();
                     let mut buffered = pending.lock().await;
+                    let mut cached = head.lock().await;
                     buffered.extend_from_slice(bytes.as_slice());
-                    let Some(raw) = complete_message(&buffered)? else {
+                    if buffered.len() > self.max_body_bytes {
+                        // The operator's cap, applied to the accumulator itself: an unsent message
+                        // that outgrows what this gateway accepts is refused here rather than held.
+                        buffered.clear();
+                        *cached = EgressHead::default();
+                        return Err(TransportError::Framing);
+                    }
+                    let Some(raw) = complete_message(&buffered, &mut cached, self.max_body_bytes)?
+                    else {
                         // A prefix of a message. Nothing goes on the wire until the declared length
                         // or the terminal chunk says the message is whole.
                         return Ok(queued);
                     };
                     buffered.clear();
+                    drop(cached);
                     drop(buffered);
+                    // From here to the send, every await is a point the caller can drop us at.
+                    let mut guard = ExchangeGuard {
+                        resp_tx,
+                        armed: true,
+                    };
 
                     let mut builder = http::Request::builder()
                         .method(raw.start.method_or("GET"))
@@ -509,6 +581,15 @@ impl Transport for HttpTransport {
                         resp.status().canonical_reason().unwrap_or("")
                     );
                     for (name, value) in resp.headers() {
+                        // The same two headers the request side strips, and for the same reason:
+                        // hyper de-chunked the body on the way in, and what leaves here leaves as
+                        // frames rather than as one length-declared blob. A head carrying either
+                        // would describe a framing that is not the one going up.
+                        if name.as_str().eq_ignore_ascii_case("transfer-encoding")
+                            || name.as_str().eq_ignore_ascii_case("content-length")
+                        {
+                            continue;
+                        }
                         head.push_str(name.as_str());
                         head.push_str(": ");
                         head.push_str(value.to_str().unwrap_or(""));
@@ -517,45 +598,36 @@ impl Transport for HttpTransport {
                     head.push_str("\r\n");
                     let head_bytes = head.into_bytes();
                     let head_len = head_bytes.len() as u64;
-                    let body = resp
-                        .into_body()
-                        .collect()
-                        .await
-                        .map_err(|_| TransportError::Reset)?
-                        .to_bytes();
 
+                    // The head is in hand, and it is the frame the status leg rides. This take is
+                    // the one the guard exists to stand in for, so disarm it first.
+                    guard.armed = false;
                     let tx = resp_tx.lock().expect("poisoned").take();
-                    if let Some(tx) = tx {
-                        let head_frame = Frame {
-                            direction: Direction::Inbound,
-                            stream: StreamId(0),
-                            bytes: SlabBytes::new(Arc::from(head_bytes.into_boxed_slice())),
-                            meta: FrameMeta {
-                                bytes: head_len,
-                                transport_units: None,
-                                status: Some(status_class(status)),
-                            },
-                        };
-                        let _ = tx.send(Ok((StreamId(0), head_frame)));
-                        if !body.is_empty() {
-                            let body_arc: Arc<[u8]> = Arc::from(body.to_vec().into_boxed_slice());
-                            let body_frame = Frame {
-                                direction: Direction::Inbound,
-                                stream: StreamId(0),
-                                bytes: SlabBytes::new(body_arc),
-                                meta: FrameMeta {
-                                    bytes: body.len() as u64,
-                                    transport_units: None,
-                                    // Only the HEAD frame carries the status leg: it is per-frame
-                                    // meta on the FIRST response frame (`StatusAt::FirstFrame`),
-                                    // never repeated, so a composed layer (`sse`) can tell a head
-                                    // frame from a body frame by this field alone.
-                                    status: None,
-                                },
-                            };
-                            let _ = tx.send(Ok((StreamId(0), body_frame)));
-                        }
+                    let Some(tx) = tx else {
+                        return Ok(queued);
+                    };
+                    let head_frame = Frame {
+                        direction: Direction::Inbound,
+                        stream: StreamId(0),
+                        bytes: SlabBytes::new(Arc::from(head_bytes.into_boxed_slice())),
+                        meta: FrameMeta {
+                            bytes: head_len,
+                            transport_units: None,
+                            status: Some(status_class(status)),
+                        },
+                    };
+                    if tx.send(Ok((StreamId(0), head_frame))).is_err() {
+                        return Ok(queued);
                     }
+                    // The body streams. Collecting it first would mean nothing composes over this
+                    // transport: `sse` re-segments the bytes `http` hands it, and a body that only
+                    // arrives when the upstream closes is one it can never re-segment in time — an
+                    // event stream would deliver zero frames until close, and a stream that never
+                    // closes would deliver nothing ever. So the pump runs on its own task and
+                    // `write` answers on the head, which is also what makes the caller's write
+                    // deadline a deadline on the exchange starting rather than on it finishing.
+                    let body = resp.into_body();
+                    tokio::spawn(pump_response_body(body, tx, self.max_response_bytes));
                     Ok(queued)
                 }
             }
@@ -672,39 +744,190 @@ impl Transport for HttpTransport {
     }
 }
 
+/// Drain an upstream response body into the connection's frame channel, one frame per chunk hyper
+/// yields, and end the stream when the body ends, when the receiver goes away, or when the upstream
+/// has written more than this node agreed to carry.
+///
+/// The cap is held against the bytes that ACTUALLY arrive, not against a total the peer declared: a
+/// streamed body declares none, and it is a response, so there is no accumulator one layer up
+/// holding it — the served door's request-body limit does not reach what an upstream answers with.
+/// Nothing past the cap is emitted; the stream ends with `Framing` instead.
+async fn pump_response_body(mut body: hyper::body::Incoming, tx: RespSender, max_bytes: usize) {
+    let mut carried = 0_usize;
+    while let Some(next) = body.frame().await {
+        let Ok(frame) = next else {
+            let _ = tx.send(Err(TransportError::Reset));
+            return;
+        };
+        // A trailer frame carries no body bytes; this transport's response shape is HEAD plus body
+        // chunks, so there is nothing here to hand up for one.
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        if data.is_empty() {
+            continue;
+        }
+        carried = carried.saturating_add(data.len());
+        if carried > max_bytes {
+            let _ = tx.send(Err(TransportError::Framing));
+            return;
+        }
+        let bytes: Arc<[u8]> = Arc::from(&data[..]);
+        let len = data.len() as u64;
+        let body_frame = Frame {
+            direction: Direction::Inbound,
+            stream: StreamId(0),
+            bytes: SlabBytes::new(bytes),
+            meta: FrameMeta {
+                bytes: len,
+                transport_units: None,
+                // Only the HEAD frame carries the status leg: it is per-frame meta on the FIRST
+                // response frame (`StatusAt::FirstFrame`), never repeated, so a composed layer
+                // (`sse`) can tell a head frame from a body frame by this field alone.
+                status: None,
+            },
+        };
+        if tx.send(Ok((StreamId(0), body_frame))).is_err() {
+            return;
+        }
+    }
+}
+
+/// Holds the exchange's end-of-stream promise for as long as the exchange is in flight.
+///
+/// The response sender lives in the connection until the exchange finishes and hands it the
+/// frames. If the `write` future is DROPPED in between — a timeout, a `select`, a cancelled task —
+/// nothing else ever takes that sender, so the channel stays open and `frames` waits on a receive
+/// that can never complete: an unrecoverable hang rather than a degradation. This guard takes the
+/// sender on an undisarmed drop, which closes the channel and ends the stream. A half-sent exchange
+/// is not resumable and this does not pretend otherwise; the connection just ends observably.
+struct ExchangeGuard<'a> {
+    resp_tx: &'a Mutex<Option<RespSender>>,
+    armed: bool,
+}
+
+impl Drop for ExchangeGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.resp_tx.lock().expect("poisoned").take();
+        }
+    }
+}
+
 /// A message this transport has been handed enough of to send, or `None` for a prefix of one.
 ///
 /// The three endings are the wire's own: a declared `Content-Length` reached, the terminal chunk of
 /// a chunked body seen, or a message that declares neither coding and therefore carries no body at
 /// all. A chunked message is decoded here, so what comes back always carries the body itself rather
 /// than a framing of it.
-fn complete_message(buffered: &[u8]) -> Result<Option<raw::RawMessage>, TransportError> {
-    let Some(header_end) = find_header_end(buffered) else {
-        return Ok(None);
+fn complete_message(
+    buffered: &[u8],
+    cache: &mut EgressHead,
+    max_body_bytes: usize,
+) -> Result<Option<raw::RawMessage>, TransportError> {
+    if cache.head.is_none() {
+        let Some(header_end) = find_header_end(buffered) else {
+            return Ok(None);
+        };
+        let message = raw::parse_message(&buffered[..header_end]).ok_or(TransportError::Framing)?;
+        cache.parses += 1;
+        if raw::has_transfer_encoding(&message.headers) && !raw::is_chunked(&message.headers) {
+            // A declared coding this transport cannot frame. Falling through to `Content-Length`
+            // would be answering a question the sender did not ask.
+            return Err(TransportError::Framing);
+        }
+        cache.head = Some(CachedHead {
+            end: header_end,
+            start: message.start,
+            headers: message.headers,
+        });
+    }
+    // Read what the head says before touching the cache again: the decoder lives beside it, and
+    // feeding it is a mutation of the same cell this borrow reads.
+    let (head_end, chunked, declared) = {
+        let head = cache.head.as_ref().expect("set just above");
+        (
+            head.end,
+            raw::is_chunked(&head.headers),
+            raw::content_length(&head.headers),
+        )
     };
-    let mut message = raw::parse_message(&buffered[..header_end]).ok_or(TransportError::Framing)?;
-    let rest = &buffered[header_end..];
+    let rest = &buffered[head_end..];
 
-    if raw::is_chunked(&message.headers) {
-        let mut decoder = raw::ChunkedDecoder::default();
-        decoder.feed(rest).map_err(|_| TransportError::Framing)?;
+    let (body, trailers) = if chunked {
+        // ONE decoder across the calls, fed only what arrived with this one. A fresh decoder per
+        // call re-decodes every byte received so far and re-allocates the decoded chunks each
+        // time — quadratic in the body, which for the megabyte bodies this path exists to carry is
+        // the difference between a transport and a stall. The ingress reader already reads this
+        // way; this is the same reading on the side that accumulates.
+        let decoder = cache
+            .decoder
+            .get_or_insert_with(|| Box::new(raw::ChunkedDecoder::default()));
+        let fresh = &rest[cache.fed.min(rest.len())..];
+        cache.feeds += fresh.len();
+        decoder.feed(fresh).map_err(|_| TransportError::Framing)?;
+        cache.fed = rest.len();
         if !decoder.is_done() {
             return Ok(None);
         }
-        let (chunks, trailers) = decoder.take();
-        message.body = chunks.concat();
-        // A trailer is a header that arrived late; it goes where every other header went, so
-        // nothing downstream has to know which side of the body it was written on.
-        message.headers.extend(trailers);
-        return Ok(Some(message));
-    }
+        let (chunks, trailers) = cache.decoder.take().expect("set just above").take();
+        (chunks.concat(), trailers)
+    } else {
+        let declared = declared.map_err(|()| TransportError::Framing)?.unwrap_or(0);
+        if declared > max_body_bytes {
+            return Err(TransportError::Framing);
+        }
+        if rest.len() < declared {
+            return Ok(None);
+        }
+        (rest[..declared].to_vec(), Vec::new())
+    };
 
-    let declared = raw::content_length(&message.headers).unwrap_or(0);
-    if rest.len() < declared {
-        return Ok(None);
-    }
-    message.body = rest[..declared].to_vec();
-    Ok(Some(message))
+    // Whole: the head is spent with the message it belonged to, so the next one parses its own,
+    // and the decoder that read this body is spent with it too.
+    let mut head = cache.head.take().expect("set just above");
+    cache.decoder = None;
+    cache.fed = 0;
+    // A trailer is a header that arrived late; it goes where every other header went, so
+    // nothing downstream has to know which side of the body it was written on.
+    head.headers.extend(trailers);
+    Ok(Some(raw::RawMessage {
+        start: head.start,
+        headers: head.headers,
+        body,
+    }))
+}
+
+/// The parsed header block of the message `write` is still accumulating.
+///
+/// `write` asks whether the message is whole on EVERY chunk, and the header prefix does not change
+/// between those asks. Parsing it each time allocates a fresh vector and two strings per header and
+/// throws them away — the same waste the chunked decoder was written incrementally to avoid. Held
+/// beside the pending bytes, and taken when the message completes so it can never outlive it.
+struct CachedHead {
+    end: usize,
+    start: raw::RawStartLine,
+    headers: Vec<(String, String)>,
+}
+
+/// [`CachedHead`], plus this connection's own count of how many times it has parsed one — the cell
+/// that pins the egress side to one parse per message rather than one per `write` call. Per
+/// instance rather than a crate-global counter, so a test reading it back sees only its own
+/// connection's work, never a sibling test's sharing the same binary.
+#[derive(Default)]
+struct EgressHead {
+    head: Option<CachedHead>,
+    parses: usize,
+    /// The chunked decoder this message is being decoded by, kept across `write` calls so each
+    /// call feeds only the bytes that arrived with it — the same discipline the ingress reader
+    /// keeps across reads. Behind a box because it is a per-message working set that most
+    /// connections never allocate, and inline it would be carried by every connection ever dialled.
+    decoder: Option<Box<raw::ChunkedDecoder>>,
+    /// How many bytes past the header block have already been fed to `decoder`.
+    fed: usize,
+    /// This connection's own tally of bytes fed to a decoder, per instance for the same reason
+    /// `parses` is: a test reading it back sees only its own connection's work.
+    feeds: usize,
 }
 
 /// Read one HTTP/1.1 request off an ingress connection.
@@ -717,14 +940,16 @@ fn complete_message(buffered: &[u8]) -> Result<Option<raw::RawMessage>, Transpor
 /// wire form, which is where a reader that folded it into the body would have lost it.
 async fn read_ingress_message(
     inner: &Inner,
+    max_body_bytes: usize,
 ) -> Result<Option<Vec<(StreamId, Frame)>>, TransportError> {
     let Inner::Ingress { read, leftover, .. } = inner else {
         return Err(TransportError::Framing);
     };
     let mut buf = leftover.lock().await;
     let mut r = read.lock().await;
+    let mut scan = HeaderScan::default();
     let header_end = loop {
-        if let Some(pos) = find_header_end(&buf) {
+        if let Some(pos) = scan.find(&buf) {
             break pos;
         }
         if buf.len() >= READ_CHUNK_BYTES {
@@ -742,22 +967,47 @@ async fn read_ingress_message(
     };
 
     let header_bytes = buf[..header_end].to_vec();
+    // A block this reader cannot parse is a message it cannot read. Taking it for an empty header
+    // list would invent a framing — declared length zero, no body — out of a parse failure, while
+    // the same unreadable bytes still went up as the HEAD frame.
     let headers = raw::parse_message(&header_bytes)
-        .map(|m| m.headers)
-        .unwrap_or_default();
+        .ok_or(TransportError::Framing)?
+        .headers;
     let mut rest = buf[header_end..].to_vec();
     buf.clear();
     drop(buf);
 
+    if raw::has_transfer_encoding(&headers) {
+        if !raw::is_chunked(&headers) {
+            // A declared coding this transport cannot frame. Falling through to `Content-Length`
+            // would be answering a question the sender did not ask.
+            return Err(TransportError::Framing);
+        }
+        if raw::header(&headers, "content-length").is_some() {
+            // Two headers describing two framings of the same bytes. The coding wins the reading,
+            // but this reader hands the VERBATIM header prefix up as the HEAD frame, so forwarding
+            // it would hand the next reader a length the bytes do not have — the smuggling shape
+            // itself. Refused rather than forwarded.
+            return Err(TransportError::Framing);
+        }
+    }
+
     let (bodies, trailers) = if raw::is_chunked(&headers) {
         let mut decoder = raw::ChunkedDecoder::default();
+        // A chunked sender declares no total, so the cap is held against the bytes that have
+        // actually arrived rather than against a number the peer supplied.
+        let mut read_so_far = rest.len();
         decoder.feed(&rest).map_err(|_| TransportError::Framing)?;
         while !decoder.is_done() {
+            if read_so_far > max_body_bytes {
+                return Err(TransportError::Framing);
+            }
             let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
             let n = r
                 .read(&mut chunk)
                 .await
                 .map_err(|e| HttpTransport::map_io_err(&e))?;
+            read_so_far += n;
             if n == 0 {
                 // The peer stopped before the terminal chunk: the declared framing did not happen,
                 // and guessing where the body ended is the one thing a transport must not do.
@@ -769,7 +1019,14 @@ async fn read_ingress_message(
         }
         decoder.take()
     } else {
-        let declared = raw::content_length(&headers).unwrap_or(0);
+        let declared = raw::content_length(&headers)
+            .map_err(|()| TransportError::Framing)?
+            .unwrap_or(0);
+        if declared > max_body_bytes {
+            // Refused on the declaration, before a byte of the body behind it is read: reading a
+            // megabyte only to discard it is the resource cost the cap exists to avoid.
+            return Err(TransportError::Framing);
+        }
         while rest.len() < declared {
             let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
             let n = r
@@ -777,7 +1034,10 @@ async fn read_ingress_message(
                 .await
                 .map_err(|e| HttpTransport::map_io_err(&e))?;
             if n == 0 {
-                break;
+                // The peer stopped before the length it declared: the same answer the chunked
+                // branch gives a peer that stops before the terminal chunk. A body short of its
+                // declared length is a message that never arrived, not a smaller one that did.
+                return Err(TransportError::Framing);
             }
             rest.extend_from_slice(&chunk[..n]);
         }
@@ -827,8 +1087,57 @@ fn body_frame(bytes: Vec<u8>) -> (StreamId, Frame) {
     )
 }
 
+/// The offset just past the blank line that ends a header block, searching from `start`, alongside
+/// how many bytes of `buf` this call examined — the pair a caller uses to pin the scan's own
+/// complexity class without a process-global counter racing every other test in the binary.
+///
+/// The search JUMPS between line feeds rather than stepping a four-byte window over every position;
+/// the terminator's last byte is one, so no candidate is skipped. `start` may sit anywhere in the
+/// buffer: the match looks BACKWARD from the line feed it found, so a caller resuming a scan never
+/// has to have kept the three bytes before it in view.
+fn find_header_end_from(buf: &[u8], start: usize) -> (Option<usize>, usize) {
+    let mut i = start.min(buf.len());
+    let scanned = buf.len() - i;
+    let found = loop {
+        let Some(rel) = memchr::memchr(b'\n', &buf[i..]) else {
+            break None;
+        };
+        let at = i + rel;
+        if at >= 3 && &buf[at - 3..=at] == b"\r\n\r\n" {
+            break Some(at + 1);
+        }
+        i = at + 1;
+    };
+    (found, scanned)
+}
+
 fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
+    find_header_end_from(buf, 0).0
+}
+
+/// What the header scan remembers between reads: how much of the buffer has already been proven
+/// not to hold the terminator, and how many bytes it has examined in total.
+///
+/// Without the cursor the reader rescans the whole growing buffer on every read, which for a header
+/// dribbled a byte at a time is quadratic in the header size. The cursor is rewound by three
+/// bytes, because that is the most of a four-byte terminator a previous read can have left behind.
+/// `scanned` is this instance's own tally, not a crate-global one, so a test reading it back sees
+/// only the work its own scan did — never a sibling test's, running in the same binary.
+#[derive(Default)]
+struct HeaderScan {
+    proven: usize,
+    scanned: usize,
+}
+
+impl HeaderScan {
+    fn find(&mut self, buf: &[u8]) -> Option<usize> {
+        let (found, scanned) = find_header_end_from(buf, self.proven);
+        self.scanned += scanned;
+        if found.is_none() {
+            self.proven = buf.len().saturating_sub(3);
+        }
+        found
+    }
 }
 
 #[cfg(test)]

@@ -110,7 +110,14 @@ fn exclusion_rule_matches_known_directories() {
 #[test]
 fn exclusion_rule_does_not_hide_ordinary_source_dirs() {
     for kept in [
-        "src", "config_validate", "oauth_as", "mcp", "a2a", "binary", "testing", "contest",
+        "src",
+        "config_validate",
+        "oauth_as",
+        "mcp",
+        "a2a",
+        "binary",
+        "testing",
+        "contest",
     ] {
         assert!(
             !is_excluded_source_dir(kept),

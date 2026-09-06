@@ -50,7 +50,9 @@ impl ReplayEncoder<MintedKeyOutcome> for FakeReplayEncoder {
     }
 }
 
-fn make_verbs<G: Governance>(gov: G) -> Verbs<G, FakeStore, CountingNonceSource, FakeReplayEncoder> {
+fn make_verbs<G: Governance>(
+    gov: G,
+) -> Verbs<G, FakeStore, CountingNonceSource, FakeReplayEncoder> {
     Verbs::new(
         gov,
         FakeStore,
@@ -65,6 +67,12 @@ struct FakeGovernance {
     keys: Mutex<HashMap<String, bool>>, // id -> tombstoned
     next_id: AtomicU64,
     new_verb_calls: Mutex<Vec<KernelVerb>>,
+    /// What every mutating governance call should fail with, if anything.
+    ///
+    /// Without this the fail-closed arm of `GovernanceError::into_refusal` is unreachable from any
+    /// test: a double that can only succeed proves the happy path and nothing else, and a store that
+    /// went away is the case the mapping exists for.
+    fails_with: Mutex<Option<GovernanceError>>,
 }
 
 impl FakeGovernance {
@@ -74,6 +82,24 @@ impl FakeGovernance {
             keys: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             new_verb_calls: Mutex::new(Vec::new()),
+            fails_with: Mutex::new(None),
+        }
+    }
+
+    /// Every mutating call refuses with this error until it is cleared.
+    fn failing_with(self, error: GovernanceError) -> Self {
+        *self.fails_with.lock().unwrap() = Some(error);
+        self
+    }
+
+    /// The injected failure, taken fresh for each call so a double can refuse more than once.
+    fn injected(&self) -> Option<GovernanceError> {
+        match *self.fails_with.lock().unwrap() {
+            None => None,
+            Some(GovernanceError::NotFound) => Some(GovernanceError::NotFound),
+            Some(GovernanceError::Conflict) => Some(GovernanceError::Conflict),
+            Some(GovernanceError::Validation) => Some(GovernanceError::Validation),
+            Some(GovernanceError::Store) => Some(GovernanceError::Store),
         }
     }
 
@@ -98,14 +124,29 @@ impl Governance for FakeGovernance {
     fn actual_parent(&self, name: &str) -> Option<String> {
         self.groups.lock().unwrap().get(name).cloned().flatten()
     }
-    fn provision_group(&self, _admin: &AdminToken, group: &str, parent: &str) -> Result<(), GovernanceError> {
+    fn provision_group(
+        &self,
+        _admin: &AdminToken,
+        group: &str,
+        parent: &str,
+    ) -> Result<(), GovernanceError> {
+        if let Some(e) = self.injected() {
+            return Err(e);
+        }
         self.groups
             .lock()
             .unwrap()
             .insert(group.to_string(), Some(parent.to_string()));
         Ok(())
     }
-    fn mint_key(&self, _admin: &AdminToken, _group: Option<&str>) -> Result<MintedKey, GovernanceError> {
+    fn mint_key(
+        &self,
+        _admin: &AdminToken,
+        _group: Option<&str>,
+    ) -> Result<MintedKey, GovernanceError> {
+        if let Some(e) = self.injected() {
+            return Err(e);
+        }
         let id = format!("key-{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         self.keys.lock().unwrap().insert(id.clone(), false);
         Ok(MintedKey {
@@ -115,6 +156,9 @@ impl Governance for FakeGovernance {
         })
     }
     fn rotate_key(&self, _admin: &AdminToken, id: &str) -> Result<RotateOutcome, GovernanceError> {
+        if let Some(e) = self.injected() {
+            return Err(e);
+        }
         let keys = self.keys.lock().unwrap();
         match keys.get(id) {
             None => Ok(RotateOutcome::NotFound),
@@ -132,6 +176,9 @@ impl Governance for FakeGovernance {
         _admin: &AdminToken,
         _request: &[u8],
     ) -> Result<Vec<u8>, GovernanceError> {
+        if let Some(e) = self.injected() {
+            return Err(e);
+        }
         Ok(b"ok".to_vec())
     }
     fn execute_new_verb(
@@ -140,6 +187,9 @@ impl Governance for FakeGovernance {
         _admin: &AdminToken,
         _request: &[u8],
     ) -> Result<Vec<u8>, GovernanceError> {
+        if let Some(e) = self.injected() {
+            return Err(e);
+        }
         self.new_verb_calls.lock().unwrap().push(verb);
         Ok(b"ok".to_vec())
     }
@@ -159,7 +209,11 @@ impl Store for FakeStore {
     fn replay_new_verb(&self, _key: &(String, String)) -> Result<Option<Vec<u8>>, StoreError> {
         Ok(None)
     }
-    fn commit_new_verb_replay(&self, _key: &(String, String), _response: &[u8]) -> Result<(), StoreError> {
+    fn commit_new_verb_replay(
+        &self,
+        _key: &(String, String),
+        _response: &[u8],
+    ) -> Result<(), StoreError> {
         Ok(())
     }
 }
@@ -223,7 +277,9 @@ fn mint_under_an_existing_unrelated_parent_succeeds_existence_only() {
             Some("some-existing-team"),
         )
         .unwrap();
-    let outcome = out.minted_outcome().expect("first call must mint, not replay");
+    let outcome = out
+        .minted_outcome()
+        .expect("first call must mint, not replay");
     assert!(outcome.id.starts_with("key-"));
 }
 
@@ -275,10 +331,28 @@ fn without_an_idempotency_key_every_call_mints_a_new_key() {
     let verbs = make_verbs(gov);
     let admin = admin();
     let first = verbs
-        .create_key(&admin, "alice", VerbScope::Full, 1_000, UnitKey::new(1), None, None, None)
+        .create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            1_000,
+            UnitKey::new(1),
+            None,
+            None,
+            None,
+        )
         .unwrap();
     let second = verbs
-        .create_key(&admin, "alice", VerbScope::Full, 1_001, UnitKey::new(1), None, None, None)
+        .create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            1_001,
+            UnitKey::new(1),
+            None,
+            None,
+            None,
+        )
         .unwrap();
     assert!(!first.is_replay());
     assert!(!second.is_replay());
@@ -335,18 +409,26 @@ fn replay_is_byte_identical_and_never_a_fresh_mint() {
 /// could not guarantee.
 #[test]
 fn two_mints_with_a_real_nonce_source_produce_different_nonces() {
-    struct RecordingNonceSource(std::sync::Arc<Mutex<Vec<[u8; 16]>>>);
+    struct RecordingNonceSource {
+        seen: std::sync::Arc<Mutex<Vec<[u8; 16]>>>,
+        draws: AtomicU64,
+    }
     impl NonceSource for RecordingNonceSource {
         fn fill(&self, buf: &mut [u8; 16]) {
-            // Stands in for the secret plugin's CSPRNG: varies with wall-clock time down to the
-            // nanosecond, so it is not a function of the unit key or the secret's shape (the
-            // property that made the deleted placeholder predictable).
+            // Stands in for the secret plugin's CSPRNG: it varies with wall-clock time, and it
+            // varies with a per-source counter as well. The counter is what makes the variation a
+            // property of the SOURCE rather than of the host's clock granularity — on a platform
+            // whose clock ticks more coarsely than the gap between two mints, a clock-only source
+            // would hand out the same nonce twice and fail this test for a reason that has nothing
+            // to do with what it is proving. Neither term is a function of the unit key or the
+            // secret's shape, which is the property that made the deleted placeholder predictable.
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")
                 .as_nanos();
-            *buf = nanos.to_be_bytes();
-            self.0.lock().unwrap().push(*buf);
+            let draw = u128::from(self.draws.fetch_add(1, Ordering::SeqCst));
+            *buf = (nanos ^ draw.rotate_left(64)).to_be_bytes();
+            self.seen.lock().unwrap().push(*buf);
         }
     }
 
@@ -355,7 +437,10 @@ fn two_mints_with_a_real_nonce_source_produce_different_nonces() {
     let verbs = Verbs::new(
         gov,
         FakeStore,
-        RecordingNonceSource(seen.clone()),
+        RecordingNonceSource {
+            seen: seen.clone(),
+            draws: AtomicU64::new(0),
+        },
         FakeReplayEncoder,
         CONFIG_CLASS_RULES,
     );
@@ -363,15 +448,39 @@ fn two_mints_with_a_real_nonce_source_produce_different_nonces() {
     // Two calls with DISTINCT idempotency keys (or none), each therefore minting fresh, and each
     // therefore calling the nonce source exactly once.
     verbs
-        .create_key(&admin, "alice", VerbScope::Full, 1_000, UnitKey::new(1), None, None, None)
+        .create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            1_000,
+            UnitKey::new(1),
+            None,
+            None,
+            None,
+        )
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_micros(1));
     verbs
-        .create_key(&admin, "alice", VerbScope::Full, 1_001, UnitKey::new(1), None, None, None)
+        .create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            1_001,
+            UnitKey::new(1),
+            None,
+            None,
+            None,
+        )
         .unwrap();
     let seen = seen.lock().unwrap();
-    assert_eq!(seen.len(), 2, "each fresh mint calls the nonce source exactly once");
-    assert_ne!(seen[0], seen[1], "two mints with a real source must not share a nonce");
+    assert_eq!(
+        seen.len(),
+        2,
+        "each fresh mint calls the nonce source exactly once"
+    );
+    assert_ne!(
+        seen[0], seen[1],
+        "two mints with a real source must not share a nonce"
+    );
 }
 
 #[test]
@@ -379,7 +488,15 @@ fn rotate_unknown_id_is_not_found() {
     let verbs = make_verbs(FakeGovernance::new());
     let admin = admin();
     let err = verbs
-        .rotate_key(&admin, "alice", VerbScope::Full, 0, UnitKey::new(1), None, "no-such-key")
+        .rotate_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            UnitKey::new(1),
+            None,
+            "no-such-key",
+        )
         .unwrap_err();
     assert_eq!(err.reason, crate::refusal::ReasonCode::NotFound);
 }
@@ -390,7 +507,15 @@ fn rotate_tombstoned_key_is_refused_as_conflict() {
     let verbs = make_verbs(gov);
     let admin = admin();
     let err = verbs
-        .rotate_key(&admin, "alice", VerbScope::Full, 0, UnitKey::new(1), None, "dead-key")
+        .rotate_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            UnitKey::new(1),
+            None,
+            "dead-key",
+        )
         .unwrap_err();
     assert_eq!(err.reason, crate::refusal::ReasonCode::Conflict);
 }
@@ -423,7 +548,10 @@ fn rotate_scoped_idempotency_key_replays_and_does_not_collide_with_create() {
         )
         .unwrap();
     assert!(!first.is_replay());
-    assert!(second.is_replay(), "the second call inside the window must replay");
+    assert!(
+        second.is_replay(),
+        "the second call inside the window must replay"
+    );
     assert_eq!(second.body(), first.body());
 }
 
@@ -473,6 +601,414 @@ fn a_new_verb_admitted_by_posture_reaches_governance() {
     assert_eq!(out, b"ok");
 }
 
+/// A NEW VERB WITH NO POSTURE IS A REFUSAL, NOT A PANIC.
+///
+/// The posture is resolved by the caller and arrives as an `Option`, so "a new verb always has
+/// one" is a claim about a call site rather than a fact this crate can see. A miswired caller, or a
+/// verb newly added to the posture-gated set on one side only, hands `None` past an `admit` that
+/// legitimately passed — and an unwrap there turns an admin request into a downed process. The
+/// answer is the one every other unresolvable precondition gets: refuse the request.
+#[test]
+fn a_new_verb_with_no_resolved_posture_is_refused_rather_than_panicking() {
+    let verbs = make_verbs(FakeGovernance::new());
+    let admin = admin();
+    let err = verbs
+        .execute(
+            KernelVerb::SetOverdraftCeiling,
+            &admin,
+            "alice",
+            // The scope is granted, so `admit` passes and the posture branch is genuinely reached.
+            VerbScope::Full,
+            0,
+            None,
+            ApprovalState::NotYetApproved,
+            b"{}",
+        )
+        .expect_err("a new verb with no posture must refuse");
+    assert_eq!(err.reason, crate::refusal::ReasonCode::Validation);
+}
+
+/// A governance whose mint parks inside the call, so a second caller can be observed arriving while
+/// the first one's idempotency reservation is genuinely live.
+///
+/// The in-flight refusal is a fact about two callers overlapping, and there is no other way to hold
+/// a reservation open: a single-threaded test only ever sees the reservation already committed or
+/// already cleared.
+struct GatedGovernance {
+    inner: FakeGovernance,
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+    /// How many mints actually reached governance, so a refused retry can be shown to have minted
+    /// nothing.
+    mints: std::sync::Arc<AtomicU64>,
+    /// Only the FIRST caller parks. A second one that got this far was not refused, and it must say
+    /// so with an assertion rather than by deadlocking the test.
+    gate_spent: std::sync::atomic::AtomicBool,
+}
+
+impl GatedGovernance {
+    fn park(&self) {
+        if self
+            .gate_spent
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let _ = self.entered.send(());
+        let _ = self.release.lock().unwrap().recv();
+    }
+}
+
+impl Governance for GatedGovernance {
+    fn group_exists(&self, name: &str) -> bool {
+        self.inner.group_exists(name)
+    }
+    fn actual_parent(&self, name: &str) -> Option<String> {
+        self.inner.actual_parent(name)
+    }
+    fn provision_group(
+        &self,
+        admin: &AdminToken,
+        group: &str,
+        parent: &str,
+    ) -> Result<(), GovernanceError> {
+        self.inner.provision_group(admin, group, parent)
+    }
+    fn mint_key(
+        &self,
+        admin: &AdminToken,
+        group: Option<&str>,
+    ) -> Result<MintedKey, GovernanceError> {
+        self.park();
+        self.mints.fetch_add(1, Ordering::SeqCst);
+        self.inner.mint_key(admin, group)
+    }
+    fn rotate_key(&self, admin: &AdminToken, id: &str) -> Result<RotateOutcome, GovernanceError> {
+        self.park();
+        self.inner.rotate_key(admin, id)
+    }
+    fn execute_legacy(
+        &self,
+        verb: KernelVerb,
+        admin: &AdminToken,
+        request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError> {
+        self.inner.execute_legacy(verb, admin, request)
+    }
+    fn execute_new_verb(
+        &self,
+        verb: KernelVerb,
+        admin: &AdminToken,
+        request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError> {
+        self.inner.execute_new_verb(verb, admin, request)
+    }
+}
+
+/// A retry that arrives while the first call is still running is REFUSED, not served.
+///
+/// The alternative is minting a second admin key for one request — a credential the client never
+/// asked for and will never see. Asserted at the API level, through `Verbs`, because that is where
+/// the refusal is client-visible: a regression that collapsed `Probe::InFlight` into `Probe::NoKey`
+/// passes every test that only drives the bare cache.
+#[test]
+fn a_create_that_arrives_while_the_first_is_in_flight_is_refused_not_minted() {
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let mints = std::sync::Arc::new(AtomicU64::new(0));
+    let verbs = make_verbs(GatedGovernance {
+        inner: FakeGovernance::new(),
+        entered: entered_tx,
+        release: Mutex::new(release_rx),
+        mints: mints.clone(),
+        gate_spent: std::sync::atomic::AtomicBool::new(false),
+    });
+
+    // Everything the run learns is collected first and asserted after the parked thread has been
+    // let go: an assertion that fired inside the scope would strand the first call and hang.
+    let (retry, first) = std::thread::scope(|scope| {
+        let held = scope.spawn(|| {
+            let admin = admin();
+            verbs.create_key(
+                &admin,
+                "alice",
+                VerbScope::Full,
+                1_000,
+                UnitKey::new(1),
+                Some("dedupe-me"),
+                None,
+                None,
+            )
+        });
+
+        // The first call is now inside governance with its reservation live.
+        entered_rx.recv().expect("the first call reached the mint");
+        let admin = admin();
+        let retry = verbs.create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            1_001,
+            UnitKey::new(1),
+            Some("dedupe-me"),
+            None,
+            None,
+        );
+
+        release_tx.send(()).expect("let the first call finish");
+        (retry, held.join().expect("the first call did not panic"))
+    });
+
+    let Err(err) = retry else {
+        panic!("a retry inside the first call's window must be refused, not served");
+    };
+    assert_eq!(err.step, crate::refusal::RefusalStep::Admit);
+    assert_eq!(
+        err.reason,
+        crate::refusal::ReasonCode::IdempotencyInFlight,
+        "the client-visible reason for an overlapping retry"
+    );
+
+    let first = first.expect("the first call succeeds once it is let go");
+    assert!(
+        first.minted_outcome().is_some(),
+        "exactly one key was minted"
+    );
+    assert_eq!(
+        mints.load(Ordering::SeqCst),
+        1,
+        "the refused retry must not have reached governance at all"
+    );
+}
+
+/// A rotate retry that overlaps its first call is refused the same way, on the rotate-scoped key.
+#[test]
+fn a_rotate_that_arrives_while_the_first_is_in_flight_is_refused() {
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let verbs = make_verbs(GatedGovernance {
+        inner: FakeGovernance::new().with_key("k1", false),
+        entered: entered_tx,
+        release: Mutex::new(release_rx),
+        mints: std::sync::Arc::new(AtomicU64::new(0)),
+        gate_spent: std::sync::atomic::AtomicBool::new(false),
+    });
+
+    let (retry, first) = std::thread::scope(|scope| {
+        let held = scope.spawn(|| {
+            let admin = admin();
+            verbs.rotate_key(
+                &admin,
+                "alice",
+                VerbScope::Full,
+                1_000,
+                UnitKey::new(1),
+                Some("dedupe-me"),
+                "k1",
+            )
+        });
+
+        entered_rx
+            .recv()
+            .expect("the first call reached the rotate");
+        let admin = admin();
+        let retry = verbs.rotate_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            1_001,
+            UnitKey::new(1),
+            Some("dedupe-me"),
+            "k1",
+        );
+
+        release_tx.send(()).expect("let the first call finish");
+        (retry, held.join().expect("the first call did not panic"))
+    });
+
+    let Err(err) = retry else {
+        panic!("a retry inside the first call's window must be refused, not served");
+    };
+    assert_eq!(err.step, crate::refusal::RefusalStep::Admit);
+    assert_eq!(err.reason, crate::refusal::ReasonCode::IdempotencyInFlight);
+    first.expect("the rotate succeeds once it is let go");
+}
+
+/// A store that has gone away refuses, on every governance call, with the reason the mapping names.
+///
+/// This is the fail-closed arm: it never echoes the cause (several of these calls carry secrets)
+/// and it never proceeds as if the call had succeeded. Nothing exercised it end to end before,
+/// because the only governance double in this crate could not fail.
+#[test]
+fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
+    let admin = admin();
+
+    // Mint: the group plan is fine, the store underneath is not.
+    let verbs = make_verbs(FakeGovernance::new().failing_with(GovernanceError::Store));
+    let err = verbs
+        .create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            UnitKey::new(1),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
+    assert_eq!(err.step, crate::refusal::RefusalStep::Verify);
+
+    // Provisioning a leaf group on the way to a mint fails the same way.
+    let verbs = make_verbs(
+        FakeGovernance::new()
+            .with_group("team", None)
+            .failing_with(GovernanceError::Store),
+    );
+    let err = verbs
+        .create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            UnitKey::new(1),
+            None,
+            Some("leaf"),
+            Some("team"),
+        )
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
+
+    // Rotate.
+    let verbs = make_verbs(
+        FakeGovernance::new()
+            .with_key("k1", false)
+            .failing_with(GovernanceError::Store),
+    );
+    let err = verbs
+        .rotate_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            UnitKey::new(1),
+            None,
+            "k1",
+        )
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
+
+    // A legacy verb, through the catch-all.
+    let verbs = make_verbs(FakeGovernance::new().failing_with(GovernanceError::Store));
+    let err = verbs
+        .execute(
+            KernelVerb::PostGroups,
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            None,
+            ApprovalState::NotYetApproved,
+            b"{}",
+        )
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
+
+    // And a new 1.6.0 verb, once posture has already admitted it.
+    let verbs = make_verbs(FakeGovernance::new().failing_with(GovernanceError::Store));
+    let err = verbs
+        .execute(
+            KernelVerb::SetOverdraftCeiling,
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            Some(PostureCtx {
+                operator: OperatorState::Set,
+                dual_control: DualControl::Single,
+            }),
+            ApprovalState::NotYetApproved,
+            b"{}",
+        )
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
+}
+
+/// A refused mint leaves nothing behind: no key, and no idempotency entry that would make the
+/// client's retry replay a failure it never got an answer for.
+#[test]
+fn a_store_failure_mid_mint_clears_the_reservation_rather_than_committing_it() {
+    let admin = admin();
+    let verbs = make_verbs(FakeGovernance::new().failing_with(GovernanceError::Store));
+
+    let err = verbs
+        .create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            1_000,
+            UnitKey::new(1),
+            Some("dedupe-me"),
+            None,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
+
+    // The store comes back; the same idempotency key is a FRESH attempt, not a replayed refusal.
+    let verbs = make_verbs(FakeGovernance::new());
+    let out = verbs
+        .create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            1_010,
+            UnitKey::new(1),
+            Some("dedupe-me"),
+            None,
+            None,
+        )
+        .expect("a retry after the store recovers mints");
+    assert!(out.minted_outcome().is_some());
+}
+
+/// The other three governance errors map to their own reasons, so `StoreError` is not a catch-all
+/// that would hide a validation mistake behind an infrastructure one.
+#[test]
+fn the_other_governance_errors_keep_their_own_reasons() {
+    let admin = admin();
+    for (error, expected) in [
+        (
+            GovernanceError::NotFound,
+            crate::refusal::ReasonCode::NotFound,
+        ),
+        (
+            GovernanceError::Conflict,
+            crate::refusal::ReasonCode::Conflict,
+        ),
+        (
+            GovernanceError::Validation,
+            crate::refusal::ReasonCode::Validation,
+        ),
+    ] {
+        let verbs = make_verbs(FakeGovernance::new().failing_with(error));
+        let err = verbs
+            .create_key(
+                &admin,
+                "alice",
+                VerbScope::Full,
+                0,
+                UnitKey::new(1),
+                None,
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(err.reason, expected);
+    }
+}
+
 #[test]
 fn rate_limit_is_enforced_across_execute_calls() {
     let verbs = make_verbs(FakeGovernance::new());
@@ -504,4 +1040,238 @@ fn rate_limit_is_enforced_across_execute_calls() {
         )
         .unwrap_err();
     assert_eq!(err.reason, crate::refusal::ReasonCode::RateLimited);
+}
+
+// ── the five 1.6.0 ledger views ─────────────────────────────────────────────────────────────────
+
+/// Which of the governance seam's three execution methods each verb reached.
+///
+/// Shared with the test rather than owned by the seam, because `Verbs` takes its governance by
+/// value: the log has to outlive the executor for the test to read it. Which method a verb reaches
+/// is the whole of what this crate decides about a ledger view, so it is what these tests measure.
+type SeamLog = std::sync::Arc<Mutex<Vec<(KernelVerb, &'static str)>>>;
+
+struct RoutingGovernance(SeamLog);
+
+impl Governance for RoutingGovernance {
+    fn group_exists(&self, _name: &str) -> bool {
+        true
+    }
+    fn actual_parent(&self, _name: &str) -> Option<String> {
+        None
+    }
+    fn provision_group(
+        &self,
+        _admin: &AdminToken,
+        _group: &str,
+        _parent: &str,
+    ) -> Result<(), GovernanceError> {
+        Ok(())
+    }
+    fn mint_key(
+        &self,
+        _admin: &AdminToken,
+        _group: Option<&str>,
+    ) -> Result<MintedKey, GovernanceError> {
+        Err(GovernanceError::Validation)
+    }
+    fn rotate_key(&self, _admin: &AdminToken, _id: &str) -> Result<RotateOutcome, GovernanceError> {
+        Err(GovernanceError::Validation)
+    }
+    fn execute_legacy(
+        &self,
+        verb: KernelVerb,
+        _admin: &AdminToken,
+        _request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError> {
+        self.0.lock().unwrap().push((verb, "legacy"));
+        Ok(b"legacy".to_vec())
+    }
+    fn execute_new_verb(
+        &self,
+        verb: KernelVerb,
+        _admin: &AdminToken,
+        _request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError> {
+        self.0.lock().unwrap().push((verb, "new"));
+        Ok(b"new".to_vec())
+    }
+    fn execute_ledger_read(
+        &self,
+        verb: KernelVerb,
+        _admin: &AdminToken,
+        _request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError> {
+        self.0.lock().unwrap().push((verb, "ledger"));
+        Ok(b"ledger".to_vec())
+    }
+}
+
+/// A ledger view reaches the read seam, and reaches it under the posture that refuses every
+/// mutation.
+///
+/// The posture is the part that matters. `operator: unset` with `dual_control: required` is the
+/// state a fleet is in before its ceremony has run, and under it the 17 money-governance verbs are
+/// refused outright. A read answers anyway — there is nothing about looking at a figure for a
+/// maker-checker step to interpose on — and the control below is one of those 17 being refused on
+/// the same executor, so the green is the views being exempt rather than the posture check being
+/// unwired.
+#[test]
+fn a_ledger_view_reaches_the_read_seam_under_a_posture_that_refuses_every_mutation() {
+    let admin = admin();
+    let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
+    let posture = Some(PostureCtx {
+        operator: OperatorState::Unset,
+        dual_control: DualControl::Required,
+    });
+
+    for verb in crate::verb::LEDGER_VERBS {
+        let body = verbs
+            .execute(
+                *verb,
+                &admin,
+                "alice",
+                VerbScope::ReadOnly,
+                0,
+                posture,
+                ApprovalState::NotYetApproved,
+                b"",
+            )
+            .unwrap_or_else(|e| panic!("{verb:?} was refused: {e:?}"));
+        assert_eq!(body, b"ledger", "{verb:?} did not reach the read seam");
+    }
+
+    let refused = verbs
+        .execute(
+            KernelVerb::Adjust,
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            posture,
+            ApprovalState::NotYetApproved,
+            b"",
+        )
+        .unwrap_err();
+    assert_eq!(refused.reason, crate::refusal::ReasonCode::OperatorUnset);
+
+    let reached = log.lock().unwrap().clone();
+    assert!(
+        reached.iter().all(|(_, seam)| *seam == "ledger"),
+        "a ledger view reached a seam that is not the read one: {reached:?}"
+    );
+    assert_eq!(reached.len(), crate::verb::LEDGER_VERBS.len());
+}
+
+/// A view asks for exactly what the legacy `/usage` read asks for, and no more.
+#[test]
+fn a_ledger_view_requires_what_the_legacy_usage_read_requires() {
+    for verb in crate::verb::LEDGER_VERBS {
+        assert_eq!(
+            crate::verbs::required_scope(*verb),
+            crate::verbs::required_scope(KernelVerb::GetUsage),
+            "{verb:?} does not require what /usage requires"
+        );
+        assert_eq!(crate::verbs::required_scope(*verb), VerbScope::ReadOnly);
+    }
+}
+
+/// A view never spends a mutation slot.
+///
+/// The failure this pins is quiet and expensive: a view whose class fell through to `Crud` would
+/// consume one of the mutations a minute an operator is allowed, so a dashboard polling four
+/// balances would exhaust the budget the operator needed to change a config with — and the refusal
+/// would name the config change, not the polling.
+#[test]
+fn a_ledger_view_never_spends_a_mutation_slot() {
+    for verb in crate::verb::LEDGER_VERBS {
+        assert_eq!(
+            crate::rate::MutationClass::for_verb(*verb, CONFIG_CLASS_RULES),
+            crate::rate::MutationClass::Forbidden,
+            "{verb:?} is classified as a mutation"
+        );
+    }
+    // The control: a verb that IS a mutation still classifies as one, so the green above is the
+    // views being excluded rather than the classifier answering `Forbidden` to everything.
+    assert_ne!(
+        crate::rate::MutationClass::for_verb(KernelVerb::Adjust, CONFIG_CLASS_RULES),
+        crate::rate::MutationClass::Forbidden
+    );
+}
+
+/// An integrator who has bound no ledger serves nothing, and says so.
+///
+/// The default is what makes this addition additive: a `Governance` implementation written before
+/// the views existed compiles unchanged and answers `NotFound` — which is true, because it has no
+/// ledger behind it — rather than inventing zeros that would read as a deployment whose books
+/// balance.
+#[test]
+fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
+    struct NoLedger;
+    impl Governance for NoLedger {
+        fn group_exists(&self, _name: &str) -> bool {
+            true
+        }
+        fn actual_parent(&self, _name: &str) -> Option<String> {
+            None
+        }
+        fn provision_group(
+            &self,
+            _admin: &AdminToken,
+            _group: &str,
+            _parent: &str,
+        ) -> Result<(), GovernanceError> {
+            Ok(())
+        }
+        fn mint_key(
+            &self,
+            _admin: &AdminToken,
+            _group: Option<&str>,
+        ) -> Result<MintedKey, GovernanceError> {
+            Err(GovernanceError::Validation)
+        }
+        fn rotate_key(
+            &self,
+            _admin: &AdminToken,
+            _id: &str,
+        ) -> Result<RotateOutcome, GovernanceError> {
+            Err(GovernanceError::Validation)
+        }
+        fn execute_legacy(
+            &self,
+            _verb: KernelVerb,
+            _admin: &AdminToken,
+            _request: &[u8],
+        ) -> Result<Vec<u8>, GovernanceError> {
+            Ok(Vec::new())
+        }
+        fn execute_new_verb(
+            &self,
+            _verb: KernelVerb,
+            _admin: &AdminToken,
+            _request: &[u8],
+        ) -> Result<Vec<u8>, GovernanceError> {
+            Ok(Vec::new())
+        }
+        // `execute_ledger_read` is DELIBERATELY not written here. That absence is the test.
+    }
+
+    let admin = admin();
+    let verbs = make_verbs(NoLedger);
+    for verb in crate::verb::LEDGER_VERBS {
+        let err = verbs
+            .execute(
+                *verb,
+                &admin,
+                "alice",
+                VerbScope::ReadOnly,
+                0,
+                None,
+                ApprovalState::NotYetApproved,
+                b"",
+            )
+            .unwrap_err();
+        assert_eq!(err.reason, crate::refusal::ReasonCode::NotFound);
+    }
 }

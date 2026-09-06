@@ -4,7 +4,7 @@
 //! The Anthropic (Messages API) dialect — one module of the `busbar-llm` protocol crate.
 //!
 //! THE FIRST EXTRACTED PROTOCOL, and the control experiment for the plugin seam
-//! (`design/1.6.0-llm-extraction-plan.md` §3.2): the five files here are exactly the per-dialect
+//! (`design/1.6.0-llm-extraction-plan.md`): the five files here are exactly the per-dialect
 //! template `one-core-mcp-a2a-as-protocols.md` bars — this file (the declaration), `reader.rs`
 //! (wire → IR), `writer.rs` (IR → wire), `handler.rs` (which operations it serves), and `tests/`
 //! (its own tests, nobody else's). Everything it consumes from the engine comes through
@@ -28,11 +28,11 @@ mod reader;
 mod writer;
 
 use crate::ir::{IrBlockMeta, IrDelta, IrStreamEvent, IrUsage};
-use http::{header::HeaderValue, HeaderName, StatusCode};
 #[cfg(test)]
 use busbar_substrate_values::breaker::CanonicalSignal;
 use busbar_substrate_values::breaker::StatusClass;
 use busbar_substrate_values::proto::*;
+use http::{header::HeaderValue, HeaderName, StatusCode};
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
@@ -100,7 +100,10 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// `anthropic-version`/`anthropic-beta` headers (rung 2), the `x-api-key` credential header that is
 /// Anthropic's alone among the six (rung 4, catching curl users who omit the version header), then
 /// the `/v1/messages` path (rung 11). Lower strength binds tighter — the shared ladder positions.
-fn claims(h: &http::HeaderMap, path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+fn claims(
+    h: &http::HeaderMap,
+    path: &str,
+) -> Option<busbar_substrate_values::proto::ClaimStrength> {
     use busbar_substrate_values::proto::ClaimStrength;
     if h.contains_key("anthropic-version") || h.contains_key("anthropic-beta") {
         return Some(ClaimStrength(2));
@@ -609,6 +612,49 @@ fn stream_error_class(error_type: Option<&str>) -> StatusClass {
     }
 }
 
+/// The nine tokens `ErrorResponse.error` is discriminated on. A value outside this set is not a
+/// valid error object, so it can never be written to `error.type` — however plausible it looks.
+const ANTHROPIC_ERROR_TYPES: [&str; 9] = [
+    ERR_TYPE_INVALID_REQUEST,
+    ERR_TYPE_AUTHENTICATION,
+    "billing_error",
+    ERR_TYPE_PERMISSION,
+    ERR_TYPE_NOT_FOUND,
+    ERR_TYPE_RATE_LIMIT,
+    ERR_TYPE_TIMEOUT,
+    ERR_TYPE_OVERLOADED,
+    ERR_TYPE_API_ERROR,
+];
+
+/// Choose the `error.type` token for an outgoing error — the inverse of [`stream_error_class`].
+///
+/// A signal that is ALREADY one of the nine is kept verbatim, so a token read off a native upstream
+/// stream round-trips exactly (`permission_error` does not come back as `authentication_error`,
+/// though both read as `Auth`). Anything else is free text — an upstream sentence, a foreign
+/// dialect's code — and cannot go in a discriminator field, so the class supplies the token and the
+/// text is carried as `message` instead, which is where prose belongs.
+///
+/// `Auth` and `ClientError` are many-to-one in the forward map, so the inverse picks the general
+/// member of each (`authentication_error`, `invalid_request_error`). `Network` has no Anthropic
+/// token at all and takes the `api_error` catch-all, as does an absent signal: `null` is not a
+/// member of the set, and an SDK dispatching on the type gets no arm for it.
+fn stream_error_type(err: &IrError) -> &'static str {
+    if let Some(signal) = err.provider_signal.as_deref() {
+        if let Some(known) = ANTHROPIC_ERROR_TYPES.iter().find(|t| **t == signal) {
+            return known;
+        }
+    }
+    match err.class {
+        StatusClass::Overloaded => ERR_TYPE_OVERLOADED,
+        StatusClass::RateLimit => ERR_TYPE_RATE_LIMIT,
+        StatusClass::Timeout => ERR_TYPE_TIMEOUT,
+        StatusClass::Auth => ERR_TYPE_AUTHENTICATION,
+        StatusClass::Billing => "billing_error",
+        StatusClass::ClientError | StatusClass::ContextLength => ERR_TYPE_INVALID_REQUEST,
+        StatusClass::ServerError | StatusClass::Network => ERR_TYPE_API_ERROR,
+    }
+}
+
 /// Read Anthropic's 5m/1h cache-creation TIER SPLIT off a wire `usage` object into the neutral
 /// [`crate::ir::IrUsageDetail`].
 ///
@@ -880,7 +926,9 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 .filter(|s| !s.is_empty())
                 .ok_or(IrError {
                     class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+                    provider_signal: Some(
+                        busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
+                    ),
                     retry_after: None,
                 })?
                 .to_string();
@@ -974,7 +1022,9 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
             } else {
                 Err(IrError {
                     class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+                    provider_signal: Some(
+                        busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
+                    ),
                     retry_after: None,
                 })
             }

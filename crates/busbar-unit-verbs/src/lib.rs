@@ -66,7 +66,9 @@ pub use posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
 pub use rate::ConfigClassRule;
 pub use refusal::{ReasonCode, Refusal, RefusalStep};
 pub use store::{Store, StoreError};
-pub use verb::{KernelVerb, VerbScope, IRREDUCIBLE_VERBS, LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS};
+pub use verb::{
+    KernelVerb, VerbScope, IRREDUCIBLE_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS,
+};
 pub use verbs::{required_scope, MintOutcome, MintedKeyOutcome, NonceSource, Verbs};
 
 #[cfg(test)]

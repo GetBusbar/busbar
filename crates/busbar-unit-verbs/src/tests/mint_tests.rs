@@ -20,7 +20,7 @@ impl GroupLookup for FakeTree {
     }
 }
 
-const MAX_LEN: usize = 253;
+const MAX_LEN: usize = 256;
 
 #[test]
 fn no_group_named_is_a_no_op() {
@@ -108,4 +108,50 @@ fn overlong_parent_name_is_refused() {
     let long_parent: String = "p".repeat(MAX_LEN + 1);
     let err = plan_mint_group(&tree, Some("leaf"), Some(&long_parent), MAX_LEN).unwrap_err();
     assert_eq!(err.reason, ReasonCode::Validation);
+}
+
+/// THE CEILING IS 1.5.5'S, AND 1.5.5'S IS 256.
+///
+/// The shipped bound lives in `busbar-core`'s admin service as
+/// `MAX_GROUP_NAME_LEN = 256`, which this crate's constant documents itself as mirroring — and
+/// then spelled 253. A parent name of 254, 255 or 256 characters that 1.5.5 accepted would have
+/// been refused. The core constant is `pub(crate)`, so the source cannot be imported and the
+/// literal is pinned here instead, with the same names on it that the doc carries.
+///
+/// A boundary either side of the ceiling, so this measures the accept/refuse edge rather than only
+/// the number.
+#[test]
+fn the_group_name_ceiling_is_the_one_the_admin_service_pins() {
+    assert_eq!(
+        crate::verbs::MAX_GROUP_NAME_LEN,
+        256,
+        "the ceiling must be busbar-core::admin::v1::service::MAX_GROUP_NAME_LEN"
+    );
+    assert_eq!(MAX_LEN, crate::verbs::MAX_GROUP_NAME_LEN);
+
+    // The at-cap parent has to EXIST for the length arm to be the one under test — a missing
+    // parent refuses with the same reason for a different cause.
+    let at_cap: &'static str = Box::leak(
+        "p".repeat(crate::verbs::MAX_GROUP_NAME_LEN)
+            .into_boxed_str(),
+    );
+    let tree = FakeTree(HashMap::from([(at_cap, None)]));
+    assert!(
+        plan_mint_group(
+            &tree,
+            Some("leaf"),
+            Some(at_cap),
+            crate::verbs::MAX_GROUP_NAME_LEN
+        )
+        .is_ok(),
+        "a name of exactly the ceiling is accepted, as it was"
+    );
+    let over: String = "p".repeat(crate::verbs::MAX_GROUP_NAME_LEN + 1);
+    assert!(plan_mint_group(
+        &tree,
+        Some("leaf"),
+        Some(&over),
+        crate::verbs::MAX_GROUP_NAME_LEN
+    )
+    .is_err());
 }

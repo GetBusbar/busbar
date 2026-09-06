@@ -58,6 +58,11 @@ busbar-api = { path = "../api" }
 # is the crate axum re-exports as `axum::http`; naming it directly is what lets this crate drop axum
 # (and with it hyper, tower and a socket-capable tokio) out of the plane's closure.
 http = { workspace = true }
+# THE JSON SPAN SCANNER — the workspace's one reading of JSON, used here so routing can read the
+# body's top-level `method` without materialising a document the selected operation cell is about
+# to parse anyway. It depends on nothing of busbar's and opens nothing, so it adds no edge a pure
+# kind's closure scan could object to.
+busbar-grammar = { path = "../busbar-grammar" }
 bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

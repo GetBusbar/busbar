@@ -254,27 +254,45 @@ impl Transport for GrpcTransport {
             };
             let payload = bytes.as_slice().to_vec();
             let n = payload.len();
-            let existing = state.outbound.lock().unwrap().get(&stream.0).cloned();
-            let tx = match existing {
-                Some(tx) => tx,
-                None => {
-                    // A fresh `StreamId` this connection has not seen: on the DIAL side, that
-                    // OPENS a new gRPC call. An accepted (server) connection cannot originate a
-                    // call — its streams are opened by the peer — so an unseen id there is a
-                    // caller error, not something this transport can serve.
-                    let Some((dialer, origin, method)) = state.dialer.clone() else {
-                        return Err(TransportError::Framing);
-                    };
-                    let tx = client::open_stream(
-                        state.clone(),
-                        (*dialer).clone(),
-                        origin,
-                        method,
-                        stream,
-                    )
-                    .await?;
-                    state.outbound.lock().unwrap().insert(stream.0, tx.clone());
-                    tx
+            // Open-or-get, decided under ONE hold of the lock: what goes into the map is the
+            // OPENING of the call, so a second writer racing on the same fresh id finds the first
+            // writer's future and awaits it instead of opening a call of its own.
+            let call = {
+                let mut open = state.outbound.lock().unwrap();
+                match open.get(&stream.0) {
+                    Some(call) => call.clone(),
+                    None => {
+                        // A fresh `StreamId` this connection has not seen: on the DIAL side, that
+                        // OPENS a new gRPC call. An accepted (server) connection cannot originate a
+                        // call — its streams are opened by the peer — so an unseen id there is a
+                        // caller error, not something this transport can serve.
+                        let Some((dialer, origin, method)) = state.dialer.clone() else {
+                            return Err(TransportError::Framing);
+                        };
+                        let opening = state.clone();
+                        let fut: std::pin::Pin<
+                            Box<
+                                dyn std::future::Future<
+                                        Output = Result<crate::conn::OutboundTx, TransportError>,
+                                    > + Send,
+                            >,
+                        > = Box::pin(async move {
+                            client::open_stream(opening, (*dialer).clone(), origin, method, stream)
+                                .await
+                        });
+                        let call = futures::FutureExt::shared(fut);
+                        open.insert(stream.0, call.clone());
+                        call
+                    }
+                }
+            };
+            let tx = match call.await {
+                Ok(tx) => tx,
+                Err(e) => {
+                    // A call that failed to open is not a call: leaving its future in the map would
+                    // make every later write to this id replay the same failure forever.
+                    state.outbound.lock().unwrap().remove(&stream.0);
+                    return Err(e);
                 }
             };
             tx.send(payload).map_err(|_| TransportError::Reset)?;
@@ -357,16 +375,19 @@ impl Transport for GrpcTransport {
                     // Remove the sender as well as writing to it: dropping it is what ends this
                     // call's response stream (and so emits its `grpc-status` trailer), which is the
                     // difference between refusing one call and leaving it half-served.
-                    let tx = state.outbound.lock().unwrap().remove(&stream.0);
-                    if let Some(tx) = tx {
-                        let _ = tx.send(payload);
+                    let call = state.outbound.lock().unwrap().remove(&stream.0);
+                    if let Some(call) = call {
+                        if let Ok(tx) = call.await {
+                            let _ = tx.send(payload);
+                        }
                     }
                 }
                 None => {
-                    let senders: Vec<_> =
-                        state.outbound.lock().unwrap().values().cloned().collect();
-                    for tx in senders {
-                        let _ = tx.send(payload.clone());
+                    let calls: Vec<_> = state.outbound.lock().unwrap().values().cloned().collect();
+                    for call in calls {
+                        if let Ok(tx) = call.await {
+                            let _ = tx.send(payload.clone());
+                        }
                     }
                     self.close(conn, CloseReason::Normal);
                 }

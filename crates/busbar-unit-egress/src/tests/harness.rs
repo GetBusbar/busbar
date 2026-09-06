@@ -20,9 +20,9 @@ use std::sync::{Arc, Mutex};
 
 use busbar_contract::{
     AdmitFacts, ArenaBytes, AuditFacts, ContentFacts, CredentialLocator, Ctx, DestinationFacts,
-    EgressBody, Frame, Ingress, Ir, KernelSeal, Kind, Labels, LaneId, PlaneFacts, Plugin, Progress,
-    Refusal, RoutePlan, ScopeFacts, SlabBytes, StreamId, TransportEnvelope, TransportKeyHandle,
-    Unit, UnitEnd, UsageLocators, VerifiedDestination,
+    EgressBody, Frame, Ingress, Ir, Kind, Labels, LaneId, PlaneFacts, Plugin, Progress, Refusal,
+    RoutePlan, ScopeFacts, SlabBytes, StreamId, TransportEnvelope, TransportKeyHandle, Unit,
+    UnitEnd, UsageLocators, VerifiedDestination,
 };
 use busbar_contract_transport::wire::ArrivalRecord;
 use busbar_contract_transport::wire::Conn;
@@ -43,7 +43,7 @@ use crate::ports::{
 /// The kernel-side marker the fixtures present to build the views a plane reads.
 pub struct TestSeal;
 
-impl KernelSeal for TestSeal {
+impl busbar_contract::plugin::KernelSeal for TestSeal {
     fn seal_origin(&self) -> &'static str {
         "busbar-unit-egress::tests"
     }
@@ -70,6 +70,12 @@ impl TestClock {
     pub fn advance_secs(&self, by: u64) {
         self.secs.fetch_add(by, Ordering::Relaxed);
         self.millis.fetch_add(by * 1000, Ordering::Relaxed);
+    }
+
+    /// Move time forward by milliseconds, keeping the whole-second reading consistent with it.
+    pub fn advance_millis(&self, by: u64) {
+        let millis = self.millis.fetch_add(by, Ordering::Relaxed) + by;
+        self.secs.store(millis / 1000, Ordering::Relaxed);
     }
 }
 
@@ -598,6 +604,17 @@ pub enum Script {
     Hang,
     /// Answer with a first frame and then die before the terminal one.
     Truncated(Frame),
+    /// Answer with these frames, with `step_ms` of the clock's time passing before each one
+    /// arrives. This is the trickle an upstream produces when it emits just enough to look alive:
+    /// every frame on its own is well inside any bound, and the answer as a whole is not.
+    Drip {
+        /// The frames, in arrival order.
+        frames: Vec<Frame>,
+        /// How much time passes before each of them.
+        step_ms: u64,
+        /// The clock that time passes on.
+        clock: Arc<TestClock>,
+    },
 }
 
 /// A response frame with the transport's own status reading on it.
@@ -748,6 +765,19 @@ impl busbar_contract::Transport for TestTransport {
                 Box::pin(futures::stream::iter(vec![Ok((StreamId(0), first))]))
             }
             Script::Hang => Box::pin(futures::stream::pending()),
+            Script::Drip {
+                frames,
+                step_ms,
+                clock,
+            } => Box::pin(futures::StreamExt::map(
+                futures::stream::iter(frames),
+                move |f| {
+                    // The closure runs as the item is pulled, so the time passes when the reader
+                    // waits for the frame rather than all at once when the stream is built.
+                    clock.advance_millis(step_ms);
+                    Ok((StreamId(0), f))
+                },
+            )),
             Script::DialError(e) => Box::pin(futures::stream::iter(vec![Err(e)])),
         }
     }

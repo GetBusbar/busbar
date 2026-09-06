@@ -984,6 +984,55 @@ pub fn meter(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// The exit — the reservation the door opened is closed here, and only here
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// **The exit arm.** Move the books for what one unit posted, and put the posting on the journal.
+///
+/// The loop's exit path takes the hold out of its cell, applies what the unit spent and settles it —
+/// that is where the hold stops existing. What comes back is the POSTING, and until it reaches here
+/// it has moved no balance and left no record. So this is the far end of the reservation's life: the
+/// door opened it, the metering step accrued against it, and the settlement here releases what was
+/// never used and carries out what nothing could back.
+///
+/// `epoch` is the unit's pinned arrival time, so a request that straddled a window boundary posts in
+/// the window it was admitted in rather than the one it happened to finish in.
+///
+/// # Errors
+///
+/// The journal could not make the record durable. The books have already moved: value was delivered,
+/// and a settlement is not rolled back because a write failed.
+pub fn settle(
+    durability: &mut crate::root::durability::Durability,
+    server: &str,
+    scope: BucketScope,
+    epoch: u64,
+    token: &busbar_caps::DurabilityToken,
+    posted: busbar_caps::Posted,
+) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
+    // The key this plane already declares for its settlements — one per registration per dimension —
+    // rather than a second spelling of the same balance invented at the exit.
+    let key = totals_key(server, CapDimension::NanoUnits, scope);
+    let at = crate::root::durability::Settling {
+        key: &key,
+        window: busbar_unit_admission::budget_window(
+            busbar_unit_admission::window::WINDOW_DAY,
+            epoch,
+        ),
+        durability: token,
+        // The loop has no exit step of its own; the figure this posting is OF is the metering
+        // step's, and that is the step a durability loss here is attributed to.
+        step: busbar_caps::StepName::Meter,
+        stamp: crate::root::durability::PostingStamp {
+            rate_card_version: 0,
+            wall: epoch,
+            mono: epoch,
+        },
+    };
+    durability.settle_posted(&at, posted)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Step 7 — audit, on both chains
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1872,5 +1921,188 @@ mod tests {
             BucketScope::Pool(pool_key("fs")),
         );
         assert_eq!(key.bucket.as_str(), "tool:fs");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // The reservation, from the door to the exit
+    // ─────────────────────────────────────────────────────────────────────────
+
+    fn memory_durability() -> crate::root::durability::Durability {
+        crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open")
+    }
+
+    /// The door opens the reservation, sized off the estimate this plane's two classes produce, and
+    /// it opens it only because the decision said yes. Nothing about the size is a decision.
+    #[test]
+    fn the_door_opens_a_reservation_sized_off_this_planes_estimate() {
+        use busbar_caps::{step::Admit as AdmitStep, AdmitToken, KernelSeal, UnitToken};
+        let seal = KernelSeal::acquire_for_kernel();
+        let door = Door::new(InMemoryCells::new());
+        let pricer = Pricer::flat(0);
+        let chain = BucketChain::unchecked(Vec::new(), Vec::new());
+        let prices = ClassPrices {
+            tool_calls: 7,
+            bytes: 2,
+        };
+        let est = estimate(ops::OP_TOOL_CALL, 10, &prices, 100);
+        let who = PrincipalId::new("vk_mcp");
+        let unit = Admitting {
+            door: &door,
+            pricer: &pricer,
+            pool: "fs",
+            arrival_epoch: 1_700_000_000,
+            estimate: &est,
+            principal: &who,
+            chain: &chain,
+        };
+        let decision = admit(
+            &unit,
+            &AdmitToken::<AdmitStep>::mint(&seal),
+            &UnitToken::<AdmitStep>::mint(&seal),
+        );
+        let busbar_caps::Admission::Own(hold) = decision
+            .into_result(&seal)
+            .expect("an empty chain refuses nothing")
+        else {
+            panic!("a priced unit opens a hold of its own");
+        };
+        assert_eq!(
+            hold.reserved(),
+            127,
+            "100 fee + one call at 7 + ten bytes at 2"
+        );
+        let _ = busbar_caps::Posted::settle(
+            hold,
+            &busbar_caps::Usage::report(&busbar_caps::UsageToken::mint(&seal), Vec::new())
+                .expect("empty"),
+            &busbar_caps::LedgerToken::mint(&seal),
+        );
+    }
+
+    /// And the exit closes it: the books move on the key this plane already declares, the residual
+    /// is released, and the posting lands on the journal. Before the exit arm was bound the last two
+    /// happened nowhere at all.
+    #[test]
+    fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
+        use busbar_caps::{
+            step::Admit as AdmitStep, AdmitToken, DurabilityToken, Hold, KernelSeal, LedgerToken,
+            MeterClassId, QuantitySource, Usage, UsageLine, UsageToken,
+        };
+        let seal = KernelSeal::acquire_for_kernel();
+        let mut durability = memory_durability();
+        let who = PrincipalId::new("vk_mcp");
+
+        let mut hold = Hold::open(&AdmitToken::<AdmitStep>::mint(&seal), who, 1_000);
+        // The slice had room, so the reservation grows rather than the unit carrying anything.
+        assert_eq!(hold.spend(400, u64::MAX).overdraft, 0);
+        let usage = Usage::report(
+            &UsageToken::mint(&seal),
+            vec![UsageLine {
+                class: MeterClassId::new("nano_units"),
+                quantity: 400,
+                source: QuantitySource::Count,
+                estimated: false,
+            }],
+        )
+        .expect("one line");
+        let posted = busbar_caps::Posted::settle(hold, &usage, &LedgerToken::mint(&seal));
+
+        let settled = settle(
+            &mut durability,
+            "fs",
+            BucketScope::Pool(pool_key("fs")),
+            1_700_000_000,
+            &DurabilityToken::mint(&seal),
+            posted,
+        )
+        .expect("the memory-buffered journal takes it");
+        assert_eq!(settled.settlement.released, 600);
+        assert!(settled.overdraft.is_none());
+
+        let key = totals_key(
+            "fs",
+            CapDimension::NanoUnits,
+            BucketScope::Pool(pool_key("fs")),
+        );
+        let window = busbar_unit_admission::budget_window(
+            busbar_unit_admission::window::WINDOW_DAY,
+            1_700_000_000,
+        );
+        let figures = durability.ledger.book().get(&key, window);
+        assert_eq!(figures.settled, 400);
+        assert_eq!(figures.open_slice_remainders, 600, "the residual goes back");
+        assert_eq!(figures.overdraft_carried_out, 0);
+        let replayed = durability
+            .journal
+            .replay()
+            .expect("reads back")
+            .expect("verifies");
+        assert_eq!(replayed.len(), 1, "one posting, one record");
+    }
+
+    /// A unit that outran everything reservable is not refused, not trimmed, and leaves a carry of
+    /// its own on the chain beside the posting it came out of.
+    #[test]
+    fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
+        use busbar_caps::{
+            step::Admit as AdmitStep, AdmitToken, DurabilityToken, Hold, KernelSeal, LedgerToken,
+            MeterClassId, PostingFlags, QuantitySource, Usage, UsageLine, UsageToken,
+        };
+        let seal = KernelSeal::acquire_for_kernel();
+        let mut durability = memory_durability();
+        let mut hold = Hold::open(
+            &AdmitToken::<AdmitStep>::mint(&seal),
+            PrincipalId::new("vk_mcp"),
+            1_000,
+        );
+        let spend = hold.spend(4_000, 0);
+        assert_eq!(spend.accrued, 4_000, "the spend is never trimmed");
+        assert_eq!(spend.overdraft, 3_000);
+        let usage = Usage::report(
+            &UsageToken::mint(&seal),
+            vec![UsageLine {
+                class: MeterClassId::new("nano_units"),
+                quantity: 4_000,
+                source: QuantitySource::Count,
+                estimated: false,
+            }],
+        )
+        .expect("one line");
+        let posted = busbar_caps::Posted::settle(hold, &usage, &LedgerToken::mint(&seal));
+        assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
+
+        let settled = settle(
+            &mut durability,
+            "fs",
+            BucketScope::Pool(pool_key("fs")),
+            1_700_000_000,
+            &DurabilityToken::mint(&seal),
+            posted,
+        )
+        .expect("the journal takes both records");
+        assert_eq!(
+            settled
+                .settlement
+                .overdraft
+                .as_ref()
+                .expect("the ledger noted the carry")
+                .amount,
+            3_000
+        );
+        let record = settled.overdraft.as_ref().expect("and journalled it");
+        assert_eq!(record.reserved, 0);
+        assert_eq!(record.settled, 0);
+        assert_eq!(record.overdraft, 3_000);
+        let replayed = durability
+            .journal
+            .replay()
+            .expect("reads back")
+            .expect("verifies");
+        assert_eq!(replayed.len(), 2, "the posting, then the carry");
     }
 }

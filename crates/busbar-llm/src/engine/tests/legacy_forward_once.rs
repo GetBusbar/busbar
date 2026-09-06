@@ -617,6 +617,7 @@ pub(super) async fn forward_once(
                     None,
                     true, // degraded path: selects the "degraded"-labeled warn strings
                     None,
+                    &TapCell::new(),
                 )
                 .await);
             }
@@ -666,6 +667,7 @@ pub(super) async fn forward_once(
                 json_array,
                 usage_sink,
                 budget_spent,
+                TapCell::new(),
             );
             let mut rb = Response::builder().status(status);
             // Cross-protocol streaming: the body is reframed to the client's format, so the CT must

@@ -7,6 +7,25 @@ pub mod harness;
 mod codec;
 mod ulaw;
 
+/// What a request path matches, decided the same way the boot's overlap check decides it.
+mod selectors {
+    use crate::claims::matches_selector;
+    use busbar_contract::grammar::Selector;
+
+    /// A one-level prefix claims the segment below it and nothing else. A sibling whose name merely
+    /// starts with the prefix's bytes is a different route, and matching it here would hand a
+    /// request to a dialect the boot never proved this plane had claimed.
+    #[test]
+    fn a_one_level_prefix_stops_at_the_segment_boundary() {
+        let s = Selector::PrefixOneLevel("/twilio");
+        assert!(matches_selector(&s, "/twilio/inbound"));
+        assert!(!matches_selector(&s, "/twiliofoo"));
+        assert!(!matches_selector(&s, "/twilio"));
+        assert!(!matches_selector(&s, "/twilio/inbound/deeper"));
+        assert!(!matches_selector(&s, "/other/inbound"));
+    }
+}
+
 /// Purity and determinism: the properties every plane in the design is held to ("pure over its
 /// inputs, no input or output of its own"), checked here rather than merely asserted in prose.
 mod purity {

@@ -195,6 +195,41 @@ impl<'r, S: CellStore> AdmissionUnit<'r, S> {
         self.blocked.as_ref()
     }
 
+    /// How far this unit's reservation may still be grown, in nano-units.
+    ///
+    /// The other half of "the hold is accounting". The door sized the reservation off an estimate;
+    /// when the unit's accrual passes it, the reservation is topped up out of what the principal's
+    /// slice still holds, and THIS is that figure. A chain that declares no spend cap has no ceiling
+    /// to grow into, so the answer is unbounded; a window already at its cap answers zero, and zero
+    /// is a top-up that does not happen — never a unit that does not run. Nothing here charges,
+    /// blocks or refuses.
+    #[must_use]
+    pub fn headroom_nanos(&self, chain: &BucketChain) -> u64 {
+        match self
+            .door
+            .budget_headroom_cents(self.pricer, chain, self.pool, self.now)
+        {
+            None => u64::MAX,
+            Some(cents) => {
+                let cents = u128::try_from(cents.max(0)).unwrap_or(0);
+                u64::try_from(cents.saturating_mul(price::NANOS_PER_CENT)).unwrap_or(u64::MAX)
+            }
+        }
+    }
+
+    /// Spend against the unit's hold, growing the reservation out of the slice where the slice has
+    /// anything left and carrying the remainder as an overdraft where it has not.
+    ///
+    /// One call so that the two halves cannot drift: whatever the headroom says, the spend lands.
+    pub fn spend(
+        &self,
+        hold: &mut busbar_caps::Hold,
+        chain: &BucketChain,
+        amount: u64,
+    ) -> busbar_caps::Spend {
+        hold.spend(amount, self.headroom_nanos(chain))
+    }
+
     /// Refund the fee for a request that produced no usable result. The request slot stays
     /// consumed; see [`Door::refund_request`] for why that is the whole point.
     pub fn refund(&self, chain: &BucketChain) {

@@ -30,6 +30,39 @@ use busbar_caps::{Hold, LedgerToken, Posted, Usage};
 use crate::legacy::{LegacyPosting, LegacyRows};
 use crate::totals::{Book, TotalsKey, WindowStart};
 
+/// An internal record of value delivered with no reservation behind it.
+///
+/// It is the ledger's own note, not an answer to anybody: the unit that produced it has already run
+/// and already posted, and nothing reads this to decide whether it may. What it is for is the two
+/// things that cannot be re-derived once the posting is written — WHICH principal ran past what the
+/// window could back, and by how much — so the carry into the next window's admissible budget is a
+/// figure with a provenance rather than a difference somebody noticed.
+///
+/// Produced only where the reservation could not be grown to cover the spend. A unit that topped up
+/// produces none, which is what makes the presence of one meaningful.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Overdraft {
+    /// Whose spend it was.
+    pub principal: String,
+    /// Which balance carries it.
+    pub key: TotalsKey,
+    /// Which window it was delivered in.
+    pub window: WindowStart,
+    /// How much of the posting nothing reserved.
+    pub amount: i128,
+}
+
+/// What one settlement moved and what it left behind.
+#[derive(Debug)]
+pub struct Settlement {
+    /// The posting. One per hold, because settling consumed the hold.
+    pub posted: Posted,
+    /// The residual: reserved, never used, and handed back to the slice it was drawn from.
+    pub released: i128,
+    /// The ledger's note, where the unit ran past everything that could be reserved for it.
+    pub overdraft: Option<Overdraft>,
+}
+
 /// The ledger unit: the book it keeps, and the previous release's rows it also feeds.
 pub struct Ledger {
     book: Book,
@@ -103,10 +136,38 @@ impl Ledger {
         usage: &Usage,
         token: &LedgerToken,
     ) -> Posted {
-        let reserved = i128::from(hold.reserved());
+        self.settle_recording(key, window, hold, usage, token)
+            .posted
+    }
+
+    /// Settle, and hand back what the settlement left behind as well as the posting.
+    ///
+    /// The same act as [`Ledger::settle`] — one function, so the two can never move the books
+    /// differently — reporting the residual it released and the overdraft it noted. The composition
+    /// root wants both: they are the two facts a posting record cannot carry on its own.
+    pub fn settle_recording(
+        &mut self,
+        key: &TotalsKey,
+        window: WindowStart,
+        hold: Hold,
+        usage: &Usage,
+        token: &LedgerToken,
+    ) -> Settlement {
         let posted = Posted::settle(hold, usage, token);
+        self.post(key, window, posted)
+    }
+
+    /// Move the books for a posting that is already built, and note what it left behind.
+    ///
+    /// The other way in, for the one caller that cannot hand over a hold: the loop's exit path owns
+    /// the hold and consumes it there, so what reaches the composition root is the posting. Both
+    /// doors move the same three figures through this one function, because a second copy of that
+    /// arithmetic is a second answer to the identity.
+    pub fn post(&mut self, key: &TotalsKey, window: WindowStart, posted: Posted) -> Settlement {
+        let reserved = i128::from(posted.reserved());
         let settled = i128::from(posted.settled());
         let overdraft = i128::from(posted.overdraft());
+        let released = (reserved - settled).max(0);
 
         let figures = self.book.entry(key.clone(), window);
         // Three figures move together, and they have to. What was reserved stops being held; what
@@ -116,7 +177,7 @@ impl Ledger {
         // drawn — which is exactly why the identity subtracts it.
         figures.open_holds -= reserved;
         figures.settled += settled;
-        figures.open_slice_remainders += (reserved - settled).max(0);
+        figures.open_slice_remainders += released;
         figures.overdraft_carried_out += overdraft;
 
         if let Some(rows) = self.legacy.as_mut() {
@@ -132,7 +193,16 @@ impl Ledger {
                 overdraft: posted.overdraft(),
             });
         }
-        posted
+        Settlement {
+            overdraft: (overdraft > 0).then(|| Overdraft {
+                principal: posted.principal().as_str().to_string(),
+                key: key.clone(),
+                window,
+                amount: overdraft,
+            }),
+            released,
+            posted,
+        }
     }
 
     /// Open a hold's reservation in the books. Called when the door says yes.

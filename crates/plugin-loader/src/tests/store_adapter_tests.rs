@@ -220,6 +220,108 @@ fn the_verb_seam_records_a_restore_and_keeps_the_sealed_replay_slots() {
     );
 }
 
+/// A RESTORE LEAVES THE TWO SLICE FIGURES DESCRIBING THE SAME THING.
+///
+/// `slices_granted` is "units granted and not given back", and `slices_outstanding` is the map
+/// those units live in. Clearing the map without zeroing the counter leaves a figure that describes
+/// reservations that no longer exist — a diagnostic that reads as 100 units held by nobody. The two
+/// are also resealed under ONE lock order (recovery then slices, held across the reseal), so a draw
+/// landing mid-restore cannot be half-erased: either it is in both figures or in neither.
+#[test]
+fn a_restore_reseals_both_slice_figures_together() {
+    let Some(adapter) = adapter_over_published_schema() else {
+        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    adapter.reserve(&slice_request(100, 0)).expect("reserve");
+    assert_eq!(adapter.shim_state().slices_granted, 100);
+
+    adapter
+        .store_restore(&admin(), "backup-2026-09-05")
+        .expect("store_restore");
+
+    let state = adapter.shim_state();
+    assert_eq!(
+        state.slices_outstanding, 0,
+        "slices do not survive a restore"
+    );
+    assert_eq!(
+        state.slices_granted, 0,
+        "and neither does the count of what they granted — a counter describing an empty map is a \
+         figure with nothing behind it"
+    );
+    // The seam still works after the reseal: a fresh draw is counted from zero.
+    adapter.reserve(&slice_request(7, 0)).expect("reserve");
+    assert_eq!(adapter.shim_state().slices_granted, 7);
+}
+
+/// THE SHIPPED COUNT AND THE HEAD ADVANCE TOGETHER OR NOT AT ALL.
+///
+/// The module preamble supports two logs shipping through one adapter. The count and the head are
+/// two halves of one answer — "n records acknowledged, ending at this identity" — and advancing
+/// them in separate critical sections lets a reader see a count from one shipper beside a head from
+/// the other. With both under one lock, whatever the reader sees is a pair that was true together.
+#[test]
+fn concurrent_shippers_never_split_the_count_from_the_head() {
+    let Some(adapter) = adapter_over_published_schema() else {
+        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    const PER_SHIPPER: u64 = 20_000;
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // The observer reads the pair while the shippers run. "n acknowledged, ending here" is one
+    // answer: a count above zero with no head at all is that answer torn in half.
+    let observer = {
+        let adapter = adapter.clone();
+        let done = done.clone();
+        std::thread::spawn(move || {
+            let mut torn = 0u64;
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                let count = adapter.shim_state().records_shipped;
+                if count > 0 && adapter.head().is_none() {
+                    torn += 1;
+                }
+            }
+            torn
+        })
+    };
+
+    let mut handles = Vec::new();
+    for lane in 1..=2u64 {
+        let adapter = adapter.clone();
+        handles.push(std::thread::spawn(move || {
+            let mut shipper = adapter.shipper();
+            for seq in 1..=PER_SHIPPER {
+                shipper
+                    .ship(&[Record::new(lane, seq, b"x".to_vec())])
+                    .expect("a batch is acknowledged, never refused");
+            }
+        }));
+    }
+    for h in handles {
+        h.join().expect("shipper thread");
+    }
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    let torn = observer.join().expect("observer thread");
+    assert_eq!(
+        torn, 0,
+        "the observer saw a non-zero shipped count beside no head at all {torn} time(s): the count \
+         and the head are advancing in separate critical sections"
+    );
+
+    assert_eq!(
+        adapter.shim_state().records_shipped,
+        2 * PER_SHIPPER,
+        "every acknowledged record is counted exactly once"
+    );
+    let head = adapter.head().expect("head");
+    assert_eq!(
+        head.1, PER_SHIPPER,
+        "the head is the last identity one of the shippers acknowledged"
+    );
+}
+
 /// `reseal_epoch_floor` moves the floor to the shim's epoch.
 #[test]
 fn the_verb_seam_reseals_the_epoch_floor() {

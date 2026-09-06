@@ -109,8 +109,7 @@ impl RequestHandler for McpRequestHandler {
         if !path.ends_with(PATH_MCP) {
             return None;
         }
-        let v: serde_json::Value = serde_json::from_slice(body).ok()?;
-        match v.get("method")?.as_str()? {
+        match top_level_method(body)?.as_ref() {
             METHOD_TOOLS_CALL => Some(Operation::INVOKE),
             // BOTH DIRECTIONS OF ONE REGISTRATION ARE ONE OPERATION. The codec reads the intent
             // back off the method name; the engine never learns there were two names.
@@ -118,4 +117,32 @@ impl RequestHandler for McpRequestHandler {
             _ => None,
         }
     }
+}
+
+/// The body's TOP-LEVEL `method` member as a string, without materialising the document.
+///
+/// The operation cell this routes to parses the body itself, so a full parse here would be the
+/// second complete parse of every MCP request — over a `tools/call` whose `arguments` object is as
+/// large as the caller made it. The workspace's JSON span scanner answers where the member is
+/// without building a value, and `method` is the first member in the shape clients actually send,
+/// so the ordinary request costs a few bytes of scan instead of the whole body.
+///
+/// A pointer resolves against the TOP LEVEL only, which is the property that matters: a `method`
+/// key inside `arguments` is argument data and must never name the operation. Bytes that ran out,
+/// bytes that are not JSON, a document that is not an object and a `method` that is not a string
+/// all answer `None` — the same no-operation `404` the full parse gave.
+fn top_level_method(body: &[u8]) -> Option<std::borrow::Cow<'_, str>> {
+    let busbar_grammar::Resolved::Found(span) = busbar_grammar::resolve_pointer(body, "/method")
+    else {
+        return None;
+    };
+    let raw = span.of(body);
+    // The span covers the JSON string as written, quotes included. Unescaping is only needed when
+    // the wire actually escaped something — `"tools\/call"` spells the same method name as
+    // `"tools/call"`, and the method is the DECODED string, not the bytes that carried it.
+    let inner = raw.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
+    if inner.contains(&b'\\') {
+        return serde_json::from_slice::<String>(raw).ok().map(Into::into);
+    }
+    std::str::from_utf8(inner).ok().map(Into::into)
 }

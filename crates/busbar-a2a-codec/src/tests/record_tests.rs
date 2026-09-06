@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Round-trip tests for the A2A plane rows (`TaskRow` / `TaskEventRow`) through the store-seam\n//! `PlaneRecord` encoding — field-name stability across the plugin ABI and terminal-state\n//! disposition. Relocated out of `record.rs` per the tests-in-their-own-file convention.
+//! Round-trip tests for the A2A plane rows (`TaskRow` / `TaskEventRow`) through the store-seam
+//! `PlaneRecord` encoding — field-name stability across the plugin ABI and terminal-state
+//! disposition. Relocated out of `record.rs` per the tests-in-their-own-file convention.
 
 use super::*;
 

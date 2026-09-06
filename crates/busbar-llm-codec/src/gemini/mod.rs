@@ -57,7 +57,10 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// tighter than the shared path suffixes), then the `:{action}` path verbs (rung 5), then the
 /// `/v1{,beta}/models/` wildcard surface (rung 6). Strength values are the ladder POSITION (lower
 /// binds tighter); they are the single ladder shared with the sibling dialects' predicates.
-fn claims(h: &http::HeaderMap, path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+fn claims(
+    h: &http::HeaderMap,
+    path: &str,
+) -> Option<busbar_substrate_values::proto::ClaimStrength> {
     use busbar_substrate_values::proto::ClaimStrength;
     if h.contains_key("x-goog-api-key") {
         return Some(ClaimStrength(3));
@@ -1333,6 +1336,26 @@ fn collect_gemini_schema_defs(
     }
 }
 
+/// Ceiling on the nodes one `$ref` resolution may emit. The `active` stack stops a schema that
+/// refers back to itself, but says nothing about a cycle-FREE schema whose expansion is merely
+/// enormous: N chained definitions that each reference the next twice form a diamond that inlines
+/// to 2^N nodes without ever repeating a name on the current path. Client-supplied schemas reach
+/// this walk (tool `input_schema` and `response_format`), so the expansion needs its own ceiling.
+const GEMINI_SCHEMA_INLINE_MAX_NODES: usize = 100_000;
+
+/// Ceiling on how deep the inlined result may nest, matching the substrate JSON parser's input
+/// depth guard. That guard measures the depth of the schema as it ARRIVES; inlining can multiply
+/// it, so a few thousand shallow definitions chained singly pass the parser and still build a
+/// `Value` deep enough to overflow the stack on the recursive walk — and again on its drop.
+const GEMINI_SCHEMA_INLINE_MAX_DEPTH: usize = 128;
+
+/// One inlining allowance, owned by [`resolve_gemini_schema_refs`] and threaded through the walk so
+/// every branch draws on the SAME pool rather than each getting a fresh one.
+struct GeminiInlineBudget {
+    remaining_nodes: usize,
+    depth: usize,
+}
+
 /// Recursively inline every `$ref` that points at a NAMED `#/$defs/X` or `#/definitions/X` entry in
 /// `defs`, replacing the reference with the (recursively resolved) target subschema. `active` is the
 /// stack of definition names currently being expanded on the current path — a genuinely recursive
@@ -1344,10 +1367,35 @@ fn collect_gemini_schema_defs(
 /// alone here and caught defensively by [`sanitize_gemini_schema`]'s keyword filter downstream.
 /// POSITIONAL in the same way [`collect_gemini_schema_defs`] is: [`GEMINI_SCHEMA_NAME_KEYED_MAPS`]
 /// values are walked as name→subschema maps, not schema objects themselves.
+///
+/// `budget` bounds the expansion itself. A schema that exhausts the node pool or hits the depth
+/// ceiling degrades to the same untyped `{}` a cycle does, so an over-budget schema is handled
+/// exactly like a recursive one instead of hanging or overflowing the stack.
 fn inline_gemini_schema_refs(
     schema: &serde_json::Value,
     defs: &serde_json::Map<String, serde_json::Value>,
     active: &mut Vec<String>,
+    budget: &mut GeminiInlineBudget,
+) -> serde_json::Value {
+    // Spending the budget in the one place every recursive edge passes through means a branch that
+    // runs out degrades to exactly the untyped `{}` the cycle arm below already returns.
+    if budget.remaining_nodes == 0 || budget.depth >= GEMINI_SCHEMA_INLINE_MAX_DEPTH {
+        return serde_json::json!({});
+    }
+    budget.remaining_nodes -= 1;
+    budget.depth += 1;
+    let out = inline_gemini_schema_refs_within_budget(schema, defs, active, budget);
+    budget.depth -= 1;
+    out
+}
+
+/// The inlining walk proper. Only ever reached through [`inline_gemini_schema_refs`], which charges
+/// the node/depth budget for this node first.
+fn inline_gemini_schema_refs_within_budget(
+    schema: &serde_json::Value,
+    defs: &serde_json::Map<String, serde_json::Value>,
+    active: &mut Vec<String>,
+    budget: &mut GeminiInlineBudget,
 ) -> serde_json::Value {
     match schema {
         serde_json::Value::Object(map) => {
@@ -1361,7 +1409,7 @@ fn inline_gemini_schema_refs(
                             return serde_json::json!({});
                         }
                         active.push(name.to_string());
-                        let inlined = inline_gemini_schema_refs(target, defs, active);
+                        let inlined = inline_gemini_schema_refs(target, defs, active, budget);
                         active.pop();
                         // Sibling keywords beside `$ref` (e.g. a caller-added `description`)
                         // override/extend the inlined target rather than being discarded.
@@ -1371,7 +1419,7 @@ fn inline_gemini_schema_refs(
                                     if k != "$ref" {
                                         inlined_map.insert(
                                             k.clone(),
-                                            inline_gemini_schema_refs(v, defs, active),
+                                            inline_gemini_schema_refs(v, defs, active, budget),
                                         );
                                     }
                                 }
@@ -1392,14 +1440,17 @@ fn inline_gemini_schema_refs(
                                 names
                                     .iter()
                                     .map(|(nk, nv)| {
-                                        (nk.clone(), inline_gemini_schema_refs(nv, defs, active))
+                                        (
+                                            nk.clone(),
+                                            inline_gemini_schema_refs(nv, defs, active, budget),
+                                        )
                                     })
                                     .collect(),
                             ),
-                            other => inline_gemini_schema_refs(other, defs, active),
+                            other => inline_gemini_schema_refs(other, defs, active, budget),
                         }
                     } else {
-                        inline_gemini_schema_refs(v, defs, active)
+                        inline_gemini_schema_refs(v, defs, active, budget)
                     };
                     (k.clone(), resolved)
                 })
@@ -1408,7 +1459,7 @@ fn inline_gemini_schema_refs(
         }
         serde_json::Value::Array(arr) => serde_json::Value::Array(
             arr.iter()
-                .map(|v| inline_gemini_schema_refs(v, defs, active))
+                .map(|v| inline_gemini_schema_refs(v, defs, active, budget))
                 .collect(),
         ),
         other => other.clone(),
@@ -1428,7 +1479,11 @@ fn resolve_gemini_schema_refs(schema: &serde_json::Value) -> serde_json::Value {
         return schema.clone();
     }
     let mut active = Vec::new();
-    inline_gemini_schema_refs(schema, &defs, &mut active)
+    let mut budget = GeminiInlineBudget {
+        remaining_nodes: GEMINI_SCHEMA_INLINE_MAX_NODES,
+        depth: 0,
+    };
+    inline_gemini_schema_refs(schema, &defs, &mut active, &mut budget)
 }
 
 /// Parse a Gemini `usageMetadata` block into `IrUsage`, defaulting every counter to 0 when the
@@ -1737,7 +1792,8 @@ impl GeminiJsonArrayFramer {
                     let Some((_event_type, data_str)) = parse_sse_frame(frame) else {
                         continue; // no data: line — keepalive/comment frame
                     };
-                    if data_str.is_empty() || data_str == busbar_substrate_values::proto::SSE_DONE_SENTINEL
+                    if data_str.is_empty()
+                        || data_str == busbar_substrate_values::proto::SSE_DONE_SENTINEL
                     {
                         continue; // egress terminator/keepalive — the array close is finish()'s job
                     }

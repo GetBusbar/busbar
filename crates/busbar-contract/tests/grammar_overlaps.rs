@@ -107,6 +107,12 @@ fn the_path_family_is_decided_rather_than_assumed() {
     assert!(!Selector::PrefixOneLevel("/v1").overlaps(&Selector::ExactPath("/v1/models/x")));
     assert!(!Selector::PrefixOneLevel("/v1").overlaps(&Selector::ExactPath("/v2/models")));
 
+    // A sibling whose name merely STARTS with the prefix is not under it: one level down begins
+    // at a segment boundary, not at a byte offset.
+    assert!(!Selector::PrefixOneLevel("/v1").overlaps(&Selector::ExactPath("/v1models")));
+    assert!(!Selector::PrefixOneLevel("/api").overlaps(&Selector::ExactPath("/apikeys")));
+    assert!(!Selector::PrefixOneLevel("/v1").overlaps(&Selector::ExactPath("/v1")));
+
     // A pattern against a path it matches and one it does not.
     let pat = Selector::PathPattern(&[PathSeg::Var, PathSeg::Lit("v1"), PathSeg::Tail]);
     assert!(pat.overlaps(&Selector::ExactPath("/openai/v1/chat/completions")));

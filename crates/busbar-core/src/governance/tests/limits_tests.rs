@@ -484,6 +484,71 @@ fn refund_returns_the_fee_but_never_the_requests_limit_slot() {
     );
 }
 
+/// A request charged just before a window rolls must have its refund reach the cell the charge
+/// reached, not a window that has already gone.
+///
+/// `now` is the arrival epoch, pinned when the request came in, and the charge deliberately lands
+/// IN PLACE on a cell a concurrent admission has already rolled forward rather than resetting it.
+/// The refund is the other half of that same charge, so it has to resolve the cell the same way:
+/// at or past this request's window. Resolving it on equality alone strands the flat fee for a
+/// request that failed upstream on the rolled cell, and the derived spend the budget cap reads
+/// stays one fee too high for the rest of that minute — a caller under its budget refused as
+/// though it were not.
+#[test]
+fn a_refund_after_a_window_roll_reaches_the_cell_the_charge_reached() {
+    let g = gov();
+    let cm = model_with_card(
+        &[(
+            "g",
+            group_cfg(
+                None,
+                true,
+                vec![limit(LimitMetric::Budget, 25, Some(LimitWindow::Minute))],
+            ),
+        )],
+        10, // fee 10 cents/request
+        &[],
+    );
+    let k = key("vk_straddle", Some("g"));
+
+    // A minute boundary, with `before` in the minute the request arrived in and `after` in the
+    // one it was charged and refunded in.
+    let after = 1_700_000_100;
+    let before = after - 1;
+    assert_ne!(
+        crate::governance::budget_window("minute", before),
+        crate::governance::budget_window("minute", after),
+        "the two epochs have to be in different minutes for this to be a straddle at all"
+    );
+
+    // A concurrent admission rolls the cell into the newer minute; our straddler, pinned to the
+    // older one, is then charged in place on that rolled cell. Two fees of 10 against a cap of 25
+    // leaves no room for a third.
+    g.try_admit(&cm, &k, "", after).expect("the roller admits");
+    g.try_admit(&cm, &k, "", before)
+        .expect("the straddler admits");
+    assert_blocked(
+        g.try_admit(&cm, &k, "", after).unwrap_err(),
+        "g",
+        "budget",
+        Some("minute"),
+        true,
+    );
+
+    // The straddler failed upstream, so its fee is not owed. Refunded at the same pinned epoch the
+    // charge used, it has to come off the rolled cell.
+    g.refund_request(&cm, &k, "", before);
+    let u = g
+        .derived_bucket_usage(&cm, "group:g@minute", "minute", true, after)
+        .expect("the rolled cell reads");
+    assert_eq!(
+        u.spend_cents, 10,
+        "one fee remains: the failed straddler's came off the cell it was charged to"
+    );
+    g.try_admit(&cm, &k, "", after)
+        .expect("the returned fee re-opened the budget the failed straddler was holding");
+}
+
 /// `concurrent` is an INSTANTANEOUS in-flight gauge: holds live on the returned grant and release
 /// on drop; a full gauge rejects naming (group, concurrent) with no window and no Retry-After.
 #[test]

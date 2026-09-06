@@ -4,7 +4,8 @@
 //! opaque key handle's slot).
 
 use super::*;
-use busbar_contract::{ConfigView, KernelSeal};
+use busbar_contract::plugin::KernelSeal;
+use busbar_contract::ConfigView;
 use futures::StreamExt;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -187,6 +188,41 @@ async fn half_close_and_cancel_mid_frame() {
 }
 
 #[tokio::test]
+async fn close_ends_a_live_frame_stream() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let mut frames = server.frames(server_conn.clone());
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .await
+        .unwrap();
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"first");
+
+    // The kernel finalises the connection. A stream still pumping it must end, and the TLS
+    // stream must drop: bytes the peer writes afterwards are never yielded.
+    server.close(server_conn, CloseReason::Normal);
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after close"))
+        .await
+        .unwrap();
+    assert!(
+        frames.next().await.is_none(),
+        "a closed connection's frame stream must end, not keep yielding inbound frames"
+    );
+}
+
+#[tokio::test]
 async fn handshake_failure_maps_to_its_own_error() {
     // The server expects a TLS handshake; a plain-TCP dial into it fails the handshake, not the
     // connect.
@@ -202,6 +238,35 @@ async fn handshake_failure_maps_to_its_own_error() {
         .ok();
     let result = accept_fut.await.unwrap();
     assert_eq!(result.unwrap_err(), TransportError::HandshakeFailed);
+}
+
+/// One synthetic `io::Error` per `map_io_err` arm, so swapping two arms is caught here rather than
+/// only by whichever live-dial cell happens to provoke that kind. Ported from `busbar-transport-
+/// http`'s identical table cell, with this crate's own extra arm: a handshake that fails on
+/// malformed TLS bytes surfaces as `io::ErrorKind::InvalidData`, which this crate — alone among
+/// its `tcp`/`http` siblings — maps to `HandshakeFailed` rather than `Closed`.
+#[test]
+fn every_io_error_kind_maps_through_the_table() {
+    for (kind, expected) in [
+        (io::ErrorKind::ConnectionRefused, TransportError::Refused),
+        (io::ErrorKind::TimedOut, TransportError::Timeout),
+        (io::ErrorKind::ConnectionReset, TransportError::Reset),
+        (io::ErrorKind::ConnectionAborted, TransportError::Reset),
+        (io::ErrorKind::InvalidData, TransportError::HandshakeFailed),
+        (
+            io::ErrorKind::AddrNotAvailable,
+            TransportError::AddressRefused,
+        ),
+        (io::ErrorKind::InvalidInput, TransportError::AddressRefused),
+        (io::ErrorKind::BrokenPipe, TransportError::Closed),
+        (io::ErrorKind::NotFound, TransportError::Closed),
+    ] {
+        let mapped = TlsTransport::map_io_err(&io::Error::new(kind, "fixture"));
+        assert_eq!(
+            mapped, expected,
+            "io::ErrorKind::{kind:?} maps to {expected:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -373,6 +438,7 @@ async fn the_transport_key_unit_is_what_gives_a_listener_its_key() {
             key: "secret://tls/key",
             client_ca: None,
         },
+        busbar_unit_transport_key::DEFAULT_ALPN,
     )
     .expect("the unit resolves, journals and registers");
 
@@ -544,7 +610,11 @@ async fn every_reserved_key_this_transport_publishes_is_declared() {
 
 /// A self-signed cert/key pair plus its own DER-encoded leaf, so a test can compute the exact
 /// fingerprint it expects a handshake to serve — not just check that a handshake happened.
-fn self_signed_with_der() -> (Arc<rustls::ServerConfig>, Arc<rustls::ClientConfig>, Vec<u8>) {
+fn self_signed_with_der() -> (
+    Arc<rustls::ServerConfig>,
+    Arc<rustls::ClientConfig>,
+    Vec<u8>,
+) {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
@@ -583,7 +653,10 @@ fn self_signed_with_der() -> (Arc<rustls::ServerConfig>, Arc<rustls::ClientConfi
 async fn accept_serves_the_slot_the_listener_was_provisioned_with() {
     let (server_cfg_0, _client_cfg_0, cert_0_der) = self_signed_with_der();
     let (server_cfg_7, client_cfg_7, cert_7_der) = self_signed_with_der();
-    assert_ne!(cert_0_der, cert_7_der, "the two slots must hold genuinely different certs");
+    assert_ne!(
+        cert_0_der, cert_7_der,
+        "the two slots must hold genuinely different certs"
+    );
 
     let server = StdArc::new(TlsTransport::new());
     server.register_server_config(0, server_cfg_0);
@@ -622,8 +695,14 @@ async fn accept_serves_the_slot_the_listener_was_provisioned_with() {
 
     let fp_0 = format!("{:x?}", ring_fingerprint(&cert_0_der));
     let fp_7 = format!("{:x?}", ring_fingerprint(&cert_7_der));
-    assert_eq!(served_fp, fp_7, "accept served the slot-7 certificate, byte for byte");
-    assert_ne!(served_fp, fp_0, "slot 0's certificate must not be what accept served");
+    assert_eq!(
+        served_fp, fp_7,
+        "accept served the slot-7 certificate, byte for byte"
+    );
+    assert_ne!(
+        served_fp, fp_0,
+        "slot 0's certificate must not be what accept served"
+    );
 }
 
 /// CG-49: multi-certificate SNI on one listener.
@@ -815,6 +894,7 @@ mod cg_49_sni {
                 key: "key-default",
                 client_ca: None,
             },
+            busbar_unit_transport_key::DEFAULT_ALPN,
         )
         .expect("names and default all resolve");
 
@@ -897,7 +977,10 @@ mod cg_49_sni {
     async fn a_client_offering_no_sni_gets_the_default() {
         let fx = provisioned_listener().await;
         let served = served_fingerprint(&fx, None, accept_any_client_config()).await;
-        assert_eq!(served, fx.fp_default, "no SNI offered: the default is served");
+        assert_eq!(
+            served, fx.fp_default,
+            "no SNI offered: the default is served"
+        );
     }
 
     /// 1.5.5 (`v1.5.5:crates/busbar/src/tls.rs`) never read `ClientHello::server_name` at all — it
@@ -915,6 +998,182 @@ mod cg_49_sni {
             accept_any_client_config(),
         )
         .await;
-        assert_eq!(served, fx.fp_default, "unknown name: the default is served, not a refusal");
+        assert_eq!(
+            served, fx.fp_default,
+            "unknown name: the default is served, not a refusal"
+        );
     }
+}
+
+/// A writer that accepts every byte and then fails to flush: the exact shape a Unit 0 refusal must
+/// not be able to report as delivered. `write_all` succeeds, so only the flush leg can catch it.
+struct FlushFailsWriter {
+    written: Vec<u8>,
+}
+
+impl tokio::io::AsyncWrite for FlushFailsWriter {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        self.written.extend_from_slice(buf);
+        std::task::Poll::Ready(Ok(buf.len()))
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        std::task::Poll::Ready(Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "the peer went away before the refusal reached it",
+        )))
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn an_undelivered_unit0_refusal_is_an_error() {
+    let mut w = FlushFailsWriter {
+        written: Vec::new(),
+    };
+    let err = deliver_refusal(&mut w, b"refused")
+        .await
+        .expect_err("a refusal whose flush failed was never delivered and must not report Ok");
+    assert_eq!(err, TransportError::Reset);
+    assert_eq!(w.written.as_slice(), b"refused");
+}
+
+#[tokio::test]
+async fn a_unit0_refusal_reaches_a_healthy_peer() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+    server
+        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .await
+        .unwrap();
+
+    let mut frames = client.frames(client_conn);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"refused");
+}
+
+/// A transport may not advertise a selector form it cannot serve.
+///
+/// `ClientCertSubject` reads a distinguished name off the presented certificate. This transport
+/// does not parse one: it records the certificate's fingerprint, which is a real fact, and leaves
+/// subject and issuer as placeholders. Advertising the form anyway means that the day a resolver
+/// reads it, every client certificate compares equal and a cert-subject distinction collapses
+/// silently instead of failing. The declaration is held to what the transport actually fills.
+#[tokio::test]
+async fn no_selector_form_is_advertised_that_the_certificate_facts_cannot_serve() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let _server_conn = accept_fut.await.unwrap();
+
+    let cert = client
+        .arrival(&client_conn)
+        .peer_cert
+        .expect("the handshake presented a certificate");
+    assert!(
+        !cert.fingerprint.is_empty(),
+        "the fingerprint is the fact this transport really does read"
+    );
+    let subject_is_a_placeholder = cert.subject == "peer" && cert.issuer == "peer";
+
+    let forms = <TlsTransport as TransportMeta>::SELECTOR_FORMS;
+    assert!(
+        forms.contains(&busbar_contract::SelectorForm::Sni),
+        "the forms this transport does serve stay declared"
+    );
+    assert!(
+        forms.contains(&busbar_contract::SelectorForm::Alpn),
+        "the forms this transport does serve stay declared"
+    );
+    if subject_is_a_placeholder {
+        assert!(
+            !forms.contains(&busbar_contract::SelectorForm::ClientCertSubject),
+            "a distinguished name this transport never parses must not be advertised as a form it selects on"
+        );
+    }
+}
+
+/// The read buffer is per-connection and reused across polls, so the byte-exactness cell has a new
+/// way to fail: a short frame following a long one must not carry the tail of its predecessor, and
+/// the buffer a connection reads through must be the same allocation each time rather than a fresh
+/// `READ_CHUNK_BYTES` one per read.
+#[tokio::test]
+async fn one_read_buffer_per_connection_reused_without_leaking_bytes_between_frames() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let mut frames = server.frames(server_conn.clone());
+    let long = vec![b'L'; 4096];
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(&long))
+        .await
+        .unwrap();
+    let mut got = Vec::new();
+    while got.len() < long.len() {
+        let (_s, frame) = frames.next().await.unwrap().unwrap();
+        got.extend_from_slice(frame.bytes.as_slice());
+    }
+    assert_eq!(got, long);
+    let first_buffer = server.scratch_addr(server_conn.id()).await.unwrap();
+
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"short"))
+        .await
+        .unwrap();
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(
+        frame.bytes.as_slice(),
+        b"short",
+        "no residue from the longer frame before it"
+    );
+    assert_eq!(frame.meta.bytes, 5, "honest frame meta on a reused buffer");
+    assert_eq!(
+        server.scratch_addr(server_conn.id()).await.unwrap(),
+        first_buffer,
+        "one buffer per connection, not one per read"
+    );
 }

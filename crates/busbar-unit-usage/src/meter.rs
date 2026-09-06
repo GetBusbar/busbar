@@ -77,8 +77,15 @@ impl Metered {
 /// tolerance the LOWER of the two posts. A reported cardinality with no companion at all posts as
 /// an estimate, checked only against a proxy under the same one-sided bound.
 ///
-/// The report is marked as an estimate as a whole when any line in it is one, because that mark
-/// travels onto the posting and a posting is one thing.
+/// Each posted line keeps the source the fold matched on and its own estimate mark. The arms above
+/// already know what evidence a figure rests on; posting every line as a uniform kernel `Count`
+/// would throw that away at the one point where it is written down. The audit record seals
+/// `line.source` into its digest and the ledger settles against it, so a line's provenance is part
+/// of what a billing dispute is argued from.
+///
+/// The report is ALSO marked as an estimate as a whole when any line in it is one, because that
+/// mark travels onto the posting and a posting is one thing. The two marks answer different
+/// questions: "was anything here floored" and "was THIS figure".
 pub fn meter(
     retained: &RetainedLocatorValues,
     kernel: &KernelCounts,
@@ -94,6 +101,11 @@ pub fn meter(
         let class = value.class.as_str();
         let companion = kernel.companion(class);
         let reported = value.quantity;
+        // Whether THIS line is the node's own floor rather than a figure somebody stood behind. The
+        // report-wide mark below is the OR of these, but the per-line answer is the one the record
+        // seals and a dispute reads: "the whole report contained an estimate" does not say which
+        // figure was one.
+        let mut line_estimated = false;
 
         let charge = match &value.source {
             // THE FLOOR IS EVIDENCE, NEVER A CHARGE. The located figure bills in every case; the
@@ -137,7 +149,7 @@ pub fn meter(
                 None => {
                     // No companion in this unit: the line posts as an estimate, and the only check
                     // available is the one-sided bound against a proxy.
-                    estimated = true;
+                    line_estimated = true;
                     disputes.push(Dispute {
                         class: class.to_string(),
                         reason: DisputeReason::NoCompanion,
@@ -162,17 +174,19 @@ pub fn meter(
             // is an estimate.
             source => {
                 if source.is_floor() {
-                    estimated = true;
+                    line_estimated = true;
                 }
                 reported
             }
         };
 
+        estimated |= line_estimated;
         lines.push(UsageLine {
             class: MeterClassId::new(class),
             quantity: charge,
-            source: QuantitySource::Count,
-            estimated: false,
+            // The provenance the arms above matched on, carried onto the line rather than flattened.
+            source: value.source.clone(),
+            estimated: line_estimated,
         });
     }
 

@@ -348,6 +348,60 @@ fn installed_plane_decls_are_behaviourally_isomorphic_or_declared() {
     );
 }
 
+/// THE ROOT LEG, JOINED TO THE SAME LEDGER — cfg-gated on all five `root-*` features for the reason
+/// spelled out in `capability_equality.rs`: the legs carry no config key, no environment variable
+/// and no boot line, so the only way to ask a build which legs it has is to compile the question in.
+///
+/// Isomorphism has always been about the SHIPPED decls. This adds the other path: every plane the
+/// binary installs must also be answered by a root leg in `qa/capability-equality.json`, on every one
+/// of its directional ledger columns. A plane installed into the binary and driven through the loop
+/// by no leg would be a plane whose loop nobody is judging — the same silent hole one axis over.
+#[cfg(all(
+    feature = "root-llm",
+    feature = "root-mcp",
+    feature = "root-a2a",
+    feature = "root-voice",
+    feature = "root-admin"
+))]
+#[test]
+fn every_installed_plane_is_answered_by_a_root_leg() {
+    let decls = installed_decls();
+    if decls.is_empty() {
+        return;
+    }
+    let ledger = read_json(&repo_root().join("qa/capability-equality.json"));
+    let legs = ledger["root_legs"]
+        .as_object()
+        .expect("qa/capability-equality.json declares `root_legs`");
+    // column -> leg, read off the ledger rather than restated here.
+    let mut answered: BTreeMap<String, String> = BTreeMap::new();
+    for (leg, meta) in legs {
+        for col in meta["columns"].as_array().expect("`columns` is an array") {
+            let col = col.as_str().expect("a column is a string");
+            assert!(
+                answered.insert(col.to_string(), leg.clone()).is_none(),
+                "column `{col}` is claimed by two legs; a plane runs through one leg"
+            );
+        }
+    }
+    let columns = columns_map();
+    for (key, _) in &decls {
+        let cols = columns
+            .get(key)
+            .unwrap_or_else(|| panic!("installed plane `{key}` has no ledger columns"));
+        for &col in *cols {
+            let leg = answered.get(col).unwrap_or_else(|| {
+                panic!(
+                    "installed plane `{key}` answers to ledger column `{col}`, which NO root leg \
+                     covers. A plane the binary installs and no leg drives is a loop nobody is \
+                     judging."
+                )
+            });
+            println!("  {key:<6} {col:<13} -> {leg}");
+        }
+    }
+}
+
 /// I1 / floor guard: the reflected hook set and the doctrine constants cannot silently shrink.
 #[test]
 fn the_reflected_hook_set_and_constants_are_the_doctrine() {

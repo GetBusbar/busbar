@@ -10,6 +10,12 @@
 //!   `tests/table_matches_openapi.rs` that fails the build if this list and the committed fixture
 //!   ever disagree, by even one operation or one scope;
 //! - one of the **17 new 1.6.0 verbs** named in the architecture document — see [`NEW_VERBS`];
+//! - one of the **five 1.6.0 ledger views** — see [`LEDGER_VERBS`]. These are reads of what the
+//!   ledger already holds, so they are the one group of 1.6.0 additions that is `ReadOnly` rather
+//!   than `Full`, and the only group that is never posture-gated: reading a figure changes nothing,
+//!   so there is no mutation for dual control to check. They carry no legacy row because they are
+//!   new surface, and the document that describes them is a separate additive one for the same
+//!   reason — the 1.5.5 document's bytes are pinned;
 //! - one of the **named non-admin surfaces** (the self-serve token exchange, the browser token
 //!   exchange, the two model listings, and the four unauthenticated/data-plane-keyed surfaces) —
 //!   see [`NAMED_SURFACES`]. These are not part of the admin `openapi.json` table (they are not
@@ -319,6 +325,21 @@ pub enum KernelVerb {
     ExportKeyset,
     /// The maker-checker approval verb (checked, not itself dual-controlled).
     Approve,
+
+    // ---- 1.6.0 ledger views (5) ----
+    /// `GET /api/v1/admin/ledger/totals` — what the ledger posted, per bucket, day, lane and
+    /// provider.
+    GetLedgerTotals,
+    /// `GET /api/v1/admin/ledger/checkpoints` — the sealed checkpoint figures.
+    GetLedgerCheckpoints,
+    /// `GET /api/v1/admin/ledger/reconciliation` — the residual of the ledger's postings against
+    /// the previous release's rows, row by row.
+    GetLedgerReconciliation,
+    /// `GET /api/v1/admin/ledger/migration` — the marker the first boot after the upgrade sealed.
+    GetLedgerMigration,
+    /// `GET /api/v1/admin/ledger/openapi.json` — the additive document describing the 1.6.0
+    /// operations, served beside the 1.5.5 document rather than inside it.
+    GetLedgerOpenapiJson,
 
     // ---- named non-admin surfaces ----
     /// `POST /auth/token` — the self-serve exchange (exempt from dual control in both postures).
@@ -672,6 +693,21 @@ pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Adjust,
     KernelVerb::ExportKeyset,
     KernelVerb::Approve,
+];
+
+/// The five 1.6.0 ledger views, in the order the admin surface lists them.
+///
+/// Kept as their own list rather than folded into [`NEW_VERBS`] because membership of that list is
+/// what makes a verb posture-gated and `Full`-scoped, and neither is true of a read. A view answers
+/// with figures the ledger already holds: it mutates nothing, so there is no maker-checker step for
+/// dual control to interpose, and it needs no more authority than the legacy `GET /usage` that
+/// reads the same money from the other side.
+pub const LEDGER_VERBS: &[KernelVerb] = &[
+    KernelVerb::GetLedgerTotals,
+    KernelVerb::GetLedgerCheckpoints,
+    KernelVerb::GetLedgerReconciliation,
+    KernelVerb::GetLedgerMigration,
+    KernelVerb::GetLedgerOpenapiJson,
 ];
 
 /// The named non-admin surfaces, each pinned by its own handler in 1.5.5, not by this crate's

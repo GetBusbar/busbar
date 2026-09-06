@@ -740,6 +740,134 @@ fn pool_scoped_accrual_and_refund_mirror_the_charge() {
         .expect("the refunded fee re-opened frontier's bucket");
 }
 
+/// A request that straddles a window boundary is charged on the LIVE cell, and its refund has to
+/// reach that same cell.
+///
+/// `now` is the arrival epoch, pinned when the request came in. A concurrent admission can roll the
+/// cell forward between then and the charge, and the charge deliberately lands in place on the
+/// rolled cell rather than resetting it — the check reads that same cell for exactly this reason.
+/// The refund is the other half of that charge, so it resolves the cell the same way: at or past
+/// this request's window. Anything else keeps the flat fee for a request that failed, and the
+/// derived spend the budget cap reads stays one fee too high for the rest of the window.
+#[test]
+fn a_refund_reaches_the_cell_a_straddling_charge_reached() {
+    let d = door();
+    let p = no_card(10);
+    let t = table(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Budget, 1_000, Some(MINUTE))],
+        ),
+    )]);
+    let c = chain(&t, "vk_straddle", Some("g"));
+
+    // A minute boundary, with `earlier` in the minute before `later`.
+    let later = 1_700_000_100;
+    let earlier = 1_700_000_099;
+    assert_ne!(
+        crate::window::budget_window(MINUTE, earlier),
+        crate::window::budget_window(MINUTE, later),
+        "the two epochs have to be in different minutes for this to be a straddle at all"
+    );
+
+    // A concurrent admission has already rolled the cell into the newer minute.
+    d.try_admit(&p, &c, "", later).expect("the roller admits");
+    let bucket = "group:g@minute";
+    let rolled = d.cells().snapshot(bucket).expect("the cell exists");
+    assert_eq!(rolled.billable_requests, 1);
+
+    // Our request arrived just before the boundary; its charge lands IN PLACE on the rolled cell.
+    d.try_admit(&p, &c, "", earlier)
+        .expect("the straddler admits");
+    assert_eq!(
+        d.cells().snapshot(bucket).expect("cell").billable_requests,
+        2,
+        "the straddling charge landed on the live cell, not on a fresh one"
+    );
+
+    // It failed. The refund must reach the cell the charge reached.
+    d.refund_request(&c, "", earlier);
+    assert_eq!(
+        d.cells().snapshot(bucket).expect("cell").billable_requests,
+        1,
+        "the fee for a failed request must come back off the cell it was charged to"
+    );
+}
+
+/// What that stranded fee COSTS, read through the budget cap rather than through the counter.
+///
+/// The previous release resolved a refund on `window_start == window` while resolving a charge on
+/// `window > window_start`, so the two halves of one request could land on different cells and the
+/// flat fee for a failed straddling request was never returned. The visible consequence is here:
+/// the derived spend the budget cap reads stays one fee too high for the rest of that minute, and
+/// a caller who is under its budget is refused as though it were not. The refund closing the gap
+/// is what re-opens the door.
+///
+/// The stale half is asserted too — a cell genuinely older than the request's window is a window
+/// already left behind, and its refund stays a no-op under the improvement.
+#[test]
+fn a_stranded_straddling_fee_would_hold_the_budget_cap_shut() {
+    let d = door();
+    let p = no_card(10); // flat fee per request
+    let t = table(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Budget, 25, Some(MINUTE))],
+        ),
+    )]);
+    let c = chain(&t, "vk_cap_straddle", Some("g"));
+
+    let later = 1_700_000_100; // the rolled minute
+    let earlier = 1_700_000_099; // the minute before it
+    assert_ne!(
+        crate::window::budget_window(MINUTE, earlier),
+        crate::window::budget_window(MINUTE, later),
+        "the two epochs have to be in different minutes for this to be a straddle at all"
+    );
+
+    // A concurrent admission rolls the cell into the newer minute, then our straddler is charged
+    // in place on that rolled cell. Two fees of 10 against a cap of 25 leaves no room for a third.
+    d.try_admit(&p, &c, "", later).expect("the roller admits");
+    d.try_admit(&p, &c, "", earlier)
+        .expect("the straddler admits");
+    assert_blocked(
+        d.try_admit(&p, &c, "", later).unwrap_err(),
+        "g",
+        Metric::Budget,
+        Some(MINUTE),
+        true,
+    );
+
+    // The straddler failed upstream, so its fee is not owed. Refunding it at the SAME pinned epoch
+    // the charge used has to reach the rolled cell; if it does not, the spend the cap reads stays
+    // at two fees and the door below stays shut for the rest of the minute.
+    d.refund_request(&c, "", earlier);
+    d.try_admit(&p, &c, "", later)
+        .expect("the returned fee re-opened the budget the failed straddler was holding");
+
+    // The other side of the rule still holds a line: a cell left behind by a LATER window is not
+    // this request's cell, so a refund pinned to that later window is a no-op rather than a free
+    // decrement of a minute nobody charged.
+    let held = d
+        .cells()
+        .snapshot("group:g@minute")
+        .expect("the cell exists")
+        .billable_requests;
+    d.refund_request(&c, "", later + 120);
+    assert_eq!(
+        d.cells()
+            .snapshot("group:g@minute")
+            .expect("the cell exists")
+            .billable_requests,
+        held,
+        "a refund pinned past the cell's window cannot erode a window it never charged"
+    );
+}
+
 /// A budget block whose limit declared a downgrade NAMES the downgrade pool in the refusal, so the
 /// caller can re-admit there; the most restrictive of two merged budgets is the one whose
 /// behaviour governs; and a plain budget block still carries no downgrade.

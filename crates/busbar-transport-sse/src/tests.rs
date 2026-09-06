@@ -3,24 +3,27 @@
 //! parser tests ported alongside `proto` itself.
 
 use super::*;
-use busbar_contract::KernelSeal;
 use busbar_transport_http::ClientSettings;
 use futures::StreamExt;
 
-struct FixtureSeal;
-impl KernelSeal for FixtureSeal {
-    fn seal_origin(&self) -> &'static str {
-        "busbar-transport-sse test fixture"
-    }
+/// The seal these fixtures build kernel-side values with: the capability crate's own token.
+///
+/// A fixture that declared a private type and implemented the contract's sealing trait on it was
+/// forging kernel evidence in order to test something else, and it read as if that were the
+/// ordinary way to obtain one. The ordinary way is a token the loop lends out, so the fixture uses
+/// that and the transport under test receives exactly what a deployment hands it.
+fn fixture_seal() -> busbar_caps::TransportKeyToken {
+    busbar_caps::TransportKeyToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel())
 }
+
 fn fixture_key() -> TransportKeyHandle {
-    TransportKeyHandle::issue(&FixtureSeal, 0, "test")
+    TransportKeyHandle::issue(&fixture_seal(), 0, "test")
 }
 
 fn upstream_dest(uri: &str) -> busbar_contract::VerifiedDestination {
     let host: &'static str = Box::leak(uri.to_string().into_boxed_str());
     busbar_contract::VerifiedDestination::seal(
-        &FixtureSeal,
+        &fixture_seal(),
         busbar_contract::DestinationFacts::Upstream {
             transport: "sse",
             address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
@@ -93,19 +96,318 @@ async fn request_plus_n_response_frames_over_a_real_stream() {
     assert!(frames.next().await.is_none());
 }
 
+/// The re-segmentation scan costs a pass over the frame, not a pass per arriving chunk.
+///
+/// An upstream trickling one large frame is the shape that separates a linear scan from a
+/// quadratic one: rescanning the whole buffer on every http frame re-proves the prefix already
+/// proven terminator-free, once per chunk. The crate next door holds its chunked decoder to exactly
+/// this standard, and says why — for the bodies these paths exist to carry it is the difference
+/// between a transport and a stall.
+///
+/// This drives the same [`proto::find_frame_terminator_from`] the transport's `frames` runs on, in
+/// the same resume-and-rewind discipline, so what it counts is production work.
 #[test]
-fn frame_meta_honesty_holds_for_sse_frames() {
-    let raw = b"data: x\n\n";
-    let bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(&raw[..]);
-    let frame = Frame {
-        direction: Direction::Inbound,
-        stream: StreamId(0),
-        bytes: SlabBytes::new(bytes),
-        meta: FrameMeta {
-            bytes: raw.len() as u64,
-            transport_units: None,
-            status: None,
-        },
-    };
-    assert_eq!(frame.meta.bytes, frame.bytes.len() as u64);
+fn the_resegmentation_scan_costs_one_pass_over_the_frame_not_one_per_chunk() {
+    let mut frame = b"data: ".to_vec();
+    frame.extend_from_slice(&[b'x'; 8192]);
+    frame.extend_from_slice(b"\n\n");
+
+    let mut buf: Vec<u8> = Vec::with_capacity(frame.len());
+    let mut scanned_prefix = 0_usize;
+    let mut scanned = 0_usize;
+    let mut found = None;
+    for byte in &frame {
+        buf.push(*byte);
+        let (hit, examined) =
+            proto::find_frame_terminator_from(&buf, scanned_prefix.saturating_sub(3));
+        scanned += examined;
+        match hit {
+            Some(hit) => {
+                found = Some(hit);
+                break;
+            }
+            None => scanned_prefix = buf.len(),
+        }
+    }
+    assert_eq!(
+        found,
+        Some((frame.len() - 2, 2)),
+        "the frame boundary is still found at exactly the same offset"
+    );
+
+    let n = frame.len();
+    assert!(
+        scanned < 5 * n,
+        "a {n}-byte frame arriving a byte at a time cost {scanned} bytes of scanning; \
+         a resume point makes that O(n), restarting at zero makes it O(n^2)"
+    );
+}
+
+/// A frame trickled in one byte at a time is segmented exactly as one delivered whole.
+///
+/// The correctness half of carrying a scan cursor: the only way an offset-tracking scan can be
+/// wrong is by moving a frame boundary, so both deliveries are asserted to produce the same frames.
+#[tokio::test]
+async fn byte_at_a_time_delivery_segments_identically_to_one_shot_delivery() {
+    async fn frames_of(trickle: bool) -> Vec<Vec<u8>> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0_u8; 4096];
+            let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+            let body = b"event: a\ndata: one\n\ndata: two\r\n\r\ndata: three\r\rdata: four\n\n";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes())
+                .await
+                .unwrap();
+            if trickle {
+                for byte in body {
+                    tokio::io::AsyncWriteExt::write_all(&mut stream, &[*byte])
+                        .await
+                        .unwrap();
+                    tokio::io::AsyncWriteExt::flush(&mut stream).await.unwrap();
+                }
+            } else {
+                tokio::io::AsyncWriteExt::write_all(&mut stream, body)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let uri = format!("http://{addr}/");
+        let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+        let sse = SseTransport::new(http);
+        let conn = sse
+            .dial(&upstream_dest(&uri), &fixture_key())
+            .await
+            .unwrap();
+        sse.write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        )
+        .await
+        .unwrap();
+        let mut out = Vec::new();
+        let mut frames = sse.frames(conn);
+        while let Some(Ok((_s, f))) = frames.next().await {
+            out.push(f.bytes.as_slice().to_vec());
+        }
+        out
+    }
+
+    let whole = frames_of(false).await;
+    let trickled = frames_of(true).await;
+    assert_eq!(
+        whole.len(),
+        4,
+        "four frames, every terminator shape among them"
+    );
+    assert_eq!(
+        whole, trickled,
+        "how the bytes were delivered is not a fact about where the frames end"
+    );
+}
+
+/// An upstream that streams events and never closes delivers them as they arrive.
+///
+/// This is the composition claim itself. `sse` re-segments the bytes `http` hands it, so whatever
+/// `http` withholds until the upstream closes, `sse` cannot segment until then either: an event
+/// stream would deliver zero frames until close, and one that never closes would deliver nothing
+/// ever. Nothing about `sse`'s own re-segmentation can rescue that, which is why the cell lives
+/// here as well as next door — this is where the shape is actually used.
+#[tokio::test]
+async fn a_never_closing_event_stream_delivers_its_events_as_they_arrive() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0_u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+        tokio::io::AsyncWriteExt::write_all(
+            &mut stream,
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        // One event every 100ms, and no terminal chunk ever: the stream does not end.
+        for i in 0.. {
+            let event = format!("data: {{\"n\":{i}}}\n\n");
+            let mut piece = format!("{:x}\r\n", event.len()).into_bytes();
+            piece.extend_from_slice(event.as_bytes());
+            piece.extend_from_slice(b"\r\n");
+            if tokio::io::AsyncWriteExt::write_all(&mut stream, &piece)
+                .await
+                .is_err()
+            {
+                return;
+            }
+            let _ = tokio::io::AsyncWriteExt::flush(&mut stream).await;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    });
+
+    let uri = format!("http://{addr}/");
+    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let sse = SseTransport::new(http);
+    let conn = sse
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        sse.write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        ),
+    )
+    .await
+    .expect("the request answers on the response head, not on the upstream's close")
+    .unwrap();
+
+    let mut frames = sse.frames(conn);
+    for i in 0..2 {
+        let (_s, frame) = tokio::time::timeout(std::time::Duration::from_secs(2), frames.next())
+            .await
+            .expect("an event arrives while the upstream is still streaming")
+            .unwrap()
+            .unwrap();
+        let (event, data) = proto::parse_sse_frame(frame.bytes.as_slice()).unwrap();
+        assert_eq!(event, "");
+        assert_eq!(data, format!("{{\"n\":{i}}}"));
+        assert_eq!(
+            frame.meta.status.is_some(),
+            i == 0,
+            "the inherited status leg rides the first response frame only"
+        );
+    }
+    server.abort();
+}
+
+/// An upstream that never ends a frame is refused at the cursor budget, not accumulated forever.
+///
+/// Upstream response bytes are untrusted input, and unlike the request body there is no cap one
+/// layer up for this buffer: a streamed response body is exactly what the served door's body limit
+/// does not apply to. So a provider — or anything wearing one's address — that opens a
+/// `text/event-stream` and then writes without ever emitting a blank line grows this buffer for the
+/// life of the connection. The design's per-connection reading budget is the right instrument and
+/// `Framing` is the right answer; no real provider frame comes close to it, which the fixtures
+/// above pin.
+#[tokio::test]
+async fn an_upstream_frame_past_the_cursor_budget_ends_the_stream() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let filler = busbar_contract::MAX_CURSOR_BYTES * 2;
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0_u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+        let mut body = b"data: ".to_vec();
+        // Not one blank line anywhere in it.
+        body.extend_from_slice(&vec![b'x'; filler]);
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes())
+            .await
+            .unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut stream, &body)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+
+    let uri = format!("http://{addr}/");
+    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let sse = SseTransport::new(http);
+    let conn = sse
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    sse.write(
+        &conn,
+        StreamId(0),
+        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+    )
+    .await
+    .unwrap();
+
+    let mut frames = sse.frames(conn);
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the stream answers rather than accumulating")
+        .expect("the stream yields the framing error");
+    assert_eq!(
+        first.unwrap_err(),
+        TransportError::Framing,
+        "an unterminated frame past the cursor budget is refused, not buffered"
+    );
+}
+
+/// Frame meta is honest on frames a REAL `SseTransport` emitted, and the check that says so is one
+/// an inflating or a deflating fixture turns red.
+///
+/// The old cell built a `Frame` literal in the test body, set `meta.bytes` from the same slice it
+/// then compared against, and never constructed a transport at all: a tautology that would have
+/// shipped green over a `meta.bytes` that counted the terminator twice as the buffer drained. The
+/// metering path reads `FrameMeta.bytes` as the bytes meter class, so a dishonest one is a billing
+/// figure, not a cosmetic slip. This asserts against frames off the wire and proves the predicate
+/// discriminates by perturbing them one byte each way.
+#[tokio::test]
+async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
+    fn honest(frame: &Frame) -> bool {
+        frame.meta.bytes == frame.bytes.len() as u64
+    }
+    fn perturbed(frame: &Frame, by: i64) -> Frame {
+        Frame {
+            meta: FrameMeta {
+                bytes: (frame.meta.bytes as i64 + by) as u64,
+                ..frame.meta
+            },
+            ..frame.clone()
+        }
+    }
+
+    let uri = sse_server().await;
+    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let sse = SseTransport::new(http);
+    let conn = sse
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    sse.write(
+        &conn,
+        StreamId(0),
+        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+    )
+    .await
+    .unwrap();
+
+    let mut seen = 0_usize;
+    let mut frames = sse.frames(conn);
+    while let Some(item) = frames.next().await {
+        let (_s, frame) = item.unwrap();
+        assert!(
+            honest(&frame),
+            "the transport's own frame reports the bytes it actually carries"
+        );
+        // The terminator is part of the frame's bytes, so an off-by-one either way is a real
+        // possibility and the check has to see it.
+        assert!(
+            !honest(&perturbed(&frame, 1)),
+            "an inflating fixture is red"
+        );
+        assert!(
+            !honest(&perturbed(&frame, -1)),
+            "a deflating fixture is red"
+        );
+        seen += 1;
+    }
+    assert_eq!(seen, 2, "both frames of the fixture stream were checked");
 }

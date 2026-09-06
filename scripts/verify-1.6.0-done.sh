@@ -21,7 +21,9 @@
 #   no-deferral      scripts/no-deferral-gate.sh --strict-done (nothing deferred; voice markers CLEARED).
 #   config-noun      scripts/plane-config-noun-gate.sh armed (GREP_GATE_REPORT_ONLY=0): core names no
 #                    section noun as a parse target (0 — Stage A landed).
-#   equality         scripts/capability-equality-summary.py reports 0 missing cells (LLM==MCP==A2A true).
+#   equality         scripts/capability-equality-summary.py reports 0 missing cells (LLM==MCP==A2A true),
+#                    AND the ledger's root column holds with all five root-* legs on and every cell it
+#                    calls `proven` over the loop actually runs and passes.
 #   isomorphism      the crates/busbar/tests/plane_isomorphism.rs gate is present and green.
 #   parity           testing/shadow-oracle: this build vs the PUBLISHED 1.5.5 binary, 0 divergences
 #                    across every recorded cell family (wire, admin, boot, CLI, config, billing,
@@ -195,7 +197,7 @@ GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh --check 2>&1 | gr
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "EQUALITY — capability-equality ledger has 0 missing cells"
+begin_group "EQUALITY — capability-equality ledger has 0 missing cells, on the legacy path AND over the loop"
 step "capability-equality-summary --selftest" python3 scripts/capability-equality-summary.py --selftest
 # The summary prints the missing count but exits 0 while the pin is honest; DONE additionally requires
 # ZERO missing, so assert it explicitly here.
@@ -206,6 +208,18 @@ m = [c["capability"] + "/" + c["plane"] for c in d["cells"] if c["state"] == "mi
 print((str(len(m)) + " missing cell(s): " + ", ".join(m)) if m else "0 missing cells")
 sys.exit(1 if m else 0)
 '
+# THE ROOT COLUMN. Every plane also runs through the composition root, so the ledger carries a second
+# verdict per cell over its plane's `root-*` leg. Two things are asserted here and neither is the
+# other: that the column HOLDS (the cargo gate, run with all five legs on — which is also the only
+# build where the leg-by-leg half of that gate exists at all), and that every cell it calls `proven`
+# actually RUNS and passes (the summary's own runner, which refuses a run that executed a different
+# set). The remaining "none" cells are the switch-over queue and are PRINTED, not fatal — the same
+# honest-ledger posture the missing set has.
+step "capability_equality gate, five legs on" \
+  cargo test -p busbar --features root-admin,root-mcp,root-a2a,root-voice,root-llm --quiet --test capability_equality
+step "every root-leg proof cell RUNS and passes" python3 scripts/capability-equality-summary.py --root-legs
+printf '  \033[36m[info]\033[0m '
+python3 scripts/capability-equality-summary.py 2>/dev/null | grep -E "^ROOT-EQUALITY:" || echo "root-equality count unavailable"
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -295,10 +309,17 @@ fi
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "TELLER-STEPS — H2: one conformance cell per Teller step per plane (qa/teller-steps.json)"
+begin_group "TELLER-STEPS — H2: one conformance cell per Teller step per plane, and one root-leg cell beside it"
 if [ -f scripts/teller-steps-check.py ] && [ -f qa/teller-steps.json ]; then
   step "teller-steps-check self-test"  python3 scripts/teller-steps-check.py --selftest
   step "teller-steps-check --check"    python3 scripts/teller-steps-check.py --check
+  # The ROOT column beside the rig column: every (plane x step) cell also names the root::units_*
+  # cell that drives that step through run_unit, or a named gap. --check verifies the column holds
+  # (a proven cell's fn exists in its own leg's file; a leg proving nothing is red); this RUNS every
+  # named cell with all five legs on, so "proven" means watched rather than present on disk.
+  step "every root-leg step cell RUNS and passes" python3 scripts/teller-steps-check.py --root-legs
+  printf '  \033[36m[info]\033[0m '
+  python3 scripts/teller-steps-check.py --check 2>/dev/null | grep -E "^ROOT-STEPS:" || echo "root-steps count unavailable"
 else
   absent_step "teller-steps-check" "scripts/teller-steps-check.py / qa/teller-steps.json"
 fi

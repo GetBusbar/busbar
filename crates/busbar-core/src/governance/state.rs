@@ -2030,7 +2030,11 @@ impl GovState {
     /// request that produced no usable upstream result (non-2xx). Keeps the flat-fee policy "bill
     /// 2xx only" intact (the fee derives from the request count, so -1 request = -1 fee on the key
     /// bucket). `now` MUST be the same `charged_at` epoch the admission charge used so the refund
-    /// lands in the SAME window per bucket; a bucket whose window has rolled past is a no-op.
+    /// lands on the SAME cell per bucket the charge landed on — including the straddle, where a
+    /// concurrent admission rolled the cell forward between this request's arrival and its charge
+    /// and the charge landed in place on the rolled cell. Only a bucket whose cell is genuinely
+    /// OLDER than this request's window is a no-op: that is a window already left behind rather
+    /// than one this request reached.
     /// Floored at 0 - a refund can never drive a counter negative.
     pub(crate) fn refund_request(
         &self,
@@ -2056,7 +2060,12 @@ impl GovState {
         let window = budget_window(budget_period, now);
         let mut map = self.budget.write(bucket_id);
         if let Some(cell) = map.get_mut(bucket_id) {
-            if cell.window_start == window {
+            // The exact inverse of the charge's cell resolution: that lands a charge in place on a
+            // cell holding this window OR a newer one, so this returns the fee from the same set.
+            // An equality test here would leave the flat fee for a failed straddling request on the
+            // rolled cell forever, and the derived spend the budget cap reads one fee too high for
+            // the rest of that window.
+            if cell.window_start >= window {
                 // Refund ONLY the billable (fee-base) counter - the flat fee bills 2xx only. The
                 // admission `requests` counter is NEVER refunded, so a failed request still
                 // consumed its requests-limit slot (a caller cannot escape the requests cap by

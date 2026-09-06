@@ -7,8 +7,13 @@ rust-version = "1.97"
 description = "The http transport: request/response frames over tcp or tls, plus the pinned 1.5.5 egress client posture."
 license = "Apache-2.0"
 
+# DEPENDENCY POLICY. A transport is in-tree only and never dynamically loaded, so it sits inside
+# the trusted computing base and is reviewed rather than manifest-gated. `memchr` is the one
+# non-plumbing name here: the framing scanners search for their terminators with it, and it is
+# already in the lock through hyper's own tree, so naming it adds no crate to the graph.
 [dependencies]
 tokio-util = { workspace = true }
+memchr = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 busbar-contract-transport = { path = "../busbar-contract-transport" }
 busbar-transport-tcp = { path = "../busbar-transport-tcp" }

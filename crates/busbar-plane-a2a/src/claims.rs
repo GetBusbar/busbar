@@ -179,10 +179,7 @@ mod tests {
         assert_eq!(P_ROOT, busbar_a2a_codec::MOUNT_PATH);
         // The framed binding's mount is one path segment, and the claim spells it as that one
         // segment followed by the method.
-        assert_eq!(
-            busbar_a2a_codec::GRPC_MOUNT_PATH,
-            "/lf.a2a.v1.A2AService"
-        );
+        assert_eq!(busbar_a2a_codec::GRPC_MOUNT_PATH, "/lf.a2a.v1.A2AService");
     }
 
     /// This plane's registry key is the codec's own.

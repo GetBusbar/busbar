@@ -11,9 +11,9 @@ use crate::dest::{
     AuthDecoration, CandidateSet, EgressBody, Permutation, VerifiedDestination, VetoCode,
 };
 use crate::grammar::ArrivalLocation;
-use crate::ids::{LaneId, PrincipalId, RecordSchemaId, SchemeAlt, SessionId, StreamId};
+use crate::ids::{LaneId, PrincipalId, RecordSchemaId, SchemeAlt, SessionId};
 use crate::plugin::Plugin;
-use crate::unit::{Clock, ConfigView, Ctx, Step, Unit};
+use crate::unit::{Clock, ConfigView, Step, Unit};
 use crate::wire::{ArrivalRecord, Frame};
 use core::fmt;
 
@@ -94,7 +94,10 @@ pub enum AuthOutcome {
 }
 
 /// Key material an auth scheme refreshes on the node's clock.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// Its `Debug` prints how much material there is and when it was fetched — the two facts a stalled
+/// refresh is diagnosed from — and never the material.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct KeyMaterial {
     /// The material, in whatever encoding the scheme uses.
     pub bytes: Vec<u8>,
@@ -102,16 +105,38 @@ pub struct KeyMaterial {
     pub fetched_at: u64,
 }
 
+impl fmt::Debug for KeyMaterial {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KeyMaterial")
+            .field("len", &self.bytes.len())
+            .field("fetched_at", &self.fetched_at)
+            .finish()
+    }
+}
+
 /// A credential as the kernel hands it to a scheme.
 ///
 /// The kernel has already copied the span out of the read cursor and masked what remains, so the
 /// bytes here are the credential and the wire no longer holds it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Its `Debug` says where the credential arrived and how long it was, never what it was — the same
+/// shape [`SecretValue`] uses, for the same reason. Every scheme across the ABI is handed one of
+/// these, so the code that might format it is code this tree cannot read.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Credential {
     /// Where it was found.
     pub location: ArrivalLocation,
     /// The bytes.
     pub bytes: Vec<u8>,
+}
+
+impl fmt::Debug for Credential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Credential")
+            .field("location", &self.location)
+            .field("len", &self.bytes.len())
+            .finish()
+    }
 }
 
 /// Turns an arriving credential into facts about a principal.
@@ -644,20 +669,6 @@ pub struct KernelCounts {
     pub elapsed_nanos: u128,
 }
 
-/// The facts a hook or a plane may attach to one stream of a session.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct StreamFacts<'u> {
-    /// Which stream.
-    pub stream: Option<StreamId>,
-    /// The facts.
-    pub facts: Facts<'u>,
-}
-
-/// A bounded list of envelope fields, for the kinds that build one.
+/// A bounded list of envelope fields: the one spelling of the bound, for every shape that carries
+/// one.
 pub type EnvelopeFields<'u> = BoundedVec<crate::wire::EnvelopeField<'u>, MAX_KEYS>;
-
-/// Everything the kernel hands a plugin call that is not the call's own arguments.
-///
-/// Re-exported here so a plugin crate can name the context without reaching for the module it
-/// lives in.
-pub type CallCtx<'u> = Ctx<'u>;

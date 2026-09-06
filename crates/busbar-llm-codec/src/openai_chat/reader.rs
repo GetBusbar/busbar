@@ -308,7 +308,8 @@ impl ProtocolReader for OpenAiReader {
                                     let func = tc_val.get("function").ok_or(IrError {
                                         class: StatusClass::ClientError,
                                         provider_signal: Some(
-                                            busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
+                                            busbar_substrate_values::proto::SIGNAL_IR_PARSE
+                                                .to_string(),
                                         ),
                                         retry_after: None,
                                     })?;
@@ -1151,7 +1152,9 @@ impl ProtocolReader for OpenAiReader {
                     let raw_id = tc_val.get("id").and_then(|v| v.as_str()).unwrap_or("");
                     let func = tc_val.get("function").ok_or(IrError {
                         class: StatusClass::ClientError,
-                        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
+                        provider_signal: Some(
+                            busbar_substrate_values::proto::SIGNAL_IR_PARSE.into(),
+                        ),
                         retry_after: None,
                     })?;
                     let name = func

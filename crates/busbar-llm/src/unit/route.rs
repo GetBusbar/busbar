@@ -70,7 +70,7 @@ use crate::unit::meter::MeterFacts;
 
 use crate::engine::{
     capture_stage_shape, fire_stage_taps, forwardable_client_header_names, EngineTables,
-    GateRejected, LazyBody, NativeRuntime, UsageSink, WeightedLane, APPLICATION_JSON,
+    GateRejected, LazyBody, NativeRuntime, TapCell, UsageSink, WeightedLane, APPLICATION_JSON,
     KIND_NOT_FOUND,
 };
 use crate::native_ingress::affinity_header_for;
@@ -440,25 +440,36 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
         .instrument(span)
         .await
     };
+    // THE TAP'S REPORT-BACK, taken off the response the walk handed back. The serving lane, the
+    // usage the dialect's reader found and the terminal-error fact are resolved INSIDE the walk, at
+    // the tap that accrues them — the walk answers with a response, not with a lane — so this is how
+    // they reach the step that has to report them.
+    //
+    // For a BUFFERED answer the tap has already finished: the body was read whole before it was
+    // translated, so the cell is filled here and the three figures below are the tap's own. For a
+    // STREAMED answer the cell is still empty, because the response is served on its headers and its
+    // figures do not exist yet — so the fields stay as they were, `accrued` says the tap owns the
+    // posting, and the Meter step reads the cell later, when it has been filled.
+    let mut facts = MeterFacts {
+        // Empty until the tap says otherwise, which is the state a stream leaves them in.
+        lane: None,
+        usage: None,
+        // The status the CLIENT saw, which is the fee basis and is known at the head either way.
+        status: resp.status().as_u16(),
+        billing_failed: false,
+        // The walk resolved candidates and dialled, so this is a fee-bearing client request.
+        upstream_leg: true,
+        accrued,
+    };
+    if let Some(report) = resp
+        .extensions()
+        .get::<TapCell>()
+        .and_then(|cell| cell.get())
+    {
+        facts.fold(report);
+    }
     RouteParts {
-        facts: MeterFacts {
-            // The serving lane and the usage the reader found are resolved INSIDE the walk, at the
-            // tap that accrues them, and the walk hands back a response rather than a lane. For a
-            // streamed answer they do not exist yet at all: the terminal usage frame arrives after
-            // the client has the bytes. Both are the tap's, which is why `accrued` is what this
-            // step reports about them rather than the figures themselves.
-            lane: None,
-            usage: None,
-            // The status the CLIENT saw, which is the fee basis.
-            status: resp.status().as_u16(),
-            // A terminal reader error or an aborted translation is read at stream end, inside the
-            // tap that skips the accrual on it. A unit whose accrual is the tap's carries that fact
-            // there; one whose accrual is not has no stream to fail.
-            billing_failed: false,
-            // The walk resolved candidates and dialled, so this is a fee-bearing client request.
-            upstream_leg: true,
-            accrued,
-        },
+        facts,
         // The walk took it.
         meter_sink: None,
         // The plan the walk ran, for the token to seal as the step's answer.
@@ -969,6 +980,79 @@ mod tests {
             v.to_string().contains("nope"),
             "the refusal names the destination the caller asked for: {v}"
         );
+    }
+
+    /// THE THREE FIGURES ROUTE COULD NOT FILL, filled — on the one end where the tap has already
+    /// finished by the time the step returns.
+    ///
+    /// A buffered cross-protocol answer is read WHOLE, translated, and only then handed back, so its
+    /// completion tap runs inside the walk and its report is on the response the walk returns. The
+    /// Route step folds it, and the facts the Meter step is bound to name the serving lane, carry the
+    /// split the dialect's reader found, and say the figures are a charge rather than evidence —
+    /// where before the fix all three were `None`/`false` by construction.
+    ///
+    /// The literals are the fixture's own: lane 0, three uncached input tokens and two output.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn route_reports_the_taps_figures_for_an_answer_that_finished() {
+        crate::testkit::install_test_seams();
+        let state = Arc::new(MockServerState::new());
+        state.push(mock_response(Fixture::Ok, crate::proto_codec::PROTO_OPENAI));
+        let server = MockServer::new(state).await;
+        // CROSS-PROTOCOL and non-streaming: an anthropic caller over an openai lane takes the
+        // buffered path, which is the path whose tap completes before the walk returns.
+        let ingress = crate::proto_codec::PROTO_ANTHROPIC;
+        let app = TestApp::new()
+            .lane(
+                LaneSpec::new("m", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                    .provider("test"),
+            )
+            .pool("p", &[(0, 1)])
+            .build();
+        let (host, rt) = crate::engine::test_host_rt(&app);
+        let body = Bytes::from(request_body(ingress, "p"));
+        let headers = HeaderMap::new();
+        let (_seal, token) = tokens();
+        let routed = route(
+            &token,
+            RouteInput {
+                host: &host,
+                rt: &rt,
+                proto: ingress,
+                op: crate::test_support::CHAT,
+                destination: "p",
+                headers: &headers,
+                body: body.clone(),
+                parsed: LazyBody::parse(&body).ok(),
+                caller_token: None,
+                resolved_gov_key: None,
+                usage_sink: None,
+                model_not_found_message: None,
+                lanes: &LANES,
+            },
+        )
+        .await;
+        assert_eq!(routed.facts.status, 200, "the answer was delivered");
+        assert_eq!(
+            routed.facts.lane,
+            Some(0),
+            "the serving lane the tap named, not the `None` the step used to report"
+        );
+        assert_eq!(
+            routed.facts.usage.as_ref().map(|u| (u.input, u.output)),
+            Some((3, 2)),
+            "the split the dialect's reader found, carried to the step that reports it"
+        );
+        assert!(
+            !routed.facts.billing_failed,
+            "an answer that finished is a charge, not evidence"
+        );
+        assert!(
+            !routed.facts.accrued,
+            "the walk held no meter half on this fixture, so the Meter step is the posting — and it \
+             now has a lane and a split to post"
+        );
+        let _ = axum::body::to_bytes(routed.response.into_body(), usize::MAX).await;
+        server.shutdown().await;
     }
 
     /// An in-process tap capture, so the completion tap can be counted.

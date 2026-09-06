@@ -62,11 +62,23 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 /// even though they are not IP literals. Blocked case-insensitively by [`dns_name_is_internal`].
 ///
 /// The `localhost` family is deliberately NOT here: it is a SEPARATE arm in
-/// [`dns_name_is_internal`], because `config_validate::ssrf_blocked_host` allows `localhost` (a
-/// legitimate local-model upstream) while the webhook, OTLP and A2A-card guards block it. Keeping
-/// the two lists apart is what lets one guard opt out of the localhost arm without also opting out
-/// of the metadata one.
-pub const METADATA_HOSTS: &[&str] = &["metadata.google.internal", "metadata.internal"];
+/// [`dns_name_is_internal`], because [`ssrf_blocked_host`] allows `localhost` (a legitimate
+/// local-model upstream) while the webhook, OTLP and A2A-card guards block it. Keeping the two
+/// lists apart is what lets one guard opt out of the localhost arm without also opting out of the
+/// metadata one.
+///
+/// This is the ONLY metadata-name list. [`ssrf_blocked_host`] once kept a second, longer copy
+/// declared inside its own body; the two drifted, and a name the config guard blocked was one the
+/// resolved-name guard had never heard of. A private list inside a function is a list nothing else
+/// can read, which is the mechanism of the drift rather than an accident of it.
+pub const METADATA_HOSTS: &[&str] = &[
+    "metadata.google.internal",
+    "metadata.internal",
+    "metadata.tencentyun.com",
+    "metadata.platformequinix.com",
+    "instance-data",
+    "instance-data.ec2.internal",
+];
 
 /// TRUE for an IPv4 literal no busbar guard may connect to: loopback, link-local (which is where the
 /// `169.254.169.254` IMDS endpoint lives), RFC1918 private, RFC6598 CGNAT, unspecified, broadcast,
@@ -139,24 +151,35 @@ pub fn ipv6_is_internal(v6: &Ipv6Addr) -> bool {
 /// may never be reached at all. Folding them together would make `allow_private` a switch that
 /// hands out cloud credentials.
 ///
+/// The v4 question is a RANGE question, not a list of literals. Clouds put IMDS anywhere inside
+/// `169.254.0.0/16` — AWS on `169.254.169.254` and `169.254.170.2`, Tencent on `169.254.0.23`, the
+/// v6-era ECS endpoint on `169.254.170.3` — and nothing legitimate runs on link-local at all, so
+/// the whole range is metadata. Only the endpoints that sit OUTSIDE link-local need naming, and
+/// they are named. Enumerating link-local literals instead would leave every unlisted one to the
+/// internal-range arm, which `allow_private` switches off: the operator flag that says "our
+/// upstream is on the internal network" would then pin and dial an unlisted IMDS. This is the same
+/// predicate the config-side metadata check applies, deliberately.
+///
 /// The v6 arm unwraps with `to_ipv4()`, not `to_ipv4_mapped()`, for the reason [`ipv6_is_internal`]
 /// gives: `to_ipv4()` is the superset that also covers the IPv4-COMPATIBLE form, so
 /// `[::169.254.169.254]` is caught. A guard that only unwrapped the MAPPED form let exactly that
 /// literal through — it matched no v6 range, unwrapped to nothing, and was connected to.
 pub fn ip_is_cloud_metadata(addr: &IpAddr) -> bool {
-    /// AWS/Azure/GCP/OpenStack/DigitalOcean IMDS, ECS task metadata, and Alibaba's.
-    const V4: &[Ipv4Addr] = &[
-        Ipv4Addr::new(169, 254, 169, 254),
-        Ipv4Addr::new(169, 254, 170, 2),
+    /// The metadata endpoints OUTSIDE link-local: Alibaba Cloud ECS (inside the otherwise-allowed
+    /// CGNAT /10), Azure WireServer, and Oracle Cloud's globally-routable-shaped IMDS.
+    const NON_LINK_LOCAL_V4: &[Ipv4Addr] = &[
         Ipv4Addr::new(100, 100, 100, 200),
         Ipv4Addr::new(168, 63, 129, 16),
         Ipv4Addr::new(192, 0, 0, 192),
     ];
+    fn is_metadata_v4(v4: &Ipv4Addr) -> bool {
+        v4.is_link_local() || NON_LINK_LOCAL_V4.contains(v4)
+    }
     match addr {
-        IpAddr::V4(v4) => V4.contains(v4),
+        IpAddr::V4(v4) => is_metadata_v4(v4),
         IpAddr::V6(v6) => {
             if let Some(v4) = v6.to_ipv4() {
-                return V4.contains(&v4);
+                return is_metadata_v4(&v4);
             }
             // IMDSv6.
             v6.segments() == [0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x254]
@@ -1179,16 +1202,10 @@ pub fn ssrf_blocked_host(
         return None;
     }
 
-    // Cloud-metadata / IMDS hostnames (case-insensitive). The IPv4 / IPv6 metadata literals are
-    // caught in the IP arms below; these are the DNS names a connecting stack would resolve.
-    const METADATA_HOSTS: &[&str] = &[
-        "metadata.google.internal",
-        "metadata.internal",
-        "metadata.tencentyun.com",
-        "metadata.platformequinix.com",
-        "instance-data",
-        "instance-data.ec2.internal",
-    ];
+    // Cloud-metadata / IMDS hostnames (case-insensitive), read from the ONE module-level list so
+    // this guard and the resolved-name guard cannot know different names. The IPv4 / IPv6 metadata
+    // literals are caught in the IP arms below; these are the DNS names a connecting stack would
+    // resolve.
     let host_lc = host.to_ascii_lowercase();
     if METADATA_HOSTS.contains(&host_lc.as_str()) {
         return Some(host.to_string());
@@ -1331,7 +1348,34 @@ pub fn check_destination(
     policy: GuardPolicy,
     denylist: &Denylist,
 ) -> Result<Option<PinnedTarget>, NetworkRefusal> {
-    let busbar_contract::DestinationFacts::Upstream { address, .. } = dest.facts() else {
+    check_destination_facts(&dest.facts(), paths, resolver, policy, denylist)
+}
+
+/// The same check, over the facts a destination was sealed FROM.
+///
+/// The sealed value is the door a transport reaches the guard through, and it stays the published
+/// one. But a composition root judges a candidate BEFORE it is sealed — that is the whole point of
+/// judging it, and the seal is what the judgement produces — so it holds facts and no seal. Given
+/// only the sealed entry, such a caller had no way in and wrote the ordering out a second time,
+/// which is the one thing this file exists to stop: two copies of an address judgement drift, and
+/// the copy that drifts is the one nobody re-derived.
+///
+/// So the ordering lives here, once, and [`check_destination`] is a projection onto it rather than a
+/// second opinion. Nothing about the sealing rule is loosened by that: a seal was never what made
+/// the judgement correct, it is what records that the judgement happened.
+///
+/// # Errors
+///
+/// The destination is not an upstream, its host is on the denylist, or the guard refused the
+/// scheme, the name, or an address the resolver answered with.
+pub fn check_destination_facts(
+    facts: &busbar_contract::DestinationFacts,
+    paths: &[&str],
+    resolver: &dyn Resolver,
+    policy: GuardPolicy,
+    denylist: &Denylist,
+) -> Result<Option<PinnedTarget>, NetworkRefusal> {
+    let busbar_contract::DestinationFacts::Upstream { address, .. } = facts else {
         return Err(NetworkRefusal::NotAnUpstream);
     };
     let Some(authority) = address.authority() else {

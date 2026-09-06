@@ -225,6 +225,84 @@ impl AbiStore for SaysNothing {
     }
 }
 
+/// A store that answers the SAME small ledger for every bucket, in constant time.
+///
+/// Constant time is the point: the seeded double next door finds its rows by scanning a `Vec`, so a
+/// read over many buckets would be quadratic in the DOUBLE no matter what the adapter does. This one
+/// takes the double out of the measurement, leaving only the accumulation the adapter itself owns.
+#[derive(Default)]
+struct EveryBucketHoldsTheSame;
+
+impl AbiStore for EveryBucketHoldsTheSame {
+    fn put_key(&self, _key: &VirtualKey) -> StoreResult<()> {
+        panic!("write");
+    }
+    fn get_key(&self, _id: &str) -> StoreResult<Option<VirtualKey>> {
+        Ok(None)
+    }
+    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+        Ok(Vec::new())
+    }
+    fn delete_key(&self, _id: &str) -> StoreResult<()> {
+        panic!("write");
+    }
+    fn get_usage(&self, _b: &str, _w: u64) -> StoreResult<UsageLedger> {
+        Ok(UsageLedger {
+            requests: 2,
+            billable_requests: 1,
+            models: vec![model("gpt-4", &[("input", 10)])],
+        })
+    }
+    fn put_usage(&self, _b: &str, _w: u64, _l: &UsageLedger) -> StoreResult<()> {
+        panic!("write");
+    }
+    fn add_metering(&self, _d: &MeteringDelta) -> StoreResult<()> {
+        panic!("write");
+    }
+    fn list_metering(&self, _bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+        Ok(Vec::new())
+    }
+}
+
+/// THE OPENING READ IS LINEAR IN THE DEPLOYMENT'S BUCKETS, NOT QUADRATIC.
+///
+/// Every (bucket, window) pair folded its ledger total into `balances` by SCANNING that vector for
+/// the bucket, so a deployment's boot migration cost grew with the square of its virtual-key count.
+/// The figures must be identical either way — this is an equivalence assertion with a wall-clock
+/// bound, which is exactly the shape a performance-only change is provable in.
+#[test]
+fn the_opening_read_folds_many_buckets_without_rescanning_the_balances() {
+    const BUCKETS: usize = 60_000;
+    let adapter = adapter_over(Arc::new(EveryBucketHoldsTheSame));
+    let plan = LegacyReadPlan {
+        windows: (0..BUCKETS).map(|i| (format!("vk_{i}"), WINDOW)).collect(),
+        days: Vec::new(),
+    };
+
+    let started = std::time::Instant::now();
+    let cells = adapter.legacy_cells_read(&plan);
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        cells.balances.len(),
+        BUCKETS,
+        "one opening balance per distinct bucket"
+    );
+    assert_eq!(cells.cells_read, BUCKETS as u64);
+    // The order is the plan's, and every figure is the seeded ledger's total (2 requests' worth of
+    // 10 input tokens is a total of 10 — the balance comes from the ledger, not the meter).
+    assert_eq!(cells.balances[0], ("vk_0".to_string(), 10));
+    assert_eq!(
+        cells.balances[BUCKETS - 1],
+        (format!("vk_{}", BUCKETS - 1), 10)
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "reading {BUCKETS} buckets took {elapsed:?}: the balance fold is scanning the vector it is \
+         building, which is quadratic in a deployment's virtual-key count"
+    );
+}
+
 fn model(name: &str, units: &[(&str, u64)]) -> ModelTokens {
     ModelTokens {
         model: name.to_string(),

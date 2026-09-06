@@ -3,6 +3,7 @@
 
 //! The batteries.
 
+mod bounds;
 mod fixtures;
 mod journal_chain;
 mod kill_at_every_offset;

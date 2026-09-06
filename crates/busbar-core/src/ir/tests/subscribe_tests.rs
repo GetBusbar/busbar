@@ -15,7 +15,7 @@ fn subscribe_projects_target_name_and_never_streams() {
         extra: Default::default(),
     };
     assert_eq!(IrFacts::verb(&req), Operation::SUBSCRIBE);
-    // FATAL-4: registering is answered once — it is NOT a stream.
+    // Registering is answered once — it is NOT a stream.
     assert!(!IrFacts::wants_stream(&req));
     let items = req.content();
     assert_eq!(items.len(), 1);

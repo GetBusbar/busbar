@@ -136,7 +136,7 @@ pub(crate) fn read_hook_facts(
 ) -> Result<HookFacts, HookIrRejected> {
     // The op-less pre-routing site (auth's completion-tap capture, `operation == None`) never
     // resolved an operation, so there is nothing to read and nothing to reject — the zeroed shape,
-    // exactly as before (MINOR-8).
+    // exactly as before.
     let Some(operation) = operation else {
         return Ok(HookFacts::Absent);
     };
@@ -152,7 +152,7 @@ pub(crate) fn read_hook_facts(
     // A JSON OBJECT body projects through the value reader (chat overrides it to call its proto
     // reader directly — byte-identical to the pre-change seam). A non-object body is either a
     // multipart/binary payload (transcription/speech audio) whose caller text is reachable ONLY
-    // through the byte reader (FATAL-1), or the engine's absent-body sentinel with no bytes at all.
+    // through the byte reader, or the engine's absent-body sentinel with no bytes at all.
     use busbar_substrate::handlers::TranslateCodec;
     // THE ONE READ, through the codec cell's neutral `read_facts` entrypoint — the same reader the
     // cross-protocol translate path uses, projected straight to `IrFacts` so this seam never holds the
@@ -1000,7 +1000,7 @@ pub(crate) use busbar_substrate::proxy::proxy_vocab::{
 /// Capture the stage-tap shape from the parsed body. `v == None` is an opaque/binary body (a
 /// multipart transcription/speech upload) OR the op-less pre-routing capture: the byte reader
 /// projects the former's shape when an operation + bytes are present, and the latter stays zeroed
-/// (`operation == None`, MINOR-8).
+/// (`operation == None`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn capture_stage_shape<'a>(
     v: Option<&Value>,

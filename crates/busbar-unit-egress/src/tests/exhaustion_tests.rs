@@ -107,6 +107,21 @@ fn a_purely_saturated_pool_gets_the_floor_and_never_the_bare_one_second() {
     drop(held);
 }
 
+/// The two units hold the same floor, and this is the only place that says so.
+///
+/// A unit crate does not depend on another unit crate — the composition root binds them — so the
+/// breaker's floor and this crate's are two constants by construction, not by oversight. What would
+/// be an oversight is nothing checking they still agree, since they are the same operator-visible
+/// `Retry-After`. The breaker is a dev-dependency here for exactly this kind of proof.
+#[test]
+fn the_at_capacity_floor_matches_the_breaker_units_own() {
+    assert_eq!(
+        AT_CAPACITY_RETRY_AFTER_SECS,
+        busbar_unit_breaker::AT_CAPACITY_RETRY_AFTER_SECS,
+        "the two units advertise one at-capacity Retry-After between them"
+    );
+}
+
 #[test]
 fn an_empty_candidate_set_gets_the_floor_too() {
     let node = Node::with_lanes(&[]);

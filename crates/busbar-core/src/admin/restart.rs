@@ -17,14 +17,58 @@
 //! counters advance only via `fetch_max`, precisely so history cannot be rewound, and only a process
 //! boundary resets them.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use tokio::sync::broadcast;
 
 /// The process shutdown broadcaster, published by `main` once the channel exists.
 static SHUTDOWN: OnceLock<broadcast::Sender<()>> = OnceLock::new();
 
+/// Whether the drain is RELEASED BY THE EXIT PATH instead of by the handler that asked for it.
+///
+/// A composition that answers this operation directly writes the response the moment the handler
+/// returns, so publishing inside the handler and publishing "once the answer exists" are the same
+/// instant. A composition that walks the operation through the loop has steps still to run after
+/// the handler answers, and a drain published inside the handler is therefore a side effect that
+/// begins while the response is still travelling — which is visible on the wire, because a draining
+/// server marks the connection closing on the way out. Such a composition arms this, and the drain
+/// waits for the exit path that owns effects outliving the response.
+static DRAIN_AT_EXIT: AtomicBool = AtomicBool::new(false);
+
+/// A drain that has been asked for and not yet released. Process-wide, like the act itself: there
+/// is one process to drain, however many callers ask.
+static DRAIN_ASKED: AtomicBool = AtomicBool::new(false);
+
 pub fn publish_shutdown(tx: broadcast::Sender<()>) {
     let _ = SHUTDOWN.set(tx);
+}
+
+/// Declare that this composition releases the drain on its exit path.
+///
+/// Called once by the composition that owns such a path. Undeclared — every composition that
+/// answers the operation directly — the drain publishes exactly where and when it always did.
+pub fn drain_released_at_exit() {
+    DRAIN_AT_EXIT.store(true, Ordering::Release);
+}
+
+/// Release a drain the request that just answered asked for, if it asked for one.
+///
+/// Answers whether one fired. Called from the exit path, once the response is in hand and nothing
+/// left to run can change it, so the drain begins where it would have begun without the steps in
+/// between. A request that asked for no drain releases none, which is every request but one.
+pub fn release_asked_drain() -> bool {
+    if !DRAIN_ASKED.swap(false, Ordering::AcqRel) {
+        return false;
+    }
+    send_shutdown();
+    true
+}
+
+/// Send on the channel a signal fires on, if `main` has published it.
+fn send_shutdown() {
+    if let Some(tx) = SHUTDOWN.get() {
+        let _ = tx.send(());
+    }
 }
 
 /// Whether this process can restart itself. Checked BEFORE the audit record so a refusal is never
@@ -34,10 +78,15 @@ pub(crate) fn can_restart() -> bool {
 }
 
 /// Begin the graceful drain, on the same channel a signal fires.
+///
+/// Where the composition releases drains at its exit path this records the ask and returns; the
+/// drain is the same drain, published from the one place that runs after the answer is written.
 pub(crate) fn begin_drain() {
-    if let Some(tx) = SHUTDOWN.get() {
-        let _ = tx.send(());
+    if DRAIN_AT_EXIT.load(Ordering::Acquire) {
+        DRAIN_ASKED.store(true, Ordering::Release);
+        return;
     }
+    send_shutdown();
 }
 
 /// The environment markers a process supervisor is known to stamp. Single source of truth for both

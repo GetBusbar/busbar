@@ -114,18 +114,27 @@ fn parse_call_suffix(
     content: &[u8],
 ) -> StoreResult<(u64, String, String, String, String, String, u64)> {
     fn take<'a>(content: &'a [u8], off: &mut usize) -> StoreResult<&'a [u8]> {
-        if *off + 8 > content.len() {
-            return Err(StoreError(
-                "truncated call suffix length prefix".to_string(),
-            ));
-        }
-        let len = u64::from_be_bytes(content[*off..*off + 8].try_into().unwrap()) as usize;
-        *off += 8;
-        if *off + len > content.len() {
-            return Err(StoreError("truncated call suffix field".to_string()));
-        }
-        let s = &content[*off..*off + len];
-        *off += len;
+        // Both cursor advances are CHECKED, because both operands come off the wire: a corrupt or
+        // hostile prefix can name any 64-bit length, and `off + len` on a `usize` either panics
+        // (debug) or WRAPS (release) — and a wrapped sum passes the bound test below and then slices
+        // with a start past its end, which panics too. Checked-then-bounded is the only form that
+        // keeps the documented "fails closed rather than reading past the buffer" true in both
+        // profiles.
+        let end_prefix = off
+            .checked_add(8)
+            .filter(|e| *e <= content.len())
+            .ok_or_else(|| StoreError("truncated call suffix length prefix".to_string()))?;
+        let len = usize::try_from(u64::from_be_bytes(
+            content[*off..end_prefix].try_into().unwrap(),
+        ))
+        .map_err(|_| StoreError("truncated call suffix field".to_string()))?;
+        *off = end_prefix;
+        let end_field = off
+            .checked_add(len)
+            .filter(|e| *e <= content.len())
+            .ok_or_else(|| StoreError("truncated call suffix field".to_string()))?;
+        let s = &content[*off..end_field];
+        *off = end_field;
         Ok(s)
     }
     fn take_num(content: &[u8], off: &mut usize) -> StoreResult<u64> {

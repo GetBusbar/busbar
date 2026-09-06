@@ -34,9 +34,12 @@ fn assert_root(t: &dyn Transport) {
 }
 
 fn assert_composed(t: &dyn Transport, composes_over: &'static [&'static str]) {
-    let over = t
-        .composed_over()
-        .unwrap_or_else(|| panic!("{} is only ever built composed and must name its layer", t.key()));
+    let over = t.composed_over().unwrap_or_else(|| {
+        panic!(
+            "{} is only ever built composed and must name its layer",
+            t.key()
+        )
+    });
     assert!(
         composes_over.contains(&over),
         "{}.composed_over() = {over:?}, which is not in its own COMPOSES_OVER {composes_over:?}",

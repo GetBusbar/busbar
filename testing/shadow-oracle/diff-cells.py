@@ -224,6 +224,10 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--cells", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "cells.json"))
     ap.add_argument("--family", default="")
+    ap.add_argument("--id-filter", default="",
+                    help="regex over cell IDs (the same domain as record.sh --filter); only matching cells are owed and compared")
+    ap.add_argument("--strict", action="store_true",
+                    help="exit 1 when any owed cell diverges without an accepted entry or is missing from the candidate")
     ap.add_argument("--accepted", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "accepted-differences.json"))
     ap.add_argument("--allow-harness-skew", action="store_true",
                      help="proceed even if golden and candidate were produced by different (or unrecorded) "
@@ -281,6 +285,8 @@ def main() -> int:
         cells_doc = json.load(f)
     fam_rx = re.compile(a.family) if a.family else None
     cells = [c for c in cells_doc["cells"] if not fam_rx or fam_rx.search(c.get("family", c.get("plane", "")))]
+    id_rx = re.compile(a.id_filter) if a.id_filter else None
+    cells = [c for c in cells if not id_rx or id_rx.search(c["id"])]
     by_id = {c["id"]: c for c in cells}
     gl, cl = load_ledger(a.golden), load_ledger(a.candidate)
 
@@ -439,6 +445,16 @@ def main() -> int:
             continue
         st = "FAIL" if r["classes"] else "PASS"
         sys.stdout.write(f"{r['id']}\t{st}\t{','.join(r['classes']) or 'identical'}\t{r['first_diff']}\n")
+    if a.strict:
+        # The strict exit is for callers that use this file as a gate on a subset (land.sh); the full
+        # verdict over every owed cell is still verdict.sh's. Zero owed cells is red: a filter that
+        # selects nothing has proven nothing.
+        if not owed:
+            sys.stderr.write("diff-cells: strict: no owed cells matched the filter — nothing was compared\n")
+            return 1
+        if report["totals"]["diverging"] > 0:
+            sys.stderr.write(f"diff-cells: strict: {report['totals']['diverging']} unaccepted divergence(s)\n")
+            return 1
     return 0
 
 

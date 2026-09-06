@@ -69,9 +69,9 @@
 use std::sync::{Arc, Mutex};
 
 use busbar_caps::{
-    Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate,
-    Decision, Decode, Encode, Meter, Outcome, PrincipalId, ReasonCode, Refusal,
-    Route, RoutePlan, ScopeFacts, TrustToken, UnitToken, UsageToken, Verify, VerifiedDestination,
+    Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Decision,
+    Decode, Encode, Meter, Outcome, PrincipalId, ReasonCode, Refusal, Route, RoutePlan, ScopeFacts,
+    TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
 };
 use busbar_contract::dest::{DestinationFacts, Leg};
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
@@ -252,7 +252,10 @@ impl RecordLegs {
                     None => busbar_api::PlaneSelector::All,
                 };
                 Ok(LegResult {
-                    bodies: self.store.list_plane_records(kind, &selector).map_err(fail)?,
+                    bodies: self
+                        .store
+                        .list_plane_records(kind, &selector)
+                        .map_err(fail)?,
                     ..LegResult::default()
                 })
             }
@@ -305,7 +308,12 @@ impl RecordLegs {
     /// The first leg that refuses stops the run and is returned; the legs before it have already
     /// happened, which is why a plan's record legs are ordered so that a failure leaves the durable
     /// state readable rather than half-written.
-    pub fn run_plan(&self, legs: &[Leg], key: &LegKey<'_>, body: &[u8]) -> Result<Vec<LegResult>, LegError> {
+    pub fn run_plan(
+        &self,
+        legs: &[Leg],
+        key: &LegKey<'_>,
+        body: &[u8],
+    ) -> Result<Vec<LegResult>, LegError> {
         let mut results = Vec::new();
         for leg in legs {
             if let DestinationFacts::PlaneRecord { schema, op } = leg.destination {
@@ -406,11 +414,9 @@ pub fn declared_scope(op: OpClassId) -> Scope {
 /// unreachable for a reason nobody can find in a configuration file.
 #[must_use]
 pub fn scope_policy(base: crate::root::policy::ScopePolicy) -> crate::root::policy::ScopePolicy {
-    ops::OP_CLASSES
-        .iter()
-        .fold(base, |policy, op| {
-            policy.declaring(CLAIM_A2A, *op, declared_scope(*op))
-        })
+    ops::OP_CLASSES.iter().fold(base, |policy, op| {
+        policy.declaring(CLAIM_A2A, *op, declared_scope(*op))
+    })
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -452,6 +458,14 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub door: &'r Door<S>,
     /// What the door prices a unit against.
     pub pricer: &'r Pricer,
+    /// What the deployment's card charges for a byte of the priced document, in nano-units.
+    ///
+    /// The highest such price over the destinations this unit may reach, read out of the card once
+    /// by the root rather than looked up per unit — the maximum for the reason the estimate's own
+    /// documentation gives, and read here rather than in the admission step so the door never
+    /// reaches a rate table. Zero on a deployment whose card prices this plane's byte class at
+    /// nothing, which is a reservation carrying the flat fee alone and not a missing one.
+    pub bytes_nanos: u64,
     /// The plane's durable records.
     pub records: &'r RecordLegs,
     /// What the usage unit folds against.
@@ -525,6 +539,69 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     #[must_use]
     pub fn draft(&self) -> &A2aDraft {
         &self.draft
+    }
+
+    /// The balance one unit of this plane settles into: the caller's own attribution bucket, in
+    /// nano-units, across every pool.
+    ///
+    /// The plane names the balance because the plane is what knows which pot its traffic belongs
+    /// in; the ledger keeps it. An uncapped attribution bucket is still a balance, which is the
+    /// point — a deployment that configured no group still has one figure per principal.
+    #[must_use]
+    pub fn balance(principal: &PrincipalId) -> busbar_unit_ledger::totals::TotalsKey {
+        busbar_unit_ledger::totals::TotalsKey::new(
+            busbar_unit_ledger::totals::BucketId::new(principal.as_str()),
+            busbar_unit_ledger::totals::CapDimension::NanoUnits,
+            busbar_unit_ledger::totals::BucketScope::All,
+        )
+    }
+
+    /// **The exit arm.** Move the books for what this unit posted, and put the posting on the
+    /// journal.
+    ///
+    /// The loop's exit path takes the hold out of its cell, applies what the unit spent and settles
+    /// it — that is where the hold stops existing. What comes back is the POSTING, and until it
+    /// reaches here it has moved no balance and left no record. So this is the far end of the
+    /// reservation's life: the door opened it sized off the estimate, the route and metering steps
+    /// accrued against it, and the settlement here releases the residual and carries out whatever
+    /// nothing could back.
+    ///
+    /// The window comes off the unit's pinned arrival epoch, never a fresh clock read, so a request
+    /// that straddled a boundary posts in the window it was admitted in.
+    ///
+    /// # Errors
+    ///
+    /// The journal could not make the record durable. The books have already moved: value was
+    /// delivered, and a settlement is not rolled back because a write failed.
+    pub fn settle(
+        &self,
+        principal: &PrincipalId,
+        posted: busbar_caps::Posted,
+        token: &busbar_caps::DurabilityToken,
+    ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
+        let key = Self::balance(principal);
+        let at = crate::root::durability::Settling {
+            key: &key,
+            window: busbar_unit_admission::budget_window(
+                busbar_unit_admission::window::WINDOW_DAY,
+                self.bindings.now,
+            ),
+            durability: token,
+            // The loop has no exit step of its own; the figure this posting is OF is the metering
+            // step's, and that is the step a durability loss here is attributed to.
+            step: busbar_caps::StepName::Meter,
+            stamp: crate::root::durability::PostingStamp {
+                rate_card_version: 0,
+                wall: self.bindings.now,
+                mono: self.bindings.now,
+            },
+        };
+        let mut durability = self
+            .bindings
+            .durability
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        durability.settle_posted(&at, posted)
     }
 
     /// The verify judgement, without the seal.
@@ -611,6 +688,11 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     }
 
     /// Run the network guard over one candidate, converting its refusal into the loop's.
+    ///
+    /// Every refusal the guard can raise becomes the one reason this step has for "there is nowhere
+    /// to go", so which of them answered is not visible to a caller. The pin is dropped because
+    /// nothing on this path dials through this seam today; it is returned by the guard so that the
+    /// caller which eventually does will not resolve the name a second time.
     fn guard_destination(&self, candidate: &DestinationFacts) -> Result<(), Refusal> {
         guard_destination(
             candidate,
@@ -618,6 +700,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             self.bindings.guard,
             self.bindings.denylist,
         )
+        .map(|_pinned| ())
         .map_err(|_| Refusal::new(ReasonCode::NoDestination))
     }
 
@@ -632,7 +715,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             per_class: vec![busbar_unit_admission::ClassEstimate {
                 class: CLASS_BYTES.as_str().to_string(),
                 quantity: self.draft.request_bytes,
-                max_unit_price_nanos: 0,
+                max_unit_price_nanos: self.bindings.bytes_nanos,
             }],
             fee_nanos: if self.draft.has_upstream() {
                 u64::try_from(self.bindings.pricer.price_per_request_cents().max(0))
@@ -732,7 +815,11 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         }
     }
 
-    fn authenticate(&self, token: &UnitToken<Authenticate>, _ctx: &UnitCtx) -> Decision<Authenticate> {
+    fn authenticate(
+        &self,
+        token: &UnitToken<Authenticate>,
+        _ctx: &UnitCtx,
+    ) -> Decision<Authenticate> {
         // The three open surfaces of this protocol declare no scheme, so there is nothing to narrow
         // within and nothing to present: the chain answers for the anonymous principal or it
         // denies, and either answer is the chain's. Everything else presents a bearer credential
@@ -810,7 +897,8 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // Silence is a refusal. A pair the deployment's policy says nothing about has not been
         // authorized, and there is deliberately no arm here that reads an absent entry as a
         // permissive one.
-        let Some(needed) = busbar_unit_scope::required_scope(CLAIM_A2A, op, self.bindings.scope_policy)
+        let Some(needed) =
+            busbar_unit_scope::required_scope(CLAIM_A2A, op, self.bindings.scope_policy)
         else {
             return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
         };
@@ -850,7 +938,12 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         unit.admit(&self.estimate(), principal, &chain, admit, token)
     }
 
-    fn route(&self, token: &UnitToken<Route>, _ctx: &UnitCtx, meter: &AccrualMeter) -> Decision<Route> {
+    fn route(
+        &self,
+        token: &UnitToken<Route>,
+        _ctx: &UnitCtx,
+        meter: &AccrualMeter,
+    ) -> Decision<Route> {
         // The record legs, in the plan's order, before anything is dialled. They are what says
         // whether this caller may see the task at all and what the agent's own name for it is, and
         // the hop that follows carries that name.
@@ -859,7 +952,10 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             parent: None,
             seq: 0,
             ts: self.bindings.now,
-            terminal: matches!(self.draft.finish, FinishClass::Complete | FinishClass::Error),
+            terminal: matches!(
+                self.draft.finish,
+                FinishClass::Complete | FinishClass::Error
+            ),
         };
         match self.bindings.records.run_plan(&self.draft.legs, &key, &[]) {
             Err(LegError::UndeclaredOp { .. }) => {
@@ -875,6 +971,20 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // metering step. The meter is the kernel's running total and the hold is applied to it at
         // the exit, which is why this is an accrual and not a posting.
         meter.accrue(self.draft.request_bytes);
+        // How far this unit's reservation may still grow, read off the same chain the door was
+        // judged against. Offered here rather than at the door because it is a reading of the window
+        // as it is NOW, and the exit is where it is spent. Zero is a top-up that does not happen,
+        // never a unit that does not run.
+        meter.offer_headroom({
+            let chain = busbar_unit_admission::BucketChain::unchecked(Vec::new(), Vec::new());
+            AdmissionUnit::new(
+                self.bindings.door,
+                self.bindings.pricer,
+                self.bindings.pool,
+                self.bindings.now,
+            )
+            .headroom_nanos(&chain)
+        });
 
         // A plan with no leg at all is an operation this plane does not carry: a refusal at the
         // routing step, not a panic and not a guess.
@@ -945,7 +1055,12 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         }
     }
 
-    fn audit(&self, token: &UnitToken<Audit>, _ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+    fn audit(
+        &self,
+        token: &UnitToken<Audit>,
+        _ctx: &UnitCtx,
+        outcome: &Outcome,
+    ) -> Decision<Audit> {
         let inputs = self.audit_inputs(*outcome, None);
         let record = {
             let mut durability = self.bindings.durability.lock().expect("durability lock");
@@ -987,7 +1102,12 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         )
     }
 
-    fn encode(&self, token: &UnitToken<Encode>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Encode> {
+    fn encode(
+        &self,
+        token: &UnitToken<Encode>,
+        _ctx: &UnitCtx,
+        _outcome: &Outcome,
+    ) -> Decision<Encode> {
         // The plane's encoders take the unit's arena, and this signature carries neither an arena
         // nor the plane's draft, so the bytes are written where the borrow lives and this step
         // reports what left. That is a statement about the seam, not a shortcut: a root that
@@ -1034,17 +1154,15 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 
 /// Judge one destination's address, before any dial.
 ///
-/// The guard's own published entry, `net::check_destination`, takes a
-/// `busbar_contract::VerifiedDestination`, and the only constructor for one takes the contract's
-/// kernel seal — which a composition root does not have and must not name. So the guard is reached
-/// through the primitives it is itself written over, in the order it writes them: the metadata
-/// denylist first, because a deployment's statement about which addresses exist to be reached at all
-/// is answered before anything is resolved; then the scheme; then exactly one resolution, pinned.
-/// Every judgement here is one of the guard's own functions, so this is the guard's ordering reached
-/// a different way rather than a second opinion about addressing.
+/// This is the trust unit's own check, reached through the entry that takes the facts a destination
+/// is sealed FROM — a composition root judges a candidate before it is sealed, because the seal is
+/// what the judgement produces. It used to be the guard's ordering written out a second time here,
+/// over the same primitives; two copies of an address judgement drift, and the copy that drifts is
+/// the one nobody re-derived.
 ///
 /// A destination that is not a network hop — a record leg, a client delivery, a kernel verb — has no
-/// address and passes: there is nothing to have judged.
+/// address and passes: there is nothing to have judged. The pin travels back rather than being
+/// dropped here, so a caller that goes on to dial does not resolve the name a second time.
 ///
 /// # Errors
 ///
@@ -1055,43 +1173,19 @@ pub fn guard_destination(
     resolver: &dyn Resolver,
     policy: GuardPolicy,
     denylist: &busbar_unit_trust::Denylist,
-) -> Result<(), busbar_unit_trust::NetworkRefusal> {
-    use busbar_unit_trust::net;
-    let DestinationFacts::Upstream { address, .. } = candidate else {
-        return Ok(());
-    };
-    let Some(authority) = address.authority() else {
-        // A spawned program is not a network hop, so there is no address to have judged.
-        return Ok(());
-    };
-    if let Some(host) = net::ssrf_blocked_host(
-        authority,
-        &denylist.allowed,
-        denylist.allow_all,
-        &denylist.blocked,
+) -> Result<Option<busbar_unit_trust::PinnedTarget>, busbar_unit_trust::NetworkRefusal> {
+    match busbar_unit_trust::net::check_destination_facts(
+        candidate,
+        &[],
+        resolver,
+        policy,
+        denylist,
     ) {
-        return Err(busbar_unit_trust::NetworkRefusal::MetadataDenied(host));
+        // Only an upstream is dialled at an address. Every other kind reaches its destination
+        // without one, so "this is not an upstream" is this caller's pass, not its refusal.
+        Err(busbar_unit_trust::NetworkRefusal::NotAnUpstream) => Ok(None),
+        other => other,
     }
-    // An authority may be spelled as a URL or as a bare `host:port`, and which of the two a
-    // deployment wrote is not a security question: both reach the same judgement.
-    let (https, host, port) = match net::split_url(authority) {
-        Ok((https, host, port, _path)) => {
-            net::judge_scheme(authority, https, policy)
-                .map_err(busbar_unit_trust::NetworkRefusal::Guard)?;
-            (https, host, port)
-        }
-        Err(_) => {
-            let (host, port) = split_authority(authority).ok_or_else(|| {
-                busbar_unit_trust::NetworkRefusal::Guard(
-                    busbar_unit_trust::AddressRefusal::NoHost(authority.to_string()),
-                )
-            })?;
-            (true, host, port)
-        }
-    };
-    net::resolve_and_pin(&host, port, https, resolver, policy)
-        .map(|_pinned| ())
-        .map_err(busbar_unit_trust::NetworkRefusal::Guard)
 }
 
 /// The trust unit's spelling of where a unit came from.
@@ -1110,21 +1204,6 @@ fn trust_origin(kind: busbar_caps::OriginKind) -> OriginKind {
         busbar_caps::OriginKind::Bootstrap => OriginKind::Bootstrap,
         busbar_caps::OriginKind::Nested { .. } => OriginKind::Nested,
         busbar_caps::OriginKind::Delivery { .. } => OriginKind::Delivery,
-    }
-}
-
-/// An authority written as a bare `host:port`, split into the two.
-///
-/// Only reached when the guard's own URL recogniser says the string carries no scheme. It is a
-/// split and not a parse: everything that needs judging is judged by the guard's own functions, and
-/// a host that survives this still goes through every one of them.
-fn split_authority(authority: &str) -> Option<(String, u16)> {
-    match authority.rsplit_once(':') {
-        Some((host, port)) if !host.is_empty() => Some((host.to_string(), port.parse().ok()?)),
-        _ => Some((
-            authority.to_string(),
-            busbar_unit_trust::net::default_port(true),
-        )),
     }
 }
 
@@ -1238,7 +1317,10 @@ mod tests {
         // Four schemas, and every one of them was reached under its own name.
         let seen = store.kinds();
         for schema in records::RECORD_SCHEMAS {
-            assert!(seen.contains(&schema.as_str().to_string()), "{schema} unreached");
+            assert!(
+                seen.contains(&schema.as_str().to_string()),
+                "{schema} unreached"
+            );
         }
     }
 
@@ -1386,6 +1468,36 @@ mod tests {
         .is_ok());
     }
 
+    /// A kind that is not dialled at an address PASSES here, and pins nothing.
+    ///
+    /// The trust unit's published door answers `NotAnUpstream` for these, because it is asked about
+    /// a destination that was already sealed and a caller reading that answer wants to know which
+    /// kind it holds. This caller is asking a narrower question — "is there an address here that
+    /// would fail the guard" — and for a verb, a delivery or a session accrual the answer is no.
+    /// Reading the unit's answer as a refusal would refuse every leg that never had an address.
+    #[test]
+    fn a_kind_that_is_not_dialled_at_an_address_passes_and_pins_nothing() {
+        let resolver = FixedResolver(vec![]);
+        for candidate in [
+            DestinationFacts::KernelVerb { verb: "status" },
+            DestinationFacts::SessionAccrual {
+                lane: LaneId::new("probe"),
+            },
+            DestinationFacts::Upgrade { to: "ws" },
+        ] {
+            assert_eq!(
+                guard_destination(
+                    &candidate,
+                    &resolver,
+                    GuardPolicy::default(),
+                    &busbar_unit_trust::Denylist::default(),
+                ),
+                Ok(None),
+                "{candidate:?} has no address to have judged"
+            );
+        }
+    }
+
     /// A cloud-metadata endpoint is refused, and it is refused whatever the deployment opted into.
     ///
     /// An operator saying "this agent is on our internal network" has said nothing about the address
@@ -1479,6 +1591,72 @@ mod tests {
         .is_err());
     }
 
+    /// An authority carrying userinfo is refused, because its two readings differ.
+    ///
+    /// `user@agent.example:443` reads as `agent.example` to a URL parser and as `user@agent.example`
+    /// to a human skimming a config diff, and the trust unit's recogniser refuses a value whose two
+    /// readings differ rather than picking one. A guard that split on the last colon and never
+    /// looked for the `@` accepted it, resolved whatever the name answered with, and pinned that.
+    #[test]
+    fn a_userinfo_bearing_bare_authority_is_refused() {
+        let resolver = FixedResolver(vec!["93.184.216.34".parse().expect("an address")]);
+        assert!(guard_destination(
+            &upstream("user@agent.example:443"),
+            &resolver,
+            GuardPolicy::default(),
+            &busbar_unit_trust::Denylist::default(),
+        )
+        .is_err());
+    }
+
+    /// The guard the root runs and the guard the trust unit publishes answer identically.
+    ///
+    /// This is the drift proof, and it is a table rather than a spot check because the two used to
+    /// be two implementations: what a second copy costs is not that it is wrong on the case someone
+    /// thought of, it is that it is wrong on the case nobody re-derived. Every row goes through both
+    /// doors and the verdicts must match.
+    #[test]
+    fn the_root_guard_and_the_trust_units_own_door_agree() {
+        // The token the loop lends the trust unit, which is what seals a destination in a running
+        // deployment. A private type carrying an impl of the contract's sealing trait would forge
+        // the same value while reading as if that were the ordinary way to obtain one.
+        let trust = busbar_caps::TrustToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel());
+        let resolver = FixedResolver(vec!["93.184.216.34".parse().expect("an address")]);
+        for authority in [
+            "https://agent.example/",
+            "http://agent.example/",
+            "agent.example:443",
+            "user@agent.example:443",
+            "https://user@agent.example/",
+            "[::1]:443",
+            "https://169.254.169.254/latest/meta-data",
+        ] {
+            let facts = upstream(authority);
+            let sealed = busbar_contract::VerifiedDestination::seal(&trust, facts, "http", None);
+            let through_the_root = guard_destination(
+                &facts,
+                &resolver,
+                GuardPolicy::default(),
+                &busbar_unit_trust::Denylist::default(),
+            )
+            .is_ok();
+            // The published door answers `NotAnUpstream` for a kind that is not dialled at an
+            // address; every row here IS an upstream, so the two verdicts are directly comparable.
+            let through_the_unit = busbar_unit_trust::net::check_destination(
+                &sealed,
+                &[],
+                &resolver,
+                GuardPolicy::default(),
+                &busbar_unit_trust::Denylist::default(),
+            )
+            .is_ok();
+            assert_eq!(
+                through_the_root, through_the_unit,
+                "the two doors disagree about `{authority}`"
+            );
+        }
+    }
+
     /// Every origin has a spelling on the trust unit's side.
     #[test]
     fn every_origin_has_a_trust_side_spelling() {
@@ -1539,7 +1717,6 @@ mod tests {
         }
     }
 
-
     /// One record leg of a plan.
     fn leg_record(schema: RecordSchemaId, op: &'static str) -> Leg {
         Leg {
@@ -1592,7 +1769,10 @@ mod tests {
             fn put_key(&self, _key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
                 Ok(())
             }
-            fn get_key(&self, _id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+            fn get_key(
+                &self,
+                _id: &str,
+            ) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
                 Ok(None)
             }
             fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
@@ -1616,7 +1796,10 @@ mod tests {
             ) -> busbar_api::StoreResult<()> {
                 Ok(())
             }
-            fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+            fn add_metering(
+                &self,
+                _delta: &busbar_api::MeteringDelta,
+            ) -> busbar_api::StoreResult<()> {
                 Ok(())
             }
             fn list_metering(
@@ -1657,7 +1840,10 @@ mod tests {
     impl busbar_api::Store for RecordingStore {
         no_governance_rows!();
 
-        fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+        fn upsert_plane_record(
+            &self,
+            record: &busbar_api::PlaneRecord,
+        ) -> busbar_api::StoreResult<()> {
             self.note("put", &record.kind);
             Ok(())
         }
@@ -1671,7 +1857,10 @@ mod tests {
             Ok(None)
         }
 
-        fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+        fn append_plane_record(
+            &self,
+            record: &busbar_api::PlaneRecord,
+        ) -> busbar_api::StoreResult<()> {
             self.note("append", &record.kind);
             Ok(())
         }
@@ -1712,7 +1901,9 @@ mod tests {
             &self,
             _record: &busbar_api::PlaneRecord,
         ) -> busbar_api::StoreResult<()> {
-            Err(busbar_api::StoreError("the store is unavailable".to_string()))
+            Err(busbar_api::StoreError(
+                "the store is unavailable".to_string(),
+            ))
         }
     }
 }

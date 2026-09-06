@@ -30,7 +30,7 @@
 //! without touching any other one, because claims are declared independently and the boot's own
 //! overlap check is what proves they stay disjoint.
 
-use busbar_contract::grammar::{Claim, Selector};
+use busbar_contract::grammar::{one_level_under, Claim, Selector};
 
 /// The transport both JSON duplex dialects (`openai-realtime`, `gemini-live`) are claimed against.
 pub const WS_TRANSPORT: &str = "ws";
@@ -214,17 +214,13 @@ pub fn dialect_for(path: &str) -> Option<Dialect> {
 /// Whether one selector matches a request path.
 ///
 /// Only the forms this plane's claims actually use are answered.
-fn matches_selector(s: &Selector, path: &str) -> bool {
+pub(crate) fn matches_selector(s: &Selector, path: &str) -> bool {
     match s {
         Selector::PathSuffix(suffix) => path.ends_with(suffix),
         Selector::PathContains(needle) => path.contains(needle),
-        Selector::PrefixOneLevel(prefix) => {
-            let Some(rest) = path.strip_prefix(prefix) else {
-                return false;
-            };
-            let rest = rest.strip_prefix('/').unwrap_or(rest);
-            !rest.is_empty()
-        }
+        // The contract's rule, read rather than restated: a second spelling here could hand a
+        // request to a dialect the boot's overlap check never saw this plane claim.
+        Selector::PrefixOneLevel(prefix) => one_level_under(prefix, path),
         _ => false,
     }
 }

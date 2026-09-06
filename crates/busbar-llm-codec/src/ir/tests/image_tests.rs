@@ -60,7 +60,7 @@ fn variation_op_needs_no_prompt() {
     assert!(req.prompt.is_none());
 }
 
-// ── IrFacts projection + the new-String-field forcing function (MAJOR-6) ─────────────────────────
+// ── IrFacts projection + the new-String-field forcing function ───────────────────────────────────────────────────────
 
 use busbar_api::operation::Operation;
 use busbar_substrate_values::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};

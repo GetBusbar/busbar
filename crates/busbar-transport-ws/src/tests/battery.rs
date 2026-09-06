@@ -259,6 +259,33 @@ async fn cancel_mid_frame_fences_the_connection() {
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::Framing);
+
+    // The read arm of the same cell. A `frames()` future dropped while suspended in the socket
+    // read must leave the connection readable: the reader belongs to the connection, not to the
+    // future that was polling it, so the next pump sees the frame that arrived rather than a
+    // silent end-of-stream indistinguishable from the peer closing.
+    let t = Arc::new(WsTransport::new());
+    let (a, b) = pair(&t, 64 * 1024).await;
+    {
+        let mut frames = t.frames(b.clone());
+        let first = frames.next();
+        tokio::pin!(first);
+        let raced = tokio::time::timeout(Duration::from_millis(1), first.as_mut()).await;
+        assert!(
+            raced.is_err(),
+            "the read must still be suspended when dropped"
+        );
+    }
+    t.write(&a, StreamId(0), ArenaBytes::new(b"after the cancel"))
+        .await
+        .unwrap();
+    let mut frames = t.frames(b);
+    let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("a cancelled read must not lose the reader")
+        .expect("the stream must not end")
+        .expect("and must not be a fenced error");
+    assert_eq!(frame.bytes.as_slice(), b"after the cancel");
 }
 
 #[tokio::test]
@@ -365,7 +392,7 @@ async fn transport_meta_matches_the_architecture_row() {
 
 fn test_key_handle() -> busbar_contract::TransportKeyHandle {
     struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
+    impl busbar_contract::plugin::KernelSeal for Seal {
         fn seal_origin(&self) -> &'static str {
             "test"
         }
@@ -375,7 +402,7 @@ fn test_key_handle() -> busbar_contract::TransportKeyHandle {
 
 fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination {
     struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
+    impl busbar_contract::plugin::KernelSeal for Seal {
         fn seal_origin(&self) -> &'static str {
             "test"
         }
@@ -390,4 +417,79 @@ fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination
         "ws",
         None,
     )
+}
+
+/// `split_ws_url` on the bracketed-IPv6 shapes. A literal address with an explicit port is the one
+/// case the bracket rule exists to serve, and it must come back as the address without its brackets
+/// and the port the URL spelled — not as an authority that gets a default port stapled onto it.
+#[test]
+fn a_bracketed_ipv6_authority_parses_with_and_without_a_port() {
+    assert_eq!(
+        crate::transport::split_ws_url("wss://[::1]:8080/p").unwrap(),
+        (true, "::1".to_string(), 8080, "/p".to_string())
+    );
+    assert_eq!(
+        crate::transport::split_ws_url("ws://[::1]/p").unwrap(),
+        (false, "::1".to_string(), 80, "/p".to_string())
+    );
+    // The shapes the existing rule already got right stay right.
+    assert_eq!(
+        crate::transport::split_ws_url("ws://host:9000/p").unwrap(),
+        (false, "host".to_string(), 9000, "/p".to_string())
+    );
+    assert_eq!(
+        crate::transport::split_ws_url("wss://host/p").unwrap(),
+        (true, "host".to_string(), 443, "/p".to_string())
+    );
+}
+
+/// A courtesy Close frame must not be able to outlive the process. `close` hands the send to a
+/// detached task and keeps no handle to cancel it, so a peer whose receive window is full would
+/// pin the writer lock — and the socket — forever. The budget is what makes the task terminate.
+#[tokio::test]
+async fn close_gives_up_on_a_peer_that_never_reads() {
+    let t = Arc::new(WsTransport::new());
+    // A duplex with no room left: the peer end is never read, so a Close frame cannot be sent.
+    let (a, _b) = pair(&t, 8).await;
+    let stuffing = vec![b'z'; 1_000_000];
+    let t2 = t.clone();
+    let a2 = a.clone();
+    let stuffer =
+        tokio::spawn(async move { t2.write(&a2, StreamId(0), ArenaBytes::new(&stuffing)).await });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!stuffer.is_finished(), "the duplex must be full");
+    stuffer.abort();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // The only handle on the connection state, besides the one `close` hands its detached task.
+    let state = t.state_of(a.id()).expect("the connection is live");
+    t.close(a, CloseReason::Normal);
+
+    let gave_up = tokio::time::timeout(crate::transport::CLOSE_BUDGET * 8, async {
+        while Arc::strong_count(&state) > 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(
+        gave_up.is_ok(),
+        "the detached close task must give up within its budget and drop the socket"
+    );
+}
+
+/// A redial against the same upstream must not allocate a second `'static` address. `dial` needs
+/// both halves for the lifetime of the process, so the allocation is deliberate; what would not be
+/// deliberate is one per dial, which a redial loop against a flapping upstream turns into unbounded
+/// growth. Identical strings must come back as the identical allocation.
+#[test]
+fn a_redial_reuses_the_interned_address_rather_than_leaking_a_new_one() {
+    let first = crate::transport::intern("example.invalid:8443");
+    let again = crate::transport::intern("example.invalid:8443");
+    assert!(
+        std::ptr::eq(first, again),
+        "a repeat dial must reuse the address the first one interned, not leak a second"
+    );
+    let other = crate::transport::intern("elsewhere.invalid:8443");
+    assert!(!std::ptr::eq(first, other));
+    assert_eq!(other, "elsewhere.invalid:8443");
 }

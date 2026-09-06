@@ -46,13 +46,23 @@ pub fn base64_encode(input: &[u8]) -> String {
     out
 }
 
+/// The REVERSE of [`B64_ALPHABET`]: byte → its 6-bit value, `255` for every byte that is not a
+/// base64 digit. Built at COMPILE time from the alphabet itself (never hand-typed, so the two cannot
+/// drift) rather than rebuilt on entry to every decode.
+const B64_REVERSE: [u8; 256] = {
+    let mut val = [255u8; 256];
+    let mut i = 0;
+    while i < B64_ALPHABET.len() {
+        val[B64_ALPHABET[i] as usize] = i as u8;
+        i += 1;
+    }
+    val
+};
+
 /// Decode standard base64 (padding optional; whitespace ignored). Returns `None` on any invalid byte
 /// so a malformed provider payload fails loud rather than silently truncating audio.
 pub fn base64_decode(input: &str) -> Option<Bytes> {
-    let mut val = [255u8; 256];
-    for (i, &c) in B64_ALPHABET.iter().enumerate() {
-        val[c as usize] = i as u8;
-    }
+    let val = &B64_REVERSE;
     let mut bits: u32 = 0;
     let mut nbits = 0u32;
     let mut out = Vec::with_capacity(input.len() / 4 * 3);

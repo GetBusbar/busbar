@@ -266,9 +266,22 @@ fn there_is_exactly_one_canonicalizer_and_one_signing_payload_on_this_plane() {
     // fixed, and the disagreement is invisible until a real vendor's card contains a number, a
     // supplementary-plane character in an extension key, or a member busbar does not model. So the
     // ratchet is on the COUNT of definitions, not on a comment saying they are shared.
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../busbar-a2a/src/a2a");
-    let mut sources: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
-        .expect("the plane's source directory")
+    //
+    // The plane is split across two crates: `busbar-a2a` (the runtime seam) and `busbar-a2a-codec`
+    // (where the codec split moved the canonicalizer and the wire-format helpers). The invariant is
+    // about the PLANE, not about either crate in isolation, so the scan walks both halves' `src/a2a`
+    // directories.
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dirs = [
+        manifest_dir.join("../busbar-a2a/src/a2a"),
+        manifest_dir.join("../busbar-a2a-codec/src/a2a"),
+    ];
+    let mut sources: Vec<std::path::PathBuf> = dirs
+        .iter()
+        .flat_map(|dir| {
+            std::fs::read_dir(dir)
+                .unwrap_or_else(|e| panic!("the plane's source directory {dir:?}: {e}"))
+        })
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|e| e == "rs"))
         .collect();

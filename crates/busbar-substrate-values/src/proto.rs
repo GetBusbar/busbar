@@ -350,35 +350,68 @@ pub fn tool_arguments_to_string(input: &serde_json::Value) -> String {
 /// so the abort text a client sees is identical on every framing.
 pub const STREAM_ABORT_DETAIL: &str = "The response stream was interrupted.";
 
+/// The length of the line terminator starting at `i`, or `None` when `i` does not begin one.
+///
+/// The event-stream grammar names three: CRLF, a lone LF, and a lone CR. A CR at the very end of
+/// the buffer is not yet knowable — the LF that would make it a CRLF may still be in flight — so it
+/// reads as "no terminator here", which is the answer that makes a caller wait for more bytes
+/// rather than split a CRLF down the middle.
+fn terminator_len(buf: &[u8], i: usize) -> Option<usize> {
+    match buf.get(i)? {
+        b'\n' => Some(1),
+        b'\r' => match buf.get(i + 1) {
+            Some(b'\n') => Some(2),
+            Some(_) => Some(1),
+            None => None,
+        },
+        _ => None,
+    }
+}
+
 /// Find the first SSE frame terminator (a blank line) in `buf`, returning `(offset, terminator_len)`
-/// where `offset` is the byte index of the first terminator byte. Recognizes both the LF-LF (`\n\n`,
-/// 2 bytes) and the spec-legal CRLF (`\r\n\r\n`, 4 bytes) blank-line terminators per WHATWG SSE.
-/// Returns `None` if no complete terminator is present yet.
+/// where `offset` is the byte index of the first terminator byte and the length spans BOTH line
+/// terminators that make the blank line. All three of the spec's terminators are recognised, in
+/// every pairing: `\n\n` and `\r\n\r\n` are the two the providers emit, and `\r\r`, `\n\r`,
+/// `\r\n\r` and `\r\r\n` are the rest of the grammar. Returns `None` if no complete blank line is
+/// present yet.
 pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
     let mut i = 0;
-    while i < buf.len() {
-        if buf[i] == b'\n' {
-            // LF-LF: `\n\n` — the blank-line terminator begins at this `\n` and is 2 bytes long.
-            if buf.get(i + 1) == Some(&b'\n') {
-                return Some((i, 2));
-            }
-            // CRLF-CRLF: `\r\n\r\n` — the full spec-legal terminator is 4 bytes. We anchor the scan
-            // on the `\n` that ENDS the preceding line's CRLF, then confirm the blank line's own
-            // `\r\n` follows (`...\n` + `\r\n`). The terminator proper begins at the trailing `\r`
-            // of the preceding line (one byte BEFORE this `\n`), so report `offset = i - 1` and
-            // `len = 4`. (`i >= 1` is guaranteed here: a leading `\n` at index 0 cannot match this
-            // arm, since the preceding `\r` it requires would have to sit at index -1.)
-            if i >= 1
-                && buf[i - 1] == b'\r'
-                && buf.get(i + 1) == Some(&b'\r')
-                && buf.get(i + 2) == Some(&b'\n')
-            {
-                return Some((i - 1, 4));
-            }
+    loop {
+        let at = i + memchr::memchr2(b'\r', b'\n', &buf[i..])?;
+        let first = terminator_len(buf, at)?;
+        if let Some(second) = terminator_len(buf, at + first) {
+            return Some((at, first + second));
         }
-        i += 1;
+        // A line ended here but the next one is not blank: resume past the terminator itself, so a
+        // CRLF is never re-read as a bare CR followed by a bare LF.
+        i = at + first;
     }
-    None
+}
+
+/// Split SSE frame text into lines on the event-stream grammar's own line-terminator rule — CRLF, a
+/// lone LF, **or** a lone CR each end a line — rather than `str::lines()`, which recognizes only
+/// LF/CRLF. Shared by [`parse_sse_frame`] here and `proxy::sse::sse_data`, which both used
+/// `str::lines()` and so silently produced no fields at all on a frame framed by a bare-CR
+/// terminator (a frame `find_frame_terminator` above correctly frames).
+pub(crate) fn sse_lines(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match terminator_len(bytes, i) {
+            Some(len) => {
+                lines.push(&text[start..i]);
+                i += len;
+                start = i;
+            }
+            None => i += 1,
+        }
+    }
+    if start < bytes.len() {
+        lines.push(&text[start..]);
+    }
+    lines
 }
 
 /// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
@@ -389,7 +422,7 @@ pub fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
     let text = std::str::from_utf8(frame).ok()?;
     let mut event_type = String::new();
     let mut data_lines: Vec<&str> = Vec::new();
-    for line in text.lines() {
+    for line in sse_lines(text) {
         if let Some(rest) = line.strip_prefix("event:") {
             event_type = rest.trim().to_string();
         } else if let Some(rest) = line.strip_prefix("data:") {
@@ -421,6 +454,59 @@ pub fn write_sse_frame(out: &mut Vec<u8>, event_type: &str, data: &serde_json::V
     // serialise is not a condition this emitter can report, and diverging here would be gratuitous.
     out.extend_from_slice(&crate::json::to_vec(data).unwrap_or_default());
     out.extend_from_slice(b"\n\n");
+}
+
+#[cfg(test)]
+mod frame_terminator_tests {
+    use super::*;
+
+    /// The event-stream grammar names three line terminators — CRLF, a lone LF, a lone CR — and a
+    /// blank line is any terminator immediately followed by any terminator (nine pairings). A
+    /// scanner that only recognised `\n\n`/`\r\n\r\n` never framed a bare-CR stream, or a stream
+    /// mixing terminators across the frame boundary, at all.
+    #[test]
+    fn every_spec_line_terminator_pairing_ends_a_frame() {
+        assert_eq!(find_frame_terminator(b"data: a\r\rrest"), Some((7, 2)));
+        assert_eq!(find_frame_terminator(b"data: a\n\rrest"), Some((7, 2)));
+        assert_eq!(find_frame_terminator(b"data: a\r\n\rrest"), Some((7, 3)));
+        assert_eq!(find_frame_terminator(b"data: a\n\r\nrest"), Some((7, 3)));
+        assert_eq!(find_frame_terminator(b"data: a\r\n\n"), Some((7, 3)));
+        assert_eq!(find_frame_terminator(b"data: a\n\r\n"), Some((7, 3)));
+        // One terminator is not a blank line: the frame has not ended.
+        assert_eq!(find_frame_terminator(b"data: a\r\nrest"), None);
+        // A CRLF is ONE terminator, never two: mis-splitting it is the only real risk here.
+        assert_eq!(find_frame_terminator(b"a\r\nb\r\n\r\nc"), Some((4, 4)));
+        // A lone trailing CR is not yet knowable — it may still turn out to be a CRLF.
+        assert_eq!(find_frame_terminator(b"data: a\r"), None);
+        // The existing LF/CRLF offsets stay byte-identical.
+        assert_eq!(find_frame_terminator(b"data: a\n\nrest"), Some((7, 2)));
+        assert_eq!(find_frame_terminator(b"data: a\r\n\r\nrest"), Some((7, 4)));
+        assert_eq!(find_frame_terminator(b"data: a"), None);
+    }
+
+    /// `parse_sse_frame` used `str::lines()`, which does not split on a bare CR — a bare-CR frame
+    /// (correctly framed by `find_frame_terminator` above) yielded no `data:` line at all, and a
+    /// multi-field bare-CR frame swallowed later fields into the first value.
+    #[test]
+    fn parse_sse_frame_splits_on_bare_cr() {
+        assert_eq!(
+            parse_sse_frame(b"event: message\rdata: {\"a\":1}"),
+            Some(("message".to_string(), "{\"a\":1}".to_string()))
+        );
+        assert_eq!(
+            parse_sse_frame(b"data: line1\rdata: line2"),
+            Some((String::new(), "line1\nline2".to_string()))
+        );
+        // CRLF and LF frames stay byte-identical to today.
+        assert_eq!(
+            parse_sse_frame(b"event: message\r\ndata: {\"a\":1}\r\n"),
+            Some(("message".to_string(), "{\"a\":1}".to_string()))
+        );
+        assert_eq!(
+            parse_sse_frame(b"data: line1\ndata: line2"),
+            Some((String::new(), "line1\nline2".to_string()))
+        );
+    }
 }
 
 /// Neutral streaming byte-in/byte-out translator seam. The WHOLE concrete `StreamTranslate` (in the
@@ -1111,6 +1197,16 @@ static TEST_REGISTERED_PROTOCOLS: std::sync::Mutex<Vec<&'static ProtocolDecl>> =
 /// itself.
 #[cfg(any(test, feature = "test-support"))]
 pub fn register_test_protocol(decl: &'static ProtocolDecl) {
+    // A name the composition root already installed is declared: this seam stands in for a root
+    // in binaries that have none, and re-declaring behind a real root would make the boot fold
+    // report a duplicate the operator never caused (a test-built binary would then carry boot
+    // lines the shipped one does not).
+    let installed_already = INSTALLED
+        .get()
+        .is_some_and(|installed| installed.iter().any(|d| d.name == decl.name));
+    if installed_already {
+        return;
+    }
     let mut reg = TEST_REGISTERED_PROTOCOLS
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -1623,4 +1719,78 @@ pub fn warn_untranslatable_response_metadata(
          to receive them. If this metadata is compliance evidence, route the request to a \
          same-protocol lane, where the upstream body reaches the client verbatim"
     );
+}
+
+#[cfg(test)]
+mod boot_fold_tests {
+    use super::*;
+
+    /// A name-only declaration: the boot fold and the test seam read nothing but `name`.
+    const fn named_decl(name: &'static str) -> ProtocolDecl {
+        ProtocolDecl {
+            name,
+            codec: None,
+            handler: None,
+            verbs: &[],
+            head_keys: &[],
+            streaming_content_type: None,
+            array_stream_shim_key: None,
+            native_tool_id_prefix: None,
+            ingress_auth: IngressAuth::Bearer,
+            egress_auth_headers: None,
+            egress_auth_lane_constant: false,
+            stream_usage_requires_opt_in: false,
+            requires_max_tokens: false,
+            stop_sequence_cap: None,
+            cache_markers_model_gated: false,
+            fills_thought_signature: false,
+            frame_after_message_start: None,
+            reshapes_body_at_path_base: false,
+            max_cache_control_breakpoints: None,
+            quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
+            ingress_is_eventstream: false,
+            emits_sse_done_terminator: false,
+            max_citations_per_delta: None,
+            egress_user_agent: crate::proxy::EGRESS_UA_DEFAULT,
+            has_model_in_url: false,
+            auth_failure_status_and_kind: (http::StatusCode::UNAUTHORIZED, ERR_TYPE_AUTHENTICATION),
+            ingress_relays_amzn_headers: false,
+            ingress_relayed_response_header_names: &[],
+            auth_failure_message: "authentication failed",
+            uses_array_stream_shim: false,
+            has_native_path_not_found: false,
+            egress_stream_accept: crate::proxy::TEXT_EVENT_STREAM,
+            models_list_envelope: None,
+            claims: None,
+            residual_claims: None,
+            residual_default: false,
+            vendor_response_metadata: None,
+            list_models_fingerprint_headers: &[],
+        }
+    }
+
+    static ROOTED: ProtocolDecl = named_decl("rooted");
+    static TEST_ONLY: ProtocolDecl = named_decl("test-only");
+
+    /// The one test in this binary that installs a root: `install_protocols` is once per process.
+    /// A test-built binary with a real composition root must fold to the same declaration list
+    /// as the shipped one, with no re-declaration for the boot fold to skip audibly.
+    #[test]
+    fn the_test_seam_does_not_redeclare_what_the_root_installed() {
+        install_protocols(vec![&ROOTED]);
+        register_test_protocol(&ROOTED);
+        register_test_protocol(&TEST_ONLY);
+        let names: Vec<&str> = test_registered_protocols().iter().map(|d| d.name).collect();
+        assert_eq!(
+            names,
+            ["test-only"],
+            "a root-installed name must not enter the test set"
+        );
+        let folded: Vec<&str> = registry().decls().iter().map(|d| d.name).collect();
+        assert_eq!(
+            folded,
+            ["rooted", "test-only"],
+            "installed first, each name once"
+        );
+    }
 }

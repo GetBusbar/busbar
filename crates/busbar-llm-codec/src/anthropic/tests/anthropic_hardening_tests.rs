@@ -807,9 +807,9 @@ fn write_response_event_error_serializes_native_shape() {
     let _: serde_json::Value = serde_json::from_str(&s).expect("must be valid JSON");
 }
 
-/// When the upstream error event carries no `type`, the writer must emit `error.type: null`
-/// (not `""`) and still a non-empty `message`. Guards that the Option is carried through
-/// (no `unwrap_or_default()`) and that a message is always present.
+/// When the upstream error event carries no `type`, the writer must still emit a spec token for
+/// the error's class (never `""`, and never `null` — not a member of the discriminated set) and a
+/// non-empty `message`. Guards that a message is always present.
 #[test]
 fn write_response_event_error_null_type_when_signal_absent() {
     let err = IrError {
@@ -824,12 +824,13 @@ fn write_response_event_error_null_type_when_signal_absent() {
     assert_eq!(
             data.get("type").and_then(|t| t.as_str()),
             Some("error"),
-            "data body must carry the top-level `type`:\"error\" discriminator even when the inner error.type is null"
+            "data body must carry the top-level `type`:\"error\" discriminator even when no signal was carried"
         );
     let error_obj = data.get("error").expect("error sub-object present");
-    assert!(
-        error_obj.get("type").map(|t| t.is_null()).unwrap_or(false),
-        "error.type must be JSON null when no provider signal, not an empty string"
+    assert_eq!(
+        error_obj.get("type").and_then(|t| t.as_str()),
+        Some("invalid_request_error"), // golden wire-contract literal (kept bare on purpose)
+        "a signal-less ClientError must carry its class's spec token, not null or an empty string"
     );
     assert!(
         error_obj
@@ -838,6 +839,73 @@ fn write_response_event_error_null_type_when_signal_absent() {
             .map(|m| !m.is_empty())
             .unwrap_or(false),
         "error.message must still be present and non-empty"
+    );
+}
+
+/// `ErrorResponse.error` is discriminated on `type` over a CLOSED set of nine tokens, so free text
+/// there is not a valid error object — an SDK dispatching on it cannot match, and the value is
+/// often an upstream sentence rather than a token. The type must come from the error's class; the
+/// free text stays as `message`, where prose belongs.
+#[test]
+fn write_response_event_error_type_is_a_spec_token_not_free_text() {
+    let sentence = "You have exceeded your requests per minute.";
+    let err = IrError {
+        class: StatusClass::RateLimit,
+        provider_signal: Some(sentence.to_string()),
+        retry_after: None,
+    };
+    let (_, data) = AnthropicWriter
+        .write_response_event(&IrStreamEvent::Error(err))
+        .expect("error event must serialize");
+    let error_obj = data.get("error").expect("error sub-object present");
+    assert_eq!(
+        error_obj.get("type").and_then(|t| t.as_str()),
+        Some("rate_limit_error"), // golden wire-contract literal (kept bare on purpose)
+        "error.type must be the class's spec token, never the free-text signal"
+    );
+    assert_eq!(
+        error_obj.get("message").and_then(|m| m.as_str()),
+        Some(sentence),
+        "the upstream text must survive verbatim as error.message"
+    );
+}
+
+/// With no provider signal at all the type still has to be one of the nine. `api_error` is the
+/// catch-all a server-side failure maps to; `null` is not a member of the set.
+#[test]
+fn write_response_event_error_type_falls_back_to_api_error() {
+    let err = IrError {
+        class: StatusClass::ServerError,
+        provider_signal: None,
+        retry_after: None,
+    };
+    let (_, data) = AnthropicWriter
+        .write_response_event(&IrStreamEvent::Error(err))
+        .expect("error event must serialize");
+    let error_obj = data.get("error").expect("error sub-object present");
+    assert_eq!(
+        error_obj.get("type").and_then(|t| t.as_str()),
+        Some("api_error"), // golden wire-contract literal (kept bare on purpose)
+        "a signal-less error must still carry a spec token, not null"
+    );
+}
+
+/// A native token arriving from upstream must round-trip verbatim rather than being re-derived,
+/// so a `permission_error` does not come back out as `authentication_error` (both read as Auth).
+#[test]
+fn write_response_event_error_type_round_trips_a_native_token() {
+    let err = IrError {
+        class: StatusClass::Auth,
+        provider_signal: Some("permission_error".to_string()),
+        retry_after: None,
+    };
+    let (_, data) = AnthropicWriter
+        .write_response_event(&IrStreamEvent::Error(err))
+        .expect("error event must serialize");
+    assert_eq!(
+        data["error"].get("type").and_then(|t| t.as_str()),
+        Some("permission_error"),
+        "a signal that is already a spec token must survive unchanged"
     );
 }
 

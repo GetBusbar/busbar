@@ -193,8 +193,12 @@ fn a_registration_interns_a_configured_key_exactly_once() {
     assert!(reg.is_empty());
 
     let lane = String::from("openai-frontier");
-    let first = reg.key(&lane);
-    let second = reg.key(&lane);
+    let first = reg
+        .key(&lane)
+        .expect("the vocabulary is open and far from its ceiling");
+    let second = reg
+        .key(&lane)
+        .expect("a key already registered always resolves");
 
     assert_eq!(first, "openai-frontier");
     assert_eq!(first, second);
@@ -203,7 +207,9 @@ fn a_registration_interns_a_configured_key_exactly_once() {
     assert_eq!(reg.len(), 1);
 
     // A different key is a second entry, and the fixed term is readable from the count.
-    let other = reg.key("anthropic-frontier");
+    let other = reg
+        .key("anthropic-frontier")
+        .expect("the vocabulary is open");
     assert_ne!(first, other);
     assert_eq!(reg.len(), 2);
 }

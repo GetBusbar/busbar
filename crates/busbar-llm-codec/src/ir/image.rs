@@ -78,7 +78,7 @@ pub struct ImageReq {
 
 /// THE IMAGE FAMILY'S WALK — this IR's answer to [`busbar_substrate_values::ir::facts::IrFacts`]. Unlike an enum, a
 /// struct has no exhaustiveness check on its fields, so EVERY caller-text field is enumerated here by
-/// hand (MAJOR-6) and the `image_projection_covers_every_text_field` forcing-function test fails
+/// hand and the `image_projection_covers_every_text_field` forcing-function test fails
 /// loudly if a new `String` field is added without a projection decision. Screenable text →
 /// [`busbar_substrate_values::ir::facts::ContentItem::Text`]: `prompt`, `negative_prompt`, `mask_prompt`, and each
 /// `weighted_prompts` string (SDXL, which override `prompt`). Binary edit inputs →

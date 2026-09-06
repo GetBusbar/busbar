@@ -6,12 +6,16 @@
 //! The claim is not "the log avoids writing files in this mode" — it is that a memory-buffered log
 //! holds nothing that knows how to open one. The battery makes that observable: a temp directory is
 //! created, a whole append-recover-restart cycle runs beside it, and the directory is asserted still
-//! empty. The same assertion is made about the process's current directory, because a path bug
-//! usually lands there rather than somewhere plausible.
+//! empty. The current directory is checked too, because a path bug usually lands there rather than
+//! somewhere plausible — but as a set of names matching the log's own `<index>.wal` segments, not
+//! as a count: the cwd is shared with every other test in the binary, so a count moves for reasons
+//! that are nothing to do with the log, and a count that happens to hold still also hides one file
+//! replacing another. The temp-directory walk is the primary evidence; the cwd set is the check
+//! that the write did not simply land somewhere else.
 
 use crate::wal::{Mode, Wal};
 
-use super::fixtures::{durability_token, records, TempDir};
+use super::fixtures::{cwd_segment_names, durability_token, records, TempDir};
 
 #[test]
 fn a_memory_buffered_log_creates_no_file_anywhere() {
@@ -21,9 +25,7 @@ fn a_memory_buffered_log_creates_no_file_anywhere() {
         before.is_empty(),
         "the fixture directory did not start empty"
     );
-    let cwd_before = std::fs::read_dir(".")
-        .map(|entries| entries.flatten().count())
-        .unwrap_or(0);
+    let cwd_before = cwd_segment_names();
 
     let mut wal = Wal::memory_buffered();
     assert_eq!(wal.mode(), Mode::MemoryBuffered);
@@ -43,12 +45,10 @@ fn a_memory_buffered_log_creates_no_file_anywhere() {
         "a memory-buffered log put something on a disk: {:?}",
         dir.walk()
     );
-    let cwd_after = std::fs::read_dir(".")
-        .map(|entries| entries.flatten().count())
-        .unwrap_or(0);
     assert_eq!(
-        cwd_before, cwd_after,
-        "something appeared in the working directory"
+        cwd_before,
+        cwd_segment_names(),
+        "a log segment appeared in the working directory"
     );
 }
 

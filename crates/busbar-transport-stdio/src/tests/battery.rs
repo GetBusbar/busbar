@@ -146,6 +146,37 @@ async fn cancel_mid_frame_fences_the_connection() {
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::Framing);
+
+    // The read arm of the same cell. A `frames()` future dropped while suspended in `read_line`
+    // must leave the connection readable: the reader (and its read-ahead) belongs to the
+    // connection, not to the future that was polling it, so the next pump sees the line that
+    // arrived rather than a silent end-of-stream indistinguishable from the peer closing.
+    let t = StdioTransport::new();
+    let (a, b) = pair(&t, 64 * 1024);
+    {
+        let mut frames = t.frames(b.clone());
+        let first = frames.next();
+        tokio::pin!(first);
+        let raced = tokio::time::timeout(Duration::from_millis(1), first.as_mut()).await;
+        assert!(
+            raced.is_err(),
+            "the read must still be suspended when dropped"
+        );
+    }
+    t.write(
+        &a,
+        busbar_contract::StreamId(0),
+        ArenaBytes::new(b"after the cancel"),
+    )
+    .await
+    .unwrap();
+    let mut frames = t.frames(b);
+    let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("a cancelled read must not lose the reader")
+        .expect("the stream must not end")
+        .expect("and must not be a fenced error");
+    assert_eq!(frame.bytes.as_slice(), b"after the cancel");
 }
 
 #[tokio::test]
@@ -266,7 +297,7 @@ async fn transport_meta_matches_the_architecture_row() {
 
 fn test_key_handle() -> busbar_contract::TransportKeyHandle {
     struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
+    impl busbar_contract::plugin::KernelSeal for Seal {
         fn seal_origin(&self) -> &'static str {
             "test"
         }
@@ -329,7 +360,7 @@ fn program_dest(
     env: &'static [(&'static str, &'static str)],
 ) -> busbar_contract::VerifiedDestination {
     struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
+    impl busbar_contract::plugin::KernelSeal for Seal {
         fn seal_origin(&self) -> &'static str {
             "test"
         }
@@ -351,4 +382,82 @@ fn program_dest(
         "stdio",
         None,
     )
+}
+
+/// A child that dies mid-line has not sent a frame. `read_until` returns what it has when the peer
+/// hits EOF without a newline, and handing that fragment up as a well-formed frame is the same
+/// "guess where the body ended" this transport already refuses on the write side. The unterminated
+/// tail is a framing error, and the clean EOF on a line boundary stays a clean end of stream.
+#[tokio::test]
+async fn an_unterminated_final_line_is_a_framing_error() {
+    let t = StdioTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    let (_ar, mut aw) = split(end_a);
+
+    // One whole line, then half of another, then the peer goes away.
+    aw.write_all(b"{\"id\":1}\n{\"jsonr").await.unwrap();
+    aw.shutdown().await.unwrap();
+
+    let mut frames = t.frames(b);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"{\"id\":1}");
+    let err = frames
+        .next()
+        .await
+        .expect("the fragment must be reported, not swallowed")
+        .expect_err("a half-written line is not a frame");
+    assert_eq!(err, TransportError::Framing);
+}
+
+/// A peer that never writes a newline must not be able to exhaust this process's memory. The child
+/// is operator-launched, so it sits nearer the trusted side than a client does, but it is still a
+/// process this transport does not control and no layer above caps what it sends.
+#[tokio::test]
+async fn a_line_past_the_maximum_is_a_framing_error() {
+    let t = StdioTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    let (_ar, mut aw) = split(end_a);
+
+    let over = vec![b'x'; crate::transport::MAX_LINE_BYTES + 1];
+    let flood = tokio::spawn(async move {
+        // Never a newline: without a bound the reader would keep growing instead of answering.
+        let _ = aw.write_all(&over).await;
+        futures::future::pending::<()>().await;
+    });
+
+    let mut frames = t.frames(b);
+    let err = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("an over-long line must be answered, not read forever")
+        .expect("the stream must report it")
+        .expect_err("a line past the maximum is not a frame");
+    assert_eq!(err, TransportError::Framing);
+    flood.abort();
+}
+
+/// The bound does not touch ordinary traffic: a line just under the maximum is still a frame,
+/// byte-exact.
+#[tokio::test]
+async fn a_line_within_the_maximum_is_still_a_frame() {
+    let t = Arc::new(StdioTransport::new());
+    let (a, b) = pair(&t, 64 * 1024);
+    let payload = vec![b'y'; crate::transport::MAX_LINE_BYTES - 1];
+    let writer = tokio::spawn({
+        let t = t.clone();
+        let payload = payload.clone();
+        async move {
+            t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(&payload))
+                .await
+                .unwrap()
+        }
+    });
+    let mut frames = t.frames(b);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.len(), payload.len());
+    assert!(frame.bytes.as_slice().iter().all(|&c| c == b'y'));
+    writer.await.unwrap();
 }

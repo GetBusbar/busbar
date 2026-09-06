@@ -17,7 +17,11 @@
 //! 2. **Rate limit.** [`crate::rate::MutationClass::for_verb`] then
 //!    [`crate::rate::MutationLimiter::check`] — refused `RateLimited` otherwise. Reads never reach
 //!    the limiter at all (their class is `Forbidden`, i.e. never checked).
-//! 3. **Posture** (new verbs only). [`crate::posture::check_new_verb_admission`].
+//! 3. **Posture** (new verbs only). [`crate::posture::check_new_verb_admission`]. The five ledger
+//!    views ([`crate::verb::LEDGER_VERBS`]) are answered BEFORE this step and never reach it: a view
+//!    reads figures the ledger already holds, so there is no mutation for dual control to check and
+//!    no ceremony for it to wait on. They reach [`crate::governance::Governance::execute_ledger_read`]
+//!    instead, having passed exactly the same scope and rate checks as everything above.
 //! 4. **Idempotency** (the two legacy replayable mutations only, `create_key`/`rotate_key`,
 //!    reached through their own dedicated methods rather than the generic [`Verbs::execute`] — see
 //!    their doc comments for why they are not folded into the generic dispatch).
@@ -32,7 +36,7 @@ use crate::posture::{ApprovalState, PostureCtx};
 use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
 use crate::refusal::{ReasonCode, Refusal, RefusalStep};
 use crate::store::Store;
-use crate::verb::{KernelVerb, VerbScope, LEGACY_VERBS, NEW_VERBS};
+use crate::verb::{KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS};
 use busbar_caps::{AdminToken, SecretOnce, UnitKey};
 
 /// CG-39: the nonce seam. This crate has no CSPRNG dependency of its own, so the 128-bit nonce a
@@ -49,11 +53,15 @@ pub trait NonceSource {
     fn fill(&self, buf: &mut [u8; 16]);
 }
 
-/// The longest a group/parent name may be. `// contract:` in spirit (1.5.5 pins this in
-/// `busbar-core::admin::v1::service::MAX_GROUP_NAME_LEN`), kept as a plain constant here because
-/// the architecture document does not name it as a dual-controlled default and a mismatch would
-/// only ever be too strict, never a security gap.
-pub const MAX_GROUP_NAME_LEN: usize = 253;
+/// The longest a group/parent name may be. `// contract:` in spirit: 1.5.5 pins this in
+/// `busbar-core::admin::v1::service::MAX_GROUP_NAME_LEN`, and the number here is that number. The
+/// literal is repeated rather than imported because the source is `pub(crate)` and this crate
+/// depends on nothing that could hand it over.
+///
+/// It had drifted to 253 on the theory that a mismatch could only ever be too strict and so was
+/// harmless. Too strict IS the harm: a 254-, 255- or 256-character parent name that the shipped
+/// release accepted would have been refused, which is a served answer changing.
+pub const MAX_GROUP_NAME_LEN: usize = 256;
 
 /// The outcome of a verb call that minted or rotated a credential: the once-shown secret is a
 /// [`SecretOnce`] placeholder, never a plain string, so nothing downstream of this crate can hold
@@ -117,9 +125,10 @@ impl MintOutcome {
     }
 }
 
-/// Resolve the scope a [`KernelVerb`] requires. Legacy verbs read [`LEGACY_VERBS`]; the 17 new
-/// verbs are `Full` (every one of them mutates state or reads privileged material — there is no
-/// read-only new verb); the named surfaces split by their own nature (`Get*` reads, the two
+/// Resolve the scope a [`KernelVerb`] requires. Legacy verbs read [`LEGACY_VERBS`]; the 17
+/// money-governance verbs are `Full` (every one of them mutates state or reads privileged
+/// material); the five ledger views are `ReadOnly` (they are the one group of 1.6.0 additions that
+/// only looks); the named surfaces split by their own nature (`Get*` reads, the two
 /// `/auth/token` methods are their own thing and never checked against this two-rung scope model at
 /// all — see the module doc on why `Verbs::execute` is not the caller for them).
 pub fn required_scope(verb: KernelVerb) -> VerbScope {
@@ -128,6 +137,15 @@ pub fn required_scope(verb: KernelVerb) -> VerbScope {
     }
     if NEW_VERBS.contains(&verb) {
         return VerbScope::Full;
+    }
+    // The five ledger views are reads, and are answered here rather than by the fallthrough below
+    // so that the scope is a decision this function MAKES about them. The fallthrough happens to
+    // land on the same rung, and that coincidence is exactly why it must not be relied on: a
+    // read-only view and an unrecognised verb would then be indistinguishable, and the day the
+    // fallthrough is tightened to `Full` — the safe direction for an unknown — every ledger view
+    // would silently start demanding a full-scope credential.
+    if LEDGER_VERBS.contains(&verb) {
+        return VerbScope::ReadOnly;
     }
     // Named surfaces: every `Get*` is a read; `PostAuthToken`/`GetAuthToken` are exempt from this
     // model entirely (see module doc) and are given `ReadOnly` here only so `required_scope` stays
@@ -151,7 +169,9 @@ pub struct Verbs<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<Minte
     limiter: MutationLimiter,
 }
 
-impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>> Verbs<G, S, N, E> {
+impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>>
+    Verbs<G, S, N, E>
+{
     /// Build a fresh executor over the four bound seams. `config_class_rules` is the composition
     /// root's sealed CG-38 table (see [`crate::rate::CONFIG_CLASS_RULES`] for the 1.5.5-parity
     /// default); `nonce_source` and `replay_encoder` are mandatory — there is no `Default` for
@@ -389,8 +409,26 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             "create_key/rotate_key have dedicated methods with their own idempotency handling"
         );
         self.admit(verb, actor, granted, now)?;
+        // A ledger view is answered BEFORE the new-verb branch, and the ordering is the whole of
+        // its posture: it never reaches `check_new_verb_admission`, because there is no mutation
+        // for dual control to check and no ceremony a read has to wait for. What it does reach is
+        // the same `admit` above every other verb reaches, so its scope and its rate class are
+        // decided by the same two lines that decide every other verb's.
+        if LEDGER_VERBS.contains(&verb) {
+            return self
+                .governance
+                .execute_ledger_read(verb, admin, request)
+                .map_err(GovernanceError::into_refusal);
+        }
         if NEW_VERBS.contains(&verb) {
-            let ctx = posture.expect("a new verb must be called with a resolved PostureCtx");
+            // A posture-gated verb whose posture the caller did not resolve is REFUSED, not
+            // unwrapped. "A new verb always arrives with one" is a claim about a call site, and a
+            // miswired caller — or a verb added to the gated set on one side only — would otherwise
+            // turn an admin request into a downed process at the point where the gate was supposed
+            // to protect something.
+            let Some(ctx) = posture else {
+                return Err(Refusal::new(RefusalStep::Verify, ReasonCode::Validation));
+            };
             crate::posture::check_new_verb_admission(verb, ctx, approval)?;
             return self
                 .governance

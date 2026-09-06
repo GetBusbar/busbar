@@ -4,7 +4,6 @@
 //! Bedrock Converse protocol reader/writer implementation.
 
 use crate::ir::IrStreamEvent;
-use http::{HeaderName, HeaderValue, StatusCode};
 #[cfg(test)]
 use busbar_substrate_values::breaker::CanonicalSignal;
 use busbar_substrate_values::breaker::StatusClass;
@@ -13,6 +12,7 @@ use busbar_substrate_values::proto::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
     ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
 };
+use http::{HeaderName, HeaderValue, StatusCode};
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
@@ -38,7 +38,10 @@ pub fn protocol() -> Protocol {
 /// `Authorization: AWS4-HMAC-SHA256…` signature is the TIGHTEST claim of any dialect (rung 1,
 /// unambiguous regardless of path), then the `/converse` path (rung 12) and the `/model/{id}/invoke`
 /// path (rung 13). Lower strength binds tighter — the shared ladder positions.
-fn claims(h: &http::HeaderMap, path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+fn claims(
+    h: &http::HeaderMap,
+    path: &str,
+) -> Option<busbar_substrate_values::proto::ClaimStrength> {
     use busbar_substrate_values::proto::ClaimStrength;
     if h.get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -296,7 +299,9 @@ fn attach_bedrock_error_headers(headers: &mut http::HeaderMap, kind: &str) {
 /// Shared by `write_response_exception` (the StreamTranslate exception-frame path) and the fallback
 /// `write_response_event` Error arm (also a stream-output context) so both stay consistent. The
 /// message prefers the upstream's `provider_signal`, falling back to the exception name.
-fn bedrock_stream_exception_for(err: &busbar_substrate_values::proto::IrError) -> (&'static str, String) {
+fn bedrock_stream_exception_for(
+    err: &busbar_substrate_values::proto::IrError,
+) -> (&'static str, String) {
     let exception_name = match err.class {
         StatusClass::RateLimit => EXC_THROTTLING,
         StatusClass::Overloaded => EXC_SERVICE_UNAVAILABLE,
@@ -1804,7 +1809,8 @@ impl busbar_substrate_values::proto::StreamTranslator for BedrockConverseBodyTra
                 .recover_truncated_usage(&body)
                 .or_else(|| {
                     Some(busbar_substrate_values::billing::TokenUsage {
-                        output: (tail_len / crate::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN).max(1),
+                        output: (tail_len / crate::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN)
+                            .max(1),
                         ..Default::default()
                     })
                 });

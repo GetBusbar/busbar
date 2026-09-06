@@ -27,7 +27,27 @@
     "CHANGING THIS FILE: close a cell by flipping it to `proven` WITH the test that proves it, in",
     "the SAME commit as the test. Regressing a proven cell (its test vanishes or is renamed) is RED.",
     "Adding a capability or plane without filling its whole row/column is RED (the cross product is",
-    "exact). Do not delete a capability to shrink the queue."
+    "exact). Do not delete a capability to shrink the queue.",
+    "",
+    "THE ROOT COLUMN (`root_legs` + every cell's `root`). The `test` above is the LEGACY path: the",
+    "capability proven where the plane crate serves it. Every plane now also runs through the",
+    "composition root, behind root-llm / root-mcp / root-a2a / root-voice / root-admin, and a",
+    "capability that holds on the legacy path and is unwitnessed over the loop is a second, silent",
+    "half of the same question. So each cell carries a SECOND verdict, over its plane's root leg:",
+    "  proven          -- with `test`: a `<crates/busbar/src/root/units_*.rs>::<test fn>` cell that",
+    "                     drives the capability through the leg. The gate verifies the file is the",
+    "                     leg's own file and the fn is in it.",
+    "  none            -- with `reason`: the leg does not witness this capability yet, and the reason",
+    "                     says what the leg does instead. R-16: name a gap, never paper it.",
+    "  not-applicable  -- the cell's own state is `not-applicable`, so the leg is owed nothing here.",
+    "                     The two states move together: a cell is n/a on both paths or on neither.",
+    "`root_legs` declares the five legs and, per leg, the ledger columns it answers to. root-admin",
+    "answers to ZERO columns on purpose (admin is not one of the doctrine's protocol planes); its",
+    "root leg is judged by qa/teller-steps.json's admin row instead.",
+    "The root column's evidence is verified for EXISTENCE by the gate under the five features, and",
+    "RUN by `scripts/capability-equality-summary.py --root-legs`, which builds the binary crate with",
+    "all five legs on and executes every named root cell -- so `proven` on this column means the",
+    "instrument was watched over the loop, not only that it is on disk."
   ],
   "capabilities": {
     "breaker-trip": "a failing upstream target records into the ONE core breaker cell (LaneRuntime, (pool,lane)-keyed) and the cell opens",
@@ -53,566 +73,1033 @@
     "voice-client": "busbar's outbound duplex leg: the dialed WSS to the realtime voice provider (OpenAI Realtime / Gemini Live) and the telephony media egress (Twilio g711); one session is pinned to one provider socket for its whole lifetime",
     "voice-server": "busbar's voice front door: inbound session-open ingress -- the browser sideband WebSocket and the telephony (Twilio) media-stream webhook -- that opens a governed duplex session"
   },
+  "root_legs": {
+    "root-llm": {
+      "file": "crates/busbar/src/root/units_llm.rs",
+      "columns": [
+        "llm"
+      ],
+      "note": "the LLM plane over the loop: LlmNode::answer driving the kernel's ten steps, compared against the shipped entry point on six fixtures"
+    },
+    "root-mcp": {
+      "file": "crates/busbar/src/root/units_mcp.rs",
+      "columns": [
+        "mcp-client",
+        "mcp-server"
+      ],
+      "note": "the MCP plane's bindings to the fourteen units, compiled and sealed at boot; the serving path is still the plugin's, which is why several cells on this leg are honestly \"none\""
+    },
+    "root-a2a": {
+      "file": "crates/busbar/src/root/units_a2a.rs",
+      "columns": [
+        "a2a-client",
+        "a2a-server"
+      ],
+      "note": "the A2A plane's scope entries, its record-leg binding and its destination guard, assembled at boot; the serving path is still the plugin's"
+    },
+    "root-voice": {
+      "file": "crates/busbar/src/root/units_voice.rs",
+      "columns": [
+        "voice-client",
+        "voice-server"
+      ],
+      "note": "the voice plane switched over: a live session as a sequence of ordinary units -- the handshake, the per-frame turns and the metering lease"
+    },
+    "root-admin": {
+      "file": "crates/busbar/src/root/units_admin.rs",
+      "columns": [],
+      "note": "the admin plane is NOT one of the doctrine's seven protocol columns -- it carries no protocol and no upstream target -- so it owns no cell in this matrix. Its root leg is judged, step by step, by the admin row of qa/teller-steps.json. Zero columns here is that statement, not an omission."
+    }
+  },
   "cells": [
     {
       "capability": "breaker-trip",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_transport_error_opens_pool_cell"
+      "test": "crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_transport_error_opens_pool_cell",
+      "root": {
+        "state": "none",
+        "leg": "root-llm",
+        "reason": "the six root-llm fixtures each name one pool with one lane, so no run on the loop takes a target down and nothing is recorded into the breaker cell through the route step"
+      }
     },
     {
       "capability": "breaker-trip",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/breaker_fastfail_tests.rs::a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_touching_it"
+      "test": "crates/busbar-mcp/src/mcp/tests/breaker_fastfail_tests.rs::a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_touching_it",
+      "root": {
+        "state": "none",
+        "leg": "root-mcp",
+        "reason": "the root-mcp leg compiles and seals the MCP plane's bindings to the fourteen units; no cell on it dials an upstream, so nothing records into or is refused by the breaker cell over the loop"
+      }
     },
     {
       "capability": "breaker-trip",
       "plane": "mcp-server",
       "state": "not-applicable",
-      "reason": "the front door is inbound; there is no upstream target whose availability could be recorded. A peer-initiated sampling/createMessage rides the LLM engine and is the llm cell's evidence."
+      "reason": "the front door is inbound; there is no upstream target whose availability could be recorded. A peer-initiated sampling/createMessage rides the LLM engine and is the llm cell's evidence.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-mcp"
+      }
     },
     {
       "capability": "breaker-trip",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/breaker_fastfail_tests.rs::a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_wire"
+      "test": "crates/busbar-a2a/src/a2a/tests/breaker_fastfail_tests.rs::a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_wire",
+      "root": {
+        "state": "none",
+        "leg": "root-a2a",
+        "reason": "the root-a2a leg assembles the plane's scope entries and its record-leg binding; no cell on it dials a fronted agent, so the breaker cell is neither recorded into nor consulted over the loop"
+      }
     },
     {
       "capability": "breaker-trip",
       "plane": "a2a-server",
       "state": "not-applicable",
-      "reason": "inbound role; no upstream availability to record. The anomaly breaker (a2a/anomaly.rs) is behaviour trust, not availability, and must not be conflated with the core breaker."
+      "reason": "inbound role; no upstream availability to record. The anomaly breaker (a2a/anomaly.rs) is behaviour trust, not availability, and must not be conflated with the core breaker.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-a2a"
+      }
     },
     {
       "capability": "breaker-fastfail",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::ordered_walk_skips_tripped_preferred_to_next"
+      "test": "crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::ordered_walk_skips_tripped_preferred_to_next",
+      "root": {
+        "state": "none",
+        "leg": "root-llm",
+        "reason": "nothing on the root-llm leg opens a cell, so no fixture reaches the loop's route step with a tripped target to be refused before dispatch"
+      }
     },
     {
       "capability": "breaker-fastfail",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/breaker_fastfail_tests.rs::a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fails"
+      "test": "crates/busbar-mcp/src/mcp/tests/breaker_fastfail_tests.rs::a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fails",
+      "root": {
+        "state": "none",
+        "leg": "root-mcp",
+        "reason": "the root-mcp leg compiles and seals the MCP plane's bindings to the fourteen units; no cell on it dials an upstream, so nothing records into or is refused by the breaker cell over the loop"
+      }
     },
     {
       "capability": "breaker-fastfail",
       "plane": "mcp-server",
       "state": "not-applicable",
-      "reason": "the front door is inbound; admission-before-dispatch has no upstream target on this role. The outbound legs it triggers are the llm and mcp-client cells."
+      "reason": "the front door is inbound; admission-before-dispatch has no upstream target on this role. The outbound legs it triggers are the llm and mcp-client cells.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-mcp"
+      }
     },
     {
       "capability": "breaker-fastfail",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding"
+      "test": "crates/busbar-a2a/src/a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding",
+      "root": {
+        "state": "none",
+        "leg": "root-a2a",
+        "reason": "the root-a2a leg assembles the plane's scope entries and its record-leg binding; no cell on it dials a fronted agent, so the breaker cell is neither recorded into nor consulted over the loop"
+      }
     },
     {
       "capability": "breaker-fastfail",
       "plane": "a2a-server",
       "state": "not-applicable",
-      "reason": "inbound role; there is no dispatch admission against an upstream to make fast. Refusing inbound work is the governance and trust cells' subject, not the breaker's."
+      "reason": "inbound role; there is no dispatch admission against an upstream to make fast. Refusing inbound work is the governance and trust cells' subject, not the breaker's.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-a2a"
+      }
     },
     {
       "capability": "failover-reroute",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/reroute_pool_tests.rs::a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves"
+      "test": "crates/busbar-llm/src/engine/tests/reroute_pool_tests.rs::a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves",
+      "root": {
+        "state": "none",
+        "leg": "root-llm",
+        "reason": "the fixtures declare a single pool member, so the selection loop the route step drives is never asked for a second candidate on this leg"
+      }
     },
     {
       "capability": "failover-reroute",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/reroute_pool_tests.rs::a_tripped_pool_primary_reroutes_the_next_tools_call_to_its_twin_and_stays_untouched"
+      "test": "crates/busbar-mcp/src/mcp/tests/reroute_pool_tests.rs::a_tripped_pool_primary_reroutes_the_next_tools_call_to_its_twin_and_stays_untouched",
+      "root": {
+        "state": "none",
+        "leg": "root-mcp",
+        "reason": "the root-mcp leg compiles and seals the MCP plane's bindings to the fourteen units; no cell on it dials an upstream, so nothing records into or is refused by the breaker cell over the loop"
+      }
     },
     {
       "capability": "failover-reroute",
       "plane": "mcp-server",
       "state": "not-applicable",
-      "reason": "inbound role; there is no candidate set to walk. Failover for work this role triggers belongs to the outbound cells (llm, mcp-client)."
+      "reason": "inbound role; there is no candidate set to walk. Failover for work this role triggers belongs to the outbound cells (llm, mcp-client).",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-mcp"
+      }
     },
     {
       "capability": "failover-reroute",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/reroute_pool_tests.rs::a_tripped_pool_primary_reroutes_a_fresh_submission_to_the_twin_and_stays_untouched"
+      "test": "crates/busbar-a2a/src/a2a/tests/reroute_pool_tests.rs::a_tripped_pool_primary_reroutes_a_fresh_submission_to_the_twin_and_stays_untouched",
+      "root": {
+        "state": "none",
+        "leg": "root-a2a",
+        "reason": "the root-a2a leg assembles the plane's scope entries and its record-leg binding; no cell on it dials a fronted agent, so the breaker cell is neither recorded into nor consulted over the loop"
+      }
     },
     {
       "capability": "failover-reroute",
       "plane": "a2a-server",
       "state": "not-applicable",
-      "reason": "inbound role; there is no candidate set to walk on the receiving side. The relay's candidate walk is the a2a-client cell."
+      "reason": "inbound role; there is no candidate set to walk on the receiving side. The relay's candidate walk is the a2a-client cell.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-a2a"
+      }
     },
     {
       "capability": "hooks-tap",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/usage_tap_tests.rs::apply_global_rewrites_chains_in_order"
+      "test": "crates/busbar-llm/src/engine/tests/usage_tap_tests.rs::apply_global_rewrites_chains_in_order",
+      "root": {
+        "state": "none",
+        "leg": "root-llm",
+        "reason": "no root-llm fixture installs an observe or transform hook, so the byte-identity the leg proves says nothing about a rewrite or a usage projection running over the loop"
+      }
     },
     {
       "capability": "hooks-tap",
       "plane": "mcp-client",
       "state": "proven",
       "test": "crates/busbar-mcp/src/mcp/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_tool_call_arguments_before_they_go_upstream",
-      "note": "the `prompt: rw` transform pass at mcp/method.rs (through the EngineHost::transform_over host seam, mirroring the LLM apply_global_rewrites) rewrites the tool-call arguments over the SAME InvokeReq projection the gate builds, BEFORE the upstream credential is leased. One wiring at the method layer covers both directions (no ungated production entry to the client leg), exactly as the hooks-gate cells."
+      "note": "the `prompt: rw` transform pass at mcp/method.rs (through the EngineHost::transform_over host seam, mirroring the LLM apply_global_rewrites) rewrites the tool-call arguments over the SAME InvokeReq projection the gate builds, BEFORE the upstream credential is leased. One wiring at the method layer covers both directions (no ungated production entry to the client leg), exactly as the hooks-gate cells.",
+      "root": {
+        "state": "none",
+        "leg": "root-mcp",
+        "reason": "no root-mcp cell installs an observe or transform hook; the leg's cells judge the plane's declarations and its unit bindings, never a payload a hook rewrote"
+      }
     },
     {
       "capability": "hooks-tap",
       "plane": "mcp-server",
       "state": "proven",
       "test": "crates/busbar-mcp/src/mcp/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_tool_call_arguments_before_they_go_upstream",
-      "note": "same transform_over wiring at mcp/method.rs; the test asserts on the arguments the real upstream peer received (peer.last_mcp()). BYTE-IDENTICAL when no rewrite hook is attached (tap_attached misses)."
+      "note": "same transform_over wiring at mcp/method.rs; the test asserts on the arguments the real upstream peer received (peer.last_mcp()). BYTE-IDENTICAL when no rewrite hook is attached (tap_attached misses).",
+      "root": {
+        "state": "none",
+        "leg": "root-mcp",
+        "reason": "no root-mcp cell installs an observe or transform hook; the leg's cells judge the plane's declarations and its unit bindings, never a payload a hook rewrote"
+      }
     },
     {
       "capability": "hooks-tap",
       "plane": "a2a-client",
       "state": "proven",
       "test": "crates/busbar-a2a/src/a2a/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_submission_params_before_the_hop",
-      "note": "the `prompt: rw` transform pass at a2a/receive.rs::admitted rewrites the submission params over the same InvokeReq projection the gate builds; the relay (a2a-client) leg runs downstream of that admission, so one wiring covers both directions. The test asserts on the params the backend actually received (h.sent())."
+      "note": "the `prompt: rw` transform pass at a2a/receive.rs::admitted rewrites the submission params over the same InvokeReq projection the gate builds; the relay (a2a-client) leg runs downstream of that admission, so one wiring covers both directions. The test asserts on the params the backend actually received (h.sent()).",
+      "root": {
+        "state": "none",
+        "leg": "root-a2a",
+        "reason": "no root-a2a cell installs an observe or transform hook; the leg's cells judge the plan, the guard and the scope tables rather than a payload a hook touched"
+      }
     },
     {
       "capability": "hooks-tap",
       "plane": "a2a-server",
       "state": "proven",
       "test": "crates/busbar-a2a/src/a2a/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_submission_params_before_the_hop",
-      "note": "same transform_over wiring at a2a/receive.rs; BYTE-IDENTICAL verbatim passthrough when no rewrite hook is attached (the relay re-serializes the envelope only when a rewrite actually committed)."
+      "note": "same transform_over wiring at a2a/receive.rs; BYTE-IDENTICAL verbatim passthrough when no rewrite hook is attached (the relay re-serializes the envelope only when a rewrite actually committed).",
+      "root": {
+        "state": "none",
+        "leg": "root-a2a",
+        "reason": "no root-a2a cell installs an observe or transform hook; the leg's cells judge the plan, the guard and the scope tables rather than a payload a hook touched"
+      }
     },
     {
       "capability": "hooks-gate",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request"
+      "test": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request",
+      "root": {
+        "state": "none",
+        "leg": "root-llm",
+        "reason": "no root-llm fixture installs a gate hook, so the loop has never been asked to refuse a request at hooks::gate::decide"
+      }
     },
     {
       "capability": "hooks-gate",
       "plane": "mcp-client",
       "state": "proven",
       "test": "crates/busbar-mcp/src/mcp/tests/hook_gate_tests.rs::tools_hooks_reject_all_rejects_a_tools_call",
-      "note": "the gate sits at the method layer (mcp/method.rs) BEFORE the upstream leg; there is no ungated production entry to the client leg, so one battery covers both directions."
+      "note": "the gate sits at the method layer (mcp/method.rs) BEFORE the upstream leg; there is no ungated production entry to the client leg, so one battery covers both directions.",
+      "root": {
+        "state": "none",
+        "leg": "root-mcp",
+        "reason": "the refusals a root-mcp cell drives are the scope unit's, at approve; hooks::gate::decide is reached by no cell on this leg"
+      }
     },
     {
       "capability": "hooks-gate",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/hook_gate_tests.rs::tools_hooks_reject_all_rejects_a_tools_call"
+      "test": "crates/busbar-mcp/src/mcp/tests/hook_gate_tests.rs::tools_hooks_reject_all_rejects_a_tools_call",
+      "root": {
+        "state": "none",
+        "leg": "root-mcp",
+        "reason": "the refusals a root-mcp cell drives are the scope unit's, at approve; hooks::gate::decide is reached by no cell on this leg"
+      }
     },
     {
       "capability": "hooks-gate",
       "plane": "a2a-client",
       "state": "not-applicable",
-      "reason": "busbar-originated A2A traffic is not a second gate point: originate (mirror_push_config, refresh_listed_tasks) is called only from receive.rs::admitted, downstream of the proven inbound hooks gate, and push delivery targets the caller's own webhook, which the agent-submission gate has no semantic target for. Same rationale the mcp-client cell is proven under."
+      "reason": "busbar-originated A2A traffic is not a second gate point: originate (mirror_push_config, refresh_listed_tasks) is called only from receive.rs::admitted, downstream of the proven inbound hooks gate, and push delivery targets the caller's own webhook, which the agent-submission gate has no semantic target for. Same rationale the mcp-client cell is proven under.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-a2a"
+      }
     },
     {
       "capability": "hooks-gate",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/hook_gate_tests.rs::agents_hooks_reject_all_rejects_a_message_send"
+      "test": "crates/busbar-a2a/src/a2a/tests/hook_gate_tests.rs::agents_hooks_reject_all_rejects_a_message_send",
+      "root": {
+        "state": "none",
+        "leg": "root-a2a",
+        "reason": "the refusals the root-a2a cells drive are the scope unit's and the destination guard's; hooks::gate::decide is reached by no cell on this leg"
+      }
     },
     {
       "capability": "audit-chain",
       "plane": "llm",
       "state": "proven",
       "test": "crates/busbar-llm/src/engine/tests/reqlog_dispatch_tests.rs::every_model_request_lands_on_the_presenting_keys_hash_chain_dispatch_and_refusal_alike",
-      "note": "closed by proxy/reqlog.rs -- a RECORD TYPE and nothing else, appended at the plane's one terminal (ingress::finish_inner) through the ONE mechanism in crate::audit. Scoped per principal like the MCP call log. The test drives a real request through build_router over a real socket and reads the chain back; deleting the append fails it and leaves the other 4,540 tests green. HONEST LIMIT: busbar_api::Store carries no model-request method, so this stream is a bounded in-memory window and a restart loses it -- adding durability is a plugin-ABI change fanned out to four store repos and is deliberately not made here. Nothing may call it durable until that method exists."
+      "note": "closed by proxy/reqlog.rs -- a RECORD TYPE and nothing else, appended at the plane's one terminal (ingress::finish_inner) through the ONE mechanism in crate::audit. Scoped per principal like the MCP call log. The test drives a real request through build_router over a real socket and reads the chain back; deleting the append fails it and leaves the other 4,540 tests green. HONEST LIMIT: busbar_api::Store carries no model-request method, so this stream is a bounded in-memory window and a restart loses it -- adding durability is a plugin-ABI change fanned out to four store repos and is deliberately not made here. Nothing may call it durable until that method exists.",
+      "root": {
+        "state": "proven",
+        "leg": "root-llm",
+        "test": "crates/busbar/src/root/units_llm.rs::one_unit_leaves_exactly_one_link_on_the_chain"
+      }
     },
     {
       "capability": "audit-chain",
       "plane": "mcp-client",
       "state": "proven",
       "test": "crates/busbar-mcp/src/mcp/tests/calllog_dispatch_tests.rs::the_client_legs_own_outcome_is_what_the_chain_records_success_and_failure_apart",
-      "note": "the outcome of the leg BUSBAR issues is what the chain carries: a leg that went out and came back badly is chained as `dispatched` + `upstream_failed`, a leg that worked as `dispatched` with an empty reason. Both are driven through one principal, one server and one tool differing only in the upstream's answer, so the pin cannot be satisfied by a constant. Watched red: deleting the reason token at method.rs's Outcome::UpstreamFailed arm fails it and leaves the two front-door tests green."
+      "note": "the outcome of the leg BUSBAR issues is what the chain carries: a leg that went out and came back badly is chained as `dispatched` + `upstream_failed`, a leg that worked as `dispatched` with an empty reason. Both are driven through one principal, one server and one tool differing only in the upstream's answer, so the pin cannot be satisfied by a constant. Watched red: deleting the reason token at method.rs's Outcome::UpstreamFailed arm fails it and leaves the two front-door tests green.",
+      "root": {
+        "state": "proven",
+        "leg": "root-mcp",
+        "test": "crates/busbar/src/root/units_mcp.rs::only_a_served_call_leaves_an_administrative_entry"
+      }
     },
     {
       "capability": "audit-chain",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/calllog_dispatch_tests.rs::a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_store_plugin"
+      "test": "crates/busbar-mcp/src/mcp/tests/calllog_dispatch_tests.rs::a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_store_plugin",
+      "root": {
+        "state": "proven",
+        "leg": "root-mcp",
+        "test": "crates/busbar/src/root/units_mcp.rs::only_a_served_call_leaves_an_administrative_entry"
+      }
     },
     {
       "capability": "audit-chain",
       "plane": "a2a-client",
       "state": "proven",
       "test": "crates/busbar-a2a/src/a2a/tests/client_leg_tests.rs::the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_issued_to",
-      "note": "the hop busbar ISSUES is chained: `task.delegated` naming who delegated and to which registered agent, appended BEFORE the socket, in the same per-task chain as the submission and verified by crate::audit::verify_chain. A failed hop is chained too and ends terminally (a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome). Watched red: removing the record_dispatch call in a2a/receive.rs fails both. STILL OPEN on this plane's sibling: push-notification DELIVERY (a2a/pushdeliver.rs) chains nothing -- that is the a2a-server role's own outbound leg, tracked in the gap report, not claimed here."
+      "note": "the hop busbar ISSUES is chained: `task.delegated` naming who delegated and to which registered agent, appended BEFORE the socket, in the same per-task chain as the submission and verified by crate::audit::verify_chain. A failed hop is chained too and ends terminally (a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome). Watched red: removing the record_dispatch call in a2a/receive.rs fails both. STILL OPEN on this plane's sibling: push-notification DELIVERY (a2a/pushdeliver.rs) chains nothing -- that is the a2a-server role's own outbound leg, tracked in the gap report, not claimed here.",
+      "root": {
+        "state": "proven",
+        "leg": "root-a2a",
+        "test": "crates/busbar/src/root/units_a2a.rs::every_ending_has_an_audited_spelling"
+      }
     },
     {
       "capability": "audit-chain",
       "plane": "a2a-server",
       "state": "proven",
       "test": "crates/busbar-a2a/src/a2a/tests/front_door_chain_tests.rs::an_inbound_task_leaves_a_verifying_chain_in_the_store_the_front_door_wrote_it_to",
-      "note": "RE-POINTED. The previous pin (provenance_tests::an_untouched_chain_verifies_and_its_links_are_actual_links) builds a synthetic TaskChain in-process and would have passed unchanged if the front door chained nothing at all -- a cell green on evidence that never touches the plane. The new pin POSTs message/send at a real listener through build_router and reads the events back out of an attached store, so an empty read-back is a failure rather than a pass. This plane's own outbound webhook delivery is covered by the three task.push_* tests in pushdeliver_tests.rs, added with it: before them a delivery refused by the delivery-time SSRF guard left no record anywhere."
+      "note": "RE-POINTED. The previous pin (provenance_tests::an_untouched_chain_verifies_and_its_links_are_actual_links) builds a synthetic TaskChain in-process and would have passed unchanged if the front door chained nothing at all -- a cell green on evidence that never touches the plane. The new pin POSTs message/send at a real listener through build_router and reads the events back out of an attached store, so an empty read-back is a failure rather than a pass. This plane's own outbound webhook delivery is covered by the three task.push_* tests in pushdeliver_tests.rs, added with it: before them a delivery refused by the delivery-time SSRF guard left no record anywhere.",
+      "root": {
+        "state": "proven",
+        "leg": "root-a2a",
+        "test": "crates/busbar/src/root/units_a2a.rs::the_audit_action_is_the_word_the_rig_reads"
+      }
     },
     {
       "capability": "governance-budget",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker"
+      "test": "crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker",
+      "root": {
+        "state": "proven",
+        "leg": "root-llm",
+        "test": "crates/busbar/src/root/units_llm.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it"
+      }
     },
     {
       "capability": "governance-budget",
       "plane": "mcp-client",
       "state": "proven",
       "test": "crates/busbar-mcp/src/mcp/tests/sampling_satisfy_tests.rs::the_per_upstream_budget_refuses_the_completion_past_the_cap_before_it_runs",
-      "note": "the per-upstream sampling budget, charged BEFORE the model leg in mcp::sampling::satisfy_upstream_ask when busbar itself originates the completion. Red-proven by deleting the try_spend call from the production path: this test failed and the other five sampling_satisfy tests plus all three sampling_spend unit tests stayed green."
+      "note": "the per-upstream sampling budget, charged BEFORE the model leg in mcp::sampling::satisfy_upstream_ask when busbar itself originates the completion. Red-proven by deleting the try_spend call from the production path: this test failed and the other five sampling_satisfy tests plus all three sampling_spend unit tests stayed green.",
+      "root": {
+        "state": "proven",
+        "leg": "root-mcp",
+        "test": "crates/busbar/src/root/units_mcp.rs::a_call_is_estimated_flat_plus_its_document"
+      }
     },
     {
       "capability": "governance-budget",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/method_tests.rs::a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane"
+      "test": "crates/busbar-mcp/src/mcp/tests/method_tests.rs::a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane",
+      "root": {
+        "state": "proven",
+        "leg": "root-mcp",
+        "test": "crates/busbar/src/root/units_mcp.rs::a_call_is_estimated_flat_plus_its_document"
+      }
     },
     {
       "capability": "governance-budget",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a-codec/src/a2a/tests/meter_tests.rs::a_delegation_bills_the_initiating_key_for_the_hop_and_claims_nothing_beyond_it"
+      "test": "crates/busbar-a2a-codec/src/a2a/tests/meter_tests.rs::a_delegation_bills_the_initiating_key_for_the_hop_and_claims_nothing_beyond_it",
+      "root": {
+        "state": "proven",
+        "leg": "root-a2a",
+        "test": "crates/busbar/src/root/units_a2a.rs::only_a_hop_to_an_agent_carries_the_fee"
+      }
     },
     {
       "capability": "governance-budget",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-a2a-codec/src/a2a/tests/meter_tests.rs::reaching_the_limit_is_over_it_and_the_refusal_carries_a_retry_after"
+      "test": "crates/busbar-a2a-codec/src/a2a/tests/meter_tests.rs::reaching_the_limit_is_over_it_and_the_refusal_carries_a_retry_after",
+      "root": {
+        "state": "proven",
+        "leg": "root-a2a",
+        "test": "crates/busbar/src/root/units_a2a.rs::only_a_hop_to_an_agent_carries_the_fee"
+      }
     },
     {
       "capability": "disposition",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-substrate-values/src/tests/breaker_tests.rs::test_structured_type_drives_error_map"
+      "test": "crates/busbar-substrate-values/src/tests/breaker_tests.rs::test_structured_type_drives_error_map",
+      "root": {
+        "state": "proven",
+        "leg": "root-llm",
+        "test": "crates/busbar/src/root/units_llm.rs::every_fixture_reaches_the_end_it_names"
+      }
     },
     {
       "capability": "disposition",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/reroute_pool_tests.rs::a_client_fault_answer_never_penalizes_the_member"
+      "test": "crates/busbar-mcp/src/mcp/tests/reroute_pool_tests.rs::a_client_fault_answer_never_penalizes_the_member",
+      "root": {
+        "state": "proven",
+        "leg": "root-mcp",
+        "test": "crates/busbar/src/root/units_mcp.rs::every_planned_kind_classifies"
+      }
     },
     {
       "capability": "disposition",
       "plane": "mcp-server",
       "state": "not-applicable",
-      "reason": "disposition classifies an upstream's ANSWER; the inbound role has no upstream answer to classify. Rendering a refusal to a caller is the response path, not disposition."
+      "reason": "disposition classifies an upstream's ANSWER; the inbound role has no upstream answer to classify. Rendering a refusal to a caller is the response path, not disposition.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-mcp"
+      }
     },
     {
       "capability": "disposition",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/reroute_pool_tests.rs::a_client_fault_answer_never_penalizes_the_agent"
+      "test": "crates/busbar-a2a/src/a2a/tests/reroute_pool_tests.rs::a_client_fault_answer_never_penalizes_the_agent",
+      "root": {
+        "state": "none",
+        "leg": "root-a2a",
+        "reason": "the four endings this leg pins are the audit unit's spellings, not breaker::classify's Disposition; no cell on this leg puts an upstream answer through Stage 1 and Stage 2"
+      }
     },
     {
       "capability": "disposition",
       "plane": "a2a-server",
       "state": "not-applicable",
-      "reason": "disposition classifies an upstream's ANSWER; the inbound role has no upstream answer to classify. Rendering a refusal to a caller is the response path, not disposition."
+      "reason": "disposition classifies an upstream's ANSWER; the inbound role has no upstream answer to classify. Rendering a refusal to a caller is the response path, not disposition.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-a2a"
+      }
     },
     {
       "capability": "metrics",
       "plane": "llm",
       "state": "proven",
       "test": "crates/busbar-core/tests/plane_integration.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape",
-      "note": "despite its name the test drives all three planes and asserts the llm, mcp and a2a series labels on one real scrape."
+      "note": "despite its name the test drives all three planes and asserts the llm, mcp and a2a series labels on one real scrape.",
+      "root": {
+        "state": "none",
+        "leg": "root-llm",
+        "reason": "the leg compares client bytes and the money the store holds; neither leg of a fixture scrapes /metrics, so the plane label on a real scrape is unwitnessed over the loop"
+      }
     },
     {
       "capability": "metrics",
       "plane": "mcp-client",
       "state": "proven",
       "test": "crates/busbar-mcp/src/mcp/tests/client_leg_metrics_tests.rs::a_tool_call_counts_an_upstream_attempt_naming_the_registration_it_was_issued_to",
-      "note": "the MODEL PLANE'S OWN client-leg families -- busbar_upstream_attempts_total / busbar_upstream_failures_total, same label keys, same disposition vocabulary -- emitted from the one counted wire seam (mcp::client::wire::send), so the plane label is no longer front-door-only. Its twin an_upstream_that_cannot_be_reached_is_counted_as_a_transient_failure_beside_its_attempt covers the failure half."
+      "note": "the MODEL PLANE'S OWN client-leg families -- busbar_upstream_attempts_total / busbar_upstream_failures_total, same label keys, same disposition vocabulary -- emitted from the one counted wire seam (mcp::client::wire::send), so the plane label is no longer front-door-only. Its twin an_upstream_that_cannot_be_reached_is_counted_as_a_transient_failure_beside_its_attempt covers the failure half.",
+      "root": {
+        "state": "proven",
+        "leg": "root-mcp",
+        "test": "crates/busbar/src/root/units_mcp.rs::a_completed_call_is_counted_once"
+      }
     },
     {
       "capability": "metrics",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-core/tests/plane_integration.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape"
+      "test": "crates/busbar-core/tests/plane_integration.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape",
+      "root": {
+        "state": "proven",
+        "leg": "root-mcp",
+        "test": "crates/busbar/src/root/units_mcp.rs::a_completed_call_is_counted_once"
+      }
     },
     {
       "capability": "metrics",
       "plane": "a2a-client",
       "state": "proven",
       "test": "crates/busbar-a2a/src/a2a/tests/relay_leg_metrics_tests.rs::a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issued_to",
-      "note": "the same two client-leg families, emitted from a2a::relay::prepare and count_leg_failure, labelled with the operator's agent_def id and the binding word off the closed transport axis. Its twin a_backend_that_cannot_be_reached_is_counted_as_a_transient_upstream_failure covers the failure half."
+      "note": "the same two client-leg families, emitted from a2a::relay::prepare and count_leg_failure, labelled with the operator's agent_def id and the binding word off the closed transport axis. Its twin a_backend_that_cannot_be_reached_is_counted_as_a_transient_upstream_failure covers the failure half.",
+      "root": {
+        "state": "proven",
+        "leg": "root-a2a",
+        "test": "crates/busbar/src/root/units_a2a.rs::a_record_leg_is_not_priced_on_a_lane"
+      }
     },
     {
       "capability": "metrics",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-core/tests/plane_integration.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape"
+      "test": "crates/busbar-core/tests/plane_integration.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape",
+      "root": {
+        "state": "proven",
+        "leg": "root-a2a",
+        "test": "crates/busbar/src/root/units_a2a.rs::a_record_leg_is_not_priced_on_a_lane"
+      }
     },
     {
       "capability": "trust-pinning",
       "plane": "llm",
       "state": "not-applicable",
-      "reason": "LLM providers are operator-declared config endpoints, not peer-published artifacts; there is no upstream-authored schema or card to pin. The trust lifecycle governs artifacts a peer authors."
+      "reason": "LLM providers are operator-declared config endpoints, not peer-published artifacts; there is no upstream-authored schema or card to pin. The trust lifecycle governs artifacts a peer authors.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-llm"
+      }
     },
     {
       "capability": "trust-pinning",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/client/tests/rugpull_tests.rs::a_changed_schema_under_a_live_cache_is_detected_demoted_and_refused"
+      "test": "crates/busbar-mcp/src/mcp/client/tests/rugpull_tests.rs::a_changed_schema_under_a_live_cache_is_detected_demoted_and_refused",
+      "root": {
+        "state": "proven",
+        "leg": "root-mcp",
+        "test": "crates/busbar/src/root/units_mcp.rs::a_record_leg_is_judged_against_the_planes_own_declaration"
+      }
     },
     {
       "capability": "trust-pinning",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/trust_gate_tests.rs::the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered"
+      "test": "crates/busbar-mcp/src/mcp/tests/trust_gate_tests.rs::the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered",
+      "root": {
+        "state": "proven",
+        "leg": "root-mcp",
+        "test": "crates/busbar/src/root/units_mcp.rs::a_record_leg_is_judged_against_the_planes_own_declaration"
+      }
     },
     {
       "capability": "trust-pinning",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/transport_pin_tests.rs::the_pin_read_off_a_real_handshake_is_the_leaf_keys_own_spki_hash"
+      "test": "crates/busbar-a2a/src/a2a/tests/transport_pin_tests.rs::the_pin_read_off_a_real_handshake_is_the_leaf_keys_own_spki_hash",
+      "root": {
+        "state": "proven",
+        "leg": "root-a2a",
+        "test": "crates/busbar/src/root/units_a2a.rs::every_origin_has_a_trust_side_spelling"
+      }
     },
     {
       "capability": "trust-pinning",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/pin_tests.rs::an_unpinned_registration_is_capturable_and_never_approvable"
+      "test": "crates/busbar-a2a/src/a2a/tests/pin_tests.rs::an_unpinned_registration_is_capturable_and_never_approvable",
+      "root": {
+        "state": "proven",
+        "leg": "root-a2a",
+        "test": "crates/busbar/src/root/units_a2a.rs::the_origin_gate_over_this_planes_kinds"
+      }
     },
     {
       "capability": "net-guard",
       "plane": "llm",
       "state": "not-applicable",
-      "reason": "LLM egress targets are operator-configured provider endpoints; no request-authored URL reaches the LLM egress path, so there is no SSRF surface -- which is why grep finds no net_guard consumer under proxy/."
+      "reason": "LLM egress targets are operator-configured provider endpoints; no request-authored URL reaches the LLM egress path, so there is no SSRF surface -- which is why grep finds no net_guard consumer under proxy/.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-llm"
+      }
     },
     {
       "capability": "net-guard",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/client/tests/ssrf_tests.rs::plaintext_http_to_a_public_host_is_refused_because_the_credential_rides_the_request"
+      "test": "crates/busbar-mcp/src/mcp/client/tests/ssrf_tests.rs::plaintext_http_to_a_public_host_is_refused_because_the_credential_rides_the_request",
+      "root": {
+        "state": "none",
+        "leg": "root-mcp",
+        "reason": "the root-mcp cells judge registration and lane permission for a hop; the SSRF judgement over a derived destination is core net_guard's and no cell on this leg puts an address in front of it"
+      }
     },
     {
       "capability": "net-guard",
       "plane": "mcp-server",
       "state": "not-applicable",
-      "reason": "the inbound listener derives no outbound destination of its own; the destinations its work triggers are guarded in the mcp-client and llm cells."
+      "reason": "the inbound listener derives no outbound destination of its own; the destinations its work triggers are guarded in the mcp-client and llm cells.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-mcp"
+      }
     },
     {
       "capability": "net-guard",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/fetch_tests.rs::a_rebinding_host_is_refused_outright_once_it_answers_the_metadata_address"
+      "test": "crates/busbar-a2a/src/a2a/tests/fetch_tests.rs::a_rebinding_host_is_refused_outright_once_it_answers_the_metadata_address",
+      "root": {
+        "state": "proven",
+        "leg": "root-a2a",
+        "test": "crates/busbar/src/root/units_a2a.rs::a_metadata_endpoint_is_refused_even_when_private_addressing_is_allowed"
+      }
     },
     {
       "capability": "net-guard",
       "plane": "a2a-server",
       "state": "proven",
       "test": "crates/busbar-a2a/src/a2a/tests/pushdeliver_tests.rs::a_callback_that_became_internal_after_registration_is_refused_at_delivery",
-      "note": "this role's own outbound is webhook push delivery, and it is guarded -- the PUSH-DELIVER TCK waivers exist because this guard correctly wins over the conformance score."
+      "note": "this role's own outbound is webhook push delivery, and it is guarded -- the PUSH-DELIVER TCK waivers exist because this guard correctly wins over the conformance score.",
+      "root": {
+        "state": "proven",
+        "leg": "root-a2a",
+        "test": "crates/busbar/src/root/units_a2a.rs::a_private_address_needs_the_operators_word"
+      }
     },
     {
       "capability": "egress-auth",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/auth_style_tests.rs::test_api_key_auth_sends_api_key_header"
+      "test": "crates/busbar-llm/src/engine/tests/auth_style_tests.rs::test_api_key_auth_sends_api_key_header",
+      "root": {
+        "state": "none",
+        "leg": "root-llm",
+        "reason": "the scripted upstream accepts any credential it is handed, so a byte-identical delivered answer over the loop does not witness the egress plan that produced the header"
+      }
     },
     {
       "capability": "egress-auth",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/client/tests/egress_tests.rs::each_upstream_gets_a_token_bound_to_its_own_resource"
+      "test": "crates/busbar-mcp/src/mcp/client/tests/egress_tests.rs::each_upstream_gets_a_token_bound_to_its_own_resource",
+      "root": {
+        "state": "proven",
+        "leg": "root-mcp",
+        "test": "crates/busbar/src/root/units_mcp.rs::the_narrowing_follows_the_transport"
+      }
     },
     {
       "capability": "egress-auth",
       "plane": "mcp-server",
       "state": "not-applicable",
-      "reason": "this role's only outbound (peer sampling) rides the LLM engine, whose credential injection is the llm cell; inbound caller authentication is the Auth plugin's subject, not egress."
+      "reason": "this role's only outbound (peer sampling) rides the LLM engine, whose credential injection is the llm cell; inbound caller authentication is the Auth plugin's subject, not egress.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-mcp"
+      }
     },
     {
       "capability": "egress-auth",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/creds_tests.rs::a_minted_lease_carries_the_secret_only_through_the_header_it_was_placed_at"
+      "test": "crates/busbar-a2a/src/a2a/tests/creds_tests.rs::a_minted_lease_carries_the_secret_only_through_the_header_it_was_placed_at",
+      "root": {
+        "state": "none",
+        "leg": "root-a2a",
+        "reason": "no root-a2a cell plans or injects an outbound credential; the leg's authenticate binding reads the caller's own credential and the relay's egress plan is untouched by it"
+      }
     },
     {
       "capability": "egress-auth",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/pushdeliver_tests.rs::the_callers_own_webhook_credential_is_presented_on_the_delivery"
+      "test": "crates/busbar-a2a/src/a2a/tests/pushdeliver_tests.rs::the_callers_own_webhook_credential_is_presented_on_the_delivery",
+      "root": {
+        "state": "none",
+        "leg": "root-a2a",
+        "reason": "no root-a2a cell plans or injects an outbound credential; the leg's authenticate binding reads the caller's own credential and the relay's egress plan is untouched by it"
+      }
     },
     {
       "capability": "catalogue",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-core/src/tests/endpoints_tests.rs::test_v1_models_restricted_key_sees_only_reachable_names"
+      "test": "crates/busbar-core/src/tests/endpoints_tests.rs::test_v1_models_restricted_key_sees_only_reachable_names",
+      "root": {
+        "state": "proven",
+        "leg": "root-llm",
+        "test": "crates/busbar/src/root/units_llm.rs::the_switched_table_names_every_dialect_the_plane_names"
+      }
     },
     {
       "capability": "catalogue",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/client/tests/catalogue_tests.rs::a_registered_server_serves_nothing_until_it_is_approved"
+      "test": "crates/busbar-mcp/src/mcp/client/tests/catalogue_tests.rs::a_registered_server_serves_nothing_until_it_is_approved",
+      "root": {
+        "state": "proven",
+        "leg": "root-mcp",
+        "test": "crates/busbar/src/root/units_mcp.rs::a_read_only_grant_lists_and_does_not_call"
+      }
     },
     {
       "capability": "catalogue",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/catalogue_tests.rs::two_grants_see_two_different_catalogues_and_a_third_sees_none"
+      "test": "crates/busbar-mcp/src/mcp/tests/catalogue_tests.rs::two_grants_see_two_different_catalogues_and_a_third_sees_none",
+      "root": {
+        "state": "proven",
+        "leg": "root-mcp",
+        "test": "crates/busbar/src/root/units_mcp.rs::a_call_names_the_tool_as_well_as_the_server"
+      }
     },
     {
       "capability": "catalogue",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/registry_tests.rs::a_fresh_registration_is_pending_and_delegable_to_nobody"
+      "test": "crates/busbar-a2a/src/a2a/tests/registry_tests.rs::a_fresh_registration_is_pending_and_delegable_to_nobody",
+      "root": {
+        "state": "proven",
+        "leg": "root-a2a",
+        "test": "crates/busbar/src/root/units_a2a.rs::a_read_only_grant_does_not_reach_a_send"
+      }
     },
     {
       "capability": "catalogue",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/catalogue_tests.rs::scope_decides_visibility_and_a_pool_only_key_sees_nothing"
+      "test": "crates/busbar-a2a/src/a2a/tests/catalogue_tests.rs::scope_decides_visibility_and_a_pool_only_key_sees_nothing",
+      "root": {
+        "state": "proven",
+        "leg": "root-a2a",
+        "test": "crates/busbar/src/root/units_a2a.rs::every_operation_class_is_declared"
+      }
     },
     {
       "capability": "breaker-trip",
       "plane": "voice-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/breaker_tests.rs::a_hard_down_provider_records_into_the_core_cell_and_opens_it"
+      "test": "crates/busbar-voice/src/tests/breaker_tests.rs::a_hard_down_provider_records_into_the_core_cell_and_opens_it",
+      "root": {
+        "state": "none",
+        "leg": "root-voice",
+        "reason": "the root-voice dial cell reads a cell that is already open; no cell on this leg records a failing provider dial into the breaker cell to make it open"
+      }
     },
     {
       "capability": "breaker-trip",
       "plane": "voice-server",
       "state": "not-applicable",
-      "reason": "the voice front door is an inbound role; opening a session records no upstream target availability, so there is no core breaker cell to trip here -- the outbound provider dial a session triggers is the voice-client cell's subject, the same shape mcp-server/a2a-server breaker-trip are N/A under."
+      "reason": "the voice front door is an inbound role; opening a session records no upstream target availability, so there is no core breaker cell to trip here -- the outbound provider dial a session triggers is the voice-client cell's subject, the same shape mcp-server/a2a-server breaker-trip are N/A under.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-voice"
+      }
     },
     {
       "capability": "breaker-fastfail",
       "plane": "voice-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/breaker_tests.rs::a_tripped_provider_cell_refuses_before_the_dial"
+      "test": "crates/busbar-voice/src/tests/breaker_tests.rs::a_tripped_provider_cell_refuses_before_the_dial",
+      "root": {
+        "state": "proven",
+        "leg": "root-voice",
+        "test": "crates/busbar/src/root/units_voice.rs::a_refused_dial_ends_the_opening_unit"
+      }
     },
     {
       "capability": "breaker-fastfail",
       "plane": "voice-server",
       "state": "not-applicable",
-      "reason": "the inbound session-open has no dispatch against an upstream to make fast; admission-before-dial against a tripped provider cell belongs to the voice-client dial leg, not the front door that merely accepts the session."
+      "reason": "the inbound session-open has no dispatch against an upstream to make fast; admission-before-dial against a tripped provider cell belongs to the voice-client dial leg, not the front door that merely accepts the session.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-voice"
+      }
     },
     {
       "capability": "failover-reroute",
       "plane": "voice-client",
       "state": "not-applicable",
-      "reason": "a duplex voice session is pinned to one provider socket for its whole lifetime, so there is no pre-first-byte candidate set to walk on the dial leg; a dropped session re-dials as a NEW session, never a mid-session reroute, so failover::walk has nothing to select over here."
+      "reason": "a duplex voice session is pinned to one provider socket for its whole lifetime, so there is no pre-first-byte candidate set to walk on the dial leg; a dropped session re-dials as a NEW session, never a mid-session reroute, so failover::walk has nothing to select over here.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-voice"
+      }
     },
     {
       "capability": "failover-reroute",
       "plane": "voice-server",
       "state": "not-applicable",
-      "reason": "the front door is an inbound role with no candidate set to walk; failover selection over interchangeable provider members is the outbound voice-client leg's decision, exactly as a2a-server reroute is not-applicable on the receiving side."
+      "reason": "the front door is an inbound role with no candidate set to walk; failover selection over interchangeable provider members is the outbound voice-client leg's decision, exactly as a2a-server reroute is not-applicable on the receiving side.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-voice"
+      }
     },
     {
       "capability": "hooks-tap",
       "plane": "voice-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_session_open_params_before_the_provider_dial"
+      "test": "crates/busbar-voice/src/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_session_open_params_before_the_provider_dial",
+      "root": {
+        "state": "none",
+        "leg": "root-voice",
+        "reason": "no root-voice cell installs an observe or transform hook; the leg drives a session's stations and its lease, and no payload on it passes through a hook"
+      }
     },
     {
       "capability": "hooks-tap",
       "plane": "voice-server",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_session_open_params_before_the_provider_dial"
+      "test": "crates/busbar-voice/src/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_session_open_params_before_the_provider_dial",
+      "root": {
+        "state": "none",
+        "leg": "root-voice",
+        "reason": "no root-voice cell installs an observe or transform hook; the leg drives a session's stations and its lease, and no payload on it passes through a hook"
+      }
     },
     {
       "capability": "hooks-gate",
       "plane": "voice-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_gate_tests.rs::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade"
+      "test": "crates/busbar-voice/src/tests/hook_gate_tests.rs::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade",
+      "root": {
+        "state": "none",
+        "leg": "root-voice",
+        "reason": "the refusal a session meets on the root-voice leg is the scope unit's at approve; hooks::gate::decide is reached by no cell on this leg"
+      }
     },
     {
       "capability": "hooks-gate",
       "plane": "voice-server",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_gate_tests.rs::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade"
+      "test": "crates/busbar-voice/src/tests/hook_gate_tests.rs::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade",
+      "root": {
+        "state": "none",
+        "leg": "root-voice",
+        "reason": "the refusal a session meets on the root-voice leg is the scope unit's at approve; hooks::gate::decide is reached by no cell on this leg"
+      }
     },
     {
       "capability": "audit-chain",
       "plane": "voice-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/audit_chain_tests.rs::an_opened_voice_session_seals_a_genesis_event_and_survives_reattach_on_the_durable_chain"
+      "test": "crates/busbar-voice/src/tests/audit_chain_tests.rs::an_opened_voice_session_seals_a_genesis_event_and_survives_reattach_on_the_durable_chain",
+      "root": {
+        "state": "proven",
+        "leg": "root-voice",
+        "test": "crates/busbar/src/root/units_voice.rs::the_opening_unit_seals_under_the_declared_operation_class"
+      }
     },
     {
       "capability": "audit-chain",
       "plane": "voice-server",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/audit_chain_tests.rs::an_inbound_session_open_lands_a_sealed_genesis_event_the_front_door_wrote"
+      "test": "crates/busbar-voice/src/tests/audit_chain_tests.rs::an_inbound_session_open_lands_a_sealed_genesis_event_the_front_door_wrote",
+      "root": {
+        "state": "proven",
+        "leg": "root-voice",
+        "test": "crates/busbar/src/root/units_voice.rs::unit_zero_runs_every_station_and_settles_exactly_once"
+      }
     },
     {
       "capability": "governance-budget",
       "plane": "voice-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/governance_budget_tests.rs::a_session_lease_settled_past_its_cap_hard_closes_and_refuses_further_spend"
+      "test": "crates/busbar-voice/src/tests/governance_budget_tests.rs::a_session_lease_settled_past_its_cap_hard_closes_and_refuses_further_spend",
+      "root": {
+        "state": "proven",
+        "leg": "root-voice",
+        "test": "crates/busbar/src/root/units_voice.rs::a_detached_node_refuses_the_session_at_the_door"
+      }
     },
     {
       "capability": "governance-budget",
       "plane": "voice-server",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/governance_budget_tests.rs::the_session_lease_bills_the_presenting_key_and_refuses_past_the_cap_with_a_hard_close"
+      "test": "crates/busbar-voice/src/tests/governance_budget_tests.rs::the_session_lease_bills_the_presenting_key_and_refuses_past_the_cap_with_a_hard_close",
+      "root": {
+        "state": "proven",
+        "leg": "root-voice",
+        "test": "crates/busbar/src/root/units_voice.rs::the_handshake_draws_no_request_slot_and_posts_nothing"
+      }
     },
     {
       "capability": "disposition",
       "plane": "voice-client",
       "state": "not-applicable",
-      "reason": "disposition classifies a discrete upstream ANSWER (proto Stage 1 -> breaker::classify); a duplex frame stream has no per-hop answer to normalize -- a fatal provider frame closes the session rather than resolving into a Disposition, so Stage 2 has nothing to classify on the dial leg."
+      "reason": "disposition classifies a discrete upstream ANSWER (proto Stage 1 -> breaker::classify); a duplex frame stream has no per-hop answer to normalize -- a fatal provider frame closes the session rather than resolving into a Disposition, so Stage 2 has nothing to classify on the dial leg.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-voice"
+      }
     },
     {
       "capability": "disposition",
       "plane": "voice-server",
       "state": "not-applicable",
-      "reason": "disposition classifies an upstream's ANSWER; the inbound session-open has no upstream answer to normalize, so Stage-1/Stage-2 classification has no subject here -- the same argument mcp-server and a2a-server disposition are not-applicable under."
+      "reason": "disposition classifies an upstream's ANSWER; the inbound session-open has no upstream answer to normalize, so Stage-1/Stage-2 classification has no subject here -- the same argument mcp-server and a2a-server disposition are not-applicable under.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-voice"
+      }
     },
     {
       "capability": "metrics",
       "plane": "voice-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/metrics_tests.rs::a_voice_session_open_increments_the_plane_labelled_counter"
+      "test": "crates/busbar-voice/src/tests/metrics_tests.rs::a_voice_session_open_increments_the_plane_labelled_counter",
+      "root": {
+        "state": "proven",
+        "leg": "root-voice",
+        "test": "crates/busbar/src/root/units_voice.rs::a_turn_meters_the_classes_the_plane_declares_with_text_split_by_direction"
+      }
     },
     {
       "capability": "metrics",
       "plane": "voice-server",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/metrics_tests.rs::a_voice_session_open_increments_the_plane_labelled_counter"
+      "test": "crates/busbar-voice/src/tests/metrics_tests.rs::a_voice_session_open_increments_the_plane_labelled_counter",
+      "root": {
+        "state": "proven",
+        "leg": "root-voice",
+        "test": "crates/busbar/src/root/units_voice.rs::a_class_with_nothing_to_report_produces_no_line"
+      }
     },
     {
       "capability": "trust-pinning",
       "plane": "voice-client",
       "state": "not-applicable",
-      "reason": "voice providers (OpenAI Realtime, Gemini Live) are operator-declared config endpoints, not peer-published artifacts; there is no upstream-authored schema digest or card to pin -- exactly the argument the llm dial cell is not-applicable under."
+      "reason": "voice providers (OpenAI Realtime, Gemini Live) are operator-declared config endpoints, not peer-published artifacts; there is no upstream-authored schema digest or card to pin -- exactly the argument the llm dial cell is not-applicable under.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-voice"
+      }
     },
     {
       "capability": "trust-pinning",
       "plane": "voice-server",
       "state": "not-applicable",
-      "reason": "the browser-sideband and telephony callers that reach the front door publish no artifact (no schema digest, agent card, or SPKI) for the trust lifecycle to pin; there is no peer-authored object whose drift could be detected, unlike the a2a-server card-fingerprint cell."
+      "reason": "the browser-sideband and telephony callers that reach the front door publish no artifact (no schema digest, agent card, or SPKI) for the trust lifecycle to pin; there is no peer-authored object whose drift could be detected, unlike the a2a-server card-fingerprint cell.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-voice"
+      }
     },
     {
       "capability": "net-guard",
       "plane": "voice-client",
       "state": "not-applicable",
-      "reason": "the provider WSS is an operator-configured endpoint and no request-authored URL reaches the dial, so there is no SSRF surface on the outbound leg (the net_guard resolve->pin->guard at topology::dial_provider is defense-in-depth, not a request-URL guard); revisit if a T3 request-authored callback URL is ever dialed, like a2a-server push delivery."
+      "reason": "the provider WSS is an operator-configured endpoint and no request-authored URL reaches the dial, so there is no SSRF surface on the outbound leg (the net_guard resolve->pin->guard at topology::dial_provider is defense-in-depth, not a request-URL guard); revisit if a T3 request-authored callback URL is ever dialed, like a2a-server push delivery.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-voice"
+      }
     },
     {
       "capability": "net-guard",
       "plane": "voice-server",
       "state": "not-applicable",
-      "reason": "the inbound session listener derives no outbound destination of its own; the one outbound a session triggers is the provider dial, guarded (defense-in-depth) on the voice-client leg, so the front door has no request-authored egress to SSRF-guard."
+      "reason": "the inbound session listener derives no outbound destination of its own; the one outbound a session triggers is the provider dial, guarded (defense-in-depth) on the voice-client leg, so the front door has no request-authored egress to SSRF-guard.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-voice"
+      }
     },
     {
       "capability": "egress-auth",
       "plane": "voice-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/egress_tests.rs::the_provider_dial_carries_the_planned_credential_and_never_a_caller_token"
+      "test": "crates/busbar-voice/src/tests/egress_tests.rs::the_provider_dial_carries_the_planned_credential_and_never_a_caller_token",
+      "root": {
+        "state": "none",
+        "leg": "root-voice",
+        "reason": "the root-voice dial cells compose the provider endpoint from borrowed names; the credential that endpoint is reached with is planned outside this leg and no cell witnesses the injection"
+      }
     },
     {
       "capability": "egress-auth",
       "plane": "voice-server",
       "state": "not-applicable",
-      "reason": "the front door's only outbound is the provider dial, whose credential injection is the voice-client egress-auth cell; the inbound caller's own bearer is authenticated by the Auth plugin, which is not egress credential planning -- the same split mcp-server egress-auth is not-applicable under."
+      "reason": "the front door's only outbound is the provider dial, whose credential injection is the voice-client egress-auth cell; the inbound caller's own bearer is authenticated by the Auth plugin, which is not egress credential planning -- the same split mcp-server egress-auth is not-applicable under.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-voice"
+      }
     },
     {
       "capability": "catalogue",
       "plane": "voice-client",
       "state": "not-applicable",
-      "reason": "the voice plane's config is the SINGULAR streams: section, not a named-definition map like tools:/agents:, so there are no per-item registrations for catalogue::entitled to walk and trust-gate; named_def_list and registry_contains are None by construction, so no caller-visible catalogue exists on this plane."
+      "reason": "the voice plane's config is the SINGULAR streams: section, not a named-definition map like tools:/agents:, so there are no per-item registrations for catalogue::entitled to walk and trust-gate; named_def_list and registry_contains are None by construction, so no caller-visible catalogue exists on this plane.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-voice"
+      }
     },
     {
       "capability": "catalogue",
       "plane": "voice-server",
       "state": "not-applicable",
-      "reason": "the voice plane declares the SINGULAR streams: section, not a named-definition map, so the front door exposes no per-item registry for catalogue::entitled to walk; named_def_list/registry_contains are None, so there is no caller-visible catalogue surface to trust-gate."
+      "reason": "the voice plane declares the SINGULAR streams: section, not a named-definition map, so the front door exposes no per-item registry for catalogue::entitled to walk; named_def_list/registry_contains are None, so there is no caller-visible catalogue surface to trust-gate.",
+      "root": {
+        "state": "not-applicable",
+        "leg": "root-voice"
+      }
     }
   ]
 }

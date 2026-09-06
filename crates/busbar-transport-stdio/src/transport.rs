@@ -29,12 +29,56 @@ use busbar_contract_transport::wire::TransportError;
 use busbar_contract_transport::wire::Unit0Trigger;
 use busbar_contract_transport::AbiVersion;
 
-use crate::conn::{ConnState, StdioConnHandle};
+use crate::conn::{ConnState, ReaderSlot, StdioConnHandle};
+
+/// The most bytes one line may carry before this transport stops reading it.
+///
+/// `read_until` has no bound of its own: a peer that writes without ever sending a newline grows
+/// the buffer until memory runs out. The peer here is an operator-launched child rather than a
+/// client, but it is still a process this transport does not control, and nothing above it caps
+/// what a line may be.
+pub(crate) const MAX_LINE_BYTES: usize = 1024 * 1024;
+
+/// How a call to [`read_line`] stopped.
+enum LineEnd {
+    /// A newline was read: the bytes in the buffer are one whole line.
+    Terminated,
+    /// The peer reached end of stream. With an empty buffer that is a clean end of session; with
+    /// bytes in it, it is a line the peer never finished.
+    Eof,
+    /// The line ran past [`MAX_LINE_BYTES`] without a newline.
+    TooLong,
+}
 
 /// stdio's own frame stream: bytes split one line at a time, exactly the "duplex framed" shape the
 /// architecture's stdio row names.
 type FrameStream =
     std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
+
+/// The read-side counterpart of [`PoisonGuard`]: the reader slot is put back where the connection
+/// keeps it however this future ends, including a drop mid-read.
+///
+/// Without it a cancelled read left the slot empty and the next `frames()` call read that hole as a
+/// clean EOF — on a session transport, the same answer as the peer closing. The slot's lock is free
+/// by construction here (the guard is built after the lock is released and the slot is put back
+/// before anything else can take it), so a `try_lock` that somehow failed would mean a second pump
+/// held the connection, and fencing is the honest answer to that rather than dropping the reader on
+/// the floor.
+struct ReaderGuard {
+    state: Arc<ConnState>,
+    slot: Option<ReaderSlot>,
+}
+
+impl Drop for ReaderGuard {
+    fn drop(&mut self) {
+        if let Some(slot) = self.slot.take() {
+            match self.state.reader.try_lock() {
+                Ok(mut held) => *held = Some(slot),
+                Err(_) => self.state.poisoned.store(true, Ordering::Release),
+            }
+        }
+    }
+}
 
 /// Poisons a connection unless disarmed — the "cancel mid-frame" fence. A write that never reaches
 /// its clean-completion disarm, for ANY reason (an I/O error via the early-return `?`, or this
@@ -267,24 +311,46 @@ impl Transport for StdioTransport {
                 if done || state.is_poisoned() {
                     return None;
                 }
-                let mut guard = state.reader.lock().await;
-                let Some(mut buf) = guard.take() else {
+                let mut lock = state.reader.lock().await;
+                let Some(taken) = lock.take() else {
                     // Another `frames()` call already consumed this connection's reader — a
                     // transport connection is read by exactly one pump, matching every other
                     // in-tree transport's `frames` contract.
                     return None;
                 };
-                drop(guard);
-                let mut line: Vec<u8> = Vec::new();
+                drop(lock);
+                // The reader belongs to the connection, not to this future. Holding it in a guard
+                // is what makes a cancelled read the same non-event a cancelled poll of any other
+                // stream is: the guard's `Drop` runs whether this future completes or is dropped
+                // mid-read, so the next pump reads on — with the read-ahead and any partial line
+                // intact — rather than seeing a reader-shaped hole it would report as a clean EOF.
+                let mut held = ReaderGuard {
+                    state: state.clone(),
+                    slot: Some(taken),
+                };
+                let slot = held.slot.as_mut().expect("held for the guard's lifetime");
                 let item = loop {
-                    line.clear();
-                    match read_line(&mut buf, &mut line).await {
-                        Ok(0) => break None, // EOF: the session ends
-                        Ok(_) => {
-                            if line.iter().all(u8::is_ascii_whitespace) {
+                    match read_line(&mut slot.reader, &mut slot.partial).await {
+                        // A clean end on a line boundary: the session ends.
+                        Ok((0, LineEnd::Eof)) => break None,
+                        // The peer stopped partway through a line, or never ended one at all.
+                        // Where that line ended is the one thing this transport must not guess, so
+                        // the tail is a framing error and not a frame — the read-side answer to
+                        // what the write side already fences.
+                        Ok((_, LineEnd::Eof | LineEnd::TooLong)) => {
+                            break Some(Err(TransportError::Framing))
+                        }
+                        Ok((_, LineEnd::Terminated)) => {
+                            if slot.partial.iter().all(u8::is_ascii_whitespace) {
+                                slot.partial.clear();
                                 continue; // a blank line carries no frame
                             }
-                            let bytes = SlabBytes::new(Arc::<[u8]>::from(line.clone()));
+                            // Taken, not cloned: the line is finished with, so copying it into a
+                            // second buffer only to drop the first is one allocation and one copy
+                            // per frame that nothing needs.
+                            let bytes = SlabBytes::new(Arc::<[u8]>::from(std::mem::take(
+                                &mut slot.partial,
+                            )));
                             let meta = FrameMeta {
                                 bytes: bytes.len() as u64,
                                 transport_units: None,
@@ -303,9 +369,9 @@ impl Transport for StdioTransport {
                         Err(_) => break Some(Err(TransportError::Reset)),
                     }
                 };
-                // Hand the SAME `BufReader` back (readahead intact) so the NEXT poll of this
-                // stream keeps reading exactly where this one left off.
-                *state.reader.lock().await = Some(buf);
+                // Hand the SAME slot back (read-ahead intact) so the NEXT poll of this stream
+                // keeps reading exactly where this one left off.
+                drop(held);
                 match item {
                     None => None,
                     Some(result) => {
@@ -430,17 +496,34 @@ impl Transport for StdioTransport {
 
 /// `read_until('\n', ...)` with the terminator stripped, and any trailing `\r` stripped too so a
 /// peer that writes CRLF line endings is not handed a frame with a dangling carriage return.
+///
+/// Returns how many bytes this call read and how the line ended. The second half is what the caller
+/// cannot otherwise know: `read_until` returns a non-zero count both for a whole line and for a peer
+/// that reached EOF partway through one, and a caller that could not tell those apart would hand a
+/// half-written line up as a whole frame.
+///
+/// Reading through a `take` is what bounds the line: `read_until` on its own grows the buffer for as
+/// long as the peer withholds a newline.
 async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
     buf: &mut Vec<u8>,
-) -> std::io::Result<usize> {
-    use tokio::io::AsyncBufReadExt;
-    let n = reader.read_until(b'\n', buf).await?;
+) -> std::io::Result<(usize, LineEnd)> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+    // One byte past the maximum is enough to tell "a line that fits" from "a line that does not".
+    let budget = (MAX_LINE_BYTES + 1).saturating_sub(buf.len());
+    if budget == 0 {
+        return Ok((0, LineEnd::TooLong));
+    }
+    let n = reader.take(budget as u64).read_until(b'\n', buf).await?;
     if buf.last() == Some(&b'\n') {
         buf.pop();
         if buf.last() == Some(&b'\r') {
             buf.pop();
         }
+        return Ok((n, LineEnd::Terminated));
     }
-    Ok(n)
+    if buf.len() > MAX_LINE_BYTES {
+        return Ok((n, LineEnd::TooLong));
+    }
+    Ok((n, LineEnd::Eof))
 }

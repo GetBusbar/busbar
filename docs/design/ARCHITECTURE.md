@@ -691,7 +691,7 @@ destination is permitted only under `may_change_destination`; the pre/post head 
 |---|---|---|
 | A plugin cannot name the kernel, a capability, a unit, another plane or a transport | manifest allow-list | CI |
 | A pure-kind plugin cannot perform I/O (own crate: scan; dependencies: `cargo metadata` + review); I/O kinds are bounded by signature, deadline, `Access` entries and review | source denylist; blocking pool | CI + runtime |
-| A plugin cannot build a decision / destination / usage / hold / accrual / decoration / key handle / posted | token-sealed constructors, sealed by `busbar-caps`' `KernelSeal` token only — there is no public sealing trait in the contract for a plugin to implement | compile-time |
+| A plugin cannot build a decision / destination / usage / hold / accrual / decoration / key handle / posted | token-sealed constructors. The token is `busbar-caps`', and the manifest allow-list refuses a plugin crate that names that crate at all. The contract's sealing trait is public in `plugin` — it must be, since `busbar-caps` implements it and sits above the contract, and Rust cannot say "implementable by exactly one other crate" — so it is kept off the contract's ROOT surface and the `kernel-seal-impls` scan forbids implementing it in-tree outside `busbar-caps` (ten files are a named ratchet; two of them are plane crates that may not name `busbar-caps` and stay forgeable until the contract offers a seal a plane may name). An out-of-tree plugin CAN implement it; a loaded plugin is trusted code, so that is not a line drawn here | compile-time for caps-token holders + CI scan (in-tree) |
 | Every trait method implemented; no default bodies; one base trait; sealed unit traits; feature-invariant | trait shape + AST scan | compile-time + CI |
 | Object safety | fixture per kind | compile-time |
 | Every path takes its `Hold` exactly once | `HoldCell` state machine + CAS; no `?`/early exit; no capture in `catch_unwind`; no `abort` | runtime CAS + lint |
@@ -1437,9 +1437,18 @@ busbar is a byte-governance router.
 
 ### Decisions 2026-09-05 (orchestrator, resolving the consolidated contract gaps in `docs/design/1.6.0-contract-gaps.md`)
 
-- **CG-20 `KernelSeal` means one thing.** The caps unit struct. The contract's public trait of the same
-  name is removed; every contract-side sealed constructor is reachable only through a `busbar-caps`
-  token, so §3.7's "compile-time" line for sealed constructors is literally true.
+- **CG-20 `KernelSeal` means one thing.** The caps unit struct. The contract's trait of the same name
+  cannot be removed — `busbar-caps` implements it on every token and sits above the contract, and Rust
+  has no "implementable by exactly one other crate" — so what is done instead is: it leaves the
+  contract's ROOT re-export (reachable only as `busbar_contract::plugin::KernelSeal`, pinned by a
+  `compile_fail` doctest with a positive companion so the fixture is not read as claiming
+  unnameability), and the `kernel-seal-impls` construction-gate rule forbids implementing it in-tree
+  outside `busbar-caps`, over test code as well as production, with a named ratchet for the ten files
+  that carry one today. §3.7's row is amended to "compile-time for caps-token holders + CI scan
+  (in-tree)" rather than "compile-time", because that is what the mechanism is. An out-of-tree plugin
+  can still implement the trait; it cannot obtain a token, because the manifest allow-list (which reads
+  `[dependencies]` only) refuses a plugin crate that names `busbar-caps`, and a loaded plugin is
+  trusted code in any case.
 - **CG-28 `busbar-caps` depends on `busbar-contract`.** One spelling of every seam type; the caps
   stand-ins are deleted. §3.1's "std and nothing more" for caps is amended to "std and the contract".
 - **CG-37 the store trait is typed after the published ABI-2 store protocol** (the request/response
@@ -1476,6 +1485,21 @@ busbar is a byte-governance router.
   crate is a boot refusal; the voice plane's telephony claim waits for its transport (Phase 0.5).
 - **CG-51 the network guard is the trust unit's check** over `VerifiedDestination`, applied before any
   transport `dial`; transports do no resolution policy of their own.
+- **CG-51 / CG-28 (2026-09-05, status): one address judgement, two spellings still.** The guard's
+  ordering now lives once, in `busbar_unit_trust::net::check_destination_facts`, with the sealed-value
+  entry `check_destination` a projection onto it — a composition root judges a candidate BEFORE it is
+  sealed, so it holds facts and no seal, and given only the sealed entry it wrote the ordering out a
+  second time. The A2A root's copy is deleted. The copies had already drifted: the root's accepted a
+  bare `user@agent.example:443`, whose two readings differ, where the trust unit refuses it. What is
+  NOT done is CG-28's one-spelling merge of `VerifiedDestination` itself: the caps stand-in carries a
+  lane and the contract's carries `DestinationFacts`, and two composition-root seal sites
+  (`root/units_llm.rs`, and the LLM walk behind it) hold only a `LaneId`, so sealing contract facts
+  there would fabricate an `UpstreamAddress` or intern one per request against CG-06. The caps
+  accessor is also infallible where the contract's is `Option<LaneId>`, which three tests depend on.
+  The merge waits on the LLM root naming a real per-candidate address. Until then CG-51's compile-time
+  link — the value the trust unit seals IS the value a transport dials — remains unmade, and the
+  guard's remaining copies in `busbar-substrate`'s `net_guard` and `busbar-llm`'s engine egress are the
+  next step of the same collapse, onto the unit and not away from it.
 
 **2026-09-05 — the contract/caps LOC ceiling counts surface, not proofs.** The ceiling in §1.1 is a
 budget for what a plugin author has to read: non-blank, non-comment code lines under `src/`, with

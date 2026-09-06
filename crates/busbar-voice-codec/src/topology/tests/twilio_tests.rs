@@ -104,6 +104,44 @@ fn lifecycle_events_decode() {
     );
 }
 
+/// A CALLER PRESSING A KEY IS A LIFECYCLE EVENT, NOT A HOSTILE FRAME.
+///
+/// `dtmf` is one of the six messages Twilio Media Streams sends TO the socket, emitted on the
+/// inbound track when a DTMF-enabled stream hears a touch-tone. Leaving it unmodelled makes it an
+/// `UnknownEvent`, and the plane maps any decode error onto a malformed-frame refusal — so a caller
+/// pressing 5 would be handled as a garbled or forged frame. It carries no audio, so it decodes to
+/// its own variant and the adapter discards it exactly like `mark`.
+#[test]
+fn a_dtmf_keypress_decodes_as_a_lifecycle_event() {
+    let dtmf = TwilioEnvelope::decode(&frame(serde_json::json!({
+        "event": "dtmf",
+        "streamSid": "MZ1",
+        "sequenceNumber": "5",
+        "dtmf": { "track": "inbound_track", "digit": "5" }
+    })))
+    .unwrap();
+    assert_eq!(
+        dtmf,
+        TwilioEvent::Dtmf {
+            stream_sid: "MZ1".into(),
+            digit: "5".into()
+        }
+    );
+    // A `dtmf` frame with the inner object missing still decodes — the digit is what Twilio may
+    // omit, and refusing the whole frame over a missing digit would reintroduce the same refusal
+    // this variant exists to remove.
+    assert_eq!(
+        TwilioEnvelope::decode(&frame(
+            serde_json::json!({"event": "dtmf", "streamSid": "MZ1"})
+        ))
+        .unwrap(),
+        TwilioEvent::Dtmf {
+            stream_sid: "MZ1".into(),
+            digit: String::new()
+        }
+    );
+}
+
 // ── The start media-format guard REFUSES a non-g711_ulaw negotiation (fail closed, not warn) ────────
 
 #[test]

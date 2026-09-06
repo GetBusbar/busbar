@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The reads-not-restates guarantee for the LLM `PLANE_DECL` — see the doc comment on the\n//! `plane_decl_identity_tests` declaration in `lib.rs`. Relocated out of `lib.rs` per the\n//! tests-in-their-own-file convention.
+//! The reads-not-restates guarantee for the LLM `PLANE_DECL` — see the doc comment on the
+//! `plane_decl_identity_tests` declaration in `lib.rs`. Relocated out of `lib.rs` per the
+//! tests-in-their-own-file convention.
 
 #[test]
 fn the_llm_plane_reads_the_registry_it_does_not_restate_it() {

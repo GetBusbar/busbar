@@ -30,6 +30,15 @@ use serde_json::Value;
 pub enum CanonicalError {
     /// RFC 8785 section 3.2.2.3: NaN and the infinities have no canonical form. JSON cannot even
     /// carry them, so their presence means the document was built in memory, not parsed.
+    ///
+    /// NOT REACHABLE THROUGH ANY WIRE PATH TODAY, and the tests say so rather than pretending
+    /// otherwise: `serde_json::Number` refuses to build a non-finite value at all (`from_f64`
+    /// answers `None`) and `to_value` degrades one to `null`, so no `Value` handed to
+    /// [`canonicalize`] can carry one while the default (non-`arbitrary_precision`) serde_json is
+    /// what parses cards. The arm stays because it is a DEFENCE against a `Value` some future
+    /// in-memory path builds, not a case a card can arrive in — and a canonicalizer that emitted
+    /// `null` or `0` for such a number would mint a fingerprint no second implementation could
+    /// reproduce, which is a permanent false drift alarm on Agent Card signature verification.
     NonFiniteNumber,
 }
 

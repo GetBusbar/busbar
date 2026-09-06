@@ -10,7 +10,7 @@ use std::time::Duration;
 use futures::StreamExt;
 
 use busbar_contract::{ArenaBytes, StreamId, Transport};
-use busbar_contract_transport::wire::TransportError;
+use busbar_contract_transport::wire::{StatusClass, TransportError};
 
 use crate::GrpcTransport;
 
@@ -49,7 +49,7 @@ impl busbar_contract::TransportConfigView for BindTo {
 
 fn test_key_handle() -> busbar_contract::TransportKeyHandle {
     struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
+    impl busbar_contract::plugin::KernelSeal for Seal {
         fn seal_origin(&self) -> &'static str {
             "test"
         }
@@ -59,7 +59,7 @@ fn test_key_handle() -> busbar_contract::TransportKeyHandle {
 
 fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination {
     struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
+    impl busbar_contract::plugin::KernelSeal for Seal {
         fn seal_origin(&self) -> &'static str {
             "test"
         }
@@ -157,7 +157,32 @@ async fn terminal_status_is_read_from_the_grpc_status_trailer() {
     // call's response stream ends — the honest reading of the `grpc-status` trailer.
     let (_s, terminal) = client_frames.next().await.unwrap().unwrap();
     assert_eq!(terminal.bytes.len(), 0);
-    assert!(terminal.meta.status.is_some(), "STATUS_CLASS at Terminal");
+    assert_eq!(
+        terminal.meta.status,
+        Some(StatusClass::Success),
+        "STATUS_CLASS at Terminal: an OK grpc-status is honestly Success, not merely present"
+    );
+}
+
+/// [`crate::server::map_status`] directly, one row per `grpc-status` code family: `Ok` is a
+/// success, `PermissionDenied` and `Internal` are the client/server halves of the failure split,
+/// and a code the table names neither of falls to `Other` rather than silently landing in one of
+/// them.
+#[test]
+fn map_status_reads_the_grpc_status_trailer_honestly() {
+    for (code, expected) in [
+        (tonic::Code::Ok, StatusClass::Success),
+        (tonic::Code::PermissionDenied, StatusClass::ClientError),
+        (tonic::Code::Internal, StatusClass::ServerError),
+        (tonic::Code::Cancelled, StatusClass::Other),
+    ] {
+        let status = tonic::Status::new(code, "fixture");
+        assert_eq!(
+            crate::server::map_status(&status),
+            expected,
+            "tonic::Code::{code:?} maps to {expected:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -444,7 +469,7 @@ async fn the_destinations_method_is_the_path_the_call_opens_against() {
 
     let host: &'static str = Box::leak(addr.into_boxed_str());
     struct Seal;
-    impl busbar_contract::KernelSeal for Seal {
+    impl busbar_contract::plugin::KernelSeal for Seal {
         fn seal_origin(&self) -> &'static str {
             "test"
         }
@@ -479,13 +504,15 @@ async fn the_destinations_method_is_the_path_the_call_opens_against() {
         .unwrap();
     assert_eq!(frame.bytes.as_slice(), b"ping");
 
-    let served = server_t
+    let served: Vec<String> = server_t
         .state_of(server_conn.id())
         .unwrap()
         .served_paths
         .lock()
         .unwrap()
-        .clone();
+        .iter()
+        .cloned()
+        .collect();
     assert_eq!(served, vec!["/vendor.Inference/Chat".to_string()]);
 
     // And the chain both ends report is the stack they actually stand on.
@@ -540,4 +567,338 @@ async fn transport_meta_matches_the_architecture_row() {
         <GrpcTransport as TransportMeta>::STATUS_CLASS,
         Some(StatusAt::Terminal)
     );
+}
+
+/// Two concurrent `write()`s naming the same unseen `StreamId` are one call, not two.
+///
+/// The "K writers" cell makes concurrent writers on one connection an expected shape. A
+/// check-then-open sequence lets both writers miss the map, both open an HTTP/2 call, and the
+/// later registration overwrite — and so drop — the earlier sender, ending that call's outbound
+/// stream with the first write's bytes accepted but never delivered.
+#[tokio::test]
+async fn two_writes_racing_on_one_fresh_stream_open_a_single_call() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = std::sync::Arc::new(client_transport());
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = std::sync::Arc::new(client_t.dial(&dest, &keys).await.unwrap());
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    let one = {
+        let (t, c) = (client_t.clone(), client_conn.clone());
+        tokio::spawn(async move { t.write(&c, StreamId(7), ArenaBytes::new(b"one")).await })
+    };
+    let two = {
+        let (t, c) = (client_t.clone(), client_conn.clone());
+        tokio::spawn(async move { t.write(&c, StreamId(7), ArenaBytes::new(b"two")).await })
+    };
+    one.await.unwrap().unwrap();
+    two.await.unwrap().unwrap();
+
+    // Both payloads reach the server, and they reach it on ONE call.
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    for _ in 0..2 {
+        let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+            .await
+            .expect("both writes were accepted, so both messages must arrive")
+            .unwrap()
+            .unwrap();
+        seen.push(frame.bytes.as_slice().to_vec());
+    }
+    seen.sort();
+    assert_eq!(seen, vec![b"one".to_vec(), b"two".to_vec()]);
+
+    let paths = server_t
+        .state_of(server_conn.id())
+        .unwrap()
+        .served_paths
+        .lock()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        paths.len(),
+        1,
+        "one fresh StreamId is one gRPC call, however many writers raced for it: {paths:?}"
+    );
+}
+
+/// The outbound map is per-call, and `next_local_stream` only ever counts up: a long-lived HTTP/2
+/// connection serving many short calls must not accumulate one stale sender per call it has
+/// already finished. Both registration sites are checked — the dial side's, which registers when a
+/// call is opened, and the accept side's, which registers when one arrives.
+#[tokio::test]
+async fn a_finished_call_leaves_no_entry_behind() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+
+    const CALLS: u64 = 20;
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let mut client_frames = client_t.frames(client_conn.clone());
+    for n in 1..=CALLS {
+        client_t
+            .write(&client_conn, StreamId(n), ArenaBytes::new(b"ping"))
+            .await
+            .unwrap();
+        let (server_stream, _f) =
+            tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+                .await
+                .expect("the call arrives")
+                .unwrap()
+                .unwrap();
+        // The server finishes the call: writing the answer and ending its outbound stream is what
+        // emits the `grpc-status` trailer that completes an RPC.
+        server_t
+            .unit0_refusal(
+                server_conn.clone(),
+                Some(server_stream),
+                &refusal,
+                ArenaBytes::new(b"pong"),
+            )
+            .await
+            .unwrap();
+        // Drain the client's side of that call through to its terminal status frame, which is what
+        // tells the dial side the call is over.
+        loop {
+            let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), client_frames.next())
+                .await
+                .expect("the answer arrives")
+                .unwrap()
+                .unwrap();
+            if frame.meta.status.is_some() {
+                break;
+            }
+        }
+    }
+
+    let client_state = client_t.state_of(client_conn.id()).unwrap();
+    let left = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let n = client_state.outbound.lock().unwrap().len();
+            if n == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        left.is_ok(),
+        "the dial side kept a sender per finished call: {} left after {CALLS}",
+        client_state.outbound.lock().unwrap().len()
+    );
+}
+
+/// `served_paths` is a diagnostic record, not a log: a connection open across many RPCs must not
+/// grow it forever. Past [`crate::conn::SERVED_PATHS_CAP`] calls it keeps only the most recent.
+#[tokio::test]
+async fn served_paths_stays_bounded_across_many_calls() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+
+    let calls: u64 = crate::conn::SERVED_PATHS_CAP as u64 + 1;
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let mut client_frames = client_t.frames(client_conn.clone());
+    for n in 1..=calls {
+        client_t
+            .write(&client_conn, StreamId(n), ArenaBytes::new(b"ping"))
+            .await
+            .unwrap();
+        let (server_stream, _f) =
+            tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+                .await
+                .expect("the call arrives")
+                .unwrap()
+                .unwrap();
+        server_t
+            .unit0_refusal(
+                server_conn.clone(),
+                Some(server_stream),
+                &refusal,
+                ArenaBytes::new(b"pong"),
+            )
+            .await
+            .unwrap();
+        loop {
+            let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), client_frames.next())
+                .await
+                .expect("the answer arrives")
+                .unwrap()
+                .unwrap();
+            if frame.meta.status.is_some() {
+                break;
+            }
+        }
+    }
+
+    let served = server_t
+        .state_of(server_conn.id())
+        .unwrap()
+        .served_paths
+        .lock()
+        .unwrap()
+        .len();
+    assert!(
+        served <= crate::conn::SERVED_PATHS_CAP,
+        "{calls} RPCs over one connection must not grow served_paths past the cap: {served}"
+    );
+}
+
+/// The accept side's half of the same rule, at the seam it actually happens on: an RPC's outbound
+/// stream being dropped — which is what hyper does when the peer resets the call — is what makes
+/// the call over, and the map entry must go with it.
+#[tokio::test]
+async fn dropping_a_served_calls_outbound_stream_prunes_its_entry() {
+    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    state
+        .outbound
+        .lock()
+        .unwrap()
+        .insert(3, crate::conn::opened(tx));
+    let out = crate::server::OutStream::new(rx, state.clone(), StreamId(3));
+    assert_eq!(state.outbound.lock().unwrap().len(), 1);
+    drop(out);
+    assert_eq!(
+        state.outbound.lock().unwrap().len(),
+        0,
+        "a served call whose outbound stream is gone is a call that is over"
+    );
+}
+
+/// Bidirectional backpressure, the cell `grpc` is the one in-tree transport that could not pass.
+///
+/// Every multiplexed call's inbound messages share one channel. A peer writing faster than
+/// `frames()` is polled must stall — against the HTTP/2 flow-control window — rather than queue on
+/// this process's heap, so filling the per-unit frame buffer with nothing draining it must not
+/// complete.
+#[tokio::test]
+async fn the_inbound_channel_backpressures_a_peer_that_outruns_frames() {
+    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let one = || {
+        Ok((
+            StreamId(1),
+            busbar_contract::wire::Frame {
+                direction: busbar_contract_transport::wire::Direction::Inbound,
+                stream: StreamId(1),
+                bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b"x"[..])),
+                meta: busbar_contract_transport::wire::FrameMeta {
+                    bytes: 1,
+                    transport_units: None,
+                    status: None,
+                },
+            },
+        ))
+    };
+    // Nothing polls `frames()`, so nothing drains: well past the buffer's depth, the sender must
+    // still be waiting rather than have swallowed every message.
+    let flooded = tokio::time::timeout(Duration::from_millis(250), async {
+        for _ in 0..crate::conn::INBOUND_FRAME_BUFFER * 4 {
+            let _ = state.send_inbound(one()).await;
+        }
+    })
+    .await;
+    assert!(
+        flooded.is_err(),
+        "an undrained inbound channel must backpressure once the per-unit frame buffer is full"
+    );
+}
+
+/// A destination is sealed by whatever named the method; nothing validates that string is a legal
+/// HTTP/2 `:path` before it gets here. A malformed method must refuse the dial's first write, not
+/// panic the process building the request.
+#[tokio::test]
+async fn a_malformed_sealed_method_refuses_instead_of_panicking() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    struct Seal;
+    impl busbar_contract::plugin::KernelSeal for Seal {
+        fn seal_origin(&self) -> &'static str {
+            "test"
+        }
+    }
+    let dest = busbar_contract::VerifiedDestination::seal(
+        &Seal,
+        busbar_contract::DestinationFacts::Upstream {
+            transport: "grpc",
+            address: busbar_contract_transport::dest::UpstreamAddress::Grpc {
+                authority: host,
+                sni: None,
+                method: "/pkg.Svc/My Method",
+            },
+            lane: busbar_contract::LaneId::new("test-lane"),
+        },
+        "grpc",
+        None,
+    );
+
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let _server_conn = accept_task.await.unwrap().unwrap();
+    let err = client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransportError::AddressRefused);
 }
