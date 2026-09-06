@@ -146,9 +146,10 @@
         "status": "mapped",
         "note": "existing OUTCOMES cross, enumerated per dialect",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-llm",
-          "note": "the op class on this plane is the dialect's own resolved operation and no fixture is refused at approve; the credential-scope question this plane answers is the pool ACL the verify cell drives"
+          "test": "crates/busbar/src/root/units_llm.rs::a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing",
+          "note": "the 1.6.0-native Before(Approve) seat driven both ways through run_unit: the mount's own seat list is asserted empty (the migrated hooks fire after the door and a veto moved in front of a charge would change what is billed), a seat that does not veto is consulted and the unit still answers what the shipped entry point answers, and a seat that vetoes stops the unit at approve -- nothing charged, no metering row, the upstream never dialled, one link on the chain and the plane's own permission refusal in the caller's dialect"
         }
       },
       "admit": {

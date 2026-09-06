@@ -98,6 +98,24 @@ use busbar_substrate::proxy::POOL_LABEL_UNRESOLVED;
 /// none would be the under-reported shape composition exists to fix.
 const TRANSPORT_CHAIN: [&str; 1] = ["http"];
 
+/// THE NATIVE GATES SEATED AT APPROVE, and there are none.
+///
+/// The seat is the 1.6.0-native [`approve::VetoSeat`]: a gate that may stop a unit BEFORE the door
+/// and may do nothing else. Nothing installs one today, and that emptiness is the whole reason this
+/// plane's approve step is behaviour-identical to the shipped path — so it is written down as a
+/// value the tests can read rather than as an argument literal nobody can name.
+///
+/// The MIGRATED hooks are deliberately absent. They fire after the door on the live path — the
+/// request-log and completion taps run around admission and around the response — and a hook that
+/// fires after Admit cannot veto at Approve, because by the time it runs the unit is admitted and
+/// charged. Seating them here would move a veto from after a charge to before one, which changes
+/// what is billed; that is a behaviour change wearing a refactor's clothes, and this file does not
+/// make it.
+///
+/// `+ Sync` because a seat is shared by reference across the loop's one await, and a gate that were
+/// not shareable would have to be cloned per unit.
+static NATIVE_SEATS: &[&(dyn approve::VetoSeat + Sync)] = &[];
+
 // ---------------------------------------------------------------------------------------------
 // The node
 // ---------------------------------------------------------------------------------------------
@@ -228,12 +246,29 @@ impl LlmNode {
     /// out. Nothing is spawned here, so there is no detached task left holding either.
     #[must_use]
     pub async fn answer(&self, arrival: WalkArrival, model_hint: Option<String>) -> Response {
+        self.answer_with(arrival, model_hint, NATIVE_SEATS).await
+    }
+
+    /// The same drive, with the Approve seats named rather than assumed.
+    ///
+    /// [`answer`](Self::answer) is this with [`NATIVE_SEATS`], which is empty on every deployment
+    /// today. It is split out because "nothing is seated, so the step is a no-op" and "a seated gate
+    /// stops the unit before the door" are two behaviours of one arm, and only one of them can be
+    /// reached through a mount that hard-codes the list.
+    #[must_use]
+    pub async fn answer_with(
+        &self,
+        arrival: WalkArrival,
+        model_hint: Option<String>,
+        seats: &[&(dyn approve::VetoSeat + Sync)],
+    ) -> Response {
         let proto = arrival.proto;
         let op_class = OpClassId::new(arrival.operation.name());
         let key = UnitKey::new(self.next_key.fetch_add(1, Ordering::Relaxed));
         let principal = authenticate::principal_id(&arrival.gov);
         let unit = LlmUnit {
             node: self,
+            seats,
             op_class,
             model_hint,
             started: Instant::now(),
@@ -327,6 +362,21 @@ impl Drop for Occupied<'_> {
     }
 }
 
+/// What a unit a seated gate stopped answers with, in the caller's own dialect.
+///
+/// One permission sentence, vendor-plausible, naming nothing of the operator's — not the seat, not
+/// the principal, not a word of governance vocabulary — because a gate's veto is not entitled to a
+/// reason of its own and a client is owed the same answer whichever gate stopped it. WHICH seat
+/// stopped the unit is the operator's diagnostic, and the step file already logs it.
+fn vetoed(proto: &str) -> Response {
+    busbar_substrate::proxy::ingress_error(
+        proto,
+        StatusCode::FORBIDDEN,
+        busbar_substrate::proxy::KIND_PERMISSION,
+        "Your API key does not have permission to access this resource.",
+    )
+}
+
 /// What a node that cannot take the unit at all answers with, in the caller's own dialect.
 fn unavailable(proto: &str) -> Response {
     busbar_substrate::proxy::ingress_error(
@@ -349,6 +399,9 @@ fn unavailable(proto: &str) -> Response {
 pub struct LlmUnit<'n> {
     /// The node's long-lived half.
     node: &'n LlmNode,
+    /// The gates seated at Approve for this unit, in the order they are consulted. Borrowed for the
+    /// length of the unit: a seat is configuration, and configuration is not per-request state.
+    seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
     /// The plane's per-request carry, and the two steps reached through it.
     walk: Walk,
     /// The operation class this unit is, as the sealed facts name it.
@@ -602,15 +655,36 @@ impl Units for LlmUnit<'_> {
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
-        // THE SEATS, and there are none. The step's only refusal is a seated gate's veto, the seat
-        // list handed over is empty, and an empty list cannot veto — so on every deployment today
-        // this step proceeds. It is still called, because "nothing is seated" is a fact about
-        // configuration rather than a licence to skip a step, and the day a seat IS installed is the
-        // day this arm grows the rendered refusal beside it: a veto answers in the neutral
-        // vocabulary and carries no bytes, and the terminal can only post bytes some step rendered.
-        // Rendering them now, for a refusal this list cannot raise, would be a response allocated
-        // per request for a path that does not exist.
-        approve::approve(token, principal, destinations, &[])
+        // THE SEATS, as the node was composed with them. The step's only refusal is a seated gate's
+        // veto, and [`NATIVE_SEATS`] is empty on every deployment today — so on every deployment
+        // today this step proceeds, which is the same unit-for-unit behaviour as the live path. It
+        // is still called, because "nothing is seated" is a fact about configuration rather than a
+        // licence to skip a step.
+        //
+        // A VETO CARRIES NO BYTES OF ITS OWN. The step answers in the neutral vocabulary — a gate is
+        // not entitled to add to the closed reason set, and is handed neither the body nor the
+        // dialect — so the ANSWER a vetoed unit leaves with is rendered here, and the terminal posts
+        // it exactly as it posts every other step's. Without it the not-charged door would find
+        // nothing rendered and a client refused on policy would read the node's overload sentence.
+        //
+        // It is rendered BEFORE the ask rather than after it because a `Decision` is the kernel's to
+        // read and no step can open its own. The cost is one response for a unit that may proceed —
+        // paid only where a gate is actually seated, which is nowhere today — and it is discarded
+        // the moment any later step ends the unit: the door overwrites it with its own refusal and
+        // the route step overwrites it with the upstream's answer, which is the same one-slot
+        // discipline every other rendered refusal on this plane already relies on.
+        if !self.seats.is_empty() {
+            self.walk.hold_bytes(vetoed(self.walk.proto()));
+        }
+        // The auto trait is dropped for the call because the step file's seat list does not ask for
+        // it; an empty list collects into a `Vec` that allocates nothing, which is what the mount
+        // hands down.
+        let seats: Vec<&dyn approve::VetoSeat> = self
+            .seats
+            .iter()
+            .map(|seat| *seat as &dyn approve::VetoSeat)
+            .collect();
+        approve::approve(token, principal, destinations, &seats)
     }
 
     fn admit(
@@ -1214,6 +1288,10 @@ mod tests {
         /// forgery fixture.
         expired_token: String,
         server: MockServer,
+        /// The scripted upstream's own state, kept so a fixture can ask whether the upstream was
+        /// dialled at all — "the unit stopped before the route step" is not a fact any counter on
+        /// this side of the loop reports.
+        upstream: Arc<MockServerState>,
         charged_at: u64,
         group: String,
     }
@@ -1236,7 +1314,7 @@ mod tests {
         for _ in 0..8 {
             state.push(fixture.upstream());
         }
-        let server = MockServer::new(state).await;
+        let server = MockServer::new(Arc::clone(&state)).await;
 
         let group = unique("root-llm");
         let mut groups = std::collections::BTreeMap::new();
@@ -1321,6 +1399,7 @@ mod tests {
             token,
             expired_token,
             server,
+            upstream: state,
             charged_at: busbar_substrate::store::now(),
             group,
         }
@@ -1578,7 +1657,7 @@ mod tests {
     async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         let rig = rig(Fixture::BufferedOk).await;
         let node = LlmNode::new();
-        let ended = drive_to_end(&rig, &node, Fixture::BufferedOk, rig.gov()).await;
+        let ended = drive_to_end(&rig, &node, Fixture::BufferedOk, rig.gov(), NATIVE_SEATS).await;
         rig.server.shutdown().await;
 
         let Ended::Settled { end, .. } = ended else {
@@ -1631,11 +1710,12 @@ mod tests {
     /// authenticate step ANSWERS is only visible on this side of the loop: the hold the door opens
     /// is opened for the principal that step settled on, and the posting the exit hands back names
     /// it. A drive that always used the rig's key could not tell the step's answer from the walk's.
-    async fn drive_to_end(
+    async fn drive_to_end<'n>(
         rig: &Rig,
-        node: &LlmNode,
+        node: &'n LlmNode,
         fixture: Fixture,
         gov: busbar_api::PlaneRequestCtx,
+        seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
     ) -> Ended {
         let arrival = WalkArrival {
             host: rig.host(),
@@ -1651,6 +1731,7 @@ mod tests {
         let principal = authenticate::principal_id(&arrival.gov);
         let unit = LlmUnit {
             node,
+            seats,
             op_class: OpClassId::new(arrival.operation.name()),
             model_hint: None,
             started: Instant::now(),
@@ -2514,7 +2595,7 @@ mod tests {
     /// one observation that is about step 2 and about nothing else.
     async fn principal_the_loop_settled_on(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> String {
         let node = LlmNode::new();
-        let ended = drive_to_end(rig, &node, Fixture::BufferedOk, gov).await;
+        let ended = drive_to_end(rig, &node, Fixture::BufferedOk, gov, NATIVE_SEATS).await;
         let Ended::Settled { end, .. } = ended else {
             panic!("the exit path settles a delivered unit");
         };
@@ -2608,7 +2689,9 @@ mod tests {
             match (legacy_admit, loop_admit) {
                 (Ok(legacy_gov), Ok(loop_gov)) => {
                     if cred != Credential::Good {
-                        failures.push(format!("{cred:?}: the door admitted a credential it must refuse"));
+                        failures.push(format!(
+                            "{cred:?}: the door admitted a credential it must refuse"
+                        ));
                     }
                     // THE RESOLVED KEY IS THE DEPLOYMENT'S KEY — the door read the bearer back to
                     // the binding it was minted for, which is what makes the attribution below a
@@ -2646,7 +2729,9 @@ mod tests {
                     let looped = leg_loop_as(&loop_rig, loop_gov).await;
                     compare(&format!("{cred:?}"), &legacy, &looped, &mut failures);
                     if field(&looped, "ledger_requests") != "1" {
-                        failures.push(format!("{cred:?}: the admitted unit was not charged to the key"));
+                        failures.push(format!(
+                            "{cred:?}: the admitted unit was not charged to the key"
+                        ));
                     }
                     // THE ATTRIBUTION, as an operator reads it: one link, on the resolved key's own
                     // chain. A step that answered with any other principal would leave it elsewhere.
@@ -2660,7 +2745,9 @@ mod tests {
                 }
                 (Err(_), Err(_)) => {
                     if cred == Credential::Good {
-                        failures.push(format!("{cred:?}: the door refused the deployment's own bearer"));
+                        failures.push(format!(
+                            "{cred:?}: the door refused the deployment's own bearer"
+                        ));
                     }
                     // The door refused, so no unit exists on either leg. What the loop must not do
                     // is invent one: driven with the context the middleware leaves when it binds no
@@ -2676,8 +2763,7 @@ mod tests {
                     // And the loop SETTLES on that actor: the hold the door opened for this unit
                     // names the anonymous caller, not the key whose bearer was just turned away.
                     let settle_rig = rig(Fixture::BufferedOk).await;
-                    let settled =
-                        principal_the_loop_settled_on(&settle_rig, open.clone()).await;
+                    let settled = principal_the_loop_settled_on(&settle_rig, open.clone()).await;
                     if settled != anonymous || settled == settle_rig.key.id {
                         failures.push(format!(
                             "{cred:?}: the loop settled on principal {settled:?} for a request the \
@@ -2688,7 +2774,12 @@ mod tests {
 
                     let legacy = leg_legacy_as(&legacy_rig, open.clone()).await;
                     let looped = leg_loop_as(&loop_rig, open).await;
-                    compare(&format!("{cred:?}/unbound"), &legacy, &looped, &mut failures);
+                    compare(
+                        &format!("{cred:?}/unbound"),
+                        &legacy,
+                        &looped,
+                        &mut failures,
+                    );
                     if !REQUESTS.records_for(&loop_rig.key.id).is_empty() {
                         failures.push(format!(
                             "{cred:?}: a refused credential's key carries a link it never earned"
@@ -2705,6 +2796,163 @@ mod tests {
         assert!(
             failures.is_empty(),
             "{} divergence(s) across the three credentials:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    // ── STEP 4, APPROVE — the native seat, over the loop ────────────────────────────────────────
+
+    /// A seated gate that stops every unit, and records that it was asked. The recording is what
+    /// makes "the loop consulted the seat" a fact rather than an inference from the refusal.
+    struct StopsEverything(std::sync::atomic::AtomicBool);
+    impl approve::VetoSeat for StopsEverything {
+        fn vetoes(&self, _p: &PrincipalId, _d: &[VerifiedDestination]) -> bool {
+            self.0.store(true, Ordering::SeqCst);
+            true
+        }
+    }
+
+    /// A seated gate that stops nothing, and records that it was asked. Without this the pass-through
+    /// half of the cell would be satisfied by a seat list the loop never reached at all.
+    struct StopsNothing(std::sync::atomic::AtomicBool);
+    impl approve::VetoSeat for StopsNothing {
+        fn vetoes(&self, _p: &PrincipalId, _d: &[VerifiedDestination]) -> bool {
+            self.0.store(true, Ordering::SeqCst);
+            false
+        }
+    }
+
+    /// One request through the real loop with a named seat list, exactly as the mount drives it with
+    /// its own.
+    async fn leg_loop_seated(rig: &Rig, seats: &[&(dyn approve::VetoSeat + Sync)]) -> Observed {
+        let node = LlmNode::new();
+        let arrival = WalkArrival {
+            host: rig.host(),
+            gov: rig.gov(),
+            proto: PROTO,
+            operation: busbar_api::operation::Operation::CHAT,
+            caller_token: None,
+            headers: json_headers(),
+            body: Fixture::BufferedOk.body(),
+            lanes: node.lanes(),
+            path: None,
+        };
+        let resp = node.answer_with(arrival, None, seats).await;
+        observe(rig, resp).await
+    }
+
+    /// **STEP 4 OVER THE LOOP: THE NATIVE SEAT, BOTH WAYS.**
+    ///
+    /// Approve is two halves and this plane's scope half has nothing to ask — its resource IS its
+    /// destination, and the destination set was sealed one step earlier. What is left is the hook
+    /// half, and the seat is the 1.6.0-native one: a gate that may stop a unit BEFORE the door and
+    /// may do nothing else.
+    ///
+    /// The MIGRATED hooks are not seated here and this cell says so first: [`NATIVE_SEATS`] is the
+    /// list the mount installs, it is empty, and that emptiness is why a unit over the loop is
+    /// unit-for-unit what the shipped path answers. Seating the migrated hooks would move a veto
+    /// from after a charge to before one, which changes what is billed.
+    ///
+    /// Then the three shapes, each on its own deployment:
+    ///
+    /// * NOTHING SEATED — the shipped entry point's answer, field for field;
+    /// * A SEAT THAT DOES NOT VETO — the same answer again, and the seat records that it WAS asked,
+    ///   so the pass-through above is a decision rather than an unwired field;
+    /// * A SEAT THAT VETOES — the unit stops at Approve: before the door, so nothing is charged and
+    ///   no metering row exists; before the route step, so the upstream is never dialled; and it
+    ///   still leaves through a terminal, with exactly one link on the principal's chain and the
+    ///   plane's own permission answer in the caller's dialect rather than the node's overload one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing() {
+        use busbar_core::proxy::reqlog::REQUESTS;
+        use std::sync::atomic::AtomicBool;
+
+        assert!(
+            NATIVE_SEATS.is_empty(),
+            "the mount seats a native gate: the migrated hooks fire AFTER the door on the live \
+             path, and a veto moved in front of a charge changes what is billed"
+        );
+
+        // THE SHIPPED ANSWER, on its own deployment — the expectation every seated run below is
+        // read against, rather than a status spelled here.
+        let shipped_rig = rig(Fixture::BufferedOk).await;
+        let shipped = leg_legacy_as(&shipped_rig, shipped_rig.gov()).await;
+        shipped_rig.server.shutdown().await;
+
+        let mut failures: Vec<String> = Vec::new();
+
+        // NOTHING SEATED: the mount's own list, which is the whole of today's behaviour.
+        let bare_rig = rig(Fixture::BufferedOk).await;
+        let bare = leg_loop_seated(&bare_rig, NATIVE_SEATS).await;
+        compare("no seat", &shipped, &bare, &mut failures);
+        bare_rig.server.shutdown().await;
+
+        // A SEAT THAT DOES NOT VETO: consulted, and the unit goes on to the same end.
+        let passing = StopsNothing(AtomicBool::new(false));
+        let passing_rig = rig(Fixture::BufferedOk).await;
+        let passed = leg_loop_seated(&passing_rig, &[&passing]).await;
+        compare(
+            "a seat that does not veto",
+            &shipped,
+            &passed,
+            &mut failures,
+        );
+        if !passing.0.load(Ordering::SeqCst) {
+            failures.push(
+                "the loop never consulted the seated gate, so the pass-through above is an \
+                 unwired field rather than a decision"
+                    .to_string(),
+            );
+        }
+        passing_rig.server.shutdown().await;
+
+        // A SEAT THAT VETOES: the unit stops at Approve.
+        let stopping = StopsEverything(AtomicBool::new(false));
+        let veto_rig = rig(Fixture::BufferedOk).await;
+        let stopped = leg_loop_seated(&veto_rig, &[&stopping]).await;
+        assert!(
+            stopping.0.load(Ordering::SeqCst),
+            "the vetoing gate was never asked"
+        );
+        if field(&stopped, "status") != "403" {
+            failures.push(format!(
+                "a vetoed unit answers {} rather than the plane's permission refusal: {}",
+                field(&stopped, "status"),
+                field(&stopped, "body")
+            ));
+        }
+        // BEFORE THE DOOR. Nothing charged, nothing metered — which is the whole reason the seat is
+        // at this step and not the next one.
+        if field(&stopped, "ledger_requests") != "0" || !field(&stopped, "metering_rows").is_empty()
+        {
+            failures.push(format!(
+                "a veto was charged: requests={} rows={}",
+                field(&stopped, "ledger_requests"),
+                field(&stopped, "metering_rows")
+            ));
+        }
+        // BEFORE THE ROUTE STEP. The scripted upstream saw nothing at all.
+        if veto_rig.upstream.get_last_request_path().is_some() {
+            failures.push("a vetoed unit reached the upstream".to_string());
+        }
+        // AND IT STILL ENDS AT A TERMINAL: one link, never none and never two.
+        let links = REQUESTS.records_for(&veto_rig.key.id);
+        if links.len() != 1 {
+            failures.push(format!(
+                "a vetoed unit left {} link(s) on the chain",
+                links.len()
+            ));
+        }
+        assert!(
+            REQUESTS.verify_principal_chain(&veto_rig.key.id).is_ok(),
+            "the chain a vetoed unit left does not verify"
+        );
+        veto_rig.server.shutdown().await;
+
+        assert!(
+            failures.is_empty(),
+            "{} finding(s) at the approve seat:\n{}",
             failures.len(),
             failures.join("\n")
         );
