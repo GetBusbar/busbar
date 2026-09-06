@@ -58,7 +58,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -165,6 +165,11 @@ enum Inner {
         read: AsyncMutex<ReadSide>,
         write: AsyncMutex<OwnedWriteHalf>,
         leftover: AsyncMutex<Vec<u8>>,
+        /// Set once this connection has been finalised. A frame stream captured its own clone of
+        /// this state before the close, and a request the peer half-wrote parks that stream on a
+        /// read the peer may never answer; the registry removal alone would never reach it. This is
+        /// the flag it checks, so it ends and the socket halves actually drop.
+        closed: AtomicBool,
     },
     /// A dialled destination: the exchange happens inside `write` once the message it is
     /// accumulating is complete, and pushes the response's frames into this channel for `frames` to
@@ -452,6 +457,7 @@ impl Transport for HttpTransport {
                 }),
                 write: AsyncMutex::new(write),
                 leftover: AsyncMutex::new(Vec::new()),
+                closed: AtomicBool::new(false),
             });
             self.conns.lock().expect("poisoned").insert(id, inner);
             Ok(Conn::new(Arc::new(HttpConnHandle {
@@ -793,7 +799,10 @@ impl Transport for HttpTransport {
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {
-        self.conns.lock().expect("poisoned").remove(&conn.id());
+        // A frame stream holds its own clone of the state, so removing the registry entry is not
+        // enough to drop the socket halves: the flag is what ends that stream at its next read,
+        // after which the last clone goes and the socket really does close.
+        finalise(&self.conns, conn.id());
     }
 
     fn unit0_refusal<'a>(
@@ -816,7 +825,7 @@ impl Transport for HttpTransport {
             // refusal finalises the connection whether or not the peer was still there to read it,
             // and a registry entry left behind on the failure path is a connection nothing will
             // ever close.
-            self.conns.lock().expect("poisoned").remove(&conn.id());
+            finalise(&self.conns, conn.id());
             delivered
         })
     }
@@ -873,6 +882,15 @@ fn request_target(dial: &http::Uri, path: &str) -> Result<http::Uri, TransportEr
             .map_err(|_| TransportError::Framing)?,
     );
     http::Uri::from_parts(parts).map_err(|_| TransportError::Framing)
+}
+
+/// Take a connection out of the registry and mark it finalised, so a pump that already holds a
+/// clone of its state ends rather than staying parked on a socket nobody is going to write to.
+fn finalise(conns: &Mutex<HashMap<u64, Arc<Inner>>>, id: u64) {
+    let removed = conns.lock().expect("poisoned").remove(&id);
+    if let Some(Inner::Ingress { closed, .. }) = removed.as_deref() {
+        closed.store(true, Ordering::Release);
+    }
 }
 
 /// Drain an upstream response body into the connection's frame channel, one frame per chunk hyper
@@ -1089,9 +1107,18 @@ async fn read_ingress_message(
     inner: &Inner,
     max_body_bytes: usize,
 ) -> Result<Option<Vec<(StreamId, Frame)>>, TransportError> {
-    let Inner::Ingress { read, leftover, .. } = inner else {
+    let Inner::Ingress {
+        read,
+        leftover,
+        closed,
+        ..
+    } = inner
+    else {
         return Err(TransportError::Framing);
     };
+    if closed.load(Ordering::Acquire) {
+        return Ok(None);
+    }
     let mut buf = leftover.lock().await;
     let mut guard = read.lock().await;
     let r = &mut *guard;
@@ -1118,6 +1145,12 @@ async fn read_ingress_message(
             // silently discard bytes that were already read and call a truncated request no
             // request at all — the same guess the body branches refuse to make.
             return Err(TransportError::Framing);
+        }
+        // Between reads, because a half-written request parks this loop for as long as the peer
+        // stays quiet, and a connection closed under it must not go on reading toward a message
+        // nobody is waiting for any more.
+        if closed.load(Ordering::Acquire) {
+            return Ok(None);
         }
         buf.extend_from_slice(&r.scratch[..n]);
     };
@@ -1164,6 +1197,9 @@ async fn read_ingress_message(
                 .await
                 .map_err(|e| HttpTransport::map_io_err(&e))?;
             read_so_far += n;
+            if closed.load(Ordering::Acquire) {
+                return Ok(None);
+            }
             if n == 0 {
                 // The peer stopped before the terminal chunk: the declared framing did not happen,
                 // and guessing where the body ended is the one thing a transport must not do.
@@ -1189,6 +1225,9 @@ async fn read_ingress_message(
                 .read(&mut r.scratch)
                 .await
                 .map_err(|e| HttpTransport::map_io_err(&e))?;
+            if closed.load(Ordering::Acquire) {
+                return Ok(None);
+            }
             if n == 0 {
                 // The peer stopped before the length it declared: the same answer the chunked
                 // branch gives a peer that stops before the terminal chunk. A body short of its

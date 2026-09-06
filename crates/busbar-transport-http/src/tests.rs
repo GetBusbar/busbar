@@ -1413,6 +1413,72 @@ impl tokio::io::AsyncWrite for FlushFailsWriter {
     }
 }
 
+/// A close ends a frame stream that is parked mid-request, and the socket really goes with it.
+///
+/// The registry entry is not the connection: a pump started before the close holds its own clone of
+/// the state, parked on a read for the rest of a half-written request the peer may never finish.
+/// Removing the registry's clone alone leaves that pump waiting forever — one leaked socket per
+/// closed connection. The flag is what ends it, after which the last clone goes and the peer sees
+/// the socket shut.
+#[tokio::test]
+async fn a_close_ends_a_parked_ingress_pump_and_releases_the_socket() {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let conn = accept_fut.await.unwrap();
+
+    // A pump that is live before the close, parked on the rest of a header block that never ends.
+    let pump = tokio::spawn({
+        let transport = transport.clone();
+        let conn = conn.clone();
+        async move { transport.frames(conn).next().await.is_none() }
+    });
+    tokio::io::AsyncWriteExt::write_all(&mut client, b"POST / HTTP/1.1\r\nHost: x\r\n")
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    transport.close(conn, CloseReason::Normal);
+
+    // The peer keeps writing, as a peer that has not heard about the close will.
+    tokio::io::AsyncWriteExt::write_all(&mut client, b"X-More: y\r\n")
+        .await
+        .unwrap();
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), pump)
+        .await
+        .expect("a closed connection's frame stream must end rather than park on the socket")
+        .unwrap();
+    assert!(ended, "a closed connection yields no further frames");
+
+    // The pump was the last holder: with it finished the socket is really gone.
+    let mut sink = [0_u8; 32];
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::io::AsyncReadExt::read(&mut client, &mut sink),
+    )
+    .await
+    .expect("the closed socket must be released, which the peer reads as end-of-stream");
+    assert_eq!(
+        read.unwrap(),
+        0,
+        "the closed connection's socket must close"
+    );
+}
+
+/// One read buffer per ingress connection, not a fresh `READ_CHUNK_BYTES` one per read syscall.
+///
+/// The ingress reader takes as many reads as the message arrives in — the header, then each piece of
+/// the body — and a buffer allocated inside that loop is an allocation and a 64 KiB zero-fill on the
+/// frame path for every one of them. The buffer belongs to the connection, behind the same lock as
+/// the read half, which is what makes reusing it sound: one pump reads a connection at a time.
 /// The refusal is the client-visible answer to an authentication failure, so "delivered" has to
 /// mean the bytes left. `write_all` only proves they reached the writer's own buffer; the flush is
 /// the evidence, and swallowing its failure reports a refusal nobody ever received. The sibling
