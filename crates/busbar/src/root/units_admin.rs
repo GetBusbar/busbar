@@ -2064,9 +2064,13 @@ async fn call(inner: axum::Router, request: &AdminRequest) -> AdminAnswer {
     // would be a branch that can never be taken pretending to be a fallback that could be.
     let response = inner.oneshot(http).await.unwrap_or_else(|e| match e {});
     let (parts, body) = response.into_parts();
-    let bytes = axum::body::to_bytes(body, usize::MAX)
-        .await
-        .unwrap_or_default();
+    // The surface answered and its body did not come back. Serving the status with an EMPTY body
+    // was the worst of the available answers: a 200 whose document is missing reads, to every
+    // client and every operator dashboard, as an operation that succeeded and returned nothing.
+    // The node could not produce the answer, and that is what it says.
+    let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
+        return unavailable_answer();
+    };
     AdminAnswer {
         status: parts.status.as_u16(),
         headers: header_pairs(&parts.headers),
@@ -2106,6 +2110,26 @@ fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
         .collect()
 }
 
+/// One answer as the response this listener writes.
+///
+/// Written once because two paths reach it: the request that ran and the one this wrap refused
+/// before the loop was entered. A second builder would be a second chance for the two to differ.
+#[cfg(feature = "root-admin")]
+fn http_response(answer: AdminAnswer) -> axum::http::Response<axum::body::Body> {
+    let mut response = axum::http::Response::builder().status(answer.status);
+    for (name, value) in &answer.headers {
+        response = response.header(name.as_str(), value.as_str());
+    }
+    response
+        .body(axum::body::Body::from(answer.body))
+        .unwrap_or_else(|_| {
+            axum::http::Response::builder()
+                .status(500)
+                .body(axum::body::Body::empty())
+                .expect("an empty 500 always builds")
+        })
+}
+
 /// Wrap a mounted admin surface so every request on it travels through the kernel.
 ///
 /// The router that goes in is the one that already answers; the router that comes out answers the
@@ -2116,10 +2140,16 @@ fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
 /// await inside it — the inner router's own — is driven on the runtime this was handed. That is the
 /// honest ordering: Route drives the seam, the seam drives the surface, and the answer comes back
 /// through the steps that are still to run.
+///
+/// `request_body_max_bytes` is the operator's own ingress cap, the same figure the mounted router's
+/// body limit was built with. It is a parameter rather than a constant because this wrap reads the
+/// body BEFORE that limit gets a chance to: a cap written down twice is a cap that can differ, and
+/// the one that matters is the one the deployment configured.
 #[cfg(feature = "root-admin")]
 pub fn mount(
     inner: axum::Router,
     kernel: busbar_kernel::teller::Kernel,
+    request_body_max_bytes: usize,
     build_units: impl FnOnce(Arc<dyn AdminDispatch>) -> crate::root::kernel::ProductionUnits,
 ) -> axum::Router {
     let runtime = tokio::runtime::Handle::current();
@@ -2160,10 +2190,29 @@ pub fn mount(
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
                 }
 
+                // A BODY BIGGER THAN THE OPERATOR'S CAP IS NOT THIS WRAP'S TO ANSWER. The mounted
+                // surface carries that cap and the answer release pinned for exceeding it, and
+                // this wrap reads the body first — so a request that DECLARES more than the cap
+                // goes straight there rather than being buffered into this node's memory on the
+                // way to being rejected anyway.
+                let declared = req
+                    .headers()
+                    .get(axum::http::header::CONTENT_LENGTH)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<usize>().ok());
+                if declared.is_some_and(|len| len > request_body_max_bytes) {
+                    return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
+                }
+
                 let (parts, body) = req.into_parts();
-                let bytes = axum::body::to_bytes(body, usize::MAX)
-                    .await
-                    .unwrap_or_default();
+                // AND A BODY THAT COULD NOT BE READ IS NOT AN EMPTY ONE. Read to the same cap, so
+                // an undeclared length cannot buffer without bound either; and where the read does
+                // not finish, the request is refused. It used to become an empty body — which a
+                // mutating verb would go on to execute, with whatever an empty document means to
+                // it, on a request the caller never finished sending.
+                let Ok(bytes) = axum::body::to_bytes(body, request_body_max_bytes).await else {
+                    return http_response(error_answer(400, "invalid_request"));
+                };
                 let request = AdminRequest {
                     method: parts.method.as_str().to_string(),
                     path: parts
@@ -2185,18 +2234,7 @@ pub fn mount(
                     .await
                     .unwrap_or_else(|_| unavailable_answer());
 
-                let mut response = axum::http::Response::builder().status(answer.status);
-                for (name, value) in &answer.headers {
-                    response = response.header(name.as_str(), value.as_str());
-                }
-                let response = response
-                    .body(axum::body::Body::from(answer.body))
-                    .unwrap_or_else(|_| {
-                        axum::http::Response::builder()
-                            .status(500)
-                            .body(axum::body::Body::empty())
-                            .expect("an empty 500 always builds")
-                    });
+                let response = http_response(answer);
 
                 // THE END OF THE EXIT PATH: whatever this unit asked to outlive its response is
                 // released HERE, with the response built and handed back and nothing left that can
@@ -2242,6 +2280,56 @@ mod tests {
         };
         let packed = answer.pack();
         assert_eq!(AdminAnswer::unpack(&packed), Some(answer));
+    }
+
+    /// A body this wrap cannot read is refused, and one too big for the operator's cap is not read
+    /// here at all.
+    ///
+    /// Both used to end in the same place: an empty body, handed to whichever mutating verb the
+    /// path named, which then executed whatever an empty document means to it on a request the
+    /// caller never finished sending. And the read was unbounded, so the cap the deployment
+    /// configured was applied by a layer this wrap had already buffered past.
+    #[cfg(feature = "root-admin")]
+    #[tokio::test]
+    async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
+        use tower::ServiceExt;
+
+        let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
+        let wrapped = mount(
+            inner,
+            busbar_kernel::teller::Kernel::new(),
+            4,
+            crate::root::kernel::ProductionUnits::admin_only,
+        );
+
+        // Longer than the cap and no declared length: the read stops at the cap and the request is
+        // refused, rather than becoming a document nobody sent.
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/keys")
+            .body(axum::body::Body::from(b"0123456789".to_vec()))
+            .expect("the request builds");
+        let response = wrapped
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("the router answers");
+        assert_eq!(response.status(), 400);
+
+        // A declared length past the cap is the mounted surface's own answer to give, and this wrap
+        // does not buffer the body to find that out.
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/keys")
+            .header(axum::http::header::CONTENT_LENGTH, "10")
+            .body(axum::body::Body::from(b"0123456789".to_vec()))
+            .expect("the request builds");
+        let response = wrapped.oneshot(request).await.expect("the router answers");
+        assert_eq!(
+            response.status(),
+            200,
+            "the request reached the surface below, which is where the cap is enforced"
+        );
     }
 
     /// A unit that reached no answer is rendered under the status its ending earned.

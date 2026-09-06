@@ -1348,9 +1348,14 @@ async fn run(data_workers: usize) {
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
     // and out through the one exit. Off, this line does not exist and the surface is the one it was.
     #[cfg(feature = "root-admin")]
-    let admin_router = root::units_admin::mount(admin_router, root::kernel::new_kernel(), |d| {
-        root::kernel::ProductionUnits::admin_only(d)
-    });
+    let admin_router = root::units_admin::mount(
+        admin_router,
+        root::kernel::new_kernel(),
+        // The same ingress cap the router below the wrap was built with, because the wrap reads the
+        // body before that router's own limit can.
+        req_body_max,
+        root::kernel::ProductionUnits::admin_only,
+    );
 
     // Bind the boot generation's engine host to the handle so it OWNS the only strong reference the boot
     // probers depend on (they hold a `Weak`): the first config swap drops it and retires them. See the
