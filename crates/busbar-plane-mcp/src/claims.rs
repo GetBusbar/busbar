@@ -122,6 +122,21 @@ pub const CLAIMS: &[Claim] = &[
     claim(TRANSPORT_STDIO, Selector::StreamName(STDIO_STREAM)),
 ];
 
+/// Whether this plane declares a claim on `key`.
+///
+/// A NAMED QUESTION on the plane's own declaration, for the same reason `is_stdio` above is one.
+/// The arrival step must establish that the claim it was handed is one of THIS plane's — a plane
+/// may not answer a unit on a surface it never declared — and the only honest source for that
+/// answer is the claim table itself. Asked at the call site it reads as `claim.transport ==
+/// <something>`: an agnostic caller comparing against a wire carrier, which is the shape the axis
+/// lint exists to catch and which a type-blind reader cannot tell apart from the real thing. Asked
+/// here it is what it actually is — a lookup in the declaration — and it leaves exactly one line in
+/// the tree that compares a claim's transport, in the plane that owns the claims.
+#[must_use]
+pub fn declares(key: &str) -> bool {
+    CLAIMS.iter().any(|c| c.transport == key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
