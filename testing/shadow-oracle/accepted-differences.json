@@ -68,6 +68,7 @@
       "changelog": "Admin views gained fields; none changed.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^hooks\\|register\\|plugin-alias$|^admin\\.ops\\|DeleteOverlaySection\\|not-found$|^admin\\.ops\\|(DeleteHooksName|PatchHooksNameSettings|PutHooksName|PostHooks)\\|ok$|^admin\\.ops\\|PostHooks\\|if-match-stale$",
+      "expected_cells": 10,
       "classes": [
         "body",
         "headers"
@@ -79,6 +80,7 @@
       "kind": "breaking",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage; split out 2026-09-05 (round-3 audit)",
       "cells": "^admin\\.ops\\|(PostHooks|PutHooksName|PatchHooksNameSettings|DeleteHooksName)\\|ok$",
+      "expected_cells": 4,
       "classes": [
         "effects.readback"
       ],
@@ -91,10 +93,11 @@
       "changelog": "Validation messages know the new keys.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^boot\\.refusal\\|BOOT-(P20|P29|P30|P07|P09)\\|validate$",
+      "expected_cells": 5,
       "classes": [
         "effects.stderr"
       ],
-      "rationale": "The new token limit metrics appear in a limit's expected-one-of list; reserved-name / credential-mode sentences rephrased. Same refusal, same exit code. NARROWED 2026-09-05 (the plane-key-lift fix): the top-level plane-key row dropped — the TOP-LEVEL expected-one-of list no longer includes the plane keys, because the 1.6.0-additive keys are lifted off the document before the frozen 1.5.5-shaped parse. That cell is byte-identical to 1.5.5 now and needs no acceptance. NARROWED AGAIN 2026-09-06 (oracle-phase0, committed-golden triage) for the two cells this entry should never have carried. BOOT-020: the divergence it forgave was 'protocol list reordered', and a reorder of an operator-visible list is neither additive nor better — it is a change nobody announced. The PUBLISHED 1.5.5 binary prints `anthropic, openai, gemini, bedrock, responses, cohere`; the plugin consolidation had moved it to `anthropic, gemini, openai, …` believing that was already the shipped order. The order is RESTORED in `busbar_llm_codec::DECLS`, so BOOT-020 is byte-identical to 1.5.5 again and owes no acceptance at all. BOOT-043b: the unknown-member refusal did not merely rephrase a sentence — its FRAME LINE moved from the validate stage to the resolve stage, which an operator's log match sees; it is registered on its own terms as kind=breaking (F-013b) rather than folded into an improvement."
+      "rationale": "The new token limit metrics appear in a limit's expected-one-of list; reserved-name / credential-mode sentences rephrased. Same refusal, same exit code. NARROWED 2026-09-05 (the plane-key-lift fix): the top-level plane-key row dropped — the TOP-LEVEL expected-one-of list no longer includes the plane keys, because the 1.6.0-additive keys are lifted off the document before the frozen 1.5.5-shaped parse. That cell is byte-identical to 1.5.5 now and needs no acceptance. NARROWED AGAIN 2026-09-06 (oracle-phase0, committed-golden triage) for the two cells this entry should never have carried. BOOT-020: the divergence it forgave was 'protocol list reordered', and a reorder of an operator-visible list is neither additive nor better — it is a change nobody announced. The PUBLISHED 1.5.5 binary prints `anthropic, openai, gemini, bedrock, responses, cohere`; the plugin consolidation had moved it to `anthropic, gemini, openai, …` believing that was already the shipped order. The order is RESTORED in `busbar_llm_codec::DECLS`, so BOOT-020 is byte-identical to 1.5.5 again and owes no acceptance at all. BOOT-043b: the unknown-member refusal did not merely rephrase a sentence — its FRAME LINE moved from the validate stage to the resolve stage, which an operator's log match sees; it is registered on its own terms as kind=breaking (F-013b) rather than folded into an improvement. COUNT FOLLOWS THE NARROWING: `expected_cells` is 5, one per BOOT-P id this entry still names (P20, P29, P30, P07, P09) — not the 7 it forgave before BOOT-020 and BOOT-043b were removed above. The declared width is derived from the regex it accompanies, so a later widening of one without the other is caught by the differ rather than silently forgiven."
     },
     {
       "id": "F-013b the unknown pool member is refused by the resolver, not the validator",
@@ -112,6 +115,7 @@
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-06 oracle-phase0 parity triage",
       "cells": "^boot\\.refusal\\|BOOT-P32\\|validate$",
+      "expected_cells": 1,
       "classes": [
         "effects.stderr"
       ],
@@ -124,6 +128,7 @@
       "changelog": "a plugin download failure quotes the HTTP client's current error text",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^boot\\.(refusal|warning)\\|BOOT-(141|W24)\\|boot$",
+      "expected_cells": 2,
       "classes": [
         "body",
         "effects.stderr"
@@ -136,6 +141,7 @@
       "changelog": "`--help` documents `-c`/`--config` and `--providers`; `--version` prints a second line.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^(cli\\|(--help|-h|--version|-V)|documented\\|readme\\|env-launch)$",
+      "expected_cells": 5,
       "classes": [
         "body"
       ],
@@ -147,6 +153,7 @@
       "changelog": "Bedrock text blocks no longer open with an empty `contentBlockStart`.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^llm\\|bedrock\\|[a-z]+\\|request\\|ok_stream$",
+      "expected_cells": 5,
       "classes": [
         "body",
         "headers"
@@ -159,6 +166,7 @@
       "changelog": "Responses API streams carry the lifecycle frames the spec declares:",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^llm\\|responses\\|[a-z]+\\|request\\|ok_stream$",
+      "expected_cells": 5,
       "classes": [
         "body",
         "headers"
@@ -171,6 +179,7 @@
       "changelog": "a non-2xx records the breaker outcome by status class, honouring the upstream `Retry-After` as the cooldown floor, and emits the upstream-failure series",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-down$|^route\\.failover\\|fo\\|primary-429$",
+      "expected_cells": 2,
       "classes": [
         "effects.metrics"
       ],
@@ -181,6 +190,7 @@
       "kind": "breaking",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-401$",
+      "expected_cells": 1,
       "classes": [
         "status",
         "body",
@@ -196,6 +206,7 @@
       "changelog": "a client-fault 4xx bumps the lane's `client_fault` counter",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-4[0-9][0-9]$",
+      "expected_cells": 1,
       "classes": [
         "effects.metrics"
       ],
@@ -206,6 +217,7 @@
       "kind": "breaking",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-down-stream-openai$",
+      "expected_cells": 1,
       "classes": [
         "body",
         "effects.egress",
@@ -221,6 +233,7 @@
       "changelog": "a pool member's `attempt_timeout_ms` override is honoured",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-slow$",
+      "expected_cells": 0,
       "classes": [
         "effects.metrics"
       ],
@@ -232,6 +245,7 @@
       "changelog": "a transport error emits the same upstream-failure and failover series",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-down$|^route\\.failover\\|fb\\|all-down$|^route\\.failover\\|lb\\|member-down$",
+      "expected_cells": 3,
       "classes": [
         "effects.metrics"
       ],
@@ -243,6 +257,7 @@
       "changelog": "A Bedrock `Converse` response always carries `metrics`.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|bedrock\\|bedrock\\|request\\|ok$",
+      "expected_cells": 1,
       "classes": [
         "body",
         "headers"
@@ -255,6 +270,7 @@
       "changelog": "An Anthropic response carries the members its published schema requires.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|anthropic\\|(bedrock|cohere|gemini|openai|responses)\\|request\\|ok(_stream)?$",
+      "expected_cells": 9,
       "classes": [
         "body",
         "headers"
@@ -267,6 +283,7 @@
       "changelog": "A chat completion's `logprobs` object carries `refusal`.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|responses)\\|request\\|ok$|^route\\.failover\\|(fo\\|primary-(429|5xx|down)|fo\\|second-request-after-trip|lb\\|up)$",
+      "expected_cells": 10,
       "classes": [
         "body",
         "headers"
@@ -279,6 +296,7 @@
       "changelog": "A Responses object carries the members its published schema requires.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|responses\\|(anthropic|bedrock|cohere|gemini|openai)\\|request\\|ok$",
+      "expected_cells": 5,
       "classes": [
         "body",
         "headers"
@@ -291,6 +309,7 @@
       "changelog": "`openapi.json` describes the MCP and A2A endpoints",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^admin\\.ops\\|GetOpenapiJson\\|ok$|^crosscut\\.traps\\|openapi-info-version$|^neutrality\\|routes\\|admin-openapi-paths$",
+      "expected_cells": 3,
       "classes": [
         "body",
         "headers"
@@ -303,6 +322,7 @@
       "changelog": "A `stream: true` request on the Responses door is answered as a stream.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|responses\\|responses\\|request\\|ok_stream$",
+      "expected_cells": 1,
       "classes": [
         "body",
         "headers",
@@ -316,6 +336,7 @@
       "changelog": "Every door streams when the routed lane is Responses-shaped.",
       "by": "owner (Matthew Jackson), 2026-09-04 E7 conformance-rig triage",
       "cells": "^llm\\|(cohere|gemini|openai)\\|responses\\|request\\|ok_stream$",
+      "expected_cells": 3,
       "classes": [
         "body",
         "headers"
@@ -328,6 +349,7 @@
       "changelog": "A streamed response's `usage` carries the same attribution buckets as a buffered one.",
       "by": "owner (Matthew Jackson), 2026-09-05 llm-codec audit",
       "cells": "^llm\\|[a-z_]+\\|responses\\|request\\|ok_stream$",
+      "expected_cells": 6,
       "classes": [
         "body"
       ],
@@ -339,6 +361,7 @@
       "changelog": "A failed request's flat fee is refunded even when its window rolled under it.",
       "by": "owner (Matthew Jackson), 2026-09-05 maximum spec compliance",
       "cells": "^billing\\|key-usage\\|refund-across-window$",
+      "expected_cells": 1,
       "classes": [
         "body",
         "headers"
@@ -351,6 +374,7 @@
       "changelog": "A stream that dies mid-flight is no longer served, and billed, as a completed one.",
       "by": "owner (Matthew Jackson), 2026-09-05 llm-codec audit",
       "cells": "^llm\\|[a-z_]+\\|(openai|cohere)\\|request\\|mid-stream-error(_stream)?$",
+      "expected_cells": 0,
       "classes": [
         "body"
       ],
@@ -360,12 +384,13 @@
       "id": "M-3 Cohere billed_units bill the same buffered and streamed",
       "kind": "breaking",
       "by": "owner (Matthew Jackson), 2026-09-05 round-3 audit",
-      "cells": "^llm\\|[a-z_]+\\|cohere\\|request\\|ok(_stream)?$|^billing\\|",
+      "cells": "^llm\\|[a-z_]+\\|cohere\\|request\\|ok(_stream)?$",
+      "expected_cells": 12,
       "classes": [
         "effects.usage",
         "body"
       ],
-      "rationale": "Cohere reports usage TWICE -- a raw `usage.tokens` bucket and a separately-metered `usage.billed_units` bucket -- and billed_units is the count Cohere itself invoices the operator on. 1.5.5 read only `tokens` (its cohere reader parsed usage.tokens on both the stream and the non-stream path; billed_units was never read) and billed those. 1.6.0 lets billed_input_tokens/billed_output_tokens win over the raw totals inside IrUsage::to_token_usage, the one projection the ledger reads. This entry covers the BUFFERED arm finally reaching that same projection: chat_usage (the projection behind ChatRespHandle::billing()) had been rebuilding TokenUsage from the RAW IrUsage totals, so a single completion was billed the billed counts when streamed and the raw counts when buffered -- two different invoices for one completion, decided only by the caller's stream flag. Both arms now answer identically. No other dialect populates the billed fields, so every other backend's ledgered counts stay byte-identical to 1.5.5. The oracle's own mock sends billed_units EQUAL to tokens, so no recorded cell moves today; the entry is registered ahead of any fixture that makes them differ, which is exactly what S-8's caveat requires.",
+      "rationale": "NARROWED 2026-09-06 (shadow-oracle round-5): the `cells` regex was `^llm\\|[a-z_]+\\|cohere\\|request\\|ok(_stream)?$|^billing\\|`. That trailing `|^billing\\|` alternation held this entry's `effects.usage` -- a MONEY class -- over all twelve `billing|*` cells (eleven of them owed), a family this entry's id, rationale and changelog line never mention. Those cells are the ledger's own views (key/group/admin usage, the refund window); a change to what busbar CHARGES, or to what it reports having charged, is precisely the divergence the oracle exists to catch, and it would have reported ACCEPTED under a Cohere waiver. Cohere reaches the billing views only through the same `llm|*|cohere|*` cells already named on the left of the alternation, so the honest scope is exactly those twelve and nothing else; `billing|key-usage|refund-across-window` has its own entry (M-1). The register now requires every entry to declare `expected_cells`, so an alternation bolted onto a live scope stops the run. ORIGINAL RATIONALE: Cohere reports usage TWICE -- a raw `usage.tokens` bucket and a separately-metered `usage.billed_units` bucket -- and billed_units is the count Cohere itself invoices the operator on. 1.5.5 read only `tokens` (its cohere reader parsed usage.tokens on both the stream and the non-stream path; billed_units was never read) and billed those. 1.6.0 lets billed_input_tokens/billed_output_tokens win over the raw totals inside IrUsage::to_token_usage, the one projection the ledger reads. This entry covers the BUFFERED arm finally reaching that same projection: chat_usage (the projection behind ChatRespHandle::billing()) had been rebuilding TokenUsage from the RAW IrUsage totals, so a single completion was billed the billed counts when streamed and the raw counts when buffered -- two different invoices for one completion, decided only by the caller's stream flag. Both arms now answer identically. No other dialect populates the billed fields, so every other backend's ledgered counts stay byte-identical to 1.5.5. The oracle's own mock sends billed_units EQUAL to tokens, so no recorded cell moves today; the entry is registered ahead of any fixture that makes them differ, which is exactly what S-8's caveat requires.",
       "changelog": "1.6.0 Improvements: a Cohere backend's `usage.billed_units` is what the key is billed, on both the buffered and the streamed path"
     },
     {
@@ -373,6 +398,7 @@
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-05 round-3 audit",
       "cells": "^llm\\|bedrock\\|[a-z_]+\\|request\\|ok(_stream)?$",
+      "expected_cells": 11,
       "classes": [
         "body"
       ],
@@ -384,6 +410,7 @@
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-05 oracle Phase 0 group-budget-total cell",
       "cells": "^llm\\|anthropic\\|anthropic\\|request\\|over_budget_total$",
+      "expected_cells": 1,
       "classes": [
         "body"
       ],
