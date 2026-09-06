@@ -9,15 +9,29 @@
 //! ## What "unchanged" means here, precisely
 //!
 //! Eight wire fields, in the order they have always been in. One further field carrying provenance
-//! that is skipped on the wire, so an encoded record has eight fields and not nine. A digest that is
-//! the hexadecimal SHA-256 of the previous hash, sequence, timestamp, action, resource, outcome and
-//! principal, joined by vertical bars. A genesis previous hash that is the empty string. A ring
-//! bounded at a thousand entries, pruned oldest-first. A restore that seeds the ring from what was
-//! persisted and resumes the sequence after the highest restored one.
+//! that is skipped on the wire. A digest over the previous hash, sequence, timestamp, action,
+//! resource, outcome and principal. A genesis previous hash that is the empty string. A ring bounded
+//! at a thousand entries, pruned oldest-first. A restore that seeds the ring from what was persisted
+//! and resumes the sequence after the highest restored one.
 //!
 //! Any of those moving would not break a feature — it would make the read-back surface return
 //! something different from what it returned yesterday, and make every persisted chain fail to
 //! verify. So each of them is a test in this crate rather than a sentence in this comment.
+//!
+//! ## The one thing that DID move, and why it had to
+//!
+//! How those seven fields are FRAMED into the digest input. It used to be a join on vertical bars,
+//! and two of the seven — `resource` and `principal` — are free text a caller hands in unvalidated.
+//! A join on a character a field may contain is not a canonical encoding: it lets two different
+//! things that happened produce one digest, so a record saying a mutation was REJECTED could be
+//! presented as one saying it was APPLIED and the chain would verify. An audit log whose digest can
+//! be made to agree with a lie is not evidence.
+//!
+//! So the framing is now VERSIONED, per entry — see [`DIGEST_SCHEME_LEGACY_PIPE`] and
+//! [`DIGEST_SCHEME_LEN_PREFIXED`]. Records already on disk keep verifying under the framing they
+//! were sealed under; every new record is sealed under one whose field boundaries no field's content
+//! can move; and a chain that spans the change is mixed and verifies, because each entry is checked
+//! against its own scheme. Nobody has to choose between reading their history and being safe.
 //!
 //! ## Sharing a mechanism is not sharing a buffer
 //!
@@ -40,11 +54,64 @@ use serde::{Deserialize, Serialize};
 
 use super::chain::{ChainLabels, ChainedRecord, Digest, Framing};
 
+/// DIGEST SCHEME 1 — the LEGACY PIPE JOIN: previous hash, sequence, timestamp, action, resource,
+/// outcome and principal joined by vertical bars.
+///
+/// IT IS AMBIGUOUS, AND THAT IS A DEFECT, NOT A QUIRK. `resource` and `principal` are free text a
+/// caller hands in at [`AuditLog::record_by`], and neither is validated. So a resource of
+/// `hook:x|rejected` with outcome `applied` and principal `mallory` joins to the same bytes as a
+/// resource of `hook:x` with outcome `rejected` and principal `applied|mallory` — two DIFFERENT
+/// things that happened, one digest. An attacker who can choose one field's bytes can therefore
+/// present a record that says a mutation was REJECTED as one that says it was APPLIED, or move the
+/// attribution onto somebody who was not there, and [`super::verify_chain`] passes it: the digest
+/// really is the digest of those bytes.
+///
+/// It is retained for exactly one reason — records sealed under it are already on disk, cannot be
+/// re-sealed, and must keep verifying. It is NEVER used to seal a new record.
+pub const DIGEST_SCHEME_LEGACY_PIPE: u8 = 1;
+
+/// DIGEST SCHEME 2 — the INJECTIVE LENGTH-PREFIXED FRAMING every new entry is sealed under: a
+/// leading scheme tag, then every field carrying its own big-endian eight-byte length ahead of its
+/// bytes and every integer in its fixed eight-byte big-endian form.
+///
+/// Because a field's length precedes its bytes, the boundary between two fields is not something any
+/// field's CONTENT can move. The collision scheme 1 admits is therefore not merely unlikely under
+/// this framing, it is unrepresentable: recovering the fields from the preimage is unambiguous, so
+/// two distinct tuples cannot share one.
+pub const DIGEST_SCHEME_LEN_PREFIXED: u8 = 2;
+
+/// The scheme a record that does not name one was sealed under.
+///
+/// A record persisted before the framing was versioned carries no scheme field at all, and serde
+/// defaults it here — which is correct, because those records really were sealed under the pipe
+/// join. Defaulting the other way would report every chain written before this release as tampered.
+fn default_digest_scheme() -> u8 {
+    DIGEST_SCHEME_LEGACY_PIPE
+}
+
+/// Whether a scheme is the legacy one, and so is left OFF the wire.
+///
+/// A record read from a store written before this release must re-encode to the same eight fields it
+/// arrived as; a scheme field appearing on it would be this crate rewriting somebody else's bytes to
+/// say something they do not say.
+fn is_legacy_scheme(scheme: &u8) -> bool {
+    *scheme == DIGEST_SCHEME_LEGACY_PIPE
+}
+
+/// The fixed leading tag of every scheme 2 preimage.
+///
+/// It DOMAIN-SEPARATES this preimage space: no scheme 2 digest can coincide with a scheme 1 digest,
+/// because a scheme 1 preimage begins with a hexadecimal hash or a bar and this one does not. So an
+/// entry cannot be relabelled from one scheme to the other and still verify — the version is inside
+/// what is signed, not merely beside it.
+const DIGEST_SCHEME_2_TAG: &str = "busbar.audit.adminchain.v2";
+
 /// One admin audit record.
 ///
-/// The digest is the hexadecimal SHA-256 of the previous hash, sequence, timestamp, action,
-/// resource, outcome and principal joined by vertical bars, and the previous hash is the preceding
-/// entry's digest. Recomputing the chain detects any altered, reordered or deleted entry — detection,
+/// The digest covers the previous hash, sequence, timestamp, action, resource, outcome and
+/// principal, and the previous hash is the preceding entry's digest. HOW those fields are framed
+/// into the digest input is [`AuditEntry::digest_scheme`]'s business, and each record is verified
+/// under its own. Recomputing the chain detects any altered, reordered or deleted entry — detection,
 /// not prevention. A compromised host can still rewrite the whole chain; prevention is shipping the
 /// log off-box to something that host cannot reach.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +134,22 @@ pub struct AuditEntry {
     pub prev_hash: String,
     /// This entry's own digest: the tamper-evidence.
     pub hash: String,
+    /// WHICH FRAMING `hash` was computed under.
+    ///
+    /// Carried PER ENTRY rather than per chain, because a chain that has crossed the upgrade is
+    /// legitimately mixed: the entries a store already holds were sealed under
+    /// [`DIGEST_SCHEME_LEGACY_PIPE`] and everything appended after it under
+    /// [`DIGEST_SCHEME_LEN_PREFIXED`], in one sequence, linked to each other. A per-chain scheme
+    /// would force a deployment to choose between verifying its own history and being safe from the
+    /// collision the legacy framing admits; a per-entry one asks nobody to choose.
+    ///
+    /// Absent on the wire for a legacy entry, so records written before this release re-encode to
+    /// the same eight fields they arrived as.
+    #[serde(
+        default = "default_digest_scheme",
+        skip_serializing_if = "is_legacy_scheme"
+    )]
+    pub digest_scheme: u8,
     /// TRUE only for entries THIS process appended live. Seeded entries — restored from a durable
     /// store — are false. Skipped on the wire, which gives the right default on the encoded and
     /// store-seeding paths; the live append sets it explicitly.
@@ -165,9 +248,22 @@ impl ChainedRecord for AuditEntry {
         chain: "the admin audit chain",
         scope: "log",
     };
-    /// PIPE-SEPARATED because that is how the entries already on disk were written. A new record
-    /// type takes the length-prefixed framing instead.
+    /// PIPE-SEPARATED, because an entry that names no scheme is one written before the scheme was
+    /// named, and those are on disk pipe-joined. Every entry this build seals says
+    /// [`DIGEST_SCHEME_LEN_PREFIXED`] and is framed by [`AuditEntry::framing`] instead.
     const FRAMING: Framing = Framing::PipeSeparated;
+
+    /// The framing THIS entry was sealed under, read off the entry.
+    ///
+    /// An unrecognised scheme falls to the legacy framing rather than panicking or verifying
+    /// vacuously: it can only have been written by a build that does not exist, and the honest
+    /// consequence is that the record fails to verify under a framing that is at least defined.
+    fn framing(&self) -> Framing {
+        match self.digest_scheme {
+            DIGEST_SCHEME_LEN_PREFIXED => Framing::LengthPrefixed,
+            _ => Framing::PipeSeparated,
+        }
+    }
 
     fn scope_of(&self) -> &str {
         ADMIN_LOG
@@ -195,6 +291,10 @@ impl ChainedRecord for AuditEntry {
             principal: input.principal,
             prev_hash,
             hash: String::new(),
+            // EVERY NEW ENTRY IS SEALED UNDER THE INJECTIVE FRAMING. This is the only place an
+            // entry's scheme is chosen, and it has no branch: nothing can ask for a new record under
+            // the ambiguous one, which is what stops the defect being reintroduced by a caller.
+            digest_scheme: DIGEST_SCHEME_LEN_PREFIXED,
             // Reached only from the live append: THIS process is writing it right now.
             recorded_here: true,
         }
@@ -207,7 +307,15 @@ impl ChainedRecord for AuditEntry {
     /// The digest over the previous hash, sequence, timestamp, action, resource, outcome and
     /// principal, fed field by field rather than formatted here. Note there is no scope field: this
     /// chain has exactly one scope, so nothing distinguishes it.
+    ///
+    /// Under scheme 2 the SCHEME TAG leads. Putting the version inside the preimage is what makes
+    /// the two schemes disjoint spaces rather than two readings of one: an entry cannot be
+    /// relabelled from the legacy scheme to this one, or back, and still recompute to its stored
+    /// digest.
     fn digest_fields(&self, d: &mut Digest) {
+        if self.digest_scheme == DIGEST_SCHEME_LEN_PREFIXED {
+            d.text(DIGEST_SCHEME_2_TAG);
+        }
         d.text(&self.prev_hash)
             .num(self.seq)
             .num(self.ts)
