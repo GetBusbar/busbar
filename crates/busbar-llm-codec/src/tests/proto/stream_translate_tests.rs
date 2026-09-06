@@ -4787,3 +4787,79 @@ fn fold_path_merges_trailing_usage_detail_sub_buckets_end_to_end() {
          streamed answer must match the buffered one: {usage}"
     );
 }
+
+/// Buffered-2xx-wrapped-as-a-stream must remap each tool id EXACTLY ONCE.
+///
+/// The wants-stream / upstream-answered-with-one-JSON-body path runs the answer through
+/// `chat_prepare_for_ingress` (which already reshapes every tool id to the ingress client's native
+/// form) and THEN fans the prepared answer out into stream events. Driving those already-prepared
+/// events back through the cross-protocol per-event tool-id remap wrapped the id a SECOND time, and
+/// the reverse decode strips exactly one level — so the next turn's `tool_result` reached the backend
+/// still carrying a layer of busbar encoding and the backend rejected the id.
+///
+/// The client-visible contract: the synthesized stream's tool id decodes back to the ORIGINAL egress
+/// id in ONE step, and is byte-identical to the id the non-stream write of the same answer carries.
+#[test]
+fn test_buffered_as_stream_remaps_tool_ids_exactly_once() {
+    let mut ir = crate::ir::IrResponse {
+        logprobs: Vec::new(),
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::ToolUse {
+            id: "call_abc".to_string(),
+            name: "get_weather".to_string(),
+            input: serde_json::json!({"city": "Paris"}),
+            cache_control: None,
+            thought_signature: None,
+        }],
+        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
+        stop_sequence: None,
+        usage: crate::ir::IrUsage {
+            input_tokens: 5,
+            output_tokens: 2,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
+        },
+        model: Some("test-model".to_string()),
+        id: Some("chatcmpl-x".to_string()),
+        created: Some(1_700_000_000),
+        system_fingerprint: None,
+        request_echo: None,
+    };
+    // The engine's order: prepare the answer for the ingress client FIRST (that is where the id is
+    // reshaped), then synthesize the client's native stream from the prepared answer.
+    crate::chat_handle::chat_prepare_for_ingress(&mut ir, "anthropic", 1_700_000_001);
+    let prepared_id = match &ir.content[0] {
+        crate::ir::IrBlock::ToolUse { id, .. } => id.clone(),
+        other => panic!("expected a tool_use block, got {other:?}"),
+    };
+    assert_eq!(
+        decode_native_tool_id("anthropic", &prepared_id).as_deref(),
+        Some("call_abc"),
+        "precondition: the prepared answer already carries a once-encoded native id"
+    );
+
+    let bytes = StreamTranslate::synthesize_from_response("anthropic", &ir)
+        .expect("anthropic is SSE-framed, so the shared synthesizer answers");
+    let out = String::from_utf8(bytes).expect("utf-8 SSE");
+    let emitted = data_payloads(&out)
+        .into_iter()
+        .find_map(|p| {
+            p.pointer("/content_block/id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .expect("a content_block_start carrying a tool_use id");
+
+    assert_eq!(
+        emitted, prepared_id,
+        "the synthesized stream must carry the SAME id the buffered write carries — the \
+         synthesizer drives an already-prepared answer and must not re-encode it"
+    );
+    assert_eq!(
+        decode_native_tool_id("anthropic", &emitted).as_deref(),
+        Some("call_abc"),
+        "one decode must recover the original egress id; a doubly-wrapped id leaves a layer \
+         behind and the backend rejects the next turn's tool_result: {emitted}"
+    );
+}
