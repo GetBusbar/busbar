@@ -7,26 +7,23 @@
 //! token the report is sealed with, the request's context and the provisional end, answering with
 //! `Decision<Meter>` carrying the `Usage` the exit path settles against.
 //!
-//! # The body is today's accrual, unchanged
+//! # One posting per unit, and the walk is the one that makes it
 //!
-//! One call: `engine::usage::ledger_and_meter`, with the same four arguments the live taps pass —
-//! the stream-end tap in `FirstByteBody`, its drop-time partial, and the buffered tap on the
-//! cross-protocol path. Behind it are the two host seams, `meter_ledger` (the tier split against
-//! the key's budget chain, in the window the pinned arrival epoch names) and `meter_series` (the
-//! raw per-model consumption row). This step calls them once, in that order, exactly as today.
+//! The accrual is `engine::usage::ledger_and_meter` — the tier split against the key's budget chain
+//! in the window the pinned arrival epoch names, then the raw per-model consumption row — and it is
+//! made by the taps INSIDE the walk: the stream-end tap in `FirstByteBody`, its drop-time partial,
+//! and the buffered tap on the cross-protocol path. It has to be there: a streamed answer's usage is
+//! known at stream end and nowhere earlier, which is after the Route step returned, after this step
+//! ran and after the Audit step gave the client its bytes.
 //!
-//! # One posting per unit, and which side of the walk makes it
-//!
-//! Those taps are inside the walk, and they have to be: a streamed answer's usage is known at
-//! stream end and nowhere earlier, which is after the Route step returned, after this step ran and
-//! after the Audit step gave the client its bytes. So for a unit that reached the walk holding the
-//! admission's meter half, the walk's tap IS this step's body — the same function, the same four
-//! arguments — and what this step does is SEAL what was posted rather than post it a second time.
-//! [`MeterFacts::accrued`] is Route saying which of the two happened, and it is the only thing
-//! standing between one accrual and two. [`Metered::posted`] is this step saying which of the two
-//! it did, and it is set inside the accrual arm: the row this step reports is filled either way, so
-//! a row cannot answer that question and a caller that read one for the answer would call every
-//! sealed unit a posting.
+//! **So this step never accrues.** It SEALS what the walk posted. It used to carry an arm that made
+//! the accrual itself, for a unit whose walk held no meter half — but no unit can be in that state:
+//! Route hands the meter half to the walk on every unit that resolves candidates and hands it back
+//! on exactly one exit, the candidate miss, which resolves no lane. A meter half and a serving lane
+//! therefore never arrive together, and the arm that needed both is gone. What stands in its place
+//! is an assertion, so a Route step that ever handed both back stops here instead of opening the
+//! door to a second accrual. [`Metered::posted`] is `false` for every unit, and the rehearsal
+//! asserts it — which is what keeps the deletion honest rather than merely believed.
 //!
 //! # A STREAMED UNIT'S REPORT IS EMPTY BY CONSTRUCTION, and that is the decision
 //!
@@ -97,14 +94,11 @@
 //! So there is no rate, no fee, no card and no price anywhere in this file. A plane says what it
 //! did; the composition root says what it cost.
 
-use std::sync::Arc;
-
 use busbar_caps::{
     step::Meter, Decision, Hold, MeterClassId, Outcome, QuantitySource, UnitToken, Usage,
     UsageLine, UsageToken,
 };
 use busbar_contract::ClassDirection;
-use busbar_substrate::plane_host::EngineHost;
 
 /// WHAT THE ROUTE STEP OBSERVED — the facts this step is bound to, as the step before it hands
 /// them over.
@@ -176,8 +170,13 @@ impl MeterFacts {
 /// Built by the Route step out of what the response actually was, so every figure here is observed
 /// rather than assumed: the status the CLIENT saw, the lane that actually answered post-failover,
 /// and the usage the dialect's reader found — or did not.
+/// NO HOST SEAM AND NO `accrued`. Both were the accrual arm's, and the arm is gone: this step
+/// reaches nothing and posts nothing, so a host to post through is not something it needs, and
+/// "who made the accrual" is not a question it branches on any more. `MeterFacts` still carries
+/// `accrued` for the Route step's own assertions, which is where the fact belongs.
 pub struct MeterCtx<'a> {
-    host: &'a Arc<dyn EngineHost>,
+    /// The admission's meter half, where the walk handed it back. Kept only so the step can CHECK
+    /// that it never arrives beside a lane — see the assertion in [`meter`].
     sink: Option<&'a crate::engine::UsageSink>,
     lane: Option<&'a crate::engine::Lane>,
     usage: Option<&'a busbar_substrate::billing::TokenUsage>,
@@ -185,7 +184,6 @@ pub struct MeterCtx<'a> {
     charged: bool,
     upstream_leg: bool,
     billing_failed: bool,
-    accrued: bool,
 }
 
 impl<'a> MeterCtx<'a> {
@@ -202,7 +200,6 @@ impl<'a> MeterCtx<'a> {
     /// the request path, and it does not exist yet.
     #[allow(clippy::too_many_arguments, dead_code)]
     pub(crate) fn new(
-        host: &'a Arc<dyn EngineHost>,
         sink: Option<&'a crate::engine::UsageSink>,
         lane: Option<&'a crate::engine::Lane>,
         usage: Option<&'a busbar_substrate::billing::TokenUsage>,
@@ -212,7 +209,6 @@ impl<'a> MeterCtx<'a> {
         billing_failed: bool,
     ) -> Self {
         MeterCtx {
-            host,
             sink,
             lane,
             usage,
@@ -220,9 +216,6 @@ impl<'a> MeterCtx<'a> {
             charged,
             upstream_leg,
             billing_failed,
-            // The step is the posting unless something before it says otherwise; `bind` is what
-            // says otherwise.
-            accrued: false,
         }
     }
 
@@ -233,14 +226,12 @@ impl<'a> MeterCtx<'a> {
     /// the admit step's, because whether the admission charge landed is not a fact about the walk.
     #[allow(dead_code)]
     pub(crate) fn bind(
-        host: &'a Arc<dyn EngineHost>,
         sink: Option<&'a crate::engine::UsageSink>,
         lane: Option<&'a crate::engine::Lane>,
         facts: &'a MeterFacts,
         charged: bool,
     ) -> Self {
         MeterCtx {
-            host,
             sink,
             lane,
             usage: facts.usage.as_ref(),
@@ -248,7 +239,6 @@ impl<'a> MeterCtx<'a> {
             charged,
             upstream_leg: facts.upstream_leg,
             billing_failed: facts.billing_failed,
-            accrued: facts.accrued,
         }
     }
 
@@ -270,10 +260,6 @@ pub struct Metered {
     /// The unit's reservation, handed back for the exit path to settle. Never settled here: there
     /// are two places a hold leaves its cell and this is not one of them.
     pub hold: Option<Hold>,
-    /// The metering row this response accrued — one request for the serving model, with the token
-    /// split preserved. `None` when there was no key or no serving lane to attribute it to, which
-    /// is the only case in which nothing is metered at all.
-    pub row: Option<busbar_api::MeteringRow>,
     /// Whether the flat per-request fee posts: 1 on a delivered 2xx from an upstream leg, 0
     /// otherwise. Decided here, from the client-facing status, and never reversed later.
     pub fee_count: u32,
@@ -364,53 +350,33 @@ pub fn meter(
     let bills = !ctx.billing_failed;
     let reported = if bills { ctx.usage } else { None };
 
-    // THE LIVE ACCRUAL, unchanged: the tier split onto the key's budget chain in the pinned
-    // window, then the raw per-model series row. Both through the one seam the stream-end tap,
-    // its drop-time partial and the buffered tap already call.
+    // THE ACCRUAL IS THE TAP'S, ON EVERY UNIT THAT REACHED A LANE — and this step does not make a
+    // second one. The Route step hands the admission's meter half to the walk on every unit that
+    // resolved candidates, and the walk's own tap makes the accrual with these arguments; it is
+    // where a streamed answer's usage becomes known, and making the call again here would post the
+    // same tokens twice. So this step SEALS that unit rather than accruing it.
     //
-    // ONE POSTING PER UNIT. Where the Route step handed the admission's meter half to the walk, the
-    // walk's own tap already made this call with these arguments — it is where a streamed answer's
-    // usage becomes known — and making it again here would post the same tokens twice. So this step
-    // SEALS that unit: it reports the same row and the same figures, and it does not accrue them a
-    // second time. Where the walk held no sink, this step is the accrual and makes the call itself.
-    let mut row = None;
-    // Whether the accrual arm below was the one that ran. Reported rather than derived: `row` is
-    // filled on both sides of the branch and cannot stand in for this.
-    let mut posted = false;
-    // WHAT THE UNIT CONSUMED, assembled for whoever keeps the books. `None` until there is a lane
-    // and a meter half to attribute it to, which is the honest statement that there is nothing to
-    // price — and it is the same `None` a unit that billed nothing reports.
-    let mut report = None;
-    if bills {
-        if let (Some(sink), Some(lane)) = (ctx.sink, ctx.lane) {
-            // The tier split, projected once and read twice: the ledger accrues against it, and the
-            // card prices the same counts. Hoisted out of the accrual arm so a unit the walk already
-            // posted still prices what it delivered — sealing is not a reason to spend nothing.
-            let tier = reported
-                .map(crate::engine::usage::tier_usage)
-                .unwrap_or_default();
-            if !ctx.accrued {
-                crate::engine::usage::ledger_and_meter(ctx.host, sink, lane, reported, &tier);
-                posted = true;
-            }
-            row = Some(metering_row(sink, lane, reported));
-            // THE REPORT, and it is where the money used to be. The step used to reach the legacy
-            // host seam here and come back with an amount; what it hands over now is the tier split
-            // it already projected, the billable count it already decided, and the two names the row
-            // it belongs to is keyed by — and it is told a total by the one side that holds a card.
-            //
-            // The lane is the SERVING lane's config name, after any failover. That is the key space
-            // rates are written in and the same key the metering row above attributes to, so the
-            // line this reports and the entry that prices it are keyed by the same name with no
-            // translation between them.
-            report = Some(crate::unit::walk::LateReport {
-                usage: tier,
-                fee_count,
-                lane: lane.model.clone(),
-                provider: lane.provider.clone(),
-            });
-        }
-    }
+    // The arm that used to accrue here, for "the walk held no sink", is gone because no unit can
+    // reach it: Route hands the meter half BACK on exactly one exit — the candidate miss — and that
+    // exit resolves no lane, so a sink and a lane never arrive together. The assertion is what keeps
+    // that true rather than merely true today: a Route step that handed both back would be opening
+    // the door to a second accrual, and it stops here instead of posting one.
+    debug_assert!(
+        !(ctx.sink.is_some() && ctx.lane.is_some()),
+        "the walk holds the meter half on every routed unit; a sink beside a lane is a second accrual"
+    );
+    // WHAT THE UNIT CONSUMED, assembled for whoever keeps the books. `None` until there is a lane to
+    // attribute it to, which is the honest statement that there is nothing to price.
+    //
+    // Built through the SAME constructor the late reading uses, and gated on the lane alone. It is
+    // deliberately not gated on `bills`: a unit whose stream carried a terminal error reached a lane
+    // and consumed nothing the node will charge for, which is an EMPTY tier rather than no report at
+    // all — and it still carries the fee count the previous release charges on it. Gating the report
+    // here as well would have been this step answering that question differently from the late
+    // reading, about the same unit.
+    let report = ctx
+        .lane
+        .map(|lane| crate::unit::walk::LateReport::of(reported, fee_count, lane));
 
     // The report the posting is made against: one line per non-zero tier, in canonical order. A
     // response that reported nothing reports no lines — zero, not a floor, because that is what the
@@ -463,12 +429,15 @@ pub fn meter(
     Metered {
         decision: Decision::proceed(unit_token, usage),
         hold,
-        row,
         fee_count,
         // The refund is owed only where a charge landed and the client did not see a 2xx — and it
         // is owed against the fee base alone.
         refund: ctx.charged && !delivered,
-        posted,
+        // NEVER, and it is now a property rather than a branch outcome: the accrual arm above is
+        // gone because no unit could reach it, so the tap is the one accrual of every unit and this
+        // step is always the seal. The rehearsal asserts this, which is what keeps the deletion
+        // honest — a step that started posting again would fail there.
+        posted: false,
         report,
     }
 }
@@ -495,32 +464,6 @@ fn push_line(
         },
         estimated: false,
     });
-}
-
-/// The metering row this response accrues, in the shape the flush writes to the store.
-///
-/// The MODEL is the config name of the SERVING lane — the lane that actually answered, after any
-/// failover — because that is the key the rate card is written against; the wire name a lane sends
-/// upstream is not an accounting key. A delivered response always counts its request, whatever it
-/// consumed.
-fn metering_row(
-    sink: &crate::engine::UsageSink,
-    lane: &crate::engine::Lane,
-    usage: Option<&busbar_substrate::billing::TokenUsage>,
-) -> busbar_api::MeteringRow {
-    busbar_api::MeteringRow {
-        key_id: sink.key.id.clone(),
-        model: lane.model.clone(),
-        provider: lane.provider.clone(),
-        tokens_input: usage.map(|u| u.input).unwrap_or(0),
-        tokens_output: usage.map(|u| u.output).unwrap_or(0),
-        tokens_cache_read: usage.and_then(|u| u.cache_read).unwrap_or(0),
-        tokens_cache_write: usage.and_then(|u| u.cache_creation).unwrap_or(0),
-        requests: 1,
-        billable_requests: 1,
-        key_group_at_use: String::new(),
-        pricing_version: String::new(),
-    }
 }
 
 #[cfg(test)]
