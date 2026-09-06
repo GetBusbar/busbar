@@ -40,6 +40,24 @@ pub enum Finding {
     },
     /// One balance does not satisfy the identity.
     Imbalanced(Imbalance),
+    /// A balance the checkpoint sealed is no longer in the book.
+    ///
+    /// Its own finding rather than an imbalance, because the two are different events and only one
+    /// of them is a defect. A window retired by `Book::retain_from` is gone on purpose — it was
+    /// sealed into a checkpoint, signed and shipped, and the book stopped being the record of it.
+    /// Measuring what the checkpoint holds against the zeros the book now reads back answers a
+    /// question nobody asked, and answers it two different wrong ways depending on the figures:
+    /// silence when the sealed balance happens to balance from zero, and an imbalance the size of
+    /// the whole balance when it does not. Neither of them says "this balance left the book".
+    ///
+    /// So it is named. The other way a balance leaves a book is that somebody removed it, and a
+    /// disappearance nobody reported is indistinguishable from housekeeping.
+    Retired {
+        /// Which balance.
+        key: TotalsKey,
+        /// Which window.
+        window: WindowStart,
+    },
     /// A closed window moved after its last transfer.
     ClosedWindowMoved(ClosedWindowMoved),
 }
@@ -60,6 +78,10 @@ impl std::fmt::Display for Finding {
                 "the anchor holds checkpoint {anchored}, not {expected} — the anchored history and this node's do not agree"
             ),
             Finding::Imbalanced(i) => write!(f, "{i}"),
+            Finding::Retired { key, window } => write!(
+                f,
+                "{key} in the window opening at {window} was sealed into the checkpoint and is no longer in the book — retired, or REMOVED"
+            ),
             Finding::ClosedWindowMoved(c) => write!(f, "{c}"),
         }
     }
@@ -86,7 +108,8 @@ impl WindowState for AllWindowsOpen {
 ///
 /// `since` is the checkpoint the delta is measured from; `now` is the figures as they stand. Every
 /// balance in either of them is checked, so a balance that appeared since the checkpoint is not
-/// skipped and one that vanished from the current figures is measured against zeros.
+/// skipped, and one that is no longer in the book is named as such rather than measured against
+/// zeros — see [`Finding::Retired`] for why those are different answers.
 pub fn verify(
     since: &Checkpoint,
     now: &std::collections::BTreeMap<(TotalsKey, WindowStart), Totals>,
@@ -110,7 +133,13 @@ pub fn verify(
 
     for (key, window) in keys.into_iter().cloned() {
         let before = since.totals_for(&key, window);
-        let after = now.get(&(key.clone(), window)).copied().unwrap_or_default();
+        // A balance the book no longer holds is not a balance measured against zeros. Retiring a
+        // sealed window is the ordinary way a book stays bounded, and comparing what the checkpoint
+        // holds against the zeros a retired key reads back as reports the whole of it as a hole.
+        let Some(&after) = now.get(&(key.clone(), window)) else {
+            findings.push(Finding::Retired { key, window });
+            continue;
+        };
         if windows.is_open(&key, window) {
             let r = residual(&before, &after);
             if !r.holds() {

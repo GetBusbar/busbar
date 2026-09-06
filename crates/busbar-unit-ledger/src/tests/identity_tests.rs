@@ -217,17 +217,20 @@ fn a_closed_window_that_is_still_moving_is_a_different_finding_from_one_that_doe
     assert_eq!(closed_window_is_settled(&since, &posted_late), Err(50));
 }
 
-/// "STOPPED MOVING" IS THE IDENTITY READING ZERO, not a second sum over a hand-picked subset of the
-/// columns.
+/// "STOPPED MOVING" IS BOTH SIDES OF THE IDENTITY READING ZERO, not the residual between them.
 ///
-/// A closed window is settled exactly when its residual has not moved since the checkpoint, and the
-/// residual is the thing that already knows which columns count and with which sign. A second sum
-/// that omits `unreconciled` and `overdraft_carried()` answers a different question, and answers it
-/// wrong in both directions: a reconciliation that moves value between two columns it disagrees
-/// about is reported as a closed window still moving, while a posting that lands in the one column
-/// the sum skips moves the window invisibly.
+/// The columns the check looks at are the identity's own — a second sum over a hand-picked subset is
+/// a second definition of "the books balance", and it answers wrong in both directions: a
+/// reconciliation that moves value between two columns it disagrees about reads as a window still
+/// moving, while a posting that lands in the one column it skips moves the window invisibly.
+///
+/// But the RESIDUAL is not the answer either, and this is the case that says why. A late posting
+/// into a reported window that draws 200 and settles 200 is perfectly balanced — the residual is
+/// zero and stays zero — and it is exactly the thing a closed window must not do. Both sides moved;
+/// they moved together. So the check compares the two column totals, each against where the
+/// checkpoint left it, and a window is settled only when neither has moved.
 #[test]
-fn a_closed_window_is_settled_exactly_when_its_residual_has_not_moved() {
+fn a_closed_window_moves_when_either_side_of_the_identity_moves_even_if_they_balance() {
     let since = Totals {
         drawn: 1_000,
         settled: 1_000,
@@ -265,6 +268,27 @@ fn a_closed_window_is_settled_exactly_when_its_residual_has_not_moved() {
     let mut overdrawn = since;
     overdrawn.overdraft_carried_out += 40;
     assert_eq!(closed_window_is_settled(&since, &overdrawn), Err(-40));
+
+    // A BALANCED late posting: 200 more drawn from the store and 200 more settled against it. The
+    // residual is zero — the books balance, and would balance in an open window — but a window that
+    // has been closed and reported has just had money moved through it, and that is the alarm.
+    let mut balanced_late_posting = since;
+    balanced_late_posting.drawn += 200;
+    balanced_late_posting.settled += 200;
+    assert!(
+        residual(&since, &balanced_late_posting).holds(),
+        "the fixture is only interesting if the residual stays at zero"
+    );
+    assert_eq!(
+        closed_window_is_settled(&since, &balanced_late_posting),
+        Err(200),
+        "a balanced posting into a reported window is still a window that moved"
+    );
+
+    // And a draw with nothing to show for it moves the window by what was drawn.
+    let mut drawn_only = since;
+    drawn_only.drawn += 15;
+    assert_eq!(closed_window_is_settled(&since, &drawn_only), Err(15));
 }
 
 #[test]
