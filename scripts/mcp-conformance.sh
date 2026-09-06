@@ -230,13 +230,19 @@ A verdict that skipped part of the required set is not a verdict about that set.
 # proves less than it appears to.
 #
 # This does couple the control leg to a third party's file layout (`test/conformance/src/
-# everythingServer.ts`, port 3000). That coupling is safe precisely because the checkout is pinned to
-# a commit: a pinned tree's layout cannot move underneath us, and a deliberate pin bump is where a
-# layout change should be discovered.
+# everythingServer.ts`, and its `PORT` environment variable). That coupling is safe precisely because
+# the checkout is pinned to a commit: a pinned tree's layout cannot move underneath us, and a
+# deliberate pin bump is where a layout change should be discovered.
+#
+# THE PORT IS ASKED OF THE OS, not taken as the fixture's default 3000, for the same reason
+# `subject_free_ports` exists in boot.sh. On a fixed port there is no proof that the thing answering
+# is the peer THIS leg started: a fixture left behind by a killed run, or an unrelated dev server on
+# a developer's machine, answers the readiness probe and is then judged as the reference. That is a
+# control leg reporting on somebody else's process, and if it happens to pass it licenses every
+# subject verdict in the run.
 SDK_REPO="https://github.com/modelcontextprotocol/typescript-sdk.git"
 SDK_REF="cc4b4161"
 SDK_FIXTURE="test/conformance/src/everythingServer.ts"
-SDK_URL="http://localhost:3000/mcp"
 CONTROL_READY_TIMEOUT=240
 
 official_control() {
@@ -258,15 +264,37 @@ never float it to a branch, or this leg goes red the day somebody else's main br
     || { tail -40 "$dir/build.log" >&2; die "the control peer would not build. Harness/runner \
 finding, not a busbar finding."; }
 
-  ( cd "$sdk" && npx tsx "$SDK_FIXTURE" ) >"$dir/control-server.log" 2>&1 &
+  # A free loopback port, asked of the OS immediately before the fixture is told to use it. The
+  # window between the probe closing the socket and the fixture binding it is small and the fixture
+  # exits loudly if it loses the race ("Port … is already in use"), which the readiness liveness
+  # check below turns into a prompt red rather than a four-minute wait.
+  local sdk_port
+  sdk_port="$(node -e '
+    const s = require("net").createServer();
+    s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => console.log(p)); });
+  ')"
+  [ -n "$sdk_port" ] || die "could not obtain a free loopback port for the control peer."
+  local SDK_URL="http://localhost:$sdk_port/mcp"
+  say "   control peer will listen on 127.0.0.1:$sdk_port"
+
+  ( cd "$sdk" && PORT="$sdk_port" npx tsx "$SDK_FIXTURE" ) >"$dir/control-server.log" 2>&1 &
   local server_pid=$!
   reap_add "$server_pid"
 
   # READINESS BY OBSERVATION, not by sleeping. The wait ends when the endpoint answers ANYTHING —
   # a 4xx is a perfectly good proof that a server is listening, and waiting for a 2xx would make
   # readiness depend on the very behaviour under test.
+  #
+  # THE LIVENESS CHECK IS PART OF READINESS. Without it, "something answered" is the whole of the
+  # proof, and a peer that died on startup while a different process holds the port reads as ready.
+  # The pair — our own port, and our own process still alive on it — is what makes the reference a
+  # reference.
   local waited=0
   until curl -s -o /dev/null --max-time 5 "$SDK_URL" -X POST -H 'content-type: application/json' -d '{}'; do
+    kill -0 "$server_pid" 2>/dev/null || {
+      tail -30 "$dir/control-server.log" >&2
+      die "the control peer exited during boot; nothing this leg reports would be about it."
+    }
     waited=$((waited+2))
     [ "$waited" -lt "$CONTROL_READY_TIMEOUT" ] || {
       tail -30 "$dir/control-server.log" >&2
