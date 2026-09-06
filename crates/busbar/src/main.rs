@@ -603,7 +603,7 @@ fn register_protocols() {
     // `mut` is used only under the protocol features below; with every protocol compiled out
     // (`--no-default-features`) nothing pushes, so the binding is legitimately unmutated there.
     #[allow(unused_mut)]
-    let mut installed: Vec<&'static busbar_core::proto::ProtocolDecl> = Vec::new();
+    let mut installed: Vec<&'static busbar_substrate::proto::ProtocolDecl> = Vec::new();
     // THE SECOND SEAM, FOLDED IN (Batch C-6): a path-model dialect's arrival split off `ProtocolDecl`
     // when the decl relocated to `busbar-substrate`, so each protocol crate contributes its
     // `(name, arrival)` pairs BESIDE its declarations here — the ONE composition-root write into both
@@ -999,10 +999,10 @@ fn main() {
     // BUSBAR_PROFILE set → periodically dump the per-stage breakdown to stderr (every 20 s), so a
     // live benchmark run reports stage timings without the in-process test driver. Measurement-only
     // opt-in, absent from any production deployment; zero cost when the env is unset.
-    if busbar_core::profile::enabled() {
+    if busbar_substrate::profile::enabled() {
         std::thread::spawn(|| loop {
             std::thread::sleep(std::time::Duration::from_secs(20));
-            busbar_core::profile::dump();
+            busbar_substrate::profile::dump();
         });
     }
     // Worker-thread count. `advanced.worker_threads` in config.yaml is the operator override; the
@@ -1070,7 +1070,7 @@ fn main() {
     // Publish the data-plane worker count to core BEFORE anything builds: the egress client
     // shards (and later per-worker state stripes) size themselves to it. A process-topology fact,
     // exactly like the runtimes themselves — set once here, immutable, no config surface.
-    busbar_core::state::set_data_workers(worker_threads);
+    busbar_substrate::topology::set_data_workers(worker_threads);
     #[cfg(unix)]
     {
         tokio::runtime::Builder::new_current_thread()
@@ -1555,7 +1555,7 @@ async fn run(data_workers: usize) {
         // The WORKER-SHUTDOWN WATCH: the broadcast, refolded into a level (a `watch<bool>`) so
         // detached work spawned at any moment — including after the signal — can still observe
         // that shutdown has fired. Each data worker registers a clone
-        // (`busbar_core::state::set_worker_shutdown`) beside its detached tracker, and an MCP task
+        // (`busbar_substrate::detached::set_worker_shutdown`) beside its detached tracker, and an MCP task
         // runner selects on it to write its CANCELLED terminal status within the drain grace
         // instead of being aborted with a caller left polling forever.
         let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::watch::channel(false);
@@ -1679,7 +1679,7 @@ fn serve_thread_per_core(
     n: usize,
     addr: String,
     data_router: Router,
-    tls_cfg: Option<busbar_core::config::TlsCfg>,
+    tls_cfg: Option<busbar_substrate::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_core::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
@@ -1733,17 +1733,17 @@ fn serve_thread_per_core(
                 // This thread IS data-plane worker `i` for its whole lifetime: everything core
                 // stripes per worker (the egress client shard today; SWRR/breaker scratch in later
                 // stages) indexes by this id. Set after the pin, before the runtime serves.
-                busbar_core::state::set_worker_id(i);
+                busbar_substrate::topology::set_worker_id(i);
                 // Detached-work tracker (request-outliving spawns: webhook/tap deliveries, MCP
                 // runners, A2A watchers) — the post-drain grace below waits on it so a graceful
                 // stop gives such work a bounded window instead of an instant abort.
-                let detached = busbar_core::state::DetachedTasks::new();
-                busbar_core::state::set_worker_detached(detached.clone());
+                let detached = busbar_substrate::detached::DetachedTasks::new();
+                busbar_substrate::detached::set_worker_detached(detached.clone());
                 // The shutdown level, registered beside the tracker: detached work spawned on
                 // this worker captures it and can settle its own terminal state (an MCP task
                 // runner writes CANCELLED) inside the drain grace below instead of being aborted
                 // silently when the runtime drops.
-                busbar_core::state::set_worker_shutdown(worker_shutdown);
+                busbar_substrate::detached::set_worker_shutdown(worker_shutdown);
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -1781,7 +1781,7 @@ fn serve_thread_per_core(
                     // Connections are drained; give this worker's detached work its bounded
                     // grace before the runtime drops (and aborts whatever remains).
                     let _ = tokio::time::timeout(
-                        busbar_core::state::DETACHED_DRAIN_GRACE,
+                        busbar_substrate::detached::DETACHED_DRAIN_GRACE,
                         detached.drained(),
                     )
                     .await;
@@ -1835,7 +1835,7 @@ fn bind_reuseport_listener(addr: &str) -> std::io::Result<std::net::TcpListener>
 async fn serve_listener(
     listener: tokio::net::TcpListener,
     router: Router,
-    tls_cfg: Option<busbar_core::config::TlsCfg>,
+    tls_cfg: Option<busbar_substrate::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_core::config::secret::SecretResolver>,
     label: &str,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
