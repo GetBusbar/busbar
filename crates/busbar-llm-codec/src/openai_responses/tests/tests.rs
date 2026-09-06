@@ -7541,3 +7541,94 @@ fn writer_tool_arguments_stop_growing_at_the_translate_cap() {
         "the finalized item still carries an arguments string: {done}"
     );
 }
+
+/// A URL citation must SURVIVE a Responses→Responses hop.
+///
+/// The Responses wire shape for an annotation is the published `UrlCitationBody`, which FLATTENS
+/// `url`/`title`/`start_index`/`end_index` onto the entry — unlike Chat, which nests them under a
+/// `url_citation` object. The writer has always emitted the flat shape; the shared reader used to
+/// recognize only the nested one, so it dropped every citation it was handed — including the ones
+/// this very writer had just produced. Assert BOTH halves: the bytes are the flat shape the spec
+/// requires, and reading them back recovers the citation.
+#[test]
+fn responses_url_citation_survives_a_responses_round_trip() {
+    let resp = crate::ir::IrResponse {
+        logprobs: Vec::new(),
+        role: crate::ir::IrRole::Assistant,
+        id: Some("resp_rt".to_string()),
+        model: Some("gpt-4o".to_string()),
+        created: Some(1_700_000_000),
+        content: vec![crate::ir::IrBlock::Text {
+            text: "See the source for details.".to_string(),
+            cache_control: None,
+            citations: vec![crate::ir::IrCitation {
+                kind: Some("web_search_result_location".to_string()),
+                cited_text: None,
+                title: Some("Responses Source".to_string()),
+                url: Some("https://example.com/r".to_string()),
+                document_index: None,
+                start_index: Some(4),
+                end_index: Some(10),
+                encrypted_index: None,
+                raw: None,
+            }],
+        }],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_sequence: None,
+        usage: crate::ir::IrUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
+        },
+        system_fingerprint: None,
+        request_echo: None,
+    };
+
+    let writer = ResponsesWriter;
+    let wire = writer.write_response(&resp);
+
+    // The written shape is the spec's flat `UrlCitationBody`, not Chat's nested object.
+    let ann = wire
+        .pointer("/output/0/content/0/annotations/0")
+        .expect("the output text part carries an annotation");
+    assert_eq!(ann["type"], "url_citation");
+    assert_eq!(
+        ann.get("url").and_then(|v| v.as_str()),
+        Some("https://example.com/r"),
+        "url is flattened onto the entry: {ann}"
+    );
+    assert!(
+        ann.get("url_citation").is_none(),
+        "the Responses wire must NOT nest under url_citation: {ann}"
+    );
+
+    // And the reader recovers it rather than dropping it on the floor.
+    let back = ResponsesReader
+        .read_response(&wire)
+        .expect("read_response should succeed");
+    let citations = back
+        .content
+        .iter()
+        .find_map(|b| match b {
+            crate::ir::IrBlock::Text { citations, .. } => Some(citations),
+            _ => None,
+        })
+        .expect("a Text block must be present");
+    assert_eq!(
+        citations.len(),
+        1,
+        "the citation must survive the round-trip, not be dropped: {citations:?}"
+    );
+    assert_eq!(
+        citations[0].url.as_deref(),
+        Some("https://example.com/r"),
+        "{citations:?}"
+    );
+    assert_eq!(
+        citations[0].title.as_deref(),
+        Some("Responses Source"),
+        "{citations:?}"
+    );
+}

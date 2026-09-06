@@ -141,6 +141,14 @@ fn citation_span(text: &str, base: usize, c: &crate::ir::IrCitation) -> Option<(
 /// Read an OpenAI-family `annotations` array (`url_citation` entries) into IR citations. Shared by
 /// the Chat and Responses readers, mirroring `url_annotations` above in the write direction.
 ///
+/// BOTH published shapes are accepted, because the two dialects genuinely differ and this one
+/// function reads for both: Chat nests the fields under a `url_citation` object, while the Responses
+/// API's `UrlCitationBody` flattens `url`/`title`/`start_index`/`end_index` onto the entry itself.
+/// Recognizing only the nested one silently dropped EVERY Responses citation — including on a
+/// Responses→Responses hop, where this reader consumes the very bytes `url_annotations` had just
+/// written in the flat shape the spec requires. The nested object wins when present, so a Chat entry
+/// is never re-read as a flat one.
+///
 /// KNOWN LIMITATION — offsets are deliberately NOT carried. `IrCitation::start_index`/`end_index`
 /// are CHARACTER offsets by contract (`ir/mod.rs`), and OpenAI does not document whether its
 /// `start_index`/`end_index` count bytes or characters. Copying them across unconverted would
@@ -159,9 +167,9 @@ pub fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::ir::I
         if entry.get("type").and_then(|t| t.as_str()) != Some("url_citation") {
             continue;
         }
-        let Some(citation) = entry.get("url_citation") else {
-            continue;
-        };
+        // Chat nests under `url_citation`; Responses (`UrlCitationBody`) flattens onto the entry.
+        // Chat nests under `url_citation`; Responses (`UrlCitationBody`) flattens onto the entry.
+        let citation = entry.get("url_citation").unwrap_or(entry);
         // Never invent a fact: an entry with no usable url is skipped, symmetric with
         // `url_annotations`' own rule in the write direction (a citation with no url is not
         // emitted there either).
