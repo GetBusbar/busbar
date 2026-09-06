@@ -23,7 +23,7 @@ SYMBOL = 61
 TYPE = 13
 KEY = 378
 DIALECT = 449
-BACKWARDS = 570
+BACKWARDS = 392
 
 # [test-reach] — the BACKWARDS class broken out per plane crate (bare plane key, matching
 # scripts/plane-keys.sh), test scope only: how many lines under crates/busbar-<key>/src's OWN test
@@ -34,7 +34,7 @@ BACKWARDS = 570
 # within a single line and neither claims exactness beyond "test code reaching busbar_core:: is
 # visible and ratchets down", which is the point of both gates.
 [test-reach]
-llm = 566
+llm = 383
 mcp = 1
 a2a = 3
 voice = 0
