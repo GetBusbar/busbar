@@ -107,7 +107,7 @@ pub(crate) fn route_path() -> String {
 /// The A2A protocol version this binding speaks. The gRPC service descriptor IS the v1 protocol —
 /// there is no v0.3 protobuf — so a request that names no version is a 1.0 request, unlike the HTTP
 /// bindings where an absent header means 0.3.
-const GRPC_A2A_VERSION: &str = "1.0";
+pub(super) const GRPC_A2A_VERSION: &str = "1.0";
 
 /// The `A2A-Version` metadata key, lower-cased as HTTP/2 requires every header name to be.
 const A2A_VERSION_METADATA: &str = "a2a-version";
