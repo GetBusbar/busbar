@@ -416,6 +416,16 @@ pub fn decide(
     // (3) THE BOUND, checked against the round we would be about to serve. Carried in the seal, so a
     // caller replaying round-1 state for ever is replaying a round-1 index for ever and never gets
     // past `cap`.
+    //
+    // `cap == 0` IS THE KILL SWITCH THE FIELD DOCUMENTS, AND IT NOW BEHAVES LIKE ONE. The bound
+    // below fires on the FIRST round of any capability that declares an ask, so a zero cap did not
+    // disable the asks — it made every capability that had one UNCALLABLE, answering an operator who
+    // wrote "stop asking" with "this tool no longer works". Nothing else in the grammar can express
+    // "run these tools without their exchange", and a switch whose documented meaning and actual
+    // meaning differ is worse than no switch: an operator reaches for it in an incident.
+    if cap == 0 {
+        return AskDecision::Proceed;
+    }
     if next_round >= cap && (next_round as usize) < rounds.len() {
         return AskDecision::Refuse(Refusal::RoundCapExceeded {
             capability: bind.capability.to_string(),

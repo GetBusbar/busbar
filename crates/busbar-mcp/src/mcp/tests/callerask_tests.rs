@@ -419,7 +419,15 @@ fn the_round_cap_is_hard_and_cannot_be_reset_by_replaying_an_earlier_state() {
     }
 }
 
-/// A cap of ZERO never asks. An operator kill switch that works without editing every capability.
+/// A cap of ZERO never asks — and the capability is still CALLABLE, which is the whole difference
+/// between a kill switch and a capability that has been withdrawn.
+///
+/// This assertion used to be `Refuse(RoundCapExceeded)`, i.e. it asserted the exact opposite of the
+/// sentence above it and of what `max_caller_ask_rounds:` documents ("`0` is legal and is an
+/// operator KILL SWITCH: it disables every `ask_caller` on this server at once"). The bound fires on
+/// the FIRST round, so a zero cap did not disable the asks, it disabled the tools that had them —
+/// and an operator reaching for the switch during an incident took every gated capability down with
+/// it.
 #[test]
 fn a_cap_of_zero_never_asks() {
     let rounds = vec![round("user_name", "elicitation/create")];
@@ -437,10 +445,10 @@ fn a_cap_of_zero_never_asks() {
             },
         )
     });
-    assert!(matches!(
-        got,
-        AskDecision::Refuse(Refusal::RoundCapExceeded { .. })
-    ));
+    assert!(
+        matches!(got, AskDecision::Proceed),
+        "a zero cap must DISABLE THE ASKS and dispatch, not refuse the call: {got:?}"
+    );
 }
 
 /// `input-required-result-missing-input-response` is a `SHOULD` to RE-ASK rather than error. A retry

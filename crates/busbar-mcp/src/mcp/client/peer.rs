@@ -216,9 +216,18 @@ impl ServerNotification {
 /// module's decision.
 ///
 /// The discriminator is the presence of `method`, and then of `id`, which is the JSON-RPC base
-/// specification's own rule and not a heuristic. A `null` id on a request is treated as a
-/// NOTIFICATION rather than as a request with a null id: answering it would produce a response
-/// nothing can correlate, which the base protocol reserves for errors about un-parseable requests.
+/// specification's own rule and not a heuristic. PRESENCE, not legibility: a member that is present
+/// and `null` is present.
+///
+/// ## Why a present `null` is a request and not a notification
+///
+/// JSON-RPC 2.0 §4 defines a notification as a request object WITHOUT an `id` member. A child that
+/// wrote `"id": null` wrote the member, so it is waiting for a response and will wait for ever if
+/// busbar decides otherwise — and busbar is the only party that could answer it. Collapsing the two
+/// meant a child using a JSON encoder that renders an absent id as an explicit null (a common
+/// shape) never got a reply to `roots/list` and blocked, which is exactly the failure
+/// [`ServerMessage::UnknownRequest`]'s own doc-comment says must not happen. The response carries
+/// `id: null` back, which §5 permits and which the child can correlate because it is the id it sent.
 pub(crate) fn classify(value: &serde_json::Value) -> Option<ServerMessage> {
     let obj = value.as_object()?;
     // A response, not a message. Checked FIRST and by the presence of the members rather than by the
@@ -228,12 +237,18 @@ pub(crate) fn classify(value: &serde_json::Value) -> Option<ServerMessage> {
         return None;
     }
     let method = obj.get("method").and_then(|m| m.as_str())?;
-    let id = obj.get("id").filter(|v| !v.is_null()).cloned();
-    match id {
-        None => Some(match notification_of(method) {
-            Some(n) => ServerMessage::Notification(n),
-            None => ServerMessage::UnknownNotification(method.to_string()),
-        }),
+    // THE NOTIFICATION TABLE IS CONSULTED FIRST, and that ordering is what lets the id member be read
+    // by PRESENCE below. A method the protocol defines as a notification is a notification whatever
+    // id rode along: clients do emit `"id": null` on `notifications/message`, and answering it would
+    // put a response on the stream for something that is defined never to have one.
+    if let Some(n) = notification_of(method) {
+        return Some(ServerMessage::Notification(n));
+    }
+    match obj.get("id").cloned() {
+        // No `id` member at all: JSON-RPC 2.0 §4's definition of a notification, and a method the
+        // table above did not recognise is an unknown one — never answered.
+        None => Some(ServerMessage::UnknownNotification(method.to_string())),
+        // PRESENT, including present and `null`. The child wrote the member, so it is waiting.
         Some(id) => Some(match request_of(method) {
             Some(verb) => ServerMessage::Request { id, verb },
             None => ServerMessage::UnknownRequest {
