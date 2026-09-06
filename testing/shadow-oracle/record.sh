@@ -898,7 +898,27 @@ source "${here}/harness-rev.sh"
 BIN_SHA256="$(binary_sha256 "$BIN")"
 HARNESS_REV="$(harness_rev)"
 HOST_TRIPLE="$(host_triple)"
-jq -n --arg ver "$VER" --arg bin "$BIN" --argjson recorded "$n" \
+# `binary` IS BOOKKEEPING, AND IT IS COMMITTED. The golden recording's meta.json is a checked-in
+# public file, and `--bin ~/.cache/busbar-oracle/1.5.5/busbar` wrote an absolute path under a
+# personal home directory into it — which names a person AND a machine, the one thing
+# scripts/public-hygiene-lint.py's `machine-path` rule exists to keep out of published files. It
+# also says nothing: merge-recordings.py and fetch-golden.sh --check-golden both identify a
+# recording's source by `binary_sha256`, never by where the file sat (see e0923a7a).
+# So the path is written in a MACHINE-INDEPENDENT form — the same information about WHICH
+# well-known location it came from, with the operator's name and home layout removed:
+#   under this repo             -> <repo>/target/release/busbar
+#   under the oracle cache      -> <oracle-cache>/1.5.5/busbar   (BUSBAR_ORACLE_CACHE or ~/.cache/busbar-oracle)
+#   anywhere else under $HOME   -> <home>/some/path/busbar
+#   anywhere else               -> unchanged (/usr/local/bin/busbar names no person)
+# The digest beside it is unchanged and is still the identity.
+_oracle_cache_root="${BUSBAR_ORACLE_CACHE:-${HOME:-/nonexistent}/.cache/busbar-oracle}"
+case "$BIN" in
+  "$repo"/*) BIN_DISPLAY="<repo>/${BIN#"$repo"/}" ;;
+  "$_oracle_cache_root"/*) BIN_DISPLAY="<oracle-cache>/${BIN#"$_oracle_cache_root"/}" ;;
+  "${HOME:-/nonexistent}"/*) BIN_DISPLAY="<home>/${BIN#"${HOME:-/nonexistent}"/}" ;;
+  *) BIN_DISPLAY="$BIN" ;;
+esac
+jq -n --arg ver "$VER" --arg bin "$BIN_DISPLAY" --argjson recorded "$n" \
   --arg binsha "$BIN_SHA256" --arg hrev "$HARNESS_REV" --arg host "$HOST_TRIPLE" \
   '{binary: $bin, version: $ver, recorded: $recorded, binary_sha256: $binsha, harness_rev: $hrev,
     host_triple: $host, at: (now | todate)}' >"$OUT/meta.json"

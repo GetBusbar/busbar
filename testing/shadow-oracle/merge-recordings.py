@@ -51,6 +51,35 @@ import tempfile
 IDENTITY = ("version", "binary_sha256", "host_triple")
 
 
+def machine_independent_binary(path: str) -> str:
+    """The `binary` bookkeeping path with the operator's name and home layout removed.
+
+    A merged golden's meta.json is COMMITTED, and an absolute path under a personal home directory
+    names a person and a machine — scripts/public-hygiene-lint.py's `machine-path` rule refuses
+    exactly that in a published file. It is safe to rewrite because this field was never the
+    identity: IDENTITY above is (version, binary_sha256, host_triple), and `binary` is carried only
+    so a reader knows WHICH well-known location a part came from. That much is kept:
+
+        under the repo          -> <repo>/target/release/busbar
+        under the oracle cache  -> <oracle-cache>/1.5.5/busbar   (BUSBAR_ORACLE_CACHE or ~/.cache/busbar-oracle)
+        elsewhere under $HOME   -> <home>/some/path/busbar
+        elsewhere               -> unchanged (/usr/local/bin/busbar names no person)
+
+    The SAME rule record.sh applies when it writes a fresh meta.json, so a merge of fresh parts is
+    a no-op here and only an OLD part (recorded before that rule existed) is rewritten — and when
+    one is, merge() says so on stdout rather than doing it silently.
+    """
+    if not isinstance(path, str) or not path.startswith("/"):
+        return path
+    repo = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+    home = os.environ.get("HOME") or "/nonexistent"
+    cache = os.environ.get("BUSBAR_ORACLE_CACHE") or os.path.join(home, ".cache", "busbar-oracle")
+    for root, token in ((repo, "<repo>"), (cache, "<oracle-cache>"), (home, "<home>")):
+        if root and path.startswith(root.rstrip("/") + "/"):
+            return token + "/" + path[len(root.rstrip("/")) + 1:]
+    return path
+
+
 def _load_meta(p: str) -> dict:
     mp = os.path.join(p, "meta.json")
     if not os.path.isfile(mp):
@@ -68,6 +97,16 @@ def merge(parts, out, allow_harness_skew=False, note=None, cells_json=None) -> i
                 sys.exit(f"merge-recordings: {p} {k}={m.get(k)!r} but {base_p} {k}={base.get(k)!r}; "
                          "parts of one recording must come from the same binary on the same host")
     # The binary PATH is bookkeeping, not identity: say so out loud rather than refusing on it.
+    # The merged meta.json is committed, so every `binary` that reaches it — the base's and each
+    # part's in merged_from — is written in the machine-independent form (see the docstring above).
+    # Announced, never silent: a reader of the merge output learns the path was rewritten.
+    for p, m in metas:
+        b = m.get("binary")
+        nb = machine_independent_binary(b)
+        if nb != b:
+            print(f"merge-recordings: {os.path.basename(os.path.normpath(p))} recorded its binary as "
+                  f"an absolute path; writing it as {nb} (the digest is the identity, not the path)")
+            m["binary"] = nb
     paths = {m.get("binary") for _, m in metas}
     if len(paths) > 1:
         print(f"merge-recordings: parts name {len(paths)} different paths for the same binary "
@@ -189,9 +228,17 @@ def selftest() -> int:
             return t
 
     # THE CASE THIS FILE WAS FIXED FOR: same binary bytes, two different filesystem paths.
+    # (The second path is deliberately NOT under a home directory: this file is itself public, and a
+    # `/Users/<person>/...` literal here is the very thing the machine-path rule keeps out.)
     case("same sha256, different binary PATH -> merges",
-         [("a", ["x|1"], {}), ("b", ["x|2"], {"binary": "/Users/dev/.cache/busbar-oracle/1.5.5/busbar"})],
+         [("a", ["x|1"], {}), ("b", ["x|2"], {"binary": "/opt/busbar-oracle-cache/1.5.5/busbar"})],
          [], 0, "merged 2 parts")
+    # A COMMITTED meta.json MAY NOT NAME A PERSON: a part recorded before that rule (or by a caller
+    # that passed an absolute --bin) gets its `binary` written machine-independently, out loud.
+    case("a part's binary under $HOME -> rewritten, announced",
+         [("a", ["x|1"], {}), ("b", ["x|2"], {"binary": os.path.join(os.environ.get("HOME", "/nonexistent"),
+                                                                     ".cache/busbar-oracle/1.5.5/busbar")})],
+         [], 0, "<oracle-cache>/1.5.5/busbar")
     case("different binary_sha256 -> refused",
          [("a", ["x|1"], {}), ("b", ["x|2"], {"binary_sha256": "deadbeef"})],
          [], 1, "binary_sha256")
