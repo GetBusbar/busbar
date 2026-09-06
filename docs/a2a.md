@@ -378,15 +378,16 @@ At boot, `restore_from_store` walks the store's task rows (`taskstore.rs:191-239
 
 A caller registers a push-notification config and expects a callback when its task moves. Busbar does **not** relay that config to the backend.
 
-**The substitution.** Busbar registers *its own* callback with the backend — `<public_url>/a2a/push`, with a per-task capability token — and holds the caller's URL and credential itself (`crates/busbar-a2a/src/a2a/pushback.rs:27-42`, `:172-180`). The token is `<task-id>.<hex HMAC-SHA256(task_id)>` under a **process-local** 32-byte secret from `getrandom` (`pushback.rs:44-57`, `:98-122`). If `getrandom` fails the secret stays unset, the mint answers `None`, and Busbar registers **no** callback at all rather than one under a guessable key. **A restart invalidates every prior token.** Busbar registers a callback only while the task is non-terminal.
+**The substitution.** Busbar registers *its own* callback with the backend — `<public_url>/a2a/push`, with a per-task capability token — and holds the caller's URL and credential itself (`crates/busbar-a2a/src/a2a/pushback.rs:27-42`, `:172-180`). The token is `<task-id>.<nonce>.<expires-at>.<hex HMAC-SHA256>` — the MAC covers all three fields, length-framed, under a **process-local** 32-byte secret from `getrandom`. The nonce makes two mints for one task two distinct capabilities; the expiry (24 hours, measured from the mint) is *inside* the MAC, so a holder cannot move it. It is not single-use: a backend legitimately reports several times against one registration, so replay is bounded by the rate limit below rather than by spending the token (`pushback.rs:44-57`, `:98-122`). If `getrandom` fails the secret stays unset, the mint answers `None`, and Busbar registers **no** callback at all rather than one under a guessable key. **A restart invalidates every prior token.** Busbar registers a callback only while the task is non-terminal.
 
 **Busbar's callback endpoint** (`POST /a2a/push`, `pushback.rs:259-347`) is unauthenticated by the key chain and authenticates itself against that token:
 
 | Condition | Answer |
 |---|---|
 | no A2A plane | `404` |
-| missing, unparseable or non-verifying token | `401`, with a message that says nothing about which |
-| body over 64 KiB | `413` |
+| body over 64 KiB (declared or actual) | `413` — judged **first**, before the token, so an oversized body pays for no MAC |
+| missing, unparseable, non-verifying or **lapsed** token | `401`, with a message that says nothing about which |
+| more than 60 pushes for one task in one minute | `429` |
 | token verified but the task row is gone | `401` — not `404`, so existence is never revealed |
 | token verified and the task has ENDED | `401` — the same sentence, for the same reason |
 | body not JSON | `400` |

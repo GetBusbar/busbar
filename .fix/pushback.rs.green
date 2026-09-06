@@ -283,7 +283,7 @@ fn admit_push(task_id: &str, now: u64) -> bool {
 }
 
 /// TEST ONLY: forget every window, so one battery's pushes do not count against another's.
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn clear_push_rate_for_test() {
     push_rate()
         .lock()
@@ -293,13 +293,13 @@ pub(crate) fn clear_push_rate_for_test() {
 
 /// TEST ONLY: the rate bound and its window, so a test asserts against the shipped values rather
 /// than restating them.
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn push_rate_bounds() -> (u32, u64) {
     (PUSH_RATE_LIMIT, PUSH_RATE_WINDOW_SECS)
 }
 
 /// TEST ONLY: the minted token's lifetime.
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn token_ttl_secs() -> u64 {
     TOKEN_TTL_SECS
 }
@@ -457,25 +457,6 @@ pub(crate) async fn push_notification(
             "this endpoint is addressed by the push token busbar registered with the agent",
         );
     };
-    // ── THE DEADLINE IS ENFORCED ON PRESENT, NOT ONLY ON SUBMIT. ────────────────────────────────
-    //
-    // `token_live` below retires a token when its task ends, and `taskstore`'s retention sweep is
-    // what ends a task nobody has touched for `ACTIVE_TASK_ABANDON_SECS` — it moves it to
-    // `canceled`, which is terminal. Those two facts were supposed to compose into a bound on the
-    // token's lifetime, and they did not, because the sweep ran ONLY as a side effect of a new
-    // submission. A deployment that stops submitting stops enforcing the bound: the silent task
-    // never ages out, and the capability that names it stays live for as long as the process does.
-    // The documented deadline was a deadline only on a busy node.
-    //
-    // So the sweep is run HERE, at the one moment that matters — a token being offered — and the
-    // check that reads its result is the next thing that happens. `sweep_now` claims the work once
-    // per second, so a backend pushing hard pays an atomic load and nothing else, and the clock is
-    // the same wall clock the sweep's bounds are written in.
-    //
-    // AFTER the MAC, deliberately. The token has already been proven to have been minted by this
-    // process, so this is not a scan an anonymous caller can drive.
-    crate::taskstore::TASKS.sweep_now(busbar_substrate::store::now());
-
     // THE RATE LIMIT, AFTER the token and BEFORE any durable work. After the token because the
     // window is keyed by the task the token names, and an unauthenticated caller must not be able
     // to exhaust another task's window by naming it. Before the store read, the transition, the
@@ -484,12 +465,6 @@ pub(crate) async fn push_notification(
         return refused(
             axum::http::StatusCode::TOO_MANY_REQUESTS,
             "this task has reported more push notifications than this endpoint accepts",
-        );
-    }
-    if body.len() > MAX_PUSH_BODY {
-        return refused(
-            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-            "a push notification is one task document",
         );
     }
     let Some(row) = crate::taskstore::TASKS.get_unscoped(&task_id) else {
@@ -509,34 +484,6 @@ pub(crate) async fn push_notification(
             "this endpoint is addressed by the push token busbar registered with the agent",
         );
     };
-    // ── THE CAPABILITY IS STILL LIVE, OR IT AUTHORISES NOTHING. ─────────────────────────────────
-    //
-    // The MAC says the token was minted by this process for this task. It does NOT say the token
-    // still means anything, and until this check that was the entire authorisation of the endpoint:
-    // a token captured anywhere it travels — it rides `Authorization: Bearer` on an outbound hop,
-    // so a backend's own logs, a proxy and an error page all hold one — replayed for as long as the
-    // process lived, on a task that ended days ago.
-    //
-    // The replay did not even have to lie. Re-reporting the state busbar ALREADY HOLDS is taken as
-    // a retry rather than as a transition below, which is correct — `transition` refuses a move to
-    // the state it is already in — but it meant the transition table's terminal-refuses-everything
-    // rule was never the thing that ran. Each replay delivered to the caller's webhook again and
-    // appended another entry to that task's durable provenance chain: a hash chain an external
-    // party could grow without bound, on work that had finished.
-    //
-    // ASKED HERE, before the body is parsed and long before anything is recorded or delivered. A
-    // dead capability must cost nothing further, exactly as every other refusal above it does.
-    //
-    // ONE `401`, and the same sentence as every other refusal on this endpoint, for the reason
-    // `task_of` gives one answer for four different failures: whether a task exists, and whether it
-    // has ended, are not facts this endpoint tells an unauthenticated caller.
-    if !token_live(task.state) {
-        return refused(
-            axum::http::StatusCode::UNAUTHORIZED,
-            "this endpoint is addressed by the push token busbar registered with the agent",
-        );
-    }
-
     let Ok(document) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return refused(
             axum::http::StatusCode::BAD_REQUEST,
@@ -610,35 +557,13 @@ fn refused(status: axum::http::StatusCode, message: &str) -> Response {
         .into_response()
 }
 
-/// **THE CAPABILITY'S LIFETIME, AS ONE PREDICATE.** A per-task push token authorises the endpoint
-/// exactly while the task it names is NON-TERMINAL, and the ending of that task is what retires it.
+/// The state token a mirrored registration is worth making at all.
 ///
-/// ONE function, asked on BOTH sides, and that is the whole of the design rather than a convenience:
-///
-/// * **At mint time** — `super::originate::mirror_push_config` asks it before registering a
-///   callback with a backend. A task busbar already holds as terminal has nothing left to report,
-///   so arming a webhook for it would be arming it for an event that cannot happen.
-/// * **At present time** — [`push_notification`] asks it of the task a presented token resolves to.
-///   The same fact, read at the other end: a token minted for work that has since ended no longer
-///   speaks for anything.
-///
-/// This is the successor plane's rule, reached through the fact both planes already share instead
-/// of through a second mechanism. Over the composition root the same lifetime is a store record
-/// under kind `push_config` that `plane_token_live` reads and the route plan's revoke leg deletes
-/// `if key.terminal`; here the task ROW is that record, `state.is_terminal()` is that reading, and
-/// the terminal transition — which goes through `super::task`'s transition table like every other
-/// observation of this task — is that revocation. There is no second secret, no second deadline and
-/// no second lifecycle to drift.
-///
-/// **The revocation is durable and it is monotone**, which is what makes it a revocation rather
-/// than a cache. `TaskState`'s transition table is total and its terminal states accept nothing,
-/// including themselves (`super::task`), so a task that has ended can never leave the state that
-/// killed its token — not by a later push, not by a relayed read, not across a restart, because the
-/// terminal row is what is persisted.
-///
-/// **And a live token is NOT SPENT by being used.** One task draws several callbacks — `working`,
-/// `input-required`, then its ending — and all of them are the same capability being used for what
-/// it is for. Single-use would break the interrupted task this whole endpoint exists to serve.
-pub(crate) fn token_live(state: TaskState) -> bool {
+/// A task busbar already holds as TERMINAL has nothing left to report, so registering a callback
+/// for it would be arming a webhook for an event that cannot happen. Stated as a function rather
+/// than inline at the call site because the mirroring decision is made in two places
+/// (`super::receive`'s inline-config arm and its CRUD arm) and one of them drifting is how a
+/// customer gets a substitution on one spelling and not the other.
+pub(crate) fn worth_registering(state: TaskState) -> bool {
     !state.is_terminal()
 }
