@@ -574,14 +574,29 @@ jobs:
       - name: Voice runtime tests (the `runtime`-gated plane suites `cargo test --workspace` never runs)
         env:
           VOICE_MIN_TESTS: "100"
+        # `set -uo pipefail` + PIPESTATUS[0], matching the workspace / no-default-features / windows
+        # steps. Without it `cargo … | tee` reports TEE's exit status, which is 0 whether cargo
+        # passed or failed, and the only surviving check was a count of PASSING tests — a run with
+        # 150 passes and 3 failures cleared the floor and the step went green. The failure count is
+        # now asserted at zero explicitly rather than inferred from an exit code that had been
+        # laundered through a pipe.
         run: |
+          set -uo pipefail
           cargo test -p busbar-voice --features runtime,test-support \
                      -p busbar-voice-codec --features runtime \
-                     --locked --verbose | tee "$RUNNER_TEMP/voice-test.log"
+                     --locked --verbose 2>&1 | tee "$RUNNER_TEMP/voice-test.log"
+          rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/voice-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
-          echo "voice runtime: ${total} tests passed (floor: ${VOICE_MIN_TESTS})"
+          failed=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed; [0-9]+ failed' "$RUNNER_TEMP/voice-test.log" \
+                  | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "voice runtime: ${total} tests passed, ${failed} failed (floor: ${VOICE_MIN_TESTS})"
+          if [ "$rc" -ne 0 ] || [ "$failed" -ne 0 ]; then
+            echo "::error::the voice runtime suite FAILED (cargo exit ${rc}, ${failed} failing test(s))."
+            exit "$((rc == 0 ? 1 : rc))"
+          fi
           if [ "$total" -lt "$VOICE_MIN_TESTS" ]; then
             echo "::error::the voice runtime suite ran ${total} tests, below its floor of ${VOICE_MIN_TESTS}."
             echo "::error::A crate split (like codec/topology moving out of busbar-voice) can strand a"
@@ -599,13 +614,25 @@ jobs:
       - name: Timing implementation tests (the `timing`-gated suite `cargo test --workspace` never runs)
         env:
           TIMING_MIN_TESTS: "5"
+        # Same pipefail + explicit `0 failed` discipline as the voice step above, for the same
+        # reason: a `| tee` without it hands the step tee's exit status, and a passing-test count
+        # alone cannot tell a clean run from a run that also had failures.
         run: |
+          set -uo pipefail
           cargo test -p busbar-timing --features timing \
-                     --locked --verbose | tee "$RUNNER_TEMP/timing-test.log"
+                     --locked --verbose 2>&1 | tee "$RUNNER_TEMP/timing-test.log"
+          rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/timing-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
-          echo "timing implementation: ${total} tests passed (floor: ${TIMING_MIN_TESTS})"
+          failed=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed; [0-9]+ failed' "$RUNNER_TEMP/timing-test.log" \
+                  | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "timing implementation: ${total} tests passed, ${failed} failed (floor: ${TIMING_MIN_TESTS})"
+          if [ "$rc" -ne 0 ] || [ "$failed" -ne 0 ]; then
+            echo "::error::the timing implementation suite FAILED (cargo exit ${rc}, ${failed} failing test(s))."
+            exit "$((rc == 0 ? 1 : rc))"
+          fi
           if [ "$total" -lt "$TIMING_MIN_TESTS" ]; then
             echo "::error::the timing implementation suite ran ${total} tests, below its floor of ${TIMING_MIN_TESTS}."
             exit 1
@@ -622,12 +649,25 @@ jobs:
       - name: LLM teller-step tests (the `teller-waist`-gated step suite `cargo test --workspace` never runs)
         env:
           LLM_UNIT_MIN_TESTS: "70"
+        # Same pipefail + explicit `0 failed` discipline as the voice and timing steps above. This
+        # one is the most exposed of the three: it is a FILTERED run (`--lib unit::`), so its only
+        # other signal is a count, and without pipefail a filtered run with failures in it looked
+        # exactly like a clean one.
         run: |
-          cargo test -p busbar-llm --features teller-waist --locked --lib unit:: | tee "$RUNNER_TEMP/llm-unit-test.log"
+          set -uo pipefail
+          cargo test -p busbar-llm --features teller-waist --locked --lib unit:: 2>&1 | tee "$RUNNER_TEMP/llm-unit-test.log"
+          rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/llm-unit-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
-          echo "llm teller steps: ${total} tests passed (floor: ${LLM_UNIT_MIN_TESTS})"
+          failed=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed; [0-9]+ failed' "$RUNNER_TEMP/llm-unit-test.log" \
+                  | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "llm teller steps: ${total} tests passed, ${failed} failed (floor: ${LLM_UNIT_MIN_TESTS})"
+          if [ "$rc" -ne 0 ] || [ "$failed" -ne 0 ]; then
+            echo "::error::the llm teller-step suite FAILED (cargo exit ${rc}, ${failed} failing test(s))."
+            exit "$((rc == 0 ? 1 : rc))"
+          fi
           if [ "$total" -lt "$LLM_UNIT_MIN_TESTS" ]; then
             echo "::error::the llm teller-step suite ran ${total} tests, below its floor of ${LLM_UNIT_MIN_TESTS}."
             echo "::error::A directory-wide cfg gate can erase a whole suite without erasing its green."
