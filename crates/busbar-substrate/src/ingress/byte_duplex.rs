@@ -74,6 +74,16 @@ impl CallRef {
 /// prompt.
 const EOF_DRAIN: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// How many of ONE session's inbound frames may be in a handler at the same time. A peer writes as
+/// fast as it likes and the handling is concurrent, so without a cap a flood mints one task per frame
+/// and the node's memory is the peer's to spend. Wide enough that ordinary interleaved work never
+/// touches it, and reached only by a peer outrunning its own answers.
+///
+/// The cap is on the HANDLER, never on the reader's routing: a classified REPLY is delivered before
+/// this gate, so a handler parked in [`DuplexHandle::issue`] is always reachable by the answer it is
+/// waiting for, however many siblings hold permits.
+const MAX_INFLIGHT_HANDLERS: usize = 256;
+
 /// The two callbacks a plane supplies to bind this transport. The transport is generic over the
 /// concrete implementor, so there is no boxing on the hot per-frame path; the implementor is shared
 /// across concurrent handlers, hence `Send + Sync + 'static`.
@@ -180,6 +190,10 @@ struct Shared {
     inflight: Mutex<HashMap<u64, Option<tokio::task::AbortHandle>>>,
     /// The private sequence behind the `inflight` keys.
     next_inflight: AtomicU64,
+    /// THIS SESSION'S handler permits — [`MAX_INFLIGHT_HANDLERS`] of them. A permit is taken before
+    /// the handler is spawned and released when it finishes, so the reader parks on a saturated
+    /// session rather than spawning into it, and the flood lands back on the peer's own transport.
+    handlers: Arc<tokio::sync::Semaphore>,
 }
 
 /// THE PLUGGABLE WRITE HALF — one outbound frame in, framed onto the wire however the bound transport
@@ -241,6 +255,7 @@ fn new_shared(sink: Box<dyn FrameSink>) -> Arc<Shared> {
         next_ref: AtomicU64::new(1),
         inflight: Mutex::new(HashMap::new()),
         next_inflight: AtomicU64::new(0),
+        handlers: Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_HANDLERS)),
     })
 }
 
@@ -248,7 +263,7 @@ fn new_shared(sink: Box<dyn FrameSink>) -> Arc<Shared> {
 /// handler; everything else is handled concurrently under a private key so it clears itself on
 /// completion and the EOF path can abort whatever remains. Shared by both entry points so the
 /// correlation contract is written once, regardless of framing.
-fn dispatch_frame<P: DuplexPlane>(
+async fn dispatch_frame<P: DuplexPlane>(
     shared: &Arc<Shared>,
     handle: &DuplexHandle,
     plane: &Arc<P>,
@@ -262,6 +277,13 @@ fn dispatch_frame<P: DuplexPlane>(
         // the transport has nothing to answer it with.
         return;
     }
+    // TAKE A HANDLER PERMIT FIRST. On a saturated session this parks the reader, which stops reading
+    // the socket and puts the backlog back on the peer's transport — the one place it can be held
+    // without costing this node anything. The permit rides into the task and is released when the
+    // handler finishes or is aborted. `Err` is a closed semaphore, which nothing here ever does.
+    let Ok(permit) = shared.handlers.clone().acquire_owned().await else {
+        return;
+    };
     let key = shared.next_inflight.fetch_add(1, Ordering::Relaxed);
     // RESERVE the slot before the handler exists. The dispatcher runs on the reader's thread and the
     // handler on the runtime's, so a handler that finishes first would otherwise clear a key not yet
@@ -272,6 +294,7 @@ fn dispatch_frame<P: DuplexPlane>(
     let handle = handle.clone();
     let for_cleanup = shared.clone();
     let running = tokio::spawn(async move {
+        let _permit = permit;
         plane.handle(frame, handle).await;
         for_cleanup.inflight.lock().unwrap().remove(&key);
     });
@@ -332,7 +355,7 @@ where
         if buf.iter().all(u8::is_ascii_whitespace) {
             continue; // a blank line is not a frame
         }
-        dispatch_frame(&shared, &handle, &plane, std::mem::take(&mut buf));
+        dispatch_frame(&shared, &handle, &plane, std::mem::take(&mut buf)).await;
     }
     drain_and_flush(&shared).await;
 }
@@ -360,7 +383,7 @@ where
     // One frame per message, no framing to strip. The stream ending (close / dropped sender) is the
     // message-duplex analogue of EOF.
     while let Some(frame) = stream.next().await {
-        dispatch_frame(&shared, &handle, &plane, frame);
+        dispatch_frame(&shared, &handle, &plane, frame).await;
     }
     drain_and_flush(&shared).await;
 }

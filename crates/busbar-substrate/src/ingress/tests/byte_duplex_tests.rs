@@ -123,6 +123,60 @@ async fn mint_is_monotonic_and_never_none() {
     assert!(CallRef::NONE.is_none());
 }
 
+/// A plane whose handlers all PARK: each one records its arrival and then never finishes, so the
+/// number that got in is exactly the number of handler tasks the transport allowed to exist at once.
+struct ParkingPlane {
+    entered: Arc<AtomicU64>,
+}
+
+#[async_trait::async_trait]
+impl DuplexPlane for ParkingPlane {
+    fn classify(&self, _frame: &[u8]) -> Option<CallRef> {
+        None
+    }
+    async fn handle(self: Arc<Self>, _frame: Vec<u8>, _out: DuplexHandle) {
+        self.entered.fetch_add(1, Ordering::Relaxed);
+        std::future::pending::<()>().await;
+    }
+}
+
+/// ONE SESSION'S HANDLERS ARE CAPPED. A peer that floods frames faster than they are handled must not
+/// be able to mint an unbounded number of handler tasks: past the cap the reader PARKS, which is what
+/// puts the flood back on the peer's own transport instead of on this node's memory. Well past the cap
+/// here, so a missing gate shows up as every frame in flight at once.
+#[tokio::test]
+async fn one_session_holds_no_more_handlers_than_its_cap() {
+    use futures::channel::mpsc;
+
+    let entered = Arc::new(AtomicU64::new(0));
+    let plane = Arc::new(ParkingPlane {
+        entered: entered.clone(),
+    });
+
+    let (mut in_tx, in_rx) = mpsc::unbounded::<Vec<u8>>();
+    let (out_tx, _out_rx) = mpsc::unbounded::<Vec<u8>>();
+    let over = MAX_INFLIGHT_HANDLERS + 32;
+    for _ in 0..over {
+        in_tx.send(b"park".to_vec()).await.unwrap();
+    }
+    let _pump = tokio::spawn(serve_messages(in_rx, out_tx, plane));
+
+    // Let every handler the transport is willing to admit get in and park.
+    for _ in 0..50 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        if entered.load(Ordering::Relaxed) as usize >= MAX_INFLIGHT_HANDLERS {
+            break;
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert_eq!(
+        entered.load(Ordering::Relaxed) as usize,
+        MAX_INFLIGHT_HANDLERS,
+        "the session admitted exactly its cap and parked the reader on the rest"
+    );
+}
+
 /// A plane whose handler finishes the instant it is polled — the ordinary shape of a frame answered
 /// from memory, and the one that races the dispatcher's own bookkeeping.
 struct InstantPlane;
@@ -161,7 +215,9 @@ fn a_finished_handler_leaves_the_inflight_registry_empty() {
 
     let _in_runtime = handlers.enter();
     for _ in 0..20_000 {
-        dispatch_frame(&shared, &handle, &plane, b"frame".to_vec());
+        // Driven right here, on the dispatching thread: the only await is the handler permit, and the
+        // handlers themselves run on the runtime entered above.
+        futures::executor::block_on(dispatch_frame(&shared, &handle, &plane, b"frame".to_vec()));
     }
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
