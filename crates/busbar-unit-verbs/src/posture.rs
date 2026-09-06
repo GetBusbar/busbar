@@ -20,7 +20,7 @@
 //! maker-checker state to check either), then dual-control posture.
 
 use crate::refusal::{ReasonCode, Refusal, RefusalStep};
-use crate::verb::{KernelVerb, ADMITTED_UNDER_UNSET, IRREDUCIBLE_VERBS};
+use crate::verb::{KernelVerb, ADMITTED_UNDER_UNSET, IRREDUCIBLE_VERBS, READ_ONLY_NEW_VERBS};
 
 /// Whether the operator-key ceremony (`busbar operator keygen` + `set_operator_key`) has run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +101,14 @@ pub fn check_dual_control(
     approval: ApprovalState,
 ) -> Result<(), Refusal> {
     if verb == KernelVerb::Approve {
+        return Ok(());
+    }
+    // Maker-checker is scoped to MUTATING verbs, and two of the seventeen are not: `verify` and
+    // `plane_facts` are bound `GET`. A read has no pending mutation, so there is nothing a checker
+    // could ever approve for it — holding one here does not delay it, it refuses it for as long as
+    // the posture stands, and `verify` is the check an operator runs to find out what state the
+    // fleet is in.
+    if READ_ONLY_NEW_VERBS.contains(&verb) {
         return Ok(());
     }
     if dual_control == DualControl::Single {
