@@ -195,7 +195,9 @@ impl AuthChain {
             // The cache key is the PROVIDER name, not the module's self-reported name: two named
             // providers backed by one module are different verifiers with different settings, so a
             // shared row would let one provider's verdict admit the other's credential.
-            let outcome = match cache_here.and_then(|(c, cred)| c.get(provider, cred, now)) {
+            let hit = cache_here.and_then(|(c, cred)| c.get(provider, cred, now));
+            let was_hit = hit.is_some();
+            let outcome = match hit {
                 Some(hit) => hit,
                 None => {
                     let o = entry.module.authenticate(candidate);
@@ -211,7 +213,11 @@ impl AuthChain {
                         for name in &pending_pass {
                             c.put(name, cred, &AuthOutcome::Pass, now, g);
                         }
-                        if cache_here.is_some() {
+                        // Only a MISS commits, the way the buffered passes above already do. A hit
+                        // re-inserted here would reset the row's expiry on every request, so a
+                        // credential used more often than its own TTL would never be re-verified
+                        // against its module and an upstream revocation would never land.
+                        if cache_here.is_some() && !was_hit {
                             c.put(
                                 provider,
                                 cred,
