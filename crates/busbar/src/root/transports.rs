@@ -192,6 +192,88 @@ pub fn provision_servers(
     Ok(provisioned)
 }
 
+/// The deployment's own secret references, at the width the transport-key unit asks for.
+///
+/// The unit resolves a LOCATION, which is an opaque string it never interprets — that is the whole
+/// point of the seam, and it is why a file path, a vault reference and a cloud secret name are all
+/// the same kind of thing to it. What a deployment actually holds is a typed `SecretRef` with its
+/// own grammar, so something has to sit between the two, and the root is the only thing that has
+/// both.
+///
+/// The locations are the CONFIG PATHS the references were written at (`tls.cert`, `admin_tls.key`)
+/// rather than any rendering of the references themselves. That is deliberate on both sides: the
+/// unit gets a stable opaque token, and the journal entry the unit writes names where an operator
+/// declared the secret rather than anything derived from what the secret is.
+pub struct ConfiguredSecrets<'a> {
+    resolver: &'a dyn busbar_api::SecretResolve,
+    refs: std::collections::BTreeMap<String, busbar_api::SecretRef>,
+}
+
+impl<'a> ConfiguredSecrets<'a> {
+    /// Bind a resolver and the references this boot may resolve through it.
+    ///
+    /// The map is the whole permission: a location that is not in it resolves to nothing, so the
+    /// transport-key unit cannot reach a secret the root did not put in front of it.
+    #[must_use]
+    pub fn new(
+        resolver: &'a dyn busbar_api::SecretResolve,
+        refs: std::collections::BTreeMap<String, busbar_api::SecretRef>,
+    ) -> Self {
+        ConfiguredSecrets { resolver, refs }
+    }
+}
+
+impl SecretSource for ConfiguredSecrets<'_> {
+    fn resolve(&self, location: &str) -> Result<Vec<u8>, String> {
+        let reference = self
+            .refs
+            .get(location)
+            .ok_or_else(|| format!("no secret is declared at {location}"))?;
+        self.resolver.resolve(reference)
+    }
+}
+
+/// The `Access` entries the transport-key unit writes, on the node's own journal.
+///
+/// One entry per secret ACTUALLY READ, written by the unit and not by the provisioning function,
+/// which is what keeps the journal a record of reads rather than a record of intentions. It goes on
+/// the node's one chain for the same reason every other record does: a read of the deployment's
+/// private key has a POSITION relative to the postings around it, and an auditor asking when the key
+/// was last read should not have to correlate two clocks to find out.
+///
+/// A journal that will not take the entry is not a boot refusal. The read has already happened by
+/// then — refusing after the fact would not un-read it — and a node that would not boot because it
+/// could not record a boot-time read is a node that stops serving for a reason unrelated to serving.
+pub struct BookAccessJournal<'a> {
+    book: &'a std::sync::Mutex<crate::root::durability::Durability>,
+    token: &'a busbar_caps::DurabilityToken,
+}
+
+impl<'a> BookAccessJournal<'a> {
+    /// Write this boot's access entries onto `book`.
+    #[must_use]
+    pub fn new(
+        book: &'a std::sync::Mutex<crate::root::durability::Durability>,
+        token: &'a busbar_caps::DurabilityToken,
+    ) -> Self {
+        BookAccessJournal { book, token }
+    }
+}
+
+impl AccessJournal for BookAccessJournal<'_> {
+    fn record_access(&self, location: &str, purpose: busbar_unit_transport_key::AccessPurpose) {
+        let mut body = busbar_unit_wal::BodyWriter::new();
+        body.text(location);
+        body.text(purpose.as_str());
+        let entry =
+            busbar_unit_wal::Entry::new(busbar_unit_wal::RecordClass::Access, body.finish());
+        let mut durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = durability
+            .journal
+            .append(self.token, busbar_caps::StepName::Arrival, &[entry]);
+    }
+}
+
 /// One listener's configuration, as the transport reads it.
 ///
 /// A transport is handed a view rather than the deployment's configuration object, because the one
