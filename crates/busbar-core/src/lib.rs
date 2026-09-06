@@ -250,7 +250,8 @@ mod tests;
 
 pub use appbuild::{
     build_app_from_config, inert_durable_keys_banner, load_config_from_disk, open_relay_banner,
-    resolve_model_context_max, GovCredentialRotation, LoadedConfig, DEFAULT_CONFIG_PATH,
+    resolve_model_context_max, GovCredentialRotation, InstalledLimits, LoadedConfig,
+    DEFAULT_CONFIG_PATH,
     ENV_CONFIG, ENV_PROVIDERS,
 };
 pub use preflight::{
