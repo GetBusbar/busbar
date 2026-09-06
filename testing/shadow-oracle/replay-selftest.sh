@@ -30,6 +30,8 @@
 #       makes the matching case here go green-when-it-should-be-red, i.e. RED in this selftest.
 #   (w) EVERY script driver's give-up path carries effects.harness_error when it fails with a
 #       non-negative status -> record.sh cannot write a PASS row over a harness failure
+#   (x) no script driver steps a wall clock into effects (effects.script rates every such key
+#       MONEY, so an epoch second there is a permanent divergence about nothing)
 #   (r) diff-cells.py --strict --id-filter used directly as a subset gate (land.sh's shape):
 #       a filter that selects a diverging cell exits 1, and a filter that selects NOTHING also
 #       exits 1 — a subset gate that compared zero cells has proven nothing
@@ -390,6 +392,22 @@ done
 [ -z "$missing_he" ] \
   && say PASS "every script driver that fails with a non-negative status marks it harness_error" \
   || say FAIL "script driver(s) fail with a non-negative status and NO harness_error, so record.sh writes a PASS row over a harness failure:${missing_he}"
+
+# (x) A DRIVER MUST NOT PUT A WALL CLOCK IN `effects`. Since diff-cells.py grew `effects.script`,
+# EVERY effects key a driver writes is compared, and rated MONEY. A raw `date +%s` (or a store column
+# holding one) stepped into effects therefore differs on every single replay by construction — the
+# golden was recorded at one instant and the candidate runs at another — and normalize.py cannot save
+# it: its TS_KEYS rewrite is an EXACT key-name match on an int/float, and `step` writes strings under
+# names of the driver's own choosing (`now_at_edit`, `expires_at_after_edit`). The result is a
+# permanent, unforgivable-except-as-`breaking` divergence on a cell about nothing.
+clock_in_eff=""
+for f in "$sd"/*.sh; do
+  grep -Eq '^[[:space:]]*step[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+"\$\((date|python3 -c .import time)' "$f" \
+    && clock_in_eff="${clock_in_eff} $(basename "$f")"
+done
+[ -z "$clock_in_eff" ] \
+  && say PASS "no script driver steps a wall clock straight into effects (money-rated by effects.script)" \
+  || say FAIL "script driver(s) step a raw wall clock into effects, which effects.script now compares as MONEY on every replay:${clock_in_eff}"
 
 echo
 [ "$fails" -eq 0 ] && echo "replay selftest: GREEN" || { echo "replay selftest: RED ($fails)"; exit 1; }
