@@ -769,23 +769,36 @@ async fn a_handoff_from_an_undeclared_layer_is_a_mismatch() {
     assert_eq!(err, TransportError::HandoffMismatch);
 }
 
+/// A refusal is the last thing this transport says on a connection: the peer is told, and then the
+/// connection is finalised. Both halves are the claim — a refusal that wrote its bytes and left the
+/// connection live is one the kernel would go on being handed frames for.
 #[tokio::test]
 async fn unit0_refusal_writes_then_closes() {
     let t = WsTransport::new();
     let (a, b) = pair(&t, 4096).await;
-    let refusal = busbar_contract::unit::Refusal {
-        step: busbar_contract::unit::Step::Arrival,
-        reason: busbar_contract::unit::RefusalReason::CursorBudget,
-        retry_after_secs: None,
-        stream: None,
-        correlates: None,
-    };
+    let id = a.id();
+    // A pump already live on the refused end, holding its own clone of the connection state.
+    let mut refused_side = t.frames(a.clone());
+    let refusal = test_refusal();
+
     t.unit0_refusal(a, None, &refusal, ArenaBytes::new(b"refused"))
         .await
         .unwrap();
+
+    // The peer is told, byte-exact.
     let mut frames = t.frames(b);
     let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), b"refused");
+
+    // And the connection is over: the pump ends and the registry no longer knows it.
+    assert!(
+        refused_side.next().await.is_none(),
+        "a refused connection's frame stream must end"
+    );
+    assert!(
+        t.state_of(id).is_none(),
+        "a refusal finalises the connection, the way a close does"
+    );
 }
 
 /// A refusal that never reached the peer is not a refusal. It is the only answer the far side will
