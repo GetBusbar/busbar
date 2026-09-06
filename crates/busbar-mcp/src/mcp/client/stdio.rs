@@ -747,10 +747,19 @@ async fn read_capped_line(
 pub(crate) struct ChildSlot {
     supervisor: Supervisor,
     child: Option<StdioChild>,
-    /// The recipe the live child was ACTUALLY spawned with, so an operator's edit to `command:` is
-    /// noticed. Without it a config apply would leave the old binary serving under the new
-    /// registration — the change would appear to have been made and would not have been.
-    spawned_with: Option<StdioCommand>,
+    /// The recipe this slot last ATTEMPTED, so an operator's edit to `command:` is noticed. Without
+    /// it a config apply would leave the old binary serving under the new registration — the change
+    /// would appear to have been made and would not have been.
+    ///
+    /// ATTEMPTED, NOT SPAWNED, and the distinction is the whole re-approval story. This held the
+    /// recipe a child was successfully spawned with, which is written only on a spawn that WORKED —
+    /// so the one failure mode guaranteed to quarantine a slot without ever producing a process (a
+    /// typo'd program, a missing interpreter, a permission error) left it unset, the "has the
+    /// operator changed the recipe?" comparison could never fire, and the breaker's documented
+    /// remedy could not be performed on the slot that needs it most. Recording the ATTEMPT makes the
+    /// comparison answer the question it is actually asking: is the operator's recipe still the one
+    /// that produced this slot's state?
+    attempted_with: Option<StdioCommand>,
 }
 
 impl ChildSlot {
@@ -758,7 +767,7 @@ impl ChildSlot {
         Self {
             supervisor: Supervisor::spawning(RestartPolicy::default()),
             child: None,
-            spawned_with: None,
+            attempted_with: None,
         }
     }
 
@@ -1046,14 +1055,20 @@ impl StdioWire {
         // operator naming THIS child and saying they have fixed it. It fires only when the recipe
         // itself differs, so touching an unrelated key does not re-arm a fork bomb — which is the
         // property that would be lost by resetting on every apply.
+        //
+        // The comparison is against the last ATTEMPT, not the last successful spawn. A recipe that
+        // never produced a process — a typo'd program, a missing interpreter, a permission error —
+        // is precisely the one that quarantines a slot, and recording it only on success meant the
+        // slot in quarantine had nothing to compare against and the edit could not be seen. The
+        // refusal names re-approval as the way out, so this is what makes that sentence true.
         if slot
-            .spawned_with
+            .attempted_with
             .as_ref()
             .is_some_and(|previous| previous != cmd)
         {
             slot.supervisor.drain();
             slot.child = None;
-            slot.spawned_with = None;
+            slot.attempted_with = None;
             slot.supervisor.reset();
         }
 
@@ -1063,10 +1078,13 @@ impl StdioWire {
             slot.supervisor
                 .may_restart(now_ms())
                 .map_err(|r| TransportError::Supervision(r.to_string()))?;
+            // RECORDED BEFORE THE SPAWN, so a recipe that fails to start is still the recipe this
+            // slot's state was produced by — see the field's own note for why recording it after a
+            // successful spawn made a quarantine unreopenable.
+            slot.attempted_with = Some(cmd.clone());
             match StdioChild::spawn(cmd).await {
                 Ok(child) => {
                     slot.child = Some(child);
-                    slot.spawned_with = Some(cmd.clone());
                     // The pipes are open and the reader is this task, so the child is dispatchable.
                     // The FIRST call is the readiness probe: a program that exits immediately fails
                     // that call and lands on the crash arm below, which is where a child that
