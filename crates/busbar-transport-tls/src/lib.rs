@@ -254,7 +254,7 @@ impl TlsTransport {
                 // transport really does read off the presented certificate.
                 subject: "peer".to_string(),
                 issuer: "peer".to_string(),
-                fingerprint: format!("{:x?}", ring_fingerprint(c.as_ref())),
+                fingerprint: hex_lower(&ring_fingerprint(c.as_ref())),
             })
         });
         let (read, write) = tokio::io::split(stream);
@@ -298,7 +298,7 @@ impl TlsTransport {
                 // transport really does read off the presented certificate.
                 subject: "peer".to_string(),
                 issuer: "peer".to_string(),
-                fingerprint: format!("{:x?}", ring_fingerprint(c.as_ref())),
+                fingerprint: hex_lower(&ring_fingerprint(c.as_ref())),
             })
         });
         let (read, write) = tokio::io::split(stream);
@@ -364,6 +364,21 @@ impl busbar_unit_transport_key::TlsConfigSink for TlsTransport {
 fn ring_fingerprint(der: &[u8]) -> Vec<u8> {
     use ring::digest;
     digest::digest(&digest::SHA256, der).as_ref().to_vec()
+}
+
+/// A digest rendered the way every other tool renders one: lowercase hex, two characters per byte.
+///
+/// The debug formatter this used to go through prints a Rust slice — brackets, commas, spaces, and
+/// single-digit bytes with no leading zero. Nothing an operator has can compare that to the output
+/// of `openssl x509 -fingerprint`, and the missing zeroes mean it is not even a stable rendering of
+/// the digest: `0a` and `a` are the same byte spelled two different ways.
+fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
 }
 
 impl Plugin for TlsTransport {
@@ -704,6 +719,7 @@ impl Transport for TlsTransport {
         let inner = self.conns.lock().expect("poisoned").remove(&conn.id());
         if let Some(inner) = inner {
             inner.finalise();
+            shut_down_session(inner);
         }
     }
 
@@ -732,6 +748,9 @@ impl Transport for TlsTransport {
             let removed = self.conns.lock().expect("poisoned").remove(&conn.id());
             if let Some(removed) = removed {
                 removed.finalise();
+                // Inline here: this path is already async, so the alert goes out before the refusal
+                // reports done rather than on a task the caller cannot wait for.
+                send_close_notify(&removed).await;
             }
             Ok(())
         })
@@ -755,9 +774,12 @@ fn split_address(
         .map_err(|_| TransportError::AddressRefused)?;
     match address.sni() {
         Some(name) => Ok((name, addr)),
-        None if addr.is_ipv4() || addr.is_ipv6() => {
+        None => {
             // No name declared: the literal the authority already spells, without its port, is the
-            // only name this transport can offer without inventing one.
+            // only name this transport can offer without inventing one. There is no other arm to
+            // take — a `SocketAddr` is v4 or v6 and nothing else, so the guard this used to carry
+            // asked a question with one answer, and the refusal behind it was unreachable. The
+            // parse above is what refuses an authority that names no address.
             let host_part = authority
                 .rsplit_once(':')
                 .map_or(authority, |(h, _)| h)
@@ -765,7 +787,36 @@ fn split_address(
                 .trim_end_matches(']');
             Ok((host_part, addr))
         }
-        None => Err(TransportError::AddressRefused),
+    }
+}
+
+/// Send the TLS `close_notify` alert this session's peer is owed, then let the halves drop.
+///
+/// Dropping a rustls stream without the alert is an ABRUPT close: the peer's own rustls reports
+/// `UnexpectedEof` rather than a clean end of stream, because that is exactly what a truncation
+/// attack looks like from the inside — and a peer that cannot tell a deliberate close from a
+/// truncated one has to treat every close as suspect. This transport knows which one this is, so
+/// it says so.
+async fn send_close_notify(inner: &Inner) {
+    let mut guard = inner.write.lock().await;
+    match &mut *guard {
+        InnerWrite::Server(w) => {
+            let _ = w.shutdown().await;
+        }
+        InnerWrite::Client(w) => {
+            let _ = w.shutdown().await;
+        }
+    }
+}
+
+/// [`send_close_notify`] from `close`, which the trait makes synchronous.
+///
+/// The alert is a write, and a write is async; the only place to put it is a task. Where there is
+/// no runtime to spawn one on — a caller closing outside an async context — the halves drop as they
+/// did before, which is the abrupt close rather than a panic.
+fn shut_down_session(inner: Arc<Inner>) {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(async move { send_close_notify(&inner).await });
     }
 }
 

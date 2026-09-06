@@ -72,6 +72,52 @@ fn self_signed() -> (Arc<rustls::ServerConfig>, Arc<rustls::ClientConfig>) {
     (Arc::new(server_cfg), Arc::new(client_cfg))
 }
 
+/// What the fingerprint of a certificate IS, computed here rather than borrowed from the crate:
+/// the SHA-256 of its DER bytes, lowercase, two hex characters per byte. Every other tool an
+/// operator has — `openssl x509 -fingerprint -sha256`, a browser's certificate viewer, a pinning
+/// list — spells it this way, and a rendering they cannot compare against is a fact they cannot
+/// use. Building the expectation from the same formatter the transport uses would assert only that
+/// the code agrees with itself.
+fn expected_fingerprint(der: &[u8]) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, der);
+    digest
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
+}
+
+/// The rendering is the operator-facing one, so it is asserted directly and not only through the
+/// comparisons above: 64 lowercase hex characters, every byte zero-padded. The debug formatter this
+/// used to go through printed a Rust slice — brackets, commas, and single-digit bytes with no
+/// leading zero, so `0a` and `a` were the same byte spelled two ways.
+#[tokio::test]
+async fn a_certificate_fingerprint_is_the_sha256_of_its_der_in_lowercase_hex() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let _server_conn = accept_fut.await.unwrap();
+
+    let fp = client
+        .arrival(&client_conn)
+        .peer_cert
+        .expect("the handshake presented a certificate")
+        .fingerprint;
+    assert_eq!(fp.len(), 64, "a SHA-256 is 32 bytes, two characters each");
+    assert!(
+        fp.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "lowercase hex and nothing else: {fp}"
+    );
+}
+
 fn upstream_dest(addr: &str) -> busbar_contract::VerifiedDestination {
     let host: &'static str = Box::leak(addr.to_string().into_boxed_str());
     busbar_contract::VerifiedDestination::seal(
@@ -197,10 +243,10 @@ async fn half_close_and_cancel_mid_frame() {
     let mut frames = server.frames(server_conn.clone());
     let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), b"bye");
-    // TLS half-close: dropping the client side without a `close_notify` alert is exactly what
-    // this crate's `close()` does (it never sends one), so rustls reports the abrupt EOF as an
-    // error rather than a clean end-of-stream — unlike plain `tcp`, where the same drop is a
-    // silent EOF. Either shape ends the stream with no further data, which is the cell's point.
+    // TLS half-close. `close()` sends the `close_notify` alert before the halves drop, so the
+    // clean end-of-stream is what the peer should see; the error arm stays because the alert goes
+    // out on a task and this cell does not order itself against it. Either shape ends the stream
+    // with no further data, which is this cell's point — the alert has a cell of its own.
     match frames.next().await {
         None => {}
         Some(Err(_)) => {}
@@ -232,6 +278,43 @@ async fn half_close_and_cancel_mid_frame() {
     let mut frames2 = server2.frames(server_conn2);
     let (_s, frame) = frames2.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), b"still alive");
+}
+
+/// A rustls stream dropped without its `close_notify` alert is an ABRUPT close, and the peer's own
+/// rustls reports it as `UnexpectedEof` — because that is exactly what a truncation attack looks
+/// like from the inside. A peer that cannot tell a deliberate close from a truncated one has to
+/// treat every close as suspect. This transport knows which one this is, so it says so.
+#[tokio::test]
+async fn a_close_sends_the_alert_the_peer_is_owed() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    server
+        .write(&server_conn, StreamId(0), ArenaBytes::new(b"last word"))
+        .await
+        .unwrap();
+    let mut client_frames = client.frames(client_conn);
+    let (_s, frame) = client_frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"last word");
+
+    server.close(server_conn, CloseReason::Normal);
+    let ended = tokio::time::timeout(Duration::from_secs(5), client_frames.next())
+        .await
+        .expect("the peer's stream ends rather than parking");
+    assert!(
+        ended.is_none(),
+        "the peer sees a clean end of stream, not the error rustls reports for a truncated one: \
+         {ended:?}"
+    );
 }
 
 #[tokio::test]
@@ -666,15 +749,64 @@ async fn with_no_declared_name_the_address_itself_stands_in() {
 async fn every_reserved_key_this_transport_publishes_is_declared() {
     use busbar_contract_transport::registry::facts;
 
-    let (server, listener, client) = bound_pair().await;
+    // The connection is built so all three keys are actually FILLED. A default pair offers no ALPN
+    // and declares no name, so both come back None and the check below covers only the peer key —
+    // it would pass on a transport that had started publishing an undeclared SNI or ALPN fact.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let (base_server, base_client) = self_signed();
+    let mut server_cfg = (*base_server).clone();
+    server_cfg.alpn_protocols = vec![b"busbar/1".to_vec()];
+    let mut client_cfg = (*base_client).clone();
+    client_cfg.alpn_protocols = vec![b"busbar/1".to_vec()];
+
+    let server = StdArc::new(TlsTransport::new());
+    server.register_server_config(0, Arc::new(server_cfg));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = server.listen(&cfg, &fixture_key(0)).await.unwrap();
+    let client = StdArc::new(TlsTransport::new());
+    client.register_client_config(0, Arc::new(client_cfg));
+
     let addr = listener.local_addr();
     let key0 = fixture_key(0);
     let accept_fut = tokio::spawn({
         let server = server.clone();
         async move { server.accept(&listener).await }
     });
-    let dialled = client.dial(&upstream_dest(&addr), &key0).await.unwrap();
+    let leaked: &'static str = Box::leak(addr.into_boxed_str());
+    let named = busbar_contract::VerifiedDestination::seal(
+        &FixtureSeal,
+        busbar_contract::DestinationFacts::Upstream {
+            transport: "tls",
+            address: busbar_contract_transport::dest::UpstreamAddress::Socket {
+                authority: leaked,
+                sni: Some("localhost"),
+            },
+            lane: busbar_contract::LaneId::new("test"),
+        },
+        "tls",
+        None,
+    );
+    let dialled = client.dial(&named, &key0).await.unwrap();
     let accepted = accept_fut.await.unwrap().unwrap();
+
+    // The premise of the check: all three facts are really present on this pair.
+    let served = server.arrival(&accepted);
+    assert_eq!(
+        served.sni.as_deref(),
+        Some("localhost"),
+        "the SNI key is filled"
+    );
+    assert_eq!(
+        served.alpn.as_deref(),
+        Some("busbar/1"),
+        "the ALPN key is filled"
+    );
+    assert!(
+        client.arrival(&dialled).peer_cert.is_some(),
+        "the peer-certificate key is filled"
+    );
 
     let mut published: Vec<&'static str> = Vec::new();
     for (transport, conn) in [(server.as_ref(), &accepted), (client.as_ref(), &dialled)] {
@@ -785,8 +917,8 @@ async fn accept_serves_the_slot_the_listener_was_provisioned_with() {
         .fingerprint
         .clone();
 
-    let fp_0 = format!("{:x?}", ring_fingerprint(&cert_0_der));
-    let fp_7 = format!("{:x?}", ring_fingerprint(&cert_7_der));
+    let fp_0 = expected_fingerprint(&cert_0_der);
+    let fp_7 = expected_fingerprint(&cert_7_der);
     assert_eq!(
         served_fp, fp_7,
         "accept served the slot-7 certificate, byte for byte"
@@ -1000,9 +1132,9 @@ mod cg_49_sni {
             server,
             listener,
             addr,
-            fp_a: format!("{:x?}", ring_fingerprint(&der_a)),
-            fp_b: format!("{:x?}", ring_fingerprint(&der_b)),
-            fp_default: format!("{:x?}", ring_fingerprint(&der_d)),
+            fp_a: expected_fingerprint(&der_a),
+            fp_b: expected_fingerprint(&der_b),
+            fp_default: expected_fingerprint(&der_d),
             client_a,
             client_b,
             journal,
@@ -1201,7 +1333,6 @@ async fn no_selector_form_is_advertised_that_the_certificate_facts_cannot_serve(
         !cert.fingerprint.is_empty(),
         "the fingerprint is the fact this transport really does read"
     );
-    let subject_is_a_placeholder = cert.subject == "peer" && cert.issuer == "peer";
 
     let forms = <TlsTransport as TransportMeta>::SELECTOR_FORMS;
     assert!(
@@ -1212,12 +1343,21 @@ async fn no_selector_form_is_advertised_that_the_certificate_facts_cannot_serve(
         forms.contains(&busbar_contract::SelectorForm::Alpn),
         "the forms this transport does serve stay declared"
     );
-    if subject_is_a_placeholder {
-        assert!(
-            !forms.contains(&busbar_contract::SelectorForm::ClientCertSubject),
-            "a distinguished name this transport never parses must not be advertised as a form it selects on"
-        );
-    }
+    // Unconditional: the form is absent because this transport does not parse a distinguished
+    // name, full stop. Guarding the assertion on the placeholder made it vacuous the moment the
+    // placeholder changed — the day someone wrote a real subject without writing a real parser,
+    // the check would have gone quiet rather than gone red.
+    assert!(
+        !forms.contains(&busbar_contract::SelectorForm::ClientCertSubject),
+        "a distinguished name this transport never parses must not be advertised as a form it selects on"
+    );
+    // And the placeholder is its own fact, asserted separately: the subject and issuer are the
+    // stand-ins the doc says they are, so nothing downstream can read a real name out of them.
+    assert_eq!(
+        (cert.subject.as_str(), cert.issuer.as_str()),
+        ("peer", "peer"),
+        "the subject is a placeholder, and the form above stays off the row until it is not"
+    );
 }
 
 /// The read buffer is per-connection and reused across polls, so the byte-exactness cell has a new
