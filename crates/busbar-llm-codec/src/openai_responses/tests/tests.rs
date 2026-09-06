@@ -7435,3 +7435,107 @@ fn response_object_function_arguments_preserved() {
     assert_eq!(input.get("city").and_then(|v| v.as_str()), Some("SF"));
     assert_eq!(input.get("unit").and_then(|v| v.as_str()), Some("c"));
 }
+
+/// The writer's four per-item accumulators (`tool_calls`, `text_accum`, `citation_accum`,
+/// `reasoning_accum`) grow one entry per distinct block index a backend streams. Nothing bounded
+/// that COUNT, so an upstream emitting an unbounded run of distinct indices grew four maps for the
+/// life of the connection — per-connection memory amplification. `mark_tool_open` already refuses
+/// past `MAX_OPEN_TOOLS`; the accumulators must hold the same line.
+#[test]
+fn writer_accumulators_are_bounded_in_entry_count() {
+    let writer = ResponsesWriter;
+    let citation = crate::ir::IrCitation {
+        kind: Some("web_search_result_location".to_string()),
+        cited_text: None,
+        title: None,
+        url: Some("https://example.invalid/a".to_string()),
+        document_index: None,
+        start_index: None,
+        end_index: None,
+        encrypted_index: None,
+        raw: None,
+    };
+    for index in 0..(MAX_OPEN_TOOLS + 50) {
+        writer.append_tool_arguments(index, "{}");
+        writer.append_text(index, "hi");
+        writer.append_citations(index, std::slice::from_ref(&citation));
+        writer.append_reasoning(index, "why");
+    }
+
+    assert!(
+        writer.tool_calls.lock().unwrap().len() <= MAX_OPEN_TOOLS,
+        "tool_calls grew past the cap: {}",
+        writer.tool_calls.lock().unwrap().len()
+    );
+    assert!(
+        writer.text_accum.lock().unwrap().len() <= MAX_OPEN_TOOLS,
+        "text_accum grew past the cap: {}",
+        writer.text_accum.lock().unwrap().len()
+    );
+    assert!(
+        writer.citation_accum.lock().unwrap().len() <= MAX_OPEN_TOOLS,
+        "citation_accum grew past the cap: {}",
+        writer.citation_accum.lock().unwrap().len()
+    );
+    assert!(
+        writer.reasoning_accum.lock().unwrap().len() <= MAX_OPEN_TOOLS,
+        "reasoning_accum grew past the cap: {}",
+        writer.reasoning_accum.lock().unwrap().len()
+    );
+    // The cap must not be so eager that it starves an ordinary stream: everything up to it is kept.
+    assert_eq!(
+        writer.text_accum.lock().unwrap().len(),
+        MAX_OPEN_TOOLS,
+        "the cap admits exactly MAX_OPEN_TOOLS distinct items"
+    );
+}
+
+/// A single tool-call `arguments` accumulator must also stop growing at the operator's translate-body
+/// cap — one open index fed an unbounded run of fragments was previously unbounded in BYTES. Stopping
+/// (not slicing) leaves an accumulation that fails to parse, which degrades to the writer's
+/// established empty-arguments fallback; `output_item.done` still emits a well-formed item.
+#[test]
+fn writer_tool_arguments_stop_growing_at_the_translate_cap() {
+    let cap = busbar_substrate_values::proxy::max_translate_body_bytes();
+    let writer = ResponsesWriter;
+    writer.record_tool_meta(0, "call_x", "lookup");
+    writer.mark_tool_open(0);
+    writer.append_tool_arguments(0, "{\"blob\":\"");
+    let fragment = "a".repeat(1024 * 1024);
+    for _ in 0..((cap / fragment.len()) + 8) {
+        writer.append_tool_arguments(0, &fragment);
+    }
+    {
+        let map = writer.tool_calls.lock().unwrap();
+        let args = &map.get(&0).expect("the open tool accumulates").arguments;
+        assert!(
+            args.len() <= cap,
+            "the arguments accumulator must never exceed the translate cap ({cap}), got {}",
+            args.len()
+        );
+        assert!(
+            args.len() + fragment.len() > cap,
+            "the test must actually have driven the buffer up TO the cap, got {}",
+            args.len()
+        );
+    }
+
+    // The item still closes cleanly: a well-formed `output_item.done` naming the call.
+    let frames = writer.write_response_events(&crate::ir::IrStreamEvent::BlockStop { index: 0 });
+    let done = frames
+        .iter()
+        .find(|(et, _)| et == "response.output_item.done")
+        .map(|(_, d)| d)
+        .expect("BlockStop on an open tool item emits output_item.done");
+    assert_eq!(
+        done.pointer("/item/name").and_then(|v| v.as_str()),
+        Some("lookup"),
+        "the finalized item keeps the call's name: {done}"
+    );
+    assert!(
+        done.pointer("/item/arguments")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "the finalized item still carries an arguments string: {done}"
+    );
+}

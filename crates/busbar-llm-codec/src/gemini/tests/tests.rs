@@ -6722,3 +6722,27 @@ fn gemini_schema_ref_flat_chain_depth_is_capped() {
         "chained refs must be depth-capped, got depth {depth}"
     );
 }
+
+/// The writer's `open_tools` accumulator grows one entry per distinct tool-block index a backend
+/// opens, and lives for the whole stream. The per-block byte cap bounds how LARGE one entry grows;
+/// nothing bounded how MANY there were, so an upstream streaming an unbounded run of distinct tool
+/// indices could grow the Vec until the process is OOM-killed. It must hold the same
+/// `MAX_GEMINI_TOOL_FRAMES` line the reader's `open_tools` does.
+#[test]
+fn test_writer_open_tools_capped_in_entry_count() {
+    let writer = GeminiWriter;
+    for index in 0..(MAX_GEMINI_TOOL_FRAMES + 50) {
+        writer.write_response_event(&IrStreamEvent::BlockStart {
+            index,
+            block: IrBlockMeta::ToolUse {
+                id: String::new(),
+                name: "t".to_string(),
+            },
+        });
+    }
+    let held = writer.open_tools.lock().unwrap().len();
+    assert_eq!(
+        held, MAX_GEMINI_TOOL_FRAMES,
+        "open_tools must admit exactly the cap and refuse past it, got {held}"
+    );
+}

@@ -833,11 +833,22 @@ impl ProtocolWriter for GeminiWriter {
             IrStreamEvent::BlockStart { index, block } => match block {
                 crate::ir::IrBlockMeta::ToolUse { name, .. } => {
                     if let Ok(mut guard) = self.open_tools.lock() {
+                        let open_count = guard.len();
                         match guard.iter_mut().find(|(idx, _, _)| idx == index) {
                             Some(entry) => {
                                 entry.1 = name.clone();
                                 entry.2.clear();
                             }
+                            // A NEW index is refused once `MAX_GEMINI_TOOL_FRAMES` blocks are
+                            // already open: the per-block byte cap below bounds how large one
+                            // accumulator grows, but nothing bounded how MANY of them a backend
+                            // streaming an unbounded run of distinct tool indices could open, and
+                            // this Vec lives for the whole stream. Same cap, and the same
+                            // stop-recording (not abort) policy, the reader's `open_tools` holds.
+                            // A refused block's argument fragments then find no entry and are
+                            // dropped exactly as an untracked block's already are, so the outcome
+                            // is the established degraded one rather than a new failure mode.
+                            None if open_count >= MAX_GEMINI_TOOL_FRAMES => {}
                             None => guard.push((*index, name.clone(), String::new())),
                         }
                     }
