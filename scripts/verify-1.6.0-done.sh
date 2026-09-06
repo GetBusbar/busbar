@@ -61,7 +61,11 @@
 # FLAGS:
 #   --fast   substitute `cargo build --workspace` for the heavy full-gate battery in the BUILD group
 #            (for a quick progress read); every other group still runs in full. Without it, BUILD runs
-#            the full scripts/full-gate.sh — the real DONE claim.
+#            the full scripts/full-gate.sh — the real DONE claim. A --fast run that comes out clean
+#            reports PROVISIONAL and exits 3, never the DONE banner and never exit 0: the banner and
+#            the exit code are all a wrapper, a CI step or the proof collator ever sees, so a
+#            provisional answer must not be spendable as the real one.
+#   --selftest  prove the verdict itself (the floor, the --fast demotion, red-group handling).
 #
 # bash 3.2 + POSIX, the same bare-runner posture as the sibling gates.
 set -uo pipefail
@@ -73,8 +77,8 @@ ylw()  { printf '\033[33m%s\033[0m\n' "$*"; }
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 hdr()  { printf '\n\033[1m══ %s ══\033[0m\n' "$*"; }
 
-FAST=0
-case "${1:-}" in --fast) FAST=1 ;; "" ) ;; -h|--help) sed -n '2,66p' "$0"; exit 0 ;; *) echo "usage: $0 [--fast]" >&2; exit 2 ;; esac
+FAST=0 SELFTEST=0
+case "${1:-}" in --fast) FAST=1 ;; --selftest) SELFTEST=1 ;; "" ) ;; -h|--help) sed -n '2,66p' "$0"; exit 0 ;; *) echo "usage: $0 [--fast|--selftest]" >&2; exit 2 ;; esac
 
 # Results accumulators (parallel arrays — bash 3.2 has no assoc arrays).
 G_NAME=(); G_STATE=(); G_NOTE=()
@@ -97,6 +101,87 @@ step() {   # $1 = label ; rest = command
   fi
   rm -f /tmp/done-oracle-step.$$
 }
+# ── THE ONE VERDICT, as a function so --selftest can drive it ───────────────────────────────────
+# It used to be a straight-line tail nobody could exercise without running every gate in the file
+# for twenty minutes, which is why both of the defects it now refuses lived in it.
+#
+# THE FLOOR. `fail` starts at 0 and only a group can raise it, so an empty G_NAME — a refactor that
+# moves the group definitions, an early `return` in a sourced fragment — walks straight past the
+# loop and announces DONE having judged nothing. (On bash 3.2, the macOS bare runner this file
+# targets, `${!G_NAME[@]}` on an empty array under `set -u` is a hard error instead; on Linux CI's
+# bash 5 it is silently empty. The floor makes both hosts answer the same way.)
+#
+# --fast IS NOT A DONE CLAIM. It substitutes `cargo build --workspace` for the full ci battery, so
+# the run never executed `clippy -D warnings` or the test tiers the BUILD group's name promises. It
+# said so in one yellow line hundreds of lines earlier and then printed the SAME unqualified DONE
+# banner and the SAME exit 0 as a full run — and the banner and the exit code are all a wrapper
+# script, a CI step or the proof-manifest collator ever sees. A provisional answer must not be
+# spendable as the real one.
+# The floor is the number of begin_group/end_group pairs this file defines (19 today). Raise it
+# with a new group; a run that reports fewer is a run that lost groups, not a run that passed.
+DONE_GROUP_FLOOR="${DONE_GROUP_FLOOR:-19}"
+final_verdict() {
+  local fail=0 green=0 total=0 i
+  if [ "${#G_NAME[@]}" -gt 0 ]; then
+    for i in $(seq 0 $(( ${#G_NAME[@]} - 1 ))); do
+      total=$((total+1))
+      if [ "${G_STATE[$i]}" = "GREEN" ]; then
+        green=$((green+1)); printf '  \033[32m● GREEN\033[0m  %s\n' "${G_NAME[$i]}"
+      else
+        fail=1; printf '  \033[31m● RED  \033[0m  %s   — %s\n' "${G_NAME[$i]}" "${G_NOTE[$i]}"
+      fi
+    done
+  fi
+  printf '\n'
+  bold "  $green / $total groups GREEN"
+  if [ "$total" -lt "$DONE_GROUP_FLOOR" ]; then
+    red "══ busbar 1.6.0 done-oracle: only ${total} group(s) reported, floor is ${DONE_GROUP_FLOOR} — groups went missing, so nothing here is a verdict. ══"
+    return 1
+  fi
+  if [ "$fail" -eq 0 ]; then
+    if [ "$FAST" -eq 1 ]; then
+      ylw "══ busbar 1.6.0: PROVISIONAL — every sub-gate that RAN is green, but --fast substituted"
+      ylw "   'cargo build --workspace' for the full ci battery, so the BUILD group proves much less"
+      ylw "   than its name. Re-run without --fast before calling 1.6.0 done. ══"
+      return 3
+    fi
+    grn "══ busbar 1.6.0 is DONE — every sub-gate is green. ══"
+    return 0
+  fi
+  red "══ busbar 1.6.0 is NOT done — $((total-green)) group(s) RED (see above). This readout is the work queue. ══"
+  return 1
+}
+
+if [ "$SELFTEST" -eq 1 ]; then
+  _st_fails=0
+  _st() {  # _st <label> <want-rc> <want-substring> <fast> <n-green> <n-red>
+    local label="$1" want="$2" needle="$3" fast="$4" ng="$5" nr="$6" out rc j
+    out="$(
+      FAST="$fast"; G_NAME=(); G_STATE=(); G_NOTE=()
+      for j in $(seq 1 "$ng"); do [ "$ng" -eq 0 ] || { G_NAME+=("g$j"); G_STATE+=("GREEN"); G_NOTE+=(""); }; done
+      for j in $(seq 1 "$nr"); do [ "$nr" -eq 0 ] || { G_NAME+=("r$j"); G_STATE+=("RED"); G_NOTE+=("because"); }; done
+      final_verdict; echo "RC=$?"
+    )"
+    rc="${out##*RC=}"
+    if [ "$rc" = "$want" ] && printf '%s' "$out" | grep -q -- "$needle"; then
+      printf 'PASS  %s\n' "$label"
+    else
+      printf 'FAIL  %s (rc=%s want=%s, looked for %s)\n' "$label" "$rc" "$want" "$needle"; _st_fails=$((_st_fails+1))
+    fi
+  }
+  # A --fast run whose groups are all green must NOT be spendable as the DONE claim.
+  _st "--fast + all green -> PROVISIONAL, non-zero"      3 "PROVISIONAL"    1 19 0
+  _st "full run + all green -> DONE, exit 0"             0 "is DONE"        0 19 0
+  _st "--fast + a red group -> NOT done"                 1 "is NOT done"    1 18 1
+  _st "full run + a red group -> NOT done"               1 "is NOT done"    0 18 1
+  # Zero groups is not DONE: nothing raised `fail`, because nothing ran.
+  _st "zero groups -> RED, never DONE"                   1 "floor is"       0 0  0
+  _st "groups went missing (below the floor) -> RED"     1 "floor is"       0 3  0
+  echo
+  [ "$_st_fails" -eq 0 ] && { grn "verify-1.6.0-done selftest: GREEN"; exit 0; }
+  red "verify-1.6.0-done selftest: RED ($_st_fails)"; exit 1
+fi
+
 # A step that is RED simply because an artifact does not exist yet (a not-yet-built sub-gate).
 absent_step() { printf '  \033[31m[RED]\033[0m  %s — NOT PRESENT YET (%s)\n' "$1" "$2"; CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="$1 (absent)"; }
 
@@ -463,20 +548,5 @@ end_group
 
 # ── THE ONE VERDICT ─────────────────────────────────────────────────────────────────────────────
 hdr "1.6.0 DONE-ORACLE READOUT"
-fail=0; green=0; total=0
-for i in "${!G_NAME[@]}"; do
-  total=$((total+1))
-  if [ "${G_STATE[$i]}" = "GREEN" ]; then
-    green=$((green+1)); printf '  \033[32m● GREEN\033[0m  %s\n' "${G_NAME[$i]}"
-  else
-    fail=1; printf '  \033[31m● RED  \033[0m  %s   — %s\n' "${G_NAME[$i]}" "${G_NOTE[$i]}"
-  fi
-done
-printf '\n'
-bold "  $green / $total groups GREEN"
-if [ "$fail" -eq 0 ]; then
-  grn "══ busbar 1.6.0 is DONE — every sub-gate is green. ══"
-  exit 0
-fi
-red "══ busbar 1.6.0 is NOT done — $((total-green)) group(s) RED (see above). This readout is the work queue. ══"
-exit 1
+final_verdict
+exit $?
