@@ -37,6 +37,26 @@ use crate::plane_host::{run_gauntlet_session, GauntletPlane, GauntletRequest};
 /// Deep enough that ordinary jitter between a peer's writes and a plane's reads never touches it.
 pub(crate) const MAX_QUEUED_INBOUND_FRAMES: usize = 64;
 
+/// The largest inbound WS message (and single frame) this acceptor will take, in bytes.
+///
+/// A frame bound is a different defence from the queue bound above and neither substitutes for the
+/// other: the queue caps how MANY frames may wait, this caps how BIG one of them may be, and without
+/// it a peer needs a single message to make the socket's own reassembly buffer as large as it likes —
+/// the counted-frames bound never even sees it, because the message is still being assembled. So the
+/// cap is the deployment's request-body ceiling, `limits.request_body_max_bytes`, read through the
+/// SAME resolved limits every other reader of that knob uses. That is the same reasoning the
+/// standalone `ws` transport applies at its own listener: a WebSocket message and an HTTP body are
+/// one thing to an operator sizing a limit, and a WS door that buffered more than the HTTP door
+/// beside it would be a hole nobody declared. Both the message and the frame ceiling are set,
+/// because a message ceiling alone still lets one oversized FRAME be buffered before the message is
+/// refused. With nothing installed (boot, or a test process) the historical default stands, exactly
+/// as every other accessor of these limits resolves an absent install.
+fn max_inbound_message_bytes() -> usize {
+    crate::config::limits::installed()
+        .map(|l| l.request_body_max_bytes)
+        .unwrap_or(crate::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES)
+}
+
 /// Bridge an already-upgraded [`WebSocket`] into the neutral `(frame-stream, frame-sink)` the pump
 /// speaks, over two mpsc channels (both `Unpin + Send`, the shape `serve_messages` requires): inbound
 /// text/binary → one `Vec<u8>` frame; an outbound frame → one binary WS message. Control frames and
@@ -93,15 +113,25 @@ pub fn channel(socket: WebSocket) -> (Receiver<Vec<u8>>, UnboundedSender<Vec<u8>
 /// received `upgrade` keeps ownership of the HTTP response; `on_socket` runs once the upgrade completes,
 /// with the neutral `(frame-stream, frame-sink)` this transport presents — so a plane serves a live WS
 /// session without ever naming the HTTP handshake, the routing, or the WS framing.
+///
+/// The SIZE ceiling is applied HERE, on the upgrade, before any socket exists: a message (and a single
+/// frame) larger than [`max_inbound_message_bytes`] is REFUSED by the WS layer and the connection is
+/// closed, rather than reassembled into memory and handed on. The upgrade is the only moment that
+/// choice can be made — past it the socket is already reading — which is why the cap sits beside the
+/// handshake and not in the pump.
 pub fn accept<F, Fut>(upgrade: WebSocketUpgrade, on_socket: F) -> Response
 where
     F: FnOnce(Receiver<Vec<u8>>, UnboundedSender<Vec<u8>>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
-    upgrade.on_upgrade(move |socket| async move {
-        let (stream, sink) = channel(socket);
-        on_socket(stream, sink).await;
-    })
+    let cap = max_inbound_message_bytes();
+    upgrade
+        .max_message_size(cap)
+        .max_frame_size(cap)
+        .on_upgrade(move |socket| async move {
+            let (stream, sink) = channel(socket);
+            on_socket(stream, sink).await;
+        })
 }
 
 /// SERVE one inbound WS session on the neutral pump: accept the upgrade, then drive `plane`'s two

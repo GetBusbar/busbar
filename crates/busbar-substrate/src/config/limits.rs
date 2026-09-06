@@ -97,6 +97,26 @@ pub const DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES: usize =
 /// legitimate signed plugin tarball while bounding the worst case; the download is aborted with a
 /// clear "exceeded the cap" error the instant more bytes arrive, never buffered past it.
 pub const DEFAULT_PLUGIN_FETCH_MAX_BYTES: usize = 256 * 1024 * 1024;
+/// Default depth, in FRAMES, of the OUTBOUND queue on one full-duplex leg: how many frames a plane
+/// may have handed a socket that has not yet drained them.
+///
+/// The mirror of the inbound queue depth the duplex acceptor and dialer already bound, pointed the
+/// other way, and it is a cap for the same reason. An UNBOUNDED outbound queue charges this node's
+/// memory for the difference between the rate a plane produces frames at and the rate the far end
+/// accepts them: a relay leg whose upstream has stalled (a wedged provider, a peer that stopped
+/// reading, a socket held open by a middlebox) goes on accepting frames forever, and the amount of
+/// memory one session can cost is then decided by the producer alone with nothing on the other side
+/// of the equation. Bounded, the producer's own `send` waits for capacity instead, which is what
+/// pushes the stall back to whoever is causing it — the same discipline the inbound side applies to
+/// a flooding peer. 64 frames is deep enough that ordinary jitter between a plane's writes and a
+/// socket's drain never reaches it, and shallow enough that a wedged leg is bounded by a queue and
+/// not by the heap.
+///
+/// Lives HERE, with every other operational cap, rather than beside the transport that reads it: it
+/// is the same kind of number as the rest of this page, and a neutral transport reads it without
+/// naming the engine. No `limits:` key drives it — like [`DEFAULT_MAX_TOKENS`], the constant IS the
+/// posture.
+pub const DEFAULT_DUPLEX_OUTBOUND_QUEUE_FRAMES: usize = 64;
 /// Default TLS handshake wall-clock bound (seconds). Mirrors `tls.rs`.
 pub const DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 /// Default inbound request-BODY read bound (seconds): the max time allowed BETWEEN inbound body
