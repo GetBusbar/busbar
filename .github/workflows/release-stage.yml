@@ -925,6 +925,73 @@ jobs:
       attestations: write
     secrets: inherit
 
+  # -- THE IMAGE'S OWN CONTRACT ROWS: THE FIVE THAT NOTHING EXECUTED --------------------------------
+  #
+  # scripts/verify-artifact.py --coverage names five declared contract rows
+  # (image_boots_documented_quickstart, image_runs_as_nonroot, image_release_pubkey,
+  # image_version_anchored, image_matches_packaged_binary) that no job in the pipeline ever invoked
+  # the verifier to run: `verify-artifact` above iterates `targets.outputs.matrix`, which is filtered
+  # to `published: true`, and the two `kind: image` entries in .github/release-targets.json are
+  # `published: false` by definition -- an image is not a GitHub Release asset, it is staged here.
+  # So the tarball/zip artifacts got the full contract and the container nobody has ever booted
+  # walked through every gate declaring only its OCI layers correct.
+  #
+  # RUNS HERE, NOT IN docker.yml, because `--packaged-from` needs the musl binary docker.yml already
+  # uploaded as a workflow artifact (`busbar-<arch>`, built by its own `build-binaries` job) and
+  # `--image` needs the digest `stage-image` (docker.yml's `publish` job) just pushed -- both exist
+  # only once `stage-image` has completed, and both are visible here because a called reusable
+  # workflow's artifacts and outputs belong to the SAME run, not to a separate one.
+  #
+  # ONE NATIVE RUNNER PER PLATFORM, exactly as `verify-artifact` above does for the tarballs: the
+  # amd64 rows run on ubuntu-latest, the arm64 rows on ubuntu-24.04-arm, against the SAME multi-arch
+  # manifest digest -- `docker ... --platform` resolves which platform's image that digest actually
+  # runs, so no row is statically approximated because a runner could not execute it.
+  verify-image:
+    name: image contract ${{ matrix.target }}
+    needs: [plan, stage-image]
+    runs-on: ${{ matrix.runner }}
+    if: ${{ !cancelled() && needs.plan.outputs.release == '1' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: image-linux-amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - target: image-linux-arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # THE EXACT BYTES docker.yml PACKAGED INTO THIS PLATFORM'S IMAGE, per
+      # `packaged_into` in .github/release-targets.json (x86_64-unknown-linux-musl ->
+      # image-linux-amd64, aarch64-unknown-linux-musl -> image-linux-arm64). Downloaded, not
+      # rebuilt: a second build of "the same" binary is exactly the two-build-path shape that let
+      # one release artifact embed the plugin release key while its sibling did not.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: busbar-${{ matrix.arch }}
+          path: musl-${{ matrix.arch }}
+
+      - name: The image artifact contract
+        shell: bash
+        env:
+          # THROUGH `env:`, NOT SPLICED INTO THE SCRIPT -- same reasoning as `verify-artifact`
+          # above: an org variable is attacker-writable and unmasked, so it must stay data the
+          # shell only ever expands, never text the shell parses.
+          RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+          IMAGE_DIGEST: ${{ needs.stage-image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [ -n "$IMAGE_DIGEST" ] || { echo "::error::stage-image reported no digest; the image contract cannot name what it pulls."; exit 1; }
+          python3 scripts/verify-artifact.py \
+            --target "${{ matrix.target }}" \
+            --version "${{ needs.plan.outputs.version }}" \
+            --image "getbusbar/busbar@${IMAGE_DIGEST}" \
+            --packaged-from "musl-${{ matrix.arch }}/busbar" \
+            --pubkey "$RELEASE_PUBKEY"
+
   # PHANTOM-RELEASE GUARD: assert the draft actually carries every asset before anything is
   # promoted. The per-target build/upload jobs run with fail-fast:false, and `draft` always makes the
   # (initially empty) release up front, so a build/pack failure on EVERY target (e.g. a stale
