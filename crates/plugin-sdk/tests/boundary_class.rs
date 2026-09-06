@@ -79,10 +79,10 @@ fn net_alloc_delta(f: impl FnOnce()) -> isize {
 // ── A synthetic switchable "handle" whose ctor/dispatch/Drop can be told to misbehave via the JSON
 //    config, driven through the SAME `boundary::*` helpers the shipping macro emits. ──────────────
 
-/// A DISTINCTIVELY LARGE owned payload (64 KiB) so a leaked handle shows a delta ≥ this, far above any
-/// few-hundred-byte panic-runtime allocation noise on the stable toolchain. A reclaimed handle nets it
-/// back to ~0. (Miri catches the exact leak too; this makes the stable-CI assertion robust to the
-/// panic machinery's own transient allocations.)
+/// A large owned payload the handle carries. It is NOT the leak witness — Rust reclaims it during the
+/// unwind out of a panicking `Drop` no matter what the boundary does — it is just a realistic handle
+/// that owns something. The witness is an EXACT net-zero allocation delta, which catches the handle's
+/// own box (a few dozen bytes) that a `ptr::read`-style close would strand.
 const HANDLE_PAYLOAD: usize = 64 * 1024;
 
 struct TestHandle {
@@ -103,9 +103,16 @@ impl TestHandle {
 
 impl Drop for TestHandle {
     fn drop(&mut self) {
-        // The `_payload` field is dropped as part of dropping `self` — even though this Drop then
-        // panics, `close_boundary` owns the box before the catch, so the 64 KiB is reclaimed and only
-        // the panic dies here. Panic AFTER any field-drop ordering to prove the box was owned locally.
+        // This body runs BEFORE the fields are dropped — that is the drop order, and the previous
+        // comment here had it backwards. So the panic below fires while `_payload` is still live, and
+        // the 64 KiB comes back only because Rust drops the remaining fields as the panic unwinds
+        // OUT of this function. That reclamation is the language's, not this boundary's, which is
+        // exactly why the payload cannot be the witness for what `close_boundary` does.
+        //
+        // What `close_boundary` owes is the BOX: it does `Box::from_raw` before the `catch_unwind`,
+        // so the heap allocation holding this `TestHandle` is owned by a local whose own drop runs
+        // whether the inner drop panicked or not. Only a `ptr::read`-style close — take the value out
+        // and never reclaim the box — leaks, and it leaks the box, not the payload.
         assert!(!self.panic_on_drop, "TestHandle::drop panic injection");
     }
 }
@@ -305,6 +312,20 @@ fn real_error_is_status_err() {
 #[test]
 fn panicking_drop_does_not_unwind_and_frees() {
     unsafe {
+        // WARM the panic machinery first. The first caught panic on a thread makes the runtime's own
+        // one-time lazy allocations, which are not this boundary's and never come back; they are the
+        // few hundred bytes the loose threshold was really tolerating. Paying them OUTSIDE the
+        // measured region is what lets the witness be exact rather than approximate.
+        // Silence the default panic hook and WARM the panic machinery. The hook renders a message and
+        // a backtrace, and the runtime makes one-time lazy allocations on the first caught panic;
+        // neither is this boundary's doing, and together they are the few hundred bytes the loose
+        // threshold was really tolerating. Paying them OUTSIDE the measured region is what lets the
+        // witness be exact rather than approximate.
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let warm = open(b"panic_drop");
+        let _ = catch_unwind(AssertUnwindSafe(|| close_boundary::<TestHandle>(warm)));
+
         let delta = net_alloc_delta(|| {
             let handle = open(b"panic_drop");
             let closed = catch_unwind(AssertUnwindSafe(|| close_boundary::<TestHandle>(handle)));
@@ -313,11 +334,15 @@ fn panicking_drop_does_not_unwind_and_frees() {
                 "a panicking Drop must never unwind past close_boundary"
             );
         });
-        // A LEAKED handle would show a delta ≥ the 64 KiB payload; a reclaimed one nets to ~0 (only
-        // small panic-runtime noise). The strict witness is `delta` far below the payload size.
-        assert!(
-            delta < (HANDLE_PAYLOAD as isize) / 2,
-            "a panicking Drop must still free the handle (box owned before the catch); leaked {delta} bytes"
+        // The witness is EXACT: not one byte outstanding. Keying on "well under the 64 KiB payload"
+        // measured the wrong thing — the payload is reclaimed by the unwind out of `Drop::drop`
+        // regardless of what `close_boundary` does, so that threshold stayed green even for a close
+        // that never reclaimed the handle's own box. The box is a few dozen bytes and hid comfortably
+        // under half the payload. `delta == 0` is the only bound that fails for a leaked box.
+        std::panic::set_hook(previous_hook);
+        assert_eq!(
+            delta, 0,
+            "a panicking Drop must still free the handle's box (owned before the catch)"
         );
     }
 }
