@@ -296,6 +296,75 @@ STUB
     nope "probe_expectations_absent did not name an empty expect_status"
   fi
 
+  # ── CASE 6: a version match cannot be satisfied by a LONGER version ───────────────────────────
+  # `grep -q "1.5.2"` matches "1.5.20". install:e2e (the row proving the documented first command
+  # installs THIS release) and helm:render (the row proving the published chart deploys THIS image
+  # tag) both used the unanchored form; site:download-page, in the same file, used the anchored one
+  # and wrote down why. The failure only appears once the patch number reaches two digits, which is
+  # to say it hides for years and then passes on exactly the release where it matters.
+  if printf 'busbar 1.5.20' | grep -qE "$(version_re 1.5.2)"; then
+    nope "the version matcher accepted 1.5.20 as 1.5.2 — the gate would pass on the wrong release"
+  else
+    ok "1.5.20 is not accepted as 1.5.2 (the right anchor holds)"
+  fi
+  if printf 'busbar 21.5.4' | grep -qE "$(version_re 1.5.4)"; then
+    nope "the version matcher accepted 21.5.4 as 1.5.4 — the LEFT anchor is missing"
+  else
+    ok "21.5.4 is not accepted as 1.5.4 (the left anchor holds)"
+  fi
+  for good in "busbar 1.5.2" "v1.5.2" "busbar 1.5.2 (abcdef)" "1.5.2"; do
+    if printf '%s' "$good" | grep -qE "$(version_re 1.5.2)"; then :; else
+      nope "the version matcher REJECTED a genuine match: '${good}' — the fix broke the pass path"
+    fi
+  done
+  ok "every genuine spelling of the version under test still matches"
+  if printf 'image: "getbusbar/busbar:1.5.20"' | grep -qE "busbar:$(version_re_after 1.5.2)"; then
+    nope "the after-a-prefix matcher accepted busbar:1.5.20 as busbar:1.5.2"
+  else
+    ok "busbar:1.5.20 is not accepted as busbar:1.5.2 after a literal prefix"
+  fi
+  if printf 'image: "getbusbar/busbar:1.5.2"' | grep -qE "busbar:$(version_re_after 1.5.2)"; then
+    ok "and busbar:1.5.2 still matches after that prefix"
+  else
+    nope "version_re_after rejected a genuine busbar:1.5.2 — the left anchor was wrongly added"
+  fi
+
+  # ── CASE 7: a `docker run` that never started is not a boot ───────────────────────────────────
+  # docker-checks' two boot rows were `docker run -d ... >/dev/null 2>&1` with the status thrown
+  # away, and the verdict was a curl at the HOST port. So a `docker run` that failed — "port is
+  # already allocated" being the everyday cause — left the check curling 127.0.0.1:18080 and
+  # PASSING on whatever answered. Driven here against a stubbed docker on PATH: one that refuses to
+  # start, plus a foreign listener already answering `ok` on the port, which is the exact shape.
+  mkdir -p "$tmp/dockerstub"
+  cat > "$tmp/dockerstub/docker" <<'DOCKERSTUB'
+#!/usr/bin/env bash
+case "$1" in
+  rm) exit 0 ;;
+  run) echo 'docker: Error response from daemon: Bind for 0.0.0.0:18080 failed: port is already allocated.' >&2; exit 125 ;;
+  inspect) echo "false" ;;   # nothing of ours is running
+  logs) exit 0 ;;
+esac
+exit 0
+DOCKERSTUB
+  chmod +x "$tmp/dockerstub/docker"
+  # The functions under test, sourced out of docker-checks.sh without running the file (which needs
+  # a real registry). Extracted by name so the selftest drives THE code, never a copy of it.
+  eval "$(awk '/^start_container\(\)/,/^}/' scripts/release-gate/docker-checks.sh)"
+  eval "$(awk '/^is_running\(\)/,/^}/' scripts/release-gate/docker-checks.sh)"
+  ( export PATH="$tmp/dockerstub:$PATH" ANTHROPIC_KEY=x BUSBAR_ADMIN_TOKEN=y
+    if start_container busbar-gate-selftest 18080 "getbusbar/busbar:9.9.9"; then exit 0; fi
+    exit 1 )
+  if [ $? -eq 0 ]; then
+    nope "start_container reported success on a \`docker run\` that exited 125 — a container that never started would read as booted"
+  else
+    ok "a \`docker run\` that failed to start is a failure, not a curl at whatever holds the port"
+  fi
+  if PATH="$tmp/dockerstub:$PATH" is_running busbar-gate-selftest; then
+    nope "is_running said true for a container that was never created"
+  else
+    ok "and the boot rows only believe a healthz probe once OUR container is confirmed running"
+  fi
+
   echo
   if [ "$rc_bad" = 0 ]; then echo "release-gate selftest: the gate's floors, the staged-record digests and the version anchors all hold"; return 0; fi
   echo "release-gate selftest: FAILED"; return 1

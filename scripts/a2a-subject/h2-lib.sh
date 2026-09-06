@@ -105,8 +105,18 @@ YAML
   H2_BUSBAR_PID=$!
   track_pid "$H2_BUSBAR_PID"
 
-  local waited=0
-  until [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:${H2_DATA_PORT}/.well-known/agent-card.json")" != "000" ]; do
+  # WAIT FOR SERVING, NOT FOR ANY ANSWER AT ALL. This loop exited on `!= "000"`, i.e. on the first
+  # HTTP status of any kind -- including the 503 busbar returns while it is still coming up. Every
+  # scenario that boots through here then began driving a busbar that was not yet serving, and the
+  # 503 it got back is BYTE-IDENTICAL to the 503 a tripped circuit breaker returns. h2-route-
+  # failover, whose entire subject is "which attempt tripped the breaker", would record the trip at
+  # attempt 1 and report a passing-looking failure mode that never happened; the reverse (a real
+  # trip read as a slow boot) is equally available. Wait for 200, and let the existing
+  # kill-0/timeout arms below handle a busbar that never gets there.
+  local waited=0 boot_code=000
+  until [ "$boot_code" = "200" ]; do
+    boot_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:${H2_DATA_PORT}/.well-known/agent-card.json")"
+    if [ "$boot_code" = "200" ]; then break; fi
     kill -0 "$H2_BUSBAR_PID" 2>/dev/null || { cat "$dir/busbar.log" >&2; return 1; }
     waited=$((waited+1))
     [ "$waited" -lt 60 ] || { cat "$dir/busbar.log" >&2; return 1; }

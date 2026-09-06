@@ -750,6 +750,26 @@ run_selftest() {
     "$(grep -c 'phase-152-B-oidc-boot' "$gapf" || true)"
   rm -f "$gapf"
 
+  # 9. BASH 3.2, WHICH IS WHAT /bin/bash IS ON macOS. This file's own header names a Mac as a
+  #    supported place to run the gate, and two bash-4 constructs had crept into the family:
+  #    `mapfile` in promote.sh (bash 4.0; `command not found`, rc 127, and `set -e` ends the
+  #    promote before it prints a word about the SHA) and `${var@Q}` here (bash 4.4;
+  #    `bad substitution` inside start_mock_upstream, which every upstream-using phase calls).
+  #    A scanner, not a version check, because the point is that neither can come back.
+  local b4_hits=""
+  for f in scripts/release-check.sh scripts/release-check-1.5.2.sh scripts/promote.sh \
+           scripts/release-gate/lib.sh scripts/release-gate/gate.sh \
+           scripts/release-gate/expected-ids.sh scripts/release-gate/platform-checks.sh \
+           scripts/release-gate/channel-checks.sh scripts/release-gate/docker-checks.sh; do
+    [ -f "${REPO_ROOT}/$f" ] || continue
+    # Non-comment lines only: the post-mortems above name both constructs on purpose.
+    if grep -v '^[[:space:]]*#' "${REPO_ROOT}/$f" \
+       | grep -qE '(^|[^[:alnum:]_])(mapfile|readarray)[[:space:]]|\$\{[A-Za-z_][A-Za-z0-9_]*@[QAaEKkLUu]\}|\bdeclare -[Ang]\b'; then
+      b4_hits="${b4_hits}${f} "
+    fi
+  done
+  check "no bash-4-only construct in the release family (bash 3.2 is /bin/bash on macOS)" "" "$b4_hits"
+
   # 8. Nothing in the repository sets the old opt-in. Pinned so the variable cannot come back as a
   #    condition nobody satisfies.
   check "BUSBAR_1_5_2_RUN_OIDC_BOOT no longer gates anything (only the post-mortem comment names it)" "0" \
@@ -870,12 +890,25 @@ MOCK_TEXT_MARKER_SEQ=0
 # a slow in-flight request never head-of-line-blocks a concurrent one at the mock itself.
 start_mock_upstream() {
   local port="$1" marker="$2" delay="${3:-0}"
-  local script
+  local script marker_py
   new_tmpdir; script="$NEW_TMPDIR/mock_upstream.py"
+  # `${marker@Q}` IS BASH 4.4 (2016). macOS ships bash 3.2.57 as /bin/bash and has since 2007, for
+  # licensing reasons that are not going to change, and this script's shebang is `/usr/bin/env
+  # bash`, which finds 3.2 first on a stock Mac. On 3.2 the expansion is `bad substitution` at the
+  # moment it is evaluated: `start_mock_upstream` dies, `set -e` takes the whole gate with it, and
+  # it dies HERE -- inside the helper every phase that needs an upstream calls -- so the failure is
+  # not "one check could not run", it is the gate being unrunnable on the machine its own header
+  # tells a maintainer to run it on. Verified against /bin/bash 3.2.57: `bad substitution`, rc 1.
+  # And `@Q` produces SHELL quoting, not Python quoting; it coincides for a plain marker and would
+  # not for one containing a backslash.
+  #
+  # Python's own repr, computed by the python3 this heredoc is written for, is both portable to 3.2
+  # and correct for the language it lands in.
+  marker_py="$(python3 -c 'import sys; print(repr(sys.argv[1]))' "$marker")"
   cat >"$script" <<PYEOF
 import http.server, json, sys, time
 
-MARKER = ${marker@Q}
+MARKER = ${marker_py}
 DELAY = float("${delay}")
 
 class Handler(http.server.BaseHTTPRequestHandler):
