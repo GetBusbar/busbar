@@ -6639,3 +6639,86 @@ fn recover_truncated_usage_counts_thinking_as_output() {
     );
     assert_eq!(usage.cache_read, Some(200));
 }
+
+/// Measure the nesting depth of a `Value` iteratively. A recursive walk would itself overflow the
+/// stack on the very input this test exists to bound, so the measurement must not recurse.
+fn value_depth(v: &serde_json::Value) -> usize {
+    let mut max = 0usize;
+    let mut stack = vec![(v, 1usize)];
+    while let Some((node, d)) = stack.pop() {
+        max = max.max(d);
+        match node {
+            serde_json::Value::Object(m) => {
+                for child in m.values() {
+                    stack.push((child, d + 1));
+                }
+            }
+            serde_json::Value::Array(a) => {
+                for child in a {
+                    stack.push((child, d + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    max
+}
+
+/// A cycle-free "diamond" of chained `$defs` — each level references the next TWICE — has no cycle
+/// for the `active` stack to catch, so an unbudgeted inliner expands it into 2^N nodes and never
+/// returns. The inliner must spend a bounded node budget and degrade to the same untyped `{}` the
+/// cycle arm already returns.
+#[test]
+fn gemini_schema_ref_diamond_stays_within_budget() {
+    const LEVELS: usize = 40;
+    let mut defs = serde_json::Map::new();
+    for i in 0..LEVELS {
+        let next = format!("#/$defs/D{}", i + 1);
+        defs.insert(
+            format!("D{i}"),
+            serde_json::json!({
+                "type": "object",
+                "properties": { "a": { "$ref": next }, "b": { "$ref": next } },
+            }),
+        );
+    }
+    defs.insert(
+        format!("D{LEVELS}"),
+        serde_json::json!({ "type": "string" }),
+    );
+    let schema = serde_json::json!({ "$defs": defs, "$ref": "#/$defs/D0" });
+
+    let out = resolve_gemini_schema_refs(&schema);
+    let depth = value_depth(&out);
+    assert!(
+        depth <= 256,
+        "diamond must not expand without bound, got depth {depth}"
+    );
+}
+
+/// Thousands of shallow sibling `$defs` chained singly are also cycle-free, but inline into one
+/// N-deep `Value` — deep enough that the recursive walk (and the recursive drop that follows)
+/// overflows the worker stack. The result's depth must be capped.
+#[test]
+fn gemini_schema_ref_flat_chain_depth_is_capped() {
+    const LINKS: usize = 5_000;
+    let mut defs = serde_json::Map::new();
+    for i in 0..LINKS {
+        defs.insert(
+            format!("D{i}"),
+            serde_json::json!({
+                "type": "object",
+                "properties": { "next": { "$ref": format!("#/$defs/D{}", i + 1) } },
+            }),
+        );
+    }
+    defs.insert(format!("D{LINKS}"), serde_json::json!({ "type": "string" }));
+    let schema = serde_json::json!({ "$defs": defs, "$ref": "#/$defs/D0" });
+
+    let out = resolve_gemini_schema_refs(&schema);
+    let depth = value_depth(&out);
+    assert!(
+        depth <= 256,
+        "chained refs must be depth-capped, got depth {depth}"
+    );
+}
