@@ -123,9 +123,13 @@ impl RequestHandler for McpRequestHandler {
 ///
 /// The operation cell this routes to parses the body itself, so a full parse here would be the
 /// second complete parse of every MCP request — over a `tools/call` whose `arguments` object is as
-/// large as the caller made it. The workspace's JSON span scanner answers where the member is
-/// without building a value, and `method` is the first member in the shape clients actually send,
-/// so the ordinary request costs a few bytes of scan instead of the whole body.
+/// large as the caller made it. The workspace's JSON span scanner answers WHERE the member is and
+/// builds nothing, so routing a body of any size costs no heap.
+///
+/// What it does not do is stop early, and that is not an oversight to fix here: a duplicated
+/// top-level member answers the LAST one, the reading serde_json and the providers' own parsers give
+/// it, so the answer is not final until the closing brace and the scan reads every byte. The saving
+/// is the DOCUMENT, not the walk — one byte loop instead of a second parse tree.
 ///
 /// A pointer resolves against the TOP LEVEL only, which is the property that matters: a `method`
 /// key inside `arguments` is argument data and must never name the operation. Bytes that ran out,

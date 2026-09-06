@@ -353,14 +353,21 @@ fn the_method_is_read_from_the_top_level_member_alone() {
     );
 }
 
-/// ROUTING COSTS ONE MEMBER, NOT ONE WHOLE BODY.
+/// ROUTING BUILDS NOTHING, however large the body is.
 ///
-/// The cell this resolves to parses the body itself, so a full parse here is the SECOND complete
-/// parse of every MCP request — over a `tools/call` whose `arguments` can be as large as the caller
-/// cares to make it. `method` is the first member in the JSON-RPC shape every client sends, and
-/// answering "which operation is this" should stop there rather than walk the megabytes behind it.
+/// The cell this resolves to parses the body itself, so materialising a document here would be the
+/// SECOND complete parse of every MCP request — over a `tools/call` whose `arguments` can be as large
+/// as the caller cares to make it. The span scanner answers WHERE the member is and never builds a
+/// value, so routing a sixteen-megabyte body must cost NO HEAP AT ALL.
+///
+/// The assertion is on ALLOCATION and not on the clock, and that is the honest measurement. The scan
+/// does read every byte of the body, deliberately: a duplicated top-level member answers the LAST
+/// one, which is the reading serde_json and every provider gives it, so the answer is not final until
+/// the closing brace. A wall-clock bound therefore measures the machine rather than the code — it
+/// passed on an idle laptop and failed under load — while "did it build the document" is exactly the
+/// property the scanner exists for and is the same answer every time.
 #[test]
-fn resolving_the_operation_does_not_walk_the_whole_arguments_object() {
+fn resolving_the_operation_builds_no_document() {
     let h = McpRequestHandler;
     let blob = "x".repeat(16 * 1024 * 1024);
     let body = serde_json::to_vec(&serde_json::json!({
@@ -371,18 +378,72 @@ fn resolving_the_operation_does_not_walk_the_whole_arguments_object() {
     }))
     .expect("fixture");
 
-    let started = std::time::Instant::now();
-    let op = h.resolve_operation("/mcp", &body);
-    let elapsed = started.elapsed();
-
+    let (op, routing_bytes) = allocated_by(|| h.resolve_operation("/mcp", &body));
     assert_eq!(op, Some(Operation::INVOKE));
+    assert_eq!(
+        routing_bytes,
+        0,
+        "resolving the operation on a {} byte body allocated {routing_bytes} bytes: it is building \
+         a value to read one top-level string",
+        body.len()
+    );
+
+    // THE CONTROL, so the assertion above cannot pass because the meter is broken: the thing routing
+    // must not do, done, costs heap on the order of the body.
+    let (parsed, parsing_bytes) =
+        allocated_by(|| serde_json::from_slice::<serde_json::Value>(&body));
+    assert!(parsed.is_ok());
     assert!(
-        elapsed < std::time::Duration::from_millis(20),
-        "resolving the operation on a {} byte body took {elapsed:?}: it is materialising the whole \
-         document to read one top-level string",
+        parsing_bytes > body.len() / 2,
+        "materialising the same {} bytes allocated only {parsing_bytes}: the meter is not reading",
         body.len()
     );
 }
+
+// ── THE METER THE TEST ABOVE READS ───────────────────────────────────────────────────────────────
+
+/// How many bytes `f` asked the heap for, on THIS thread.
+///
+/// Per-thread and not global, because the test harness runs these concurrently and a global counter
+/// would report whatever the other tests happened to be doing at the same moment.
+pub(super) fn allocated_by<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = ALLOCATED.with(std::cell::Cell::get);
+    let out = f();
+    (out, ALLOCATED.with(std::cell::Cell::get) - before)
+}
+
+std::thread_local! {
+    static ALLOCATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The system allocator with a per-thread tally in front of it. It only counts; every request is
+/// served by the allocator that would have served it anyway.
+struct CountingAllocator;
+
+// SAFETY: every method forwards to `System` unchanged, so the allocator contract is whatever
+// `System`'s is. The tally is a thread-local `Cell` of a `usize` read through `try_with`, which
+// allocates nothing and answers `Err` rather than panicking once thread-local storage is being torn
+// down.
+unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let _ = ALLOCATED.try_with(|n| n.set(n.get() + layout.size()));
+        std::alloc::System.alloc(layout)
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        std::alloc::System.dealloc(ptr, layout);
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        if let Some(grew) = new_size.checked_sub(layout.size()) {
+            let _ = ALLOCATED.try_with(|n| n.set(n.get() + grew));
+        }
+        std::alloc::System.realloc(ptr, layout, new_size)
+    }
+}
+
+#[global_allocator]
+static METERED: CountingAllocator = CountingAllocator;
 
 // ── THE ATTRIBUTED OUTCOME NOW SPANS OPERATIONS ──────────────────────────────────────────────────
 
