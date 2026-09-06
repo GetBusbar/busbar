@@ -157,6 +157,28 @@ impl busbar_api::Store for DurableTaskStore {
             _ => Ok(0),
         }
     }
+    /// Delete by IDENTITY, every `seq` under it — the contract `store-memory` implements and the one
+    /// `compact` relies on to take a collected task's whole event chain in one call. The `Store`
+    /// default is a silent no-op, which would let the orphaned-events assertion below pass vacuously.
+    fn delete_plane_record(&self, kind: &str, id: &str) -> busbar_api::StoreResult<()> {
+        match kind {
+            crate::record::KIND_TASK_EVENT => {
+                self.events
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .retain(|(task_id, _), _| task_id != id);
+                Ok(())
+            }
+            crate::record::KIND_TASK => {
+                self.tasks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(id);
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 impl DurableTaskStore {
@@ -615,6 +637,142 @@ fn a_caller_can_never_read_another_tenants_task_and_cannot_probe_for_it() {
 
 // ── retention and compaction ─────────────────────────────────────────────────────────────────
 
+/// A SETTLED TASK'S RETENTION CLOCK IS NOT RESTARTED BY A WRITE THAT IS NOT A TRANSITION.
+/// `updated_at` is the ONE axis every retention rule compares against — the TTL evict, the
+/// oldest-first cap evict, and `compact`'s `before` — so a dispatch record, a cursor advance or a
+/// push-callback registration arriving after the task completed used to push the whole window
+/// forward. A backend that keeps advancing the cursor held a completed task in the working set and
+/// in the store indefinitely, and each write also re-sorted it to the YOUNGEST end of the
+/// cap-evict order, so it outlived tasks that settled after it.
+///
+/// The write itself is NOT refused, and the second half of this test is why: a terminal transition
+/// and an artifact chunk arrive on the SAME relay event, and `a2a/receive.rs`'s streaming sink
+/// transitions then advances the cursor for one event. Refusing the cursor advance would drop the
+/// resume point for the last chunk of every stream that ends by settling.
+#[test]
+fn a_settled_tasks_retention_clock_survives_a_dispatch_a_cursor_and_a_callback() {
+    let store = durable();
+    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let h = process_one(handle.clone());
+    let reg = &h.reg;
+    reg.transition(
+        "t-work",
+        "req-1",
+        crate::a2a::task::plan_transition(TaskState::Completed, NOW + 10),
+    )
+    .expect("t-work completes");
+
+    // The same relay event: the transition above, then this cursor advance, at the same instant.
+    let row = reg
+        .advance_cursor("t-work", 1, NOW + 10, "req-1")
+        .expect("the last chunk of a settling stream still advances the cursor");
+    assert_eq!(row.artifact_cursor, 1, "the resume point is still recorded");
+    assert_eq!(row.updated_at, NOW + 10, "and the clock has not moved");
+
+    // Now the late writes, an hour after the task settled.
+    let late = NOW + 3_600;
+    let row = reg
+        .advance_cursor("t-work", 2, late, "req-1")
+        .expect("a late cursor advance still lands");
+    assert_eq!(row.artifact_cursor, 2, "the write itself is not refused");
+    assert_eq!(
+        row.updated_at,
+        NOW + 10,
+        "a cursor advance does NOT restart a settled task's retention window"
+    );
+    let row = reg
+        .record_dispatch("t-work", "planner-2", late, "req-1")
+        .expect("a late dispatch record still lands");
+    assert_eq!(row.agent_id, "planner-2", "the write itself is not refused");
+    assert_eq!(
+        row.updated_at,
+        NOW + 10,
+        "and the clock still has not moved"
+    );
+    let row = reg
+        .set_push_callback("t-work", Some("https://example.test/cb".into()), late)
+        .expect("a late callback registration still lands");
+    assert_eq!(row.push_callback, "https://example.test/cb");
+    assert_eq!(
+        row.updated_at,
+        NOW + 10,
+        "and the clock still has not moved"
+    );
+
+    // The durable row carries the same unmoved clock, so `compact`'s `before` sees the real age.
+    assert_eq!(
+        handle
+            .get_task("t-work")
+            .unwrap()
+            .expect("persisted")
+            .updated_at,
+        NOW + 10
+    );
+    assert_eq!(
+        reg.compact(NOW + 20).expect("compact"),
+        1,
+        "a window that closed at NOW+10 is collectable at NOW+20, whatever happened at NOW+3600"
+    );
+
+    // The ACTIVE twin is unaffected: a live task's clock still moves on every write.
+    let row = reg
+        .advance_cursor("t-paused", 8, late, "req-2")
+        .expect("the interrupt takes a cursor advance");
+    assert_eq!(
+        row.updated_at, late,
+        "an ACTIVE task's clock still moves — the guard is terminality, not the verb"
+    );
+}
+
+/// A SUBMIT UNDER AN ID ALREADY IN FLIGHT IS REFUSED, NOT ALLOWED TO DISPLACE IT. The engine's
+/// install OVERWRITES the working-set slot, and with it the handle's chain position, which resets to
+/// genesis — so the newcomer's first event sealed at `seq` 1 with an empty `prev_hash` under a task
+/// id whose store already held a chain, and every later read of that task found a sequence break and
+/// reported it TAMPERED. It also stranded the first task, whose caller is still waiting and whose row
+/// the newcomer's had just replaced.
+#[test]
+fn a_submit_under_a_live_task_id_is_refused_and_the_live_task_is_untouched() {
+    let store = durable();
+    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let h = process_one(handle.clone());
+    let reg = &h.reg;
+    let events_before = handle.list_task_events("t-work").unwrap();
+    assert!(
+        events_before.len() >= 2,
+        "the live task has a chain a genesis reset would break"
+    );
+
+    let err = reg
+        .submit(
+            &Task::submitted("t-work", "ctx-z", "key-9", Direction::Inbound, NOW + 50)
+                .unwrap()
+                .to_row(),
+            "req-9",
+        )
+        .expect_err("a second submit under a live id is refused");
+    assert!(
+        matches!(err, crate::taskstore::TaskStoreError::DuplicateTask(ref id) if id == "t-work"),
+        "and the refusal names the collision rather than a store failure: {err}"
+    );
+
+    let live = reg.get_unscoped("t-work").expect("the live task survives");
+    assert_eq!(live.principal, "key-1", "it is still the FIRST task's row");
+    assert_eq!(live.context_id, "ctx-a");
+    assert_eq!(live.state, "working");
+    assert_eq!(
+        handle.list_task_events("t-work").unwrap(),
+        events_before,
+        "no durable write happened at all — the refusal is BEFORE the row upsert and the append"
+    );
+    // The proof the chain was never re-based: it still verifies end to end.
+    reg.verify_task_chain(
+        busbar_substrate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
+        "t-work",
+    )
+    .expect("the chain reads back")
+    .expect("and it VERIFIES — no second genesis was spliced into it");
+}
+
 /// Retention drops TERMINAL rows past the window and NEVER an interrupted one, however old. The
 /// interrupt waiting on a human is the row that legitimately sits still longest; collecting it is
 /// losing the work, not reclaiming space.
@@ -640,11 +798,30 @@ fn compaction_collects_terminal_tasks_and_never_an_interrupt() {
          event would open a SECOND chain at seq 1 under the same task id"
     );
 
+    assert!(
+        !handle.list_task_events("t-work").unwrap().is_empty(),
+        "the completed task has a chain to lose"
+    );
+
     let removed = reg.compact(NOW + 1_000).expect("compact");
     assert_eq!(removed, 1, "exactly the completed task was collected");
     assert!(
         handle.get_task("t-work").unwrap().is_none(),
         "the terminal row is gone from the store"
+    );
+    // THE CHAIN GOES WITH THE ROW. Purging only the `task` kind left every collected task's
+    // `task_event` rows behind under a parent no read path can reach — unbounded growth carrying the
+    // principal, context and agent id of a task that is otherwise gone.
+    assert!(
+        handle.list_task_events("t-work").unwrap().is_empty(),
+        "the collected task's provenance chain was collected WITH it, not orphaned"
+    );
+    // And the interrupt's chain is untouched: the events cannot be collected by their own age, or a
+    // by-age purge would delete the early events of a chain whose task is still live and the next
+    // boot would report that SURVIVING task tampered.
+    assert!(
+        !handle.list_task_events("t-paused").unwrap().is_empty(),
+        "the interrupt keeps its whole chain"
     );
     let survivor = handle
         .get_task("t-paused")

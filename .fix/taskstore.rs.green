@@ -677,28 +677,9 @@ impl TaskRegistry {
             };
             let meta = meta_of(&row);
             let id = row.task_id.clone();
-            // The RESUMED handle's rollback target: the durable record this row IS, re-derived by
-            // the same builder every mutation writes through, so a post-boot mutation whose event
-            // append fails has a row to put back. A row that will not re-encode is not safely
-            // resumable — it is counted unreadable, exactly as one that would not decode.
-            let row_record = match row.to_plane_record() {
-                Ok(record) => record,
-                Err(e) => {
-                    busbar_substrate::diag_error!(
-                        crate::diagnostics::A2A_TASK_ROWS_UNREADABLE,
-                        task_id = %id,
-                        error = %e,
-                        "a persisted A2A task row decoded but could not be RE-ENCODED to its durable \
-                         record on restore; it is NOT resumable and is being counted rather than \
-                         resumed without a rollback target"
-                    );
-                    return Ok(RehydrateOutcome::Unreadable);
-                }
-            };
             Ok(RehydrateOutcome::Active {
                 id,
                 row: Arc::new(row),
-                row_record,
                 meta,
                 pos,
                 event_unreadable,
