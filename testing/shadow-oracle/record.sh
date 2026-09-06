@@ -803,6 +803,17 @@ while IFS=$'\x1f' read -r id outcome driver keep_lines keep_spec needs_fixture p
       || { record "$id" FAIL "normalize.py failed" "$(tail -c 300 "$raw/normalize.err")"; continue; }
     st="$(jq -r .status "$raw/captured.json")"
     if [ "$st" = "-1" ]; then record "$id" SKIP "UNSUPPORTED: $(jq -r '.effects.error // "script could not run"' "$raw/captured.json")" "named gap"; continue; fi
+    # A SCRIPT THAT GAVE UP IS NOT A CELL. Every status other than -1 was recorded PASS, so each
+    # script's own `fail 1 …` / `fail 2 …` path (openssl produced no cert, a boot never answered, an
+    # admin call came back empty) wrote a captured.json that became the golden — and the candidate,
+    # failing the same way for the same reason, matched it. Those paths now carry
+    # `effects.harness_error`; a cell wearing it is red, and its half-made cell file goes with it so
+    # no cells/<id>.json survives without a PASS row behind it.
+    if [ "$(jq -r 'has("effects") and (.effects | has("harness_error"))' "$raw/captured.json")" = true ]; then
+      rm -f "$OUT/cells/$safe.json"
+      record "$id" FAIL "script ${sname} gave up (status ${st})" "$(jq -r '.effects.harness_error' "$raw/captured.json" | tr '\n' ' ' | cut -c1-200)"
+      continue
+    fi
     record "$id" PASS "script ${sname}: status ${st}" ""; n=$((n + 1)); continue
   fi
 

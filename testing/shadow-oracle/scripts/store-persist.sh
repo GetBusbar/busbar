@@ -82,7 +82,12 @@ env_() { BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" ORA
 spawn_() { local log="$1"; shift; ( exec env BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ADMIN" RUST_LOG=warn "$@" ) >>"$log" 2>&1 & echo $!; }
 eff='{}'
 step() { eff="$(jq -c --arg k "$1" --arg v "$2" '. + {($k): $v}' <<<"$eff")"; }
-fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"; exit 0; }
+# A `fail` IS THE HARNESS GIVING UP, NOT AN OUTCOME OF THE BINARY. It writes a captured.json like
+# any other result, and the recorder used to read `status` alone — so `fail 1 "openssl produced no
+# cert"` was recorded as a golden that says "this cell is exit 1", with a PASS row behind it, and
+# the candidate agreed because it failed the same way. `harness_error` says which of the two this
+# is; record.sh refuses any cell that carries it (a status of -1 stays a named gap, as before).
+fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 0; }
 
 env_ "$BIN" --validate >"$W/validate.log" 2>&1; step validate_exit "$?"
 # STRIP THIS RUN'S DIRS BEFORE TRUNCATING, not after. The window is a fixed number of BYTES, so
