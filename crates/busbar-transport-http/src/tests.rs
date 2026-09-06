@@ -2022,6 +2022,68 @@ async fn an_arrival_names_the_port_it_arrived_on() {
     );
 }
 
+/// A request carrying `Expect: 100-continue` is ANSWERED before its body is waited for.
+///
+/// This is what a client asks for when it would rather be refused than upload: `curl` sets the
+/// header on its own for any body past about a kibibyte and then WAITS for the interim answer
+/// before sending a byte. A reader that only parks on the body has both sides waiting on each
+/// other until the client's own timeout fires — the request never arrives and the client sees a
+/// hang, not a refusal. `hyper` served this surface in 1.5.5 and answered the header, so answering
+/// it is the parity bar rather than an addition.
+#[tokio::test]
+async fn a_request_expecting_a_continue_is_answered_before_its_body_is_waited_for() {
+    let served = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = served.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let served = served.clone();
+        async move { served.accept(&listener).await.unwrap() }
+    });
+    let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let conn = accept_fut.await.unwrap();
+
+    // The head only — the body is deliberately withheld, exactly as a client that is waiting for
+    // the go-ahead withholds it.
+    tokio::io::AsyncWriteExt::write_all(
+        &mut client,
+        b"POST /x HTTP/1.1\r\nHost: h\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n",
+    )
+    .await
+    .unwrap();
+
+    let mut frames = served.frames(conn);
+    let pump = tokio::spawn(async move { frames.next().await });
+
+    let mut interim = [0_u8; 64];
+    let n = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::io::AsyncReadExt::read(&mut client, &mut interim),
+    )
+    .await
+    .expect("the interim answer must arrive before the body does")
+    .unwrap();
+    assert_eq!(
+        &interim[..n],
+        b"HTTP/1.1 100 Continue\r\n\r\n",
+        "the answer is the one the client is waiting for, and nothing else"
+    );
+
+    // And the request completes normally once the client, so told, sends its body.
+    tokio::io::AsyncWriteExt::write_all(&mut client, b"hello")
+        .await
+        .unwrap();
+    let (_s, head) = tokio::time::timeout(Duration::from_secs(5), pump)
+        .await
+        .expect("the request arrives")
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(head.bytes.as_slice().starts_with(b"POST /x HTTP/1.1"));
+}
+
 /// An upstream's response TRAILERS reach the caller as one final frame, in the same wire form the
 /// ingress reader hands a request's trailers up in — one `name: value` line each.
 ///
