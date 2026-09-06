@@ -247,6 +247,7 @@ impl LlmNode {
                 // cannot be taken still has to say something if it is.
                 unit.walk
                     .take_terminal()
+                    .map(audit::Served::into_response)
                     .unwrap_or_else(|| unavailable(proto))
             }
         }
@@ -346,11 +347,16 @@ impl LlmUnit<'_> {
         }
     }
 
-    /// The bytes a step already rendered, or the node's own answer where somehow none were.
-    fn released(&self) -> Response {
-        self.walk
-            .take_bytes()
-            .unwrap_or_else(|| unavailable(self.walk.proto()))
+    /// The node's own answer, for a terminal reached with an empty carry.
+    ///
+    /// Handed to the walk's doors as a fallback rather than fetched here: the bytes a step rendered
+    /// live in the walk's carry and the walk hands them to the door itself, so there is no
+    /// expression on this side that evaluates to a finished response before a door has posted one.
+    /// Unreachable from the loop's order — every path to a terminal has already rendered
+    /// something — and an answer rather than an unwrap, because a path that cannot be taken still
+    /// has to say something if it is.
+    fn nothing_rendered(&self) -> audit::Served {
+        audit::Served::of(unavailable(self.walk.proto()))
     }
 }
 
@@ -615,14 +621,9 @@ impl Units for LlmUnit<'_> {
         // delivered answer, a relayed upstream failure, or a destination that resolved to nothing
         // after the caller was already charged. All three are the same door.
         let destination = self.destination();
-        let audited = audit::audit(
-            token,
-            &self.audit_ctx(&destination),
-            self.released(),
-            self.walk.charged(),
-        );
-        self.walk.seal_terminal(audited.response);
-        audited.decision
+        self.walk.audit(token, &self.audit_ctx(&destination), || {
+            self.nothing_rendered()
+        })
     }
 
     fn audit_refused(
@@ -635,9 +636,10 @@ impl Units for LlmUnit<'_> {
         // the same bound the charged door applies over the same destination, so a refusal raised
         // against a CONFIGURED pool is recorded under that pool's name on both paths.
         let destination = self.destination();
-        let audited = audit::audit_refused(token, &self.audit_ctx(&destination), self.released());
-        self.walk.seal_terminal(audited.response);
-        audited.decision
+        self.walk
+            .audit_refused(token, &self.audit_ctx(&destination), || {
+                self.nothing_rendered()
+            })
     }
 
     fn encode(

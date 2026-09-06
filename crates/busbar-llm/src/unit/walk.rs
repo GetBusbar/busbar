@@ -36,6 +36,7 @@ use busbar_substrate::plane_host::{EngineHost, EngineTablesView};
 
 use crate::unit::admit::Admitted;
 use crate::unit::arrival::BodyArrival;
+use crate::unit::audit::Served;
 use crate::unit::meter::{MeterCtx, MeterFacts};
 use crate::unit::route::RouteInput;
 
@@ -91,8 +92,8 @@ struct Carry {
     effective: Option<String>,
     /// Whether the verified set offered an upstream to route to.
     upstream_candidate: bool,
-    /// The bytes some step already rendered and no step has posted.
-    pending: Option<Response>,
+    /// The bytes some step already rendered and no step has posted, in the sealed shape.
+    pending: Option<Served>,
     /// What the Route step observed, for the Meter step to be bound to.
     facts: Option<MeterFacts>,
     /// The meter half the walk handed back unspent.
@@ -103,7 +104,7 @@ struct Carry {
     fee_count: u32,
     refund: bool,
     /// The bytes the terminal posted, which are the bytes the client is given.
-    terminal: Option<Response>,
+    terminal: Option<Served>,
 }
 
 /// One request, as this plane's steps carry it.
@@ -280,12 +281,18 @@ impl Walk {
     /// Rendering and posting are two jobs: a step names its refusal, one place turns it into bytes,
     /// and one place posts it. This is where the bytes wait in between.
     pub fn hold_bytes(&self, resp: Response) {
-        self.lock().pending = Some(resp);
+        // The ONE place a rendered refusal is taken into the sealed shape. It is taken here rather
+        // than at the caller so a step that rendered bytes has nowhere to put them but this cell.
+        self.lock().pending = Some(Served::of(resp));
     }
 
     /// The bytes waiting for the terminal, if a step left any.
-    #[must_use]
-    pub fn take_bytes(&self) -> Option<Response> {
+    ///
+    /// PRIVATE, and that is the point of it. This used to be the walk's public escape hatch: a
+    /// driver could take the pending bytes and hand them straight back to the transport, which is a
+    /// unit ending without passing a terminal door. The two doors below are now the only readers,
+    /// so the bytes a step rendered can only leave this carry through the terminal.
+    fn take_bytes(&self) -> Option<Served> {
         self.lock().pending.take()
     }
 
@@ -301,7 +308,7 @@ impl Walk {
         carry.upstream_candidate = admitted.upstream_candidate;
         carry.sink = admitted.sink;
         if let Some(resp) = admitted.refusal {
-            carry.pending = Some(resp);
+            carry.pending = Some(Served::of(resp));
         }
         admitted.decision
     }
@@ -367,15 +374,66 @@ impl Walk {
             .unwrap_or(false)
     }
 
-    /// Post the terminal's bytes.
-    pub fn seal_terminal(&self, resp: Response) {
+    /// Post the terminal's bytes. Private: the two doors below are the only posters.
+    fn seal_terminal(&self, resp: Served) {
         self.lock().terminal = Some(resp);
     }
 
-    /// The bytes the client is given, once the unit has ended.
+    /// THE ONE WAY A RESPONSE LEAVES THIS PLANE — the bytes the client is given, once the unit has
+    /// ended, in the sealed shape the terminal put them in.
+    ///
+    /// `Served` rather than a bare `Response`, and the difference is not cosmetic: unwrapping one is
+    /// spelled in `audit.rs` and nowhere else, so the driver can give the transport its answer and
+    /// still cannot manufacture an answer anywhere earlier. `None` where the loop never reached a
+    /// terminal at all, which its own order makes unreachable.
     #[must_use]
-    pub fn take_terminal(&self) -> Option<Response> {
+    pub fn take_terminal(&self) -> Option<Served> {
         self.lock().terminal.take()
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // STEP 7, AUDIT — the two terminal doors, driven through the carry
+    // ---------------------------------------------------------------------------------------------
+
+    /// THE CHARGED TERMINAL. A unit that passed the door leaves here, whatever it ended on.
+    ///
+    /// The carry is handed to the door INTERNALLY. That is the whole shape of this pair: the driver
+    /// names the destination and the clock, the walk supplies the bytes and the charge, the door
+    /// posts, and what comes back is a decision. At no point is there an expression outside
+    /// `audit.rs` that evaluates to a finished `Response` — so a unit cannot be ended by anything
+    /// but a door, which is what "posted exactly once" needs in order to be a property of the call
+    /// graph rather than of the driver's good intentions.
+    ///
+    /// The bytes are the ones a step rendered, or the empty-carry fallback the caller supplies. That
+    /// fallback is unreachable from the loop's order — every path to a terminal has already rendered
+    /// something — and it is an answer rather than an unwrap, because a path that cannot be taken
+    /// still has to say something if it is.
+    pub fn audit(
+        &self,
+        token: &UnitToken<busbar_caps::step::Audit>,
+        ctx: &crate::unit::audit::AuditCtx<'_>,
+        fallback: impl FnOnce() -> Served,
+    ) -> Decision<busbar_caps::step::Audit> {
+        let bytes = self.take_bytes().unwrap_or_else(fallback);
+        let audited = crate::unit::audit::audit(token, ctx, bytes, self.charged());
+        self.seal_terminal(audited.response);
+        audited.decision
+    }
+
+    /// THE NOT-CHARGED TERMINAL. Nothing was charged, so nothing is refunded.
+    ///
+    /// Same shape, same carry, same sealing; the difference is the door, and the door's difference
+    /// is the refund. See [`Walk::audit`] for why the bytes are fetched here rather than passed in.
+    pub fn audit_refused(
+        &self,
+        token: &UnitToken<busbar_caps::step::Audit>,
+        ctx: &crate::unit::audit::AuditCtx<'_>,
+        fallback: impl FnOnce() -> Served,
+    ) -> Decision<busbar_caps::step::Audit> {
+        let bytes = self.take_bytes().unwrap_or_else(fallback);
+        let audited = crate::unit::audit::audit_refused(token, ctx, bytes);
+        self.seal_terminal(audited.response);
+        audited.decision
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -456,7 +514,7 @@ impl Walk {
             let mut carry = self.lock();
             carry.facts = Some(routed.facts);
             carry.meter_sink = routed.meter_sink;
-            carry.pending = Some(routed.response);
+            carry.pending = Some(Served::of(routed.response));
         }
         routed.decision
     }
@@ -497,7 +555,11 @@ impl Walk {
         if let Some(report) = carry
             .pending
             .as_ref()
-            .and_then(|resp| resp.extensions().get::<crate::engine::TapCell>())
+            .and_then(|resp| {
+                resp.as_response()
+                    .extensions()
+                    .get::<crate::engine::TapCell>()
+            })
             .and_then(|cell| cell.get())
         {
             facts.fold(report);

@@ -64,6 +64,51 @@ use busbar_caps::{step::Audit, AuditFacts, Decision, OpClassId, UnitToken};
 use busbar_contract::FinishClass;
 use busbar_substrate::plane_host::EngineHost;
 
+/// BYTES THAT HAVE PASSED THROUGH THIS FILE — the only shape in which a response moves between the
+/// steps, and the only shape in which one leaves the plane.
+///
+/// A newtype, and the point is entirely in where its two halves live. [`Served::of`] and
+/// [`Served::into_response`] are written HERE, in the one file the construction gate lets return a
+/// `Response`, so every crossing between "a response" and "what a step may hold" happens inside the
+/// terminal's own file. A step file can carry one of these from end to end and never name the type
+/// it wraps; the loop's driver can unwrap one exactly where it hands the transport its answer. What
+/// neither can do is invent a finished response somewhere in the middle of the unit and return it,
+/// because there is nowhere else the conversion is spelled.
+///
+/// This is the compiler's half of the rule the gate states. The gate counts signatures; the type
+/// makes the count structural.
+pub struct Served(Response);
+
+impl Served {
+    /// Take bytes into the sealed shape. Called from the walk when a step renders a refusal, and
+    /// from the driver for the node's own last-resort answer.
+    #[must_use]
+    pub fn of(resp: Response) -> Self {
+        Served(resp)
+    }
+
+    /// Give the bytes back to the transport. The ONE unwrap, at the ONE place a unit's answer
+    /// leaves the plane.
+    #[must_use]
+    pub fn into_response(self) -> Response {
+        self.0
+    }
+
+    /// Read the sealed bytes without taking them — what the terminal's own facts are read off.
+    #[must_use]
+    pub fn as_response(&self) -> &Response {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Served {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Served")
+            .field("status", &self.0.status())
+            .finish_non_exhaustive()
+    }
+}
+
 /// A REFUSAL AS A VALUE — what an earlier step answers with instead of bytes.
 ///
 /// The three parts are the three a client can observe of a turn-away, and they are deliberately
@@ -186,8 +231,9 @@ pub struct AuditCtx<'a> {
 pub struct Audited {
     /// The sealed step-7 answer: what the plane says this unit was, and how it says it ended.
     pub decision: Decision<Audit>,
-    /// The posted response.
-    pub response: Response,
+    /// The posted response, in the sealed shape — the only shape a response moves in outside this
+    /// file.
+    pub response: Served,
 }
 
 impl Audited {
@@ -203,7 +249,7 @@ impl Audited {
 /// plane is a plugin on the neutral ABI and does not depend on the kernel. So the context is the
 /// plane's and the provisional end is the response itself, while the token and the sealed answer
 /// are the kernel's own vocabulary, named at `busbar-caps` where a plugin may name it.
-pub type AuditStep = for<'a> fn(&UnitToken<Audit>, &AuditCtx<'a>, Response, bool) -> Audited;
+pub type AuditStep = for<'a> fn(&UnitToken<Audit>, &AuditCtx<'a>, Served, bool) -> Audited;
 
 /// How the plane says a unit ended.
 ///
@@ -256,23 +302,23 @@ fn finish_of(resp: &Response) -> FinishClass {
 pub fn audit(
     unit_token: &UnitToken<Audit>,
     ctx: &AuditCtx<'_>,
-    resp: Response,
+    resp: Served,
     charged: bool,
 ) -> Audited {
     let facts = AuditFacts {
         op_class: ctx.op_class,
-        finish: finish_of(&resp),
+        finish: finish_of(resp.as_response()),
     };
     Audited {
-        response: ctx.host.finish_admitted(
+        response: Served::of(ctx.host.finish_admitted(
             ctx.gov,
             ctx.proto,
             ctx.host.pool_label(ctx.destination),
             ctx.started,
             ctx.charged_at,
-            resp,
+            resp.into_response(),
             charged,
-        ),
+        )),
         decision: Decision::proceed(unit_token, facts),
     }
 }
@@ -286,21 +332,21 @@ pub fn audit(
 /// bytes agreed and the record did not. A caller that genuinely has no destination yet — a refusal
 /// taken before the model was ever read — passes [`crate::engine::POOL_LABEL_UNRESOLVED`], which
 /// the bound maps to itself because no deployment may configure a pool by that name.
-pub fn audit_refused(unit_token: &UnitToken<Audit>, ctx: &AuditCtx<'_>, resp: Response) -> Audited {
+pub fn audit_refused(unit_token: &UnitToken<Audit>, ctx: &AuditCtx<'_>, resp: Served) -> Audited {
     // A refusal is never a completion, whatever status it wears.
     let facts = AuditFacts {
         op_class: ctx.op_class,
         finish: FinishClass::Error,
     };
     Audited {
-        response: ctx.host.finish_rejected(
+        response: Served::of(ctx.host.finish_rejected(
             ctx.gov,
             ctx.proto,
             ctx.host.pool_label(ctx.destination),
             ctx.started,
             ctx.charged_at,
-            resp,
-        ),
+            resp.into_response(),
+        )),
         decision: Decision::proceed(unit_token, facts),
     }
 }
@@ -460,7 +506,7 @@ mod tests {
         let unit = audit(
             &token,
             &ctx(&host, &unit_gov, "p", at),
-            (StatusCode::BAD_GATEWAY, "upstream said no").into_response(),
+            Served::of((StatusCode::BAD_GATEWAY, "upstream said no").into_response()),
             true,
         );
         assert_eq!(
@@ -473,7 +519,7 @@ mod tests {
             },
             "a client-facing 502 is sealed as an error end"
         );
-        let unit = unit.response;
+        let unit = unit.response.into_response();
 
         assert_eq!(body_of(live).await, body_of(unit).await);
         assert_eq!(
@@ -521,9 +567,10 @@ mod tests {
         let unit = audit_refused(
             &token,
             &ctx(&host, &unit_gov, POOL_LABEL_UNRESOLVED, at),
-            refusal(),
+            Served::of(refusal()),
         )
-        .response;
+        .response
+        .into_response();
 
         assert_eq!(body_of(live).await, body_of(unit).await);
         let live_record = one_record(&keys[0].id);
@@ -554,7 +601,7 @@ mod tests {
         let _ = audit(
             &token,
             &ctx(&host, &admitted_gov, "p", at),
-            (StatusCode::NOT_FOUND, "no such model").into_response(),
+            Served::of((StatusCode::NOT_FOUND, "no such model").into_response()),
             true,
         );
         let refused_gov = busbar_api::PlaneRequestCtx {
@@ -563,7 +610,7 @@ mod tests {
         let _ = audit_refused(
             &token,
             &ctx(&host, &refused_gov, POOL_LABEL_UNRESOLVED, at),
-            (StatusCode::NOT_FOUND, "no such model").into_response(),
+            Served::of((StatusCode::NOT_FOUND, "no such model").into_response()),
         );
 
         let admitted = one_record(&keys[0].id);
@@ -593,7 +640,7 @@ mod tests {
             let _ = audit(
                 &token,
                 &ctx(&host, &gov, "p", at),
-                (StatusCode::OK, "ok").into_response(),
+                Served::of((StatusCode::OK, "ok").into_response()),
                 true,
             );
         }
@@ -603,7 +650,7 @@ mod tests {
         let _ = audit_refused(
             &token,
             &ctx(&host, &refused, POOL_LABEL_UNRESOLVED, at),
-            (StatusCode::FORBIDDEN, "no").into_response(),
+            Served::of((StatusCode::FORBIDDEN, "no").into_response()),
         );
         assert_eq!(REQUESTS.records_for(&keys[0].id).len(), 3);
         assert!(REQUESTS.verify_principal_chain(&keys[0].id).is_ok());
@@ -645,7 +692,7 @@ mod tests {
         let _ = audit_refused(
             &token,
             &ctx(&host, &unit_gov, "p", at),
-            (StatusCode::FORBIDDEN, "not permitted").into_response(),
+            Served::of((StatusCode::FORBIDDEN, "not permitted").into_response()),
         );
 
         let live_record = one_record(&keys[0].id);
@@ -723,7 +770,7 @@ mod tests {
                 "no tap, non-2xx: still the status",
             ),
         ] {
-            let audited = audit(&token, &ctx(&host, &gov, "p", at), resp, true);
+            let audited = audit(&token, &ctx(&host, &gov, "p", at), Served::of(resp), true);
             let facts = audited
                 .decision
                 .into_result(&seal)
@@ -734,7 +781,8 @@ mod tests {
                 FinishClass::TurnComplete,
                 "{why}: this plane opens no session, so no unit of it ends a turn of one"
             );
-            let _ = axum::body::to_bytes(audited.response.into_body(), usize::MAX).await;
+            let _ = axum::body::to_bytes(audited.response.into_response().into_body(), usize::MAX)
+                .await;
         }
     }
 
