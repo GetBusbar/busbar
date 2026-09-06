@@ -47,7 +47,7 @@
 //! | Two holds never enter one cell | the second offer is refused and handed back | runtime |
 //! | A child's accrual belongs to its parent | the cell checks state and principal | runtime |
 //! | A hold accidentally dropped is caught | `#[must_use]`, denied as a lint in the kernel | compile-time (lint) |
-//! | A hold DELIBERATELY forgotten, leaked or `ManuallyDrop`ped is caught | source scan over the hold-escape list in `fixtures/lint_rules.rs` | CI |
+//! | A hold DELIBERATELY forgotten, leaked or `ManuallyDrop`ped is caught | the construction gate's `hold-escapes` rule, over the list in `fixtures/lint_rules.rs` | CI |
 //! | Only the kernel mints tokens | one audited symbol, [`KernelSeal::acquire_for_kernel`] | CI |
 //! | The recovery token stays in the recovery module | source scan over the seal-site list, same file | CI |
 //! | There are exactly two take sites | source scan, plus a fixture | CI |

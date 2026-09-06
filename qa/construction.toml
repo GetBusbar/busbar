@@ -530,3 +530,77 @@ inert text mid-sentence and no compiler warning catches it, so it survives until
 generated docs. The ceiling is zero and is never calibrated upward: this is a class of typo, not a
 figure the tree is allowed to carry any of."""
 max_hits = 0
+
+# ── 24. hold-escapes (ARCHITECTURE.md section 3.5) ────────────────────────────────────────────────────────────
+[rules.hold-escapes]
+why = """Rust has no linear types, so "this value must be consumed by exactly this function" is not \
+expressible: `std::mem::forget`, `ManuallyDrop`, `Box::leak` and an `AssertUnwindSafe` wrapper all \
+compile, and a hold that goes away through one of them is a unit that was admitted and never \
+settled — money that vanishes with no canary arithmetic to catch it, because the canary only ever \
+sees the counts a settled unit leaves behind. busbar-caps writes the escape list down as data in \
+its `fixtures/lint_rules.rs` and says in its own honesty table that CI scans for it; this rule is \
+that scan. It reads the same symbols with the same scopes, over every crate's production sources \
+rather than only the kernel's, because a plugin-side crate that leaks a hold loses exactly as much \
+money as the kernel would. `hold-discipline` above is the narrower, shape-aware reading of the same \
+promise over busbar-kernel and busbar-unit-*; this one is the flat symbol scan the honesty table \
+names, workspace-wide."""
+scan_globs = ["crates/*/src"]
+max_sites = 0
+# The reviewed sites. An entry is `path::function` (one function), a file path (one file), or a
+# path ending in `/` (a directory). Every one of these was read before it was written down.
+#
+#   busbar-contract ids.rs `Registration::key` is THE reviewed leak-once intern: lane names,
+#   op-class names and a loaded plugin's key are leaked once at boot, the allocation is fixed and
+#   countable, and interning is idempotent — so "leaked once" is a property of the interner rather
+#   than a hope. It is named by function, so the rest of the file is still held to the rule.
+#
+#   The plane-host, plugin-loader and plugin-sdk boundaries catch a panic crossing the ABI, which is
+#   the design: a plugin that panics must not take the node with it, and no hold is in scope on
+#   either side of those calls. busbar-core is the crate being emptied; its sites move or go with it.
+#
+#   The two remaining leaks are boot-time interners of the same shape as ids.rs.
+known_sites = [
+  "crates/busbar-contract/src/ids.rs::key",
+  "crates/busbar-core/src/plane_host/",
+  "crates/busbar-core/src/plane/registry.rs",
+  "crates/busbar-core/src/router.rs",
+  "crates/busbar-substrate/src/plane_host/mod.rs",
+  "crates/busbar-substrate-values/src/proto.rs",
+  "crates/busbar-transport-ws/src/transport.rs",
+  "crates/plugin-loader/src/",
+  "crates/plugin-sdk/src/boundary.rs",
+]
+
+# The escape list, mirroring crates/busbar-caps/fixtures/lint_rules.rs HOLD_ESCAPES. A test in that
+# crate asserts this table names every symbol the fixture does, so the two cannot drift apart.
+# `confined_to` empty means banned everywhere; otherwise the symbol may appear only in files whose
+# path contains the fragment.
+[rules.hold-escapes.symbols.forget]
+symbol = "mem::forget"
+confined_to = ""
+because = "a forgotten hold is a unit that was admitted and never settled"
+
+[rules.hold-escapes.symbols.manually-drop]
+symbol = "ManuallyDrop"
+confined_to = ""
+because = "the same as forgetting, spelled differently"
+
+[rules.hold-escapes.symbols.box-leak]
+symbol = "Box::leak"
+confined_to = ""
+because = "a leaked hold never reaches the exit path"
+
+[rules.hold-escapes.symbols.process-abort]
+symbol = "process::abort"
+confined_to = ""
+because = "aborting skips every exit path at once; the node drains instead"
+
+[rules.hold-escapes.symbols.assert-unwind-safe]
+symbol = "AssertUnwindSafe"
+confined_to = "kernel/src/teller"
+because = "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place"
+
+[rules.hold-escapes.symbols.join-abort]
+symbol = "JoinHandle::abort"
+confined_to = ""
+because = "an aborted task loses its unit's end; the sweep is the second exit, not abort"

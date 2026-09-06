@@ -1428,6 +1428,57 @@ def rule_forbid_unsafe(tree, cfg):
     return rows
 
 
+def rule_hold_escapes(tree, cfg):
+    """The deliberate ways a hold can be made to disappear, scanned for workspace-wide.
+
+    busbar-caps writes the escape list down as data and its honesty table says CI scans for it.
+    This is that scan. The symbols and their scopes mirror the fixture's `HOLD_ESCAPES` — a test in
+    that crate asserts this table names every one of them — and each is looked for as a literal
+    substring over every crate's production sources: no parsing, nothing to argue with in review.
+    `known_sites` is the reviewed-escape ratchet: `path::function` excuses one function, a bare
+    path one file, and a path ending in `/` one directory.
+    """
+    c = cfg["rules"]["hold-escapes"]
+    files = [rel for d in _dirs_for_globs(tree.root, c["scan_globs"])
+             for rel in tree.files if rel.startswith(os.path.relpath(d, tree.root) + os.sep)]
+    known = list(c.get("known_sites", []))
+
+    def reviewed(rel, fname):
+        for entry in known:
+            if entry.endswith("/"):
+                if rel.startswith(entry):
+                    return True
+            elif "::" in entry:
+                path, _, want = entry.partition("::")
+                if rel == path and fname == want:
+                    return True
+            elif rel == entry:
+                return True
+        return False
+
+    offenders, tracked = [], []
+    for spec in c["symbols"].values():
+        symbol = spec["symbol"]
+        for rel, l in tree.grep(re.escape(symbol), files=files):
+            confined = spec["confined_to"]
+            if confined and confined in rel:
+                continue
+            f = tree.enclosing_fn(rel, l.no)
+            where = f"`{symbol}` at {rel}:{l.no} ({spec['because']})"
+            (tracked if reviewed(rel, f.name if f else "") else offenders).append(where)
+    current = len(offenders)
+    parts = []
+    if offenders:
+        parts.append("; ".join(offenders))
+    if tracked:
+        parts.append("reviewed escapes (qa/construction.toml known_sites): " + "; ".join(tracked))
+    detail = (f"{current} deliberate hold escape(s) in production source (ceiling {c['max_sites']}): "
+              + ("; ".join(parts) if parts else "none"))
+    return [row("hold-escapes", current <= c["max_sites"],
+                "no production source deliberately forgets, leaks or unwind-smuggles a hold",
+                detail, current, c["max_sites"], c["why"], offenders)]
+
+
 def rule_secret_carrier_debug(tree, cfg):
     """A type that carries secret bytes hand-rolls its `Debug`; it never derives one.
 
@@ -1524,6 +1575,7 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_no_default_bodies(tree, cfg)
     rows += rule_sealed_unit_traits(tree, cfg)
     rows += rule_hold_discipline(tree, cfg)
+    rows += rule_hold_escapes(tree, cfg)
     rows += rule_kernel_seal_impls(tree, cfg)
     rows += rule_forbid_unsafe(tree, cfg)
     rows += rule_secret_carrier_debug(tree, cfg)
@@ -1635,6 +1687,7 @@ def calibrate(rows, cfg, path):
     for key in rules["loc-ceilings"]["kernel_files"]:
         rules["loc-ceilings"]["kernel_files"][key]["ceiling"] = by_id[f"loc-ceilings:kernel:{key}"]["current"]
     rules["sealed-unit-traits"]["max_unsealed"] = by_id["sealed-unit-traits"]["current"]
+    rules["hold-escapes"]["max_sites"] = by_id["hold-escapes"]["current"]
     for rid in ("forbid-unsafe", "forbid-unsafe-deny"):
         missing_field = "known_missing_forbid" if rid == "forbid-unsafe" else "known_missing_deny"
         rules["forbid-unsafe"][missing_field] = sorted(
