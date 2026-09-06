@@ -336,3 +336,55 @@ async fn fastest_orders_by_latency_demoting_unknown() {
         .unwrap();
     assert_eq!(d, RoutingDecision::Prefer(vec![2, 0, 1]));
 }
+
+/// A NaN cost is not a cheap candidate, an expensive one, or a tie — it is not ORDERABLE, and a
+/// comparator that folds it to `Equal` is non-transitive, which is exactly the input `sort_by` is
+/// allowed to panic on. It ranks as an ABSENT signal instead: demoted behind every real number,
+/// still reachable, and in the same order every run.
+#[tokio::test]
+async fn cheapest_treats_a_non_finite_key_as_an_absent_signal() {
+    let cands = [
+        cand(0, Some(1.0), None, 1, None),
+        cand(1, Some(f64::NAN), None, 1, None),
+        cand(2, Some(0.5), None, 1, None),
+        cand(3, Some(f64::INFINITY), None, 1, None),
+    ];
+    let expected = RoutingDecision::Prefer(vec![2, 0, 1, 3]);
+    // Same answer every run: an order that depends on the comparator's accidents is not an order.
+    for _ in 0..16 {
+        let d = CheapestPolicy
+            .decide(&req(), &cands, &ctx(), Duration::from_millis(10))
+            .await
+            .unwrap();
+        assert_eq!(
+            d, expected,
+            "a non-finite key must rank as absent, every run"
+        );
+    }
+}
+
+/// The same ruling on the descending side, and the abstain boundary with it: when the only signals
+/// present are unorderable there is no opinion to express, so the policy abstains to the default
+/// SWRR rather than inventing a ranking out of NaNs.
+#[tokio::test]
+async fn usage_ranks_a_nan_headroom_last_and_abstains_when_all_are_nan() {
+    let ranked = [
+        cand_rate(0, None, None, 1, None, Some(f64::NAN)),
+        cand_rate(1, None, None, 1, None, Some(0.25)),
+    ];
+    let d = UsagePolicy
+        .decide(&req(), &ranked, &ctx(), Duration::from_millis(10))
+        .await
+        .unwrap();
+    assert_eq!(d, RoutingDecision::Prefer(vec![1, 0]));
+
+    let all_nan = [
+        cand_rate(0, None, None, 1, None, Some(f64::NAN)),
+        cand_rate(1, None, None, 1, None, Some(f64::NAN)),
+    ];
+    let d = UsagePolicy
+        .decide(&req(), &all_nan, &ctx(), Duration::from_millis(10))
+        .await
+        .unwrap();
+    assert_eq!(d, RoutingDecision::Abstain);
+}

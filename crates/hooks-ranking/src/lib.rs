@@ -59,21 +59,53 @@ impl RoutingPolicy for WeightedPolicy {
     }
 }
 
+/// A ranking key that can be put in a TOTAL order. The float signals a routing policy ranks by
+/// (`cost_per_mtok`, `latency_ms`, `rate_headroom`) arrive from operator config and from measured
+/// telemetry, and a float has one value that is not orderable at all: `NaN` compares false against
+/// everything, including itself. A comparator that reaches for `partial_cmp().unwrap_or(Equal)` on a
+/// `NaN` is not merely arbitrary, it is NON-TRANSITIVE (`NaN == 1.0` and `NaN == 0.5` while
+/// `1.0 < 0.5` is false), which is precisely the input `sort_by` is documented to be allowed to
+/// panic on — a hard 500 on the routing path from one division-by-zero in a telemetry EWMA.
+///
+/// So a key is `usable` or it is not, and an unusable one is treated exactly like an ABSENT signal:
+/// demoted to the end but still reachable, which is already what the ranking does for a member whose
+/// signal has not arrived yet. "This number means nothing" and "there is no number" are the same
+/// statement to a router.
+trait RankKey: PartialOrd + Copy {
+    fn usable(&self) -> bool;
+}
+
+impl RankKey for f64 {
+    fn usable(&self) -> bool {
+        self.is_finite()
+    }
+}
+
+impl RankKey for usize {
+    fn usable(&self) -> bool {
+        true // an integer signal has no unorderable value
+    }
+}
+
 /// Rank candidates by a total-order key, ascending (smallest key first). Candidates whose key is
-/// `None` are demoted to the end (lowest preference) but still ranked among themselves by `idx` for
-/// determinism — never dropped, so a member with missing signal data is reachable, not stranded.
-/// Returns `Abstain` if EVERY candidate lacks the signal (no opinion → default SWRR).
-fn rank_ascending_by<K: PartialOrd + Copy>(
+/// `None` — or is present but not orderable, see [`RankKey`] — are demoted to the end (lowest
+/// preference) but still ranked among themselves by `idx` for determinism; never dropped, so a
+/// member with missing signal data is reachable, not stranded. Returns `Abstain` if EVERY candidate
+/// lacks a usable signal (no opinion → default SWRR).
+fn rank_ascending_by<K: RankKey>(
     candidates: &[Candidate<'_>],
     key: impl Fn(&Candidate<'_>) -> Option<K>,
 ) -> RoutingDecision {
-    let mut keyed: Vec<(usize, Option<K>)> = candidates.iter().map(|c| (c.idx, key(c))).collect();
+    let mut keyed: Vec<(usize, Option<K>)> = candidates
+        .iter()
+        .map(|c| (c.idx, usable_key(&key, c)))
+        .collect();
     if keyed.iter().all(|(_, k)| k.is_none()) {
         return RoutingDecision::Abstain;
     }
     // Sort: Some(k) before None; among Some, ascending by k; ties (and None/None) by idx for a
-    // deterministic, stable order. `partial_cmp` can't yield None here because keys are finite
-    // numbers in practice, but fall back to Equal to stay total and panic-free.
+    // deterministic, stable order. Every surviving `Some` is orderable (the extractor dropped the
+    // rest), so `partial_cmp` genuinely cannot yield None; the fallback stays as belt-and-braces.
     keyed.sort_by(|(ia, ka), (ib, kb)| match (ka, kb) {
         (Some(a), Some(b)) => a
             .partial_cmp(b)
@@ -86,13 +118,25 @@ fn rank_ascending_by<K: PartialOrd + Copy>(
     RoutingDecision::Prefer(keyed.into_iter().map(|(idx, _)| idx).collect())
 }
 
+/// The key extractor made TOTAL: a signal that is present but not orderable is reported as absent,
+/// so the comparator below only ever sees keys it can actually order. See [`RankKey`].
+fn usable_key<K: RankKey>(
+    key: &impl Fn(&Candidate<'_>) -> Option<K>,
+    candidate: &Candidate<'_>,
+) -> Option<K> {
+    key(candidate).filter(|k| k.usable())
+}
+
 /// Rank descending (largest key first) — the same shape as `rank_ascending_by` but preferring the
 /// LARGEST signal (e.g. most free concurrency, most budget remaining).
-fn rank_descending_by<K: PartialOrd + Copy>(
+fn rank_descending_by<K: RankKey>(
     candidates: &[Candidate<'_>],
     key: impl Fn(&Candidate<'_>) -> Option<K>,
 ) -> RoutingDecision {
-    let mut keyed: Vec<(usize, Option<K>)> = candidates.iter().map(|c| (c.idx, key(c))).collect();
+    let mut keyed: Vec<(usize, Option<K>)> = candidates
+        .iter()
+        .map(|c| (c.idx, usable_key(&key, c)))
+        .collect();
     if keyed.iter().all(|(_, k)| k.is_none()) {
         return RoutingDecision::Abstain;
     }
