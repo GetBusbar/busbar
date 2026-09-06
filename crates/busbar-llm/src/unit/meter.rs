@@ -962,4 +962,103 @@ mod tests {
             "the quantity sum is still there to be read; it is simply not the money"
         );
     }
+
+    /// SEALING IS NOT POSTING, and the step has to say which it did.
+    ///
+    /// A unit reaches this step in one of two states. Either the walk was handed the admission's
+    /// meter half and its tap has already made this unit's one accrual — in which case the step
+    /// SEALS: it reports the row and spends the money, and it must not touch the ledger a second
+    /// time. Or the walk held no meter half, and the step IS the accrual. `MeterFacts::accrued` is
+    /// the fact that separates them, and the walk carries the answer forward as `posted_here` so the
+    /// rehearsal can assert one posting per unit.
+    ///
+    /// The instrument it carries it on is `Metered::row`, and a row is not that fact. A row is a
+    /// truthful report of what the response consumed and it is filled on BOTH sides of the branch —
+    /// deliberately, because sealing is not a reason to report nothing. So `row.is_some()` answers
+    /// "there was something to attribute", which is a different question, and it answers `true` for
+    /// a unit whose accrual was made somewhere else entirely.
+    ///
+    /// Two legs, each on its own registry so neither reads the other's rows. Same host, same sink,
+    /// same lane, same reported usage; the only difference is which side of the branch the unit is
+    /// on. The registries prove the branch itself works — one accrual on the posting leg, none on
+    /// the sealing leg. The pair the walk reads has to tell them apart too.
+    #[test]
+    fn the_step_says_whether_it_posted_or_only_sealed() {
+        let reported = busbar_substrate::billing::TokenUsage {
+            input: INPUT,
+            output: OUTPUT,
+            ..Default::default()
+        };
+        let (_seal, unit_token, usage_token) = tokens();
+
+        // LEG 1 — the walk held no meter half, so this step is the accrual.
+        let (app1, key1) = priced_rig();
+        let charged_at = busbar_substrate::store::now();
+        let (host1, rt1) = crate::engine::test_host_rt(&app1);
+        let sink1 = sink(&host1, &key1, charged_at);
+        let tables1 = crate::engine::EngineTables::new(&rt1);
+        let posting = meter(
+            &unit_token,
+            &usage_token,
+            &MeterCtx::new(
+                &host1,
+                Some(&sink1),
+                Some(&tables1.lanes()[0]),
+                Some(&reported),
+                200,
+                true,
+                true,
+                false,
+            ),
+            None,
+            &Outcome::Completed,
+        );
+        assert_eq!(
+            accrued(&app1, &key1.id, charged_at).ledger_tokens,
+            INPUT + OUTPUT,
+            "the walk held no sink, so the step made the unit's one accrual"
+        );
+
+        // LEG 2 — the walk's tap already accrued this unit, so this step only seals.
+        let (app2, key2) = priced_rig();
+        let (host2, rt2) = crate::engine::test_host_rt(&app2);
+        let sink2 = sink(&host2, &key2, charged_at);
+        let tables2 = crate::engine::EngineTables::new(&rt2);
+        let facts = MeterFacts {
+            lane: Some(0),
+            usage: Some(reported.clone()),
+            status: 200,
+            billing_failed: false,
+            upstream_leg: true,
+            accrued: true,
+        };
+        let sealing = meter(
+            &unit_token,
+            &usage_token,
+            &MeterCtx::bind(&host2, Some(&sink2), Some(&tables2.lanes()[0]), &facts, true),
+            None,
+            &Outcome::Completed,
+        );
+        let gov2 = app2.governance.clone().expect("governance is configured");
+        gov2.flush_metering();
+        assert!(
+            gov2.metering_for(busbar_substrate::governance::metering_bucket(charged_at))
+                .expect("metering read")
+                .iter()
+                .all(|r| r.key_id != key2.id),
+            "the tap owns this unit's accrual, so the step posted nothing on top of it"
+        );
+
+        // Both legs report a row, because both had something to attribute — which is exactly why a
+        // row cannot be the answer to "who posted".
+        assert!(posting.row.is_some(), "the posting leg reports its row");
+        assert!(sealing.row.is_some(), "the sealing leg reports the same row");
+
+        // What the walk carries forward as `posted_here`.
+        assert_eq!(
+            (posting.posted, sealing.posted),
+            (true, false),
+            "the step that made the accrual says so; the step that only sealed one says it did not"
+        );
+    }
 }
