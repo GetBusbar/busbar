@@ -443,6 +443,21 @@ impl Selector {
             | (Self::PathSuffix(s), Self::ExactPath(p)) => p.ends_with(s),
             (Self::ExactPath(p), Self::PathContains(s))
             | (Self::PathContains(s), Self::ExactPath(p)) => p.contains(s),
+            // A one-level prefix IS a pattern: the prefix's literals, then one more segment.
+            (Self::PrefixOneLevel(prefix), Self::PathPattern(pat))
+            | (Self::PathPattern(pat), Self::PrefixOneLevel(prefix)) => {
+                prefix_overlaps_pattern(prefix, pat)
+            }
+            // Two suffixes are both anchored to the same end, so one has to end the other.
+            (Self::PathSuffix(x), Self::PathSuffix(y)) => x.ends_with(y) || y.ends_with(x),
+            (Self::PathSuffix(s), Self::PathPattern(pat))
+            | (Self::PathPattern(pat), Self::PathSuffix(s)) => {
+                fragment_overlaps_pattern(s, pat, true)
+            }
+            (Self::PathContains(s), Self::PathPattern(pat))
+            | (Self::PathPattern(pat), Self::PathContains(s)) => {
+                fragment_overlaps_pattern(s, pat, false)
+            }
             // Every remaining path pair mixes at least one open-ended form with another
             // open-ended form: a path satisfying both always exists, so they overlap.
             _ => true,
@@ -511,12 +526,11 @@ fn segments(path: &str) -> impl Iterator<Item = &str> {
 /// Whether a pattern matches a concrete path.
 fn pattern_matches(pattern: &[PathSeg], path: &str) -> bool {
     let mut segs = segments(path);
-    for (i, seg) in pattern.iter().enumerate() {
+    for seg in pattern {
         match seg {
             PathSeg::Tail => {
                 // A tail is the last segment of a pattern and swallows whatever remains,
                 // including nothing.
-                let _ = i;
                 return true;
             }
             PathSeg::Lit(lit) => match segs.next() {
@@ -550,4 +564,110 @@ fn patterns_overlap(a: &[PathSeg], b: &[PathSeg]) -> bool {
         }
         i += 1;
     }
+}
+
+/// Whether a one-level prefix and a pattern can both match one path.
+///
+/// A one-level prefix is a pattern with a different spelling — the prefix's own segments as
+/// literals, then exactly one segment of any value — so the comparison is the segment walk that
+/// already exists, with the prefix read as that pattern rather than as a string.
+fn prefix_overlaps_pattern(prefix: &str, pattern: &[PathSeg]) -> bool {
+    let mut i = 0usize;
+    for literal in segments(prefix) {
+        match pattern.get(i) {
+            // The pattern ran out while the prefix still had segments to place.
+            None => return false,
+            Some(PathSeg::Tail) => return true,
+            Some(PathSeg::Var) => {}
+            Some(PathSeg::Lit(l)) if *l == literal => {}
+            Some(PathSeg::Lit(_)) => return false,
+        }
+        i += 1;
+    }
+    match pattern.get(i) {
+        // A tail takes whatever is left, and one segment is a thing it can take.
+        Some(PathSeg::Tail) => true,
+        // One level down is exactly one more segment, so the pattern has to END after this one —
+        // either because there is nothing after it, or because what is after it is a tail, and a
+        // tail matching NOTHING is a path one level under the prefix.
+        Some(_) => pattern.len() == i + 1 || matches!(pattern.get(i + 1), Some(PathSeg::Tail)),
+        None => false,
+    }
+}
+
+/// Whether a path matching this pattern can carry this literal — anywhere in it, or, when `at_end`,
+/// as the very end of it.
+///
+/// One rule behind both fragment forms, because they differ in one thing only: where the literal is
+/// allowed to land. Its slashes are the arriving path's own slashes, so a literal carrying `m` of
+/// them asks for `m` consecutive WHOLE segments, with whatever precedes its first slash being the
+/// tail end of the segment before them. A pattern with a literal segment in one of those positions
+/// that does not match cannot spell such a path, however its variables are filled in — and that is a
+/// proof of disjointness rather than a guess at one. A suffix pins those segments to the end of the
+/// pattern; a substring may place them anywhere, so every placement is tried.
+///
+/// Conservative — answering that they may overlap — for every shape this reasoning does not model: a
+/// pattern ending in a tail, which can spell whatever is asked of it, and a literal carrying a
+/// doubled slash, which a path may also carry because the segment walk drops empty segments.
+fn fragment_overlaps_pattern(literal: &str, pattern: &[PathSeg], at_end: bool) -> bool {
+    if pattern.iter().any(|s| matches!(s, PathSeg::Tail)) {
+        return true;
+    }
+    let piece = |k: usize| literal.split('/').nth(k).unwrap_or("");
+    let slashes = literal.split('/').count() - 1;
+    let n = pattern.len();
+    // With no slash of its own the literal lives inside ONE segment: the last one when it is
+    // anchored there, any one when it is not.
+    if slashes == 0 {
+        let fits = |s: &PathSeg| match s {
+            PathSeg::Lit(l) if at_end => l.ends_with(literal),
+            PathSeg::Lit(l) => l.contains(literal),
+            _ => true,
+        };
+        return if at_end {
+            pattern.last().is_some_and(fits)
+        } else {
+            pattern.iter().any(fits)
+        };
+    }
+    if (1..slashes).any(|k| piece(k).is_empty()) || (at_end && piece(slashes).is_empty()) {
+        return true;
+    }
+    // Whether the pattern's `i`th segment can be a whole segment spelled exactly this way. A
+    // variable takes one segment of any value, and a segment is never empty.
+    let whole = |i: usize, want: &str| match pattern.get(i) {
+        Some(PathSeg::Lit(l)) => *l == want,
+        Some(_) => !want.is_empty(),
+        None => false,
+    };
+    // `start` is the segment the literal opens inside, and `n` stands for the path's own leading
+    // slash, which is where a literal that opens with a slash may also start.
+    (0..=n).any(|start| {
+        let head = piece(0);
+        let head_ok = head.is_empty()
+            || match pattern.get(start) {
+                Some(PathSeg::Lit(l)) => l.ends_with(head),
+                Some(_) => true,
+                None => false,
+            };
+        let first = if start == n { 0 } else { start + 1 };
+        let landing = first + slashes - 1;
+        let last = piece(slashes);
+        head_ok
+            && (1..slashes).all(|k| whole(first + k - 1, piece(k)))
+            && if at_end {
+                // Anchored: the last piece IS the path's last segment.
+                landing + 1 == n && whole(landing, last)
+            } else if last.is_empty() {
+                // The literal ends at a slash: either a segment follows it, or that slash is the
+                // path's own trailing one, which the segment walk drops.
+                landing <= n
+            } else {
+                match pattern.get(landing) {
+                    Some(PathSeg::Lit(l)) => l.starts_with(last),
+                    Some(_) => true,
+                    None => false,
+                }
+            }
+    })
 }

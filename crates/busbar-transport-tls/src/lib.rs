@@ -32,6 +32,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use busbar_contract::{
     ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
@@ -64,6 +65,15 @@ pub use rustls;
 /// How many bytes one read syscall may fill a frame with.
 pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 
+/// How long an inbound TLS handshake has to complete before the connection is dropped.
+///
+/// `accept` runs the handshake inline, so without a budget one peer that opens a TCP connection and
+/// then sends nothing holds the accept loop for as long as it likes — a listener taken out of
+/// service by a client that never spent a byte. Ten seconds is the same budget the egress
+/// connector's own connect timeout is set to, so the two ends of this crate's tolerance for a peer
+/// that will not talk are one number rather than two.
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Any duplex byte stream this transport can run a handshake over: the socket it opened itself, or
 /// the one a lower layer handed up. Boxing it is what lets one connection type cover both, so an
 /// adopted connection is not a second shape with a second set of methods.
@@ -88,6 +98,25 @@ struct Inner {
     /// this state before the close, so the registry removal alone would not reach it; this is the
     /// flag that stream checks so it ends at the next poll and the TLS stream actually drops.
     closed: AtomicBool,
+    /// The wakeup that goes with the flag.
+    ///
+    /// A pump parked in `read` has no next poll to check the flag at: on a peer that completed the
+    /// handshake and then said nothing, the read is outstanding until a record arrives, and none
+    /// ever does. The flag alone would leave that pump — and the rustls session and socket it holds
+    /// the last clone of — alive for the life of the process. The close notifies this, the read is
+    /// raced against it, and the stream ends where it was parked.
+    closing: tokio::sync::Notify,
+}
+
+impl Inner {
+    /// Mark this connection finalised and wake whatever is parked on it.
+    ///
+    /// The order matters: the flag is stored FIRST, so a pump that arms its wait and then re-reads
+    /// the flag can never miss both the store and the notification.
+    fn finalise(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.closing.notify_waiters();
+    }
 }
 
 enum InnerRead {
@@ -145,6 +174,9 @@ pub struct TlsTransport {
     listeners: Mutex<HashMap<String, (Arc<TcpListener>, u64)>>,
     server_configs: Mutex<HashMap<u64, Arc<rustls::ServerConfig>>>,
     client_configs: Mutex<HashMap<u64, Arc<rustls::ClientConfig>>>,
+    /// How long an inbound handshake has to complete; [`HANDSHAKE_TIMEOUT`] unless a caller said
+    /// otherwise.
+    handshake_timeout: Duration,
 }
 
 impl Default for TlsTransport {
@@ -169,7 +201,16 @@ impl TlsTransport {
             listeners: Mutex::new(HashMap::new()),
             server_configs: Mutex::new(HashMap::new()),
             client_configs: Mutex::new(HashMap::new()),
+            handshake_timeout: HANDSHAKE_TIMEOUT,
         }
+    }
+
+    /// Set the budget an inbound handshake has to complete in, for a deployment — or a battery cell
+    /// — whose tolerance is not the default ten seconds.
+    #[must_use]
+    pub fn with_handshake_timeout(mut self, budget: Duration) -> Self {
+        self.handshake_timeout = budget;
+        self
     }
 
     /// Register the server-side rustls config a [`TransportKeyHandle`]'s slot resolves to.
@@ -213,7 +254,7 @@ impl TlsTransport {
                 // transport really does read off the presented certificate.
                 subject: "peer".to_string(),
                 issuer: "peer".to_string(),
-                fingerprint: format!("{:x?}", ring_fingerprint(c.as_ref())),
+                fingerprint: hex_lower(&ring_fingerprint(c.as_ref())),
             })
         });
         let (read, write) = tokio::io::split(stream);
@@ -229,6 +270,7 @@ impl TlsTransport {
             }),
             write: AsyncMutex::new(InnerWrite::Server(write)),
             closed: AtomicBool::new(false),
+            closing: tokio::sync::Notify::new(),
         });
         self.conns.lock().expect("poisoned").insert(id, inner);
         Conn::new(Arc::new(TlsConnHandle {
@@ -256,7 +298,7 @@ impl TlsTransport {
                 // transport really does read off the presented certificate.
                 subject: "peer".to_string(),
                 issuer: "peer".to_string(),
-                fingerprint: format!("{:x?}", ring_fingerprint(c.as_ref())),
+                fingerprint: hex_lower(&ring_fingerprint(c.as_ref())),
             })
         });
         let (read, write) = tokio::io::split(stream);
@@ -272,6 +314,7 @@ impl TlsTransport {
             }),
             write: AsyncMutex::new(InnerWrite::Client(write)),
             closed: AtomicBool::new(false),
+            closing: tokio::sync::Notify::new(),
         });
         self.conns.lock().expect("poisoned").insert(id, inner);
         Conn::new(Arc::new(TlsConnHandle {
@@ -321,6 +364,21 @@ impl busbar_unit_transport_key::TlsConfigSink for TlsTransport {
 fn ring_fingerprint(der: &[u8]) -> Vec<u8> {
     use ring::digest;
     digest::digest(&digest::SHA256, der).as_ref().to_vec()
+}
+
+/// A digest rendered the way every other tool renders one: lowercase hex, two characters per byte.
+///
+/// The debug formatter this used to go through prints a Rust slice — brackets, commas, spaces, and
+/// single-digit bytes with no leading zero. Nothing an operator has can compare that to the output
+/// of `openssl x509 -fingerprint`, and the missing zeroes mean it is not even a stable rendering of
+/// the digest: `0a` and `a` are the same byte spelled two different ways.
+fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
 }
 
 impl Plugin for TlsTransport {
@@ -436,10 +494,17 @@ impl Transport for TlsTransport {
                 .cloned()
                 .ok_or(TransportError::KeyUnavailable)?;
             let acceptor = TlsAcceptor::from(cfg);
-            let tls_stream = acceptor
-                .accept(Box::new(stream) as BoxedIo)
-                .await
-                .map_err(|_| TransportError::HandshakeFailed)?;
+            // The handshake runs inline, so it is also this accept loop's exposure: a peer that
+            // completes the TCP connection and then says nothing costs itself nothing and holds the
+            // listener indefinitely. The budget ends that — on expiry the future is dropped, and
+            // with it the half-open stream, and the loop is free for the next caller.
+            let tls_stream = tokio::time::timeout(
+                self.handshake_timeout,
+                acceptor.accept(Box::new(stream) as BoxedIo),
+            )
+            .await
+            .map_err(|_| TransportError::Timeout)?
+            .map_err(|_| TransportError::HandshakeFailed)?;
             Ok(self.insert_server(tls_stream, peer, vec!["tcp", "tls"]))
         })
     }
@@ -490,9 +555,24 @@ impl Transport for TlsTransport {
             }
             let mut guard = inner.read.lock().await;
             let side = &mut *guard;
-            let result = match &mut side.half {
-                InnerRead::Server(r) => r.read(&mut side.scratch).await,
-                InnerRead::Client(r) => r.read(&mut side.scratch).await,
+            // Arm the wait BEFORE re-reading the flag: a close that lands between the two is seen
+            // as the flag, and one that lands after it is seen as the notification. Neither order
+            // leaves this parked.
+            let mut closing = Box::pin(inner.closing.notified());
+            closing.as_mut().enable();
+            if inner.closed.load(Ordering::Acquire) {
+                return None;
+            }
+            let reading = std::pin::pin!(async {
+                match &mut side.half {
+                    InnerRead::Server(r) => r.read(&mut side.scratch).await,
+                    InnerRead::Client(r) => r.read(&mut side.scratch).await,
+                }
+            });
+            let result = match futures::future::select(reading, closing).await {
+                futures::future::Either::Left((r, _)) => r,
+                // The close won: the read is dropped where it stood and the stream ends.
+                futures::future::Either::Right(((), _)) => return None,
             };
             match result {
                 Ok(0) => None,
@@ -594,16 +674,28 @@ impl Transport for TlsTransport {
                 .get(&keys.slot())
                 .cloned()
                 .ok_or(TransportError::KeyUnavailable)?;
-            let tls_stream = TlsAcceptor::from(cfg)
-                .accept(stream)
-                .await
-                .map_err(|_| TransportError::HandshakeFailed)?;
+            // Same budget as `accept`, for the same reason: the peer whose stream was just handed
+            // up is under no obligation to send a ClientHello, and this await is otherwise unbounded.
+            let tls_stream = tokio::time::timeout(
+                self.handshake_timeout,
+                TlsAcceptor::from(cfg).accept(stream),
+            )
+            .await
+            .map_err(|_| TransportError::Timeout)?
+            .map_err(|_| TransportError::HandshakeFailed)?;
             Ok(self.insert_server(tls_stream, peer, chain))
         })
     }
 
     fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
-        let inner = self.conns.lock().expect("poisoned").remove(&conn.id())?;
+        // Checked BEFORE the removal, under the same lock: see the sibling `tcp` note. Removing
+        // first and then failing to unwrap loses the connection — no stream up, no entry left.
+        let mut registry = self.conns.lock().expect("poisoned");
+        if Arc::strong_count(registry.get(&conn.id())?) != 1 {
+            return None;
+        }
+        let inner = registry.remove(&conn.id())?;
+        drop(registry);
         let peer = conn.peer();
         let inner = Arc::try_unwrap(inner).ok()?;
         let stream: BoxedIo = match (inner.read.into_inner().half, inner.write.into_inner()) {
@@ -633,7 +725,8 @@ impl Transport for TlsTransport {
         // which the last clone goes and the socket really does close.
         let inner = self.conns.lock().expect("poisoned").remove(&conn.id());
         if let Some(inner) = inner {
-            inner.closed.store(true, Ordering::Release);
+            inner.finalise();
+            shut_down_session(inner);
         }
     }
 
@@ -654,7 +747,18 @@ impl Transport for TlsTransport {
                     InnerWrite::Client(w) => deliver_refusal(w, bytes.as_slice()).await?,
                 }
             }
-            self.conns.lock().expect("poisoned").remove(&conn.id());
+            // A refusal finalises the connection, so it ends it the way `close` does: dropping the
+            // registry's clone is not enough, because a frame stream that started before the
+            // refusal holds its own clone and would stay parked on the socket forever, keeping the
+            // rustls session alive with it. The flag is what ends that stream, after which the last
+            // clone goes and the session and its socket really close.
+            let removed = self.conns.lock().expect("poisoned").remove(&conn.id());
+            if let Some(removed) = removed {
+                removed.finalise();
+                // Inline here: this path is already async, so the alert goes out before the refusal
+                // reports done rather than on a task the caller cannot wait for.
+                send_close_notify(&removed).await;
+            }
             Ok(())
         })
     }
@@ -677,9 +781,12 @@ fn split_address(
         .map_err(|_| TransportError::AddressRefused)?;
     match address.sni() {
         Some(name) => Ok((name, addr)),
-        None if addr.is_ipv4() || addr.is_ipv6() => {
+        None => {
             // No name declared: the literal the authority already spells, without its port, is the
-            // only name this transport can offer without inventing one.
+            // only name this transport can offer without inventing one. There is no other arm to
+            // take — a `SocketAddr` is v4 or v6 and nothing else, so the guard this used to carry
+            // asked a question with one answer, and the refusal behind it was unreachable. The
+            // parse above is what refuses an authority that names no address.
             let host_part = authority
                 .rsplit_once(':')
                 .map_or(authority, |(h, _)| h)
@@ -687,7 +794,36 @@ fn split_address(
                 .trim_end_matches(']');
             Ok((host_part, addr))
         }
-        None => Err(TransportError::AddressRefused),
+    }
+}
+
+/// Send the TLS `close_notify` alert this session's peer is owed, then let the halves drop.
+///
+/// Dropping a rustls stream without the alert is an ABRUPT close: the peer's own rustls reports
+/// `UnexpectedEof` rather than a clean end of stream, because that is exactly what a truncation
+/// attack looks like from the inside — and a peer that cannot tell a deliberate close from a
+/// truncated one has to treat every close as suspect. This transport knows which one this is, so
+/// it says so.
+async fn send_close_notify(inner: &Inner) {
+    let mut guard = inner.write.lock().await;
+    match &mut *guard {
+        InnerWrite::Server(w) => {
+            let _ = w.shutdown().await;
+        }
+        InnerWrite::Client(w) => {
+            let _ = w.shutdown().await;
+        }
+    }
+}
+
+/// [`send_close_notify`] from `close`, which the trait makes synchronous.
+///
+/// The alert is a write, and a write is async; the only place to put it is a task. Where there is
+/// no runtime to spawn one on — a caller closing outside an async context — the halves drop as they
+/// did before, which is the abrupt close rather than a panic.
+fn shut_down_session(inner: Arc<Inner>) {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(async move { send_close_notify(&inner).await });
     }
 }
 

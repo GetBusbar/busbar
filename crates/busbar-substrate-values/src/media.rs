@@ -66,9 +66,21 @@ pub fn base64_decode(input: &str) -> Option<Bytes> {
     let mut bits: u32 = 0;
     let mut nbits = 0u32;
     let mut out = Vec::with_capacity(input.len() / 4 * 3);
+    // Padding is TERMINAL: `=` ends the encoded data, and only whitespace may follow it. Skipping
+    // `=` wherever it appeared let a concatenation of two padded blobs (`QQ==QQ==`) decode as one
+    // longer payload, silently accepting a corrupt provider payload the fail-loud contract exists to
+    // reject.
+    let mut padded = false;
     for &b in input.as_bytes() {
-        if b == b'=' || b.is_ascii_whitespace() {
+        if b.is_ascii_whitespace() {
             continue;
+        }
+        if b == b'=' {
+            padded = true;
+            continue;
+        }
+        if padded {
+            return None; // encoded data resumed after the padding — malformed
         }
         let v = val[b as usize];
         if v == 255 {

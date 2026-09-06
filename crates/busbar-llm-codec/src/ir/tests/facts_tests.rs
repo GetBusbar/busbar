@@ -485,6 +485,45 @@ fn screening_digest_framing_prevents_a_concatenation_collision() {
     assert_ne!(a.screening_digest(), b.screening_digest());
 }
 
+/// The VARIANT is part of a piece's identity. A `Text` body that happens to equal a `Data`
+/// payload's serialization, or an `Opaque` marker, is a DIFFERENT kind of piece and a guardrail acts
+/// differently on each — but with the variant absent from the framing all three digested the same,
+/// so one session's cleared-set could skip-screen a piece of another kind.
+#[test]
+fn screening_digest_distinguishes_variants_with_identical_text() {
+    let value = serde_json::json!({"a": 1});
+    let serialized = value.to_string();
+    let text = ContentItem::Text {
+        author: "user",
+        slot: Slot::Turn(0),
+        text: serialized.clone().into(),
+    };
+    let data = ContentItem::Data {
+        author: "user",
+        slot: Slot::Turn(0),
+        label: "args",
+        value: &value,
+    };
+    // The two carry byte-identical screenable text by construction — only the variant differs.
+    assert_eq!(text.screenable_text(), data.screenable_text());
+    assert_ne!(text.screening_digest(), data.screening_digest());
+
+    let marker = "[redacted]";
+    let opaque_as_text = ContentItem::Text {
+        author: "user",
+        slot: Slot::Turn(0),
+        text: marker.into(),
+    };
+    let opaque = ContentItem::Opaque {
+        author: "user",
+        slot: Slot::Turn(0),
+        label: "reasoning",
+        marker,
+    };
+    assert_eq!(opaque_as_text.screenable_text(), opaque.screenable_text());
+    assert_ne!(opaque_as_text.screening_digest(), opaque.screening_digest());
+}
+
 #[test]
 fn screening_digest_is_deterministic() {
     let a = ContentItem::Text {

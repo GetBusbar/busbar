@@ -331,8 +331,12 @@ impl Transport for StdioTransport {
                 let slot = held.slot.as_mut().expect("held for the guard's lifetime");
                 let item = loop {
                     match read_line(&mut slot.reader, &mut slot.partial).await {
-                        // A clean end on a line boundary: the session ends.
-                        Ok((0, LineEnd::Eof)) => break None,
+                        // A clean end on a line boundary: the session ends. What makes it clean is
+                        // an EMPTY carried-over buffer, not a zero-byte read: a pump dropped
+                        // mid-line leaves the bytes it consumed on the connection (see
+                        // [`crate::conn::ReaderSlot`]), so the read that then meets EOF returns
+                        // nothing at all while the unfinished line is still sitting there.
+                        Ok((_, LineEnd::Eof)) if slot.partial.is_empty() => break None,
                         // The peer stopped partway through a line, or never ended one at all.
                         // Where that line ended is the one thing this transport must not guess, so
                         // the tail is a framing error and not a frame — the read-side answer to
@@ -397,18 +401,23 @@ impl Transport for StdioTransport {
             if state.is_poisoned() {
                 return Err(TransportError::Framing);
             }
-            let payload = bytes.as_slice().to_vec();
+            // The arena slice outlives every await here, so there is nothing to copy it into.
+            let payload = bytes.as_slice();
             let n = payload.len();
-            // Armed for the whole write; disarmed only on a clean completion. If THIS future is
-            // dropped mid-write (a cancellation) the guard's `Drop` still runs and poisons the
-            // connection — the same fencing an I/O error gets, and for the same reason: a write
-            // that did not finish leaves no promise about what reached the wire.
+            // The lock FIRST, and only then the fence. A write still queued behind another writer
+            // has put nothing on the wire, so a caller who drops it there has left nothing in
+            // doubt — arming before the lock would fence a connection over a write that never
+            // began. From here on it is armed for the whole write and disarmed only on a clean
+            // completion: if THIS future is dropped mid-write (a cancellation) the guard's `Drop`
+            // still runs and poisons the connection, the same fencing an I/O error gets, and for
+            // the same reason — a write that did not finish leaves no promise about what reached
+            // the wire.
+            let mut w = state.writer.lock().await;
             let mut guard = PoisonGuard {
                 state: &state,
                 armed: true,
             };
-            let mut w = state.writer.lock().await;
-            w.write_all(&payload)
+            w.write_all(payload)
                 .await
                 .map_err(|_| TransportError::Reset)?;
             w.write_all(b"\n")
@@ -479,19 +488,40 @@ impl Transport for StdioTransport {
     ) -> Fut<'a, ()> {
         Box::pin(async move {
             let id = conn.id();
-            if let Some(state) = self.state_of(id) {
-                if !state.is_poisoned() {
-                    let payload = bytes.as_slice().to_vec();
-                    let mut w = state.writer.lock().await;
-                    let _ = w.write_all(&payload).await;
-                    let _ = w.write_all(b"\n").await;
-                    let _ = w.flush().await;
-                }
-            }
+            // Whether the refusal reached the peer or not, the session ends here — so the close
+            // runs on every path out, and only the answer differs.
+            let outcome = match self.state_of(id) {
+                // A connection this transport no longer knows, or one the fence has already
+                // tripped, has no channel left to carry a refusal on.
+                None => Err(TransportError::Closed),
+                Some(state) if state.is_poisoned() => Err(TransportError::Closed),
+                Some(state) => write_refusal_line(&state, bytes.as_slice()).await,
+            };
             self.close(conn, CloseReason::Normal);
-            Ok(())
+            outcome
         })
     }
+}
+
+/// Write one refusal line, fenced exactly the way an ordinary write is.
+///
+/// A refusal is the last thing this transport says on a connection, but it is still a line on the
+/// same wire: a failure partway through leaves the same unfinished line an ordinary write does, so
+/// it takes the same fence. What the caller gets back is whether the peer was actually told —
+/// discarding that reports a refusal as delivered over stdin nobody is reading any more.
+async fn write_refusal_line(state: &ConnState, payload: &[u8]) -> Result<(), TransportError> {
+    let mut w = state.writer.lock().await;
+    let mut guard = PoisonGuard { state, armed: true };
+    w.write_all(payload)
+        .await
+        .map_err(|_| TransportError::Reset)?;
+    w.write_all(b"\n")
+        .await
+        .map_err(|_| TransportError::Reset)?;
+    w.flush().await.map_err(|_| TransportError::Reset)?;
+    drop(w);
+    guard.armed = false;
+    Ok(())
 }
 
 /// `read_until('\n', ...)` with the terminator stripped, and any trailing `\r` stripped too so a

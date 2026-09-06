@@ -364,20 +364,38 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
             return c.clone();
         }
         let mut cells = self.cells.write().unwrap_or_else(|e| e.into_inner());
-        let cell = cells
-            .entry(key)
-            .or_insert_with(|| Arc::new(BreakerCell::new()));
-        let cell = cell.clone();
-        drop(cells);
-        let mut pools = self
-            .pools_by_destination
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        let list = pools.entry(destination).or_default();
-        if !list.iter().any(|p| p == pool) {
-            list.push(pool.to_string());
+        // The pool name is registered against the destination BEFORE the cell is published, and
+        // both happen under the cell map's write lock. Publishing first left a window in which the
+        // cell was fully reachable — admissions ran through it — while `hard_down_all`, which walks
+        // the destination's registered names, could not see it: a bad key would suppress every
+        // other pool for that destination and leave this one serving. Reachable now implies
+        // registered. The lock order matches `hard_down_all`'s own, cells before pools.
+        {
+            let mut pools = self
+                .pools_by_destination
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            let list = pools.entry(destination).or_default();
+            if !list.iter().any(|p| p == pool) {
+                list.push(pool.to_string());
+            }
         }
-        cell
+        cells
+            .entry(key)
+            .or_insert_with(|| Arc::new(BreakerCell::new()))
+            .clone()
+    }
+
+    /// Whether a cell for this pool and destination already exists, without creating one.
+    ///
+    /// Reachability made observable, so a test can wait for the exact moment a cell becomes usable
+    /// and ask what else can see it then.
+    #[cfg(test)]
+    pub(crate) fn has_cell(&self, pool: &str, destination: DestinationId) -> bool {
+        self.cells
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&(pool.to_string(), destination))
     }
 
     /// Trip EVERY existing pool cell for `destination` hard-down at once (PB-83: the default `""`
@@ -494,9 +512,14 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
             Outcome::HardDown => self.hard_down_all(destination, now),
             Outcome::Success => {
                 let cell = self.cell(pool, destination);
-                let was_probe = matches!(cell.state(), CellState::HalfOpen);
+                // Gated on what the call REPORTS, exactly as the Transient arm below is. The
+                // recovery CAS can only succeed from HalfOpen, so `closed` IS the proof that this
+                // call closed a probing cell. Reading the state beforehand instead lost the other
+                // direction of the same race: a peer winning the probe between the read and the
+                // CAS left this call closing a HalfOpen cell while believing it had been Closed,
+                // and the won probe got no terminal record at all.
                 let closed = cell.record_success(now);
-                if was_probe && closed {
+                if closed {
                     self.journal.record(ProbeEvent::Succeeded {
                         pool: pool.to_string(),
                         destination,

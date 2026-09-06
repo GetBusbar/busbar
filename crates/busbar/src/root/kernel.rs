@@ -677,8 +677,12 @@ mod tests {
     #[test]
     fn the_interner_leaks_a_repeated_key_once() {
         let mut registration = new_registration();
-        let first = registration.key("lane-a");
-        let second = registration.key("lane-a");
+        let first = registration
+            .key("lane-a")
+            .expect("an unfrozen image interns a key");
+        let second = registration
+            .key("lane-a")
+            .expect("a repeated key is the same key");
         assert!(std::ptr::eq(first, second));
         assert_eq!(registration.len(), 1);
     }

@@ -15,7 +15,11 @@ request, so absolute counters (which differ per run) never enter a golden:
                    the RAW (pre-normalization) hashes, before normalize.py ever sees them: an item's
                    chain_ok is true iff its prev_hash equals the preceding entry's hash (the previous
                    added item, or — for the oldest added item — the newest pre-existing entry), and,
-                   for the very first entry the process ever wrote, iff prev_hash is empty (genesis)
+                   for the very first entry the process ever wrote, iff prev_hash is empty (genesis).
+                   The COUNT is the page-length difference only while the snapshot is a whole page;
+                   once the log outgrows the recorder's `?limit=1000` the count comes from the
+                   entries' own monotonic `seq` instead, because both capped pages hold exactly 1000
+                   entries and their lengths stop moving
   effects.egress   the request(s) busbar itself sent upstream, in order: each trailing argv is the
                    path to one JSON file written by mock-upstream.py's ORACLE_MOCK_CAPTURE_DIR
                    ({"path", "method", "headers", "body"} — see that script's docstring for how the
@@ -118,6 +122,20 @@ def audit_items(x) -> list:
     return x if isinstance(x, list) else []
 
 
+def audit_seq(it):
+    """An audit entry's monotonic 1-based sequence number, or None if the wire shape has none."""
+    v = it.get("seq") if isinstance(it, dict) else None
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def audit_page_full(snap) -> bool:
+    """True when the snapshot is only the FIRST PAGE of the audit log — the recorder asks for
+    `?limit=1000` and the response says there is more behind a cursor. On a full page the entry
+    COUNT stops moving (both sides pin at the limit), so `len(after) - len(before)` silently reports
+    0 added for every cell recorded after the 1000th entry."""
+    return bool(isinstance(snap, dict) and snap.get("next_cursor"))
+
+
 def audit_diff(before, after) -> dict:
     """The audit items THIS request added, plus the count. `before`/`after` are the raw (unnormalized)
     GET /api/v1/admin/audit snapshots — newest-first — taken around the request.
@@ -132,8 +150,28 @@ def audit_diff(before, after) -> dict:
     items_before = audit_items(before)
     items_after = audit_items(after)
     added_n = len(items_after) - len(items_before)
+    extra = {}
+    # A snapshot that is only the first of several pages cannot be counted by length: the recorder
+    # asks for ?limit=1000, so once the log passes 1000 entries BOTH pages hold exactly 1000 and the
+    # subtraction reports 0 added for every cell from then on — a cell that audited nothing and a
+    # cell that audited five look identical, and the golden freezes the wrong answer.
+    # The entries carry their own monotonic 1-based `seq` (unique within a process lifetime), so the
+    # newest sequence numbers give the count directly, independent of any page limit.
+    if audit_page_full(before) or audit_page_full(after):
+        sb = audit_seq(items_before[0]) if items_before else 0
+        sa = audit_seq(items_after[0]) if items_after else None
+        if sa is not None and sb is not None and sa >= sb:
+            added_n = sa - sb
+        else:
+            # No seq on the wire, or the sequence went BACKWARDS (the process restarted mid-cell and
+            # its counter reset to 1). Neither the length nor the sequence can be trusted here, and a
+            # wrong count must not look like a right one.
+            extra["paged"] = True
     # The first `added_n` entries of `after` are the ones this request appended (still newest-first).
     added_desc = items_after[:added_n] if added_n > 0 else []
+    if added_n > len(items_after):
+        # more were added than this page can show: the items list is partial, the count is not
+        extra["items_truncated"] = added_n - len(items_after)
     # Walk oldest-added -> newest-added so each item's predecessor is well-defined: the oldest added
     # item's predecessor is the newest PRE-EXISTING entry (or, if there was no pre-existing entry at
     # all, the chain genesis — whose prev_hash must be "").
@@ -148,7 +186,7 @@ def audit_diff(before, after) -> dict:
             "chain_ok": it.get("prev_hash", "") == prev_hash,
         })
         prev_hash = it.get("hash", "")
-    return {"added": added_n, "items": items_out}
+    return {"added": added_n, "items": items_out, **extra}
 
 
 def load_egress(paths: list) -> list:

@@ -66,12 +66,46 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   `--providers <path>` names the provider catalog (flag > `providers_file:` > `providers.yaml`
   beside the config); both are additive. `--version` adds a `build: profile=… target=…`
   provenance line under the version.
+- **Bedrock `usage.totalTokens` counts the cache tokens AWS counts.** Converse reports
+  `inputTokens` as the non-cached input only and states the full input as
+  `inputTokens + cacheReadInputTokens + cacheWriteInputTokens`; 1.5.5 derived
+  `totalTokens = inputTokens + outputTokens` while emitting the two cache counts beside it, so on a
+  cache-bearing response the published parts summed past the published total and a consumer reading
+  `totalTokens` lost every cache token. Both the buffered Converse body and the streamed `metadata`
+  frame now publish the AWS sum. The component fields are unchanged, as is a response with no cache
+  activity. See [Spec fidelity](#spec-fidelity).
 - **Bedrock text blocks no longer open with an empty `contentBlockStart`.** On the ConverseStream
   wire a text block starts with its first `contentBlockDelta`; `contentBlockStart` is emitted for
   tool-use blocks only, as AWS does. See [Spec fidelity](#spec-fidelity).
 - **Responses API streams carry the lifecycle frames the spec declares:**
   `response.content_part.added`, `response.output_text.done` and `response.content_part.done`, with
   a contiguous `sequence_number`. 1.5.5 omitted them. See [Spec fidelity](#spec-fidelity).
+- **A chat completion's `logprobs` object carries `refusal`.** The published Chat Completions
+  schema requires both `content` and `refusal` on a choice's `logprobs`; 1.5.5 emitted `content`
+  alone, so a response carrying logprobs failed strict validation and the official Python SDK's
+  model. 1.6.0 emits `"refusal": null` beside the carried tokens, buffered and streamed alike —
+  what OpenAI returns when the model did not refuse. See [Spec fidelity](#spec-fidelity).
+- **A buffered chat completion's `finish_reason` is always a real token.** The buffered choice
+  schema declares a non-nullable enum (only a stream chunk's choice may be null). Where a backend
+  reported no stop reason at all — a cross-protocol response whose upstream carried none — 1.5.5's
+  successor emitted JSON `null`; 1.6.0 emits `stop`, the spec's natural-stop token. Streamed chunks
+  keep their `null` unchanged. See [Spec fidelity](#spec-fidelity).
+- **An Anthropic-dialect stream never opens an `image` content block.** The published
+  `content_block_start` union has no `image` member — an assistant block on that wire is never an
+  image — so busbar now emits no frame for one, and suppresses its matching `content_block_stop`
+  with it rather than orphaning a close a client never saw opened. Every other dialect already did.
+  See [Spec fidelity](#spec-fidelity).
+- **An Anthropic-dialect error names an Anthropic error type.** Busbar's quota and
+  context-overflow refusals reached an Anthropic client as `insufficient_quota` and
+  `context_length_exceeded` — OpenAI's vocabulary, and outside the nine types the published error
+  envelope declares, so the official SDK raised a generic `APIError`. They are now `billing_error`
+  and `invalid_request_error`. The status, message and every other error type are unchanged.
+  See [Spec fidelity](#spec-fidelity).
+- **A Responses tool call opens with `arguments`.** `response.output_item.added` for a
+  `function_call` now carries `"arguments": ""`, a required member of the published item, filled by
+  the `response.function_call_arguments.delta` events that follow — as real OpenAI does. 1.5.5
+  omitted it, so the opening item failed the item schema and an SDK seeding its accumulator from it
+  concatenated onto `undefined`. See [Spec fidelity](#spec-fidelity).
 - **A degraded hop is accounted like a primary hop.** On a fallback, least-bad or queue hop: a
   non-2xx records the breaker outcome by status class, honouring the upstream `Retry-After` as the
   cooldown floor, and emits the upstream-failure series; a client-fault 4xx bumps the lane's
@@ -90,13 +124,25 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   refused as though it were not. The refund now resolves the same cell the charge did. Strictly in
   the caller's favour, reachable only on a boundary straddle, and the admission `requests` slot is
   still never refunded.
+- **A stream that dies mid-flight is no longer served, and billed, as a completed one.** Two
+  upstream failure shapes reached the client as a clean success in 1.5.5. An OpenAI-compatible
+  backend (OpenAI, Azure, vLLM, OpenRouter) that fails after its 200 headers are on the wire sends
+  the failure inline as a `data: {"error":{…}}` chunk carrying no `choices`; that chunk decoded to
+  nothing, so the truncated answer ended with an ordinary terminator, the breaker recorded no
+  fault, and the partial completion was billed in full. A Cohere stream ending on the generic infra
+  `finish_reason: "ERROR"` had the same outcome by a different route: the reason had no native
+  token in any other dialect's writer, so a cross-protocol client read it as `stop`/`end_turn`.
+  Both now surface a real error to the client, record the upstream fault on the breaker, and are
+  not billed as completions. The content-moderation `ERROR_TOXIC` stop is untouched: a safety
+  refusal is a correctly-served response and must not fault a lane. No successful stream changes.
 
 ### Breaking
 
-The accepted-differences register for this release has exactly two entries of kind `breaking`,
-both confined to the fallback/least-bad/queue hop; the primary hop's behaviour is unchanged in
-both. Everything else that touches a 1.5.5 config, request or plugin is named above as an
-improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
+The accepted-differences register for this release has exactly four entries of kind `breaking`:
+two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
+both), one confined to Cohere backends that report `usage.billed_units`, and one field removed
+from the hook view. Everything else that touches a 1.5.5 config, request or plugin is named above
+as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
 
 - 1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native
@@ -116,6 +162,23 @@ identically, and every 1.5.5 key and minted secret carries over.
   opt in now gets its usage chunk on the fallback hop too. **Migration:** if you priced or
   capacity-planned on 1.5.5's numbers for traffic that routinely fails over, expect those keys'
   recorded spend to rise to what they actually used; no config change is needed.
+- 1.6.0 Improvements: a Cohere backend's `usage.billed_units` is what the key is billed, on both
+  the buffered and the streamed path. Cohere reports usage twice — a raw `usage.tokens` bucket and
+  a separately-metered `usage.billed_units` bucket, and `billed_units` is what the operator is
+  invoiced upstream. 1.5.5 read only `tokens` and billed those; 1.6.0 bills `billed_units` where
+  the backend reports it, and now does so identically whether the completion was served buffered or
+  streamed (the two answers for one completion previously differed). Only Cohere populates these
+  fields; every other backend's ledgered counts are byte-identical to 1.5.5. **Migration:** if a
+  Cohere lane's `billed_units` exceed its raw `tokens`, expect that key's recorded spend and
+  token-limit consumption to rise to the figure Cohere itself invoices; no config change is needed.
+- 1.6.0 Changed: the always-null `at` field on the hook view gives way to `fires_at` (rewritten for
+  you by --migrate-config). Every hook object served by `GET /api/v1/admin/hooks[/{name}]`, and the
+  follow-up read of a hook write, gains `fires_at` (the resolved stage set), `groups` and `phase`
+  and no longer carries `at`, which was always `null` in 1.5.5 and told a caller nothing.
+  **Migration:** `busbar --migrate-config` rewrites the single-stage tap `at: <stage>` config key
+  for you, and a persisted overlay auto-migrates it at boot; a client or dashboard that READ the
+  `at` field off a hook view must read `fires_at` instead. See
+  [the 1.6.0 migration guide](docs/migration-1.6.md).
 
 Four retired 1.5.x spellings that were never the documented form are rewritten for you rather
 than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap
@@ -150,7 +213,8 @@ The LLM plane is now validated against the providers' published, machine-readabl
 specifications — OpenAI (Chat Completions and Responses), Anthropic, Google Gemini, AWS Bedrock
 and Cohere, each pinned by URL and digest — for every request the oracle sends and every buffered,
 streamed and error response Busbar returns. Where 1.5.5's bytes and the spec disagreed, the spec
-won; that is the origin of the two stream-shape improvements above. One documented disagreement
+won; that is the origin of the stream-shape, required-member, error-vocabulary and `finish_reason`
+improvements above. One documented disagreement
 runs the other way: Anthropic's published stream-event union has no `ping` member although the
 docs say `ping` events occur and real Anthropic streams carry them. Busbar keeps emitting
 `event: ping` in cross-protocol Anthropic streams — a client that cannot take it is not an

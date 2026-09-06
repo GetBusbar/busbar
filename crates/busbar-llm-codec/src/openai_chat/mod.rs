@@ -473,7 +473,15 @@ pub fn write_openai_logprobs(lps: &[crate::ir::IrTokenLogprob]) -> serde_json::V
             })
         })
         .collect();
-    serde_json::json!({ "content": content })
+    // `refusal` is a REQUIRED member of the choice `logprobs` object in BOTH published schemas
+    // (`CreateChatCompletionResponse` and `CreateChatCompletionStreamResponse` each declare
+    // `required: ["content", "refusal"]`), nullable: the refusal-token list, or null when the model
+    // did not refuse. The IR carries no refusal tokens (a refusal arrives as message text), so emit
+    // explicit null — which is what real OpenAI returns for a non-refusing completion. Emitting only
+    // `content` failed strict spec validation and the Python SDK's Pydantic model, and was a proxy
+    // tell on every response that carried logprobs. The Responses writer lifts the `content` array
+    // out of this object for an `output_text` part's bare `LogProb[]`, so it is unaffected.
+    serde_json::json!({ "content": content, "refusal": serde_json::Value::Null })
 }
 
 /// Synthesize a protocol-correct OpenAI completion id (`"chatcmpl-<24 base62 chars>"`) for
@@ -582,6 +590,40 @@ fn modeled_request_keys() -> &'static std::collections::HashSet<&'static str> {
         .into_iter()
         .collect()
     })
+}
+
+/// The `error.code` token OpenAI-compatible upstreams use for a rate limit. The specific token
+/// rides on `code`; `type` carries the coarser `rate_limit_error` bucket.
+const STREAM_ERR_CODE_RATE_LIMIT: &str = "rate_limit_exceeded";
+
+/// Derive the breaker class for an INLINE mid-stream `{"error":{...}}` chunk from the upstream
+/// `error.code` / `error.type`.
+///
+/// There is no HTTP status to classify on — the response was already 200 when the failure landed —
+/// so the envelope's own vocabulary is the only signal. `code` is consulted FIRST because
+/// OpenAI-compatible upstreams put the specific token there (`context_length_exceeded`,
+/// `rate_limit_exceeded`) and leave `type` on a coarse bucket; `type` is the fallback.
+///
+/// An unrecognized or absent signal defaults to the transient `ServerError` bucket, mirroring the
+/// openai_responses sibling: the lane recovers via cooldown rather than being permanently
+/// penalized, and — critically — the stream is never mistaken for a success. The default is a
+/// NAMED arm, not a `_ =>` swallow, so a future token surfaces as an explicit unmapped case here.
+fn stream_inline_error_class(error_type: Option<&str>, code: Option<&str>) -> StatusClass {
+    let signal = code.filter(|c| !c.is_empty()).or(error_type);
+    match signal {
+        Some(busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH) => {
+            StatusClass::ContextLength
+        }
+        Some(STREAM_ERR_CODE_RATE_LIMIT)
+        | Some(ERR_TYPE_RATE_LIMIT)
+        | Some(ERR_TYPE_INSUFFICIENT_QUOTA) => StatusClass::RateLimit,
+        Some(ERR_TYPE_AUTHENTICATION) | Some(ERR_TYPE_PERMISSION) => StatusClass::Auth,
+        Some(ERR_TYPE_OVERLOADED) => StatusClass::Overloaded,
+        Some(ERR_TYPE_INVALID_REQUEST) | Some(ERR_TYPE_NOT_FOUND) => StatusClass::ClientError,
+        Some(ERR_TYPE_SERVER_ERROR) => StatusClass::ServerError,
+        Some(_unrecognized) => StatusClass::ServerError,
+        None => StatusClass::ServerError,
+    }
 }
 
 /// OpenAI reader implementation.

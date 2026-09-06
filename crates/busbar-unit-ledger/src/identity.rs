@@ -146,24 +146,33 @@ impl std::fmt::Display for ClosedWindowMoved {
 
 impl std::error::Error for ClosedWindowMoved {}
 
-/// Whether a closed window has stopped moving.
+/// Whether a closed window has stopped moving, and by how much it has not.
 ///
 /// Everything that can change in a closed window is a transfer out of it; once the transfers are
 /// accounted for, every other figure must be where it was at the last checkpoint.
 ///
-/// That is the SAME question [`residual`] answers, asked between the checkpoint and now, so it is
-/// asked through [`residual`] rather than re-summed here. A second sum over a hand-picked subset of
-/// the columns is a second definition of "the books balance", and this one had drifted from the
-/// first: it omitted `unreconciled` and the carried overdraft, so a reconciliation that moved value
-/// between the settled and unreconciled columns — which changes nothing about the window — was
-/// reported as a closed window still moving, while a posting that landed in `unreconciled` alone
-/// moved the window invisibly. One identity, asked once.
+/// It reads the columns [`residual`] reads, for the reason that module note gives: a second sum over
+/// a hand-picked subset is a second definition of "the books balance", and the one that used to be
+/// here had drifted — it omitted `unreconciled` and the carried overdraft, so a reconciliation that
+/// moved value between the settled and unreconciled columns was reported as a window still moving,
+/// while a posting that landed in `unreconciled` alone moved the window invisibly.
+///
+/// But it is NOT the residual. The residual is the difference between the two sides, and this
+/// question is about the sides themselves. A late posting into a reported window that draws 200 and
+/// settles 200 has a residual of zero — the books balance, and would balance in an open window — and
+/// it is precisely the thing a closed window must not do. So each side is compared against where the
+/// checkpoint left it, and the window is settled only when NEITHER has moved.
+///
+/// The amount returned is what moved: the accounted side when that is what moved, and otherwise the
+/// drawn side, so the figure an alarm carries is the one an operator can go looking for.
 pub fn closed_window_is_settled(since: &Totals, now: &Totals) -> Result<(), i128> {
-    let moved = residual(since, now).amount();
-    if moved == 0 {
-        Ok(())
+    let moved = residual(since, now);
+    if moved.accounted != 0 {
+        Err(moved.accounted)
+    } else if moved.drawn != 0 {
+        Err(moved.drawn)
     } else {
-        Err(moved)
+        Ok(())
     }
 }
 

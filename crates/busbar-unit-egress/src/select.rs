@@ -231,6 +231,14 @@ impl<'a> ProbeGuard<'a> {
         self.armed = false;
     }
 
+    /// Hand the probe on and yield the epoch it was won at, so the dispatch that takes it can arm
+    /// its own guard over the same epoch. Disarms this one: exactly one guard is live per win.
+    #[must_use]
+    pub fn take_epoch(&mut self) -> u64 {
+        self.armed = false;
+        self.epoch
+    }
+
     /// Whether the guard would still release on drop.
     #[must_use]
     pub fn is_armed(&self) -> bool {
@@ -255,19 +263,38 @@ impl Drop for ProbeGuard<'_> {
 pub type Preference<'a> = Option<&'a [DestinationId]>;
 
 /// What one pick found.
-#[derive(Debug)]
+///
+/// A won probe is held as a GUARD rather than a bare epoch, and that is what makes the ownership
+/// total. Between the pick and the dispatch there are resolution steps that can shed — a member the
+/// verified set does not carry, a pool whose membership no longer names it — and every one of them
+/// simply drops the pick. Holding the guard here means each of those drops gives the probe back,
+/// instead of leaving the cell half-open forever and the member excluded from every later pick.
 #[must_use = "a pick holds a concurrency permit and possibly a recovery probe"]
-pub struct Picked {
+pub struct Picked<'a> {
     /// Which member.
     pub destination: DestinationId,
     /// Its concurrency slot.
     pub permit: Permit,
-    /// The recovery probe this pick won, where it won one.
-    pub probe_epoch: Option<u64>,
+    /// The recovery probe this pick won, where it won one, still owned by the pick.
+    pub probe: Option<ProbeGuard<'a>>,
+}
+
+impl Picked<'_> {
+    /// Hand this pick's probe, where it won one, to the dispatch that is about to run and will
+    /// record its own outcome. Any path that does NOT reach a dispatch never calls this, drops the
+    /// pick instead, and the guard gives the probe back.
+    pub fn take_probe_epoch(&mut self) -> Option<u64> {
+        self.probe.as_mut().map(ProbeGuard::take_epoch)
+    }
 }
 
 /// Everything a pick reads.
-pub struct PickInput<'a> {
+///
+/// The capability token has its own lifetime: it is minted per loop step and lives only as long as
+/// the step, while the breaker and the pool name outlive the request. A probe guard the pick hands
+/// back borrows the latter, so tying the two together would shorten the guard to the token's life
+/// for no reason.
+pub struct PickInput<'a, 't> {
     /// The breaker unit.
     pub breaker: &'a dyn Breaker,
     /// The pool's permit store.
@@ -288,7 +315,7 @@ pub struct PickInput<'a> {
     /// (`busbar-caps`'s `&UnitToken<Route>`, per CG-29), lent down to every
     /// [`crate::ports::Breaker::ready`] / [`crate::ports::Breaker::cooldown_remaining`] call the
     /// pick makes.
-    pub token: &'a UnitToken<Route>,
+    pub token: &'t UnitToken<Route>,
 }
 
 /// Pick one member of the pool for this hop, or find that there is nowhere to send it.
@@ -298,7 +325,7 @@ pub struct PickInput<'a> {
 /// else happens here — no waiting, no spilling, no bypassing. Those are the terminals' job, and
 /// keeping them out of this loop is what makes "the pick never blocks" a structural fact rather
 /// than a rule someone has to remember.
-pub fn pick_among(input: &PickInput<'_>, ctx: &mut RequestCtx) -> Option<Picked> {
+pub fn pick_among<'a>(input: &PickInput<'a, '_>, ctx: &mut RequestCtx) -> Option<Picked<'a>> {
     let mut order = Order::new(input, ctx);
     let mut passed_over: Vec<(DestinationId, Unavailable)> = Vec::new();
     let mut refused: Option<usize> = None;
@@ -325,14 +352,14 @@ pub fn pick_among(input: &PickInput<'_>, ctx: &mut RequestCtx) -> Option<Picked>
     Some(Picked {
         destination,
         permit: admitted.permit,
-        probe_epoch: admitted.probe_epoch,
+        probe: admitted.probe,
     })
 }
 
 /// A successful admission: the breaker said yes and a slot was taken.
-struct Admitted {
+struct Admitted<'a> {
     permit: Permit,
-    probe_epoch: Option<u64>,
+    probe: Option<ProbeGuard<'a>>,
 }
 
 /// The single mutating admission: the breaker, then the pool's own capacity.
@@ -341,21 +368,24 @@ struct Admitted {
 /// are all held is at capacity, which is the one exclusion reason that waiting can cure — and a
 /// probe won on the way in must be given back here, because nothing was dispatched to record an
 /// outcome that would have cleared it.
-fn try_admit(input: &PickInput<'_>, destination: DestinationId) -> Result<Admitted, Unavailable> {
+///
+/// A win is wrapped in its guard the instant it happens, so every exit from here on — this
+/// function's own at-capacity return, a caller's resolution shed, a dropped future — gives the
+/// probe back without anyone having to remember to.
+fn try_admit<'a>(
+    input: &PickInput<'a, '_>,
+    destination: DestinationId,
+) -> Result<Admitted<'a>, Unavailable> {
     let admit: Admit = input
         .breaker
         .try_admit(input.pool, destination, input.now)?;
+    let probe = admit
+        .probe_epoch
+        .map(|epoch| ProbeGuard::new(input.breaker, input.pool, destination, epoch, input.now));
     match input.capacity.try_acquire(destination) {
-        Some(permit) => Ok(Admitted {
-            permit,
-            probe_epoch: admit.probe_epoch,
-        }),
+        Some(permit) => Ok(Admitted { permit, probe }),
         None => {
-            if let Some(epoch) = admit.probe_epoch {
-                input
-                    .breaker
-                    .release_probe(input.pool, destination, epoch, input.now);
-            }
+            drop(probe);
             Err(Unavailable::AtCapacity {
                 drain_hint_ms: None,
             })
@@ -364,8 +394,8 @@ fn try_admit(input: &PickInput<'_>, destination: DestinationId) -> Result<Admitt
 }
 
 /// The order: session affinity first, then a ranking hook's preference, then the weighted floor.
-struct Order<'a, 'b> {
-    input: &'b PickInput<'a>,
+struct Order<'a, 'b, 't> {
+    input: &'b PickInput<'a, 't>,
     /// The affinity position, offered first and exactly once.
     sticky: Option<usize>,
     sticky_offered: bool,
@@ -376,8 +406,8 @@ struct Order<'a, 'b> {
     local_excluded: HashSet<usize>,
 }
 
-impl<'a, 'b> Order<'a, 'b> {
-    fn new(input: &'b PickInput<'a>, ctx: &RequestCtx) -> Self {
+impl<'a, 'b, 't> Order<'a, 'b, 't> {
+    fn new(input: &'b PickInput<'a, 't>, ctx: &RequestCtx) -> Self {
         // Session affinity is a preference, not a constraint, and it is skipped in exactly two
         // cases: a drained member, and one this request has already tried. Both are selection
         // policy rather than availability, so neither is recorded as an exclusion reason.

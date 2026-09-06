@@ -203,11 +203,23 @@ impl ContentItem<'_> {
             Slot::ToolArgs(i) => (2, i as u64),
             Slot::ToolResult(i) => (3, i as u64),
         };
+        // The VARIANT is part of the identity. Without it a `Data` payload whose serialization
+        // happens to equal an `Opaque` marker (or a `Text` body) digests identically, and the
+        // cleared-set would skip-screen a different KIND of piece — the security-adjacent skip the
+        // length framing exists to prevent, one field short.
+        let variant: u8 = match self {
+            ContentItem::Text { .. } => 0,
+            ContentItem::Data { .. } => 1,
+            ContentItem::Opaque { .. } => 2,
+        };
         let text = self.screenable_text();
-        let mut buf = Vec::new();
+        let author = self.author();
+        // Exact: four length prefixes plus one byte, eight bytes, and the two variable fields.
+        let mut buf = Vec::with_capacity(5 * 8 + 1 + 1 + 8 + author.len() + text.len());
+        framed(&mut buf, &[variant]);
         framed(&mut buf, &[slot_kind]);
         framed(&mut buf, &slot_idx.to_be_bytes());
-        framed(&mut buf, self.author().as_bytes());
+        framed(&mut buf, author.as_bytes());
         framed(&mut buf, text.as_bytes());
         busbar_api::sha256_hex(&buf)
     }
@@ -313,6 +325,29 @@ pub trait IrFacts {
     /// here: a projection that decides for itself whether it may be seen is a projection with a
     /// policy in it.
     fn content(&self) -> Vec<ContentItem<'_>>;
+}
+
+/// A SHARED projection is still a projection. `facts()` must hand back an OWNED
+/// `Box<dyn IrFacts + Send + Sync>`, which forced every neutral handle to deep-clone its whole
+/// request — arguments `Value` and all — just to answer a read-only question. With this impl the
+/// handle can hold an `Arc` and hand out a REFCOUNT BUMP instead, and the request payload is
+/// serialized/allocated exactly once for the life of the request.
+impl<T: IrFacts + ?Sized> IrFacts for std::sync::Arc<T> {
+    fn verb(&self) -> Operation {
+        (**self).verb()
+    }
+    fn wants_stream(&self) -> bool {
+        (**self).wants_stream()
+    }
+    fn end_user(&self) -> Option<&str> {
+        (**self).end_user()
+    }
+    fn shape(&self) -> Shape {
+        (**self).shape()
+    }
+    fn content(&self) -> Vec<ContentItem<'_>> {
+        (**self).content()
+    }
 }
 
 /// The empty projection over a bare [`Operation`] — the [`IrFacts`] a RESPONSE-side `IrHandle`

@@ -138,7 +138,12 @@ impl Vocabulary {
             !self.sealed,
             "vocabulary sealed: `{value}` was interned after boot, which is a per-call leak"
         );
-        self.registration.key(value)
+        self.registration.key(value).unwrap_or_else(|| {
+            panic!(
+                "vocabulary: `{value}` could not be interned — the node's key set is past the \
+                 frozen image's capacity, or the image was frozen before boot finished interning"
+            )
+        })
     }
 
     /// Intern every config-derived key, once.
@@ -147,9 +152,7 @@ impl Vocabulary {
     /// that needs the static name for a particular entry can take it by position rather than
     /// interning it again.
     pub fn intern_all(&mut self, keys: &ConfigKeys) -> Vec<&'static str> {
-        keys.all()
-            .map(|value| self.registration.key(value))
-            .collect()
+        keys.all().map(|value| self.key(value)).collect()
     }
 
     /// Close the vocabulary. Nothing may intern after this.

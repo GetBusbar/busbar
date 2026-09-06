@@ -376,8 +376,8 @@ def default_gap_reason(row_id, info, cells_by_family_needs_fixture):
     fam = info["family"]
     notes = cells_by_family_needs_fixture.get(fam)
     if notes:
-        return "no cell cites %s yet; nearest %s needs_fixture note: %s" % (row_id, fam, notes[0])
-    return "no oracle cell in cells.json cites %s (%s:%d)" % (row_id, info["file"], info["line"])
+        return "no cell cites this row yet; nearest %s needs_fixture note: %s" % (fam, notes[0])
+    return "no oracle cell in cells.json cites this row (%s:%d)" % (info["file"], info["line"])
 
 
 def build_gaps(ids, coverage, cells):

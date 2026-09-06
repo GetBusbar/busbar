@@ -16,16 +16,19 @@
 # --gate      construction-gate rows (an egrep over the FAIL column) that must not be red after.
 set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
-tests=""; families=""; gate=""
+tests=""; families=""; gate=""; prove=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --tests) tests="$2"; shift 2 ;;
     --families) families="$2"; shift 2 ;;
     --gate) gate="$2"; shift 2 ;;
+    # --prove: pick nothing; prove the tip as it stands (a landing whose picks are already on
+    # the tree but whose legs were never run to green).
+    --prove) prove=1; shift ;;
     *) break ;;
   esac
 done
-[ $# -gt 0 ] || { echo "land.sh: no hashes" >&2; exit 2; }
+[ $# -gt 0 ] || [ "$prove" = 1 ] || { echo "land.sh: no hashes" >&2; exit 2; }
 
 # The lock file drifts between worktrees; a pick must never fail on it.
 git -C "$here" checkout -- Cargo.lock 2>/dev/null || true
@@ -38,7 +41,15 @@ for h in "$@"; do
 done
 echo "land.sh: picked $# commit(s); tip $(git -C "$here" rev-parse --short HEAD)"
 
-if [ -z "$tests" ]; then
+# The plugin batteries refuse to skip when their cdylib is absent, so the example plugins are
+# built before any test leg; a green here must mean the ABI-crossing cells actually ran.
+plog="$here/target/land-plugins-$(date +%H%M%S).log"
+if ! (cd "$here" && cargo build -p busbar-hook-test-plugin -p busbar-auth-static-plugin -p busbar-store-example-plugin -p busbar-export-example-plugin -p busbar-secret-example-plugin >"$plog" 2>&1); then
+  grep -E '^error' "$plog" | head -5 >&2
+  echo "land.sh: RED — example plugin cdylibs did not build (log: $plog)" >&2; exit 1
+fi
+
+if [ -z "$tests" ] && [ $# -gt 0 ]; then
   tests="$(git -C "$here" diff --name-only "HEAD~$#" HEAD | grep -o '^crates/[^/]*' | sort -u \
     | while read -r d; do grep -m1 '^name = ' "$here/$d/Cargo.toml" 2>/dev/null | sed 's/name = "\(.*\)"/\1/'; done | tr '\n' ' ')"
 fi

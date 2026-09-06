@@ -236,6 +236,61 @@ fn sha256_digest_jitter_matches_1_5_5s_hex_sha256() {
         .is_none());
 }
 
+/// A cache HIT does not refresh the row's lifetime, so a credential in continuous use is still
+/// re-verified against its module when its TTL runs out.
+///
+/// The Identify arm re-inserted on every request, hit or miss, which reset `expires_at` each time.
+/// A credential used more often than its own TTL therefore never expired and never went back to
+/// the module — a revocation the operator performed upstream would have been honoured only for
+/// traffic that paused for longer than the TTL, which is exactly the traffic that does not matter.
+/// The Pass arm alongside already only committed on a miss.
+#[test]
+fn a_hit_does_not_extend_the_row_and_the_module_is_consulted_again_after_the_ttl() {
+    let cache = CredentialCache::new(test_digest);
+    let module = Canned::cacheable(
+        "idp",
+        AuthOutcome::Identify(Principal {
+            ttl_secs: Some(300),
+            ..Principal::from_id("alice")
+        }),
+    );
+    let calls = module.calls.clone();
+    let c = AuthChain::new(vec![entry("idp", Box::new(module))], false);
+    let consulted = || calls.load(std::sync::atomic::Ordering::Relaxed);
+
+    // The miss that admits the row.
+    assert!(matches!(
+        c.run_chain_cached(Some("cred"), Some(&cache), None, 1_000, None),
+        ChainVerdict::Identified { .. }
+    ));
+    assert_eq!(consulted(), 1);
+
+    // A hit a third of the way through the row's life. The module is not consulted...
+    assert!(matches!(
+        c.run_chain_cached(Some("cred"), Some(&cache), None, 1_100, None),
+        ChainVerdict::Identified { .. }
+    ));
+    assert_eq!(consulted(), 1, "a hit does not consult the module");
+
+    // ...and the row still expires when it was always going to, not 300 seconds after the hit.
+    assert!(
+        cache.get("idp", "cred", 1_301).is_none(),
+        "a hit must not have pushed the expiry out"
+    );
+
+    // So the credential is verified against its module again, which is what makes an upstream
+    // revocation take effect within one TTL of continuous use.
+    assert!(matches!(
+        c.run_chain_cached(Some("cred"), Some(&cache), None, 1_400, None),
+        ChainVerdict::Identified { .. }
+    ));
+    assert_eq!(
+        consulted(),
+        2,
+        "the expired row sent the credential back to the module"
+    );
+}
+
 #[test]
 fn pass_churn_cannot_evict_an_identity() {
     let cache = CredentialCache::new(test_digest);

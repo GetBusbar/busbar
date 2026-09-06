@@ -70,7 +70,7 @@ fn decode(plane: &A2aPlane, body: &[u8]) -> Result<(ops::MethodRow, String), Dec
     let mut cursor = FrameCursor::new(&frames);
     let ingress = plane.decode_ingress(&mut cursor, None, &ctx)?;
     let draft: UnitDraft<'_> = match ingress {
-        Ingress::Open(d) | Ingress::OneShot(d) | Ingress::Handshake(d) => d,
+        Ingress::Open(d) | Ingress::OneShot(d) | Ingress::Handshake(d) => *d,
         other => panic!("a well-formed request decoded as {other:?}"),
     };
     // The row is found by the method the plane RECORDED, not by the class: two spellings share one

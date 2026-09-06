@@ -142,7 +142,7 @@ pub async fn walk(request: &RouteRequest<'_>, ctx: &mut RequestCtx) -> RouteOutc
             },
             ctx,
         );
-        let Some(pick) = pick else {
+        let Some(mut pick) = pick else {
             if members.is_empty() {
                 return RouteOutcome::Refused(Shed::empty_pool());
             }
@@ -166,6 +166,9 @@ pub async fn walk(request: &RouteRequest<'_>, ctx: &mut RequestCtx) -> RouteOutc
         // Mark this member as tried before the attempt runs, so a failure never re-offers it.
         ctx.exclude(pick.destination);
 
+        // Past the last resolution step that can shed: the probe now belongs to the attempt, which
+        // records an outcome for it. Every shed above this line dropped the pick and gave it back.
+        let probe_epoch = pick.take_probe_epoch();
         let metric_pool = request.metric_pool(&pool.name, member);
         let outcome = attempt(AttemptInput {
             hop: Hop {
@@ -194,7 +197,7 @@ pub async fn walk(request: &RouteRequest<'_>, ctx: &mut RequestCtx) -> RouteOutc
                 degraded: false,
             },
             permit: pick.permit,
-            probe_epoch: pick.probe_epoch,
+            probe_epoch,
             unit: request.unit,
             ctx: request.ctx,
         })

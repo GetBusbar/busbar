@@ -670,3 +670,104 @@ fn a_round_trip_through_the_published_sqlite_store() {
     drop(adapter);
     let _ = std::fs::remove_file(&db);
 }
+
+/// A store with no rows at all, for tests that touch only the node-local shim.
+///
+/// The shim is where the lock discipline lives, and it is the same shim on every store, so a test
+/// about lock order must not be able to skip for want of a built cdylib.
+#[derive(Default)]
+struct NoRows;
+
+impl busbar_api::Store for NoRows {
+    fn put_key(&self, _key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+        Ok(())
+    }
+    fn get_key(&self, _id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+        Ok(None)
+    }
+    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+        Ok(Vec::new())
+    }
+    fn delete_key(&self, _id: &str) -> busbar_api::StoreResult<()> {
+        Ok(())
+    }
+    fn get_usage(&self, _b: &str, _w: u64) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+        Ok(busbar_api::UsageLedger::default())
+    }
+    fn put_usage(
+        &self,
+        _b: &str,
+        _w: u64,
+        _l: &busbar_api::UsageLedger,
+    ) -> busbar_api::StoreResult<()> {
+        Ok(())
+    }
+    fn add_metering(&self, _d: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+        Ok(())
+    }
+    fn list_metering(&self, _b: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+        Ok(Vec::new())
+    }
+}
+
+/// Reading the shim's state must never wedge against a concurrent restore.
+///
+/// The interleaving is forced, not raced. One thread takes the recovery guard — the first of the
+/// two a restore takes — and parks there; the reader then goes through `shim_state`, which is the
+/// diagnostics read the root and the `Debug` impl both make. If that read holds any shim lock
+/// while reaching for another, the parked restore's second lock cannot land and both threads stop
+/// for good: the reader waiting on recovery, the restore on what the reader is holding.
+///
+/// The watchdog is the assertion. A wedged pair never returns, so the test cannot detect the fault
+/// by joining; it waits a generous multiple of the park and fails if the read has not answered.
+#[test]
+fn reading_the_shim_state_never_wedges_against_a_concurrent_restore() {
+    let adapter = StoreAdapter::new(Arc::new(NoRows), crate::registry::STORE_ABI_FLOOR);
+    // Something to read, so the answer is checked rather than merely arriving.
+    adapter
+        .slice_store()
+        .reserve(&slice_request(7, 0))
+        .expect("the shim grants a slice");
+
+    let parked = Arc::new(std::sync::Barrier::new(2));
+    let restorer = {
+        let adapter = adapter.clone();
+        let parked = parked.clone();
+        std::thread::spawn(move || {
+            adapter.hold_recovery_then_slices(|| {
+                // Recovery is held. Release the reader, then stay here long enough that the reader
+                // is certainly inside `shim_state` before the slices guard is reached for.
+                parked.wait();
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            });
+        })
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = {
+        let adapter = adapter.clone();
+        let parked = parked.clone();
+        std::thread::spawn(move || {
+            parked.wait();
+            let _ = tx.send(adapter.shim_state());
+        })
+    };
+
+    let state = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap_or_else(|_| {
+            panic!(
+                "shim_state did not answer while a restore held the recovery guard: it holds one \
+                 shim lock while taking another, in the opposite order to the restore, so the two \
+                 threads have deadlocked — and every later slice draw blocks behind them"
+            )
+        });
+    assert_eq!(
+        state.slices_outstanding, 1,
+        "the read answers with what the shim is holding"
+    );
+    assert_eq!(state.slices_granted, 7);
+
+    restorer.join().expect("restore thread");
+    reader.join().expect("reader thread");
+}

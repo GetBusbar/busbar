@@ -348,10 +348,22 @@ pub struct SecretSlot {
 /// Minted by the verbs unit under an admin token. It must appear exactly once at its declared
 /// target location, and if it does not, the encode step fails and the mint is reversed. It never
 /// appears in content facts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// The nonce IS the minted secret: it is the value the encoded bytes must contain exactly once, so
+/// a reader who has printed it has what the verb minted. The `Debug` is hand-written and says the
+/// target only, in the same spelling the capability crate's placeholder uses.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SecretOnce {
     nonce: u128,
     target: &'static str,
+}
+
+impl fmt::Debug for SecretOnce {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecretOnce")
+            .field("target", &self.target)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SecretOnce {

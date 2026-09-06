@@ -31,8 +31,11 @@
 //!
 //! DROP+WARN (Gemini concepts with NO shared-IR home): input/output transcription side-channels,
 //! `toolCallCancellation`, `goAway` / session-resumption, and non-audio model-turn parts. Following
-//! the OpenAI codec's own degrade discipline, "warn" is realized as the silent drop (this plane crate
-//! links no logging surface) — the frame yields no IR and is noted in the asymmetry list.
+//! the OpenAI codec's own degrade discipline, "warn" is realized as the drop itself (this plane crate
+//! links no logging surface) — the frame yields no IR and is noted in the asymmetry list. The
+//! OTHER direction of that asymmetry — OpenAI concepts Gemini has no uplink verb for (cancel, buffer
+//! clear, item delete/truncate, per-response overrides) — frames NOTHING (`write_up` answers `None`),
+//! because a stand-in frame carrying none of the semantics reads upstream as the concept surviving.
 
 use super::{decode_audio, encode_audio, parse, str_at, wire_of, DecodeState};
 use super::{DuplexReader, DuplexWriter, WireEvent};
@@ -392,8 +395,16 @@ impl DuplexReader for GeminiLiveCodec {
                     let call_id = str_at(r, "id");
                     let call_ref = st.ref_for_call_id(call_id);
                     // The `response` object is the tool's opaque output payload (the moat normalizes
-                    // correlation, not the bytes). `functionResponse.name` is redundant with `id`
-                    // and has no CallResult slot (dropped).
+                    // correlation, not the bytes). `functionResponse.name` is REQUIRED by this dialect,
+                    // so it is carried on the IR; a response that omits it falls back to the name the
+                    // originating call announced.
+                    let wire_name = str_at(r, "name");
+                    let name = if wire_name.is_empty() {
+                        st.call_name(call_id).to_string()
+                    } else {
+                        st.remember_call_name(call_id, wire_name);
+                        wire_name.to_string()
+                    };
                     let output = Bytes::from(
                         serde_json::to_vec(r.get("response").unwrap_or(&Value::Null))
                             .unwrap_or_default(),
@@ -401,6 +412,7 @@ impl DuplexReader for GeminiLiveCodec {
                     out.push(IrClientEvent::Tool(IrDuplexTool::CallResult {
                         call_ref,
                         call_id: call_id.to_string(),
+                        name,
                         output,
                     }));
                 }
@@ -457,6 +469,9 @@ impl DuplexReader for GeminiLiveCodec {
                 });
             }
             if sc.get("turnComplete").and_then(Value::as_bool) == Some(true) {
+                // THE GEMINI ITEM BOUNDARY: the turn's audio is complete, so the played-out position
+                // starts over — the next turn's barge-in truncates at ITS audio, not the running total.
+                st.reset_playback();
                 out.push(IrServerEvent::AudioDone {
                     item_id: String::new(),
                 });
@@ -470,12 +485,15 @@ impl DuplexReader for GeminiLiveCodec {
                 for c in calls {
                     let call_id = str_at(c, "id");
                     let call_ref = st.ref_for_call_id(call_id);
+                    let name = str_at(c, "name").to_string();
+                    // Remember the name for the RESULT leg — this dialect requires it back.
+                    st.remember_call_name(call_id, &name);
                     // Gemini delivers the call ATOMICALLY; expand it into the shared STREAMED triple
                     // (open → args → close) so the correlation moat matches the OpenAI codec exactly.
                     out.push(IrServerEvent::Tool(IrDuplexTool::CallOpen {
                         call_ref,
                         call_id: call_id.to_string(),
-                        name: str_at(c, "name").to_string(),
+                        name,
                     }));
                     let json_delta = Bytes::from(
                         serde_json::to_vec(c.get("args").unwrap_or(&Value::Null))
@@ -513,8 +531,26 @@ fn tool_call_frame(fc: Value) -> Value {
     json!({ wire::TOOL_CALL: { "functionCalls": [fc] } })
 }
 
+/// Frame one Gemini `toolResponse` around a single tool result. Gemini REQUIRES `name` on a
+/// `functionResponse`; it is emitted whenever the plane knows it (remembered from the originating
+/// call) and omitted when it does not — an invented name would answer for a tool nobody called.
+fn tool_response_frame(call_id: &str, name: &str, output: &Bytes) -> Value {
+    let mut fr = serde_json::Map::new();
+    fr.insert("id".into(), json!(call_id));
+    if !name.is_empty() {
+        fr.insert("name".into(), json!(name));
+    }
+    fr.insert(
+        "response".into(),
+        serde_json::from_slice::<Value>(output).unwrap_or(Value::Null),
+    );
+    json!({ wire::TOOL_RESPONSE: { "functionResponses": [Value::Object(fr)] } })
+}
+
 impl DuplexWriter for GeminiLiveCodec {
-    fn write_up(&self, ev: IrClientEvent) -> WireEvent {
+    /// Gemini has no uplink verb for several OpenAI-shaped controls, so this writer genuinely DROPS
+    /// them (`None`) rather than framing a stand-in.
+    fn write_up(&self, ev: IrClientEvent) -> Option<WireEvent> {
         let v = match ev {
             IrClientEvent::AudioFrame(f) => json!({
                 wire::REALTIME_INPUT: {
@@ -530,29 +566,30 @@ impl DuplexWriter for GeminiLiveCodec {
                 IrDuplexControl::InputAudioCommit => json!({
                     wire::REALTIME_INPUT: { wire::AUDIO_STREAM_END: true }
                 }),
-                // The Gemini uplink has no discrete cancel/clear/delete/truncate verbs; the model turn
-                // is driven by `clientContent.turnComplete` and activity detection. Frame these
-                // OpenAI-shaped controls as an empty realtime-input marker rather than panic — they are
-                // dropped cross-dialect (asymmetry).
+                // The Gemini uplink has no discrete cancel/clear/delete/truncate verb and no per-turn
+                // config override; the model turn is driven by `clientContent.turnComplete` and
+                // activity detection. The dialect landscape records each of these as a lossy drop with
+                // a diagnostic, and the cross-dialect map says the same (a truncate offset has no
+                // Gemini field, a buffer clear has no Gemini verb, per-response overrides are dropped).
+                //
+                // So they FRAME NOTHING. An empty `realtimeInput` marker would be a real message that
+                // carries none of the cancel semantics — upstream it is indistinguishable from the
+                // concept having survived, which is exactly the confusion a barge-in cannot afford.
+                // Gemini's `activityStart` is NOT a substitute: it announces USER activity under manual
+                // activity detection, not "abandon the response you are generating".
                 IrDuplexControl::ResponseCreate { .. }
                 | IrDuplexControl::ResponseCancel
                 | IrDuplexControl::InputAudioClear
                 | IrDuplexControl::ItemDelete { .. }
-                | IrDuplexControl::ItemTruncate { .. } => {
-                    json!({ wire::REALTIME_INPUT: {} })
-                }
+                | IrDuplexControl::ItemTruncate { .. } => return None,
             },
             IrClientEvent::Tool(t) => match t {
                 IrDuplexTool::CallResult {
-                    call_id, output, ..
-                } => json!({
-                    wire::TOOL_RESPONSE: {
-                        "functionResponses": [ {
-                            "id": call_id,
-                            "response": serde_json::from_slice::<Value>(&output).unwrap_or(Value::Null),
-                        } ]
-                    }
-                }),
+                    call_id,
+                    name,
+                    output,
+                    ..
+                } => tool_response_frame(&call_id, &name, &output),
                 // The other tool variants are server→client; a client-side writer never authors them,
                 // but frame them symmetrically rather than panic.
                 IrDuplexTool::CallOpen { call_id, name, .. } => {
@@ -571,7 +608,7 @@ impl DuplexWriter for GeminiLiveCodec {
                 }
             },
         };
-        wire_of(&v)
+        Some(wire_of(&v))
     }
 
     fn write_down(&self, ev: IrServerEvent) -> WireEvent {
@@ -593,15 +630,11 @@ impl DuplexWriter for GeminiLiveCodec {
                     tool_call_frame(json!({ "id": call_id }))
                 }
                 IrDuplexTool::CallResult {
-                    call_id, output, ..
-                } => json!({
-                    wire::TOOL_RESPONSE: {
-                        "functionResponses": [ {
-                            "id": call_id,
-                            "response": serde_json::from_slice::<Value>(&output).unwrap_or(Value::Null),
-                        } ]
-                    }
-                }),
+                    call_id,
+                    name,
+                    output,
+                    ..
+                } => tool_response_frame(&call_id, &name, &output),
             },
             // Gemini's barge-in signal is `serverContent.interrupted`; the shared SpeechStarted maps
             // onto it. SpeechStopped has no Gemini wire event → an empty serverContent (dropped).

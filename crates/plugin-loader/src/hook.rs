@@ -82,6 +82,11 @@ pub struct DlopenPolicy {
     /// The hook's stable name (metrics / `x-busbar-route`). Leaked to `'static` (the C ABI can't
     /// return a `&'static str`) — a bounded one-per-plugin leak of a non-secret id.
     name: &'static str,
+    /// THIS hook's concurrency cap — see [`MAX_INFLIGHT_HOOK_CALLS`]. One semaphore per loaded
+    /// plugin, owned by the plugin: a wedged hook can exhaust its own slots and nobody else's.
+    /// `Arc` because the permit has to outlive the future (it is released by the blocking closure),
+    /// which `acquire_owned` gives and a borrowed permit cannot.
+    slots: Arc<tokio::sync::Semaphore>,
 }
 
 /// Concurrency cap on hook FFI calls occupying the shared blocking pool.
@@ -95,16 +100,18 @@ pub struct DlopenPolicy {
 /// write-behind budget flusher, and the awaited shutdown flush. One bad plugin would take the admin
 /// plane and durable persistence with it.
 ///
-/// The cap keeps that isolated to the hook: calls beyond it wait, and since acquisition happens
-/// under the caller's own budget a saturated plugin surfaces as its configured `on_error`
+/// The cap keeps that isolated to the WEDGED HOOK: calls beyond it wait, and since acquisition
+/// happens under the caller's own budget a saturated plugin surfaces as its configured `on_error`
 /// disposition rather than as a process-wide stall. Sized far below the pool so the rest of the
 /// process always has threads, and above any plausible legitimate hook concurrency.
+///
+/// It is this many slots PER LOADED HOOK, not per process — one semaphore lives on each
+/// [`DlopenPolicy`]. A single cap shared by every hook would make the isolation above conditional
+/// on there being one hook: a wedged plugin holding every slot would take unrelated gates down with
+/// it, each of them failing to its own `on_error` for a reason that has nothing to do with the
+/// plugin it is calling. The pool-exhaustion bound the cap exists for is still bounded, at this
+/// many threads per loaded hook, and a deployment loads a handful.
 const MAX_INFLIGHT_HOOK_CALLS: usize = 64;
-
-/// Borrowing from a `static` yields a `'static` permit, which is what lets the permit move INTO the
-/// blocking closure — see [`DlopenPolicy::call`] for why that placement is the whole point.
-static HOOK_CALL_SLOTS: tokio::sync::Semaphore =
-    tokio::sync::Semaphore::const_new(MAX_INFLIGHT_HOOK_CALLS);
 
 impl DlopenPolicy {
     /// The ONE blocking primitive: run `op` across `busbar_call` on a blocking thread, catching any
@@ -117,7 +124,7 @@ impl DlopenPolicy {
         // permit tied to the future's lifetime would count patience rather than threads and cap
         // nothing. Acquisition sits under the caller's `timeout`, so a saturated plugin fails the
         // hook on its own deadline instead of queueing.
-        let Ok(permit) = HOOK_CALL_SLOTS.acquire().await else {
+        let Ok(permit) = Arc::clone(&self.slots).acquire_owned().await else {
             return Err("hook call slots closed".into());
         };
         let joined = tokio::task::spawn_blocking(move || {
@@ -299,6 +306,7 @@ pub fn load_hook_from_bytes(
         raw: Arc::new(raw),
         projectors,
         name,
+        slots: Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_HOOK_CALLS)),
     }))
 }
 

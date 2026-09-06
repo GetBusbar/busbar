@@ -49,11 +49,14 @@ impl Decoder for RawDecoder {
     type Item = Vec<u8>;
     type Error = Status;
 
+    /// The buffer handed here is always ONE complete message body: the framing layer above reads
+    /// the length prefix, waits for exactly that many bytes, and only then calls this. So the body
+    /// is never partial, and a zero-length one is a legal message rather than a signal to wait —
+    /// `Ok(None)` means "not yet, send more", which for a body that is already complete leaves the
+    /// call parked on it forever and takes every message queued behind it down with it. The empty
+    /// message is decoded as what it is: zero bytes, delivered.
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
         use bytes::Buf;
-        if !src.has_remaining() {
-            return Ok(None);
-        }
         let mut out = vec![0u8; src.remaining()];
         src.copy_to_slice(&mut out);
         Ok(Some(out))

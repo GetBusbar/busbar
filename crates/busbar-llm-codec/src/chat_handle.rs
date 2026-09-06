@@ -11,7 +11,7 @@
 
 use crate::ir::{IrRequest, IrResponse};
 use busbar_api::operation::Operation;
-use busbar_substrate_values::billing::{Billing, TokenUsage};
+use busbar_substrate_values::billing::Billing;
 use busbar_substrate_values::handlers::{CodecError, IngressReject, OperationHandler};
 use busbar_substrate_values::ir::egress_prep::EgressPrep;
 use busbar_substrate_values::ir::facts::IrFacts;
@@ -310,14 +310,17 @@ pub fn chat_prepare_for_ingress(ir: &mut IrResponse, ingress_protocol: &str, now
 }
 
 /// Chat token-usage billing projection (from the former `IrResp::Chat` `usage()` arm).
+///
+/// ONE PROJECTION: this delegates to [`crate::ir::IrUsage::to_token_usage`], the same function the
+/// streaming A-tap and the same-protocol usage tap below already ledger through. It used to build
+/// its own `TokenUsage` from the RAW `IrUsage` totals, which silently skipped the projection's
+/// per-dialect billed override — a Cohere completion reporting `usage.billed_units` distinct from
+/// `usage.tokens` was invoiced the billed counts when streamed and the raw counts when buffered,
+/// i.e. two different bills for one completion depending only on the caller's `stream` flag. Every
+/// dialect that leaves the billed fields `None` (all five others) projects byte-identically either
+/// way, so this is a no-op outside Cohere.
 pub fn chat_usage(r: &IrResponse) -> Option<Billing> {
-    Some(Billing::Tokens(TokenUsage {
-        input: r.usage.input_tokens,
-        output: r.usage.output_tokens,
-        cache_read: r.usage.cache_read_input_tokens,
-        cache_creation: r.usage.cache_creation_input_tokens,
-        ..Default::default()
-    }))
+    Some(Billing::Tokens(r.usage.to_token_usage()))
 }
 
 // ─────────────────────────────── the handles ───────────────────────────────

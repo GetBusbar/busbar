@@ -194,15 +194,24 @@ fn plan_over(
         let Some(lane) = all.get(c.idx) else {
             continue;
         };
+        // A name the node's vocabulary does not hold is a candidate this node does not route to.
+        // The vocabulary is filled from configuration at boot and closed after, so the only way a
+        // configured lane misses here is a lane that was never registered — and planning a leg to
+        // one would mean minting its name on the request path, which is the leak the interner
+        // exists to replace. Skipping is the same answer this loop already gives a candidate the
+        // tables no longer hold.
+        let (Some(authority), Some(model)) = (reg.key(&lane.base_url), reg.key(&lane.model)) else {
+            continue;
+        };
         let facts = DestinationFacts::Upstream {
             // The family that dials an LLM lane. A lane's `protocol` is its DIALECT, which is a
             // different question from which transport carries it.
             transport: busbar_substrate::transport::Transport::Http.name(),
             address: UpstreamAddress::Socket {
-                authority: reg.key(&lane.base_url),
+                authority,
                 sni: None,
             },
-            lane: LaneId::new(reg.key(&lane.model)),
+            lane: LaneId::new(model),
         };
         if plan.legs.push(Leg { destination: facts }).is_err() {
             break;

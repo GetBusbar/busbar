@@ -11,6 +11,7 @@
 
 use super::harness::{ok_frames, Health, Script};
 use super::{member, Node};
+use crate::pool::OnExhausted;
 use crate::select::ProbeGuard;
 use busbar_contract::DestinationId;
 
@@ -171,4 +172,91 @@ fn a_failed_attempt_records_before_the_guard_can_release() {
             "the outcome is recorded first, which is what makes the guard's release a safe no-op"
         );
     }
+}
+
+// ── the shed paths that dispatch nothing ────────────────────────────────────────────────────────
+//
+// A pick can win the recovery probe and then never reach a dispatch: the walk resolves the picked
+// member against the verified set AFTER the pick, and a member that set does not carry sheds
+// internally. Nothing downstream records an outcome on such a path, so the probe has to come back
+// from the pick itself — otherwise the cell stays half-open and the member is excluded from every
+// later pick as a probe already in flight.
+
+#[test]
+fn a_walk_that_sheds_internally_gives_a_won_probe_back() {
+    let mut node = Node::with_lanes(&["a"]);
+    // Destination 3 is not in the verified set, so the walk resolves it to nothing and sheds.
+    node.pool("primary", vec![member(DestinationId::new(3), "ghost")]);
+    node.breaker.set(
+        DestinationId::new(3),
+        Health {
+            cooldown: 30,
+            offers_probe: Some(21),
+            ..Health::default()
+        },
+    );
+
+    assert!(node.route("primary").shed().is_some());
+    assert_eq!(
+        node.breaker.probe_releases(),
+        vec![("primary".to_string(), DestinationId::new(3), 21)],
+        "the pick that won the probe is the one that has to give it back when nothing dispatches"
+    );
+}
+
+#[test]
+fn a_spill_that_sheds_internally_gives_a_won_probe_back() {
+    let mut node = Node::with_lanes(&["a"]);
+    node.pool("primary", vec![member(DestinationId::new(0), "a")]);
+    node.pool("overflow", vec![member(DestinationId::new(3), "ghost")]);
+    node.tune("primary", |p| {
+        p.on_exhausted = OnExhausted::FallbackPool("overflow".to_string());
+    });
+    // The primary is suppressed with no probe on offer, so the walk spills.
+    node.breaker.set(
+        DestinationId::new(0),
+        Health {
+            cooldown: 60,
+            ..Health::default()
+        },
+    );
+    node.breaker.set(
+        DestinationId::new(3),
+        Health {
+            cooldown: 30,
+            offers_probe: Some(31),
+            ..Health::default()
+        },
+    );
+
+    assert!(node.route("primary").shed().is_some());
+    assert_eq!(
+        node.breaker.probe_releases(),
+        vec![("overflow".to_string(), DestinationId::new(3), 31)],
+        "the degraded dispatch that never ran gives the spill pool's probe back too"
+    );
+}
+
+#[test]
+fn a_member_whose_probe_came_back_is_pickable_again() {
+    let mut node = Node::with_lanes(&["a"]);
+    node.pool("primary", vec![member(DestinationId::new(3), "ghost")]);
+    node.breaker.set(
+        DestinationId::new(3),
+        Health {
+            cooldown: 30,
+            offers_probe: Some(41),
+            ..Health::default()
+        },
+    );
+
+    assert!(node.route("primary").shed().is_some());
+    // The cell is back to offering the probe rather than wedged with one in flight, so the next
+    // request can still reach the member.
+    let members = vec![member(DestinationId::new(3), "ghost")];
+    let mut ctx = node.request_ctx();
+    assert!(
+        node.pick("primary", &members, &mut ctx).is_some(),
+        "a member whose probe was given back is admitted by a later pick"
+    );
 }

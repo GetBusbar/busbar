@@ -162,7 +162,7 @@ enum Inner {
     /// An accepted connection: the raw framing lives here, one request per connection in this
     /// delivery (no HTTP/1.1 keep-alive pipelining — see the crate doc).
     Ingress {
-        read: AsyncMutex<OwnedReadHalf>,
+        read: AsyncMutex<ReadSide>,
         write: AsyncMutex<OwnedWriteHalf>,
         leftover: AsyncMutex<Vec<u8>>,
     },
@@ -184,6 +184,20 @@ enum Inner {
         /// byte of it.
         head: Box<AsyncMutex<EgressHead>>,
     },
+}
+
+/// A connection's read half and the buffer every read on it fills.
+///
+/// The buffer is allocated once, when the connection is accepted, and reused for the life of the
+/// connection: a fresh `READ_CHUNK_BYTES` vector per read syscall is an allocation and a zero-fill
+/// on the frame path, for every read of every header, every body chunk and every trailer — and a
+/// message dribbled in arbitrarily small pieces pays it once per piece. Keeping it behind the same
+/// lock as the read half is what makes the reuse sound: a connection is read by one pump at a time,
+/// so there is never a second reader to see a half-filled buffer. The sibling `tcp` and `tls`
+/// crates read the same way.
+struct ReadSide {
+    half: OwnedReadHalf,
+    scratch: Vec<u8>,
 }
 
 struct HttpConnHandle {
@@ -241,8 +255,31 @@ impl HttpTransport {
         }
     }
 
+    /// The body ceiling this instance was built with, in bytes — the operator's
+    /// `limits.request_body_max_bytes` as it reached this transport.
+    ///
+    /// Readable because the composition that hands it here is a boot-time wiring a caller must be
+    /// able to prove: a root that built its transports from a `Default` instead of from the
+    /// deployment's limits looks identical from the outside until a body of the wrong size arrives.
+    #[must_use]
+    pub fn max_body_bytes(&self) -> usize {
+        self.max_body_bytes
+    }
+
     fn inner(&self, id: u64) -> Option<Arc<Inner>> {
         self.conns.lock().expect("poisoned").get(&id).cloned()
+    }
+
+    /// The address of the buffer an accepted connection reads through, for the cell that pins one
+    /// buffer per connection rather than one per read.
+    #[cfg(test)]
+    pub(crate) async fn scratch_addr(&self, id: u64) -> Option<usize> {
+        let inner = self.inner(id)?;
+        let Inner::Ingress { read, .. } = &*inner else {
+            return None;
+        };
+        let guard = read.lock().await;
+        Some(guard.scratch.as_ptr() as usize)
     }
 
     fn map_io_err(e: &io::Error) -> TransportError {
@@ -409,7 +446,10 @@ impl Transport for HttpTransport {
             let (read, write) = stream.into_split();
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             let inner = Arc::new(Inner::Ingress {
-                read: AsyncMutex::new(read),
+                read: AsyncMutex::new(ReadSide {
+                    half: read,
+                    scratch: vec![0_u8; READ_CHUNK_BYTES],
+                }),
                 write: AsyncMutex::new(write),
                 leftover: AsyncMutex::new(Vec::new()),
             });
@@ -552,9 +592,19 @@ impl Transport for HttpTransport {
                         armed: true,
                     };
 
+                    // The dial URI names WHERE this connection goes; the envelope names WHAT is
+                    // being asked for there. A per-request path is not a decoration — an upstream
+                    // whose whole API surface is its path (`/model/{id}/converse`) answers a
+                    // different question, or none, when the path is dropped for the dial URI's.
+                    let RawStartLine::Request { method, path } = &raw.start else {
+                        // A status line is an ANSWER. There is no request in it to send, and
+                        // sending some default in its place would put a request on the wire the
+                        // caller never wrote.
+                        return Err(TransportError::Framing);
+                    };
                     let mut builder = http::Request::builder()
-                        .method(raw.start.method_or("GET"))
-                        .uri(uri.clone());
+                        .method(method.as_str())
+                        .uri(request_target(uri, path)?);
                     for (k, v) in &raw.headers {
                         // `Transfer-Encoding` and `Content-Length` describe a framing this
                         // transport has already undone: the body below is the decoded one, and
@@ -570,16 +620,18 @@ impl Transport for HttpTransport {
                     let req = builder
                         .body(Full::new(Bytes::from(raw.body)))
                         .map_err(|_| TransportError::Framing)?;
-                    let resp = client
-                        .request(req)
-                        .await
-                        .map_err(|_| TransportError::Refused)?;
+                    let resp = client.request(req).await.map_err(|e| map_egress_err(&e))?;
                     let status = resp.status().as_u16();
+                    // Built as BYTES, not as a string: a header value the wire allows is not
+                    // required to be UTF-8, and rendering an un-decodable one as the empty string
+                    // hands the layer above a head that says the header was present and empty.
+                    // What arrived is what goes up.
                     let mut head = format!(
                         "HTTP/1.1 {} {}\r\n",
                         status,
                         resp.status().canonical_reason().unwrap_or("")
-                    );
+                    )
+                    .into_bytes();
                     for (name, value) in resp.headers() {
                         // The same two headers the request side strips, and for the same reason:
                         // hyper de-chunked the body on the way in, and what leaves here leaves as
@@ -590,13 +642,13 @@ impl Transport for HttpTransport {
                         {
                             continue;
                         }
-                        head.push_str(name.as_str());
-                        head.push_str(": ");
-                        head.push_str(value.to_str().unwrap_or(""));
-                        head.push_str("\r\n");
+                        head.extend_from_slice(name.as_str().as_bytes());
+                        head.extend_from_slice(b": ");
+                        head.extend_from_slice(value.as_bytes());
+                        head.extend_from_slice(b"\r\n");
                     }
-                    head.push_str("\r\n");
-                    let head_bytes = head.into_bytes();
+                    head.extend_from_slice(b"\r\n");
+                    let head_bytes = head;
                     let head_len = head_bytes.len() as u64;
 
                     // The head is in hand, and it is the frame the status leg rides. This take is
@@ -653,6 +705,22 @@ impl Transport for HttpTransport {
         let method = field("method").unwrap_or(b"POST");
         let path = field("path").unwrap_or(b"/");
 
+        // A CR, an LF or a NUL anywhere in a name, a value, the method or the path is a byte that
+        // ENDS a line on this wire. Writing one through means the caller chooses where this
+        // transport's header block ends and what comes after it: a value of
+        // `x\r\nauthorization: bearer ...` is not a header value, it is a second header, injected.
+        // The check is before the first byte is written, so nothing half-built ever reaches the
+        // arena.
+        let clean = |v: &[u8]| !v.iter().any(|b| matches!(b, b'\r' | b'\n' | 0));
+        if !clean(method) || !clean(path) {
+            return Err(busbar_contract_transport::wire::Encode::Unrepresentable);
+        }
+        for (name, value) in fields {
+            if !clean(name.as_bytes()) || !clean(value) {
+                return Err(busbar_contract_transport::wire::Encode::Unrepresentable);
+            }
+        }
+
         let mut out = Vec::with_capacity(body.len() + 128);
         out.extend_from_slice(method);
         out.push(b' ');
@@ -696,13 +764,20 @@ impl Transport for HttpTransport {
     /// connection has no socket to give — it dials through a pooled client, and a pooled connection
     /// is not one caller's to take.
     fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
-        let inner = self.conns.lock().expect("poisoned").remove(&conn.id())?;
+        // Checked BEFORE the removal, under the same lock: see the sibling `tcp` note. Removing
+        // first and then failing to unwrap loses the connection — no stream up, no entry left.
+        let mut registry = self.conns.lock().expect("poisoned");
+        if Arc::strong_count(registry.get(&conn.id())?) != 1 {
+            return None;
+        }
+        let inner = registry.remove(&conn.id())?;
+        drop(registry);
         let peer = conn.peer();
         let inner = Arc::try_unwrap(inner).ok()?;
         let Inner::Ingress { read, write, .. } = inner else {
             return None;
         };
-        let stream = read.into_inner().reunite(write.into_inner()).ok()?;
+        let stream = read.into_inner().half.reunite(write.into_inner()).ok()?;
         Some(busbar_contract_transport::wire::RawStream::new(
             Self::KEY,
             peer,
@@ -731,17 +806,73 @@ impl Transport for HttpTransport {
     ) -> Fut<'a, ()> {
         Box::pin(async move {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
-            if let Inner::Ingress { write, .. } = &*inner {
+            let delivered = if let Inner::Ingress { write, .. } = &*inner {
                 let mut w = write.lock().await;
-                w.write_all(bytes.as_slice())
-                    .await
-                    .map_err(|e| Self::map_io_err(&e))?;
-                let _ = w.flush().await;
-            }
+                deliver_refusal(&mut *w, bytes.as_slice()).await
+            } else {
+                Ok(())
+            };
+            // The entry goes on EVERY path, including the one where the refusal never left. A
+            // refusal finalises the connection whether or not the peer was still there to read it,
+            // and a registry entry left behind on the failure path is a connection nothing will
+            // ever close.
             self.conns.lock().expect("poisoned").remove(&conn.id());
-            Ok(())
+            delivered
         })
     }
+}
+
+/// What actually went wrong with an egress exchange, read off the error's own source chain.
+///
+/// Everything a hyper client can fail with used to come back as `Refused`, which is a specific
+/// claim: nothing was listening. A connect that timed out, a keep-alive ping that went unanswered,
+/// and a connection reset halfway through a response are three different facts about an upstream,
+/// and an operator reading `Refused` for all three is being told the upstream is down when it may
+/// be slow, or wedged, or resetting mid-body. The chain is walked because the io error that carries
+/// the fact is wrapped by however many layers of connector and pool the client is built from.
+///
+/// `Refused` stays as the fallback: an error carrying no io fact at all is one this transport has
+/// nothing more specific to say about than that the exchange did not happen.
+fn map_egress_err(err: &(dyn std::error::Error + 'static)) -> TransportError {
+    let mut cursor = Some(err);
+    while let Some(current) = cursor {
+        if let Some(io) = current.downcast_ref::<io::Error>() {
+            return HttpTransport::map_io_err(io);
+        }
+        if let Some(h) = current.downcast_ref::<hyper::Error>() {
+            // No io error underneath, but hyper knows the exchange had already started: a body cut
+            // short, a request abandoned, a stream the peer took away. That is a reset, not a
+            // refusal — the connection existed.
+            if h.is_incomplete_message() || h.is_body_write_aborted() || h.is_canceled() {
+                return TransportError::Reset;
+            }
+            if h.is_timeout() {
+                return TransportError::Timeout;
+            }
+        }
+        cursor = current.source();
+    }
+    TransportError::Refused
+}
+
+/// Where an egress request actually goes: the dialled scheme and authority, carrying the path the
+/// ENVELOPE named.
+///
+/// A dial pins a destination — scheme, host, port. It does not pin a request: one connection to an
+/// upstream carries many requests, and on an API whose surface is its path they are different
+/// requests only because their paths differ. So the path travels with the message, and the dial
+/// URI's own path stands in only when the message names none (`/` or empty), which is the shape a
+/// caller writes when the dial URI already spells the whole target.
+fn request_target(dial: &http::Uri, path: &str) -> Result<http::Uri, TransportError> {
+    if path.is_empty() || path == "/" {
+        return Ok(dial.clone());
+    }
+    let mut parts = dial.clone().into_parts();
+    parts.path_and_query = Some(
+        path.parse::<http::uri::PathAndQuery>()
+            .map_err(|_| TransportError::Framing)?,
+    );
+    http::Uri::from_parts(parts).map_err(|_| TransportError::Framing)
 }
 
 /// Drain an upstream response body into the connection's frame channel, one frame per chunk hyper
@@ -791,6 +922,22 @@ async fn pump_response_body(mut body: hyper::body::Incoming, tx: RespSender, max
             return;
         }
     }
+}
+
+/// Put a Unit 0 refusal's bytes on the wire and report whether they actually left.
+///
+/// `write_all` only proves the bytes reached the writer's own buffer. The kernel is told a refusal
+/// was delivered, and a refusal is the client-visible answer to an authentication failure, so the
+/// flush is the evidence and its failure is reported the same way the ordinary write path reports
+/// one rather than being swallowed. The sibling `tcp` and `tls` crates already answer this way.
+async fn deliver_refusal<W>(w: &mut W, bytes: &[u8]) -> Result<(), TransportError>
+where
+    W: tokio::io::AsyncWrite + Unpin + ?Sized,
+{
+    w.write_all(bytes)
+        .await
+        .map_err(|e| HttpTransport::map_io_err(&e))?;
+    w.flush().await.map_err(|e| HttpTransport::map_io_err(&e))
 }
 
 /// Holds the exchange's end-of-stream promise for as long as the exchange is in flight.
@@ -946,7 +1093,8 @@ async fn read_ingress_message(
         return Err(TransportError::Framing);
     };
     let mut buf = leftover.lock().await;
-    let mut r = read.lock().await;
+    let mut guard = read.lock().await;
+    let r = &mut *guard;
     let mut scan = HeaderScan::default();
     let header_end = loop {
         if let Some(pos) = scan.find(&buf) {
@@ -955,15 +1103,23 @@ async fn read_ingress_message(
         if buf.len() >= READ_CHUNK_BYTES {
             return Err(TransportError::Framing);
         }
-        let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
         let n = r
-            .read(&mut chunk)
+            .half
+            .read(&mut r.scratch)
             .await
             .map_err(|e| HttpTransport::map_io_err(&e))?;
         if n == 0 {
-            return Ok(None);
+            if buf.is_empty() {
+                // Nothing was ever begun: the peer opened a connection and closed it. That is the
+                // end of the stream, not a broken message.
+                return Ok(None);
+            }
+            // A header block the peer stopped in the middle of. Taking it for end-of-stream would
+            // silently discard bytes that were already read and call a truncated request no
+            // request at all — the same guess the body branches refuse to make.
+            return Err(TransportError::Framing);
         }
-        buf.extend_from_slice(&chunk[..n]);
+        buf.extend_from_slice(&r.scratch[..n]);
     };
 
     let header_bytes = buf[..header_end].to_vec();
@@ -1002,9 +1158,9 @@ async fn read_ingress_message(
             if read_so_far > max_body_bytes {
                 return Err(TransportError::Framing);
             }
-            let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
             let n = r
-                .read(&mut chunk)
+                .half
+                .read(&mut r.scratch)
                 .await
                 .map_err(|e| HttpTransport::map_io_err(&e))?;
             read_so_far += n;
@@ -1014,7 +1170,7 @@ async fn read_ingress_message(
                 return Err(TransportError::Framing);
             }
             decoder
-                .feed(&chunk[..n])
+                .feed(&r.scratch[..n])
                 .map_err(|_| TransportError::Framing)?;
         }
         decoder.take()
@@ -1028,9 +1184,9 @@ async fn read_ingress_message(
             return Err(TransportError::Framing);
         }
         while rest.len() < declared {
-            let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
             let n = r
-                .read(&mut chunk)
+                .half
+                .read(&mut r.scratch)
                 .await
                 .map_err(|e| HttpTransport::map_io_err(&e))?;
             if n == 0 {
@@ -1039,7 +1195,7 @@ async fn read_ingress_message(
                 // declared length is a message that never arrived, not a smaller one that did.
                 return Err(TransportError::Framing);
             }
-            rest.extend_from_slice(&chunk[..n]);
+            rest.extend_from_slice(&r.scratch[..n]);
         }
         rest.truncate(declared);
         (

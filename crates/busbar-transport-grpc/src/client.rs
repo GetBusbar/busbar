@@ -12,7 +12,6 @@ use std::task::{Context, Poll};
 use futures::Stream;
 use http::uri::PathAndQuery;
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use tokio::sync::mpsc;
 
 use busbar_contract::StreamId;
 use busbar_contract_transport::wire::TransportError;
@@ -47,17 +46,25 @@ impl tower::Service<http::Request<tonic::body::Body>> for Dialer {
 /// No name is resolved here and no socket is opened: the connection arrives as a stream the lower
 /// transport gave up, which is what lets the resolve-then-pin network guard sit in front of the
 /// dial, once for the whole stack, instead of inside every carrier.
+///
+/// The third value fires when the connection itself is over — the upstream gone, the socket shut,
+/// the task finished. The dial side has no connection state to hang that on yet (this handshake is
+/// what the state is built from), so the completion is handed back for the caller to wire, and what
+/// it wires it to is the end of the inbound side: a reader whose upstream has gone must see
+/// end-of-stream, not a wait with no end.
 pub(crate) async fn handshake_h2(
     stream: crate::conn::LowerIo,
     authority: &str,
-) -> Result<(Dialer, http::Uri), TransportError> {
+) -> Result<(Dialer, http::Uri, tokio::sync::oneshot::Receiver<()>), TransportError> {
     let io = TokioIo::new(stream);
     let (send_request, connection) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
         .handshake::<_, tonic::body::Body>(io)
         .await
         .map_err(|_| TransportError::HandshakeFailed)?;
+    let (over_tx, over_rx) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(async move {
         let _ = connection.await;
+        let _ = over_tx.send(());
     });
     let origin = http::Uri::builder()
         .scheme("http")
@@ -65,7 +72,7 @@ pub(crate) async fn handshake_h2(
         .path_and_query("/")
         .build()
         .map_err(|_| TransportError::AddressRefused)?;
-    Ok((Dialer(send_request), origin))
+    Ok((Dialer(send_request), origin, over_rx))
 }
 
 /// Open a fresh gRPC call for `stream_id` over `dialer` against `method`, registering its outbound
@@ -78,8 +85,9 @@ pub(crate) async fn open_stream(
     origin: http::Uri,
     method: &'static str,
     stream_id: StreamId,
-) -> Result<mpsc::UnboundedSender<Vec<u8>>, TransportError> {
-    let (out_tx, out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    serial: u64,
+) -> Result<crate::conn::OutboundTx, TransportError> {
+    let (out_tx, out_rx) = crate::conn::outbound_channel();
     // `with_origin`, not `new`: an HTTP/2 request needs a scheme and an authority (`:authority`
     // pseudo-header) — `Grpc::new` alone leaves both empty, which `hyper`'s h2 client rejects
     // (`MissingUriSchemeAndAuthority`), a real error this crate's own battery caught red before
@@ -95,8 +103,9 @@ pub(crate) async fn open_stream(
     tokio::spawn(async move {
         crate::server::forward_inbound(state.clone(), stream_id, stream, true).await;
         // The upstream's answer has ended, trailer and all: this call is over, and the sender the
-        // connection registered for it is one nothing will drain again.
-        state.outbound.lock().unwrap().remove(&stream_id.0);
+        // connection registered for it is one nothing will drain again. By serial, because by the
+        // time this runs the id may already have been reused — and THAT call is still live.
+        state.end_call(stream_id.0, serial);
     });
     Ok(out_tx)
 }
@@ -104,7 +113,7 @@ pub(crate) async fn open_stream(
 /// The outbound request-message stream: raw `Vec<u8>` items, no `Result` wrapping (unlike the
 /// server's [`crate::server::OutStream`]) because the client-side `Codec::Encode` item type here
 /// is the plain message, per `tonic::client::Grpc::streaming`'s own signature.
-struct InStream(mpsc::UnboundedReceiver<Vec<u8>>);
+struct InStream(crate::conn::OutboundRx);
 
 impl Stream for InStream {
     type Item = Vec<u8>;

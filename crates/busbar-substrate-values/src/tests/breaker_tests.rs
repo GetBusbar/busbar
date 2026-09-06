@@ -295,9 +295,52 @@ fn test_unrecognized_error_map_value_warn_carries_diag_code() {
     );
 }
 
+/// Does `line` emit a `warn!`/`error!` log, in EITHER spelling — path-qualified
+/// (`tracing::warn!(`) or imported bare (`warn!(`)? A bare `warn!(` must not match the tail of a
+/// longer identifier (`diag_warn!(`, `my_error!(`), so the character before it must not be one
+/// an identifier can continue with.
+fn is_bare_log_emission(line: &str) -> bool {
+    ["warn!(", "error!("].iter().any(|macro_name| {
+        line.match_indices(macro_name).any(|(at, _)| {
+            let before = &line[..at];
+            if let Some(stripped) = before.strip_suffix("tracing::") {
+                // Path-qualified: `tracing` itself must be a whole path segment.
+                return !stripped
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == ':');
+            }
+            !before
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == ':')
+        })
+    })
+}
+
+/// The scan below matched only the PATH-QUALIFIED spelling, so a file carrying `use tracing::warn;`
+/// and emitting a bare `warn!(…)` — the same uncoded operator-facing log, one import away — walked
+/// straight past it. Pin what the widened matcher does and does not consider an emission.
+#[test]
+fn the_uncoded_log_scan_matches_both_spellings_of_both_macros() {
+    assert!(is_bare_log_emission("    tracing::warn!(\"boom\");"));
+    assert!(is_bare_log_emission("    tracing::error!(\"boom\");"));
+    // The bare, imported spelling — the gap.
+    assert!(is_bare_log_emission("    warn!(\"boom\");"));
+    assert!(is_bare_log_emission("    error!(\"boom\");"));
+    assert!(is_bare_log_emission("if x { warn!(\"boom\") }"));
+    // A longer identifier ENDING in the macro name is not an emission of it.
+    assert!(!is_bare_log_emission("    diag_warn!(CODE, \"boom\");"));
+    assert!(!is_bare_log_emission("    diag_error!(CODE, \"boom\");"));
+    assert!(!is_bare_log_emission("    crate::diag_warn!(CODE, \"x\");"));
+    // Neither is an unrelated macro or a plain mention.
+    assert!(!is_bare_log_emission("    info!(\"boom\");"));
+    assert!(!is_bare_log_emission("    let warn = 1;"));
+}
+
 /// EVERY operator-facing warn/error in this crate carries a `BUSBAR-NNNN` code. The diagnostics
-/// module states that policy unconditionally; this scan makes the next uncoded `tracing::warn!` /
-/// `tracing::error!` fail the build rather than quietly drift the docs away from the logs.
+/// module states that policy unconditionally; this scan makes the next uncoded `warn!` / `error!`
+/// (in either spelling) fail the build rather than quietly drift the docs away from the logs.
 ///
 /// A line is CODED when the emission carries a `diag = ` field — either written through
 /// `diag_warn!`/`diag_error!` (which prepend it) or spelled out at a site that branches between
@@ -333,7 +376,11 @@ fn test_no_bare_tracing_warn_or_error_in_crate_sources() {
                 if line.trim_start().starts_with("//") {
                     continue; // prose about the macros is not an emission
                 }
-                if !(line.contains("tracing::warn!") || line.contains("tracing::error!")) {
+                // The scan matched only the PATH-QUALIFIED spelling, so a file carrying
+                // `use tracing::warn;` and emitting a bare `warn!(…)` — the same uncoded
+                // operator-facing log, one import away — passed straight through it. Match both
+                // spellings of both macros.
+                if !is_bare_log_emission(line) {
                     continue;
                 }
                 let coded = line.contains("diag = ")

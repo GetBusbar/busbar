@@ -64,6 +64,17 @@ pub struct StreamTranslate {
     /// decodes to the original egress id). The same-protocol path re-emits frames verbatim and bypasses
     /// `translate_event` entirely, so this remap only ever runs on a cross-protocol hop.
     tool_id_remap: ToolIdRemap,
+    /// The events fed to `translate_ir_event` come from an answer that ALREADY went through the
+    /// ingress preparation pass, so their tool ids are already in the client's native shape and must
+    /// NOT be reshaped a second time.
+    ///
+    /// Only the buffered-answer synthesizer sets this. That path is reached AFTER the engine has run
+    /// the answer through the ingress preparation pass, which reshapes every tool id in the answer;
+    /// re-encoding those ids here produced a doubly-wrapped id, and the reverse decode on the next
+    /// turn strips exactly one level, so the backend received an id it never issued and rejected the
+    /// `tool_result`. The live wire-frame path (`translate_event`) feeds ids read straight off the
+    /// egress wire, which have had NO reshape applied, so it leaves this `false` and remaps as before.
+    ir_already_prepared: bool,
     /// Input-token usage captured at stream start (`MessageStart.usage`), carried forward so the
     /// terminal `MessageDelta` reports the prompt-token count.
     ///
@@ -199,6 +210,9 @@ impl StreamTranslate {
             started_at: None,
             framing,
             tool_id_remap: ToolIdRemap::default(),
+            // The wire-frame paths (`new`/`new_same_proto`) always read ids straight off the egress
+            // wire, so the remap is theirs to run; only the buffered-answer synthesizer flips this.
+            ir_already_prepared: false,
             start_usage: None,
             message_stopped: false,
             same_proto,
@@ -264,7 +278,13 @@ impl StreamTranslate {
         // CROSS-PROTOCOL tool-id native remap: reshape the egress `tool_use` id on a `BlockStart`
         // to the ingress client's native shape (see `StreamTranslate::tool_id_remap`). Done before
         // identity-strip/usage-backfill so the rest of the pipeline sees the client-facing id.
-        self.tool_id_remap.remap_event(ingress_name, &mut ev);
+        // Skipped when the events were fanned out of an ALREADY-PREPARED answer (see
+        // `ir_already_prepared`): those ids carry the client-facing shape already, and reshaping a
+        // reshaped id is not idempotent — the reverse decode peels exactly one layer, so the second
+        // encode is a permanent corruption of the tool_use/tool_result correlation, not a cosmetic one.
+        if !self.ir_already_prepared {
+            self.tool_id_remap.remap_event(ingress_name, &mut ev);
+        }
         // Cross-protocol stream identity strip: a `StreamTranslate` only exists when
         // ingress != egress (`new` returns None otherwise), so every event here crosses a
         // protocol boundary. Clear the foreign-format `MessageStart` `id`/`created` so the INGRESS
@@ -546,6 +566,12 @@ impl StreamTranslate {
         if st.ingress_eventstream {
             return None;
         }
+        // The answer handed in here has already been through the ingress preparation pass, which
+        // reshaped every tool id it carries into the client's native form. The per-event pipeline
+        // below would otherwise reshape them AGAIN, and one reverse decode strips one layer — so the
+        // client would echo back an id the backend never issued and the next turn would be rejected.
+        // Tell the pipeline the ids are already client-facing; everything else it does still applies.
+        st.ir_already_prepared = true;
         let ingress_name = st.ingress.name_static();
         let mut out: Vec<u8> = Vec::new();
         for ev in response_to_ir_events(ir) {

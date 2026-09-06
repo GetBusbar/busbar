@@ -914,6 +914,59 @@ fn a_bare_authority_is_judged_as_a_secure_one() {
     assert_eq!(pinned.addr(), ip(PUBLIC));
 }
 
+/// The operator's denylist judges a bare `host:port` authority too.
+///
+/// Which of the two spellings a lane's configuration used is not a security question, and the
+/// scheme and address checks already treat them alike. The denylist ran off a host extraction that
+/// required a `://`, so it silently returned nothing for the bare form and the operator's entry
+/// never fired for it.
+#[test]
+fn an_operator_block_entry_covers_the_bare_authority_spelling() {
+    let extra = Denylist {
+        blocked: vec!["203.0.113.7".to_string()],
+        ..Denylist::default()
+    };
+
+    assert_eq!(
+        check_destination(
+            &dest("203.0.113.7:80"),
+            &[],
+            &NeverAsked,
+            private_ok(),
+            &extra
+        ),
+        Err(NetworkRefusal::MetadataDenied("203.0.113.7".to_string())),
+        "the bare authority names the address the operator blocked"
+    );
+
+    // The URL spelling of the same address is refused as it always was.
+    assert_eq!(
+        check_destination(
+            &dest("https://203.0.113.7/"),
+            &[],
+            &NeverAsked,
+            private_ok(),
+            &extra
+        ),
+        Err(NetworkRefusal::MetadataDenied("203.0.113.7".to_string()))
+    );
+
+    // And a bare authority the operator did not name is still judged on its merits.
+    assert!(
+        matches!(
+            check_destination(
+                &dest("203.0.113.9:80"),
+                &[],
+                &NeverAsked,
+                private_ok(),
+                &extra
+            ),
+            Ok(Some(_))
+        ),
+        "an unlisted bare authority still passes"
+    );
+}
+
 /// A destination that spawns a program is not a network hop: nothing is resolved and nothing is
 /// pinned, rather than a guard being run over an address that does not exist.
 #[test]

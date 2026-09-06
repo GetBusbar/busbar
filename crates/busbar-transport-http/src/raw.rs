@@ -26,17 +26,6 @@ pub enum RawStartLine {
     },
 }
 
-impl RawStartLine {
-    /// The method, when this is a request line; otherwise a caller-supplied default.
-    #[must_use]
-    pub fn method_or<'a>(&'a self, default: &'a str) -> &'a str {
-        match self {
-            Self::Request { method, .. } => method,
-            Self::Status { .. } => default,
-        }
-    }
-}
-
 /// One parsed message: its start line, its headers in wire order, and its body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawMessage {
@@ -97,18 +86,37 @@ fn parse_start_line(line: &str) -> Option<RawStartLine> {
     let b = parts.next()?;
     let c = parts.next().unwrap_or("");
     if let Some(version) = a.strip_prefix("HTTP/") {
-        let _ = version;
+        if !is_http1(version) {
+            return None;
+        }
         let code: u16 = b.parse().ok()?;
         return Some(RawStartLine::Status {
             code,
             reason: c.to_string(),
         });
     }
-    // Otherwise: `METHOD path HTTP/version`.
+    // Otherwise: `METHOD path HTTP/version`. The version token is REQUIRED. Without the check a
+    // two-word first line — anything at all, followed by a space — parses as a request, so a blob
+    // that is not HTTP is read as one and its first two words become a method and a path this
+    // transport then acts on. The wire says every request line names its version; a line that does
+    // not is not a request line.
+    let version = c.strip_prefix("HTTP/")?;
+    if !is_http1(version) {
+        return None;
+    }
     Some(RawStartLine::Request {
         method: a.to_string(),
         path: b.to_string(),
     })
+}
+
+/// Whether a version token names the HTTP/1.x this reader frames.
+///
+/// The framing rules below — `Content-Length`, chunked transfer coding, a CRLF-terminated header
+/// block — are 1.x's. A `2` or a `3` names a wire made of frames this reader has never seen, and
+/// reading one with 1.x's rules would produce a message nobody sent.
+fn is_http1(version: &str) -> bool {
+    matches!(version, "1.0" | "1.1")
 }
 
 /// Find a header's value, case-insensitively, as the wire allows any casing.
@@ -120,21 +128,54 @@ pub fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str
         .map(|(_, v)| v.as_str())
 }
 
-/// Whether a header block declares a chunked body.
+/// A field's WHOLE value: every line carrying that name, joined with `", "`, or `None` when no
+/// line carries it.
 ///
-/// `Transfer-Encoding` may name a list, and this asks the POSITIONAL question the wire asks:
-/// `chunked` must be the FINAL coding. A sender applying any other coding must apply `chunked` last
-/// so the message stays framable, and a list where it is not last leaves the body length
-/// undeterminable — so `chunked, gzip` is not a chunked body, it is a message to refuse. `chunked`
-/// is also the only coding this transport reads, which is why this is a question asked of the
-/// headers and not of the bytes.
+/// RFC 9110 5.3 makes this the definition of a repeated field: a sender may split a comma-separated
+/// list across several lines, and the meaning is the one line those values would have made. Reading
+/// only the first line therefore reads a different field than the one that was sent — and for the
+/// framing fields below that is not a cosmetic difference, it is a body length. `Transfer-Encoding:
+/// chunked` followed by `Transfer-Encoding: gzip` is the list `chunked, gzip`, whose final coding is
+/// not `chunked` and whose length RFC 9112 6.1 leaves undeterminable; a reader that saw only the
+/// first line would frame a body the sender never described.
+#[must_use]
+pub fn field_list(headers: &[(String, String)], name: &str) -> Option<String> {
+    let mut out: Option<String> = None;
+    for (_, v) in headers.iter().filter(|(k, _)| k.eq_ignore_ascii_case(name)) {
+        match &mut out {
+            Some(acc) => {
+                acc.push_str(", ");
+                acc.push_str(v.trim());
+            }
+            None => out = Some(v.trim().to_string()),
+        }
+    }
+    out
+}
+
+/// Whether a header block declares a chunked body, and one this transport can actually undo.
+///
+/// `Transfer-Encoding` names a list — across as many lines as the sender chose, which is why the
+/// whole field is read rather than its first line — and this asks the wire's own two questions of
+/// it. `chunked` must be the FINAL coding (RFC 9112 6.1): a sender applying any other coding applies
+/// `chunked` last so the message stays framable, and a list where it is not last leaves the body
+/// length undeterminable, so `chunked, gzip` is not a chunked body but a message to refuse. And
+/// `chunked` may be applied only ONCE: `chunked, chunked` describes a body wrapped twice, of which
+/// undoing one layer would hand up a framing still on the bytes as though it were the body.
 #[must_use]
 pub fn is_chunked(headers: &[(String, String)]) -> bool {
-    header(headers, "transfer-encoding").is_some_and(|v| {
-        v.split(',')
-            .next_back()
-            .is_some_and(|c| c.trim().eq_ignore_ascii_case("chunked"))
-    })
+    let Some(list) = field_list(headers, "transfer-encoding") else {
+        return false;
+    };
+    let codings: Vec<&str> = list.split(',').map(str::trim).collect();
+    let applied = codings
+        .iter()
+        .filter(|c| c.eq_ignore_ascii_case("chunked"))
+        .count();
+    applied == 1
+        && codings
+            .last()
+            .is_some_and(|c| c.eq_ignore_ascii_case("chunked"))
 }
 
 /// Whether a header block declares a transfer coding at all, chunked or otherwise.
@@ -144,7 +185,7 @@ pub fn is_chunked(headers: &[(String, String)]) -> bool {
 /// caller refuse the first without refusing the second.
 #[must_use]
 pub fn has_transfer_encoding(headers: &[(String, String)]) -> bool {
-    header(headers, "transfer-encoding").is_some()
+    field_list(headers, "transfer-encoding").is_some()
 }
 
 /// The declared body length, where the message declares one.
@@ -159,10 +200,13 @@ pub fn has_transfer_encoding(headers: &[(String, String)]) -> bool {
 ///
 /// Returns `Err(())` when the header is present but does not name a single valid body length.
 pub fn content_length(headers: &[(String, String)]) -> Result<Option<usize>, ()> {
-    let mut values = headers
-        .iter()
-        .filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
-        .map(|(_, v)| v.trim());
+    // The whole field, however many lines it was spelled across: a second `Content-Length` line is
+    // the same list a comma would have made, and reading only the first would take a message that
+    // declares two lengths for one that declares one.
+    let Some(list) = field_list(headers, "content-length") else {
+        return Ok(None);
+    };
+    let mut values = list.split(',').map(str::trim);
     let Some(first) = values.next() else {
         return Ok(None);
     };

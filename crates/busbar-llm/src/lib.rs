@@ -123,7 +123,7 @@ pub use busbar_llm_codec::{
 /// pipeline, health probe loop and native fallback plane — see [`engine`].
 pub mod engine;
 
-/// THE INBOUND OPENAI RESPONSES WEBHOOK RECEIVER (T3). It parses and HMAC-verifies a signed inbound
+/// THE INBOUND OPENAI RESPONSES WEBHOOK RECEIVER (the inbound webhook receiver). It parses and HMAC-verifies a signed inbound
 /// webhook and mounts a live HTTP route behind the OFF-by-default `webhook-receiver` feature, so it
 /// is ingress, not codec — it stays on this side of the split.
 pub mod openai_responses_webhook;

@@ -1140,11 +1140,13 @@ async fn test_governance_budget_over_quota() {
         429,
         "over-budget key → 429 (native quota status; no vendor returns 402 here)"
     );
-    // The rejection must carry the NATIVE Anthropic error envelope with the CANONICAL quota
-    // `error.type` ("insufficient_quota"), not merely the right status code. A regression that
-    // reverted the budget kind to the non-canonical `billing_error` token (which the writers pass
-    // through verbatim) would still be a 429 but would emit an `error.type` an SDK's typed
-    // exception mapping does not recognize — a router-side tell this assertion guards.
+    // The rejection must carry the NATIVE Anthropic error envelope with Anthropic's own billing
+    // type (`billing_error`), not merely the right status code. The router's quota kind is spelled
+    // with OpenAI's `insufficient_quota` token internally; the Anthropic writer projects it into
+    // the nine-member error union the published envelope declares, because the official SDK's
+    // typed exception mapping raises a generic `APIError` for anything outside that union. A
+    // regression that let the internal token through verbatim would still be a 429 but would
+    // name a competitor's vocabulary on this wire — the router-side tell this assertion guards.
     assert_eq!(
         r.headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -1162,8 +1164,8 @@ async fn test_governance_budget_over_quota() {
         body.get("error")
             .and_then(|e| e.get("type"))
             .and_then(|t| t.as_str()),
-        Some("insufficient_quota"),
-        "anthropic over-budget carries canonical insufficient_quota error.type; got {body}"
+        Some("billing_error"),
+        "anthropic over-budget carries Anthropic's billing_error error.type; got {body}"
     );
 
     handle.abort();

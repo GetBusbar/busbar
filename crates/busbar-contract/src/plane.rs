@@ -113,16 +113,22 @@ pub struct Response<'u> {
 }
 
 /// What a plane makes of inbound bytes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Every payload that carries a fact map is behind a pointer, and the answer itself is therefore
+/// not `Copy`. A fact map is a fixed array of [`MAX_KEYS`](crate::bounded::MAX_KEYS) entries — over
+/// a kilobyte — and this value is returned across the plane's dyn call once per arriving frame, so
+/// embedding one by value meant memcpying a kilobyte per frame to carry a handful of keys. The
+/// export path's content facts were already behind a pointer for exactly this reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ingress<'u> {
     /// Not yet a whole anything; hand me the next frame.
     NeedMore,
     /// A unit that stays open across frames.
-    Open(UnitDraft<'u>),
+    Open(Box<UnitDraft<'u>>),
     /// A unit that is complete in one frame.
-    OneShot(UnitDraft<'u>),
+    OneShot(Box<UnitDraft<'u>>),
     /// A challenge-response exchange.
-    Handshake(UnitDraft<'u>),
+    Handshake(Box<UnitDraft<'u>>),
     /// A frame belonging to an already-open unit, to be relayed under its hold.
     Frame {
         /// Which unit it belongs to.
@@ -130,14 +136,14 @@ pub enum Ingress<'u> {
         /// The bytes to relay.
         relay: ArenaBytes<'u>,
         /// The facts the plane read off it.
-        facts: Facts<'u>,
+        facts: Box<Facts<'u>>,
     },
     /// The end of an open unit.
     Close {
         /// Which unit ends.
         for_: Option<CorrelationRef<'u>>,
         /// The facts the plane read off the ending.
-        facts: Facts<'u>,
+        facts: Box<Facts<'u>>,
     },
     /// Nothing; drop the frame, change no state.
     Discard {
@@ -147,27 +153,30 @@ pub enum Ingress<'u> {
 }
 
 /// What a plane makes of bytes coming back from an upstream.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Behind a pointer for the same reason [`Ingress`] is, and on the same path: one of these comes
+/// back across the dyn call for every response frame of every open unit.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Progress<'u> {
     /// Not yet a whole anything; hand me the next frame.
     NeedMore,
     /// An upstream pushed something that opens a unit of its own.
-    Open(UnitDraft<'u>),
+    Open(Box<UnitDraft<'u>>),
     /// An upstream pushed something complete in one frame.
-    OneShot(UnitDraft<'u>),
+    OneShot(Box<UnitDraft<'u>>),
     /// One response frame of an open unit.
     Frame {
         /// Which request it answers.
         for_: Option<CorrelationRef<'u>>,
         /// The decoded response.
-        r: Response<'u>,
+        r: Box<Response<'u>>,
     },
     /// The last response frame.
     Terminal {
         /// Which request it answers.
         for_: Option<CorrelationRef<'u>>,
         /// The decoded response.
-        r: Response<'u>,
+        r: Box<Response<'u>>,
     },
     /// Nothing; drop the frame, change no state.
     Discard {

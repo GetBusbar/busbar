@@ -258,23 +258,69 @@ async fn a_handoff_onto_stdio_is_a_mismatch() {
     assert!(<StdioTransport as busbar_contract::TransportMeta>::COMPOSES_OVER.is_empty());
 }
 
-#[tokio::test]
-async fn unit0_refusal_writes_then_closes() {
-    let t = StdioTransport::new();
-    let (a, b) = pair(&t, 4096);
-    let refusal = busbar_contract::unit::Refusal {
+/// The refusal a unit-0 arrival is answered with, for the cells that send one.
+fn a_refusal() -> busbar_contract::unit::Refusal<'static> {
+    busbar_contract::unit::Refusal {
         step: busbar_contract::unit::Step::Arrival,
         reason: busbar_contract::unit::RefusalReason::CursorBudget,
         retry_after_secs: None,
         stream: None,
         correlates: None,
-    };
-    t.unit0_refusal(a, None, &refusal, ArenaBytes::new(b"refused"))
+    }
+}
+
+#[tokio::test]
+async fn unit0_refusal_writes_then_closes() {
+    let t = StdioTransport::new();
+    let (a, b) = pair(&t, 4096);
+    t.unit0_refusal(a, None, &a_refusal(), ArenaBytes::new(b"refused"))
         .await
         .unwrap();
     let mut frames = t.frames(b);
     let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), b"refused");
+}
+
+/// A refusal the peer never received is not a refusal that was delivered. With the far end of the
+/// pipe gone every write fails, and answering `Ok` there tells the caller a unit-0 arrival was
+/// turned away in words the peer can read when nothing left this process at all.
+#[tokio::test]
+async fn a_refusal_that_never_reached_the_peer_is_reported() {
+    let t = StdioTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(4096);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    let id = b.id();
+    // The far end goes away, so the child's stdin is closed under this transport's feet.
+    drop(end_a);
+
+    let err = t
+        .unit0_refusal(b, None, &a_refusal(), ArenaBytes::new(b"refused"))
+        .await
+        .expect_err("a refusal that could not be written is not a delivered refusal");
+    assert_eq!(err, TransportError::Reset);
+    // The connection still goes away: a refusal always ends the session, delivered or not.
+    assert!(
+        t.state_of(id).is_none(),
+        "the failure path still closes the connection"
+    );
+}
+
+/// A refusal on a connection the fence has already tripped, or one this transport no longer knows,
+/// has no channel to reach the peer on at all.
+#[tokio::test]
+async fn a_refusal_on_a_fenced_connection_is_reported_closed() {
+    let t = StdioTransport::new();
+    let (a, _b) = pair(&t, 4096);
+    t.state_of(a.id())
+        .unwrap()
+        .poisoned
+        .store(true, std::sync::atomic::Ordering::Release);
+    let err = t
+        .unit0_refusal(a, None, &a_refusal(), ArenaBytes::new(b"refused"))
+        .await
+        .expect_err("a fenced connection cannot carry a refusal");
+    assert_eq!(err, TransportError::Closed);
 }
 
 #[allow(clippy::assertions_on_constants)]
@@ -409,6 +455,74 @@ async fn an_unterminated_final_line_is_a_framing_error() {
         .expect("the fragment must be reported, not swallowed")
         .expect_err("a half-written line is not a frame");
     assert_eq!(err, TransportError::Framing);
+}
+
+/// The unterminated tail survives a cancelled read, so the answer to it must too. A pump dropped
+/// mid-line leaves those bytes on the connection (that is the whole point of the reader slot), and
+/// the next pump's own read returns nothing at all when the peer then goes away — so "this call read
+/// zero bytes" is not the same question as "the peer stopped on a line boundary". Only the second
+/// one is a clean end of session.
+#[tokio::test]
+async fn a_partial_line_carried_across_a_cancelled_read_is_still_a_framing_error() {
+    let t = StdioTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    let (_ar, mut aw) = split(end_a);
+
+    // Half a line, and no newline is ever coming.
+    aw.write_all(b"abc").await.unwrap();
+    {
+        let mut frames = t.frames(b.clone_for_test());
+        let first = frames.next();
+        tokio::pin!(first);
+        let raced = tokio::time::timeout(Duration::from_millis(50), first.as_mut()).await;
+        assert!(
+            raced.is_err(),
+            "the read must still be suspended, holding the partial line, when dropped"
+        );
+    }
+    aw.shutdown().await.unwrap();
+
+    let mut frames = t.frames(b);
+    let err = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("the carried-over fragment must be answered")
+        .expect("a fragment the peer abandoned is not a clean end of session")
+        .expect_err("a half-written line is not a frame");
+    assert_eq!(err, TransportError::Framing);
+}
+
+/// The fence answers a write that may have put bytes on the wire. A write dropped while it was still
+/// waiting its turn for the write lock put none there — nothing was written, so nothing is in doubt,
+/// and fencing the connection over it costs a caller every later write and read on a session that
+/// was never damaged.
+#[tokio::test]
+async fn a_write_dropped_while_queued_for_the_lock_does_not_fence_the_connection() {
+    let t = StdioTransport::new();
+    let (a, b) = pair(&t, 64 * 1024);
+    let state = t.state_of(a.id()).unwrap();
+
+    // Stand in for another writer holding the lock: the queued write cannot even begin.
+    let held = state.writer.lock().await;
+    {
+        let queued = t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(b"queued"));
+        tokio::pin!(queued);
+        let raced = tokio::time::timeout(Duration::from_millis(20), queued.as_mut()).await;
+        assert!(raced.is_err(), "the write cannot have taken the lock");
+    }
+    drop(held);
+
+    t.write(
+        &a,
+        busbar_contract::StreamId(0),
+        ArenaBytes::new(b"after the queue"),
+    )
+    .await
+    .expect("a write that never began leaves the connection usable");
+    let mut frames = t.frames(b);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"after the queue");
 }
 
 /// A peer that never writes a newline must not be able to exhaust this process's memory. The child

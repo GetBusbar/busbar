@@ -835,11 +835,21 @@ impl ProtocolWriter for ResponsesWriter {
                             "type": EVT_OUTPUT_ITEM_ADDED,
                             "output_index": index,
                             "item_id": item_id,
+                            // `arguments` is a REQUIRED member of the published `FunctionToolCall`
+                            // item (`required: ["type", "call_id", "name", "arguments"]`), so the
+                            // item carried on `output_item.added` must already have it: real OpenAI
+                            // OPENS the item with `"arguments": ""` and fills it through the
+                            // `response.function_call_arguments.delta` events that follow, with the
+                            // finalized string landing on the matching `output_item.done`. Omitting
+                            // it made the opening item fail the item schema, and left an SDK that
+                            // seeds its accumulator from the added item concatenating deltas onto
+                            // `undefined`.
                             "item": {
                                 "type": ITEM_TYPE_FUNCTION_CALL,
                                 "id": item_id,
                                 "call_id": id,
-                                "name": name
+                                "name": name,
+                                "arguments": ""
                             }
                         }),
                     )]

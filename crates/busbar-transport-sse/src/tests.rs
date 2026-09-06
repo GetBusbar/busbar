@@ -34,6 +34,13 @@ fn upstream_dest(uri: &str) -> busbar_contract::VerifiedDestination {
     )
 }
 
+/// The two frames the fixture upstream streams, terminators included — spelled out here so a test
+/// can count the bytes on the wire itself instead of reading them back off the meta it is checking.
+const FIXTURE_FRAMES: [&[u8]; 2] = [
+    b"event: message\ndata: {\"a\":1}\n\n",
+    b"data: {\"a\":2}\n\n",
+];
+
 /// A fixed upstream that streams two SSE frames in one response body.
 async fn sse_server() -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -42,7 +49,7 @@ async fn sse_server() -> String {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut buf = [0_u8; 4096];
         let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
-        let body = b"event: message\ndata: {\"a\":1}\n\ndata: {\"a\":2}\n\n";
+        let body: Vec<u8> = FIXTURE_FRAMES.concat();
         let resp = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
             body.len()
@@ -50,7 +57,7 @@ async fn sse_server() -> String {
         tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes())
             .await
             .unwrap();
-        tokio::io::AsyncWriteExt::write_all(&mut stream, body)
+        tokio::io::AsyncWriteExt::write_all(&mut stream, &body)
             .await
             .unwrap();
     });
@@ -140,6 +147,34 @@ fn the_resegmentation_scan_costs_one_pass_over_the_frame_not_one_per_chunk() {
         scanned < 5 * n,
         "a {n}-byte frame arriving a byte at a time cost {scanned} bytes of scanning; \
          a resume point makes that O(n), restarting at zero makes it O(n^2)"
+    );
+
+    // The other half of the same budget: carving the frames back out of the buffer. An upstream
+    // that flushes a batch of events in one body hands the re-segmenter a buffer holding many
+    // complete frames at once, and removing each one as it is found memmoves the whole remaining
+    // tail — a pass over the buffer per frame. Carving through a read offset and compacting once
+    // costs one buffer's worth however many frames are in it.
+    let mut batch: Vec<u8> = Vec::new();
+    let frames_in_batch = 400;
+    for i in 0..frames_in_batch {
+        batch.extend_from_slice(format!("data: {i}\n\n").as_bytes());
+    }
+    let batch_len = batch.len();
+    let (carved, moved) = carve_complete_frames(&mut batch, 0);
+    assert_eq!(
+        carved.len(),
+        frames_in_batch,
+        "every complete frame in the buffer is carved out in the one pass"
+    );
+    assert!(
+        batch.is_empty(),
+        "a buffer of nothing but complete frames is left empty"
+    );
+    assert!(
+        moved <= 2 * batch_len,
+        "carving {frames_in_batch} frames out of a {batch_len}-byte buffer relocated {moved} \
+         bytes; a read offset makes that O(buffer), removing each frame as it is found makes it \
+         O(frames x buffer)"
     );
 }
 
@@ -350,6 +385,75 @@ async fn an_upstream_frame_past_the_cursor_budget_ends_the_stream() {
     );
 }
 
+/// An upstream error response reaches the plane as a frame carrying its status leg, not as a clean
+/// empty success.
+///
+/// A rate-limited provider answers a JSON body with no blank line anywhere in it: nothing to carve
+/// a frame at, nothing that parses as an event. The re-segmenter therefore had a status leg in hand
+/// (`ClientError`, off `http`'s HEAD frame) and ended the stream without ever attaching it to
+/// anything, so a consumer polling this stream saw `None` on the first poll — indistinguishable
+/// from a provider that answered 200 with an empty event stream. The upstream's own answer has to
+/// survive the composition: 1.5.5 surfaces the 429 to the client, and it cannot if the transport
+/// swallowed it.
+#[tokio::test]
+async fn an_upstream_error_body_reaches_the_plane_with_its_status_leg() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let body = br#"{"error":{"type":"rate_limit_error","message":"slow down"}}"#;
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0_u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+        let resp = format!(
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes())
+            .await
+            .unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut stream, body)
+            .await
+            .unwrap();
+    });
+
+    let uri = format!("http://{addr}/");
+    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let sse = SseTransport::new(http);
+    let conn = sse
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    sse.write(
+        &conn,
+        StreamId(0),
+        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+    )
+    .await
+    .unwrap();
+
+    let mut frames = sse.frames(conn);
+    let (_s, only) = frames
+        .next()
+        .await
+        .expect("the error response is an item, not an empty stream")
+        .expect("the error body is carried as a frame, not thrown away");
+    assert_eq!(
+        only.meta.status,
+        Some(busbar_contract_transport::wire::StatusClass::ClientError),
+        "the status leg http read off the 429 is attached to the frame that carries the body"
+    );
+    assert_eq!(
+        only.bytes.as_slice(),
+        body.as_slice(),
+        "the upstream's own error body is what the frame carries"
+    );
+    assert_eq!(only.meta.bytes, body.len() as u64);
+    assert!(
+        frames.next().await.is_none(),
+        "exactly one item: the error is reported once"
+    );
+}
+
 /// Frame meta is honest on frames a REAL `SseTransport` emitted, and the check that says so is one
 /// an inflating or a deflating fixture turns red.
 ///
@@ -359,6 +463,12 @@ async fn an_upstream_frame_past_the_cursor_budget_ends_the_stream() {
 /// metering path reads `FrameMeta.bytes` as the bytes meter class, so a dishonest one is a billing
 /// figure, not a cosmetic slip. This asserts against frames off the wire and proves the predicate
 /// discriminates by perturbing them one byte each way.
+///
+/// `meta.bytes == bytes.len()` is only ever the meter's INTERNAL consistency, though — both sides
+/// come off the same carved buffer, so a carve that drops each frame's terminator meters a body
+/// short and stays green here. The figure the meter owes is the bytes that crossed the wire, so the
+/// total is checked against the fixture's own frames, terminators included, counted here rather
+/// than read back off the frames under test.
 #[tokio::test]
 async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
     fn honest(frame: &Frame) -> bool {
@@ -390,9 +500,11 @@ async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
     .unwrap();
 
     let mut seen = 0_usize;
+    let mut metered = 0_u64;
     let mut frames = sse.frames(conn);
     while let Some(item) = frames.next().await {
         let (_s, frame) = item.unwrap();
+        metered += frame.meta.bytes;
         assert!(
             honest(&frame),
             "the transport's own frame reports the bytes it actually carries"
@@ -410,4 +522,13 @@ async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
         seen += 1;
     }
     assert_eq!(seen, 2, "both frames of the fixture stream were checked");
+
+    // Counted from the fixture, not from the frames: every byte the upstream wrote as event-stream
+    // payload, each frame's own terminator included, is metered exactly once.
+    let on_the_wire: u64 = FIXTURE_FRAMES.iter().map(|f| f.len() as u64).sum();
+    assert_eq!(
+        metered, on_the_wire,
+        "the meter totals the bytes the upstream actually wrote — a carve that dropped each \
+         frame's terminator would meter {on_the_wire} bytes of body as {metered}"
+    );
 }

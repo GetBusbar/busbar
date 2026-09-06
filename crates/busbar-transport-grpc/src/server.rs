@@ -5,15 +5,15 @@
 //! per-RPC handler that forwards inbound gRPC messages into the connection's shared inbound
 //! channel and drains an outbound channel `write()` feeds, back onto the wire.
 //!
-//! ## The fixed RPC path — a placeholder this crate's report calls out
+//! ## The RPC path: the destination's, with this crate's own as the fallback
 //!
 //! gRPC's own wire format names every call by an HTTP/2 `:path` of the shape
-//! `/package.Service/Method`. A byte-blind transport has no plane-supplied value for it — the
-//! plane never reaches this layer. Every RPC this crate serves or dials therefore answers to (and
-//! is opened against) the SAME fixed path, [`RPC_PATH`]. A real deployment cannot yet route
-//! different plane operations to different upstream gRPC methods purely through this transport;
-//! that would need a way for `DestinationFacts`/claims to carry a method name through to here,
-//! which the contract does not have today.
+//! `/package.Service/Method`. A dialled call uses the method the destination named —
+//! `UpstreamAddress::Grpc` carries it, and `GrpcTransport::dial` reads it — so two plane operations
+//! on one transport can reach two upstream methods. Only a destination naming none falls back to
+//! [`RPC_PATH`], which is also the path this byte-blind server answers on: served calls are
+//! answered whatever `:path` they arrive with, since the transport reads no meaning from it beyond
+//! recording it.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -24,7 +24,6 @@ use std::task::{Context, Poll};
 use futures::Stream;
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use tokio::sync::mpsc;
 use tonic::{Request, Response, Status};
 
 use busbar_contract::wire::Frame;
@@ -36,20 +35,41 @@ use busbar_contract_transport::wire::TransportError;
 use crate::codec::RawCodec;
 use crate::conn::ConnState;
 
-/// The fixed path every RPC this crate serves or dials answers to. See the module header.
+/// The path a dial falls back to when the destination names no method — this crate's own frame
+/// method, the only one a byte-blind transport can name for itself. See the module header.
 pub(crate) const RPC_PATH: &str = "/busbar.raw/Frames";
 
-/// Serve one stream the layer below handed up as an HTTP/2 gRPC connection until it closes.
+/// Serve one stream the layer below handed up as an HTTP/2 gRPC connection until it closes — or
+/// until the connection is closed from this side.
+///
+/// The task is spawned, so the shutdown seam is armed on `state` BEFORE the spawn: a `close` racing
+/// the very first poll of the connection must still find something to fire. Firing it asks hyper
+/// for a graceful shutdown (a GOAWAY: no new calls, the ones in flight end with their own
+/// trailers), and the socket goes with the task.
 pub(crate) fn serve_connection(stream: crate::conn::LowerIo, state: Arc<ConnState>) {
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    state.arm_shutdown(stop_tx);
+    let ending = state.clone();
     tokio::spawn(async move {
         let io = TokioIo::new(stream);
         let svc = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
             let state = state.clone();
             async move { Ok::<_, std::convert::Infallible>(handle_one_rpc(state, req).await) }
         });
-        let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
-            .serve_connection(io, svc)
-            .await;
+        let conn = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+            .serve_connection(io, svc);
+        tokio::pin!(conn);
+        tokio::select! {
+            _ = conn.as_mut() => {}
+            _ = stop_rx => {
+                conn.as_mut().graceful_shutdown();
+                let _ = conn.await;
+            }
+        }
+        // The connection is over, so nothing will ever arrive on it again: end the inbound side so
+        // a reader on `frames()` finishes rather than waiting out a deadline for a frame that
+        // cannot come.
+        ending.end_inbound();
     });
 }
 
@@ -64,17 +84,14 @@ async fn handle_one_rpc(
     state.record_served_path(req.uri().path().to_string());
     let local = state.next_local_stream.fetch_add(1, Ordering::Relaxed);
     let stream_id = StreamId(local);
-    let (out_tx, out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    state
-        .outbound
-        .lock()
-        .unwrap()
-        .insert(local, crate::conn::opened(out_tx));
+    let (out_tx, out_rx) = crate::conn::outbound_channel();
+    let serial = state.register(local, crate::conn::opened(out_tx));
 
     let mut grpc = tonic::server::Grpc::new(RawCodec);
     let handler = RpcHandler {
         state: state.clone(),
         stream_id,
+        serial,
         out_rx: Some(out_rx),
     };
     grpc.streaming(handler, req).await
@@ -86,7 +103,9 @@ async fn handle_one_rpc(
 struct RpcHandler {
     state: Arc<ConnState>,
     stream_id: StreamId,
-    out_rx: Option<mpsc::UnboundedReceiver<Vec<u8>>>,
+    /// Which call this is, told apart from the next one to carry the same `StreamId`.
+    serial: u64,
+    out_rx: Option<crate::conn::OutboundRx>,
 }
 
 impl tower::Service<Request<tonic::Streaming<Vec<u8>>>> for RpcHandler {
@@ -101,6 +120,7 @@ impl tower::Service<Request<tonic::Streaming<Vec<u8>>>> for RpcHandler {
     fn call(&mut self, request: Request<tonic::Streaming<Vec<u8>>>) -> Self::Future {
         let state = self.state.clone();
         let stream_id = self.stream_id;
+        let serial = self.serial;
         let out_rx = self.out_rx.take().expect("called at most once per RPC");
         Box::pin(async move {
             // `is_response = false`: this is the REQUEST body, which carries no `grpc-status`
@@ -111,7 +131,9 @@ impl tower::Service<Request<tonic::Streaming<Vec<u8>>>> for RpcHandler {
                 request.into_inner(),
                 false,
             ));
-            Ok(Response::new(OutStream::new(out_rx, state, stream_id)))
+            Ok(Response::new(OutStream::new(
+                out_rx, state, stream_id, serial,
+            )))
         })
     }
 }
@@ -121,7 +143,7 @@ impl tower::Service<Request<tonic::Streaming<Vec<u8>>>> for RpcHandler {
 /// concurrent RPCs share one channel, told apart only by the tag.
 ///
 /// `is_response` is true only on the CLIENT side, reading the upstream's ANSWER: that stream ends
-/// bearing the `grpc-status` trailer (`StatusAt::Terminal` in the architecture's ws row), which
+/// bearing the `grpc-status` trailer (`StatusAt::Terminal` in the architecture's grpc row), which
 /// this function reports as a final, zero-length, status-bearing frame — the transport's own
 /// honest reading of the trailer, never a decode of what the messages themselves meant. A gRPC
 /// REQUEST body carries no such trailer, so the server side never appends one.
@@ -205,21 +227,24 @@ pub(crate) fn map_status(status: &Status) -> busbar_contract_transport::wire::St
 /// the call's: hyper drops it when the RPC ends, and that is the moment the connection's outbound
 /// map should stop holding a sender nothing will ever drain again.
 pub(crate) struct OutStream {
-    rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    rx: crate::conn::OutboundRx,
     state: Arc<ConnState>,
     stream_id: StreamId,
+    serial: u64,
 }
 
 impl OutStream {
     pub(crate) fn new(
-        rx: mpsc::UnboundedReceiver<Vec<u8>>,
+        rx: crate::conn::OutboundRx,
         state: Arc<ConnState>,
         stream_id: StreamId,
+        serial: u64,
     ) -> Self {
         Self {
             rx,
             state,
             stream_id,
+            serial,
         }
     }
 }
@@ -227,13 +252,12 @@ impl OutStream {
 /// The call is over when its outbound stream is: the entry the connection registered for it goes
 /// with it, so a connection serving many short calls holds senders for the ones still open and no
 /// others.
+///
+/// The entry it takes is its OWN — by serial, not by id alone. A drop that runs after the id has
+/// been reused would otherwise end a second call for the first one's death.
 impl Drop for OutStream {
     fn drop(&mut self) {
-        self.state
-            .outbound
-            .lock()
-            .unwrap()
-            .remove(&self.stream_id.0);
+        self.state.end_call(self.stream_id.0, self.serial);
     }
 }
 

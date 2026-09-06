@@ -45,7 +45,6 @@ command -v jq >/dev/null || { echo "record.sh needs jq" >&2; exit 2; }
 case "$PLANE" in llm|core|all) ;; *) echo "record.sh: planes recorded natively: llm, core (cli/config/scrape/crosscut/admin/boot), all; mcp/a2a go through the conformance rigs" >&2; exit 2 ;; esac
 
 LISTEN_PORT="${ORACLE_LISTEN_PORT:-48811}" ADMIN_PORT="${ORACLE_ADMIN_PORT:-48812}" MOCK_PORT="${ORACLE_MOCK_PORT:-48781}"
-assert_port_free "$LISTEN_PORT"; assert_port_free "$ADMIN_PORT"; assert_port_free "$MOCK_PORT"
 
 mkdir -p "$OUT/cells" "$OUT/raw"
 LEDGER="$OUT/ledger.tsv"; : >"$LEDGER"; export LEDGER
@@ -57,13 +56,71 @@ CONTROL="$WORK/mock.control"
 
 fail_setup() { record "setup" FAIL "$1" "${2:-}"; exit 1; }
 
+# ── port ownership: the ONLY evidence that what answers is what we started ───────────────────────
+# This script has no `set -e`, so an unchecked `assert_port_free` is a no-op — and every readiness
+# probe below is a bare HTTP answer, which a stale busbar or a parallel recording on the same port
+# gives just as cheerfully as ours. A recording made against someone else's process is not a
+# recording of the binary under test; it is a green that hides whatever the binary actually does.
+# So: prove the port free BEFORE the spawn, and prove the listener afterwards is OUR pid.
+port_owner_pid() {  # <port> -> the pid listening on <port>, or nothing if it cannot be determined
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1
+  elif command -v ss >/dev/null 2>&1; then
+    ss -lntpH "sport = :$1" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -1
+  fi
+}
+assert_port_is_ours() {  # <port> <pid> — 0 iff <pid> is alive and owns the listener on <port>
+  local port="$1" pid="$2" owner
+  [ -n "$pid" ] || return 1
+  # a dead pid can never be the owner, whatever is answering on the port
+  kill -0 "$pid" 2>/dev/null || return 1
+  owner="$(port_owner_pid "$port")"
+  # No inspector on this host (no lsof, no ss): fall back to `kill -0` plus the fact that the port
+  # was PROVEN FREE immediately before the spawn — every caller below establishes that first.
+  [ -n "$owner" ] || return 0
+  [ "$owner" = "$pid" ]
+}
+assert_ports_free_or_fail() {  # <port>... — a busy port is a setup failure, never a recording
+  local p
+  for p in "$@"; do
+    assert_port_free "$p" || fail_setup "port ${p} is already in use" \
+      "another recording, a stale busbar or a foreign service is listening on 127.0.0.1:${p}; adopting it would record that process instead of ${BIN} — choose free ORACLE_LISTEN_PORT/ORACLE_ADMIN_PORT/ORACLE_MOCK_PORT"
+  done
+}
+assert_ports_free_or_fail "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT"
+
+# Spare listeners for exec `boot` cells: those start a SECOND busbar, which must not collide with the
+# recording's own. Derived from the same ORACLE_* knobs rather than hardcoded, or two recordings on
+# deliberately different ports still fight over one fixed pair (48821/48822) and each adopts the
+# other's process. The defaults are unchanged (48811+10 / 48812+10), so the golden does not move.
+BOOT_LISTEN_PORT="${ORACLE_BOOT_LISTEN_PORT:-$((LISTEN_PORT + 10))}"
+BOOT_ADMIN_PORT="${ORACLE_BOOT_ADMIN_PORT:-$((ADMIN_PORT + 10))}"
+# A caller is free to choose ORACLE_* values that land the derived pair on a port this run already
+# owns (script cells take ADMIN_PORT+1 for their mock); step the pair by two until it does not.
+_boot_port_reserved() {  # <port>
+  case " ${LISTEN_PORT} ${ADMIN_PORT} ${MOCK_PORT} $((ADMIN_PORT + 1)) " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+_bp=0
+while [ "$_bp" -lt 200 ] && { _boot_port_reserved "$BOOT_LISTEN_PORT" || _boot_port_reserved "$BOOT_ADMIN_PORT" \
+        || [ "$BOOT_LISTEN_PORT" = "$BOOT_ADMIN_PORT" ]; }; do
+  BOOT_LISTEN_PORT=$((BOOT_LISTEN_PORT + 2)); BOOT_ADMIN_PORT=$((BOOT_ADMIN_PORT + 2)); _bp=$((_bp + 1))
+done
+unset _bp
+
 # ── mock upstream (all six dialects, byte-deterministic) ────────────────────────────────────────
 mkdir -p "$WORK/egress"
 # the mock records every request it receives (path, method, headers, body) so the EGRESS side of a
 # cell is judged too, not only what came back
 ORACLE_MOCK_CAPTURE_DIR="$WORK/egress" python3 "${here}/mock-upstream.py" "$MOCK_PORT" oracle-marker "$CONTROL" >"$WORK/mock.log" 2>&1 &
-track_pid $!
+MOCK_PID=$!
+track_pid "$MOCK_PID"
 wait_for_http "http://127.0.0.1:${MOCK_PORT}/" 8 || fail_setup "mock upstream did not come up" "$(tail -c 300 "$WORK/mock.log")"
+# a FOREIGN mock answering here would take every egress request and ignore $CONTROL — which this run
+# cannot write into its work dir — so `upstream_down` cells would record a healthy upstream.
+assert_port_is_ours "$MOCK_PORT" "$MOCK_PID" \
+  || fail_setup "the process answering on mock port ${MOCK_PORT} is not the mock this run started" \
+                "expected pid ${MOCK_PID}, port owned by '$(port_owner_pid "$MOCK_PORT")'; its control file (${CONTROL}) would be ignored"
 
 # ── busbar under the oracle config ──────────────────────────────────────────────────────────────
 oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || fail_setup "oracle config could not be written"
@@ -84,6 +141,11 @@ boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three key
     ORACLE_VARIANT="$variant" oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || return 3
     CUR_VARIANT="$variant"
   fi
+  # PROVE THE PORTS FREE IMMEDIATELY BEFORE THE SPAWN. Without this the /healthz poll below adopts
+  # whatever answers first — including a busbar left behind by a crashed run — and every cell after
+  # it is recorded against a process this script never started and cannot configure.
+  assert_port_free "$LISTEN_PORT" || return 4
+  assert_port_free "$ADMIN_PORT" || return 4
   BUSBAR_PID="$(oracle_spawn "$WORK/busbar.log" "$BIN")"; track_pid "$BUSBAR_PID"
   # busbar boots in tens of ms; poll at 25 ms (the shared wait_for_http sleeps a whole second).
   # The bound is 60 s, not 20: a hooks-variant boot loads the published plugins, and on a machine
@@ -94,6 +156,9 @@ boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three key
     sleep 0.025; w=$((w+1))
   done
   [ $w -lt 2400 ] || return 1
+  # /healthz answered — but by WHOM. Both listeners must be held by the pid we just spawned.
+  assert_port_is_ours "$LISTEN_PORT" "$BUSBAR_PID" || return 4
+  assert_port_is_ours "$ADMIN_PORT" "$BUSBAR_PID" || return 4
   oracle_mint_keys "$ADMIN_PORT" || return 2
   # PRIME the BROKE key: its group admits exactly one request per day, so one un-recorded request
   # now makes every over_budget cell a real 429 at Admit (the first request would be admitted).
@@ -101,15 +166,36 @@ boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three key
     -H "Authorization: Bearer ${ORACLE_TOKEN_BROKE}" -H "Content-Type: application/json" \
     -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"prime"}]}' || true
 }
-stop_busbar() {  # stop the current busbar and wait until the listen port is free again
+stop_busbar() {  # stop the current busbar and wait until BOTH its ports are free again
   [ -n "$BUSBAR_PID" ] || return 0
-  kill "$BUSBAR_PID" 2>/dev/null || true; wait "$BUSBAR_PID" 2>/dev/null || true; BUSBAR_PID=""
-  local i=0; while [ $i -lt 50 ] && ! assert_port_free "$LISTEN_PORT"; do sleep 0.1; i=$((i+1)); done
+  local dead="$BUSBAR_PID"
+  kill "$dead" 2>/dev/null || true; wait "$dead" 2>/dev/null || true; BUSBAR_PID=""
+  # THE CONFIG THIS BUSBAR WAS BOOTED UNDER IS NO LONGER RUNNING ANYWHERE. Leaving CUR_VARIANT set
+  # tells the next boot_busbar "the config on disk already matches", and under --shared-state the
+  # next cells then run against a variant nothing is serving — a dead port read as that variant.
+  CUR_VARIANT=""
+  # Wait for the PID to be reaped AND for both listeners to go: handing only the data port to a
+  # script cell (which takes LISTEN_PORT *and* ADMIN_PORT) leaves it racing the admin socket's close,
+  # and its own assert_port_free then reports "port busy" for a process that is already exiting.
+  local i=0
+  while [ $i -lt 100 ]; do
+    kill -0 "$dead" 2>/dev/null || { assert_port_free "$LISTEN_PORT" && assert_port_free "$ADMIN_PORT" && break; }
+    sleep 0.1; i=$((i+1))
+  done
   # a port still answering after the kill means the OLD process survived: refuse to continue on it
-  assert_port_free "$LISTEN_PORT" || { echo "record.sh: port ${LISTEN_PORT} still answers after stopping busbar ${BUSBAR_PID:-?}; refusing to record against a stale process" >&2; exit 1; }
+  local p
+  for p in "$LISTEN_PORT" "$ADMIN_PORT"; do
+    assert_port_free "$p" || { echo "record.sh: port ${p} still answers after stopping busbar ${dead}; refusing to record against a stale process" >&2; exit 1; }
+  done
 }
 boot_busbar; rc=$?
-[ "$rc" -eq 0 ] || { [ "$rc" -eq 1 ] && fail_setup "busbar (${VER}) did not come up" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 500)"; fail_setup "could not mint the three oracle keys" "admin API on ${ADMIN_PORT}; see $WORK/busbar.log"; }
+case "$rc" in
+  0) ;;
+  1) fail_setup "busbar (${VER}) did not come up" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 500)" ;;
+  4) fail_setup "the listeners on ${LISTEN_PORT}/${ADMIN_PORT} are not the busbar this run spawned" \
+       "pid ${BUSBAR_PID:-?} vs port owners '$(port_owner_pid "$LISTEN_PORT")'/'$(port_owner_pid "$ADMIN_PORT")'; refusing to record a foreign process as ${BIN}" ;;
+  *) fail_setup "could not mint the three oracle keys" "admin API on ${ADMIN_PORT}; see $WORK/busbar.log" ;;
+esac
 
 # ── effect snapshots ────────────────────────────────────────────────────────────────────────────
 snapshot() {  # snapshot <dir> <key-id>
@@ -200,22 +286,39 @@ record_exec_cell() {  # <id> <cell-json> <raw-dir> <safe>
     cli|validate)
       "${envcmd[@]}" "$BIN" "${args[@]}" >"$raw/stdout" 2>"$raw/stderr" </dev/null; rc=$? ;;
     boot)
-      # a boot cell must not collide with the recording busbar: rewrite the listen ports
-      python3 - "$cfgfile" "$xwork/boot.yaml" <<'PY'
+      # a boot cell must not collide with the recording busbar: rewrite the listen ports onto THIS
+      # run's derived spare pair (see BOOT_LISTEN_PORT/BOOT_ADMIN_PORT above), never a fixed one
+      python3 - "$cfgfile" "$xwork/boot.yaml" "$BOOT_LISTEN_PORT" "$BOOT_ADMIN_PORT" <<'PY'
 import sys,re
 s=open(sys.argv[1]).read()
-s=re.sub(r'^listen: .*$', 'listen: "127.0.0.1:48821"', s, flags=re.M)
-s=re.sub(r'^admin_listen: .*$', 'admin_listen: "127.0.0.1:48822"', s, flags=re.M)
+s=re.sub(r'^listen: .*$', 'listen: "127.0.0.1:%s"' % sys.argv[3], s, flags=re.M)
+s=re.sub(r'^admin_listen: .*$', 'admin_listen: "127.0.0.1:%s"' % sys.argv[4], s, flags=re.M)
 open(sys.argv[2],'w').write(s)
 PY
+      # The spare port must be PROVEN FREE before the spawn: otherwise the /healthz poll below reads
+      # somebody else's answer as "this cell's busbar came up degraded-but-serving" and records a pass
+      # for a process that never started.
+      assert_port_free "$BOOT_LISTEN_PORT" \
+        || { record "$id" FAIL "boot-cell port ${BOOT_LISTEN_PORT} is already in use" \
+               "owner pid '$(port_owner_pid "$BOOT_LISTEN_PORT")'; set ORACLE_BOOT_LISTEN_PORT/ORACLE_BOOT_ADMIN_PORT"; return; }
       envcmd+=(BUSBAR_CONFIG="$xwork/boot.yaml")
       "${envcmd[@]}" "$BIN" "${args[@]}" >"$raw/stdout" 2>"$raw/stderr" </dev/null &
       local bpid=$! i=0 healthy=0
       while [ $i -lt 100 ]; do
         if ! kill -0 "$bpid" 2>/dev/null; then break; fi
-        if curl -fsS -m 1 -o /dev/null "http://127.0.0.1:48821/healthz" 2>/dev/null; then healthy=1; break; fi
+        if curl -fsS -m 1 -o /dev/null "http://127.0.0.1:${BOOT_LISTEN_PORT}/healthz" 2>/dev/null; then
+          # answered — but only OUR pid holding the listener makes that this cell's evidence
+          if assert_port_is_ours "$BOOT_LISTEN_PORT" "$bpid"; then healthy=1; else healthy=2; fi
+          break
+        fi
         sleep 0.1; i=$((i+1))
       done
+      if [ "$healthy" -eq 2 ]; then
+        kill -9 "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
+        record "$id" FAIL "the listener on ${BOOT_LISTEN_PORT} is not this cell's busbar" \
+          "expected pid ${bpid}, port owned by '$(port_owner_pid "$BOOT_LISTEN_PORT")'"
+        return
+      fi
       if [ "$healthy" -eq 1 ]; then
         # a real warning-boot: /healthz answered on the data listener, so busbar came up degraded-but-
         # serving. That IS the "alive" contract for this cell family — stop it and record a pass.
@@ -243,10 +346,22 @@ PY
 # Metering posts write-behind (usage_flush_interval_ms) and the gauges are scrape-time derived, so an
 # "after" snapshot taken at a fixed delay races the flush. Poll until two consecutive scrapes agree
 # (a fixed point), bounded, then snapshot — deterministic on every binary, never "sleep and hope".
+
+# A portable content digest for the settle fixed point. `md5`(1) is macOS-only: on Linux the old
+# `... | md5 2>/dev/null || true` printed NOTHING and the `|| true` swallowed the missing command, so
+# half of the fixed point (the metrics half) was the empty string on every Linux run — the loop then
+# settled on the usage view alone and snapshotted before metrics had caught up. No `|| true` here:
+# if no digest tool exists at all the caller must see it, not silently lose the metrics half.
+_digest() {  # stdin -> one hex digest line
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+  else python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
+  fi
+}
 settle_then_snapshot() {  # <dir> <key-id>
   local d="$1" kid="$2" i=0 prev="" cur=""
   while [ $i -lt 20 ]; do
-    cur="$(curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${kid}/usage" 2>/dev/null | jq -c 'del(.as_of)' 2>/dev/null)$(curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_TOKEN_OK}" "http://127.0.0.1:${LISTEN_PORT}/metrics" 2>/dev/null | grep -v '^#' | grep -v '_seconds' | sort | md5 2>/dev/null || true)"
+    cur="$(curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${kid}/usage" 2>/dev/null | jq -c 'del(.as_of)' 2>/dev/null)$(curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_TOKEN_OK}" "http://127.0.0.1:${LISTEN_PORT}/metrics" 2>/dev/null | grep -v '^#' | grep -v '_seconds' | sort | _digest)"
     [ -n "$prev" ] && [ "$cur" = "$prev" ] && [ $i -ge 2 ] && break
     prev="$cur"; sleep 0.15; i=$((i+1))
   done
@@ -408,7 +523,10 @@ while IFS= read -r cell; do
     # A named script owns the whole cell (its own processes on spare ports) and writes captured.json.
     sname="$(jq -r .script.name <<<"$cell")"
     local_args=(); while IFS= read -r a; do [ -n "$a" ] && local_args+=("$a"); done < <(jq -r '.script.args[]? // empty' <<<"$cell")
-    stop_busbar   # a script cell never needs the recording busbar; free its ports and CPU
+    # a script cell never needs the recording busbar; free its ports and CPU. stop_busbar clears
+    # CUR_VARIANT as well, so the next cell reboots instead of assuming the variant it wanted is
+    # still being served here — under --shared-state that assumption was a dead port.
+    stop_busbar
     # the script reuses this recording's own (now free) listen/admin ports so two recordings never
     # collide; the recording's mock upstream is still up on MOCK_PORT, so the script's mock takes
     # the port after the admin one (inside this recording's own block)
@@ -425,7 +543,10 @@ while IFS= read -r cell; do
 
   # `fresh: true` — this cell must not see state (breaker, budgets) left by earlier cells.
   variant="$(jq -r '.config_variant // empty' <<<"$cell")"
-  if [ "$FRESH_ALL" = 1 ] || [ "$(jq -r '.fresh // false' <<<"$cell")" = true ] || [ "$variant" != "$CUR_VARIANT" ]; then
+  # `-z "$BUSBAR_PID"` is not redundant: a script cell just before this one stopped the recording
+  # busbar, and with --shared-state a following cell whose variant equals CUR_VARIANT would
+  # otherwise skip the boot and drive every request at a port nothing is listening on.
+  if [ -z "$BUSBAR_PID" ] || [ "$FRESH_ALL" = 1 ] || [ "$(jq -r '.fresh // false' <<<"$cell")" = true ] || [ "$variant" != "$CUR_VARIANT" ]; then
     stop_busbar
     boot_busbar "$variant" || { record "$id" FAIL "fresh boot before cell failed (variant '${variant}')" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 300)"; continue; }
   fi
@@ -446,13 +567,25 @@ while IFS= read -r cell; do
     repeat="$(jq -r '.request.repeat // 1' <<<"$cell")"
     body_spec="$(jq -r '.request.body // empty' <<<"$cell")"
     case "$body_spec" in
-      @oversize:*) python3 - "${body_spec#@oversize:}" >"$raw/request.body" <<'PY'
+      @oversize:*) python3 - "${body_spec#@oversize:}" >"$raw/request.body" 2>"$raw/oversize.err" <<'PY'
 import sys
 spec = sys.argv[1]
-n = int(spec[:-3]) * 1024 * 1024 if spec.endswith("MiB") else int(spec)
+# An unparseable spec must be LOUD. A bare int() raising here used to leave request.body empty and
+# the exit status unchecked, so the cell POSTed nothing at all and recorded whatever busbar says to
+# an empty body -- a PASS for a request that was never the one the cell is about.
+try:
+    n = int(spec[:-3]) * 1024 * 1024 if spec.endswith("MiB") else int(spec)
+except ValueError:
+    sys.exit("bad @oversize spec %r: expected <bytes> or <N>MiB" % spec)
+if n <= 0:
+    sys.exit("bad @oversize spec %r: size must be positive" % spec)
 sys.stdout.write('{"model":"m-openai-chat","messages":[{"role":"user","content":"' + "x" * n + '"}]}')
 PY
-        ;;
+        oversize_rc=$?
+        if [ "$oversize_rc" -ne 0 ] || [ ! -s "$raw/request.body" ]; then
+          record "$id" FAIL "could not build the @oversize body for ${body_spec}" \
+            "$(tail -c 200 "$raw/oversize.err" | tr '\n' ' ')"; continue
+        fi ;;
       "") : >"$raw/request.body" ;;
       *) printf '%s' "$body_spec" >"$raw/request.body" ;;
     esac

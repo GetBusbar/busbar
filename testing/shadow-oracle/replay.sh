@@ -11,6 +11,7 @@
 #   replay.sh --golden <dir> --candidate <dir> --out <dir> [--cells cells.json] [--family <regex>]
 #             [--accepted accepted-differences.json] [--allow-harness-skew]
 #             [--baseline owed-baseline.txt] [--accepted-gaps accepted-gaps.json] [--rebaseline]
+#             [--no-check-golden]
 #
 # <out>/  report.json report.md owed.txt owed-gaps.txt diverging.txt ledger.tsv
 # Exit non-zero on any divergence, any owed cell missing, or zero rows. Exit 2 (before anything is
@@ -29,7 +30,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
 
 GOLDEN="" CAND="" OUT="" CELLS="${here}/cells.json" FAMILY="" ACCEPTED="${here}/accepted-differences.json"
-ALLOW_SKEW=0 BASELINE="${here}/owed-baseline.txt" ACCEPTED_GAPS="${here}/accepted-gaps.json" REBASELINE=0
+ALLOW_SKEW=0 BASELINE="${here}/owed-baseline.txt" ACCEPTED_GAPS="${here}/accepted-gaps.json" REBASELINE=0 CHECK_GOLDEN=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --golden) GOLDEN="$2"; shift 2 ;;
@@ -42,15 +43,39 @@ while [ $# -gt 0 ]; do
     --baseline) BASELINE="$2"; shift 2 ;;
     --accepted-gaps) ACCEPTED_GAPS="$2"; shift 2 ;;
     --rebaseline) REBASELINE=1; shift ;;
+    --no-check-golden) CHECK_GOLDEN=0; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
-[ -d "$GOLDEN" ] && [ -d "$CAND" ] && [ -n "$OUT" ] || { echo "usage: $0 --golden <dir> --candidate <dir> --out <dir> [--cells f] [--family re] [--accepted f] [--allow-harness-skew] [--baseline f] [--accepted-gaps f] [--rebaseline]" >&2; exit 2; }
+[ -d "$GOLDEN" ] && [ -d "$CAND" ] && [ -n "$OUT" ] || { echo "usage: $0 --golden <dir> --candidate <dir> --out <dir> [--cells f] [--family re] [--accepted f] [--allow-harness-skew] [--baseline f] [--accepted-gaps f] [--rebaseline] [--no-check-golden]" >&2; exit 2; }
 # absolute paths: verdict.sh runs from the repo root, so a relative --out would make it read an empty
 # ledger and (correctly) call the run vacuous
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"; GOLDEN="$(cd "$GOLDEN" && pwd)"; CAND="$(cd "$CAND" && pwd)"
 [ -s "${GOLDEN}/ledger.tsv" ] || { echo "replay: golden has no ledger.tsv — record it first" >&2; exit 2; }
 command -v python3 >/dev/null || { echo "replay.sh needs python3" >&2; exit 2; }
+
+# ── the golden's binary provenance, BEFORE anything is compared ──────────────────────────────────
+# diff-cells.py already refuses a pair of recordings that did not come from the same HARNESS
+# revision. The other half of "this diff is about busbar" is that the golden came from the binary we
+# still believe is the golden binary: meta.json records the sha256 of the file record.sh executed,
+# and fetch-golden.sh --check-golden re-hashes the cached release artifact against it. Skipped only
+# when the golden names no binary (the tracked selftest fixtures) or this host has no cached golden
+# binary at all (exit 5) — replaying two recordings does not require the release on disk. A real
+# MISMATCH is fatal: the golden was made by some other build that happens to share a version string.
+if [ "$CHECK_GOLDEN" = 1 ] && [ -s "${GOLDEN}/meta.json" ]; then
+  gver="$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("version") or "").replace("busbar ","").strip())' "${GOLDEN}/meta.json" 2>/dev/null || true)"
+  gbin="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binary_sha256") or "")' "${GOLDEN}/meta.json" 2>/dev/null || true)"
+  if [ -n "$gver" ] && [ -n "$gbin" ]; then
+    cg_out="$(bash "${here}/fetch-golden.sh" --version "$gver" --check-golden "$GOLDEN" 2>&1)"; cg_rc=$?
+    case "$cg_rc" in
+      0) echo "$cg_out" ;;
+      5) echo "replay: golden binary provenance NOT CHECKED on this host (no cached ${gver} binary); comparing anyway" >&2 ;;
+      *) echo "$cg_out" >&2
+         echo "replay: refusing to compare — the golden on disk was not proven to come from the pinned ${gver} binary. Re-run testing/shadow-oracle/fetch-golden.sh, or pass --no-check-golden if you know why." >&2
+         exit 2 ;;
+    esac
+  fi
+fi
 
 mkdir -p "$OUT"
 export LEDGER="${OUT}/ledger.tsv"; : >"$LEDGER"

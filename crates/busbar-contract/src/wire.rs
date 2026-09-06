@@ -15,7 +15,7 @@ pub use busbar_contract_transport::wire::{
     RawStream, StatusAt, StatusClass, TransportError, Unit0Trigger,
 };
 
-use crate::bounded::{ArenaBytes, BoundedVec, SlabBytes, MAX_KEYS};
+use crate::bounded::{ArenaBytes, BoundedVec, SlabBytes, MAX_CURSOR_BYTES, MAX_KEYS};
 use crate::ids::StreamId;
 
 /// Transport bytes with a direction, a stream and meta. It has no meaning.
@@ -55,17 +55,38 @@ impl<'u> FrameCursor<'u> {
     }
 
     /// The next unconsumed frame, without consuming it.
+    ///
+    /// Answers nothing once the ceiling is reached, for the same reason [`next_frame`] stops:
+    /// a frame a plane cannot consume is not a frame it should be shown.
+    ///
+    /// [`next_frame`]: FrameCursor::next_frame
     #[must_use]
     pub fn peek(&self) -> Option<&'u Frame> {
-        self.frames.get(self.position)
+        let frame = self.frames.get(self.position)?;
+        self.within_ceiling(frame).then_some(frame)
     }
 
-    /// Consume and return the next frame.
+    /// Consume and return the next frame, or nothing once the ceiling is reached.
+    ///
+    /// The ceiling is [`MAX_CURSOR_BYTES`], and stopping at it is what makes the bound above true
+    /// rather than aspirational: the cursor used to count what a plane had consumed and hand over
+    /// every frame regardless, so a plane that kept calling was handed as much as the connection
+    /// had produced. A cursor that has stopped answers `None`, which is the same thing a plane
+    /// sees at the end of the frames it was given — so no plane needs to learn a new answer, and
+    /// the arrival gate's cursor-budget refusal is what the connection sees.
     pub fn next_frame(&mut self) -> Option<&'u Frame> {
         let frame = self.frames.get(self.position)?;
+        if !self.within_ceiling(frame) {
+            return None;
+        }
         self.position += 1;
         self.scanned = self.scanned.saturating_add(frame.bytes.len());
         Some(frame)
+    }
+
+    /// Whether consuming this frame would leave the cursor inside its ceiling.
+    fn within_ceiling(&self, frame: &Frame) -> bool {
+        self.scanned.saturating_add(frame.bytes.len()) <= MAX_CURSOR_BYTES
     }
 
     /// How many frames remain unconsumed.

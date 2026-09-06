@@ -163,6 +163,54 @@ fn a_poisoned_segment_never_takes_another_write() {
     let _ = segment_before;
 }
 
+/// What the store is owed on disk is a QUEUE WITH A BOUND, not a list that grows for as long as the
+/// outage lasts. What it gives up on is counted, and those records are still in the segments.
+#[test]
+fn the_on_disk_catch_up_queue_is_bounded_and_says_what_it_gave_up_on() {
+    struct Refuses;
+    impl crate::ship::Shipper for Refuses {
+        fn ship(
+            &mut self,
+            _records: &[crate::record::Record],
+        ) -> Result<(), crate::ship::ShipError> {
+            Err(crate::ship::ShipError::Unavailable("under test".into()))
+        }
+    }
+    let (factory, _switch, _memory) = FaultyFactory::new();
+    let mut wal = Wal::with_parts(
+        Box::new(factory),
+        Box::new(Refuses),
+        Mode::OnDisk,
+        u64::MAX / 2,
+    )
+    .unwrap();
+    let token = durability_token();
+
+    let bound = crate::wal::STORE_BACKLOG_RECORDS;
+    let mut written = 0u64;
+    while written < bound as u64 + 200 {
+        let batch = records(1, written + 1, 100, 8);
+        wal.append_batch(&token, busbar_caps::StepName::Meter, &batch)
+            .expect("the medium is healthy; only the store is not");
+        written += 100;
+    }
+
+    assert!(
+        wal.owed_to_store().len() <= bound,
+        "the catch-up queue is bounded, got {}",
+        wal.owed_to_store().len()
+    );
+    assert!(
+        wal.store_debt_dropped() > 0,
+        "and it says how much of the catch-up it gave up on"
+    );
+    assert_eq!(
+        wal.read_back().unwrap().records.len() as u64,
+        written,
+        "nothing was dropped from the medium, only from the offer to the store"
+    );
+}
+
 #[test]
 fn a_store_that_refuses_a_memory_buffered_batch_is_a_durability_loss() {
     // With no data directory the store IS the durability, so its refusal is the loss.
@@ -181,6 +229,135 @@ fn a_store_that_refuses_a_memory_buffered_batch_is_a_durability_loss() {
     wal.append_batch(&token, busbar_caps::StepName::Meter, &batch)
         .expect_err("a store that will not take the batch has not made it durable");
     assert_eq!(wal.owed(), batch.as_slice());
+}
+
+/// A store that refuses once and then accepts. It keeps everything it took, so a test can say
+/// exactly what reached it and how many times.
+#[derive(Default)]
+struct RefusesOnce {
+    refusals_left: usize,
+    taken: std::sync::Arc<std::sync::Mutex<Vec<crate::record::Record>>>,
+}
+
+impl RefusesOnce {
+    fn new(
+        refusals: usize,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Mutex<Vec<crate::record::Record>>>,
+    ) {
+        let taken = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            RefusesOnce {
+                refusals_left: refusals,
+                taken: taken.clone(),
+            },
+            taken,
+        )
+    }
+}
+
+impl crate::ship::Shipper for RefusesOnce {
+    fn ship(&mut self, records: &[crate::record::Record]) -> Result<(), crate::ship::ShipError> {
+        if self.refusals_left > 0 {
+            self.refusals_left -= 1;
+            return Err(crate::ship::ShipError::Unavailable("under test".into()));
+        }
+        self.taken
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend_from_slice(records);
+        Ok(())
+    }
+}
+
+/// A refusal on a node with a data directory does not fail the commit — and it does not throw the
+/// batch away either.
+///
+/// The contract on the seam is that an error means the batch is STILL OWED and will be offered
+/// again. Discarding the answer honours neither half: the commit is fine, and the store never hears
+/// about those records again.
+#[test]
+fn an_on_disk_batch_the_store_refused_is_offered_again_rather_than_discarded() {
+    let (shipper, taken) = RefusesOnce::new(1);
+    let (factory, _switch, _memory) = FaultyFactory::new();
+    let mut wal =
+        Wal::with_parts(Box::new(factory), Box::new(shipper), Mode::OnDisk, CEILING).unwrap();
+    let token = durability_token();
+
+    let refused = records(1, 1, 2, 20);
+    wal.append_batch(&token, busbar_caps::StepName::Meter, &refused)
+        .expect("the bytes are on the medium; the store can catch up later");
+    assert!(
+        taken.lock().unwrap().is_empty(),
+        "the store refused, so it holds nothing yet"
+    );
+    assert_eq!(
+        wal.owed_to_store().len(),
+        2,
+        "and the log knows it still owes them"
+    );
+
+    // The next commit re-offers what is owed, in order, and the store takes the lot.
+    let next = records(1, 3, 1, 20);
+    wal.append_batch(&token, busbar_caps::StepName::Meter, &next)
+        .expect("a commit on a healthy disk");
+    let mut expected = refused.clone();
+    expected.extend(next.clone());
+    assert_eq!(
+        *taken.lock().unwrap(),
+        expected,
+        "each record reaches the store exactly once, oldest first"
+    );
+    assert!(wal.owed_to_store().is_empty());
+
+    // And the medium holds each record once: a re-offer to the store is not a second write.
+    assert_eq!(wal.read_back().unwrap().records, expected);
+}
+
+/// A memory-buffered node whose store refused once must not end up with the batch on its own buffer
+/// twice.
+///
+/// The refusal is a durability loss and the batch is retained, so it is offered again on the next
+/// append. If the retry appends those records to the segment a second time the chain reads back with
+/// a repeated run — which the journal's own verification reports as tampering, from nothing worse
+/// than a store that was briefly unavailable.
+#[test]
+fn a_memory_buffered_retry_after_a_refusal_does_not_write_the_records_twice() {
+    use crate::journal::{Entry, Journal, RecordClass};
+
+    let (shipper, taken) = RefusesOnce::new(1);
+    let mut journal = Journal::memory_buffered_to(4, Box::new(shipper));
+    let token = durability_token();
+
+    let first: Vec<Entry> = (0..2)
+        .map(|i| Entry::new(RecordClass::Transaction, vec![i as u8; 8]))
+        .collect();
+    journal
+        .append(&token, busbar_caps::StepName::Meter, &first)
+        .expect_err("a store that will not take the batch has not made it durable");
+    assert_eq!(journal.buffered(), 2, "the batch is still owed");
+
+    let second = vec![Entry::new(RecordClass::Transaction, vec![9u8; 8])];
+    journal
+        .append(&token, busbar_caps::StepName::Meter, &second)
+        .expect("the store is answering again");
+    assert_eq!(journal.buffered(), 0);
+
+    let replayed = journal
+        .replay()
+        .expect("the buffer reads back")
+        .expect("and verifies: a transient refusal is not tampering");
+    assert_eq!(
+        replayed.iter().map(|r| r.node_seq).collect::<Vec<u64>>(),
+        vec![1, 2, 3],
+        "each record is on the chain exactly once"
+    );
+    assert_eq!(
+        taken.lock().unwrap().len(),
+        3,
+        "and the store ends up with all three, each once"
+    );
 }
 
 #[test]

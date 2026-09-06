@@ -80,6 +80,25 @@ struct Inner {
     /// this state before the close, so the registry removal alone would not reach it; this is the
     /// flag that stream checks so it ends at the next poll and the socket halves actually drop.
     closed: AtomicBool,
+    /// The wakeup that goes with the flag.
+    ///
+    /// A pump parked in `read` has no next poll to check the flag at: on a peer that opened the
+    /// connection and then said nothing, the read is outstanding until a byte arrives, and no byte
+    /// ever does. The flag alone would leave that pump — and the socket it holds the last clone of
+    /// — alive for the life of the process. The close notifies this, the read is raced against it,
+    /// and the stream ends where it was parked.
+    closing: tokio::sync::Notify,
+}
+
+impl Inner {
+    /// Mark this connection finalised and wake whatever is parked on it.
+    ///
+    /// The order matters: the flag is stored FIRST, so a pump that arms its wait and then re-reads
+    /// the flag can never miss both the store and the notification.
+    fn finalise(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.closing.notify_waiters();
+    }
 }
 
 /// The opaque handle the kernel is actually given. Carries nothing but what
@@ -154,6 +173,7 @@ impl TcpTransport {
             }),
             write: AsyncMutex::new(write),
             closed: AtomicBool::new(false),
+            closing: tokio::sync::Notify::new(),
         });
         self.conns
             .lock()
@@ -183,11 +203,16 @@ impl TcpTransport {
     /// "at most one upgrade in flight" rule; a caller that violates that ordering sees `None`
     /// rather than a torn stream).
     pub fn take_stream(&self, conn: &Conn) -> Option<(TcpStream, SocketAddr)> {
-        let inner = self
-            .conns
-            .lock()
-            .expect("conn registry poisoned")
-            .remove(&conn.id())?;
+        // Checked BEFORE the removal, under the same lock. Removing first and then discovering a
+        // live reader still holds a clone loses the connection either way: the stream cannot be
+        // handed up, and the registry entry that would have let the caller go on using it is gone.
+        // Answering `None` has to mean "not yours to take", not "taken and dropped".
+        let mut registry = self.conns.lock().expect("conn registry poisoned");
+        if Arc::strong_count(registry.get(&conn.id())?) != 1 {
+            return None;
+        }
+        let inner = registry.remove(&conn.id())?;
+        drop(registry);
         let inner = Arc::try_unwrap(inner).ok()?;
         let read = inner.read.into_inner().half;
         let write = inner.write.into_inner();
@@ -343,7 +368,21 @@ impl Transport for TcpTransport {
             }
             let mut guard = inner.read.lock().await;
             let side = &mut *guard;
-            match side.half.read(&mut side.scratch).await {
+            // Arm the wait BEFORE re-reading the flag: a close that lands between the two is seen
+            // as the flag, and one that lands after it is seen as the notification. Neither order
+            // leaves this parked.
+            let mut closing = Box::pin(inner.closing.notified());
+            closing.as_mut().enable();
+            if inner.closed.load(Ordering::Acquire) {
+                return None;
+            }
+            let reading = std::pin::pin!(side.half.read(&mut side.scratch));
+            let result = match futures::future::select(reading, closing).await {
+                futures::future::Either::Left((r, _)) => r,
+                // The close won: the read is dropped where it stood and the stream ends.
+                futures::future::Either::Right(((), _)) => return None,
+            };
+            match result {
                 Ok(0) => None,
                 Ok(n) => {
                     // Copied out to exactly this frame's length; the scratch keeps whatever the
@@ -440,7 +479,7 @@ impl Transport for TcpTransport {
             .expect("conn registry poisoned")
             .remove(&conn.id());
         if let Some(inner) = inner {
-            inner.closed.store(true, Ordering::Release);
+            inner.finalise();
         }
     }
 
@@ -458,10 +497,18 @@ impl Transport for TcpTransport {
                 let mut guard = inner.write.lock().await;
                 deliver_refusal(&mut *guard, bytes.as_slice()).await?;
             }
-            self.conns
+            // A refusal finalises the connection, so it ends it the way `close` does: dropping the
+            // registry's clone is not enough, because a frame stream that started before the
+            // refusal holds its own clone and would stay parked on the socket forever. The flag is
+            // what ends that stream, after which the last clone goes and the socket really closes.
+            let removed = self
+                .conns
                 .lock()
                 .expect("conn registry poisoned")
                 .remove(&conn.id());
+            if let Some(removed) = removed {
+                removed.finalise();
+            }
             Ok(())
         })
     }

@@ -1,5 +1,29 @@
 use super::*;
 
+/// AWS Converse `usage.totalTokens`: EVERY token the call consumed, cache tokens INCLUDED.
+///
+/// Under prompt caching AWS reports `inputTokens` as the NON-cached input only and documents the
+/// full input as `inputTokens + cacheReadInputTokens + cacheWriteInputTokens`; its own worked
+/// example totals `inputTokens: 16, outputTokens: 4, cacheWriteInputTokens: 695` as
+/// `totalTokens: 715`. Since `write_cache_usage` emits the two cache counts as ADDITIVE siblings
+/// (the IR's normalized convention, which matches Bedrock's wire shape), leaving them out of the
+/// total would publish parts that sum PAST the stated total — and `totalTokens` is exactly the
+/// field an accounting consumer reads, so those tokens would vanish from its books. The Bedrock
+/// reader never reads `totalTokens` (it is derived here on write), so this is the only place the
+/// wire total is decided, for both the buffered body and the streamed `metadata` frame.
+///
+/// All adds are `saturating_add`: the operands are UPSTREAM-CONTROLLED counts
+/// (`as_u64().unwrap_or(0)` in the reader), so a bare `+` on a pathological/hostile set near
+/// `u64::MAX` would panic this request-path code under overflow-checks (all debug builds, opt-in
+/// release) or silently wrap to a nonsense total in plain release. Mirrors the Gemini writer.
+fn converse_total_tokens(usage: &crate::ir::IrUsage) -> u64 {
+    usage
+        .input_tokens
+        .saturating_add(usage.output_tokens)
+        .saturating_add(usage.cache_read_input_tokens.unwrap_or(0))
+        .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0))
+}
+
 /// AWS SigV4 signing for a Bedrock Converse request — the egress credential for `bedrock` lanes
 /// (dispatched via `busbar_substrate_values::egress_auth`, and called by the Bedrock auth tests). Lane key encodes
 /// `ACCESS:SECRET[:SESSION]`; region parsed from the host; service=`bedrock`. A misconfigured key or
@@ -955,18 +979,10 @@ impl ProtocolWriter for BedrockWriter {
                     let mut usage_obj = serde_json::Map::new();
                     usage_obj.insert("inputTokens".to_string(), usage.input_tokens.into());
                     usage_obj.insert("outputTokens".to_string(), usage.output_tokens.into());
-                    // Saturating add: token counts arrive from an untrusted upstream
-                    // (`as_u64().unwrap_or(0)` in the reader); a pathological/hostile pair
-                    // near `u64::MAX` would panic this request-path code under
-                    // overflow-checks (all debug builds, opt-in release) or silently wrap to
-                    // a nonsense `totalTokens` in plain release. Mirror the Gemini writer's
-                    // explicit `saturating_add` so the total clamps at `u64::MAX` instead.
+                    // Cache-inclusive and saturating — see `converse_total_tokens`.
                     usage_obj.insert(
                         "totalTokens".to_string(),
-                        usage
-                            .input_tokens
-                            .saturating_add(usage.output_tokens)
-                            .into(),
+                        converse_total_tokens(usage).into(),
                     );
                     write_cache_usage(&mut usage_obj, usage);
                     Some((
@@ -1150,15 +1166,12 @@ impl ProtocolWriter for BedrockWriter {
         let mut usage_obj = serde_json::Map::new();
         usage_obj.insert("inputTokens".to_string(), resp.usage.input_tokens.into());
         usage_obj.insert("outputTokens".to_string(), resp.usage.output_tokens.into());
-        // Saturating add, same rationale as the streaming `metadata` frame: token counts are
-        // upstream-derived and unbounded, so a bare `u64 + u64` here is an overflow-panic
-        // (overflow-checks) / silent-wrap (release) hazard on the buffered Converse body.
+        // Cache-inclusive and saturating, same as the streaming `metadata` frame — see
+        // `converse_total_tokens`. This is what keeps the same-protocol round-trip promised just
+        // above byte-identical when the upstream reported cache tokens.
         usage_obj.insert(
             "totalTokens".to_string(),
-            resp.usage
-                .input_tokens
-                .saturating_add(resp.usage.output_tokens)
-                .into(),
+            converse_total_tokens(&resp.usage).into(),
         );
         write_cache_usage(&mut usage_obj, &resp.usage);
 

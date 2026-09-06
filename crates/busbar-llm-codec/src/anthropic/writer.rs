@@ -43,6 +43,25 @@ impl ProtocolWriter for AnthropicWriter {
             "not_found" => ERR_TYPE_NOT_FOUND,
             ERR_TYPE_REQUEST_TOO_LARGE | "payload_too_large" => ERR_TYPE_REQUEST_TOO_LARGE,
             "rate_limit" | "too_many_requests" => ERR_TYPE_RATE_LIMIT,
+            // BILLING EXHAUSTION. The router's quota kind aliases OPENAI's `insufficient_quota`
+            // token, which is not a member of the Anthropic error union — the published
+            // `ErrorResponse.error` discriminator admits exactly nine types, and the billing one is
+            // `billing_error`. Passing the OpenAI token through reached an Anthropic-dialect client
+            // as a `type` its SDK's error factory cannot map (it falls through to a generic
+            // `APIError`), and named a competitor's vocabulary on our wire. Map it, exactly as the
+            // sibling writers project this kind into their own dialect's vocabulary.
+            busbar_substrate_values::proxy::KIND_INSUFFICIENT_QUOTA | "quota_exceeded" => {
+                ERR_TYPE_BILLING
+            }
+            // CONTEXT OVERFLOW. `context_length_exceeded` is the canonical PROVIDER CODE the
+            // readers synthesize for the breaker; it is likewise not an Anthropic error type. On the
+            // Anthropic wire an over-long prompt is a request the model cannot accept, i.e.
+            // `invalid_request_error` (real Anthropic returns exactly that, with a
+            // "prompt is too long" message).
+            busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH
+            | busbar_substrate_values::proxy::DISPOSITION_CONTEXT_LENGTH => {
+                ERR_TYPE_INVALID_REQUEST
+            }
             busbar_substrate_values::proxy::KIND_OVERLOADED => ERR_TYPE_OVERLOADED,
             busbar_substrate_values::proxy::KIND_TIMEOUT => ERR_TYPE_TIMEOUT,
             ERR_TYPE_API_ERROR | busbar_substrate_values::proxy::KIND_SERVER_ERROR | "internal" => {
@@ -519,7 +538,10 @@ impl ProtocolWriter for AnthropicWriter {
                     // is). Emitting a plaintext `thinking` seed here would both MIS-TYPE the block and
                     // duplicate the start. The paired `BlockStop` still emits content_block_stop, so the
                     // wire is content_block_start{redacted_thinking,data}+content_block_stop = native.
-                    IrBlockMeta::RedactedThinking => return None,
+                    IrBlockMeta::RedactedThinking => {
+                        self.mark_block_open(*index);
+                        return None;
+                    }
                     IrBlockMeta::ToolUse { id, name } => {
                         serde_json::json!({
                             "type": STOP_TOOL_USE,
@@ -529,10 +551,19 @@ impl ProtocolWriter for AnthropicWriter {
                             "caller": { "type": "direct" },
                         })
                     }
-                    IrBlockMeta::Image => {
-                        serde_json::json!({ "type": "image" })
-                    }
+                    // An IMAGE block has NO Anthropic RESPONSE projection. The published
+                    // `ContentBlockStartEvent.content_block` is a `oneOf` DISCRIMINATED on `type`,
+                    // and its mapping has no `image` member — an assistant content block on the
+                    // Anthropic response wire is never an image (images are a REQUEST-side content
+                    // type). The previous `{"type":"image"}` frame was therefore a
+                    // `content_block_start` no Anthropic client can deserialize: the official SDK
+                    // dispatches the union on `type` and has no branch for it. Emit NO frame, as
+                    // every sibling writer (bedrock, cohere, gemini, openai_chat, openai_responses)
+                    // already does — and do NOT mark the index open, so the paired `BlockStop`
+                    // stays silent instead of orphaning a `content_block_stop`.
+                    IrBlockMeta::Image => return None,
                 };
+                self.mark_block_open(*index);
                 let mut data_obj = serde_json::Map::new();
                 data_obj.insert(
                     "type".to_string(),
@@ -643,7 +674,13 @@ impl ProtocolWriter for AnthropicWriter {
                     serde_json::Value::Object(data_obj),
                 ))
             }
+            // An untracked index is a block whose start had no Anthropic projection (Image);
+            // closing it would orphan a `content_block_stop` a real client never saw a
+            // `content_block_start` for, which an SDK accumulator cannot match to any open block.
             IrStreamEvent::BlockStop { index } => {
+                if !self.take_block_open(*index) {
+                    return None;
+                }
                 let mut data_obj = serde_json::Map::new();
                 data_obj.insert(
                     "type".to_string(),

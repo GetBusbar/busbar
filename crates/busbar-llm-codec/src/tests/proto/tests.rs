@@ -273,7 +273,7 @@ fn test_openai_reasoning_content_maps_to_thinking() {
         "the answer text should follow"
     );
     // And it should render as an Anthropic thinking block on write.
-    let wire = AnthropicWriter.write_response(&ir);
+    let wire = anthropic_writer().write_response(&ir);
     let blocks = wire.get("content").and_then(|c| c.as_array()).unwrap();
     assert!(
         blocks
@@ -420,7 +420,7 @@ fn test_openai_tool_schema_translates_to_anthropic() {
         "parameters schema must be read into IrTool.input_schema"
     );
 
-    let anthropic = AnthropicWriter.write_request(&ir);
+    let anthropic = anthropic_writer().write_request(&ir);
     let tools = anthropic.get("tools").unwrap().as_array().unwrap();
     assert_eq!(tools[0]["name"], "get_weather");
     assert!(
@@ -620,7 +620,7 @@ fn test_cross_protocol_openai_top_p_to_anthropic() {
     let mut ir = OpenAiReader.read_request(&body).expect("openai parses");
     assert_eq!(ir.top_p, Some(0.81));
     ir.extra.clear(); // simulate the cross-protocol seam
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     assert_eq!(
         out.get("top_p").and_then(|v| v.as_f64()),
         Some(0.81),

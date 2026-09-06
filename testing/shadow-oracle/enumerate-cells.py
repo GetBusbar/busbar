@@ -29,7 +29,11 @@ Each protocol cell is crossed with the OUTCOME CLASSES the governed path must re
 byte-for-byte: the happy path plus every refusal the core pipeline can emit before/around it.
 
 Output: testing/shadow-oracle/cells.json  (stable ids, sorted; the recorder/replayer iterate it).
-Usage:  enumerate-cells.py [--write] [--summary]
+Usage:  enumerate-cells.py [--write] [--summary] [--check]
+        --check regenerates to memory and exits non-zero if the checked-in cells.json has
+        drifted from it (a hand edit, or a generator change nobody ran --write for). Wired
+        into scripts/verify-1.6.0-done.sh: the oracle's owed set must be the set the
+        generator derives, not a list someone edited.
 """
 import json
 import sys
@@ -56,6 +60,12 @@ STREAMING_OUTCOMES = [("ok_stream", "happy path, streamed response (SSE / frames
 # Gemini's second streaming framing: `streamGenerateContent` WITHOUT `?alt=sse` answers a JSON
 # array, not SSE. A Gemini client's own framing, so it is enumerated same-dialect only.
 ARRAY_STREAM_OUTCOME = ("ok_stream_array", "happy path, streamed as a JSON array (gemini without alt=sse)")
+# The mid-stream failure: the upstream sent N good events and THEN an in-band error (or died). The
+# response has already begun, so the refusal cannot be a status code — it has to be translated into
+# the door's own stream dialect, and the tokens already delivered have to be billed or refunded.
+STREAM_UPSTREAM_ERROR_OUTCOME = (
+    "stream_upstream_error",
+    "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event")
 
 
 # Refusals are produced BEFORE Route, so they never depend on the egress dialect: enumerate them
@@ -102,6 +112,25 @@ def llm_cells(inv: dict) -> list[dict]:
     # (`streamGenerateContent` without `alt=sse`), not a field the inventory lists.
     if "gemini" in dialects:
         cells.append(cell("gemini", "gemini", *ARRAY_STREAM_OUTCOME))
+    # The stream that FAILS after it has already started. Every other upstream_down cell refuses
+    # before a byte is sent, so the whole mid-stream arm — what the door emits after N good frames,
+    # whether the connection is closed or an in-band error frame is translated into the door's own
+    # dialect, and (money) whether the tokens already delivered are billed or refunded — is
+    # unrecorded. One cell per BACKEND on its own door (the diagonal): the backend decides what the
+    # error looks like on the wire, the door decides what the client is told, and the diagonal
+    # covers all six of each. SKIP-able until the recorder drives mock-upstream.py's `stream-error`
+    # verb (added alongside this cell); the golden is recorded from the published 1.5.5 binary by
+    # the integrator, so nothing is recorded here.
+    # gemini is not in the inventory's `streams` set (its streaming is the path-selected
+    # streamGenerateContent framing, not a `streaming` field), but it streams, and a mid-stream
+    # failure is exactly as unrecorded there — so it gets the cell too: all six backends.
+    for d in dialects:
+        if d not in streams and d != "gemini":
+            continue
+        c = cell(d, d, *STREAM_UPSTREAM_ERROR_OUTCOME)
+        c["needs_fixture"] = True
+        c["mock_control"] = {"stream-error": True}
+        cells.append(c)
     return cells
 
 
@@ -147,7 +176,7 @@ def exec_(id_: str, family: str, *, args: list[str], mode: str, config: str = "b
 
 
 def cli_cells() -> list[dict]:
-    """Every first-argument dispatch of 1.5.5 (ops inventory §2.1): exit code + stdout/stderr bytes."""
+    """Every first-argument dispatch of 1.5.5 (the ops inventory's CLI-dispatch rows): exit code + stdout/stderr bytes."""
     F = "cli"
     return [
         exec_("cli|--version", F, args=["--version"], mode="cli", why="prints `busbar <ver>`; exit 0"),
@@ -200,7 +229,7 @@ def scrape_cells() -> list[dict]:
         http("ops.scrape|/stats|key", F, "GET", "/stats", why="20 per-lane fields, 'unbounded', variant names (PB-43)"),
         http("ops.scrape|/stats|none", F, "GET", "/stats", auth="none", why="auth chain applies"),
         http("ops.scrape|/healthz|data", F, "GET", "/healthz", auth="none", why="unconditional bypass; 200 ok"),
-        http("ops.scrape|/healthz|admin", F, "GET", "/healthz", auth="none", listener="admin", why="same on the admin listener (RT-003)"),
+        http("ops.scrape|/healthz|admin", F, "GET", "/healthz", auth="none", listener="admin", why="same on the admin listener (the admin-listener parity rule)"),
         http("ops.scrape|/v1/models|openai-fp", F, "GET", "/v1/models", why="openai envelope by fingerprint (no x-api-key rung, PB-100)"),
         http("ops.scrape|/v1/models|anthropic-fp", F, "GET", "/v1/models", headers={"anthropic-version": "2023-06-01"}, why="anthropic envelope"),
         http("ops.scrape|/v1/models|x-api-key", F, "GET", "/v1/models", headers={"x-api-key": "irrelevant"}, why="x-api-key is NOT a rung for /v1/models"),
@@ -226,13 +255,37 @@ def crosscut_cells() -> list[dict]:
         http("http.crosscut|admin-unknown|admin", F, "GET", "/api/v1/admin/nope", auth="admin", listener="admin", why="nested not_found envelope (PB-76)"),
         http("http.crosscut|admin-outside-prefix|admin", F, "GET", "/nope", auth="admin", listener="admin", why="outer admin router: empty-bodied 404 (PB-76)"),
         http("http.crosscut|admin-wrong-method|admin", F, "DELETE", "/api/v1/admin/info", auth="admin", listener="admin", why="method_not_allowed envelope"),
-        http("http.crosscut|wrong-method|GET-messages", F, "GET", "/v1/messages", why="405 protocol-native (RT-014)"),
+        http("http.crosscut|wrong-method|GET-messages", F, "GET", "/v1/messages", why="405 protocol-native (the protocol-native-status-code rule)"),
         http("http.crosscut|OPTIONS|chat", F, "OPTIONS", "/v1/chat/completions", auth="none", why="no CORS layer ever; OPTIONS => None (PB-100)"),
         http("http.crosscut|HEAD|healthz", F, "HEAD", "/healthz", auth="none", why="HEAD on a GET route"),
         http("http.crosscut|413|openai", F, "POST", "/v1/chat/completions", body=BIG_BODY, why="oversize after auth, dialect-shaped (PB-60)"),
         http("http.crosscut|413|openai-unauth", F, "POST", "/v1/chat/completions", auth="none", body=BIG_BODY, why="unauthenticated oversize: 401 first (PB-60)"),
         http("http.crosscut|413|anthropic", F, "POST", "/v1/messages", headers={"anthropic-version": "2023-06-01"}, body=BIG_BODY, why="anthropic envelope"),
         http("http.crosscut|413|api-prefix", F, "POST", "/api/v1/admin/keys", auth="admin", listener="admin", body=BIG_BODY, why="admin envelope discards status/kind (PB-60)"),
+        # The oversize refusal is produced BEFORE any plane sees the body, so its envelope is decided
+        # by the door's own dialect detection. Three doors had no 413 cell at all, which is exactly
+        # where a 1.6.0 plane that mounts its own body-limit layer would change the answer unseen.
+        # SKIP-able (`needs_fixture`) until the recorder's config mounts the mcp:/agents: blocks:
+        # on a 1.5.5 config those paths are unmounted and the cell would record the path-inferred
+        # 404, not the 413 it is here to pin.
+        http("http.crosscut|413|mcp-streamable-http", F, "POST", "/mcp", body=BIG_BODY,
+             headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+             needs_fixture=True,
+             why="oversize on the MCP streamable-http mount: which envelope answers before the plane "
+                 "is reached (JSON-RPC error vs the path-inferred dialect envelope) — needs a recorder "
+                 "config that mounts the mcp: block"),
+        http("http.crosscut|413|a2a-jsonrpc", F, "POST", "/a2a", body=BIG_BODY,
+             headers={"Content-Type": "application/json"}, needs_fixture=True,
+             why="oversize on the A2A JSON-RPC mount (busbar-a2a-codec MOUNT_PATH) — needs a recorder "
+                 "config that mounts the agents: block"),
+        # This one needs no new fixture — it is recordable on a 1.5.5 config today, and the golden
+        # will owe it at the integrator's next re-record from the published binary. Until then it is
+        # simply a cell the golden has no row for, i.e. a named gap, never a silent pass.
+        http("http.crosscut|413|gemini-path", F, "POST", "/v1beta/models/m-gemini:generateContent",
+             body=BIG_BODY,
+             why="oversize on the gemini path: the gemini door detects by PATH, not by header or "
+                 "body, so it is the one dialect whose 413 envelope the openai/anthropic cells above "
+                 "cannot stand in for"),
         http("http.crosscut|auth-token|GET-none", F, "GET", "/auth/token", auth="none", why="browser exchange bypass (PB-33)"),
         http("http.crosscut|auth-token|POST-empty", F, "POST", "/auth/token", auth="none", body="{}", why="flat {\"error\":…} envelope (PB-100)"),
         http("http.crosscut|bearer-and-x-api-key", F, "GET", "/stats", headers={"x-api-key": "not-a-key"}, why="carrier precedence: Bearer wins (PB-35)"),
@@ -560,6 +613,21 @@ def billing_cells() -> list[dict]:
         usage("key-usage|noscope-after-403", [chat(auth="noscope")], "a 403 at Approve charges nothing", path="/api/v1/admin/keys/{KEY_NOSCOPE}/usage"),
         usage("key-usage|broke-after-429", [chat(auth="broke")], "a 429 at Admit charges nothing more", path="/api/v1/admin/keys/{KEY_BROKE}/usage"),
     ]
+    # The one billing arm no scripted cell drives: a request PINNED to window M whose charge lands on
+    # a cell a concurrent admission has already rolled to M+1. 1.5.5 resolved the charge on
+    # `window > cell.window_start` but the refund on `cell.window_start == window`, so the two halves
+    # of one request could land on different cells and a failed straddling request kept its flat fee
+    # for the life of that window — leaving the derived spend a budget cap reads one fee too high.
+    # This is the ONLY cell register entry M-1 is allowed to forgive, which is why it exists by name
+    # even before the recorder can drive it: an acceptance whose scope is "some future cell" is an
+    # acceptance nobody can audit.
+    refund = usage("key-usage|refund-across-window",
+                   [{**chat(), "mock_control": {"m-openai-chat": "down"}}],
+                   "a request that straddles the window roll: its flat per-request fee must be "
+                   "refunded from the SAME cell the charge landed on, so the view reads spend 0 and "
+                   "not one fee too high (M-1)")
+    refund["needs_fixture"] = True
+    cells.append(refund)
     return cells
 
 
@@ -574,7 +642,7 @@ def hooks_cells() -> list[dict]:
         http("hooks|hooked-pool|ok_stream", F, "POST", "/v1/chat/completions", body=body(True), why="streamed through the gate", config_variant=V),
         http("hooks|hooked-pool|unauth", F, "POST", "/v1/chat/completions", auth="none", body=body(), why="refused before any hook", config_variant=V),
         http("hooks|metrics-hooks", F, "GET", "/metrics/hooks", why="the hook's own scrape exposition (PB-43)", config_variant=V),
-        http("hooks|admin-list", F, "GET", "/api/v1/admin/hooks", auth="admin", listener="admin", why="registry with the loaded hook, incl. the 1.5.5 legacy `at` field alongside `phase`/`fires_at` (A15)", config_variant=V),
+        http("hooks|admin-list", F, "GET", "/api/v1/admin/hooks", auth="admin", listener="admin", why="registry with the loaded hook, incl. the 1.5.5 legacy `at` field alongside `phase`/`fires_at` (the legacy-hook-spelling rule)", config_variant=V),
         http("hooks|unhooked-pool|ok", F, "POST", "/v1/chat/completions", body=json.dumps({"model": "m-openai-chat", "messages": [{"role": "user", "content": "ping"}]}), why="a pool without the hook is untouched", config_variant=V),
         # A15 — 1.5.5 spellings HEAD 1.6.0 dropped and the owner rule restored: a hook def's
         # `plugin:` alias for `module:` (read-only back-compat), and the settings PUT `persist:`
@@ -587,15 +655,15 @@ def hooks_cells() -> list[dict]:
         http("hooks|register|plugin-alias", F, "POST", "/api/v1/admin/hooks", auth="admin", listener="admin",
              headers={"Content-Type": "application/json"},
              body=json.dumps({"name": "oracle-plugin-alias", "config": {"kind": "tap", "plugin": "busbar-webrequest"}}, separators=(",", ":"), sort_keys=True),
-             why="1.5.5 `hooks.<h>.plugin` back-compat alias for `module:` — must still register, and the 201 body's `module` must resolve to `busbar-webrequest` (A15)", config_variant=V),
+             why="1.5.5 `hooks.<h>.plugin` back-compat alias for `module:` — must still register, and the 201 body's `module` must resolve to `busbar-webrequest` (the legacy-hook-spelling rule)", config_variant=V),
         http("hooks|config-settings-put|persist-true", F, "PUT", "/api/v1/admin/config/settings", auth="admin", listener="admin",
              headers={"Content-Type": "application/json"},
              body=json.dumps({"persist": True}, separators=(",", ":"), sort_keys=True),
-             why="1.5.5 `persist:` boolean control key — accepted (boolean-validated) then ignored, never an unknown-field 400 (A15)", config_variant=V),
+             why="1.5.5 `persist:` boolean control key — accepted (boolean-validated) then ignored, never an unknown-field 400 (the legacy-hook-spelling rule)", config_variant=V),
         http("hooks|config-settings-put|persist-non-boolean", F, "PUT", "/api/v1/admin/config/settings", auth="admin", listener="admin",
              headers={"Content-Type": "application/json"},
              body=json.dumps({"persist": "yes"}, separators=(",", ":"), sort_keys=True),
-             why="a non-boolean `persist:` is refused naming `persist`+`boolean`, not `unknown field` (A15)", config_variant=V),
+             why="a non-boolean `persist:` is refused naming `persist`+`boolean`, not `unknown field` (the legacy-hook-spelling rule)", config_variant=V),
         # A16 — the hook payload's `message_count` on the normalized IR: an OpenAI chat body may embed
         # a `system`-role turn inside `messages`. 1.5.5 counted the raw wire array length (including
         # that turn); the IR folds it out of `messages` into `system`. This cell exercises the hooked
@@ -609,7 +677,7 @@ def hooks_cells() -> list[dict]:
                  {"role": "system", "content": "be terse"},
                  {"role": "user", "content": "ping " * 40},
              ]}, separators=(",", ":"), sort_keys=True),
-             why="an embedded system-role turn folded out of `messages` by the IR — message_count parity (A16)", config_variant=V),
+             why="an embedded system-role turn folded out of `messages` by the IR — message_count parity (the folded-system-turn parity rule)", config_variant=V),
     ]
 
 
@@ -785,7 +853,7 @@ def auth_lifecycle_cells() -> list[dict]:
                 "stored key-level expiry on the request path, only a signed token's own exp claim, so "
                 "the admin API's own expires_at-must-be-future validation makes this expiry path "
                 "unreachable through the admin API (400 at mint, spend never attempted) — recorded as "
-                "the real outcome rather than assumed from the design doc"},
+                "the real outcome rather than assumed from the plan"},
     ]
 
 
@@ -914,7 +982,7 @@ def documented_cells() -> list[dict]:
                                      separators=(",", ":"), sort_keys=True)
     cells = []
 
-    # ── README §8.3 (27 rows; 15 testable rows -> 6 cells here, 1 CONTRADICTED, 12 prose) ────────
+    # ── README documented-behaviour rows (27 rows; 15 testable rows -> 6 cells here, 1 CONTRADICTED, 12 prose) ────────
     cells.append(http("documented|readme|six-protocols|openai-chat", F, "POST", "/v1/chat/completions",
                        body=chat("m-openai-chat"),
                        why="README:22 'Six wire protocols, first class on both sides' + README:85-88 "
@@ -993,7 +1061,7 @@ def documented_cells() -> list[dict]:
                          "itself (main.rs:856-865; config/overlay.rs:44-53; CHANGELOG.md:40-46). "
                          "This cell pins the code's actual behaviour as the parity target."})
 
-    # ── CHANGELOG §8.4 (29 rows; 19 testable rows -> 6 cells (one script covers 3 rows) + 2 more "
+    # ── CHANGELOG documented-behaviour rows (29 rows; 19 testable rows -> 6 cells (one script covers 3 rows) + 2 more "
     # scripts + simple http/exec cells, 1 CONTRADICTED, 10 prose) ─────────────────────────────────
     cells.append({"id": "documented|changelog|docker-boots-and-mutation-refused", "plane": "core", "family": F, "driver": "script",
                   "script": {"name": "documented-overlay-refused.sh", "args": ["overlay-unwritable"]}, "outcome": "ok", "weight": 10,
@@ -1090,7 +1158,7 @@ def documented_cells() -> list[dict]:
                          "(main.rs:1645-1647 in the 1.5.5 tag). Two providers catalogs, config.yaml "
                          "declares `providers_file:` for one, BUSBAR_PROVIDERS names the other; "
                          "`--validate`'s own success line echoes back which path it actually resolved "
-                         "(ops-observability §2.3) — the golden names the env-set file, pinning the "
+                         "(the ops-observability env-set inventory) — the golden names the env-set file, pinning the "
                          "code's actual precedence as the parity target."})
     return cells
 def hazard_cells() -> list[dict]:
@@ -1144,7 +1212,8 @@ def main() -> int:
         ],
         "derived_from": {"method_inventory": str(METHOD_INV.relative_to(ROOT)),
                           "field_inventory": str(FIELD_INV.relative_to(ROOT))},
-        "outcomes": [{"outcome": o, "why": w} for o, w in OUTCOMES + STREAMING_OUTCOMES + [ARRAY_STREAM_OUTCOME]],
+        "outcomes": [{"outcome": o, "why": w} for o, w in OUTCOMES + STREAMING_OUTCOMES
+                     + [ARRAY_STREAM_OUTCOME, STREAM_UPSTREAM_ERROR_OUTCOME]],
         "counts": {
             "total": len(cells),
             "by_plane": {p: sum(1 for c in cells if c["plane"] == p) for p in sorted({c["plane"] for c in cells})},
@@ -1153,10 +1222,38 @@ def main() -> int:
         },
         "cells": cells,
     }
+    rendered = json.dumps(doc, indent=2) + "\n"
+    # --check: regenerate to MEMORY and compare against the checked-in cells.json. cells.json is the
+    # oracle's owed set — the recorder and the replayer both iterate it — so a tree whose generator
+    # and whose committed cell list disagree is a gate measuring a cell set nobody reviewed. A hand
+    # edit (the file's own header says "do not edit by hand") and a generator change someone forgot
+    # to --write both land here, and both are red.
+    if "--check" in sys.argv:
+        if not OUT.exists():
+            sys.stderr.write(f"enumerate-cells --check: {OUT} does not exist — run enumerate-cells.py --write\n")
+            return 1
+        have = OUT.read_text()
+        if have == rendered:
+            print(f"ok  {OUT.relative_to(ROOT)} matches enumerate-cells.py ({len(cells)} cells)")
+            return 0
+        have_doc = json.loads(have) if have.strip() else {"cells": []}
+        have_ids = {c["id"] for c in have_doc.get("cells", [])}
+        want_ids = {c["id"] for c in cells}
+        sys.stderr.write(f"enumerate-cells --check: DRIFT — {OUT.relative_to(ROOT)} is not what "
+                         f"enumerate-cells.py generates ({len(have_ids)} committed cells vs "
+                         f"{len(want_ids)} generated)\n")
+        for cid in sorted(want_ids - have_ids)[:20]:
+            sys.stderr.write(f"  generated but NOT committed: {cid}\n")
+        for cid in sorted(have_ids - want_ids)[:20]:
+            sys.stderr.write(f"  committed but NOT generated: {cid}\n")
+        if have_ids == want_ids:
+            sys.stderr.write("  the id sets agree: a cell DEFINITION (or the counts/outcomes header) changed\n")
+        sys.stderr.write("  regenerate with: testing/shadow-oracle/enumerate-cells.py --write\n")
+        return 1
     if "--summary" in sys.argv or "--write" not in sys.argv:
         print(json.dumps(doc["counts"], indent=2))
     if "--write" in sys.argv:
-        OUT.write_text(json.dumps(doc, indent=2) + "\n")
+        OUT.write_text(rendered)
         print(f"wrote {OUT.relative_to(ROOT)} ({len(cells)} cells)")
     return 0
 

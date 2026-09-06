@@ -191,8 +191,10 @@ fn reencode_up<C: DuplexReader + DuplexWriter>(
     let mut st = DecodeState::default();
     let mut ir2 = Vec::new();
     for e in ir1 {
-        let w = codec.write_up(e.clone());
-        ir2.extend(codec.read_up(w, &mut st));
+        // A concept the dialect has no verb for frames NOTHING; it re-decodes to nothing too.
+        if let Some(w) = codec.write_up(e.clone()) {
+            ir2.extend(codec.read_up(w, &mut st));
+        }
     }
     ir2
 }
@@ -389,8 +391,11 @@ fn replay_decode<C: DuplexReader + DuplexWriter>(
                 let irs = codec.read_up(wire_of(ev), &mut st);
                 for ir in &irs {
                     decoded += 1;
-                    let w = codec.write_up(ir.clone());
-                    if !val_of(&w).is_null() {
+                    // A dropped concept frames nothing at all — that is not a re-encode.
+                    if codec
+                        .write_up(ir.clone())
+                        .is_some_and(|w| !val_of(&w).is_null())
+                    {
                         reencoded += 1;
                     }
                 }
@@ -547,8 +552,11 @@ where
             let mut st = DecodeState::default();
             let mut n2 = Vec::new();
             for e in ir {
-                let w = to.write_up(client_from_norm_passthrough(e));
-                n2.extend(norm_up(&to.read_up(w, &mut st)));
+                // The destination dialect may have no verb for the concept: it frames nothing, and
+                // nothing is what the bridged side then carries (the map's documented drop).
+                if let Some(w) = to.write_up(client_from_norm_passthrough(e)) {
+                    n2.extend(norm_up(&to.read_up(w, &mut st)));
+                }
             }
             (n1, n2)
         }
@@ -1361,7 +1369,7 @@ fn probe_session_scope() -> (&'static str, String) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════════════════════════
-// LEG 8 (K4) — gemini-live-route: the Gemini Live dialect has a MOUNTED route, not just a codec the
+// LEG 8 (the second-dialect route) — gemini-live-route: the Gemini Live dialect has a MOUNTED route, not just a codec the
 // spec/cross-parity legs exercise off to the side. Proves, on the plane's own PUBLIC functions (the
 // same ones the composition root calls, and the same `WsArrivalSpec` a real deployment mounts):
 //
@@ -1406,7 +1414,7 @@ fn probe_gemini_live_route() -> (&'static str, String) {
     let Some(admission) = busbar_voice::mount::voice_admission(slot.as_ref()) else {
         return (
             "FAIL",
-            "a plane that claims paths must admit (R2): admission is None".into(),
+            "a plane that claims paths must admit (the claim-admits ratchet): admission is None".into(),
         );
     };
     if !admission.audience.ends_with("/v1/realtime") {
@@ -1489,7 +1497,7 @@ fn probe_gemini_live_route() -> (&'static str, String) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════════════════════════
-// LEG 9 (K5) — provider-dial: `topology::dial_provider` is a library function nothing calls in
+// LEG 9 (the provider-dial leg) — provider-dial: `topology::dial_provider` is a library function nothing calls in
 // production without a composed provider; this leg proves a session actually dials one end to end.
 // A loopback WS "provider" stands in for a real realtime upstream (no network, no vendor credential
 // needed): the harness binds it on an ephemeral port, `dial_provider` dials it through the SAME

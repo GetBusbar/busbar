@@ -221,12 +221,12 @@ pub trait OperationHandler: Send + Sync {
     /// path). The WRITE half of the old bridge inverted onto the handle at the G6 A4b dissolve
     /// (`IrHandle::write_egress_request`/`write_ingress_response`), so only the read side remains here.
     fn read_request_value(&self, v: &Value) -> Result<Box<dyn IrHandle>, IngressReject> {
-        let bytes = serde_json::to_vec(v).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+        let bytes = crate::json::to_vec(v).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
         self.read_request(&bytes, crate::proxy::APPLICATION_JSON)
     }
     /// Value-level codec bridge (response).
     fn read_response_value(&self, v: &Value) -> Result<Box<dyn IrHandle>, CodecError> {
-        let bytes = serde_json::to_vec(v).map_err(|e| CodecError::Malformed(e.to_string()))?;
+        let bytes = crate::json::to_vec(v).map_err(|e| CodecError::Malformed(e.to_string()))?;
         self.read_response(&bytes)
     }
 

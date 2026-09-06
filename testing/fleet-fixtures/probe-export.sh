@@ -93,7 +93,7 @@ if ! wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30; then
 fi
 
 # Drive a real request so there is something to export.
-CHAT="$(curl -fsS "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
+CHAT="$(curl -fsS -m 30 "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{"model":"test-model","messages":[{"role":"user","content":"hi"}]}' 2>/dev/null || true)"
 GOT="$(printf '%s' "$CHAT" | jq -r '.choices[0].message.content // empty' 2>/dev/null)"
@@ -103,7 +103,7 @@ GOT="$(printf '%s' "$CHAT" | jq -r '.choices[0].message.content // empty' 2>/dev
 # Poll the sink: exports may be buffered, so give it a bounded window rather than one shot.
 RECV=0
 for _ in $(seq 1 15); do
-  RECV="$(curl -fsS "http://127.0.0.1:${SINK_PORT}/received" 2>/dev/null | jq -r '.count // 0' 2>/dev/null)"
+  RECV="$(curl -fsS -m 30 "http://127.0.0.1:${SINK_PORT}/received" 2>/dev/null | jq -r '.count // 0' 2>/dev/null)"
   [ "${RECV:-0}" -ge 1 ] && break
   sleep 2
 done

@@ -343,7 +343,8 @@ pub fn provision_client(
 /// applies uniformly regardless of which name a client offered.
 #[derive(Debug, Clone, Copy)]
 pub struct NamedTlsLocations<'a> {
-    /// The SNI name a `ClientHello` must present exactly to select this entry.
+    /// The SNI name a `ClientHello` must present to select this entry. Matched case-insensitively,
+    /// as DNS names are: spell it however the deployment reads best.
     pub sni: &'a str,
     /// The certificate chain, leaf first.
     pub cert: &'a str,
@@ -385,12 +386,58 @@ struct SniCertResolver {
     default: Arc<CertifiedKey>,
 }
 
+impl SniCertResolver {
+    /// Assemble the name-to-certificate table, keyed the one way both sides of the lookup can
+    /// agree on.
+    ///
+    /// DNS names are case-insensitive, and the two sides here spell them differently by default:
+    /// rustls hands a resolver the `ClientHello` name already lower-cased, while an operator writes
+    /// the name into a config however they please. Keying on the operator's spelling verbatim means
+    /// an entry configured with any upper-case letter in it can never be selected, and the listener
+    /// quietly serves its default certificate on a name it was explicitly given one for. Both sides
+    /// fold to ASCII lower case instead — the same fold DNS itself defines, so no name that differs
+    /// only in case is lost.
+    ///
+    /// # Errors
+    ///
+    /// Two entries name the same host once folded. That is one name the deployment has said two
+    /// different things about, and keeping whichever was written last picks between them at random
+    /// from the operator's point of view.
+    fn build(
+        names: Vec<(&str, Arc<CertifiedKey>)>,
+        default: Arc<CertifiedKey>,
+    ) -> Result<Self, String> {
+        let mut by_name = HashMap::with_capacity(names.len());
+        for (name, key) in names {
+            if by_name.insert(name.to_ascii_lowercase(), key).is_some() {
+                return Err(format!(
+                    "two named TLS listener entries resolve to the same SNI name: {}",
+                    name.to_ascii_lowercase()
+                ));
+            }
+        }
+        Ok(Self { by_name, default })
+    }
+
+    /// The certificate for the name a `ClientHello` offered, or the listener's default where it
+    /// offered none or one this listener has no entry for. The offered name is folded on the way in
+    /// for the same reason the table is keyed folded: rustls lower-cases it already, and this makes
+    /// that a property of the lookup rather than of the caller.
+    fn pick(&self, name: Option<&str>) -> Arc<CertifiedKey> {
+        match name {
+            Some(name) => self
+                .by_name
+                .get(&name.to_ascii_lowercase())
+                .unwrap_or(&self.default)
+                .clone(),
+            None => self.default.clone(),
+        }
+    }
+}
+
 impl ResolvesServerCert for SniCertResolver {
     fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        Some(match client_hello.server_name() {
-            Some(name) => self.by_name.get(name).unwrap_or(&self.default).clone(),
-            None => self.default.clone(),
-        })
+        Some(self.pick(client_hello.server_name()))
     }
 }
 
@@ -404,8 +451,8 @@ impl ResolvesServerCert for SniCertResolver {
 ///
 /// # Errors
 ///
-/// A name's or the default's material could not be resolved through the secret source, or it did
-/// not parse into a usable certificate and key.
+/// A name's or the default's material could not be resolved through the secret source, it did not
+/// parse into a usable certificate and key, or two names collide once folded for matching.
 #[allow(clippy::missing_panics_doc)]
 #[allow(clippy::too_many_arguments)]
 pub fn provision_server_named(
@@ -418,10 +465,10 @@ pub fn provision_server_named(
     default_at: &TlsLocations<'_>,
     alpn: &[&[u8]],
 ) -> Result<TransportKeyHandle, String> {
-    let mut by_name = HashMap::with_capacity(names.len());
+    let mut named = Vec::with_capacity(names.len());
     for n in names {
         let material = resolve_tls_material(source, journal, n.cert, n.key, None)?;
-        by_name.insert(n.sni.to_string(), certified_key(&material)?);
+        named.push((n.sni, certified_key(&material)?));
     }
 
     let default_material = resolve_tls_material(
@@ -438,7 +485,8 @@ pub fn provision_server_named(
         Some(ca_pem) => builder.with_client_cert_verifier(client_verifier(ca_pem)?),
         None => builder.with_no_client_auth(),
     };
-    let mut config = builder.with_cert_resolver(Arc::new(SniCertResolver { by_name, default }));
+    let resolver = SniCertResolver::build(named, default)?;
+    let mut config = builder.with_cert_resolver(Arc::new(resolver));
     config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
 
     sink.register_server_config(slot.index, Arc::new(config));

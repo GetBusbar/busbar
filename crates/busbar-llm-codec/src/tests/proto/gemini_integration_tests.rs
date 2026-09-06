@@ -10,7 +10,7 @@ fn test_gemini_upstream_path_for_embeds_model() {
     );
     // Default (non-Gemini) ignores the model.
     assert_eq!(
-        AnthropicWriter.upstream_path_for("anything"),
+        anthropic_writer().upstream_path_for("anything"),
         "/v1/messages"
     );
     assert_eq!(

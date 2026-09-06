@@ -22,10 +22,16 @@ use crate::ir::handle::IrHandle;
 use crate::ir::invoke::{InvokeReq, InvokeResp};
 use crate::ir::subscribe::{SubscribeReq, SubscribeResp};
 use busbar_api::operation::Operation;
+use std::sync::Arc;
 
-pub struct InvokeReqHandle(pub InvokeReq);
+/// The request payload is held behind an `Arc` because `facts()` must hand back an OWNED
+/// `Box<dyn IrFacts + Send + Sync>`: holding the request directly forced a DEEP CLONE of the whole
+/// request — arguments `Value` and all — on every call, to answer a read-only question. Sharing the
+/// one allocation means the caller's payload is cloned zero times.
+pub struct InvokeReqHandle(pub Arc<InvokeReq>);
 pub struct InvokeRespHandle(pub InvokeResp);
-pub struct SubscribeReqHandle(pub SubscribeReq);
+/// Shared for the same reason as [`InvokeReqHandle`].
+pub struct SubscribeReqHandle(pub Arc<SubscribeReq>);
 pub struct SubscribeRespHandle(pub SubscribeResp);
 
 impl Sealed for InvokeReqHandle {}
@@ -38,7 +44,7 @@ impl IrHandle for InvokeReqHandle {
         Operation::INVOKE
     }
     fn facts(&self) -> Box<dyn IrFacts + Send + Sync> {
-        Box::new(self.0.clone())
+        Box::new(Arc::clone(&self.0))
     }
 }
 
@@ -56,7 +62,7 @@ impl IrHandle for SubscribeReqHandle {
         Operation::SUBSCRIBE
     }
     fn facts(&self) -> Box<dyn IrFacts + Send + Sync> {
-        Box::new(self.0.clone())
+        Box::new(Arc::clone(&self.0))
     }
 }
 
@@ -66,5 +72,60 @@ impl IrHandle for SubscribeRespHandle {
     }
     fn billing(&self) -> Option<Billing> {
         Some(Billing::Flat)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::subscribe::SubscribeIntent;
+
+    /// `facts()` used to deep-clone the whole request — the caller's arguments `Value` and all — on
+    /// every call, to answer a read-only question. It must SHARE the one allocation instead: the
+    /// refcount goes up, and the handle still points at the SAME arguments `Value` afterwards,
+    /// which is only true if nothing was cloned.
+    #[test]
+    fn invoke_facts_share_the_request_rather_than_cloning_it() {
+        let req = Arc::new(InvokeReq {
+            tool: "search".to_string(),
+            arguments: serde_json::json!({"q": "hello"}),
+            extra: Default::default(),
+        });
+        let arguments_ptr = std::ptr::addr_of!(req.arguments);
+        let handle = InvokeReqHandle(Arc::clone(&req));
+        let before = Arc::strong_count(&req);
+
+        let facts = handle.facts();
+        assert_eq!(
+            Arc::strong_count(&req),
+            before + 1,
+            "facts() must SHARE the request (one refcount bump), not clone it"
+        );
+        assert_eq!(
+            std::ptr::addr_of!(handle.0.arguments),
+            arguments_ptr,
+            "the arguments Value must not have been cloned"
+        );
+        assert_eq!(facts.verb(), Operation::INVOKE);
+        drop(facts);
+        assert_eq!(Arc::strong_count(&req), before, "the share is released");
+    }
+
+    /// The same for `Subscribe`.
+    #[test]
+    fn subscribe_facts_share_the_request_rather_than_cloning_it() {
+        let req = Arc::new(SubscribeReq {
+            intent: SubscribeIntent::Register,
+            target: "file:///doc".to_string(),
+            extra: Default::default(),
+        });
+        let target_ptr = std::ptr::addr_of!(req.target);
+        let handle = SubscribeReqHandle(Arc::clone(&req));
+        let before = Arc::strong_count(&req);
+        let facts = handle.facts();
+        assert_eq!(Arc::strong_count(&req), before + 1);
+        assert_eq!(std::ptr::addr_of!(handle.0.target), target_ptr);
+        drop(facts);
+        assert_eq!(Arc::strong_count(&req), before);
     }
 }

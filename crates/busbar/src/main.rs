@@ -774,9 +774,21 @@ fn register_ws_arrivals() {
 /// Nothing is emitted on the success path. That is the point: a deployment cannot tell from its logs
 /// which way this binary was built, so the boot-line set, the series list and the route list are the
 /// same either way, and the neutrality cells compare like with like.
+///
+/// ## Why the deployment's limits are an argument
+///
+/// The transports the seal composes are the ones a switched-over plane serves through, and the
+/// http one carries the operator's `limits.request_body_max_bytes` as its accumulation ceiling —
+/// the SAME number the served door builds its inbound body limit from. A seal that took the
+/// transport crate's `Default` would compose a node whose door and whose transport disagree about
+/// which bodies exist on every deployment that set the knob. So this takes the resolved limits, and
+/// takes them from the one place they are resolved, which is why it is called from `run()` (after
+/// the config loads) rather than beside the axis registrations in `main()`: the axes are installed
+/// before any reader because `--validate` reads them, and this reads configuration instead. It
+/// still answers before any listener is bound, which is the property the refusal is for.
 #[cfg(feature = "root-voice")]
-fn mount_root_voice() {
-    match root::registry::seal(busbar_transport_http::ClientSettings::default()) {
+fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
+    match root::registry::seal(root::policy::client_settings(limits)) {
         Ok(sealed) => {
             debug_assert!(
                 sealed
@@ -816,12 +828,12 @@ fn main() {
     // installs nothing and the router mounts no WS-accept route. Gated to `plane-voice` (voice is the
     // only duplex plane today), so a shipped build drops it entirely — strong-form deletable.
     register_ws_arrivals();
-    // THE COMPOSITION ROOT'S OWN SEAL, in the same slot and for the same reason as the axes above:
-    // it reads the plane and transport lists, so every axis must be installed before it runs and it
-    // must run before any reader. Behind `root-voice`, which is off by default — with it off this
-    // line is not compiled and the binary is what it was.
-    #[cfg(feature = "root-voice")]
-    mount_root_voice();
+    // THE COMPOSITION ROOT'S OWN SEAL is NOT here, and it is the one boot step that is not: it
+    // composes the transports a switched-over plane would serve through, and the http one carries
+    // the operator's `limits.request_body_max_bytes`, so it cannot run before the configuration it
+    // is built from has been read. It runs in `run()`, off the resolved limits, still before any
+    // listener is bound — see `mount_root_voice`. Every axis above is installed by then, which is
+    // the ordering the seal needed from this slot in the first place.
     // THE HOSTLESS-EGRESS DRIVER, installed once here beside the plane axis: the neutral
     // `busbar_substrate::egress::seam::HostlessEgress` a plane drives its governed outbound hop
     // through, backed by core's `CoreHostlessEgress` (the `plane_host` FFI egress vtable). An
@@ -1196,6 +1208,15 @@ async fn run(data_workers: usize) {
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
+    // THE COMPOSITION ROOT'S OWN SEAL, in the first slot where the values it composes exist: the
+    // limits are resolved (and the overlay merged onto them) one screen up, and no listener is bound
+    // for another few hundred lines. The transports it composes are built from THESE limits — the
+    // same `request_body_max_bytes` the line above hands the served door — so a switched-over plane's
+    // transport and the door in front of it cannot disagree about which bodies exist. Behind
+    // `root-voice`, off by default: with it off the line is not compiled and the binary is what it
+    // was, which is what the neutrality cells read.
+    #[cfg(feature = "root-voice")]
+    mount_root_voice(&cfg.limits);
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
     // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here

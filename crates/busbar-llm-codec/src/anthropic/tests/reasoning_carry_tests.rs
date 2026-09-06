@@ -2,7 +2,7 @@
 //! `IrReq::prepare_for_egress` (per-lane `reasoning` flag); these tests cover the codec halves
 //! (read the ask, project it) plus the gate itself, the clamp, and the sampling-knob omission.
 use super::super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter};
-use super::{AnthropicReader, AnthropicWriter};
+use super::{anthropic_writer, AnthropicReader};
 use crate::ir::{IrReasoningAsk, IrReasoningEffort};
 use busbar_substrate_values::ir::egress_prep::EgressPrep;
 
@@ -27,7 +27,7 @@ fn openai_effort_projects_to_anthropic_budget() {
     );
     assert!(!ir.extra.contains_key("reasoning_effort"));
 
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     assert_eq!(out["thinking"]["type"], "enabled");
     assert_eq!(out["thinking"]["budget_tokens"], 16384);
 }
@@ -93,7 +93,7 @@ fn anthropic_clamps_and_drops_by_max_tokens() {
     let ir = super::super::openai_chat::OpenAiReader
         .read_request(&body)
         .expect("parses");
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     assert_eq!(out["thinking"]["budget_tokens"], 3072);
 
     // Dropped: max_tokens 1500 leaves <1024 of thinking -> no thinking key at all.
@@ -102,7 +102,7 @@ fn anthropic_clamps_and_drops_by_max_tokens() {
     let ir2 = super::super::openai_chat::OpenAiReader
         .read_request(&small)
         .expect("parses");
-    let out2 = AnthropicWriter.write_request(&ir2);
+    let out2 = anthropic_writer().write_request(&ir2);
     assert!(
         out2.get("thinking").is_none(),
         "no room -> no thinking: {out2}"
@@ -119,7 +119,7 @@ fn thinking_omits_incompatible_sampling_knobs() {
     let ir = super::super::openai_chat::OpenAiReader
         .read_request(&body)
         .expect("parses");
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     assert_eq!(out["thinking"]["budget_tokens"], 4096);
     assert!(
         out.get("temperature").is_none(),
@@ -137,7 +137,7 @@ fn thinking_omits_incompatible_sampling_knobs() {
     let ir2 = super::super::openai_chat::OpenAiReader
         .read_request(&plain)
         .expect("parses");
-    let out2 = AnthropicWriter.write_request(&ir2);
+    let out2 = anthropic_writer().write_request(&ir2);
     assert_eq!(out2["temperature"], 0.5);
 }
 
@@ -156,7 +156,7 @@ fn thinking_omits_top_k() {
     let ir = AnthropicReader.read_request(&body).expect("parses");
     // Precondition: top_k arrived as a first-class field (not stranded in extra).
     assert_eq!(ir.top_k, Some(40), "top_k must be read as first-class");
-    let out = AnthropicWriter.write_request(&ir);
+    let out = anthropic_writer().write_request(&ir);
     assert!(
         out.get("thinking").is_some(),
         "thinking must be emitted: {out}"
@@ -174,7 +174,7 @@ fn thinking_omits_top_k() {
         "top_k": 40
     });
     let ir2 = AnthropicReader.read_request(&plain).expect("parses");
-    let out2 = AnthropicWriter.write_request(&ir2);
+    let out2 = anthropic_writer().write_request(&ir2);
     assert_eq!(out2["top_k"], 40);
 }
 
@@ -214,7 +214,7 @@ fn seam_gate_clears_or_stamps() {
     );
     assert_eq!(allowed.reasoning_budgets, Some([1024, 2048, 3072, 4096]));
     // The operator's table (not the defaults) drives the projection.
-    let out = AnthropicWriter.write_request(&allowed);
+    let out = anthropic_writer().write_request(&allowed);
     assert_eq!(out["thinking"]["budget_tokens"], 4096);
 }
 
@@ -259,7 +259,7 @@ fn responses_effort_round_trips() {
     // Anthropic egress: medium -> 8192.
     let mut with_max = cleared;
     with_max.max_tokens = Some(32000);
-    let aout = AnthropicWriter.write_request(&with_max);
+    let aout = anthropic_writer().write_request(&with_max);
     assert_eq!(aout["thinking"]["budget_tokens"], 8192);
 }
 

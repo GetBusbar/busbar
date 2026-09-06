@@ -237,7 +237,9 @@ oracle_spawn() {  # <log-file> <bin> [args...]
 
 _oracle_mint() {  # <admin_port> <json-body>  -> prints "id token akid secret"
   local out
-  out="$(curl -fsS -X POST "http://127.0.0.1:$1/api/v1/admin/keys" \
+  # -m: a mint that hangs is neither red nor green until the whole job times out, and every OTHER
+  # call in this harness already carries a bound. Without it a wedged admin listener stalls the run.
+  out="$(curl -fsS -m 10 -X POST "http://127.0.0.1:$1/api/v1/admin/keys" \
     -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" -H "Content-Type: application/json" \
     -d "$2" 2>/dev/null || true)"
   printf '%s %s %s %s\n' "$(printf '%s' "$out" | jq -r '.id // empty')" "$(printf '%s' "$out" | jq -r '.token // empty')" \

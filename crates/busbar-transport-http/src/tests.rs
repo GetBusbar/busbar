@@ -68,6 +68,72 @@ async fn fixed_response_server(response: &'static [u8]) -> String {
     format!("http://{addr}/")
 }
 
+/// An upstream that answers with the request line it actually received, so a test can assert what
+/// went out on the wire rather than what the caller meant to put there.
+async fn request_line_echo_server() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = vec![0_u8; 4096];
+                let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf)
+                    .await
+                    .unwrap_or(0);
+                let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let line = text.lines().next().unwrap_or("").trim_end().to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                    line.len(),
+                    line
+                );
+                let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes()).await;
+            });
+        }
+    });
+    format!("http://{addr}/")
+}
+
+#[tokio::test]
+async fn the_envelopes_own_method_and_path_are_what_reach_the_upstream() {
+    let uri = request_line_echo_server().await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    let req = b"POST /v1/messages HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
+    transport
+        .write(&conn, StreamId(0), ArenaBytes::new(req))
+        .await
+        .unwrap();
+
+    let mut frames = transport.frames(conn);
+    let (_s, _head) = frames.next().await.unwrap().unwrap();
+    let (_s, body) = frames.next().await.unwrap().unwrap();
+    let echoed = String::from_utf8(body.bytes.as_slice().to_vec()).unwrap();
+    assert!(
+        echoed.starts_with("POST /v1/messages "),
+        "the upstream saw {echoed:?}, not the request the envelope named"
+    );
+}
+
+#[tokio::test]
+async fn a_status_line_is_not_a_request_this_transport_can_send() {
+    let uri = fixed_response_server(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    let msg = b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n";
+    let err = transport
+        .write(&conn, StreamId(0), ArenaBytes::new(msg))
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransportError::Framing);
+}
+
 #[tokio::test]
 async fn egress_round_trip_reports_status_class_on_the_first_frame() {
     let uri = fixed_response_server(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello").await;
@@ -324,6 +390,70 @@ async fn an_unparsable_header_block_is_a_framing_error_not_a_headerless_request(
         "a header block that does not parse is refused, not read as a request with no headers"
     );
     writer.abort();
+}
+
+/// Drive one raw request through a real ingress connection and hand back the first frame result.
+/// The header questions this exercises are asked of a live socket, not of a header vector built by
+/// hand, so a reading that only holds in a unit test cannot pass here.
+async fn ingress_first(request: &'static [u8]) -> Result<(StreamId, Frame), TransportError> {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let writer = tokio::spawn(async move {
+        let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut client, request)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+    let conn = accept_fut.await.unwrap();
+    let mut frames = transport.frames(conn);
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the reader answers rather than hanging")
+        .expect("the stream yields something");
+    writer.abort();
+    first
+}
+
+/// RFC 9110 5.3: a field sent on more than one line means the same thing as the one line those
+/// values would have made, joined by commas. So `Transfer-Encoding: chunked` followed by
+/// `Transfer-Encoding: gzip` is the coding list `chunked, gzip` — one whose final coding is not
+/// `chunked`, which RFC 9112 6.1 requires, and whose body length is therefore undeterminable.
+/// Reading only the first line answers `chunked` and frames a body the sender never described:
+/// the smuggling shape, spelled across two lines instead of one.
+#[tokio::test]
+async fn a_transfer_encoding_split_across_lines_is_read_as_the_one_list_it_is() {
+    let err = ingress_first(
+        b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        err,
+        TransportError::Framing,
+        "the combined list ends in gzip, so the body length is undeterminable"
+    );
+}
+
+/// `chunked` applied twice is `chunked, chunked`: the final coding is chunked, but the first one is
+/// a coding this transport cannot undo underneath it, and RFC 9112 6.1 forbids applying chunked
+/// more than once. Refused rather than decoded one layer deep and handed up as whole.
+#[tokio::test]
+async fn chunked_declared_twice_is_refused() {
+    let err = ingress_first(
+        b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err, TransportError::Framing);
 }
 
 /// A `Transfer-Encoding` whose final coding is not `chunked` is refused, not read as chunked and
@@ -734,6 +864,41 @@ fn the_envelope_encodes_as_an_http_message() {
         }
     );
     assert_eq!(parsed.body, b"{\"model\":\"m\"}");
+}
+
+/// A CR or an LF in a field is not data on this wire: it ENDS the line. A caller that can put one
+/// in a value chooses where this transport's header block ends and what stands after it — a second
+/// header, a body boundary, a whole second request. NUL is refused with them: nothing on this wire
+/// carries one, and a reader that stops at it reads a different message than the one written.
+#[test]
+fn a_field_cannot_smuggle_a_line_ending_into_the_header_block() {
+    let transport = HttpTransport::new(ClientSettings::default());
+    let arena = TestArena;
+    let poisoned: &[(&str, &[u8])] = &[
+        ("x-note", b"ok\r\nauthorization: bearer stolen".as_slice()),
+        ("x-note", b"ok\nauthorization: bearer stolen".as_slice()),
+        ("x-note", b"ok\rmore".as_slice()),
+        ("x-note", b"ok\0more".as_slice()),
+        ("bad\r\nname", b"ok".as_slice()),
+        ("method", b"GET / HTTP/1.1\r\nHost: elsewhere".as_slice()),
+        ("path", b"/a\r\nHost: elsewhere".as_slice()),
+    ];
+    for field in poisoned {
+        let err = transport
+            .encode_envelope(std::slice::from_ref(field), b"body", &arena)
+            .expect_err("a field carrying a line ending is not encodable");
+        assert_eq!(
+            err,
+            busbar_contract_transport::wire::Encode::Unrepresentable,
+            "field {:?} was written through",
+            field.0
+        );
+    }
+    // And an ordinary envelope beside them still encodes, so the check refuses injection rather
+    // than refusing headers.
+    transport
+        .encode_envelope(&[("x-note", b"ok".as_slice())], b"body", &arena)
+        .expect("a clean field still encodes");
 }
 
 /// A test arena that hands back what it was given. The real one is the kernel's per-unit one;
@@ -1159,6 +1324,259 @@ fn the_egress_chunked_body_is_decoded_once_across_many_write_calls() {
         cache.head.is_none() && cache.decoder.is_none(),
         "a completed message leaves no stale decoder"
     );
+}
+
+/// One wrapping layer, standing in for the connector and pool layers a real client error arrives
+/// wrapped in: the fact this transport reports must be read off the CHAIN, not off the top.
+#[derive(Debug)]
+struct Wrapped(io::Error);
+impl std::fmt::Display for Wrapped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "client error")
+    }
+}
+impl std::error::Error for Wrapped {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+/// An error with nothing underneath it: the shape the fallback exists for.
+#[derive(Debug)]
+struct Opaque;
+impl std::fmt::Display for Opaque {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "opaque")
+    }
+}
+impl std::error::Error for Opaque {}
+
+/// Every egress failure used to be reported as `Refused` — nothing was listening. A connect that
+/// timed out, a keep-alive that went unanswered and a connection reset mid-response are three
+/// different facts about an upstream, and collapsing them tells an operator the upstream is down
+/// when it is slow, or wedged, or resetting mid-body.
+#[test]
+fn an_egress_failure_reports_the_fact_it_carries_not_a_refusal_for_everything() {
+    let cases: Vec<(io::ErrorKind, TransportError)> = vec![
+        (io::ErrorKind::TimedOut, TransportError::Timeout),
+        (io::ErrorKind::ConnectionReset, TransportError::Reset),
+        (io::ErrorKind::ConnectionAborted, TransportError::Reset),
+        (io::ErrorKind::ConnectionRefused, TransportError::Refused),
+        (
+            io::ErrorKind::AddrNotAvailable,
+            TransportError::AddressRefused,
+        ),
+        (io::ErrorKind::BrokenPipe, TransportError::Closed),
+    ];
+    for (kind, expected) in cases {
+        let bare = io::Error::new(kind, "x");
+        assert_eq!(map_egress_err(&bare), expected, "bare {kind:?}");
+        let wrapped = Wrapped(io::Error::new(kind, "x"));
+        assert_eq!(map_egress_err(&wrapped), expected, "wrapped {kind:?}");
+    }
+    assert_eq!(
+        map_egress_err(&Opaque),
+        TransportError::Refused,
+        "an error carrying no io fact is the one case there is nothing more specific to say about"
+    );
+}
+
+/// A writer that accepts every byte and then fails to flush: the exact shape a Unit 0 refusal must
+/// not be able to report as delivered. `write_all` succeeds, so only the flush leg can catch it.
+struct FlushFailsWriter {
+    written: Vec<u8>,
+}
+
+impl tokio::io::AsyncWrite for FlushFailsWriter {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, io::Error>> {
+        self.written.extend_from_slice(buf);
+        std::task::Poll::Ready(Ok(buf.len()))
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), io::Error>> {
+        std::task::Poll::Ready(Err(io::Error::new(
+            io::ErrorKind::ConnectionReset,
+            "the peer went away before the refusal reached it",
+        )))
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), io::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// The refusal is the client-visible answer to an authentication failure, so "delivered" has to
+/// mean the bytes left. `write_all` only proves they reached the writer's own buffer; the flush is
+/// the evidence, and swallowing its failure reports a refusal nobody ever received. The sibling
+/// `tcp` and `tls` crates already answer this way.
+#[tokio::test]
+async fn an_undelivered_unit0_refusal_is_an_error() {
+    let mut w = FlushFailsWriter {
+        written: Vec::new(),
+    };
+    let err = deliver_refusal(&mut w, b"refused")
+        .await
+        .expect_err("a refusal whose flush failed was never delivered and must not report Ok");
+    assert_eq!(err, TransportError::Reset);
+    assert_eq!(w.written.as_slice(), b"refused");
+}
+
+/// A peer that stops in the middle of a header block sent a message that never arrived. Reading
+/// that as end-of-stream discards bytes already read and calls a truncated request no request at
+/// all — the same guess the body branches already refuse to make.
+#[tokio::test]
+async fn a_header_block_cut_short_at_eof_is_a_framing_error() {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    tokio::spawn(async move {
+        let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        // Half a header block, then a close.
+        tokio::io::AsyncWriteExt::write_all(&mut client, b"POST / HTTP/1.1\r\nHost: x")
+            .await
+            .unwrap();
+        drop(client);
+    });
+    let conn = accept_fut.await.unwrap();
+    let mut frames = transport.frames(conn);
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the reader answers rather than hanging")
+        .expect("a truncated header block is reported, not silently dropped");
+    assert_eq!(first.unwrap_err(), TransportError::Framing);
+}
+
+/// A response header value the wire allows is not required to be UTF-8. Rendering an un-decodable
+/// one as the empty string hands the layer above a head that says the header was present and empty
+/// — a claim about the upstream's answer that the upstream did not make. What arrived goes up.
+#[tokio::test]
+async fn a_non_ascii_response_header_value_reaches_the_head_frame_as_its_own_bytes() {
+    let uri = fixed_response_server(
+        b"HTTP/1.1 200 OK\r\nx-note: caf\xc3\xa9\xff\r\nContent-Length: 0\r\n\r\n",
+    )
+    .await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    transport
+        .write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        )
+        .await
+        .unwrap();
+    let mut frames = transport.frames(conn);
+    let (_s, head) = frames.next().await.unwrap().unwrap();
+    let joined = head.bytes.as_slice();
+    let needle = b"x-note: caf\xc3\xa9\xff";
+    assert!(
+        joined.windows(needle.len()).any(|w| w == needle),
+        "the head must carry the value the upstream sent, not an empty stand-in"
+    );
+}
+
+/// The read buffer is per-connection and reused across reads, so a short read following a long one
+/// must not carry the tail of its predecessor, and the buffer must be the same allocation each time
+/// rather than a fresh `READ_CHUNK_BYTES` one per read syscall — of which this reader does several
+/// per message: the header, each body chunk, the trailers.
+#[tokio::test]
+async fn one_read_buffer_per_connection_rather_than_one_per_read() {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let writer = tokio::spawn(async move {
+        let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        let body = vec![b'L'; 4096];
+        let mut req = format!(
+            "POST / HTTP/1.1\r\nHost: x\r\ncontent-length: {}\r\n\r\n",
+            4101
+        )
+        .into_bytes();
+        tokio::io::AsyncWriteExt::write_all(&mut client, &req)
+            .await
+            .unwrap();
+        // A second read: the header is already consumed, so this one fills the buffer again.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        req = body;
+        tokio::io::AsyncWriteExt::write_all(&mut client, &req)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        tokio::io::AsyncWriteExt::write_all(&mut client, b"short")
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+    let conn = accept_fut.await.unwrap();
+    let id = conn.id();
+    let before = transport.scratch_addr(id).await.unwrap();
+    let mut frames = transport.frames(conn);
+    let (_s, head) = frames.next().await.unwrap().unwrap();
+    assert!(head.bytes.as_slice().starts_with(b"POST / HTTP/1.1"));
+    let (_s, body) = frames.next().await.unwrap().unwrap();
+    assert_eq!(
+        body.bytes.as_slice().len(),
+        4101,
+        "the declared body, whole and with no residue from the header read before it"
+    );
+    assert!(body.bytes.as_slice().ends_with(b"short"));
+    assert_eq!(
+        transport.scratch_addr(id).await.unwrap(),
+        before,
+        "one buffer per connection, not one per read"
+    );
+    writer.abort();
+}
+
+/// Every request line names its version. Without the check any two words followed by a space parse
+/// as a request, so a blob that is not HTTP at all is read as one and its first two words become a
+/// method and a path this transport goes on to act on.
+#[test]
+fn a_start_line_with_no_http_version_is_not_a_message() {
+    assert!(
+        raw::parse_message(b"GET /\r\nHost: x\r\n\r\n").is_none(),
+        "a request line with no version token is not a request line"
+    );
+    assert!(
+        raw::parse_message(b"NOT A REQUEST\r\nHost: x\r\n\r\n").is_none(),
+        "an arbitrary first line is not a request line"
+    );
+    assert!(
+        raw::parse_message(b"GET / HTTP/2\r\nHost: x\r\n\r\n").is_none(),
+        "a version this reader does not frame is refused, not read with 1.x's rules"
+    );
+    assert!(
+        raw::parse_message(b"HTTP/2 200 OK\r\n\r\n").is_none(),
+        "and the same on the status side"
+    );
+    assert!(raw::parse_message(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").is_some());
+    assert!(raw::parse_message(b"GET / HTTP/1.0\r\nHost: x\r\n\r\n").is_some());
+    assert!(raw::parse_message(b"HTTP/1.1 200 OK\r\n\r\n").is_some());
 }
 
 #[test]

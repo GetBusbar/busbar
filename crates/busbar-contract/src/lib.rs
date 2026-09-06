@@ -24,9 +24,10 @@ pub mod unit;
 pub mod wire;
 
 pub use bounded::{
-    Arena, ArenaBudget, ArenaBytes, BoundedVec, FactValue, Facts, Ir, IrPatch, Labels, SlabBytes,
-    Span, ARENA_BYTES, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS, MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES,
-    MAX_RECORD_BYTES, MAX_RESPONSE_PTRS, MAX_SESSION_UPSTREAMS, MAX_STEPS, MAX_USAGE_LINES,
+    Arena, ArenaBudget, ArenaBytes, BoundedVec, FactValue, Facts, FactsExhausted, Ir, IrEdit,
+    IrPatch, Labels, Overflow, SlabBytes, Span, ARENA_BYTES, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS,
+    MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES, MAX_RECORD_BYTES, MAX_RESPONSE_PTRS,
+    MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES,
 };
 pub use dest::{
     AuthDecoration, CandidateIdx, CandidateSet, ClientMode, DestinationFacts, DestinationId,
@@ -45,9 +46,10 @@ pub use ids::{
 };
 pub use kinds::{
     Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
-    CredentialFacts, CredentialLocator, EgressAuthScheme, Export, ExportItem, Head, Hook,
-    HookFacts, HookKindDecl, HookView, KernelCounts, KeyMaterial, OnFailure, PlaneFacts,
-    RecordBytes, Seat, Secret, SecretError, SecretRef, SecretValue, SliceGrant, Store, StoreError,
+    CredentialFacts, CredentialLocator, EgressAuthScheme, EnvelopeFields, Export, ExportItem, Head,
+    Hook, HookFacts, HookKindDecl, HookView, KernelCounts, KeyMaterial, OnFailure, PlaneFacts,
+    RecordBytes, Seat, Secret, SecretError, SecretRef, SecretValue, SignFailed, Signer, SliceGrant,
+    Store, StoreError,
 };
 pub use plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
@@ -58,8 +60,8 @@ pub use plane::{
 // in its own documentation is what holds the in-tree side.
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};
 pub use transport::{
-    check_composition, CompositionError, Fut, Registered, Transport, TransportConfigView,
-    TransportMeta, TRANSPORT_ABI,
+    check_composition, CompositionError, FrameStream, Fut, Registered, Transport,
+    TransportConfigView, TransportMeta, TRANSPORT_ABI,
 };
 pub use unit::{
     AbortBy, AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FailureReason, FinishClass, LegResult,

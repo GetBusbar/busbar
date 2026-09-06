@@ -4,7 +4,7 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
-# LEG: gemini-live-route (K4) — the Gemini Live dialect has a MOUNTED route, not just a codec.
+# LEG: gemini-live-route (the second-dialect route) — the Gemini Live dialect has a MOUNTED route, not just a codec.
 #
 # The spec-per-dialect and cross-parity legs already prove the Gemini Live codec is correct in
 # isolation: wire<->IR round trips, and agreement with OpenAI Realtime where the cross-dialect map

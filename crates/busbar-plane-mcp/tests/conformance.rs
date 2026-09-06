@@ -118,7 +118,7 @@ fn decode(plane: &McpPlane, body: &[u8]) -> Result<Ingress<'static>, Decode> {
 /// The draft a decode produced, or a failure naming what it produced instead.
 fn draft_of(ingress: Ingress<'static>) -> UnitDraft<'static> {
     match ingress {
-        Ingress::Open(d) | Ingress::OneShot(d) | Ingress::Handshake(d) => d,
+        Ingress::Open(d) | Ingress::OneShot(d) | Ingress::Handshake(d) => *d,
         other => panic!("a well-formed request decoded as {other:?}"),
     }
 }

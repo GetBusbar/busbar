@@ -220,6 +220,88 @@ async fn close_ends_a_live_frame_stream() {
     );
 }
 
+/// The close above is seen because a byte arrives after it and the pump wakes to re-check the flag.
+/// A pump parked on a silent peer never wakes at all: the flag is set, the registry entry is gone,
+/// and the read stays outstanding for as long as the peer stays quiet — which is forever, for a
+/// peer that opened a connection and walked away. The socket stays open with it. So the close is a
+/// wakeup, not just a flag, and the parked read answers to it.
+#[tokio::test]
+async fn close_ends_a_read_parked_on_a_silent_peer() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let mut raw = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let server_conn = accept_fut.await.unwrap();
+    let _ = client;
+
+    let mut frames = server.frames(server_conn.clone());
+    // Park the pump: nothing has been written, so the read is outstanding with no byte to end it.
+    let parked = tokio::spawn(async move { frames.next().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    server.close(server_conn, CloseReason::Normal);
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(3), parked)
+        .await
+        .expect("a closed connection's parked read answers the close, it does not wait for a byte")
+        .unwrap();
+    assert!(
+        ended.is_none(),
+        "the stream ends at the close rather than yielding a frame"
+    );
+
+    // The last clone of the state is gone with the stream, so the socket really did close.
+    let mut sink = [0_u8; 8];
+    let n = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::io::AsyncReadExt::read(&mut raw, &mut sink),
+    )
+    .await
+    .expect("the peer sees the close rather than waiting on a socket nothing holds")
+    .unwrap();
+    assert_eq!(n, 0, "the peer reads end-of-stream");
+}
+
+/// A detach that cannot hand the stream up must leave the connection where it found it.
+///
+/// The removal used to happen first and the unwrap second, so a detach racing a live frame reader
+/// returned `None` having ALREADY dropped the registry entry: no stream for the caller, and no
+/// connection left for anyone else either — one write away from `Closed` on a socket that was
+/// perfectly healthy. `None` has to mean "not yours to take".
+#[tokio::test]
+async fn a_detach_that_cannot_take_the_stream_leaves_the_connection_alone() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key())
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    // A live reader holds its own clone of the state, so the stream is not the detacher's to take.
+    let mut frames = server.frames(server_conn.clone());
+    assert!(
+        server.detach(&server_conn).is_none(),
+        "a detach racing a live reader hands nothing up"
+    );
+
+    // And the connection is still this transport's: the write goes out and the reader sees it.
+    server
+        .write(&server_conn, StreamId(0), ArenaBytes::new(b"still here"))
+        .await
+        .expect("the connection the detach refused to take is still usable");
+    let mut client_frames = client.frames(client_conn);
+    let (_s, frame) = client_frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"still here");
+    drop(frames.next());
+}
+
 #[tokio::test]
 async fn every_transport_error_is_mapped() {
     // Refused: nothing listens on this port.
@@ -460,5 +542,78 @@ async fn one_read_buffer_per_connection_reused_without_leaking_bytes_between_fra
         server.scratch_addr(server_conn.id()).await.unwrap(),
         first_buffer,
         "one buffer per connection, not one per read"
+    );
+}
+
+/// A refusal finalises the connection, so it must end a frame stream the same way `close` does.
+///
+/// The registry entry alone is not the connection: a pump started before the refusal holds its own
+/// clone of the state, and if the refusal only drops the registry's clone that pump stays parked on
+/// the socket forever — one leaked socket per refused connection. The closed flag is what ends it,
+/// after which the last clone goes and the peer sees the socket really shut.
+#[tokio::test]
+async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_socket() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key())
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    // A pump that is live before the refusal: it already holds the connection state.
+    let mut frames = server.frames(server_conn.clone());
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .await
+        .unwrap();
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"first");
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+    server
+        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .await
+        .unwrap();
+
+    // The peer keeps writing, as a peer that has not yet read the refusal will.
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after refusal"))
+        .await
+        .unwrap();
+    let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("a refused connection's frame stream must end rather than park on the socket");
+    assert!(
+        next.is_none(),
+        "a refused connection's frame stream must end, not keep yielding inbound frames"
+    );
+
+    // The pump was the last holder: with it finished the socket is really gone, which the peer
+    // sees as end-of-stream rather than as a connection still open.
+    drop(frames);
+    let mut client_frames = client.frames(client_conn);
+    let refused = client_frames.next().await.unwrap().unwrap();
+    assert_eq!(refused.1.bytes.as_slice(), b"refused");
+    let eof = tokio::time::timeout(std::time::Duration::from_secs(5), client_frames.next())
+        .await
+        .expect("the refused socket must be released, which the peer reads as end-of-stream");
+    // Either shape says the socket is gone: a clean end of stream, or the reset the kernel sends
+    // when a socket is closed with bytes still unread — and this peer deliberately wrote "after
+    // refusal" into a connection that was never going to read it. What must NOT happen is a frame:
+    // that would mean the refused connection was still being served.
+    assert!(
+        eof.is_none() || eof.is_some_and(|next| next.is_err()),
+        "the refused connection's socket must close"
     );
 }

@@ -258,8 +258,8 @@ run_mcp() {
     owed_ids="${owed_ids} mcp.rig|_no_output"
     return
   fi
-  local rows
-  rows="$(python3 - "$out" <<'PY'
+  local rows fold_rc
+  rows="$(python3 - "$out" 2>"${WORK}/mcp-subject-fold.err" <<'PY'
 import glob, json, os, re, sys
 
 outdir = sys.argv[1]
@@ -300,7 +300,17 @@ for name in sorted(scenarios):
     else:
         print(f"ROW\t{name}\tPASS\t{len(checks)} check(s), all SUCCESS/WARNING")
 PY
-)"
+)"; fold_rc=$?
+  # A FOLDER THAT THREW IS NOT AN EMPTY LEG. Without this check the exception is invisible: `rows`
+  # is empty, the while-loop below reads nothing, and no row and no owed id is produced for the
+  # MCP official-subject leg -- so the verdict cannot see the missing leg at all and the rig reads
+  # green having judged nothing.
+  if [ "$fold_rc" -ne 0 ]; then
+    record "mcp.rig|_fold_failed" FAIL "MCP official-subject results could not be folded into the ledger (exit ${fold_rc})" \
+      "$(tail -c 300 "${WORK}/mcp-subject-fold.err" | tr '\n' ' ')"
+    owed_ids="${owed_ids} mcp.rig|_fold_failed"
+    return
+  fi
   while IFS=$'\t' read -r kind a b c; do
     case "$kind" in
       META) say "   scenarios: $a   checks: $b   checks passing: $c" ;;
@@ -357,8 +367,8 @@ run_a2a_battery() {
     owed_ids="${owed_ids} a2a.battery|_no_output"
     return
   fi
-  local rows
-  rows="$(python3 - "$report" <<'PY'
+  local rows fold_rc
+  rows="$(python3 - "$report" 2>"${WORK}/a2a-battery-fold.err" <<'PY'
 import json, sys
 
 doc = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -381,7 +391,17 @@ for r in results:
         status = "FAIL"
     print(f"ROW\t{rid}\t{status}\toutcome={outcome} role={role}")
 PY
-)"
+)"; fold_rc=$?
+  # A FOLDER THAT THREW IS NOT AN EMPTY LEG. Without this check the exception is invisible: `rows`
+  # is empty, the while-loop below reads nothing, and no row and no owed id is produced for the
+  # A2A battery leg -- so the verdict cannot see the missing leg at all and the rig reads
+  # green having judged nothing.
+  if [ "$fold_rc" -ne 0 ]; then
+    record "a2a.battery|_fold_failed" FAIL "A2A battery results could not be folded into the ledger (exit ${fold_rc})" \
+      "$(tail -c 300 "${WORK}/a2a-battery-fold.err" | tr '\n' ' ')"
+    owed_ids="${owed_ids} a2a.battery|_fold_failed"
+    return
+  fi
   while IFS=$'\t' read -r kind a b c; do
     case "$kind" in
       META) say "   battery test ids: $a   PASS: $b" ;;
@@ -434,8 +454,8 @@ run_a2a_tck() {
     owed_ids="${owed_ids} a2a.tck|_no_output"
     return
   fi
-  local rows
-  rows="$(python3 - "$report" "$waivers" <<'PY'
+  local rows fold_rc
+  rows="$(python3 - "$report" "$waivers" 2>"${WORK}/a2a-tck-fold.err" <<'PY'
 import json, sys
 
 report_path, waivers_path = sys.argv[1], sys.argv[2]
@@ -471,7 +491,17 @@ for k in sorted(must):
         n_fail += 1
     print(f"ROW\t{k}\t{status}\t{detail}")
 PY
-)"
+)"; fold_rc=$?
+  # A FOLDER THAT THREW IS NOT AN EMPTY LEG. Without this check the exception is invisible: `rows`
+  # is empty, the while-loop below reads nothing, and no row and no owed id is produced for the
+  # A2A TCK leg -- so the verdict cannot see the missing leg at all and the rig reads
+  # green having judged nothing.
+  if [ "$fold_rc" -ne 0 ]; then
+    record "a2a.tck|_fold_failed" FAIL "A2A TCK results could not be folded into the ledger (exit ${fold_rc})" \
+      "$(tail -c 300 "${WORK}/a2a-tck-fold.err" | tr '\n' ' ')"
+    owed_ids="${owed_ids} a2a.tck|_fold_failed"
+    return
+  fi
   while IFS=$'\t' read -r kind a b c; do
     case "$kind" in
       META) say "   MUST requirements: $a   pinned waivers: $b" ;;
@@ -501,8 +531,8 @@ run_voice() {
     owed_ids="${owed_ids} voice.rig|_no_output"
     return
   fi
-  local rows
-  rows="$(python3 - "$log" <<'PY'
+  local rows fold_rc
+  rows="$(python3 - "$log" 2>"${WORK}/voice-fold.err" <<'PY'
 import collections, sys
 
 legs = collections.OrderedDict()
@@ -530,7 +560,17 @@ for leg, entries in legs.items():
         detail = f"{len(entries)} slice(s), all PASS"
     print(f"ROW\t{leg}\t{status}\t{detail}")
 PY
-)"
+)"; fold_rc=$?
+  # A FOLDER THAT THREW IS NOT AN EMPTY LEG. Without this check the exception is invisible: `rows`
+  # is empty, the while-loop below reads nothing, and no row and no owed id is produced for the
+  # voice battery leg -- so the verdict cannot see the missing leg at all and the rig reads
+  # green having judged nothing.
+  if [ "$fold_rc" -ne 0 ]; then
+    record "voice.rig|_fold_failed" FAIL "voice battery results could not be folded into the ledger (exit ${fold_rc})" \
+      "$(tail -c 300 "${WORK}/voice-fold.err" | tr '\n' ' ')"
+    owed_ids="${owed_ids} voice.rig|_fold_failed"
+    return
+  fi
   while IFS=$'\t' read -r kind a b c; do
     case "$kind" in
       META) say "   legs reported: $a" ;;

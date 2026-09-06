@@ -6,5 +6,11 @@
 1.5.5	busbar-x86_64-apple-darwin.tar.gz	56438c6fcd3ece46bdaa17b49cdcf965697205331842eaeb0dec1d6a36fab9f9
 1.5.5	busbar-x86_64-unknown-linux-gnu.tar.gz	64f0eda182c803ebff691d91e71a2dae468d759d73d646b13a0b1b1df06ddd9d
 1.5.5	busbar-x86_64-pc-windows-msvc.zip	f8aaff4825bb909b9de9b5ce325b0cfbb4c4f4e5f76a45a5c12e9a82fbfd5376
+# The EXTRACTED binary, per host triple (asset name `busbar-<triple>`). The tarball digest above only
+# proves the download; this proves the file record.sh actually executes, and fetch-golden.sh re-checks
+# it on EVERY invocation, not just at install time. Add a row here for a triple by running
+# fetch-golden.sh on that host once — it prints the digest to pin. A triple with no row falls back to
+# re-hashing the cached tarball against its pinned digest (also a real pin, never a sidecar).
+1.5.5	busbar-aarch64-apple-darwin	48e2800cc1fbf229104d73c23039ba4d4a703c0a8db9e7872e22fec33f9b1e48
 1.5.5	busbar-openapi-v1.5.5.json	1c1a60798156bf7ca9b99f38852fec36a08de1ad297af9832088fccd9f663c7d
 1.5.5	busbar-v1.5.5.cdx.json	b412f9520bce639220cba8580c1c031d7ce6f69ffbdcfa31e0fb069ed75ba558

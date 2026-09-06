@@ -801,13 +801,9 @@ async fn served_paths_stays_bounded_across_many_calls() {
 #[tokio::test]
 async fn dropping_a_served_calls_outbound_stream_prunes_its_entry() {
     let state = crate::conn::ConnState::new(None, vec!["grpc"]);
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    state
-        .outbound
-        .lock()
-        .unwrap()
-        .insert(3, crate::conn::opened(tx));
-    let out = crate::server::OutStream::new(rx, state.clone(), StreamId(3));
+    let (tx, rx) = crate::conn::outbound_channel();
+    let serial = state.register(3, crate::conn::opened(tx));
+    let out = crate::server::OutStream::new(rx, state.clone(), StreamId(3), serial);
     assert_eq!(state.outbound.lock().unwrap().len(), 1);
     drop(out);
     assert_eq!(
@@ -901,4 +897,360 @@ async fn a_malformed_sealed_method_refuses_instead_of_panicking() {
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::AddressRefused);
+}
+
+/// A zero-length message is a legal one on this wire: the length-prefix framing spells a body of
+/// zero bytes, and a peer that sends the empty message is saying something — it is the shape an
+/// empty request or response takes. A codec that answers "not yet, send more" to a body it has
+/// already been handed in full does not merely drop that message: the call never leaves the state
+/// it was decoding it in, so every message queued behind it is lost too. The empty one and all of
+/// its successors must arrive.
+#[tokio::test]
+async fn an_empty_message_is_delivered_and_does_not_wedge_the_ones_behind_it() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let client_conn = client_t
+        .dial(&verified_upstream(host), &keys)
+        .await
+        .unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"open"))
+        .await
+        .unwrap();
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let (server_stream, opened) = server_frames.next().await.unwrap().unwrap();
+    assert_eq!(opened.bytes.as_slice(), b"open");
+
+    // The empty message first, then the ones that must not be stuck behind it.
+    server_t
+        .write(&server_conn, server_stream, ArenaBytes::new(b""))
+        .await
+        .unwrap();
+    for payload in [b"one".as_slice(), b"two".as_slice(), b"three".as_slice()] {
+        server_t
+            .write(&server_conn, server_stream, ArenaBytes::new(payload))
+            .await
+            .unwrap();
+    }
+
+    let mut client_frames = client_t.frames(client_conn);
+    let mut got: Vec<Vec<u8>> = Vec::new();
+    for _ in 0..4 {
+        let next = tokio::time::timeout(Duration::from_secs(5), client_frames.next())
+            .await
+            .expect("an empty message must not park the call that carries it");
+        let (_s, frame) = next.unwrap().unwrap();
+        assert_eq!(frame.meta.bytes, frame.bytes.as_slice().len() as u64);
+        got.push(frame.bytes.as_slice().to_vec());
+    }
+    assert_eq!(
+        got,
+        vec![
+            Vec::new(),
+            b"one".to_vec(),
+            b"two".to_vec(),
+            b"three".to_vec()
+        ],
+        "the empty message and every message behind it"
+    );
+}
+
+/// Closing a connection stops the HTTP/2 server task that serves it.
+///
+/// `close` is the kernel's only way to be rid of a connection. When the accept side spawned the
+/// hyper connection task and dropped its handle, nothing held a way to stop it: a closed connection
+/// kept its socket and went on accepting fresh RPCs from the peer, so "closed" meant only that this
+/// transport had stopped listing it.
+#[tokio::test]
+async fn closing_a_connection_stops_serving_new_calls_on_it() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    // The connection is really serving: one call opens and arrives.
+    client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .await
+        .unwrap();
+    let mut server_frames = server_t.frames(server_conn.clone());
+    tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the first call arrives")
+        .unwrap()
+        .unwrap();
+
+    server_t.close(
+        server_conn,
+        busbar_contract_transport::wire::CloseReason::Normal,
+    );
+
+    // A closed connection serves nothing further: the peer's next RPC on it must fail rather than
+    // be answered by a task the transport can no longer reach. Opening a call is a round trip, so
+    // the peer may have one already in flight when the close lands — but only one: past that, every
+    // fresh call must be refused, and a connection still serving them never gets there.
+    let refused = tokio::time::timeout(Duration::from_secs(10), async {
+        for n in 2..u64::MAX {
+            if client_t
+                .write(&client_conn, StreamId(n), ArenaBytes::new(b"ping"))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(
+        refused.is_ok(),
+        "a closed connection went on serving fresh calls from the peer"
+    );
+}
+
+/// `frames()` ends when the connection does, on both sides.
+///
+/// The connection state owned the inbound sender, so the receiver `frames()` drains could never see
+/// end-of-stream: with the peer gone, or after `close`, the stream stayed pending forever instead
+/// of finishing. A reader above it cannot tell "the answer is complete" from "the next frame has
+/// not arrived yet", so it waits out its whole deadline on a call that already ended whole — and
+/// then compensates for a failure that never happened.
+#[tokio::test]
+async fn frames_end_when_the_connection_does() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .await
+        .unwrap();
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let mut client_frames = client_t.frames(client_conn.clone());
+    tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the call arrives")
+        .unwrap()
+        .unwrap();
+
+    // The peer is finished with this connection and gone.
+    server_t.close(
+        server_conn,
+        busbar_contract_transport::wire::CloseReason::Normal,
+    );
+
+    // The closing side's own reader ends: nothing more will ever arrive on a connection this
+    // transport has closed.
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while server_frames.next().await.is_some() {}
+    })
+    .await;
+    assert!(ended.is_ok(), "the closed side's frames() never ended");
+
+    // And the peer's reader ends once the connection under it is gone — after whatever the calls
+    // still in flight have left to say, terminal status included.
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while client_frames.next().await.is_some() {}
+    })
+    .await;
+    assert!(
+        ended.is_ok(),
+        "the peer's frames() stayed pending with the connection gone"
+    );
+}
+
+/// The outbound half backpressures too, which is the other direction of the rule this connection
+/// already keeps inbound.
+///
+/// `write()` handed each message to an unbounded queue, so a peer that never read still let a
+/// writer accept messages without limit: every one of them queued on this process's heap, and the
+/// `Ok` it returned said "sent" about bytes that had not reached the wire and might never. Bounded,
+/// the writer waits on the peer, which is what the HTTP/2 flow-control window is for.
+#[tokio::test]
+async fn write_backpressures_a_peer_that_never_reads() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    // Accepted, and never read from: nothing polls the server's `frames()`, so the server's own
+    // inbound buffer fills, the flow-control window shuts, and the queue behind `write()` is the
+    // only place left for the messages to go.
+    let _server_conn = accept_task.await.unwrap().unwrap();
+
+    let message = vec![b'x'; 4096];
+    let flooded = tokio::time::timeout(Duration::from_secs(2), async {
+        for _ in 0..crate::conn::OUTBOUND_FRAME_BUFFER * 8 {
+            client_t
+                .write(&client_conn, StreamId(1), ArenaBytes::new(&message))
+                .await
+                .unwrap();
+        }
+    })
+    .await;
+    assert!(
+        flooded.is_err(),
+        "a writer outran a peer that never read: every message was accepted onto the heap"
+    );
+}
+
+/// A refusal that could not be delivered says so.
+///
+/// Refusing names a call, and the refusal's whole point is that the caller is told. When the stream
+/// named had no entry — already over, never opened, or the call's channel gone — the refusal was
+/// dropped on the floor and `Ok(())` was returned anyway, so the kernel recorded a unit as refused
+/// on a connection where nothing had been written.
+#[tokio::test]
+async fn a_refusal_that_reaches_no_call_is_an_error() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+
+    client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .await
+        .unwrap();
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let (served, _f) = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the call arrives")
+        .unwrap()
+        .unwrap();
+
+    // The first refusal reaches the call and ends it.
+    server_t
+        .unit0_refusal(
+            server_conn.clone(),
+            Some(served),
+            &refusal,
+            ArenaBytes::new(b"no"),
+        )
+        .await
+        .unwrap();
+
+    // The second names a call this connection no longer has: there is nothing left to refuse, and
+    // saying so is the difference between a refusal delivered and a refusal imagined.
+    let err = server_t
+        .unit0_refusal(
+            server_conn.clone(),
+            Some(served),
+            &refusal,
+            ArenaBytes::new(b"no"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransportError::Closed);
+
+    // And a stream this connection never carried at all.
+    let err = server_t
+        .unit0_refusal(
+            server_conn,
+            Some(StreamId(9999)),
+            &refusal,
+            ArenaBytes::new(b"no"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransportError::Closed);
+}
+
+/// A finished call takes its OWN entry out of the outbound map, not whatever the id holds now.
+///
+/// Cleanup runs when a call ends — from the dial side's forwarding task, from the served call's
+/// outbound stream being dropped, from a failed open. All of them ran by `StreamId` alone, and a
+/// `StreamId` is reused: a call ending just as the next one takes its id would remove the live
+/// call's sender, ending a second unit's answer for the first one's death.
+#[test]
+fn a_finished_call_cannot_end_the_one_that_reused_its_id() {
+    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let (first_tx, _first_rx) = crate::conn::outbound_channel();
+    let first = state.register(7, crate::conn::opened(first_tx));
+    assert!(
+        state.end_call(7, first).is_some(),
+        "its own entry is its own"
+    );
+
+    // The id comes round again, and the call now holding it is a different call.
+    let (second_tx, _second_rx) = crate::conn::outbound_channel();
+    let second = state.register(7, crate::conn::opened(second_tx));
+    assert_ne!(first, second, "two calls on one id are two calls");
+
+    // The first call's cleanup, arriving late.
+    assert!(
+        state.end_call(7, first).is_none(),
+        "a finished call took the entry of the live one that reused its id"
+    );
+    assert!(
+        state.call(7).is_some(),
+        "the live call's sender is gone: nothing will ever drain its answer"
+    );
+
+    // And the live one still ends when IT ends.
+    assert!(state.end_call(7, second).is_some());
+    assert!(state.call(7).is_none());
 }

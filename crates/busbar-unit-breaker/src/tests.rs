@@ -791,6 +791,139 @@ fn a_fresh_trip_is_never_journaled_as_a_failed_probe() {
     );
 }
 
+/// A probe that closed the cell is always journaled as having succeeded.
+///
+/// The mirror of the failure race above, and it runs the other way. `observe` decided `was_probe`
+/// from a state it read BEFORE `record_success`, so a peer winning the recovery probe in between
+/// left this call closing a HalfOpen cell while believing it had been Closed all along — a won
+/// probe with no terminal event in the journal at all. The CAS's own answer is the proof: it can
+/// only succeed from HalfOpen.
+#[test]
+fn a_probe_that_closed_the_cell_is_always_journaled_as_succeeded() {
+    let cfg = consecutive_cfg(1, 5);
+    let token = route_token();
+    let destination = DestinationId::new(2);
+
+    let mut orphans = 0usize;
+    for _ in 0..2_000 {
+        let journal = std::sync::Arc::new(RecordingJournal::default());
+        let unit =
+            BreakerUnit::<_, crate::classify::NoopDiagnostics>::with_journal(journal.clone());
+
+        // Trip the cell and leave the cooldown long past, so the probe is there to be won.
+        unit.observe(
+            "pool",
+            destination,
+            Outcome::Transient { retry_after: None },
+            &cfg,
+            1_000,
+            &token,
+        );
+
+        // One thread records a success against a cell it did not probe — the degraded-fallback
+        // shape `record_success` documents. The other wins the recovery probe. If the win lands
+        // between the first thread's state read and its CAS, the first thread does the closing.
+        let barrier = std::sync::Barrier::new(2);
+        let barrier = &barrier;
+        let unit = &unit;
+        let cfg = &cfg;
+        let token = &token;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                barrier.wait();
+                unit.observe("pool", destination, Outcome::Success, cfg, 1_000_000, token);
+            });
+            scope.spawn(move || {
+                barrier.wait();
+                let _ = unit.try_admit("pool", destination, 1_000_000);
+            });
+        });
+
+        let events = journal.events();
+        let won = events
+            .iter()
+            .any(|e| matches!(e, crate::journal::ProbeEvent::Won { .. }));
+        let succeeded = events
+            .iter()
+            .any(|e| matches!(e, crate::journal::ProbeEvent::Succeeded { .. }));
+        let closed = matches!(
+            unit.cell("pool", destination).state(),
+            crate::cell::BreakerState::Closed
+        );
+        if won && closed && !succeeded {
+            orphans += 1;
+        }
+    }
+
+    assert_eq!(
+        orphans, 0,
+        "a won probe whose cell then closed left no Succeeded record in the journal"
+    );
+}
+
+/// A pool cell that a caller can reach is a pool cell a hard-down can reach.
+///
+/// `cell` published a freshly created cell into the cell map and only afterwards registered its
+/// pool name against the destination. In that window the cell was fully reachable — admissions ran
+/// through it — while `hard_down_all`, which walks the destination's registered pool names, could
+/// not see it: a bad key or an exhausted account would suppress every other pool for that
+/// destination and leave this one serving.
+///
+/// The threads below make the window the whole point. One thread creates the pool under test; a
+/// crowd of others create pools of their own, so the registry is under contention and a name
+/// published after its cell has to queue behind them. The hard-down waits until the cell under
+/// test is reachable and then runs at once. Registering the name before the cell is published is
+/// what makes reachability imply hard-downability, whatever the registry is doing.
+#[test]
+fn a_reachable_pool_cell_is_always_reachable_by_a_hard_down() {
+    const NOISE: usize = 8;
+    const NOISE_POOLS: usize = 64;
+    let destination = DestinationId::new(3);
+
+    let mut missed = 0usize;
+    for round in 0..200 {
+        let unit: BreakerUnit = BreakerUnit::new();
+        let unit = &unit;
+        let target = format!("target-{round}");
+        let target = target.as_str();
+        let started = std::sync::Barrier::new(NOISE + 2);
+        let started = &started;
+        std::thread::scope(|scope| {
+            for n in 0..NOISE {
+                scope.spawn(move || {
+                    started.wait();
+                    for p in 0..NOISE_POOLS {
+                        let _ = unit.try_admit(&format!("noise-{n}-{p}"), destination, 1_000);
+                    }
+                });
+            }
+            scope.spawn(move || {
+                started.wait();
+                let _ = unit.try_admit(target, destination, 1_000);
+            });
+            scope.spawn(move || {
+                started.wait();
+                while !unit.has_cell(target, destination) {
+                    std::hint::spin_loop();
+                }
+                unit.hard_down_all(destination, 1_000);
+            });
+        });
+
+        if !matches!(
+            unit.cell(target, destination).state(),
+            crate::cell::BreakerState::Open { .. }
+        ) {
+            missed += 1;
+        }
+    }
+
+    assert_eq!(
+        missed, 0,
+        "a hard-down skipped a pool cell that was already reachable when it ran"
+    );
+}
+
 #[test]
 fn budget_spend_never_drives_the_counter_negative() {
     let budget = LifetimeBudget::limited(1);

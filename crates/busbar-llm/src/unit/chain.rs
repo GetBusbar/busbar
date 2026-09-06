@@ -580,7 +580,8 @@ mod rehearsal {
         let lane = LANES
             .lock()
             .expect("the rehearsal's interner is never poisoned")
-            .lane(lane);
+            .lane(lane)
+            .expect("the rehearsal's vocabulary is open and holds this fixture's lane");
         vec![VerifiedDestination::seal(&TrustToken::mint(seal), lane)]
     }
 

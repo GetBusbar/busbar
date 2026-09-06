@@ -401,6 +401,81 @@ fn test_verify_inbound_sigv4_roundtrip_accepts() {
     assert_eq!(verify_inbound_sigv4(&parsed, &req, secret, now), Ok(()));
 }
 
+/// A header name may legally appear SEVERAL times in one request. AWS canonicalizes such a name to
+/// ONE entry whose value is every occurrence joined with a comma, in request order — so a client
+/// sending `x-amz-meta-tag: a` and `x-amz-meta-tag: b` signs the value `a,b`. The verifier took only
+/// the FIRST match, reconstructing `a`, so a correctly signed request was REJECTED.
+#[test]
+fn test_verify_inbound_sigv4_duplicate_signed_header_values_are_combined() {
+    let secret = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+    let amzdate = "20150830T123600Z";
+    let now = parse_amz_date(amzdate).unwrap();
+    let payload_hash = sha256_hex(b"{\"x\":1}");
+
+    // What the CLIENT signs: the duplicate name folded to one comma-joined value.
+    let signing_view = vec![
+        (
+            "host".to_string(),
+            "bedrock-runtime.amazonaws.com".to_string(),
+        ),
+        ("x-amz-meta-tag".to_string(), "a,b".to_string()),
+        (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
+        (X_AMZ_DATE.to_string(), amzdate.to_string()),
+    ];
+    let (sig, signed_headers) = sign_v4(
+        secret,
+        "us-east-1",
+        "bedrock",
+        "POST",
+        "/model/anthropic.claude/converse",
+        "",
+        &signing_view,
+        &payload_hash,
+        amzdate,
+        "20150830",
+    );
+    let parsed = ParsedAuthHeader {
+        access_key_id: "AKIAEXAMPLE1234567890".to_string(),
+        datestamp: "20150830".to_string(),
+        region: "us-east-1".to_string(),
+        service: "bedrock".to_string(),
+        signed_headers,
+        signature: sig,
+    };
+
+    // What ARRIVES on the wire: the same name twice, in the order it was signed.
+    let wire = vec![
+        (
+            "host".to_string(),
+            "bedrock-runtime.amazonaws.com".to_string(),
+        ),
+        ("x-amz-meta-tag".to_string(), "a".to_string()),
+        ("x-amz-meta-tag".to_string(), "b".to_string()),
+        (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
+        (X_AMZ_DATE.to_string(), amzdate.to_string()),
+    ];
+    let req = inbound(&wire, &payload_hash, amzdate);
+    assert_eq!(verify_inbound_sigv4(&parsed, &req, secret, now), Ok(()));
+}
+
+/// Spaces INSIDE a quoted string are significant and are signed verbatim; collapsing them produced a
+/// canonical value the client never signed.
+#[test]
+fn test_canonicalize_header_value_preserves_spaces_inside_quotes() {
+    assert_eq!(
+        canonicalize_header_value("attachment; filename=\"my  file.txt\""),
+        "attachment; filename=\"my  file.txt\""
+    );
+    // Runs OUTSIDE the quotes still collapse, and the whole value still trims.
+    assert_eq!(
+        canonicalize_header_value("  a   b  \"c   d\"   e  "),
+        "a b \"c   d\" e"
+    );
+    // Idempotent: canonicalizing an already-canonical quoted value changes nothing.
+    let once = canonicalize_header_value("x  \"y  z\"  w");
+    assert_eq!(canonicalize_header_value(&once), once);
+}
+
 #[test]
 fn test_verify_inbound_sigv4_wrong_secret_rejected() {
     let amzdate = "20150830T123600Z";

@@ -254,9 +254,9 @@ impl Plane for A2aPlane {
         // A request whose answer arrives as a run of events stays OPEN across those events. One
         // whose answer is a single document is complete in this frame.
         if row.streaming {
-            Ok(Ingress::Open(draft))
+            Ok(Ingress::Open(Box::new(draft)))
         } else {
-            Ok(Ingress::OneShot(draft))
+            Ok(Ingress::OneShot(Box::new(draft)))
         }
     }
 
@@ -354,13 +354,13 @@ impl Plane for A2aPlane {
             if let Some(task) = read_str(body, "/taskId").or_else(|| read_str(body, "/id")) {
                 let _ = facts.set(f::FACT_TASK_ID, FactValue::Str(task));
             }
-            return Ok(Progress::OneShot(UnitDraft {
+            return Ok(Progress::OneShot(Box::new(UnitDraft {
                 op: ops::OP_PUSH_EVENT,
                 body_ir: view(body, jsonrpc::RESPONSE_PTRS, ctx)?,
                 correlates: None,
                 correlation_out: None,
                 facts,
-            }));
+            })));
         }
 
         let mut facts = Facts::new();
@@ -406,9 +406,15 @@ impl Plane for A2aPlane {
             facts,
         };
         if terminal {
-            Ok(Progress::Terminal { for_, r })
+            Ok(Progress::Terminal {
+                for_,
+                r: Box::new(r),
+            })
         } else {
-            Ok(Progress::Frame { for_, r })
+            Ok(Progress::Frame {
+                for_,
+                r: Box::new(r),
+            })
         }
     }
 

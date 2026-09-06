@@ -205,6 +205,48 @@ fn a_closed_window_that_keeps_posting_is_reported_as_such() {
     }
 }
 
+/// A window the book retired is NOT a window whose money went missing.
+///
+/// Retiring a sealed window is the ordinary way a book stays bounded — the figures were signed and
+/// shipped, and the book stopped being the record of them. Measured against the zeros a retired key
+/// reads back as, the answer depends on figures that have nothing to do with the question: silence
+/// when the sealed balance happens to balance from zero, an imbalance the size of the whole balance
+/// when it does not. This fixture gets the first of those, which is the worse one — a balance can
+/// leave the book and the verifier says nothing at all. Named, it says what happened, and the other
+/// way a balance leaves a book is that somebody removed it.
+#[test]
+fn a_balance_the_book_retired_is_named_as_retired_and_not_as_an_imbalance() {
+    let mut ledger = book_with_a_settlement();
+    let checkpoint = seal(&ledger, 1);
+    assert!(verify(&checkpoint, &ledger.book().snapshot(), &AllWindowsOpen).is_empty());
+
+    // The window is sealed, so the book lets it go.
+    assert_eq!(ledger.book_mut().retain_from(2), 1);
+    let findings = verify(&checkpoint, &ledger.book().snapshot(), &AllWindowsOpen);
+    match findings.as_slice() {
+        [Finding::Retired { key: k, window }] => {
+            assert_eq!(k, &key("b"));
+            assert_eq!(*window, 1 as WindowStart);
+        }
+        other => panic!("expected one retirement, got {other:?}"),
+    }
+    assert!(
+        findings[0].to_string().contains("no longer in the book"),
+        "the finding says what happened: {}",
+        findings[0]
+    );
+
+    // And a closed window is answered the same way: what is gone is gone, not gone and unbalanced.
+    struct EverythingClosed;
+    impl WindowState for EverythingClosed {
+        fn is_open(&self, _key: &TotalsKey, _window: WindowStart) -> bool {
+            false
+        }
+    }
+    let closed = verify(&checkpoint, &ledger.book().snapshot(), &EverythingClosed);
+    assert!(matches!(closed.as_slice(), [Finding::Retired { .. }]));
+}
+
 #[test]
 fn a_balance_that_appeared_after_the_checkpoint_is_still_checked() {
     // A key that was not in the checkpoint is measured from zeros, so a brand-new balance cannot

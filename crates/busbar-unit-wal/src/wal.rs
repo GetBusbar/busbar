@@ -13,6 +13,9 @@
 //!
 //! **On-disk** is what a deployment that writes a data directory gets. Segments are real files,
 //! group commits are a positional write and a data sync, and a sync that fails poisons its segment.
+//! A store that refuses a batch here does not fail the commit — the bytes are on the medium — but
+//! the batch stays owed to the store and is offered again on the next commit, in order, without
+//! being written to the medium a second time.
 //!
 //! Everything below is written so that the mode is a value, not a set of conditionals scattered
 //! through the append path. There is one `append_batch`; what differs is which factory built the
@@ -59,6 +62,14 @@ use crate::ship::{NullShipper, ShipError, Shipper};
 /// answered exactly for as long as the skipped number could plausibly be offered again, and is
 /// answered conservatively rather than expensively after that.
 const RECENT_HOLES: usize = 8192;
+
+/// How many records an on-disk log will hold for a store that has not taken them yet.
+///
+/// Pinned rather than configurable, exactly like the memory-buffered buffer's own bound: an operator
+/// who could raise it could turn a store outage into an out-of-memory kill. Past it the oldest are
+/// dropped from the catch-up queue and counted. Nothing is lost by that — on disk the segments are
+/// the record, and this queue is only the log's offer of a shortcut to the store.
+pub const STORE_BACKLOG_RECORDS: usize = 8192;
 
 /// Where a log keeps its bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +139,11 @@ pub struct Wal {
     gap_order: VecDeque<(u64, u64)>,
     /// The batch a poisoned segment lost, kept whole so it can be written again.
     lost_batch: Vec<Record>,
+    /// Records the store has not acknowledged, oldest first. On disk only: a refusal there does not
+    /// fail the commit, so this is the only thing that remembers the store is still owed them.
+    owed_to_store: Vec<Record>,
+    /// How many records the store's catch-up queue has given up on at its bound.
+    store_debt_dropped: u64,
     /// Records recovered from the tail at open time, in order.
     recovered: Vec<Record>,
     /// How many segments have been rolled through, poison included.
@@ -141,6 +157,7 @@ impl std::fmt::Debug for Wal {
             .field("segment", &self.segment)
             .field("tracked_identities", &self.tracked_identities())
             .field("lost_batch", &self.lost_batch.len())
+            .field("owed_to_store", &self.owed_to_store.len())
             .finish()
     }
 }
@@ -210,6 +227,8 @@ impl Wal {
             gaps: HashSet::new(),
             gap_order: VecDeque::new(),
             lost_batch: Vec::new(),
+            owed_to_store: Vec::new(),
+            store_debt_dropped: 0,
             recovered: Vec::new(),
             segments_used: 1,
         };
@@ -238,6 +257,21 @@ impl Wal {
     /// The batch a poisoned segment lost and the log still owes, if any.
     pub fn owed(&self) -> &[Record] {
         &self.lost_batch
+    }
+
+    /// The records the store has not acknowledged and is still owed, oldest first.
+    ///
+    /// On disk this is catch-up work rather than a durability loss — the bytes are on the medium
+    /// either way — so it is a separate queue from what a poisoned segment lost, and it is
+    /// observable so that a node can say how far behind its store is instead of only whether it is.
+    pub fn owed_to_store(&self) -> &[Record] {
+        &self.owed_to_store
+    }
+
+    /// How many records the store's catch-up queue has dropped at its bound. They are still in the
+    /// segments; what was given up on is the log's offer to hand them over.
+    pub fn store_debt_dropped(&self) -> u64 {
+        self.store_debt_dropped
     }
 
     /// Give up on the `count` oldest records the log still owes, and hand them back.
@@ -334,12 +368,23 @@ impl Wal {
 
         // Batch n first, then batch n+1, so the order records went in is the order they come back.
         let owed = std::mem::take(&mut self.lost_batch);
+        // Two sets, and they are not the same set. `batch` is what the SEGMENT takes: records it
+        // does not already hold. `offered` is what the STORE is owed: every distinct record on this
+        // call, retained or new. They differ after a refusal, because the buffer already took a
+        // record the store then declined — and writing that record again to make the ship happen is
+        // how a run ends up in the log twice.
         let mut batch: Vec<Record> = Vec::with_capacity(owed.len() + records.len());
+        let mut offered: Vec<Record> = Vec::with_capacity(owed.len() + records.len());
         let mut already_present = 0usize;
         let mut staged: HashSet<(u64, u64)> = HashSet::new();
         for record in owed.iter().chain(records.iter()) {
             let id = record.identity();
-            if self.holds(id.0, id.1) || !staged.insert(id) {
+            if !staged.insert(id) {
+                already_present += 1;
+                continue;
+            }
+            offered.push(record.clone());
+            if self.holds(id.0, id.1) {
                 already_present += 1;
                 continue;
             }
@@ -347,6 +392,17 @@ impl Wal {
         }
 
         if batch.is_empty() {
+            // Nothing new for the segment — but the store may still be owed what a refusal
+            // retained, and leaving that debt until a commit that happens to carry a new record is
+            // how it gets forgotten on a node that has gone quiet.
+            if self.mode == Mode::MemoryBuffered && !offered.is_empty() {
+                if let Err(_e) = self.shipper.ship(&offered) {
+                    self.lost_batch = offered;
+                    return Err(DurabilityLost::observed(token, at));
+                }
+            } else if self.mode == Mode::OnDisk {
+                self.offer_store_debt(&[]);
+            }
             return Ok(BatchAck {
                 appended: 0,
                 already_present,
@@ -358,21 +414,24 @@ impl Wal {
 
         match self.segment.append_batch(&batch) {
             Ok(end) => {
-                if self.mode == Mode::MemoryBuffered {
-                    // The store is where durability lives here, so its answer is part of the
-                    // commit. A refusal is a lost durable write, and it is reported as one.
-                    if let Err(_e) = self.shipper.ship(&batch) {
-                        self.lost_batch = owed.into_iter().chain(records.iter().cloned()).collect();
-                        return Err(DurabilityLost::observed(token, at));
-                    }
-                }
                 for record in &batch {
                     self.mark_written(record.node, record.node_seq);
                 }
-                if self.mode == Mode::OnDisk {
+                if self.mode == Mode::MemoryBuffered {
+                    // The store is where durability lives here, so its answer is part of the
+                    // commit. A refusal is a lost durable write, and it is reported as one. What
+                    // is retained is the shipping debt: the buffer already holds these records, so
+                    // the retry ships them again and appends nothing.
+                    if let Err(_e) = self.shipper.ship(&offered) {
+                        self.lost_batch = offered;
+                        return Err(DurabilityLost::observed(token, at));
+                    }
+                } else {
                     // On disk the local log is the record; shipping is catch-up work and its
-                    // failure does not fail the commit. The batch stays owed to the shipper.
-                    let _: Result<(), ShipError> = self.shipper.ship(&batch);
+                    // failure does not fail the commit. The batch stays owed to the store and is
+                    // offered again — the seam's contract is that an error means the batch is
+                    // still owed, and an answer that is discarded honours neither half of it.
+                    self.offer_store_debt(&batch);
                 }
                 Ok(BatchAck {
                     appended: batch.len(),
@@ -405,6 +464,32 @@ impl Wal {
     /// Read every record the log holds in its current segment, verifying as it goes.
     pub fn read_back(&self) -> io::Result<Recovered> {
         crate::recover::scan(&self.segment)
+    }
+
+    /// Offer the store what it is owed: whatever a refusal retained, then `batch`, as one batch in
+    /// the order the records were written. A refusal keeps the lot owed for the next commit.
+    ///
+    /// On disk only, and it never fails a commit: the bytes are on the medium either way. The queue
+    /// is bounded for the same reason the memory-buffered buffer is — a store that is unreachable
+    /// for an hour must not be answered by exhausting the node's memory — and at the bound the
+    /// OLDEST go, which are the ones a reader is least likely to be waiting on. What went is counted
+    /// rather than merely dropped, so a node can say how far its store is behind and how much of the
+    /// catch-up it has given up on. Those records are still in the segments.
+    fn offer_store_debt(&mut self, batch: &[Record]) {
+        self.owed_to_store.extend_from_slice(batch);
+        if self.owed_to_store.len() > STORE_BACKLOG_RECORDS {
+            let excess = self.owed_to_store.len() - STORE_BACKLOG_RECORDS;
+            self.owed_to_store.drain(0..excess);
+            self.store_debt_dropped = self.store_debt_dropped.saturating_add(excess as u64);
+        }
+        if self.owed_to_store.is_empty() {
+            return;
+        }
+        let debt = std::mem::take(&mut self.owed_to_store);
+        let shipped: Result<(), ShipError> = self.shipper.ship(&debt);
+        if shipped.is_err() {
+            self.owed_to_store = debt;
+        }
     }
 
     /// Move to the next segment. Called when the current one is poisoned or full.

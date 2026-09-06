@@ -21,10 +21,15 @@ use busbar_caps::ReasonCode;
 use crate::grammar::{ArrivalLocation, MaskKind, Span};
 
 /// The per-unit arena, pinned by the design at 4 KiB.
-pub const ARENA_BYTES: usize = 4096;
+///
+/// The contract's number, not a second copy of it. A plugin allocates against the contract's
+/// ceiling and the kernel sizes the buffer against this one, so two independently-maintained
+/// constants that happened to agree today would be a plugin refused at a limit the kernel does not
+/// have — or worse, a buffer smaller than what the contract told the plugin it could ask for.
+pub use busbar_contract::ARENA_BYTES;
 
-/// The per-connection cursor cap, which the credential slab is counted inside.
-pub const CURSOR_CAP_BYTES: usize = 64 * 1024;
+/// The per-connection cursor cap, which the credential slab is counted inside. Also the contract's.
+pub use busbar_contract::MAX_CURSOR_BYTES as CURSOR_CAP_BYTES;
 
 /// The byte a masked span is overwritten with.
 ///

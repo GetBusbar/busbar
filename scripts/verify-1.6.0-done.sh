@@ -230,6 +230,10 @@ begin_group "PARITY — the shadow oracle: this build vs the published 1.5.5 bin
 # NAMED gap in the report, never a pass. SHADOW_ORACLE_GOLDEN may point at an existing recording.
 if [ -x testing/shadow-oracle/replay.sh ]; then
   step "replay-selftest (the differ can see a diff)" bash testing/shadow-oracle/replay-selftest.sh
+  # cells.json IS the owed set — the recorder and the replayer both iterate it, and every count in
+  # the parity verdict below is a count over it. A hand edit, or a generator change nobody ran
+  # --write for, would make this whole group measure a cell set that was never reviewed.
+  step "enumerate-cells --check (cells.json is what the generator derives)" python3 testing/shadow-oracle/enumerate-cells.py --check
   step "fetch-golden --check (1.5.5 by pinned digest)" bash testing/shadow-oracle/fetch-golden.sh --check
   ORACLE_DIR="${SHADOW_ORACLE_DIR:-target/oracle}"
   GOLDEN="${SHADOW_ORACLE_GOLDEN:-$ORACLE_DIR/recordings/golden}"
@@ -322,6 +326,21 @@ if [ -f scripts/teller-steps-check.py ] && [ -f qa/teller-steps.json ]; then
   python3 scripts/teller-steps-check.py --check 2>/dev/null | grep -E "^ROOT-STEPS:" || echo "root-steps count unavailable"
 else
   absent_step "teller-steps-check" "scripts/teller-steps-check.py / qa/teller-steps.json"
+fi
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+begin_group "PUBLIC-HYGIENE — nothing a customer can read describes how the software was built (0 hits)"
+# scripts/public-hygiene-lint.py: no shipped file (source, scripts/, docs/ outside design/, generated
+# artifacts) may carry an internal tracker/audit-round id, a private-doc pointer, how-it-was-built
+# process narration, delivery-plan vocabulary, editor-directed prose, authoring meta-commentary, a
+# named individual, a developer home directory, or a bare commit-hash citation. DONE means 0 hits,
+# not "0 hits we noticed."
+if [ -f scripts/public-hygiene-lint.py ]; then
+  step "public-hygiene-lint --selftest" python3 scripts/public-hygiene-lint.py --selftest
+  step "public-hygiene-lint --check"    python3 scripts/public-hygiene-lint.py --root . --quiet
+else
+  absent_step "public hygiene gate" "scripts/public-hygiene-lint.py"
 fi
 end_group
 
