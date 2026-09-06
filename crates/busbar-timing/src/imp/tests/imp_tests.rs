@@ -110,11 +110,11 @@ fn scoped_record_and_reset_are_thread_local() {
     record("m_a", 1234);
     record("m_a", 2345);
     record("m_b", 10);
-    let snap = LOCAL.with(|a| a.lock().unwrap().clone());
+    let snap = LOCAL.with(|h| h.0.lock().unwrap().clone());
     assert_eq!(snap.get("m_a").unwrap().count, 2);
     assert_eq!(snap.get("m_b").unwrap().count, 1);
     reset();
-    let snap2 = LOCAL.with(|a| a.lock().unwrap().clone());
+    let snap2 = LOCAL.with(|h| h.0.lock().unwrap().clone());
     assert!(snap2.is_empty());
 }
 
@@ -143,6 +143,66 @@ fn dead_threads_do_not_accumulate_in_the_registry() {
     );
 }
 
+/// A worker thread's samples must OUTLIVE the worker. The thread registry holds only `Weak` handles,
+/// so the moment a short-lived thread exits its accumulator is freed — and a process-wide walk that
+/// looked at nothing but live threads reported a table with the worker's work missing entirely, which
+/// is precisely the case the count column exists to explain. The thread hands its samples to the
+/// process accumulator as it exits, so a joined worker's rows are still in the merge afterwards.
+#[test]
+fn samples_from_an_exited_thread_survive_in_the_process_merge() {
+    let _gate = gate_lock();
+    set_enabled(true);
+
+    std::thread::spawn(|| {
+        record("exited_worker_probe", 1_000);
+        record("exited_worker_probe", 3_000);
+    })
+    .join()
+    .expect("worker thread");
+
+    let merged = merged_snapshot();
+    let s = merged
+        .get("exited_worker_probe")
+        .expect("an exited thread's samples must still appear in the process merge");
+    assert_eq!(s.count, 2, "both of the worker's samples must survive it");
+    assert_eq!(s.total_ns, 4_000);
+    assert_eq!(s.min_ns, 1_000);
+    assert_eq!(s.max_ns, 3_000);
+}
+
+/// The live path and the hand-off path must compose EXACTLY: a sample is counted once, whether it is
+/// still sitting in a running thread's accumulator or has already been moved into the process one.
+/// Recording N here and M on a joined worker must total N + M — not N + 2M (a copying hand-off that
+/// left the source intact would double-count a thread that is still alive) and not N (the missing
+/// worker case above).
+#[test]
+fn live_and_exited_samples_are_counted_exactly_once() {
+    let _gate = gate_lock();
+    set_enabled(true);
+
+    const N: u64 = 7;
+    const M: u64 = 5;
+
+    for _ in 0..N {
+        record("exactly_once_probe", 100);
+    }
+    std::thread::spawn(|| {
+        for _ in 0..M {
+            record("exactly_once_probe", 100);
+        }
+    })
+    .join()
+    .expect("worker thread");
+
+    // This thread is still LIVE and still holds its N samples; the worker's M have been handed over.
+    let merged = merged_snapshot();
+    let s = merged
+        .get("exactly_once_probe")
+        .expect("the live thread's own samples must appear in the process merge");
+    assert_eq!(s.count, N + M, "every sample counted once and only once");
+    assert_eq!(s.total_ns, (N + M) * 100);
+}
+
 /// With the feature ON but the runtime gate OFF, a timer must record NOTHING — and, per the module
 /// header, cost only the gate check. Both halves are asserted: no sample lands, and the guard holds
 /// no start instant at all, which two unconditional `Instant::now()` calls used to falsify.
@@ -163,7 +223,7 @@ fn a_disabled_gate_records_nothing_and_reads_no_clock() {
         "a disabled timer must not read the clock"
     );
 
-    let recorded = LOCAL.with(|a| a.lock().unwrap_or_else(|p| p.into_inner()).len());
+    let recorded = LOCAL.with(|h| h.0.lock().unwrap_or_else(|p| p.into_inner()).len());
     assert_eq!(recorded, 0, "a disabled gate must record nothing");
 
     set_enabled(true);

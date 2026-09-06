@@ -33,8 +33,12 @@
 //! # Report scopes
 //!
 //! * **Process-wide:** `BUSBAR_TIMING=1` dumps the full sorted table at process exit (an
-//!   `atexit(3)` hook, installed once when enabled) and on demand via [`dump`]. Merges every
-//!   thread's accumulator.
+//!   `atexit(3)` hook, installed once when enabled) and on demand via [`dump`]. It merges every
+//!   thread's accumulator INCLUDING the threads that have already exited: accumulation is
+//!   thread-local while a thread runs, and a thread MOVES its samples into a process-wide
+//!   accumulator as it ends. A short-lived worker's rows therefore still appear in a table printed
+//!   after it was joined, and because the hand-off moves rather than copies, a sample lives in
+//!   exactly one of the two places and is never counted twice.
 //! * **Per-request:** [`reset`] then [`dump_scoped`] bracket ONE request on ONE worker thread and
 //!   print its method-by-method breakdown. Accumulation is thread-local, so concurrent requests on
 //!   different workers never cross-contaminate.
@@ -248,9 +252,46 @@ mod imp {
     /// would accumulate them indefinitely, and the diagnostic would become the leak. With `Weak`,
     /// the thread-local `Arc` is the sole owner: the registry dies with its thread and the stale
     /// handle is a cheap tombstone the next walk sweeps out.
+    ///
+    /// That ownership rule is why the process accumulator below exists. A registry that dies with
+    /// its thread takes the thread's SAMPLES with it, so a process-wide table built from live
+    /// threads alone silently omitted every short-lived worker — exactly the threads whose call
+    /// counts the report is usually being read to explain. The samples are handed off (moved, see
+    /// [`LocalHandle`]) on the way out rather than kept alive here, so the vector stays bounded by
+    /// the number of LIVE threads while no sample is ever lost.
     fn threads() -> &'static Mutex<Vec<Weak<Mutex<ThreadRegistry>>>> {
         static THREADS: OnceLock<Mutex<Vec<Weak<Mutex<ThreadRegistry>>>>> = OnceLock::new();
         THREADS.get_or_init(|| Mutex::new(Vec::new()))
+    }
+
+    /// The PROCESS-WIDE accumulator: the samples of every thread that has already exited, folded
+    /// together by method name. A thread's own registry is the only place its samples live WHILE it
+    /// runs; the instant it exits they move here, and here they stay for the life of the process.
+    ///
+    /// THE INVARIANT that keeps the process table honest: a sample lives in EXACTLY ONE of the two
+    /// places at any moment — its thread's live registry, or this accumulator — never both. The
+    /// hand-off in [`LocalHandle::drop`] MOVES the map out of the dying registry (`mem::take`)
+    /// rather than copying it, which is what makes "exactly one" true rather than merely usual. A
+    /// copying hand-off would leave the samples readable through the still-upgradeable `Weak` for
+    /// the remainder of the thread's teardown and a [`dump`] in that window would count them twice.
+    ///
+    /// LOCK ORDER, where both are taken: this accumulator FIRST, then a thread registry. Both the
+    /// hand-off and the merge obey it, so the two cannot deadlock; the recording hot path takes only
+    /// its own registry and so is unordered with respect to it. Holding this lock across the whole
+    /// merge is also what makes the merge atomic against a concurrent hand-off — a thread exiting
+    /// mid-merge waits, so its samples are read once from its registry rather than falling between
+    /// the two halves.
+    fn accumulated() -> &'static Mutex<ThreadRegistry> {
+        static ACCUMULATED: OnceLock<Mutex<ThreadRegistry>> = OnceLock::new();
+        ACCUMULATED.get_or_init(|| Mutex::new(ThreadRegistry::new()))
+    }
+
+    /// Fold `src` into `dst` by method name — the one merge shape used by both the exit hand-off and
+    /// the process-wide table build.
+    fn fold_into(dst: &mut ThreadRegistry, src: &ThreadRegistry) {
+        for (name, stat) in src.iter() {
+            dst.entry(name).or_default().merge(stat);
+        }
     }
 
     /// Collect the registries of threads that are still alive, DROPPING the tombstones of those that
@@ -269,15 +310,37 @@ mod imp {
         live
     }
 
+    /// The owning handle a thread keeps on its own registry. It exists for its `Drop`: the whole
+    /// point is to have something that runs AS THE THREAD ENDS and can move the thread's samples
+    /// somewhere that outlives it.
+    struct LocalHandle(Arc<Mutex<ThreadRegistry>>);
+
+    impl Drop for LocalHandle {
+        /// Hand this thread's samples to the process accumulator on the way out. TAKE, do not copy:
+        /// the registry is left empty, so from this instant the samples exist in the accumulator and
+        /// nowhere else, and a [`dump`] racing the thread's teardown cannot see them twice. Empty is
+        /// the common case (a thread that never recorded) and costs one uncontended lock.
+        ///
+        /// The accumulator lock is taken BEFORE the registry lock, per the order documented on
+        /// [`accumulated`] — and a merge in flight therefore blocks this hand-off until it has read
+        /// the registry, rather than the two interleaving into a lost or doubled row.
+        fn drop(&mut self) {
+            let mut acc = accumulated().lock().unwrap_or_else(|p| p.into_inner());
+            let taken = std::mem::take(&mut *self.0.lock().unwrap_or_else(|p| p.into_inner()));
+            fold_into(&mut acc, &taken);
+        }
+    }
+
     thread_local! {
-        /// This thread's accumulator. Created lazily and registered into [`threads`] on first touch.
-        static LOCAL: Arc<Mutex<ThreadRegistry>> = {
+        /// This thread's accumulator. Created lazily and registered into [`threads`] on first touch;
+        /// its [`LocalHandle`] wrapper hands the samples off to [`accumulated`] when the thread ends.
+        static LOCAL: LocalHandle = {
             let a = Arc::new(Mutex::new(ThreadRegistry::new()));
             threads()
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .push(Arc::downgrade(&a));
-            a
+            LocalHandle(a)
         };
     }
 
@@ -315,6 +378,12 @@ mod imp {
     }
 
     /// Install the process-exit dump once. `atexit(3)` runs the handler after `main` returns.
+    ///
+    /// It runs LATE — on glibc, after the thread-local destructors of the main thread have already
+    /// run. A handler that could only see live thread-locals therefore printed "(no samples)" on
+    /// Linux even for a single-threaded program that had recorded thousands, while printing a full
+    /// table on a platform that tears TLS down in the other order. Reading the process accumulator,
+    /// which by then owns everything every thread recorded, makes the exit table identical on both.
     fn install_atexit() {
         if ATEXIT_INSTALLED
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -340,18 +409,31 @@ mod imp {
     /// Record `nanos` against `name`. No-op unless [`enabled`]. The recording cost is: a relaxed
     /// atomic load, a thread-local access, an uncontended mutex lock, a `HashMap` probe and a
     /// handful of integer updates. See `benches`/the report for the measured observer cost.
+    ///
+    /// `try_with`, not `with`: a `record` can legitimately arrive from another thread-local's own
+    /// destructor, i.e. after THIS thread's handle has already been dropped and handed its samples
+    /// off. `with` would panic there; instead the sample goes straight to the process accumulator,
+    /// which is where it was headed anyway. It still lands in exactly one place.
     #[inline]
     pub fn record(name: &'static str, nanos: u64) {
         if !enabled() {
             return;
         }
-        LOCAL.with(|a| {
-            a.lock()
+        let landed = LOCAL.try_with(|h| {
+            h.0.lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .entry(name)
                 .or_default()
                 .record(nanos);
         });
+        if landed.is_err() {
+            accumulated()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .entry(name)
+                .or_default()
+                .record(nanos);
+        }
     }
 
     /// The RAII guard `timeit!` expands to. Holds the `&'static str` name and the start `Instant`;
@@ -401,8 +483,12 @@ mod imp {
 
     /// Clear THIS thread's accumulator — the open bracket of a per-request measurement. Pair with
     /// [`dump_scoped`] at the end of the request to print only that request's methods.
+    ///
+    /// Thread-scoped, deliberately: it discards the samples this thread has not yet handed off and
+    /// leaves the process accumulator (other threads' history) untouched, because the bracket it
+    /// opens is one request on one worker, not the process.
     pub fn reset() {
-        LOCAL.with(|a| a.lock().unwrap_or_else(|p| p.into_inner()).clear());
+        LOCAL.with(|h| h.0.lock().unwrap_or_else(|p| p.into_inner()).clear());
         // Sweep the tombstones of threads that have exited since the last walk.
         drop(live_registries());
     }
@@ -413,25 +499,34 @@ mod imp {
         if !enabled() {
             return;
         }
-        let snapshot = LOCAL.with(|a| a.lock().unwrap_or_else(|p| p.into_inner()).clone());
+        let snapshot = LOCAL.with(|h| h.0.lock().unwrap_or_else(|p| p.into_inner()).clone());
         print_table("thread", &snapshot);
     }
 
-    /// Print the process-wide table, merging every thread's accumulator. No-op when disabled.
-    /// Called on demand and from the `atexit` hook when `BUSBAR_TIMING` is set. Header line is
-    /// tagged `BUSBAR_TIMING scope=process`.
+    /// Print the process-wide table — every thread's samples, whether or not the thread is still
+    /// running. No-op when disabled. Called on demand and from the `atexit` hook when
+    /// `BUSBAR_TIMING` is set. Header line is tagged `BUSBAR_TIMING scope=process`.
     pub fn dump() {
         if !enabled() {
             return;
         }
-        let mut merged: ThreadRegistry = HashMap::new();
+        print_table("process", &merged_snapshot());
+    }
+
+    /// The process-wide merge that [`dump`] renders: the [`accumulated`] history of every thread
+    /// that has exited, plus the still-unhanded-off samples of every thread that is still running.
+    ///
+    /// The two halves are disjoint by construction — the exit hand-off MOVES a registry's map into
+    /// the accumulator — so summing them counts each sample exactly once, and the accumulator lock is
+    /// held across the live walk so a thread exiting mid-merge cannot slip between the halves.
+    fn merged_snapshot() -> ThreadRegistry {
+        let acc = accumulated().lock().unwrap_or_else(|p| p.into_inner());
+        let mut merged: ThreadRegistry = acc.clone();
         for h in live_registries() {
             let g = h.lock().unwrap_or_else(|p| p.into_inner());
-            for (name, stat) in g.iter() {
-                merged.entry(name).or_default().merge(stat);
-            }
+            fold_into(&mut merged, &g);
         }
-        print_table("process", &merged);
+        merged
     }
 
     /// Render one `name -> MethodStat` map as the sorted table, largest `total` first. `count` is
