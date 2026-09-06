@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE COLD-WORKER SCRAPE, proven on the real binary: a `/metrics` scrape that lands in the brief
+//! THE COLD-WORKER SCRAPE, proven on the real binary: a `/metrics` scrape that lands in the short
 //! boot window before the process-wide Prometheus recorder finishes installing must never answer
 //! `200` with an EMPTY body. It must either answer `200` with the FULL, closed `# HELP`/`# TYPE`
 //! set, or REFUSE the scrape (a non-`200`, retriable status) — never something in between.
