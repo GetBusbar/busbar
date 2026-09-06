@@ -227,9 +227,12 @@ fn an_mtls_peer_accepts_the_card_fetch_when_the_registration_names_a_client_iden
     let identity = identity_from_config(&client_leaf, &client_key);
 
     let policy = FetchPolicy::default();
+    // The identity generation the boot bundle would own, held for the length of the hop — dropping it
+    // would retire the ref and the transport would present nothing.
+    let generation = busbar_substrate::plane_host::identity::IdentityGeneration::install();
     let resp = ReqwestTransport::new(&policy)
         .trusting_root(server_ca.as_bytes())
-        .presenting(identity)
+        .presenting(&generation, identity)
         .get(
             &url("https", addr.port(), "/.well-known/agent-card.json"),
             LOOPBACK,
@@ -423,5 +426,80 @@ fn each_registration_presents_its_own_certificate_and_not_another_registrations(
     assert!(
         foreign.contains("invalid peer certificate"),
         "planner's certificate reaches payments' peer and is rejected as a certificate: {foreign}"
+    );
+}
+
+/// A SECOND APPLY DOES NOT LEAVE THE FIRST APPLY'S PRIVATE KEYS BEHIND.
+///
+/// Every config apply resolves the operator's client certificates again and builds a new bundle, and
+/// each certificate is a parsed private key handed to the host-side registry. With nothing owning
+/// those registrations, N agents over M applies left N×M keys resident for the life of the process —
+/// and every ref ever handed out still resolved, so a certificate the operator had retired from the
+/// config was still presentable by anything holding a stale ref.
+///
+/// The registrations belong to the bundle now. Releasing a bundle — which is exactly what an apply
+/// does to the one it replaces — retires its refs (they resolve to NO certificate, the fail-closed
+/// direction) and wipes the keys, and the live generation holds one identity per configured agent
+/// and no more.
+#[test]
+fn a_second_apply_retires_the_first_applys_client_identities() {
+    use busbar_substrate::plane_host::identity;
+
+    let (_planner_ca, planner_leaf, planner_key) = ca_and_leaf(vec!["busbar.example".to_string()]);
+    let (_payments_ca, payments_leaf, payments_key) =
+        ca_and_leaf(vec!["busbar.example".to_string()]);
+    let mut identities = crate::a2a::transport::ClientIdentities::new();
+    identities.insert(
+        "planner".to_string(),
+        identity_from_config(&planner_leaf, &planner_key),
+    );
+    identities.insert(
+        "payments".to_string(),
+        identity_from_config(&payments_leaf, &payments_key),
+    );
+    let agents = identities.len();
+
+    // APPLY ONE.
+    let mut cards = LiveCardFetch::presenting(FetchPolicy::default(), &identities);
+    let first_refs: Vec<u64> = cards
+        .per_agent
+        .values()
+        .map(|t| t.client_identity_ref)
+        .collect();
+    assert_eq!(first_refs.len(), agents);
+    assert!(
+        first_refs.iter().all(|r| identity::resolve(*r).is_some()),
+        "the first apply's registrations resolve while its bundle is the live one"
+    );
+    assert_eq!(
+        cards._identities.len(),
+        agents,
+        "one identity per configured agent, and no more"
+    );
+
+    // APPLY TWO: the new bundle replaces the old one, which is where the old one is released.
+    cards = LiveCardFetch::presenting(FetchPolicy::default(), &identities);
+
+    assert!(
+        first_refs.iter().all(|r| identity::resolve(*r).is_none()),
+        "the retired apply's refs present no certificate at all"
+    );
+    let second_refs: Vec<u64> = cards
+        .per_agent
+        .values()
+        .map(|t| t.client_identity_ref)
+        .collect();
+    assert!(
+        second_refs.iter().all(|r| identity::resolve(*r).is_some()),
+        "the live apply's registrations are the ones that resolve"
+    );
+    assert!(
+        second_refs.iter().all(|r| !first_refs.contains(r)),
+        "a retired ref is never re-minted"
+    );
+    assert_eq!(
+        cards._identities.len(),
+        agents,
+        "two applies later the live generation still holds exactly one identity per agent"
     );
 }
