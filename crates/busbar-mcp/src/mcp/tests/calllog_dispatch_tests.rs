@@ -728,3 +728,72 @@ async fn the_client_legs_own_outcome_is_what_the_chain_records_success_and_failu
          capability the audit capability rather than a log"
     );
 }
+
+/// A CALLER'S TOOL NAME IS BOUNDED BEFORE IT REACHES THE DURABLE CHAIN.
+///
+/// `params.name` is the caller's string and it was written verbatim into `McpCallRecord::tool` — a
+/// durable row in that principal's hash chain — with nothing capping it. The name is read BEFORE
+/// the catalogue lookup that would refuse it, and the refusal is itself a recorded row, so any
+/// authenticated caller could append as much as it liked to the store per call while holding a
+/// grant for nothing. A bound on the chain's inputs is what makes "one row per call" a bound.
+///
+/// Refused rather than truncated: a name this long matches no registration, and a truncated name in
+/// the chain would be a record of a call nobody made — worse than no record on a structure whose
+/// whole value is that it is evidence. So the row that lands carries the EMPTY tool the malformed
+/// arm records, and it is small.
+#[tokio::test]
+async fn an_over_long_tool_name_is_refused_and_never_reaches_the_durable_chain() {
+    let _serial = CALLS_GLOBAL.lock().await;
+    metrics_init();
+    let (_file, cfg) = durable_cfg("overlong-name");
+    let principal = "calllog-overlong-principal";
+
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&peer, SUBJECT))
+        .build();
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+
+    {
+        let store = open_plugin(&cfg);
+        engine().aim_call_sink(Some(
+            busbar_substrate::plane::store::PlaneStoreView::narrow(store),
+        ));
+    }
+
+    let huge = "n".repeat(64 * 1024);
+    let (status, _body) = call_as(
+        &app,
+        &g,
+        principal,
+        "tools/call",
+        serde_json::json!({ "name": huge, "arguments": {} }),
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "a name no registration could carry is malformed"
+    );
+    assert_eq!(peer.mcp_hits(), 0, "and the upstream is never contacted");
+
+    engine().aim_call_sink(None);
+
+    let reopened = open_plugin(&cfg);
+    let records = list_mcp_calls(&reopened, principal);
+    assert_eq!(
+        records.len(),
+        1,
+        "the refusal is still evidence and is still recorded; got {records:?}"
+    );
+    assert!(
+        records[0].tool.len() < 1024,
+        "the caller's unbounded name reached the durable hash chain: a principal with no grant for \
+         anything can grow the store by as much as it likes, one refused call at a time (recorded \
+         tool is {} bytes)",
+        records[0].tool.len()
+    );
+    engine()
+        .verify_call_rows(&as_call_rows(&records))
+        .expect("the persisted chain must verify");
+}
