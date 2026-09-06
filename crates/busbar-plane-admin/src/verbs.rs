@@ -382,25 +382,30 @@ pub fn table() -> Vec<ResolvedVerb> {
 /// verb absent from this table still decodes correctly (method+path -> verb+path-params always
 /// works); it simply carries no extra body-derived fact, which is a safe, visible omission rather
 /// than a silently wrong one — nothing downstream trusts a body fact that decode did not set.
+///
+/// Every field named here is a member the pinned `openapi-1.5.5.json` request schema for that
+/// operation actually declares, and the test below reads the fixture to say so. Seven rows used to
+/// name a member no schema had (`parent` on `PutGroupsName`, `url` on `PutHooksName`, `issuer`,
+/// `sink`, `module`, `filename`, and `settings` on a body that is a free-form object): a fact key
+/// that can never be populated is a promise decode cannot keep, so those rows are either corrected
+/// to the member the schema does declare or dropped where the schema declares no named member at
+/// all (`PutConfigSettings`, `PutIdentityProvidersName`, `PutExportName` all take an open object).
 pub(crate) fn documented_body_field(verb: &str) -> Option<&'static str> {
     Some(match verb {
         "post_keys" => "name",
         "patch_keys_id" => "group",
         "post_groups" => "name",
-        "put_groups_name" => "parent",
+        "put_groups_name" => "config",
         "patch_groups_name" => "parent",
         "post_config_apply" => "config",
-        "put_config_settings" => "settings",
         "post_config_rollback" => "version",
         "post_hooks" => "name",
-        "put_hooks_name" => "url",
+        "put_hooks_name" => "config",
         "patch_hooks_name_settings" => "settings",
-        "put_identity_providers_name" => "issuer",
         "patch_identity_providers_name_settings" => "settings",
-        "put_export_name" => "sink",
         "patch_export_name_settings" => "settings",
-        "put_admin_auth" => "module",
-        "post_plugins" => "filename",
+        "put_admin_auth" => "admin_auth",
+        "post_plugins" => "file",
         "post_plugins_rollback" => "file",
         _ => return None,
     })
@@ -487,6 +492,65 @@ mod tests {
         let (entry, params) = find_verb("GET", "/api/v1/admin/keys/xyz").expect("matches");
         assert_eq!(entry.verb, "get_keys_id");
         assert_eq!(params, vec![("id", "xyz")]);
+    }
+
+    /// The pinned fixture, parsed once per test that reads it.
+    fn fixture() -> serde_json::Value {
+        let text = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testing/shadow-oracle/fixtures/openapi-1.5.5.json"
+        ));
+        serde_json::from_str(text).expect("fixture is valid JSON")
+    }
+
+    /// Follow a document-local `$ref` chain to the schema it names.
+    fn deref<'d>(doc: &'d serde_json::Value, mut node: &'d serde_json::Value) -> &'d serde_json::Value {
+        while let Some(pointer) = node.get("$ref").and_then(serde_json::Value::as_str) {
+            node = doc
+                .pointer(pointer.trim_start_matches('#'))
+                .expect("a document-local $ref resolves");
+        }
+        node
+    }
+
+    /// Every representative body field this plane extracts is a member the pinned schema declares.
+    ///
+    /// The extraction writes a decode-time fact under the field's own name, so a field the schema
+    /// has no member for is a fact key that can never be set — a documented promise the wire cannot
+    /// keep, and one nobody would notice, because an absent fact and an unpopulated one look the
+    /// same downstream. This reads the fixture rather than a second transcription of it.
+    #[test]
+    fn every_documented_body_field_is_a_member_the_pinned_schema_declares() {
+        let doc = fixture();
+        let mut checked = 0usize;
+        for (path, item) in doc["paths"].as_object().expect("paths is an object") {
+            for (method, op) in item.as_object().expect("path item is an object") {
+                let verb = snake_case(op["operationId"].as_str().expect("an operationId"));
+                let Some(field) = documented_body_field(&verb) else {
+                    continue;
+                };
+                let body = op
+                    .get("requestBody")
+                    .unwrap_or_else(|| panic!("{verb}: a documented body field on an operation with no request body"));
+                let schema = deref(&doc, body)["content"]["application/json"]["schema"].clone();
+                let properties = deref(&doc, &schema)
+                    .get("properties")
+                    .and_then(serde_json::Value::as_object)
+                    .unwrap_or_else(|| {
+                        panic!("{verb}: {} {path} takes a body with no named members, so no field of it can be documented", method.to_uppercase())
+                    });
+                assert!(
+                    properties.contains_key(field),
+                    "{verb}: the documented field `{field}` is not a member of the pinned schema (it declares {:?})",
+                    properties.keys().collect::<Vec<_>>()
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(
+            checked, 15,
+            "every documented body field belongs to a 1.5.5 operation the fixture declares"
+        );
     }
 
     /// Mechanically converts a `PascalCase` `operationId` (`GetKeysIdUsage`) to this crate's own
