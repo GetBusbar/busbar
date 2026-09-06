@@ -176,7 +176,17 @@ fn pool_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRefusal> {
 ///
 /// Multi-level (A→B→C) and possibly cyclic (A→B→A), so the walk carries a visited set and stops for
 /// the same reason the dispatch stops. A denial is the SAME refusal guard one raises.
-fn fallback_pools_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRefusal> {
+///
+/// The denied pool travels back with the refusal because the operator's diagnostic line names the
+/// pool the ACL actually tripped on, which on this guard is a pool DOWNSTREAM of the one the caller
+/// asked for. The shipped door names it: its fallback walk calls the same one-pool guard the first
+/// guard calls, and that guard logs whichever pool it was handed. Naming the requested pool here
+/// instead would tell an operator the ACL denied a pool the ACL in fact allows, and the pool that is
+/// actually misconfigured would appear in no line at all.
+fn fallback_pools_authorized(
+    view: &dyn PoolView,
+    pool: &str,
+) -> Option<(VerifyRefusal, Option<String>)> {
     if !view.has_key() || !view.key_is_scoped() {
         return None;
     }
@@ -188,7 +198,7 @@ fn fallback_pools_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRe
         }
         let next = view.on_exhausted_fallback(&current)?;
         if let Some(refusal) = pool_authorized(view, &next) {
-            return Some(refusal);
+            return Some((refusal, Some(next)));
         }
         current = next;
     }
@@ -211,14 +221,27 @@ fn priced(view: &dyn PoolView, name: &str) -> Option<VerifyRefusal> {
 /// checked without a token in hand, and so the composition root can ask the same question at a
 /// boot-time dry run.
 pub fn destination_guard(view: &dyn PoolView, pool: &str) -> Result<(), VerifyRefusal> {
+    destination_guard_named(view, pool).map_err(|(refusal, _)| refusal)
+}
+
+/// The three guards, and WHICH POOL the one that refused was reading.
+///
+/// The name is for the operator's diagnostics and for nothing else: it never reaches a body, a
+/// header or a reason code, so a denial stays indistinguishable from outside whether it tripped on
+/// the requested pool or on one only an exhaustion would have reached. It is `None` for the pricing
+/// guard, which refuses a NAME rather than a pool and carries that name on the refusal already.
+pub(crate) fn destination_guard_named(
+    view: &dyn PoolView,
+    pool: &str,
+) -> Result<(), (VerifyRefusal, Option<String>)> {
     if let Some(r) = pool_authorized(view, pool) {
-        return Err(r);
+        return Err((r, Some(pool.to_string())));
     }
     if let Some(r) = fallback_pools_authorized(view, pool) {
         return Err(r);
     }
     if let Some(r) = priced(view, pool) {
-        return Err(r);
+        return Err((r, None));
     }
     Ok(())
 }
@@ -340,18 +363,21 @@ pub fn verify(
     principal: &PrincipalId,
     destinations: Vec<VerifiedDestination>,
 ) -> Verified {
-    match destination_guard(view, pool) {
+    match destination_guard_named(view, pool) {
         Ok(()) => Verified {
             decision: Decision::proceed(token, destinations),
             refusal: None,
         },
-        Err(refusal) => {
+        Err((refusal, denied)) => {
             // The operator's own diagnostics, which are where the key id and the pool go precisely
             // because the caller-facing body must not name either. The two lines are the live
-            // doors' own, one per guard family.
+            // doors' own, one per guard family — and the pool the permission line names is the pool
+            // the ACL tripped on, which under the fallback guard is not the one the caller asked
+            // for.
             match &refusal {
                 VerifyRefusal::NotAuthorized => {
-                    tracing::info!(key_id = %principal, pool = %pool, "governance: key not authorized for pool");
+                    let denied = denied.as_deref().unwrap_or(pool);
+                    tracing::info!(key_id = %principal, pool = %denied, "governance: key not authorized for pool");
                 }
                 VerifyRefusal::NoRate { name } => {
                     tracing::info!(model = %name, "governance: no configured rate for model; rejecting (rate_card is authoritative and complete)");
