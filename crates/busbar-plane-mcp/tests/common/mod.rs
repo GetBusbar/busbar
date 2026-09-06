@@ -125,6 +125,10 @@ impl ConfigView for EmptyConfig {
 pub struct TestTransport {
     pub key: &'static str,
     pub chain: Vec<&'static str>,
+    /// The request target this stack saw, under the kernel's own reserved key. `None` is a stack
+    /// that publishes no target at all, which is how every test that predates the plane's open
+    /// surface still reaches the document binding.
+    pub path: Option<String>,
 }
 
 impl TestTransport {
@@ -133,6 +137,7 @@ impl TestTransport {
         Self {
             key,
             chain: vec![key],
+            path: None,
         }
     }
 }
@@ -144,7 +149,10 @@ impl TransportView for TestTransport {
     fn chain(&self) -> &[&'static str] {
         &self.chain
     }
-    fn fact(&self, _key: &str) -> Option<&str> {
+    fn fact(&self, key: &str) -> Option<&str> {
+        if key == busbar_contract::transport::facts::PATH {
+            return self.path.as_deref();
+        }
         None
     }
 }
@@ -290,6 +298,13 @@ impl Scaffold {
             &self.labels,
             &self.arena,
         )
+    }
+
+    /// The same scaffold, over a stack that saw this request target.
+    #[must_use]
+    pub fn on_path(mut self, path: &str) -> Self {
+        self.transport.path = Some(path.to_string());
+        self
     }
 
     /// A context with no session, as a one-shot transport hands one over.

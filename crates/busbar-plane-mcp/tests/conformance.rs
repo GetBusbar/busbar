@@ -399,6 +399,81 @@ fn a_servers_own_request_opens_a_provider_unit() {
     }
 }
 
+/// The discovery document decodes, with no body and no credential.
+///
+/// This plane CLAIMS the discovery path, and the decode step had no arm for it: the claim took the
+/// bytes and the reader then went looking for an envelope in a request that carries no body at all.
+/// An empty body reads as "nothing has arrived yet" — which is true on the document mount and never
+/// becomes true here, because a fetch of a static document sends nothing more. So the one surface a
+/// caller reads to find out HOW to authenticate was held open until the caller gave up. It is also
+/// the one claim of this plane that declares no scheme, so the authenticate step may name no
+/// alternative for it either.
+#[test]
+fn the_discovery_document_decodes_with_no_body_at_all() {
+    let plane = McpPlane::EMPTY;
+    for target in [
+        busbar_plane_mcp::claims::DEFAULT_METADATA,
+        // A query string is an argument to the fetch, never a different operation.
+        "/.well-known/oauth-protected-resource/mcp?v=2",
+    ] {
+        let scaffold = Scaffold::new("http").on_path(target);
+        let ctx = scaffold.ctx();
+        let frames = vec![frame(b"")];
+        let mut cursor = FrameCursor::new(&frames);
+        let ingress = plane
+            .decode_ingress(&mut cursor, None, &ctx)
+            .unwrap_or_else(|e| panic!("{target} decodes: {e:?}"));
+        let Ingress::OneShot(draft) = ingress else {
+            panic!("{target} is one whole unit, got {ingress:?}");
+        };
+        assert_eq!(draft.op, ops::OP_METADATA);
+        // A static document answers no request of anyone's and is answered by no later frame.
+        assert!(draft.correlates.is_none());
+        assert!(draft.correlation_out.is_none());
+    }
+}
+
+/// The discovery document's claim declares no scheme, so this plane names no credential for it.
+#[test]
+fn the_discovery_document_names_no_credential() {
+    let plane = McpPlane::EMPTY;
+    let seal = common::TestSeal;
+    let scaffold = Scaffold::new("http").on_path(busbar_plane_mcp::claims::DEFAULT_METADATA);
+    let ctx = scaffold.ctx();
+    let unit = busbar_contract::unit::Unit::new(
+        &seal,
+        busbar_contract::UnitKey::new(1),
+        busbar_contract::unit::Origin::Client,
+        None,
+        None,
+        busbar_contract::wire::Direction::Inbound,
+        Some(common::principal()),
+        ops::OP_METADATA,
+        busbar_contract::bounded::Ir::new(b"{}", &[]),
+        busbar_contract::bounded::Facts::new(),
+        None,
+    );
+    assert!(plane.authenticate(&unit, &ctx).narrowing.is_none());
+}
+
+/// The request mount still reads an envelope, and a target that names no open surface reaches it.
+#[test]
+fn the_request_mount_is_unchanged_by_the_open_surface() {
+    let plane = McpPlane::EMPTY;
+    let scaffold = Scaffold::new("http").on_path(busbar_plane_mcp::claims::DEFAULT_MOUNT);
+    let ctx = scaffold.ctx();
+    let body = request("1", "tools/list");
+    let frames = vec![frame(&body)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::OneShot(draft) = plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("an envelope on the mount decodes")
+    else {
+        panic!("a non-streaming request is one whole unit");
+    };
+    assert_eq!(draft.op, ops::OP_TOOLS_LIST);
+}
+
 /// A method only a CALLER may send is refused on the response side too.
 ///
 /// The ingress side already refuses a caller who sends an upstream's method, and this is the same
@@ -559,6 +634,7 @@ const EXPECTED_LEGS: &[(&str, usize)] = &[
     ("roots_list", 1),
     ("elicitation", 1),
     ("notification", 1),
+    ("metadata", 1),
 ];
 
 /// Every operation class routes to at least one leg, and every leg is one its schema declares.
