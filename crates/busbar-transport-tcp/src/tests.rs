@@ -404,52 +404,90 @@ async fn backpressure_bounds_the_per_unit_frame_buffer() {
     writer.await.unwrap();
 }
 
-/// Frame-meta honesty: byte counts a transport reports must equal what actually moved. This test
-/// builds two adversarial fixtures — one that inflates its reported count, one that deflates it —
-/// and shows the honesty check the design requires ("an inflating and a deflating fixture are
-/// red") catches both, while the real `tcp` transport's frames pass it.
-fn frame_is_honest(frame: &Frame) -> bool {
-    frame.meta.bytes == frame.bytes.len() as u64
-}
+/// Frame meta is honest on frames a REAL `TcpTransport` emitted, and the check that says so is one
+/// an inflating or a deflating fixture turns red.
+///
+/// The old cell built `Frame` literals in the test body, set `meta.bytes` from the same slice it
+/// then compared against, and never constructed a transport at all: a tautology that would have
+/// shipped green over any count this transport actually reported. The metering path reads
+/// `FrameMeta.bytes` as the bytes meter class, so a dishonest one is a billing figure, not a
+/// cosmetic slip. This asserts against frames off the wire and proves the predicate discriminates
+/// by perturbing them one byte each way.
+///
+/// `meta.bytes == bytes.len()` is only ever the meter's INTERNAL consistency, though — both come
+/// off the same read. The figure the meter owes is the bytes that crossed the wire, so the total is
+/// checked against the payloads the fixture wrote, counted here rather than read back off the
+/// frames under test.
+#[tokio::test]
+async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
+    fn honest(frame: &Frame) -> bool {
+        frame.meta.bytes == frame.bytes.len() as u64
+    }
+    fn perturbed(frame: &Frame, by: i64) -> Frame {
+        Frame {
+            meta: FrameMeta {
+                bytes: (frame.meta.bytes as i64 + by) as u64,
+                ..frame.meta
+            },
+            ..frame.clone()
+        }
+    }
 
-#[test]
-fn inflating_and_deflating_fixtures_are_red() {
-    let honest_bytes: StdArc<[u8]> = StdArc::from(&b"abcd"[..]);
-    let honest = Frame {
-        direction: Direction::Inbound,
-        stream: StreamId(0),
-        bytes: SlabBytes::new(honest_bytes.clone()),
-        meta: FrameMeta {
-            bytes: 4,
-            transport_units: None,
-            status: None,
-        },
-    };
-    assert!(frame_is_honest(&honest));
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key())
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
 
-    let inflated = Frame {
-        meta: FrameMeta {
-            bytes: 40,
-            ..honest.meta
-        },
-        ..honest.clone()
-    };
-    assert!(
-        !frame_is_honest(&inflated),
-        "an inflating fixture must fail the honesty check"
+    // Two payloads, one of them longer than a single read chunk, so the frames under test include
+    // ones the transport carved out of a partly filled buffer rather than one write's worth each.
+    let payloads: [Vec<u8>; 2] = [
+        vec![b'L'; READ_CHUNK_BYTES + 1024],
+        b"and a short one".to_vec(),
+    ];
+    let on_the_wire: u64 = payloads.iter().map(|p| p.len() as u64).sum();
+    for payload in &payloads {
+        client
+            .write(&client_conn, StreamId(0), ArenaBytes::new(payload))
+            .await
+            .unwrap();
+    }
+
+    let mut frames = server.frames(server_conn);
+    let mut metered = 0_u64;
+    let mut carried = 0_u64;
+    while metered < on_the_wire {
+        let (_s, frame) = frames.next().await.unwrap().unwrap();
+        metered += frame.meta.bytes;
+        carried += frame.bytes.len() as u64;
+        assert!(
+            honest(&frame),
+            "the transport's own frame reports the bytes it actually carries"
+        );
+        assert!(
+            !honest(&perturbed(&frame, 1)),
+            "an inflating fixture is red"
+        );
+        assert!(
+            !honest(&perturbed(&frame, -1)),
+            "a deflating fixture is red"
+        );
+    }
+
+    // Counted from the fixture, not from the frames: every byte the peer wrote is metered exactly
+    // once, so a transport that double-counted a reused buffer's tail is caught here even though
+    // each frame on its own stayed internally consistent.
+    assert_eq!(
+        metered, on_the_wire,
+        "the meter totals the bytes the peer actually wrote"
     );
-
-    let deflated = Frame {
-        meta: FrameMeta {
-            bytes: 0,
-            ..honest.meta
-        },
-        ..honest
-    };
-    assert!(
-        !frame_is_honest(&deflated),
-        "a deflating fixture must fail the honesty check"
-    );
+    assert_eq!(carried, on_the_wire, "and carries exactly those bytes");
 }
 
 /// A writer that accepts every byte and then fails to flush: the exact shape a Unit 0 refusal must
