@@ -698,6 +698,7 @@ llm|anthropic|anthropic|request|ok
 llm|anthropic|anthropic|request|ok_stream
 llm|anthropic|anthropic|request|out_of_scope
 llm|anthropic|anthropic|request|over_budget
+llm|anthropic|anthropic|request|over_budget_total
 llm|anthropic|anthropic|request|unauthenticated
 llm|anthropic|anthropic|request|upstream_down
 llm|anthropic|bedrock|request|ok
@@ -722,6 +723,7 @@ llm|bedrock|bedrock|request|ok
 llm|bedrock|bedrock|request|ok_stream
 llm|bedrock|bedrock|request|out_of_scope
 llm|bedrock|bedrock|request|over_budget
+llm|bedrock|bedrock|request|over_budget_total
 llm|bedrock|bedrock|request|unauthenticated
 llm|bedrock|bedrock|request|upstream_down
 llm|bedrock|cohere|request|ok
@@ -746,6 +748,7 @@ llm|cohere|cohere|request|ok
 llm|cohere|cohere|request|ok_stream
 llm|cohere|cohere|request|out_of_scope
 llm|cohere|cohere|request|over_budget
+llm|cohere|cohere|request|over_budget_total
 llm|cohere|cohere|request|unauthenticated
 llm|cohere|cohere|request|upstream_down
 llm|cohere|gemini|request|ok
@@ -770,6 +773,7 @@ llm|gemini|gemini|request|ok
 llm|gemini|gemini|request|ok_stream_array
 llm|gemini|gemini|request|out_of_scope
 llm|gemini|gemini|request|over_budget
+llm|gemini|gemini|request|over_budget_total
 llm|gemini|gemini|request|unauthenticated
 llm|gemini|gemini|request|upstream_down
 llm|gemini|openai|request|ok
@@ -794,6 +798,7 @@ llm|openai|openai|request|ok
 llm|openai|openai|request|ok_stream
 llm|openai|openai|request|out_of_scope
 llm|openai|openai|request|over_budget
+llm|openai|openai|request|over_budget_total
 llm|openai|openai|request|unauthenticated
 llm|openai|openai|request|upstream_down
 llm|openai|responses|request|ok
@@ -818,6 +823,7 @@ llm|responses|responses|request|ok
 llm|responses|responses|request|ok_stream
 llm|responses|responses|request|out_of_scope
 llm|responses|responses|request|over_budget
+llm|responses|responses|request|over_budget_total
 llm|responses|responses|request|unauthenticated
 llm|responses|responses|request|upstream_down
 neutrality|boot-lines

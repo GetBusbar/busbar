@@ -73,6 +73,22 @@ STREAM_UPSTREAM_ERROR_OUTCOME = (
 # translation the LLM plane exists for: enumerate EVERY ordered (ingress, egress) dialect pair.
 PRE_ROUTE = {"unauthenticated", "out_of_scope", "over_budget", "malformed"}
 
+# The group BUDGET arm of Admit, as distinct from `over_budget` above (which is the group's
+# `requests` cap — checked FIRST, so a bucket that also carries a requests cap can never surface its
+# own budget exhaustion). Driven by a sibling group whose ONLY limit is a `budget` total a single
+# priming request already exceeds: `governance::state` checks `requests` before `budget`, so
+# omitting the requests cap is what makes the block land on `metric: "budget"` (KIND_INSUFFICIENT_QUOTA)
+# rather than `metric: "requests"` (KIND_RATE_LIMIT) — the two refusals share a 429 status but the
+# Anthropic writer projects them into DIFFERENT wire types (`rate_limit_error` vs `billing_error`;
+# crates/busbar-llm-codec/src/anthropic/writer.rs), so a golden that never exercises the budget arm
+# can never catch a regression there. LLM-only: no other family's oracle config has this group.
+OVER_BUDGET_TOTAL = (
+    "over_budget_total",
+    "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at "
+    "Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s "
+    "requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`",
+)
+
 
 def llm_cells(inv: dict) -> list[dict]:
     """LLM: refusal outcomes per dialect (same-proto); forwarded outcomes (ok, upstream_down, and a
@@ -100,6 +116,7 @@ def llm_cells(inv: dict) -> list[dict]:
         for oc, why in OUTCOMES:
             if oc in PRE_ROUTE:
                 cells.append(cell(d, d, oc, why))
+        cells.append(cell(d, d, *OVER_BUDGET_TOTAL))
     for i in dialects:
         for e in dialects:
             for oc, why in OUTCOMES:

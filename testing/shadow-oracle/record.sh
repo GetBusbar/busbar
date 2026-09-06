@@ -17,7 +17,12 @@
 #
 # Per-cell principal (minted by oracle_mint_keys — every refusal is REAL, not a stub):
 #   ok / ok_stream / malformed / upstream_down  -> the OK key
-#   over_budget                                 -> the BROKE key (1-cent/day budget -> 429 at Admit)
+#   over_budget                                 -> the BROKE key (group `broke`: requests 1/day trips
+#                                                   FIRST, so this is the requests-cap refusal)
+#   over_budget_total                           -> the QUOTA key (group `broke-quota`: budget 1/day is
+#                                                   the ONLY cap, so this is the group's own budget-cap
+#                                                   refusal — the arm the Anthropic writer projects as
+#                                                   `billing_error` rather than `rate_limit_error`)
 #   out_of_scope                                -> the NOSCOPE key (allowed only an unused pool -> 403)
 #   unauthenticated                             -> no Authorization header at all
 # upstream_down flips the mock's CONTROL FILE for the duration of the cell; busbar sees nothing.
@@ -197,6 +202,12 @@ boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three key
   # now makes every over_budget cell a real 429 at Admit (the first request would be admitted).
   curl -sS -m 20 -o /dev/null -X POST "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
     -H "Authorization: Bearer ${ORACLE_TOKEN_BROKE}" -H "Content-Type: application/json" \
+    -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"prime"}]}' || true
+  # PRIME the QUOTA key too: group `broke-quota` carries only a budget cap (no requests cap), so one
+  # un-recorded request exhausts that TOTAL and every over_budget_total cell is a real 429 at Admit
+  # with metric: budget, not metric: requests.
+  curl -sS -m 20 -o /dev/null -X POST "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
+    -H "Authorization: Bearer ${ORACLE_TOKEN_QUOTA}" -H "Content-Type: application/json" \
     -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"prime"}]}' || true
 }
 stop_busbar() {  # stop the current busbar and wait until BOTH its ports are free again
@@ -701,6 +712,7 @@ PY
   else
   case "$outcome" in
     over_budget) sig_akid="$ORACLE_AWS_AKID_BROKE"; sig_secret="$ORACLE_AWS_SECRET_BROKE" ;;
+    over_budget_total) sig_akid="$ORACLE_AWS_AKID_QUOTA"; sig_secret="$ORACLE_AWS_SECRET_QUOTA" ;;
     out_of_scope) sig_akid="$ORACLE_AWS_AKID_NOSCOPE"; sig_secret="$ORACLE_AWS_SECRET_NOSCOPE" ;;
     *) sig_akid="$ORACLE_AWS_AKID_OK"; sig_secret="$ORACLE_AWS_SECRET_OK" ;;
   esac
@@ -716,6 +728,7 @@ PY
 
   case "$outcome" in
     over_budget) token="$ORACLE_TOKEN_BROKE"; kid="$ORACLE_KEY_BROKE" ;;
+    over_budget_total) token="$ORACLE_TOKEN_QUOTA"; kid="$ORACLE_KEY_QUOTA" ;;
     out_of_scope) token="$ORACLE_TOKEN_NOSCOPE"; kid="$ORACLE_KEY_NOSCOPE" ;;
     unauthenticated) token=""; kid="$ORACLE_KEY_OK" ;;
     *) token="$ORACLE_TOKEN_OK"; kid="$ORACLE_KEY_OK" ;;

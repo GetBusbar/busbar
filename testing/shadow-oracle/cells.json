@@ -47,11 +47,11 @@
     }
   ],
   "counts": {
-    "total": 2293,
+    "total": 2299,
     "by_plane": {
       "a2a": 468,
       "core": 773,
-      "llm": 140,
+      "llm": 146,
       "mcp": 912
     },
     "by_family": {
@@ -70,7 +70,7 @@
       "hazard": 2,
       "hooks": 10,
       "http.crosscut": 23,
-      "llm.wire": 133,
+      "llm.wire": 139,
       "mcp": 912,
       "neutrality": 18,
       "ops.scrape": 14,
@@ -18073,6 +18073,18 @@
       "why": "budget exhausted -> refused at Admit (native 429, names the bucket)"
     },
     {
+      "id": "llm|anthropic|anthropic|request|over_budget_total",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "anthropic",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "over_budget_total",
+      "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
+    },
+    {
       "id": "llm|anthropic|anthropic|request|stream_upstream_error",
       "plane": "llm",
       "family": "llm.wire",
@@ -18382,6 +18394,18 @@
       "op": "chat",
       "outcome": "over_budget",
       "why": "budget exhausted -> refused at Admit (native 429, names the bucket)"
+    },
+    {
+      "id": "llm|bedrock|bedrock|request|over_budget_total",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "bedrock",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "over_budget_total",
+      "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
     },
     {
       "id": "llm|bedrock|bedrock|request|stream_upstream_error",
@@ -18695,6 +18719,18 @@
       "why": "budget exhausted -> refused at Admit (native 429, names the bucket)"
     },
     {
+      "id": "llm|cohere|cohere|request|over_budget_total",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "cohere",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "over_budget_total",
+      "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
+    },
+    {
       "id": "llm|cohere|cohere|request|stream_upstream_error",
       "plane": "llm",
       "family": "llm.wire",
@@ -19004,6 +19040,18 @@
       "op": "chat",
       "outcome": "over_budget",
       "why": "budget exhausted -> refused at Admit (native 429, names the bucket)"
+    },
+    {
+      "id": "llm|gemini|gemini|request|over_budget_total",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "over_budget_total",
+      "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
     },
     {
       "id": "llm|gemini|gemini|request|stream_upstream_error",
@@ -19317,6 +19365,18 @@
       "why": "budget exhausted -> refused at Admit (native 429, names the bucket)"
     },
     {
+      "id": "llm|openai|openai|request|over_budget_total",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "over_budget_total",
+      "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
+    },
+    {
       "id": "llm|openai|openai|request|stream_upstream_error",
       "plane": "llm",
       "family": "llm.wire",
@@ -19626,6 +19686,18 @@
       "op": "chat",
       "outcome": "over_budget",
       "why": "budget exhausted -> refused at Admit (native 429, names the bucket)"
+    },
+    {
+      "id": "llm|responses|responses|request|over_budget_total",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "responses",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "over_budget_total",
+      "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
     },
     {
       "id": "llm|responses|responses|request|stream_upstream_error",

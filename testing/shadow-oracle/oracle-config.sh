@@ -12,12 +12,16 @@
 #           request whose ingress dialect != the target model's provider dialect is a CROSS-PROTOCOL
 #           cell (the LLM plane's defining feature) and the diagonal is the codec's own round trip;
 #         - governance ON (keys auth chain), admin API on a token, prometheus export for /metrics;
-#         - two budget groups: `oracle` (loose) and `broke` (requests: 1/day + a 1-cent/day budget) so
-#           after the recorder's one PRIMING request the over-budget refusal is a REAL 429 at Admit.
+#         - three budget groups: `oracle` (loose), `broke` (requests: 1/day + a 1-cent/day budget) and
+#           `broke-quota` (a 1-cent/day budget ONLY, no requests cap) so after the recorder's one
+#           PRIMING request the over-budget refusal is a REAL 429 at Admit — `broke` always blocks on
+#           its `requests` cap first (governance::state checks requests before budget), so only
+#           `broke-quota`'s bucket can ever surface the group's own BUDGET exhaustion (metric: budget).
 #   oracle_mint_keys <admin_port>
-#       mints the three principals every outcome class needs and exports:
+#       mints the four principals every outcome class needs and exports:
 #         ORACLE_TOKEN_OK / ORACLE_KEY_OK         normal key, group `oracle`
-#         ORACLE_TOKEN_BROKE / ORACLE_KEY_BROKE   group `broke`  -> 429 over_budget at Admit
+#         ORACLE_TOKEN_BROKE / ORACLE_KEY_BROKE   group `broke`        -> 429 over_budget (requests cap) at Admit
+#         ORACLE_TOKEN_QUOTA / ORACLE_KEY_QUOTA   group `broke-quota`  -> 429 over_budget_total (budget cap) at Admit
 #         ORACLE_TOKEN_NOSCOPE / ORACLE_KEY_NOSCOPE allowed_pools limited to a pool no cell uses -> 403
 #
 # The six model names are `m-<dialect>`; a cell targets `m-<egress_dialect>` so the LANE selects the
@@ -99,6 +103,9 @@ groups:
   broke:
     limits:
       - { requests: 1, per: day }
+      - { budget: 1, per: day }
+  broke-quota:
+    limits:
       - { budget: 1, per: day }
 providers:
 EOF
@@ -254,11 +261,13 @@ oracle_mint_keys() {  # <admin_port>
   set -- $r; ORACLE_KEY_OK="${1:-}"; ORACLE_TOKEN_OK="${2:-}"; ORACLE_AWS_AKID_OK="${3:-}"; ORACLE_AWS_SECRET_OK="${4:-}"
   r="$(_oracle_mint "$a" '{"name":"oracle-broke","group":"broke","issue_aws_credential":true}')"
   set -- $r; ORACLE_KEY_BROKE="${1:-}"; ORACLE_TOKEN_BROKE="${2:-}"; ORACLE_AWS_AKID_BROKE="${3:-}"; ORACLE_AWS_SECRET_BROKE="${4:-}"
+  r="$(_oracle_mint "$a" '{"name":"oracle-quota","group":"broke-quota","issue_aws_credential":true}')"
+  set -- $r; ORACLE_KEY_QUOTA="${1:-}"; ORACLE_TOKEN_QUOTA="${2:-}"; ORACLE_AWS_AKID_QUOTA="${3:-}"; ORACLE_AWS_SECRET_QUOTA="${4:-}"
   r="$(_oracle_mint "$a" '{"name":"oracle-noscope","group":"oracle","allowed_pools":["oracle-unused"],"issue_aws_credential":true}')"
   set -- $r; ORACLE_KEY_NOSCOPE="${1:-}"; ORACLE_TOKEN_NOSCOPE="${2:-}"; ORACLE_AWS_AKID_NOSCOPE="${3:-}"; ORACLE_AWS_SECRET_NOSCOPE="${4:-}"
-  export ORACLE_KEY_OK ORACLE_TOKEN_OK ORACLE_KEY_BROKE ORACLE_TOKEN_BROKE ORACLE_KEY_NOSCOPE ORACLE_TOKEN_NOSCOPE
-  export ORACLE_AWS_AKID_OK ORACLE_AWS_SECRET_OK ORACLE_AWS_AKID_BROKE ORACLE_AWS_SECRET_BROKE ORACLE_AWS_AKID_NOSCOPE ORACLE_AWS_SECRET_NOSCOPE
-  [ -n "$ORACLE_TOKEN_OK" ] && [ -n "$ORACLE_TOKEN_BROKE" ] && [ -n "$ORACLE_TOKEN_NOSCOPE" ]
+  export ORACLE_KEY_OK ORACLE_TOKEN_OK ORACLE_KEY_BROKE ORACLE_TOKEN_BROKE ORACLE_KEY_QUOTA ORACLE_TOKEN_QUOTA ORACLE_KEY_NOSCOPE ORACLE_TOKEN_NOSCOPE
+  export ORACLE_AWS_AKID_OK ORACLE_AWS_SECRET_OK ORACLE_AWS_AKID_BROKE ORACLE_AWS_SECRET_BROKE ORACLE_AWS_AKID_QUOTA ORACLE_AWS_SECRET_QUOTA ORACLE_AWS_AKID_NOSCOPE ORACLE_AWS_SECRET_NOSCOPE
+  [ -n "$ORACLE_TOKEN_OK" ] && [ -n "$ORACLE_TOKEN_BROKE" ] && [ -n "$ORACLE_TOKEN_QUOTA" ] && [ -n "$ORACLE_TOKEN_NOSCOPE" ]
 }
 
 # Scrape /metrics into <out>, retrying through the boot window in which the recorder is not yet
