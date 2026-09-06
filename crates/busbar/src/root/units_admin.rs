@@ -1993,6 +1993,13 @@ impl AdminNode {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         );
         self.units.admin.units.open(key, request);
+        // From here the unit occupies two tables, and every way out of this function gives both
+        // back — including the way a panicking step takes.
+        let occupied = Occupied {
+            inflight: &self.inflight,
+            units: &self.units.admin.units,
+            key,
+        };
 
         let arrival = busbar_kernel::inflight::arrival_hold(
             &self.kernel,
@@ -2041,9 +2048,9 @@ impl AdminNode {
                         meter: &meter,
                     },
                 );
-                self.inflight.remove(key);
                 // The loop ran; the answer is whatever Route put there. A unit refused before Route
-                // has none, and the refusal it ended on is what the surface renders.
+                // has none, and the refusal it ended on is what the surface renders. Read BEFORE
+                // the guard below hands the entry back, because the entry is where the answer is.
                 self.units
                     .admin
                     .units
@@ -2052,10 +2059,37 @@ impl AdminNode {
             }
         };
 
-        // Close last, whatever happened. An entry that outlived its unit is the leak per request
-        // this root may not have.
-        let _ = self.units.admin.units.close(key);
+        // The guard closes last, whatever happened — including a step that panicked, which the two
+        // statements this replaces walked straight past. An entry or a slot that outlived its unit
+        // is the leak per request this root may not have.
+        drop(occupied);
         answer
+    }
+}
+
+/// THE TWO TABLES A UNIT OCCUPIES, for the length of one unit.
+///
+/// The in-flight table bounds how many units this node has open and the units table holds the
+/// request its steps read, so both have to come back on every way out of one unit — the answer, and
+/// the one this guard exists for: a step that panics, which takes the rest of the function with it.
+/// A removal and a close written as the last statements of that function come back on the first of
+/// those and not on the second, and what they leave behind is per request and resident for the life
+/// of the node.
+///
+/// Dropped explicitly at the end of the answering path rather than at the closing brace, because
+/// the answer is read OUT of the entry this guard gives back.
+#[cfg(feature = "root-admin")]
+struct Occupied<'n> {
+    inflight: &'n busbar_kernel::inflight::InFlight,
+    units: &'n AdminUnits,
+    key: UnitKey,
+}
+
+#[cfg(feature = "root-admin")]
+impl Drop for Occupied<'_> {
+    fn drop(&mut self) {
+        self.inflight.remove(self.key);
+        let _ = self.units.close(self.key);
     }
 }
 
@@ -3545,6 +3579,46 @@ mod tests {
 
         let document = body("/api/v1/admin/ledger/openapi.json");
         assert_eq!(document["info"]["version"], "1.6.0");
+    }
+
+    /// A dispatch that panics where an operation's body would run.
+    #[cfg(feature = "root-admin")]
+    struct PanickingDispatch;
+
+    #[cfg(feature = "root-admin")]
+    impl AdminDispatch for PanickingDispatch {
+        fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
+            panic!("the operation's body panicked");
+        }
+    }
+
+    /// A STEP THAT PANICS STILL GIVES THE TABLES BACK.
+    ///
+    /// Both tables are per-node and live for the life of the process: the in-flight slot bounds how
+    /// many units the node has open, and the units table holds the request the steps read. A removal
+    /// written as the next statement after the loop comes back on the answering path and on no
+    /// other, so a panic in one operation's body would leave one slot and one whole request body
+    /// resident for as long as the node runs — a leak per panicking request, and the operator
+    /// reaching for the admin surface to find out why is the one making them.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn a_panicking_step_leaves_both_tables_empty() {
+        let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(PanickingDispatch));
+        let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let ended =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.answer(a_request())));
+        std::panic::set_hook(previous);
+        assert!(ended.is_err(), "the fixture's dispatch panics");
+
+        assert_eq!(node.inflight.len(), 0, "the in-flight slot came back");
+        assert_eq!(
+            node.units.admin.units.len(),
+            0,
+            "the units table gave up the request"
+        );
     }
 
     /// A node whose ledger has nothing in it says so, rather than reporting a balance it never read.
