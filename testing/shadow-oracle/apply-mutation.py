@@ -177,24 +177,121 @@ def walk_set(doc, path: str, value):
         cur = cur[k]
 
 
-def walk_delete(doc, path: str):
+def walk_delete(doc, path: str) -> list:
+    """Remove a dotted path. Returns [] when something was actually removed, or a one-element list
+    naming the miss when the path is not in the document.
+
+    A delete that MATCHES NOTHING is the silent-no-op failure mode of this whole file. `cur.pop(k,
+    None)` (and the bare `return` on a missing intermediate key) turned "the baseline does not have
+    the key this mutation exists to remove" — a renamed config key, a reshaped block, a typo in the
+    fixture — into a config written back UNMUTATED. busbar then boots on it happily and the
+    boot-refusal cell that ordered the deletion records that happy boot as its golden: a PASS that
+    proves the opposite of what the cell claims, and one nothing downstream can ever distinguish
+    from a real one, because "busbar accepted the mutated config" and "the mutation never landed"
+    produce byte-identical recordings. Here is the only place that can tell them apart."""
     parts = path.split(".")
     cur = doc
-    for k in parts[:-1]:
+    for i, k in enumerate(parts[:-1]):
         if isinstance(cur, list):
             cur = cur[int(k)]
-        else:
+        elif isinstance(cur, dict):
             if k not in cur:
-                return
+                return [f"delete {path!r} matched nothing: no {'.'.join(parts[:i + 1])!r} in the baseline"]
             cur = cur[k]
+        else:
+            return [f"delete {path!r} matched nothing: {'.'.join(parts[:i])!r} is a "
+                    f"{type(cur).__name__}, not a map"]
     k = parts[-1]
     if isinstance(cur, list):
         del cur[int(k)]
-    else:
-        cur.pop(k, None)
+        return []
+    if isinstance(cur, dict):
+        if k not in cur:
+            return [f"delete {path!r} matched nothing: the baseline has no {path!r}"]
+        del cur[k]
+        return []
+    return [f"delete {path!r} matched nothing: its parent is a {type(cur).__name__}, not a map"]
+
+
+def selftest() -> int:
+    """Prove that a mutation which changes NOTHING is refused rather than written out, and that
+    every `delete` in the shipped fixture still finds its key in the shipped baseline shape. No
+    busbar, no network, no ports.
+    """
+    import tempfile
+    fails = 0
+
+    def say(ok, what):
+        nonlocal fails
+        print(f"{'PASS' if ok else 'FAIL'}  {what}")
+        if not ok:
+            fails += 1
+
+    base = {"auth": {"chain": ["keys"], "signing_key": {"file": "/w/signing.key"},
+                     "admin_auth": ["admin-tokens"]},
+            "identity-providers": {"admin-tokens": {"module": "admin-tokens"}},
+            "pools": [{"name": "p"}]}
+
+    d = json.loads(json.dumps(base))
+    say(walk_delete(d, "auth.signing_key") == [] and "signing_key" not in d["auth"],
+        "delete of a present key removes it and reports no miss")
+    d = json.loads(json.dumps(base))
+    # THE BUG: the baseline spells it `signing_key`; a fixture (or a renamed config key) says
+    # `signingKey`. The old code popped nothing and returned an untouched config.
+    say(walk_delete(d, "auth.signingKey") and d == base,
+        "delete of an absent LEAF is reported as a miss, not a silent no-op")
+    say(walk_delete(d, "auth.tls.cert") and d == base,
+        "delete under an absent INTERMEDIATE is reported as a miss")
+    say(walk_delete(d, "identity-providers.admin-tokens.module.deeper") and d == base,
+        "delete through a non-map is reported as a miss")
+    say(walk_delete(d, "pools.0") == [] and d["pools"] == [],
+        "delete of a list index still works")
+
+    # end to end: a mutation whose only op is a delete that matches nothing must exit 2 and must not
+    # leave a config.yaml behind for the recorder to boot.
+    w = tempfile.mkdtemp(prefix="apply-mutation-selftest.")
+    fx = os.path.join(w, "muts.json")
+    json.dump({"mutations": [{"id": "SELFTEST-MISS", "op": [{"delete": "auth.signingKey"}]},
+                             {"id": "SELFTEST-HIT", "op": [{"delete": "auth.signing_key"}]}]},
+              open(fx, "w"))
+    cfgp, provp = os.path.join(w, "config.yaml"), os.path.join(w, "providers.yaml")
+    open(cfgp, "w").write(yaml.safe_dump(base))
+    open(provp, "w").write("providers: {}\n")
+    argv, out = sys.argv, os.path.join(w, "out")
+    try:
+        sys.argv = ["apply-mutation.py", "--baseline", cfgp, "--providers", provp,
+                    "--mutation", "SELFTEST-MISS", "--out", out, "--fixture", fx]
+        rc = main()
+        say(rc == 2 and not os.path.exists(os.path.join(out, "config.yaml")),
+            "a mutation that changed nothing exits 2 and writes no config.yaml")
+        sys.argv[sys.argv.index("SELFTEST-MISS")] = "SELFTEST-HIT"
+        rc = main()
+        wrote = os.path.exists(os.path.join(out, "config.yaml")) and \
+            "signing_key" not in (yaml.safe_load(open(os.path.join(out, "config.yaml"))) or {}).get("auth", {})
+        say(rc == 0 and wrote, "a mutation that DID change something still writes the mutated config")
+    finally:
+        sys.argv = argv
+        shutil.rmtree(w, ignore_errors=True)
+
+    # every shipped delete must still find its key in the shipped baseline: this is the regression
+    # that would otherwise only surface as a green cell proving nothing.
+    fxp = os.path.join(HERE, "fixtures", "boot-mutations.json")
+    if os.path.exists(fxp):
+        shipped = json.load(open(fxp, encoding="utf-8"))
+        dels = [(m["id"], op) for m in shipped["mutations"] if m.get("op")
+                for op in m["op"] if "delete" in op]
+        for mid, op in dels:
+            d = json.loads(json.dumps(base))
+            say(walk_delete(d, op["delete"]) == [],
+                f"{mid}: delete {op['delete']!r} still matches the baseline shape")
+
+    print(f"\napply-mutation selftest: {'GREEN' if not fails else f'RED ({fails} failing)'}")
+    return 1 if fails else 0
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["--selftest"]:
+        return selftest()
     ap = argparse.ArgumentParser()
     ap.add_argument("--baseline", required=True)
     ap.add_argument("--providers", required=True)
@@ -215,11 +312,16 @@ def main() -> int:
     prov = yaml.safe_load(prov_text) or {}
     raw_tail, replace_all, prov_touched = [], None, False
     env_lines, args, overlay_doc = [], [], None
+    # A `delete` op that matched nothing is the silent-no-op failure mode of this file (see
+    # MutationMissed): the config goes back out UNMUTATED and the cell records a happy boot as the
+    # golden for a refusal. Refuse the run instead — exit 2 (harness error), never 3 (a named gap):
+    # a gap is a cell we know we cannot record, this is a cell we THINK we recorded and did not.
+    missed = []
     for op in mut["op"]:
         if "set" in op:
             walk_set(cfg, op["set"], op.get("value"))
         elif "delete" in op:
-            walk_delete(cfg, op["delete"])
+            missed += walk_delete(cfg, op["delete"])
         elif "raw_yaml" in op:
             raw_tail.append(op["raw_yaml"])
         elif "replace_yaml" in op:
@@ -227,7 +329,7 @@ def main() -> int:
         elif "providers_set" in op:
             walk_set(prov, op["providers_set"], op.get("value")); prov_touched = True
         elif "providers_delete" in op:
-            walk_delete(prov, op["providers_delete"]); prov_touched = True
+            missed += walk_delete(prov, op["providers_delete"]); prov_touched = True
         elif "env" in op:
             env_lines += [f"{k}={v}" for k, v in op["env"].items()]
         elif "args" in op:
@@ -249,6 +351,12 @@ def main() -> int:
             overlay_doc = op["overlay"]
         else:
             print(f"apply-mutation: unknown op {op}", file=sys.stderr); return 2
+    if missed:
+        for m in missed:
+            print(f"apply-mutation: {a.mutation}: {m}", file=sys.stderr)
+        print(f"apply-mutation: {a.mutation} changed NOTHING — refusing to write an unmutated config "
+              f"(a cell recorded against it would prove the opposite of what it claims)", file=sys.stderr)
+        return 2
 
     os.makedirs(a.out, exist_ok=True)
     if replace_all is not None:
