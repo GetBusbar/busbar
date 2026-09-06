@@ -792,9 +792,17 @@ PY
 }
 
 # THE PER-LEG FLOORS (the mechanism is defined above, before --selftest, so the self-test drives it
-# rather than a copy). The h2 floors are the number of `h2-*.sh` scenario scripts that exist today,
-# seven per plane; the fold-driven legs carry 1, the honest minimum — a suite that enumerated NOTHING
-# has not run. RAISE these deliberately as scenarios are added; a drop is the finding, not the fix.
+# rather than a copy). The h2 floors are the number of h2 SCENARIOS that exist today, seven per
+# plane; the fold-driven legs carry 1, the honest minimum — a suite that enumerated NOTHING has not
+# run. RAISE these deliberately as scenarios are added; a drop is the finding, not the fix.
+#
+# A SCENARIO IS NOT A FILE. These floors were set from `ls h2-*.sh | wc -l`, which counts
+# `h2-lib.sh` — the shared helper both planes' scenarios source, and the one file the runner
+# explicitly skips by name. So the floor read seven while six scenarios existed, and BOTH h2 legs
+# recorded a `_leg_floor` FAIL on every run from the day they were added. The count that belongs
+# here is the number of ids the leg can owe, which is the number of files MINUS the helper. It is
+# seven now because a seventh scenario per plane (`h2-discovery-open.sh`) was added alongside this
+# comment — the floor is met by a real scenario, never by lowering the bar to fit.
 run_leg run_mcp         "mcp.rig|"        1 "MCP official-subject"
 run_leg run_h2_mcp      "mcp.rig|h2-"     7 "MCP H2 gating scenarios"
 run_leg run_a2a_battery "a2a.battery|"    1 "A2A independent battery"
