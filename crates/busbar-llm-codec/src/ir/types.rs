@@ -1251,14 +1251,21 @@ pub struct StreamDecodeState {
     /// re-claim an index the client already has content in, reintroducing a block-index collision
     /// on the post-terminal path. OpenAI Chat reader only; other readers leave it 0.
     pub next_ir_index: usize,
-    /// How many candidate-level citation sources this stream has already carried in a
-    /// `CitationsDelta`. Gemini restates the FULL `citationMetadata.citationSources[]` list on every
-    /// chunk that carries it — the list is cumulative, not incremental — so reading the whole list
-    /// per chunk re-emits every earlier source as a fresh delta and a client assembling the stream
-    /// ends up with the first citation repeated once per chunk. This watermark says where the last
-    /// delta stopped, so each chunk emits only the tail it ADDED. Gemini reader only; other readers
-    /// leave it 0.
-    pub citations_emitted: usize,
+    /// The IDENTITY of every candidate-level citation this stream has already carried in a
+    /// `CitationsDelta`. Gemini restates the FULL citation list on every chunk that carries one —
+    /// the list is cumulative, not incremental — so reading the whole list per chunk re-emits every
+    /// earlier source as a fresh delta and a client assembling the stream ends up with the first
+    /// citation repeated once per chunk.
+    ///
+    /// This was a POSITIONAL watermark (a count of entries already emitted), which is only correct
+    /// while the list grows by APPENDING. A grounded answer's list does not: while
+    /// `groundingSupports[]` is absent, one span-LESS citation is emitted per `groundingChunks[]`
+    /// entry; once the supports arrive the same chunks are re-emitted as one SPAN-BEARING citation
+    /// per (support, chunk) pair. That is a different list, not a longer one, and skipping its first
+    /// N entries dropped exactly the span-bearing citations — the ones that say which sentence each
+    /// source backs. Identity dedup is right for both shapes. Gemini reader only; other readers
+    /// leave it empty.
+    pub citations_emitted: std::collections::HashSet<String>,
 }
 
 impl StreamDecodeState {
