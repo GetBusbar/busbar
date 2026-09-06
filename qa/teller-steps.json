@@ -113,9 +113,10 @@
         "status": "mapped",
         "note": "representative of the llm.wire malformed outcome, enumerated per dialect",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-llm",
-          "note": "on this plane the loop's parse refusal lands at arrival; no root-llm fixture isolates a decode-step refusal of its own"
+          "test": "crates/busbar/src/root/units_llm.rs::the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it",
+          "note": "each of the six body-model dialects driven through run_unit in four shapes and compared with the shipped entry point: a named model reaches the door, a body with no model is the ladder's own 400, a malformed body is step 0's parse refusal, and a verb the dialect declares nothing for is the endpoint's own 404"
         }
       },
       "authenticate": {

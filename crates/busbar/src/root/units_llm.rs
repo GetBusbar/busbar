@@ -1362,6 +1362,28 @@ mod tests {
         }
     }
 
+    /// One field of what a leg left behind, by name. Absent reads as empty rather than panicking,
+    /// so a comparison that named a field nobody observes fails on the VALUE rather than on the
+    /// lookup — a missing field is a divergence, not a test bug.
+    fn field(o: &Observed, k: &str) -> String {
+        o.0.iter()
+            .find(|(f, _)| *f == k)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    }
+
+    /// Compare the two legs field by field, collecting every divergence under `label` rather than
+    /// stopping at the first — one run should name everything that moved, not the earliest thing.
+    fn compare(label: &str, legacy: &Observed, looped: &Observed, failures: &mut Vec<String>) {
+        for ((f, want), (_, got)) in legacy.0.iter().zip(looped.0.iter()) {
+            if want != got {
+                failures.push(format!(
+                    "{label}: field `{f}` diverges\n  shipped: {want}\n  loop:    {got}"
+                ));
+            }
+        }
+    }
+
     async fn observe(rig: &Rig, resp: Response) -> Observed {
         use busbar_substrate::store::BreakerState;
 
@@ -1699,13 +1721,6 @@ mod tests {
     /// THE MONEY, spelled out rather than only compared.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
-        fn field(o: &Observed, k: &str) -> String {
-            o.0.iter()
-                .find(|(f, _)| *f == k)
-                .map(|(_, v)| v.clone())
-                .unwrap_or_default()
-        }
-
         // A STREAMED unit accrues at stream end rather than at the buffered tap, so it is asserted
         // in its own right: without this the comparison could be green on a stream metering nothing.
         let streamed = leg_loop(Fixture::StreamedOk).await;
@@ -2189,6 +2204,228 @@ mod tests {
             names.consulted(),
             2,
             "a name the node has not resolved still reaches the interner, exactly once"
+        );
+    }
+
+    // ── STEP 1, DECODE — the six dialects, over the loop ────────────────────────────────────────
+
+    /// The six dialects whose model rides the body. The same six the mount installs, read off the
+    /// table rather than retyped, so a dialect added to one and not the other cannot pass here.
+    fn body_dialects() -> Vec<&'static str> {
+        BODY_INGRESS.iter().map(|(name, _)| *name).collect()
+    }
+
+    /// The four shapes step 1 is asked about.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Decoded {
+        /// A well-formed native request naming a configured pool: both halves of the step answer.
+        Named,
+        /// A well-formed native request with no `model` member: the model ladder resolves nothing,
+        /// which is the decode step's own refusal and belongs to no other step.
+        NoModel,
+        /// Bytes that are not a document at all. On this plane the parse is step 0's, so this is
+        /// refused at ARRIVAL and never reaches the ladder — which is exactly the ordering the
+        /// module header spells out, and it is asserted rather than assumed.
+        Malformed,
+        /// A verb the dialect declares no handler for: the handler half of the step, refused with
+        /// the endpoint's own 404 sentence.
+        UnsupportedVerb,
+    }
+
+    /// THE NATIVE REQUEST BODY, per dialect. Each is the shape that dialect's own client sends, and
+    /// the `model` member is the rung of the ladder a body-model surface resolves on.
+    fn dialect_body(proto: &str, shape: Decoded) -> Bytes {
+        if shape == Decoded::Malformed {
+            return Bytes::from_static(b"{not json");
+        }
+        let mut v = if proto == busbar_llm::proto_codec::PROTO_ANTHROPIC {
+            serde_json::json!({"max_tokens": 16,
+                               "messages": [{"role": "user", "content": "hi"}]})
+        } else if proto == GEMINI {
+            serde_json::json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]})
+        } else if proto == BEDROCK {
+            serde_json::json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}]})
+        } else if proto == busbar_llm::proto_codec::PROTO_RESPONSES {
+            serde_json::json!({"input": "hi"})
+        } else if proto == busbar_llm::proto_codec::PROTO_COHERE {
+            serde_json::json!({"message": "hi"})
+        } else {
+            serde_json::json!({"messages": [{"role": "user", "content": "hi"}]})
+        };
+        // The ladder's rung 3 — and its absence, which is the whole of the `NoModel` shape.
+        if shape != Decoded::NoModel {
+            v["model"] = serde_json::Value::String(POOL.to_string());
+        }
+        Bytes::from(serde_json::to_vec(&v).expect("the fixture body serializes"))
+    }
+
+    /// A VERB THIS DIALECT DECLARES NO HANDLER FOR, found by ASKING the registry rather than by
+    /// guessing: the first of the family's seven the dialect does not answer. `None` for a dialect
+    /// that answers all seven, which is a dialect this shape has nothing to say about.
+    fn unsupported_verb(proto: &str) -> Option<busbar_api::operation::Operation> {
+        [
+            busbar_api::operation::Operation::EMBEDDINGS,
+            busbar_api::operation::Operation::MODERATION,
+            busbar_api::operation::Operation::IMAGE,
+            busbar_api::operation::Operation::TRANSCRIPTION,
+            busbar_api::operation::Operation::SPEECH,
+            busbar_api::operation::Operation::RERANK,
+        ]
+        .into_iter()
+        .find(|op| decode::handler_for(proto, *op).is_err())
+    }
+
+    /// LEG 1 — the shipped body-model entry point, for any dialect and any verb.
+    async fn leg_legacy_decode(
+        proto: &'static str,
+        operation: busbar_api::operation::Operation,
+        body: Bytes,
+    ) -> Observed {
+        let rig = rig(Fixture::BufferedOk).await;
+        let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+            host: rig.host(),
+            gov: rig.gov(),
+            caller_token: None,
+        });
+        let resp = busbar_llm::native_ingress::operation_ingress(
+            &ctx,
+            json_headers(),
+            body,
+            proto,
+            operation,
+            None,
+        )
+        .await;
+        let observed = observe(&rig, resp).await;
+        rig.server.shutdown().await;
+        observed
+    }
+
+    /// LEG 2 — the same dialect and the same verb through the kernel's loop.
+    async fn leg_loop_decode(
+        proto: &'static str,
+        operation: busbar_api::operation::Operation,
+        body: Bytes,
+    ) -> Observed {
+        let rig = rig(Fixture::BufferedOk).await;
+        let node = LlmNode::new();
+        let arrival = WalkArrival {
+            host: rig.host(),
+            gov: rig.gov(),
+            proto,
+            operation,
+            caller_token: None,
+            headers: json_headers(),
+            body,
+            path: None,
+        };
+        let resp = node.answer(arrival, None).await;
+        let observed = observe(&rig, resp).await;
+        rig.server.shutdown().await;
+        observed
+    }
+
+    /// **STEP 1 OVER THE LOOP, ON EVERY DIALECT THE PLANE MOUNTS.**
+    ///
+    /// The decode step answers two questions — which handler owns this `(protocol, operation)` pair,
+    /// and which model the caller named — and every later step is about those two answers. So the
+    /// step is driven through `run_unit` for each of the six body-model dialects in four shapes, and
+    /// each is compared against the shipped entry point on its own deployment: the answer, the
+    /// headers, the money and the breaker.
+    ///
+    /// The ends are asserted BESIDE the comparison, not instead of it, because six identical 404s
+    /// would compare equal and prove nothing about resolution at all:
+    ///
+    /// * `Named` reaches the door, which is the observable fact that a model WAS resolved;
+    /// * `NoModel` is the ladder's own refusal, in the dialect's envelope, charged to nobody;
+    /// * `Malformed` is refused at step 0 — the plane parses before it reads the ladder;
+    /// * `UnsupportedVerb` is the handler half, refused with the endpoint's own sentence.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it() {
+        let mut failures: Vec<String> = Vec::new();
+        let mut verbs_exercised = 0usize;
+        for proto in body_dialects() {
+            for shape in [Decoded::Named, Decoded::NoModel, Decoded::Malformed] {
+                let label = format!("{proto}/{shape:?}");
+                let body = dialect_body(proto, shape);
+                let op = busbar_api::operation::Operation::CHAT;
+                let legacy = leg_legacy_decode(proto, op, body.clone()).await;
+                let looped = leg_loop_decode(proto, op, body).await;
+                compare(&label, &legacy, &looped, &mut failures);
+
+                let status = field(&looped, "status");
+                let answered = field(&looped, "body");
+                let admitted = field(&looped, "ledger_requests");
+                match shape {
+                    // The model resolved, so the unit reached the door and drew its slot. A dialect
+                    // whose ladder answered nothing would be refused BEFORE the door and read "0".
+                    Decoded::Named => {
+                        if admitted != "1" {
+                            failures.push(format!(
+                                "{label}: the resolved model never reached the door \
+                                 (ledger_requests={admitted})"
+                            ));
+                        }
+                    }
+                    Decoded::NoModel => {
+                        if status != "400"
+                            || !answered.contains(decode::DecodeRefusal::MissingModel.message())
+                        {
+                            failures.push(format!(
+                                "{label}: the ladder's own refusal is not what the client read \
+                                 (status={status}) {answered}"
+                            ));
+                        }
+                        if admitted != "0" {
+                            failures.push(format!("{label}: a refused unit was charged"));
+                        }
+                    }
+                    // Step 0's parse refusal: the bytes are not a document, so there is nothing for
+                    // the ladder to read and the unit never reaches step 1 at all.
+                    Decoded::Malformed => {
+                        if status != "400" || admitted != "0" {
+                            failures.push(format!(
+                                "{label}: the parse refusal is not the shipped one \
+                                 (status={status} ledger_requests={admitted})"
+                            ));
+                        }
+                    }
+                    Decoded::UnsupportedVerb => unreachable!("driven below, with its own verb"),
+                }
+            }
+            // THE HANDLER HALF. A verb the dialect declares nothing for, asked of the registry
+            // rather than guessed — and skipped for a dialect that answers the whole family, which
+            // is an honest absence rather than a fabricated 404.
+            if let Some(op) = unsupported_verb(proto) {
+                verbs_exercised += 1;
+                let label = format!("{proto}/UnsupportedVerb");
+                let body = dialect_body(proto, Decoded::Named);
+                let legacy = leg_legacy_decode(proto, op, body.clone()).await;
+                let looped = leg_loop_decode(proto, op, body).await;
+                compare(&label, &legacy, &looped, &mut failures);
+                let status = field(&looped, "status");
+                let answered = field(&looped, "body");
+                if status != "404"
+                    || !answered.contains(decode::DecodeRefusal::UnsupportedOperation.message())
+                {
+                    failures.push(format!(
+                        "{label}: the endpoint's own 404 is not what the client read \
+                         (status={status}) {answered}"
+                    ));
+                }
+            }
+        }
+        assert!(
+            verbs_exercised > 0,
+            "no dialect declined a single verb of the family, so the handler half of step 1 was \
+             never driven at all"
+        );
+        assert!(
+            failures.is_empty(),
+            "{} divergence(s) across {} dialect(s):\n{}",
+            failures.len(),
+            body_dialects().len(),
+            failures.join("\n")
         );
     }
 }
