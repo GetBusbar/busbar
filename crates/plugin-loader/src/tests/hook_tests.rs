@@ -20,32 +20,11 @@ use busbar_api::{RoutingDecision, TransformOutcome};
 /// with zero real coverage locally. Mirrors this crate's
 /// `store_fixture_plugin_path`/`secret_example_plugin_path`.
 pub(crate) fn hook_plugin_path() -> Option<std::path::PathBuf> {
-    let candidate = (|| {
-        let exe = std::env::current_exe().ok()?;
-        let profile_dir = exe.parent()?.parent()?;
-        let name = crate::plugin_library_filename("busbar_hook_test_plugin");
-        let uplifted = profile_dir.join(&name);
-        let raw = profile_dir.join("deps").join(&name);
-        [uplifted, raw]
-            .into_iter()
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p)
-    })();
-    if candidate.is_none() && std::env::var_os("CI").is_some() {
-        panic!(
-            "the hook test plugin cdylib is not built under CI: `cargo test --workspace` must \
-                 build busbar_hook_test_plugin (checked both the uplifted target dir and \
-                 target/deps). Refusing to silently skip the only over-the-ABI coverage of the \
-                 DlopenPolicy hook seam."
-        );
-    }
-    candidate
+    crate::fixture_guard::locate(
+        "busbar_hook_test_plugin",
+        crate::fixture_guard::FixtureClass::InTree,
+        "the only over-the-ABI coverage of the DlopenPolicy hook seam",
+    )
 }
 
 /// Minimal engine-side projectors for the test: build a projection carrying `request.messages`,
@@ -210,7 +189,7 @@ fn ctx() -> RoutingContext<'static> {
 #[tokio::test]
 async fn dlopen_policy_drives_every_op() {
     let Some(_) = hook_plugin_path() else {
-        eprintln!("skip: hook test plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("hook test plugin");
         return;
     };
     let budget = Duration::from_secs(5);
