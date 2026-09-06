@@ -2121,23 +2121,25 @@ fn answer_for(outcome: Outcome) -> AdminAnswer {
 ///
 /// The single construction site, so a status and its code cannot be paired differently in two
 /// places — which is the shape the previous release's own admin error rendering has.
+///
+/// The ENVELOPE is the plane's, not this file's. Which code a condition renders under is this
+/// file's question (it maps a `ReasonCode` and pairs it with a status); the two keys, their order
+/// and their quoting are the frozen wire shape, and the plane is where that shape is written down.
+/// A second `format!` of it here was a second chance for a surface a client pinned to change in one
+/// place and not the other.
 #[cfg(feature = "root-admin")]
 fn error_answer(status: u16, code: &str) -> AdminAnswer {
     AdminAnswer {
         status,
         headers: vec![("content-type".to_string(), "application/json".to_string())],
-        body: format!(r#"{{"error":{{"code":"{code}","message":"{code}"}}}}"#).into_bytes(),
+        body: busbar_plane_admin::refusal::envelope_of(code, code).into_bytes(),
     }
 }
 
 /// What a node that cannot take the unit at all answers with.
 #[cfg(feature = "root-admin")]
 fn unavailable_answer() -> AdminAnswer {
-    AdminAnswer {
-        status: 503,
-        headers: vec![("content-type".to_string(), "application/json".to_string())],
-        body: br#"{"error":{"code":"unavailable","message":"unavailable"}}"#.to_vec(),
-    }
+    error_answer(503, "unavailable")
 }
 
 /// The dispatch that hands an operation to the surface that already answers it.
