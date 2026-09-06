@@ -280,6 +280,35 @@ pub enum FinishClass {
     Error,
 }
 
+/// THE ONE MAPPING from how a unit ended to the finish class its audit record carries.
+///
+/// The audit record is fixed, required and identical for every plane, and the finish class is one of
+/// the two ids a plane contributes to it. A mapping transcribed once per plane is a mapping that
+/// disagrees per plane, which makes the same ending read differently depending on which door the
+/// request came in by -- and the whole point of a fixed record is that it does not.
+///
+/// `completed` is the only genuine per-plane choice, and it is a question about the SHAPE of the
+/// exchange rather than about the ending: a request/response plane answers `Complete`, a duplex turn
+/// answers `TurnComplete`, and a plane that is both hands in whichever the unit was. Every other
+/// ending means the same thing everywhere:
+///
+/// - a refusal and a failure are `Error`; something said no, and the answer is not coming.
+/// - a stall is `Partial`; what arrived, arrived.
+/// - an abort is `Partial`, BY EITHER PARTY. `Error` is the class for an upstream that reported an
+///   error, and a kernel abort is not that: it is this node ending a unit it was serving, for a
+///   reason of its own, over an upstream that had said nothing wrong. The record does not lose who
+///   did it -- the audit row carries the `UnitEnd` itself and its step -- so classing it as an error
+///   would only put a second, disagreeing answer beside the true one.
+pub fn finish_class_of(end: &UnitEnd<'_>, completed: FinishClass) -> FinishClass {
+    match end {
+        UnitEnd::Completed => completed,
+        UnitEnd::Refused(_) | UnitEnd::Failed { .. } => FinishClass::Error,
+        UnitEnd::Aborted(AbortBy::Client)
+        | UnitEnd::Aborted(AbortBy::Kernel { .. })
+        | UnitEnd::Stalled => FinishClass::Partial,
+    }
+}
+
 /// Where a plane found the values the metering step folds.
 ///
 /// A plane returns locators, never amounts: the type carries a class, where the value was found,
@@ -695,3 +724,4 @@ impl<'u> Unit<'u> {
         self.leg_results.push(result).map_err(|o| Box::new(o.item))
     }
 }
+

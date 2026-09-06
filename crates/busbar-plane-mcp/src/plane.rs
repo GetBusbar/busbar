@@ -23,8 +23,8 @@ use busbar_contract::plane::{
     Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 use busbar_contract::unit::{
-    AbortBy, AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator,
-    ScopeFacts, Unit, UnitEnd, UsageLocator, UsageLocators,
+    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts,
+    Unit, UnitEnd, UsageLocator, UsageLocators,
 };
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 
@@ -271,13 +271,17 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
 
 /// The finish class one unit ending is.
 fn finish_of(end: &UnitEnd, streaming: bool) -> FinishClass {
-    match end {
-        UnitEnd::Completed if streaming => FinishClass::TurnComplete,
-        UnitEnd::Completed => FinishClass::Complete,
-        UnitEnd::Refused(_) | UnitEnd::Failed { .. } => FinishClass::Error,
-        UnitEnd::Aborted(AbortBy::Client) | UnitEnd::Stalled => FinishClass::Partial,
-        UnitEnd::Aborted(AbortBy::Kernel { .. }) => FinishClass::Error,
-    }
+    // One mapping, written once in the contract and read by every plane. All this plane decides is
+    // what a COMPLETED unit is, which is a question about the exchange and not about the ending: a
+    // streamed unit ends a turn of a session that continues, a unary one ends the whole answer.
+    busbar_contract::unit::finish_class_of(
+        end,
+        if streaming {
+            FinishClass::TurnComplete
+        } else {
+            FinishClass::Complete
+        },
+    )
 }
 
 impl Plane for McpPlane {

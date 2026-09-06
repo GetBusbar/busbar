@@ -890,11 +890,9 @@ impl Plane for LlmPlane {
             // the audit step reports. Reporting a different one here would be a dispute, and a
             // dispute over a class this plane never re-derives would be a fabricated one.
             op_class: u.op(),
-            finish: match out {
-                UnitEnd::Completed => FinishClass::Complete,
-                UnitEnd::Refused(_) | UnitEnd::Failed { .. } => FinishClass::Error,
-                UnitEnd::Aborted(_) | UnitEnd::Stalled => FinishClass::Partial,
-            },
+            // One mapping, written once in the contract and read by every plane, because the
+            // audit record is the same record whichever door the request came in by.
+            finish: busbar_contract::unit::finish_class_of(out, FinishClass::Complete),
         }
     }
 

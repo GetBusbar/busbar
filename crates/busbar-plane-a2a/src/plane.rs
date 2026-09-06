@@ -23,8 +23,8 @@ use busbar_contract::plane::{
     Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 use busbar_contract::unit::{
-    AbortBy, AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator,
-    ScopeFacts, Unit, UnitEnd, UsageLocator, UsageLocators,
+    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts,
+    Unit, UnitEnd, UsageLocator, UsageLocators,
 };
 use busbar_contract::wire::{Decode, Encode, Frame, FrameCursor, TransportEnvelope};
 
@@ -211,13 +211,17 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
 
 /// The finish class one unit ending is.
 fn finish_of(end: &UnitEnd, streaming: bool) -> FinishClass {
-    match end {
-        UnitEnd::Completed if streaming => FinishClass::TurnComplete,
-        UnitEnd::Completed => FinishClass::Complete,
-        UnitEnd::Refused(_) | UnitEnd::Failed { .. } => FinishClass::Error,
-        UnitEnd::Aborted(AbortBy::Client) | UnitEnd::Stalled => FinishClass::Partial,
-        UnitEnd::Aborted(AbortBy::Kernel { .. }) => FinishClass::Error,
-    }
+    // One mapping, written once in the contract and read by every plane. All this plane decides is
+    // what a COMPLETED unit is, which is a question about the exchange and not about the ending: a
+    // streamed unit ends a turn of a session that continues, a unary one ends the whole answer.
+    busbar_contract::unit::finish_class_of(
+        end,
+        if streaming {
+            FinishClass::TurnComplete
+        } else {
+            FinishClass::Complete
+        },
+    )
 }
 
 impl Plane for A2aPlane {
@@ -846,7 +850,9 @@ mod tests {
         );
     }
 
-    /// A client that went away leaves a partial answer; a kernel that ended it leaves an error.
+    /// An abort leaves a partial answer whoever performed it. `Error` is for an upstream that
+    /// reported one, and a kernel abort is this node ending a unit over an upstream that said
+    /// nothing wrong -- who did it is in the `UnitEnd` the audit row already carries.
     #[test]
     fn who_ended_it_decides_how_it_ended() {
         assert_eq!(
@@ -860,7 +866,7 @@ mod tests {
                 }),
                 false
             ),
-            busbar_contract::unit::FinishClass::Error
+            busbar_contract::unit::FinishClass::Partial
         );
         assert_eq!(
             finish_of(

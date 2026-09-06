@@ -305,11 +305,9 @@ impl Plane for AdminPlane {
     }
 
     fn audit<'u>(&self, u: &Unit<'u>, out: &UnitEnd, _ctx: &Ctx<'u>) -> AuditFacts {
-        let finish = match out {
-            UnitEnd::Completed => FinishClass::Complete,
-            UnitEnd::Refused(_) | UnitEnd::Failed { .. } => FinishClass::Error,
-            UnitEnd::Aborted(_) | UnitEnd::Stalled => FinishClass::Partial,
-        };
+        // One mapping, written once in the contract and read by every plane, because the audit
+        // record is the same record whichever door the request came in by.
+        let finish = busbar_contract::unit::finish_class_of(out, FinishClass::Complete);
         AuditFacts {
             op_class: u.op(),
             finish,

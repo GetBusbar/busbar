@@ -439,11 +439,9 @@ impl Plane for VoicePlane {
     fn audit<'u>(&self, u: &Unit<'u>, out: &UnitEnd, _ctx: &Ctx<'u>) -> AuditFacts {
         AuditFacts {
             op_class: u.op(),
-            finish: match out {
-                UnitEnd::Completed => FinishClass::TurnComplete,
-                UnitEnd::Refused(_) | UnitEnd::Failed { .. } => FinishClass::Error,
-                UnitEnd::Aborted(_) | UnitEnd::Stalled => FinishClass::Partial,
-            },
+            // One mapping, written once in the contract and read by every plane. Every unit this
+            // plane audits is a turn of a live session, so a completed one is `TurnComplete`.
+            finish: busbar_contract::unit::finish_class_of(out, FinishClass::TurnComplete),
         }
     }
 
