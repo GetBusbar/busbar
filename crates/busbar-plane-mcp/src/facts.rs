@@ -68,6 +68,19 @@ pub const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabi
 /// The metadata key naming a token progress should be reported under.
 pub const META_PROGRESS_TOKEN: &str = "progressToken";
 
+/// The same key as it appears on the wire, quoted, ready to be looked for.
+///
+/// A member is found in a document by its QUOTED name, and the quoted form of a constant is itself
+/// a constant. Building it per request — once per metadata key, on every request that carries a
+/// metadata block — spends a heap allocation to spell out something that was known when the crate
+/// was compiled. The pair below is checked against the unquoted names by a test in this module, so
+/// the two spellings cannot drift apart without the drift being said out loud.
+pub const META_PROTOCOL_VERSION_QUOTED: &[u8] = b"\"io.modelcontextprotocol/protocolVersion\"";
+
+/// The progress-token key as it appears on the wire, quoted. See
+/// [`META_PROTOCOL_VERSION_QUOTED`].
+pub const META_PROGRESS_TOKEN_QUOTED: &[u8] = b"\"progressToken\"";
+
 /// The correlation reference for one request identifier.
 ///
 /// The identifier travels as ITSELF. This protocol's request identifier is a JSON scalar the shared
@@ -260,6 +273,31 @@ mod tests {
             super::META_CLIENT_CAPABILITIES,
         ] {
             assert!(source.contains(key), "the codec no longer names {key}");
+        }
+    }
+
+    /// Each quoted needle is its own key, in quotes, and nothing else.
+    ///
+    /// The quoted forms exist so no request has to build one. That is only safe while they say the
+    /// same thing as the names they were written from, and this is what says so: change one
+    /// spelling without the other and this test names the pair that disagree.
+    #[test]
+    fn the_quoted_needles_are_the_keys_in_quotes() {
+        for (name, quoted) in [
+            (
+                super::META_PROTOCOL_VERSION,
+                super::META_PROTOCOL_VERSION_QUOTED,
+            ),
+            (
+                super::META_PROGRESS_TOKEN,
+                super::META_PROGRESS_TOKEN_QUOTED,
+            ),
+        ] {
+            assert_eq!(
+                quoted,
+                format!("\"{name}\"").as_bytes(),
+                "the quoted needle for {name} is not that key in quotes"
+            );
         }
     }
 }

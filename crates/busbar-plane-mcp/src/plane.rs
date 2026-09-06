@@ -181,24 +181,27 @@ fn request_facts<'u>(body: &'u [u8], envelope: &jsonrpc::Envelope) -> Facts<'u> 
     // block's keys carry separators, which a pointer would read as levels, so the whole block is
     // located by pointer and its members are read by name out of it.
     if let Some(block) = read_raw(body, "/params/_meta") {
-        if let Some(version) = member_of(block, f::META_PROTOCOL_VERSION) {
+        if let Some(version) = member_of(block, f::META_PROTOCOL_VERSION_QUOTED) {
             let _ = facts.set(f::FACT_PROTOCOL_VERSION, FactValue::Str(version));
         }
-        if let Some(token) = member_of(block, f::META_PROGRESS_TOKEN) {
+        if let Some(token) = member_of(block, f::META_PROGRESS_TOKEN_QUOTED) {
             let _ = facts.set(f::FACT_PROGRESS_TOKEN, FactValue::Str(token));
         }
     }
     facts
 }
 
-/// One quoted member of a flat object, by its exact name.
+/// One quoted member of a flat object, by its exact quoted name.
 ///
 /// The metadata block's own keys contain separators, and a pointer reads a separator as a level, so
 /// they cannot be reached by pointer at all. This reads the member by name instead, which is the
 /// same walk one level down and no more.
-fn member_of<'u>(object: &'u [u8], name: &str) -> Option<&'u str> {
-    let needle = format!("\"{name}\"");
-    let at = find(object, needle.as_bytes())?;
+///
+/// The name arrives ALREADY QUOTED, as the constant it is. A member is looked for by its quoted
+/// name, and quoting a compile-time constant at request time buys nothing but a heap allocation on
+/// a path that runs once per metadata key on every request that carries a metadata block.
+fn member_of<'u>(object: &'u [u8], needle: &[u8]) -> Option<&'u str> {
+    let at = find(object, needle)?;
     let mut i = at + needle.len();
     while i < object.len() && matches!(object[i], b' ' | b'\t' | b'\n' | b'\r' | b':') {
         i += 1;
@@ -988,17 +991,20 @@ mod tests {
     fn a_member_whose_name_carries_separators_is_read() {
         let block = br#"{"io.modelcontextprotocol/protocolVersion":"2026-07-28","other":1}"#;
         assert_eq!(
-            member_of(block, "io.modelcontextprotocol/protocolVersion"),
+            member_of(block, b"\"io.modelcontextprotocol/protocolVersion\""),
             Some("2026-07-28")
         );
-        assert_eq!(member_of(block, "io.modelcontextprotocol/clientInfo"), None);
+        assert_eq!(
+            member_of(block, b"\"io.modelcontextprotocol/clientInfo\""),
+            None
+        );
     }
 
     /// A member that is present and is not a string reads as absent.
     #[test]
     fn a_member_that_is_not_a_string_reads_as_absent() {
         let block = br#"{"progressToken":42}"#;
-        assert_eq!(member_of(block, "progressToken"), None);
+        assert_eq!(member_of(block, b"\"progressToken\""), None);
     }
 
     /// The codec state starts at nothing and counts up on both axes.
