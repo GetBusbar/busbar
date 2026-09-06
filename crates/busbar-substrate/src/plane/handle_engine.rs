@@ -126,8 +126,13 @@ pub struct SweepBounds {
     pub abandon_secs: u64,
     /// A TERMINAL handle stays in the working set this long (seconds) after settling, then is evicted.
     pub terminal_ttl_secs: u64,
-    /// The hard ceiling on working-set entries; oldest TERMINAL handles are dropped first, an ACTIVE
-    /// handle is never dropped to make room.
+    /// The ceiling on the TERMINAL population — NOT on the working set, and the difference is
+    /// load-bearing. Oldest terminal handles are dropped first and an ACTIVE handle is never dropped
+    /// to make room, so when nothing is terminal the cap rule has nothing it may evict and the
+    /// working set goes past this number and stays there. That is the designed answer (dropping a
+    /// live handle is forgetting work that is still running), but it means a burst of concurrent
+    /// active handles is bounded by ADMISSION or by nothing — see
+    /// `docs/design/handle-engine-retention-sweep.md`.
     pub max_retained: usize,
 }
 
@@ -557,6 +562,15 @@ impl DurableHandleEngine {
     /// `terminal_ttl_secs`; (2) if still over `max_retained`, evict oldest TERMINAL first — never an
     /// active one. Its abandon transition does durable I/O while the global lock is held — see the
     /// module-level "Lock discipline" note on the per-engine-vs-per-handle asymmetry.
+    ///
+    /// EACH RULE OPENS WITH A FULL SCAN, so this is three O(n) passes per submit under a lock every
+    /// other submit waits behind, and rule (0)'s store round-trips happen inside that window. Rule
+    /// (2) evicts only terminal handles, so a working set of live handles grows unbounded and each
+    /// pass over it gets longer — the cost grows with the condition the sweep exists to relieve. The
+    /// mechanism is due a redesign (a time-ordered expiry index, an amortised trigger, and the
+    /// abandon writes lifted outside the outer lock); what the redesign may not change is pinned by
+    /// `the_sweep_keeps_every_active_handle_and_evicts_terminal_ones_oldest_first`, and the shape is
+    /// written down in `docs/design/handle-engine-retention-sweep.md`.
     fn sweep_locked<A, R>(
         &self,
         handles: &mut HashMap<String, Arc<Mutex<HandleSlot>>>,

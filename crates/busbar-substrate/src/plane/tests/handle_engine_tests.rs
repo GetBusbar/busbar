@@ -344,6 +344,144 @@ fn the_cap_sweep_evicts_oldest_terminal_first_and_never_an_active() {
     );
 }
 
+/// THE SWEEP'S OBSERVABLE OUTCOME, PINNED BEFORE ITS MECHANISM IS CHANGED.
+///
+/// The sweep is due a redesign — it runs three full passes over the whole working set under the
+/// engine's outer lock on EVERY submit, and it does the abandon callback's durable writes while
+/// holding that lock (see the module header's lock-discipline note and the design note in
+/// `docs/design/`). What that redesign must not change is any of the four facts below, which are
+/// the whole of what a caller can see. They are asserted here first so a mechanism change that
+/// alters one of them is a red test rather than a behaviour nobody noticed moving.
+///
+/// (1) An ACTIVE handle is never evicted to make room. `max_retained` is therefore a ceiling on the
+///     TERMINAL population, not on the working set: a burst of active handles carries the set past
+///     it and the set stays over the ceiling until those handles settle or go idle. This is the
+///     designed answer — dropping a live handle would be forgetting work that is still running,
+///     which is worse than holding memory — and it is asserted rather than described because the
+///     word "hard ceiling" reads like a guarantee the sweep does not make.
+/// (2) A handle idle past `abandon_secs` is settled by the plane's abandon callback, not dropped.
+/// (3) The TERMINAL handles that survive the cap are the NEWEST ones — eviction is oldest-first by
+///     `updated_at`, and it is a total order on that key.
+/// (4) Every rule fires from a SUBMIT. Nothing sweeps on read, and nothing sweeps on a timer.
+#[test]
+fn the_sweep_keeps_every_active_handle_and_evicts_terminal_ones_oldest_first() {
+    // (1) Ten ACTIVE handles, all fresh at the same instant, against a cap of four. None is
+    // terminal, so rules (1) and (2) of the sweep have nothing to evict, and none is idle, so the
+    // abandon rule does not fire either. Every one of the ten survives.
+    let engine = DurableHandleEngine::new();
+    for i in 0..10u64 {
+        submit_demo(
+            &engine,
+            DemoRow {
+                id: format!("a{i}"),
+                owner: "o".into(),
+                updated_at: 5,
+                terminal: false,
+                cursor: 0,
+            },
+            5,
+        );
+    }
+    assert_eq!(
+        engine.len(),
+        10,
+        "an active handle is never evicted to make room, so the set is over `max_retained` (4)"
+    );
+    for i in 0..10u64 {
+        assert!(
+            engine.get_unscoped(&format!("a{i}")).is_some(),
+            "a{i} was evicted while active"
+        );
+        assert!(!engine.meta(&format!("a{i}")).unwrap().terminal);
+    }
+
+    // (2) One more submit, far enough past `abandon_secs` (100) that all ten are idle. The three
+    // rules run IN ORDER inside one sweep, and the order is the whole of the outcome: the abandon
+    // rule settles all ten first, which makes all ten TERMINAL, which is what then makes them
+    // eligible for the cap rule in the SAME pass. So a handle is abandoned and evicted in one
+    // sweep, and the seven the cap drops are the seven oldest under the sort key — every one of
+    // them now carries the sweep's own `now`, so the tie is broken by the id. THIS IS THE FACT MOST
+    // AT RISK from a mechanism change: a time-ordered index that abandoned in insertion order, or
+    // that ran the cap before the abandon rule, would evict a different seven and be just as
+    // defensible in isolation.
+    submit_demo(
+        &engine,
+        DemoRow {
+            id: "trigger".into(),
+            owner: "o".into(),
+            updated_at: 500,
+            terminal: false,
+            cursor: 0,
+        },
+        500,
+    );
+    let survives: Vec<u64> = (0..10u64)
+        .filter(|i| engine.get_unscoped(&format!("a{i}")).is_some())
+        .collect();
+    assert_eq!(
+        survives,
+        vec![7, 8, 9],
+        "the abandon rule settled all ten and the cap rule then dropped the seven oldest by \
+         (updated_at, id) in the same sweep"
+    );
+    for i in survives {
+        let id = format!("a{i}");
+        let meta = engine.meta(&id).expect("a survivor is readable");
+        assert!(meta.terminal, "{id} was left active past the abandon age");
+        assert_eq!(meta.updated_at, 500, "{id} was stamped at the sweep's now");
+    }
+    assert_eq!(engine.len(), 4, "the sweep brought the set back to the cap");
+
+    // (3) A second engine, five TERMINAL handles at distinct ages against the cap of four, and one
+    // more submit inside the terminal TTL to drive the cap rule. The eviction is oldest-first on
+    // `updated_at`: the two oldest go, every newer one stays, and the ordering is the whole of what
+    // "oldest first" means — it is not a set property and a redesign could get the set right and
+    // the order wrong.
+    let engine = DurableHandleEngine::new();
+    for i in 0..5u64 {
+        submit_demo(
+            &engine,
+            DemoRow {
+                id: format!("t{i}"),
+                owner: "o".into(),
+                updated_at: 10 + i,
+                terminal: true,
+                cursor: 0,
+            },
+            10 + i,
+        );
+    }
+    submit_demo(
+        &engine,
+        DemoRow {
+            id: "live".into(),
+            owner: "o".into(),
+            updated_at: 20,
+            terminal: false,
+            cursor: 0,
+        },
+        20,
+    );
+    let survives: Vec<u64> = (0..5u64)
+        .filter(|i| engine.get_unscoped(&format!("t{i}")).is_some())
+        .collect();
+    assert_eq!(
+        survives,
+        vec![2, 3, 4],
+        "the cap evicts the oldest terminal handles first and keeps the newest"
+    );
+    assert!(engine.get_unscoped("live").is_some());
+
+    // (4) A READ sweeps nothing. The working set is unchanged after reading every id at a `now` far
+    // past every age bound, because no read path takes a `now` at all.
+    let before = engine.len();
+    for i in 0..5u64 {
+        let _ = engine.get_unscoped(&format!("t{i}"));
+    }
+    let _ = engine.get_unscoped("live");
+    assert_eq!(before, engine.len(), "a read changed the working set");
+}
+
 #[test]
 fn an_idle_active_handle_is_abandoned_by_the_next_sweep() {
     let engine = DurableHandleEngine::new();
