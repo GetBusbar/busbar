@@ -173,9 +173,15 @@ pub trait Breaker: sealed::Sealed {
     ) -> LaneState;
 }
 
-/// One `(pool, destination)` cell key. The default cell (direct/ad-hoc routes) uses pool `""`,
-/// exactly as 1.5.5's `LaneState`-embedded default cell did.
-type CellKey = (String, DestinationId);
+/// Every `(pool, destination)` cell, nested pool-first. The default cell (direct/ad-hoc routes)
+/// lives under pool `""`, exactly as 1.5.5's `LaneState`-embedded default cell did.
+///
+/// Nested rather than keyed on a `(String, DestinationId)` tuple because a tuple key can only be
+/// looked up by a whole tuple, which means minting an owned `String` from the caller's `&str` on
+/// EVERY lookup — an allocation per admission and per observation, on the hot path, thrown away
+/// again immediately. Nested, both halves are borrowed: the pool as `&str`, the destination as the
+/// small `Copy` locator it is. Only creating a cell spells the pool name into a `String`.
+type CellMap = HashMap<String, HashMap<DestinationId, Arc<BreakerCell>>>;
 
 /// The breaker unit: every `(pool, destination)` breaker cell plus every destination's lifetime
 /// budget, behind one lock each. Cells are created lazily on first touch (a cell not yet created
@@ -187,7 +193,7 @@ type CellKey = (String, DestinationId);
 /// [`Self::with_journal`] / [`Self::with_diagnostics`] shortcuts) without this unit taking a
 /// logging dependency of its own.
 pub struct BreakerUnit<J: JournalSink = NoopJournal, D: Diagnostics = classify::NoopDiagnostics> {
-    cells: RwLock<HashMap<CellKey, Arc<BreakerCell>>>,
+    cells: RwLock<CellMap>,
     /// Which pools exist for a given destination, so a hard-down fan-out can reach every one of
     /// them without scanning the whole cell map. Populated the first time a pool cell for that
     /// destination is touched.
@@ -354,12 +360,14 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
     }
 
     fn cell(&self, pool: &str, destination: DestinationId) -> Arc<BreakerCell> {
-        let key = (pool.to_string(), destination);
+        // The hit path — every admission and every observation of an already-touched member —
+        // borrows the whole key from the caller's own arguments and allocates nothing.
         if let Some(c) = self
             .cells
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&key)
+            .get(pool)
+            .and_then(|by_destination| by_destination.get(&destination))
         {
             return c.clone();
         }
@@ -381,7 +389,9 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
             }
         }
         cells
-            .entry(key)
+            .entry(pool.to_string())
+            .or_default()
+            .entry(destination)
             .or_insert_with(|| Arc::new(BreakerCell::new()))
             .clone()
     }
@@ -395,7 +405,8 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         self.cells
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .contains_key(&(pool.to_string(), destination))
+            .get(pool)
+            .is_some_and(|by_destination| by_destination.contains_key(&destination))
     }
 
     /// Trip EVERY existing pool cell for `destination` hard-down at once (PB-83: the default `""`
