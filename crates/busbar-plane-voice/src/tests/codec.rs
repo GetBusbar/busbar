@@ -8,7 +8,7 @@
 //! `type` tokens `crates/busbar-voice/src/ir/codec/mod.rs`'s `wire` module names
 //! (`input_audio_buffer.append`, `session.created`, `response.done`).
 
-use busbar_contract::bounded::{Facts, Labels};
+use busbar_contract::bounded::{FactValue, Facts, Labels};
 use busbar_contract::ids::LaneId;
 use busbar_contract::plane::{Ingress, Plane, PlaneSessionState, Progress, SessionPlane};
 use busbar_contract::wire::FrameCursor;
@@ -636,8 +636,55 @@ fn an_upstream_error_still_meters_the_turn_it_ended() {
             .find(|l| l.class.as_str() == class)
             .and_then(|l| l.quantity)
     };
-    assert_eq!(quantity("audio_seconds_in"), Some(40_000));
+    // Forty seconds of admitted audio, metered in the seconds the class is denominated in.
+    assert_eq!(quantity("audio_seconds_in"), Some(40));
     assert_eq!(quantity("tool_calls"), Some(2));
+}
+
+/// The duration class is denominated in seconds, and the counter behind it is in milliseconds.
+///
+/// The design names the class `audio_seconds_in`. This plane counts milliseconds, because that is
+/// what a frame's byte count divides down to. Pushed through verbatim, three seconds of admitted
+/// audio settled as three thousand seconds -- a thousandfold over-report on a duration-priced class.
+#[test]
+fn admitted_milliseconds_meter_as_seconds() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let cfg = EmptyConfig;
+    let stack = WsStack::new("/v1/realtime");
+    let labels = Labels::default();
+    let c = ctx(&arena, &cfg, &stack, &labels);
+
+    let seconds_line = |ms: i64| {
+        let mut facts = Facts::new();
+        facts
+            .set(crate::meta::FACT_AUDIO_MS_IN, FactValue::Int(ms))
+            .expect("fits");
+        let response = busbar_contract::plane::Response {
+            ir: busbar_contract::bounded::Ir::new(b"{}", &[]),
+            finish: busbar_contract::unit::FinishClass::TurnComplete,
+            facts,
+        };
+        let unit = crate::tests::harness::unit(
+            busbar_contract::ids::OpClassId::new("duplex_turn"),
+            response.ir,
+            Facts::new(),
+        );
+        plane
+            .meter(&unit, &response, &c)
+            .lines
+            .as_slice()
+            .iter()
+            .find(|l| l.class.as_str() == "audio_seconds_in")
+            .and_then(|l| l.quantity)
+    };
+
+    assert_eq!(seconds_line(3_000), Some(3));
+    // A part-second rounds up rather than vanishing: audio that arrived is not audio that cost
+    // nothing, and a zero line settles exactly as an absent one.
+    assert_eq!(seconds_line(1), Some(1));
+    assert_eq!(seconds_line(1_500), Some(2));
+    assert_eq!(seconds_line(0), Some(0));
 }
 
 /// A tiny standard base64 encoder, independent of the one this crate's `twilio` module carries, so

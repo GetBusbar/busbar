@@ -418,10 +418,13 @@ impl Plane for VoicePlane {
             }
         }
         if let Some(FactValue::Int(ms)) = r.facts.get(meta::FACT_AUDIO_MS_IN) {
+            // The counter is milliseconds; the class is seconds. The conversion is the meter
+            // boundary's, stated once in `meta` — a millisecond figure carried through under a
+            // seconds-denominated class settles at a thousand times the duration it describes.
             let _ = lines.push(UsageLocator {
                 class: MeterClassId::new("audio_seconds_in"),
                 location: None,
-                quantity: u64::try_from(ms).ok(),
+                quantity: u64::try_from(ms).ok().map(meta::audio_seconds_in),
                 lane: None,
             });
         }

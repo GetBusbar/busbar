@@ -623,7 +623,10 @@ impl TurnUsage {
         if self.audio_ms_in > 0 {
             lines.push(UsageLine {
                 class: MeterClassId::new("audio_seconds_in"),
-                quantity: self.audio_ms_in,
+                // Seconds, through the plane's own boundary. The counter is milliseconds; the class
+                // the plane declares is denominated in seconds, and the figure that settles has to
+                // be in the class's unit rather than in the counter's.
+                quantity: meta::audio_seconds_in(self.audio_ms_in),
                 source: QuantitySource::Count,
                 estimated: true,
             });
@@ -1735,7 +1738,8 @@ mod tests {
         };
         assert_eq!(quantity("text_tokens_in"), Some(3));
         assert_eq!(quantity("text_tokens_out"), Some(4));
-        assert_eq!(quantity("audio_seconds_in"), Some(640));
+        // 640 ms of admitted audio is one second on a seconds-denominated class, not 640 of them.
+        assert_eq!(quantity("audio_seconds_in"), Some(1));
         assert_eq!(quantity("tool_calls"), Some(2));
 
         let ended = run(&kernel, &unit);
