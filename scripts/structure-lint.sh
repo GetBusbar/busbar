@@ -1025,6 +1025,30 @@ RS
     selftest_fail=1
   fi
 
+  # ⑫ AN ABORTED SCAN IS NOT A CLEAN ONE. Every rule in this file reads an empty hit list as its
+  #    PASS, so the one thing `scan_rule` must never do is fail quietly. awk exits non-zero on an
+  #    ERE it cannot compile; the choke-point, axis and census loops each test that status now, and
+  #    this case proves the status is really there to test. Red-before-green: with `|| true` on the
+  #    call (the shape all three loops used to have) the scanner returns empty and the caller reads
+  #    a pass, which is what the two asserts below distinguish.
+  hdr "self-test: a scanner that aborted is not a scanner that found nothing"
+  local badsrc="$SELFTEST_DIR/bad_ere.rs" bad_rc bad_out
+  printf 'pub fn prod() { let _ = 1; }\n' >"$badsrc"
+  LINT_PAT='([unclosed'; LINT_WHAT='census'; LINT_UNLESS=''
+  export LINT_PAT LINT_WHAT LINT_UNLESS
+  bad_out="$(scan_rule "$badsrc" 2>/dev/null)" && bad_rc=0 || bad_rc=$?
+  unset LINT_PAT LINT_WHAT LINT_UNLESS
+  selftest_ran=$((selftest_ran+1))
+  if [ "$bad_rc" -ne 0 ] && [ -z "$bad_out" ]; then
+    selftest_pass=$((selftest_pass+1))
+    note "ok (an uncompilable ERE makes scan_rule exit ${bad_rc} with no hits — the status is the only"
+    note "  difference between 'aborted' and 'clean', so every caller must test it)"
+  else
+    note "SELFTEST FAIL [bad_ere]: scan_rule returned rc=${bad_rc} hits=[${bad_out}] on an"
+    note "  uncompilable ERE; a caller cannot tell an aborted scan from a clean one"
+    selftest_fail=1
+  fi
+
   # A self-test that asserted nothing would report exactly what a passing one reports. So the count
   # of cases actually EXECUTED is itself an assertion: zero cases is RED, not "ok, nothing to do".
   if [ "$selftest_ran" -eq 0 ]; then
@@ -1408,7 +1432,16 @@ for row in "${CHOKE_POINTS[@]}"; do
       fail=1; ck=1
       continue
     fi
-    hits=$(scan_rule "${files[@]}")
+    # Same rule as the axis scan below: an empty hit list is this rule's PASS, so a scanner that
+    # ABORTED (awk exits 2 on an ERE it cannot compile, or on an unreadable file) must never reach
+    # that branch. `set -e` would take the whole run down here without naming the row; say which
+    # choke point could not be scanned, then keep going so the rest of the registry still reports.
+    if ! hits=$(scan_rule "${files[@]}"); then
+      note "SCAN FAILED on choke point ${cp_id} (awk exited non-zero over ${#files[@]} file(s));"
+      note "  an aborted scan returns no hits, and no hits is this rule's pass — so this is RED."
+      fail=1; ck=1
+      continue
+    fi
     if [ -n "$hits" ]; then
       while IFS= read -r h; do note "${cp_tag}: $h — ${cp_remedy}"; done <<<"$hits"
       fail=1; ck=1
@@ -2187,7 +2220,15 @@ for row in "${DECLARATION_CENSUS[@]}"; do
   fi
   LINT_PAT="$cs_pat"; LINT_WHAT="census"; LINT_UNLESS=''
   export LINT_PAT LINT_WHAT LINT_UNLESS
-  cs_hits=$(scan_rule "${cs_files[@]}" || true)
+  # The `|| true` that used to sit on this line turned an aborted scan into `cs_got=0`, which this
+  # census reports as SUBJECT-MISSING — red, but for the wrong reason and pointing the reader at the
+  # subject rather than at the scanner. Say which it was.
+  if ! cs_hits=$(scan_rule "${cs_files[@]}"); then
+    note "SCAN FAILED on census row ${cs_id} (awk exited non-zero over ${#cs_files[@]} file(s));"
+    note "  the count this row asserts was never taken, so this is RED — not a missing subject."
+    fail=1; cs=1
+    continue
+  fi
   cs_got=$({ printf '%s' "$cs_hits" | grep -c . || true; } | tr -d ' ')
   case "$(census_verdict "$cs_got" "$cs_want")" in
     MISSING)
