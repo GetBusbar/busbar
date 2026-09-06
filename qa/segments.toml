@@ -158,6 +158,36 @@ tier   = "fast"
 run    = "cargo test --release -p busbar --test field_coverage -- --ignored"
 
 [[segment]]
+id     = "teller-waist"
+status = "active"
+tier   = "fast"
+# THE `teller-waist` BUILD, RUN UNFILTERED. `busbar-llm` has two matrix legs — the default build and
+# the `teller-waist` one, which compiles the `src/unit/` step files in — and the flag changes what
+# COMPILES, not only what runs: `#[cfg(feature = "teller-waist")]` gates whole modules, so the two
+# legs are two different test binaries with two different case sets. Nothing here ran the second one
+# at all, and the cases it adds are the byte-identity rigs that hold the waist to the legacy door's
+# wire (`unit::audit`'s refusal table being the sharpest of them).
+#
+# UNFILTERED, deliberately. The obvious cheaper row is `-- unit::`, on the reasoning that the feature
+# only adds `src/unit/`. That reasoning is wrong in the direction that matters: turning the feature on
+# also changes how the ALREADY-EXISTING cases build and behave, so a `unit::`-filtered row is green
+# over a leg whose engine tests were never executed under the flag. Two engine cases were red under
+# this feature for exactly that reason, unseen, because no row ever ran them. A filter here would let
+# that recur; the whole `--lib` set is the only run that cannot.
+#
+# `--lib` (not `--all-targets`): `busbar-llm`'s integration targets are dialect oracles that do not
+# vary with this feature, and they already ride the workspace test run.
+#
+# THE cdylib BUILD IS PART OF THE ROW, not a precondition left to the caller. One case in this set
+# (`engine::signal_catalog_tests::admin_registered_hook_signals_take_effect_on_the_next_request`)
+# loads the `busbar-hook-test-plugin` cdylib from the target dir, and PANICS rather than skipping when
+# it is absent — a rig that skipped would report green over the exact code it was written to cover.
+# A `-p busbar-llm` test builds only that package's graph, so unlike the workspace run nothing here
+# would produce the artifact. Building it in the row is what makes this segment green for the right
+# reason instead of red for a build-order one.
+run    = "cargo build -p busbar-hook-test-plugin && cargo test -p busbar-llm --features teller-waist --lib"
+
+[[segment]]
 id     = "core-data-plane"
 status = "active"
 tier   = "live-mock"
