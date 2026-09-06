@@ -78,7 +78,12 @@ step() { eff="$(jq -c --arg k "$1" --arg v "$2" '. + {($k): $v}' <<<"$eff")"; }
 fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"; exit 0; }
 
 env_ "$BIN" --validate >"$W/validate.log" 2>&1; step validate_exit "$?"
-step validate_tail "$(tail -c 300 "$W/validate.log" | tr '\n' ' ')"
+# STRIP THIS RUN'S DIRS BEFORE TRUNCATING, not after. The window is a fixed number of BYTES, so
+# cutting first leaves whatever fragment of an absolute path happens to fall inside it — and a
+# fragment is no longer a path record.sh's own scrub can recognise. Two --out dirs whose names differ
+# in length then yield two different 300-byte windows of the same log, which is a byte diff on this
+# cell about where the recording was written.
+step validate_tail "$(sed -e "s|${RAW}|<WORK>|g" -e "s|${BIN}|<WORK>|g" -e "s|${repo}|<WORK>|g" "$W/validate.log" | tr '\n' ' ' | tail -c 300)"
 [ "$(jq -r .validate_exit <<<"$eff")" = 0 ] || fail 1 "$(cat "$W/validate.log")"
 env_ "$BIN" --list-plugins >"$W/plugins.log" 2>&1; step list_plugins "$(grep -w "$alias_" "$W/plugins.log" | head -1 | tr '\n' ' ')"
 
