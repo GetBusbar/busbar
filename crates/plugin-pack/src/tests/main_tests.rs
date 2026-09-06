@@ -881,3 +881,89 @@ fn unmarked_secret_looking_field_name_is_rejected() {
     });
     validate_secret_fields(&renamed).unwrap();
 }
+
+/// The `$ref`/`allOf` resolver carries its OWN depth cap, and needs to.
+///
+/// `scan`'s cap counts the levels IT descends, and this resolver recurses into itself — once through
+/// `$ref`, once per `allOf` member — without ever passing back through `scan`, so a chain that lives
+/// entirely inside the resolve step advances that counter not at all. The `resolving` set is not the
+/// backstop either: it catches a `$ref` that closes a cycle, and says nothing about a chain that is
+/// merely very long. What is left is operator-supplied input at pack time recursing as deep as it
+/// likes, and the failure at the end of that is a stack overflow — an abort with no diagnostic,
+/// which is the one answer a validator must never give.
+#[test]
+fn the_ref_resolver_caps_its_own_depth() {
+    // A NON-cyclic `allOf` chain, longer than the cap: `L0 -> L1 -> … -> L200`. Every link resolves,
+    // nothing repeats, so neither the cycle guard nor `scan`'s counter has anything to say about it.
+    const LINKS: usize = 200;
+    let mut defs = serde_json::Map::new();
+    for i in 0..LINKS {
+        let body = if i + 1 == LINKS {
+            serde_json::json!({"type": "object", "properties": {"leaf": {"type": "string"}}})
+        } else {
+            serde_json::json!({"allOf": [{"$ref": format!("#/$defs/L{}", i + 1)}]})
+        };
+        defs.insert(format!("L{i}"), body);
+    }
+    let deep = serde_json::json!({
+        "$schema": SCHEMA_2020_12,
+        "$ref": "#/$defs/L0",
+        "$defs": serde_json::Value::Object(defs),
+    });
+    let err = validate_secret_fields(&deep)
+        .expect_err("a chain past the cap must be refused, not resolved");
+    assert!(
+        err.contains("while resolving"),
+        "the RESOLVER's own cap must be what stops this — `scan`'s counter never advances inside a \
+         resolve chain, so a refusal from there would mean the test is not exercising this cap at \
+         all; got: {err}"
+    );
+
+    // And a chain WELL inside the cap still validates — the cap is a bound on the pathological
+    // case, not a new limit on schemas people actually write.
+    let mut defs = serde_json::Map::new();
+    for i in 0..8 {
+        let body = if i == 7 {
+            serde_json::json!({"type": "object", "properties": {"leaf": {"type": "string"}}})
+        } else {
+            serde_json::json!({"allOf": [{"$ref": format!("#/$defs/S{}", i + 1)}]})
+        };
+        defs.insert(format!("S{i}"), body);
+    }
+    let shallow = serde_json::json!({
+        "$schema": SCHEMA_2020_12,
+        "$ref": "#/$defs/S0",
+        "$defs": serde_json::Value::Object(defs),
+    });
+    validate_secret_fields(&shallow).expect("an ordinary nested schema still validates");
+}
+
+/// A malformed `$BUSBAR_SIGN_KEY` is reported WITHOUT quoting any of it back.
+///
+/// The hex decoder's own error names the offending character and its index, and that character is a
+/// nibble of the ed25519 signing seed. A packaging run is exactly where such a line goes to live: a
+/// CI log, a terminal scrollback, a pasted bug report. The operator needs to know which variable is
+/// malformed and what shape it must have — neither of which requires echoing the value.
+#[test]
+fn a_malformed_sign_key_is_reported_without_echoing_it() {
+    // A distinctive near-miss seed: valid hex except for one character, so the decoder has an
+    // offending character to name and it is one of the seed's own.
+    let seed = "q1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+    let err = match hex::decode(seed.trim()) {
+        Ok(_) => panic!("this fixture must not decode"),
+        Err(_) => super::sign_key_hex_error(),
+    };
+    for window in [4usize, 8, 16] {
+        for start in 0..=seed.len() - window {
+            let frag = &seed[start..start + window];
+            assert!(
+                !err.contains(frag),
+                "the refusal leaked {window} characters of the seed ({frag:?}): {err}"
+            );
+        }
+    }
+    assert!(
+        err.contains(SIGN_KEY_ENV) && err.contains("64 hex"),
+        "the refusal must still say which variable and what shape: {err}"
+    );
+}
