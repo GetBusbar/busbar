@@ -33,10 +33,12 @@ fn terminator_len(buf: &[u8], i: usize) -> Option<usize> {
 /// present yet.
 #[must_use]
 pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
-    find_frame_terminator_from(buf, 0)
+    find_frame_terminator_from(buf, 0).0
 }
 
-/// [`find_frame_terminator`], resuming at `start`.
+/// [`find_frame_terminator`], resuming at `start`, alongside how many bytes of `buf` this call
+/// examined — the pair a caller uses to pin the scan's own complexity class without a
+/// process-global counter racing every other test in the binary.
 ///
 /// A re-segmenting reader appends to its buffer and asks again; without a resume point it re-proves
 /// the prefix it already proved, once per arriving chunk, which is quadratic in the frame size. The
@@ -46,30 +48,27 @@ pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
 /// The search jumps between CR and LF bytes rather than stepping every position; a terminator
 /// begins with one of the two, so no candidate is skipped.
 #[must_use]
-pub fn find_frame_terminator_from(buf: &[u8], start: usize) -> Option<(usize, usize)> {
+pub fn find_frame_terminator_from(buf: &[u8], start: usize) -> (Option<(usize, usize)>, usize) {
     let mut i = start.min(buf.len());
-    #[cfg(test)]
-    SCANNED_BYTES.fetch_add(buf.len() - i, std::sync::atomic::Ordering::Relaxed);
-    while let Some(rel) = memchr::memchr2(b'\r', b'\n', &buf[i..]) {
+    let scanned = buf.len() - i;
+    let found = loop {
+        let Some(rel) = memchr::memchr2(b'\r', b'\n', &buf[i..]) else {
+            break None;
+        };
         let at = i + rel;
         let Some(first) = terminator_len(buf, at) else {
             // Only reachable for a trailing CR: not a terminator yet, and nothing past it to scan.
-            return None;
+            break None;
         };
         if let Some(second) = terminator_len(buf, at + first) {
-            return Some((at, first + second));
+            break Some((at, first + second));
         }
         // A line ended here but the next one is not blank: resume past the terminator itself, so a
         // CRLF is never re-read as a bare CR followed by a bare LF.
         i = at + first;
-    }
-    None
+    };
+    (found, scanned)
 }
-
-/// Bytes this scanner has looked at, for the cell that pins its complexity class.
-#[cfg(test)]
-pub(crate) static SCANNED_BYTES: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
 
 /// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
 /// no `event:` line (OpenAI style). Multiple `data:` lines in a single frame are concatenated with

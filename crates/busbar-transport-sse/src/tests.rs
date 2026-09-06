@@ -114,11 +114,14 @@ fn the_resegmentation_scan_costs_one_pass_over_the_frame_not_one_per_chunk() {
 
     let mut buf: Vec<u8> = Vec::with_capacity(frame.len());
     let mut scanned_prefix = 0_usize;
-    proto::SCANNED_BYTES.store(0, std::sync::atomic::Ordering::Relaxed);
+    let mut scanned = 0_usize;
     let mut found = None;
     for byte in &frame {
         buf.push(*byte);
-        match proto::find_frame_terminator_from(&buf, scanned_prefix.saturating_sub(3)) {
+        let (hit, examined) =
+            proto::find_frame_terminator_from(&buf, scanned_prefix.saturating_sub(3));
+        scanned += examined;
+        match hit {
             Some(hit) => {
                 found = Some(hit);
                 break;
@@ -132,7 +135,6 @@ fn the_resegmentation_scan_costs_one_pass_over_the_frame_not_one_per_chunk() {
         "the frame boundary is still found at exactly the same offset"
     );
 
-    let scanned = proto::SCANNED_BYTES.load(std::sync::atomic::Ordering::Relaxed);
     let n = frame.len();
     assert!(
         scanned < 5 * n,

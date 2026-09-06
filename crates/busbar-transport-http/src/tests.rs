@@ -761,7 +761,6 @@ fn the_header_scan_costs_one_pass_over_the_header_not_one_per_read() {
 
     let mut buf = Vec::with_capacity(header.len());
     let mut scan = HeaderScan::default();
-    SCANNED_BYTES.store(0, std::sync::atomic::Ordering::Relaxed);
     let mut found = None;
     for byte in &header {
         buf.push(*byte);
@@ -776,7 +775,7 @@ fn the_header_scan_costs_one_pass_over_the_header_not_one_per_read() {
         "the boundary is still found at exactly the same offset"
     );
 
-    let scanned = SCANNED_BYTES.load(std::sync::atomic::Ordering::Relaxed);
+    let scanned = scan.scanned;
     let n = header.len();
     assert!(
         scanned < 4 * n,
@@ -794,8 +793,7 @@ fn the_header_scan_costs_one_pass_over_the_header_not_one_per_read() {
 #[test]
 fn the_egress_header_block_is_parsed_once_across_many_write_calls() {
     let mut buffered = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n".to_vec();
-    let mut cache = None;
-    raw::PARSE_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
+    let mut cache = EgressHead::default();
 
     for i in 0..100 {
         buffered.push(b'a');
@@ -807,13 +805,15 @@ fn the_egress_header_block_is_parsed_once_across_many_write_calls() {
         );
     }
     assert_eq!(
-        raw::PARSE_CALLS.load(std::sync::atomic::Ordering::Relaxed),
-        1,
+        cache.parses, 1,
         "one header block, one parse, however many calls the body arrived in"
     );
 
     // And the cache is spent with the message: the next one parses its own headers.
-    assert!(cache.is_none(), "a completed message leaves no stale head");
+    assert!(
+        cache.head.is_none(),
+        "a completed message leaves no stale head"
+    );
 }
 
 #[test]

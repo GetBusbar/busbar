@@ -153,8 +153,9 @@ enum Inner {
         /// calls as the plane chose to write it in, and the exchange runs when the message is
         /// whole — never on a prefix of one.
         pending: AsyncMutex<Vec<u8>>,
-        /// The parsed header block of that pending message, once its terminator has arrived.
-        head: AsyncMutex<Option<CachedHead>>,
+        /// The parsed header block of that pending message, once its terminator has arrived, plus
+        /// this connection's own count of how many times it has parsed one.
+        head: AsyncMutex<EgressHead>,
     },
 }
 
@@ -411,7 +412,7 @@ impl Transport for HttpTransport {
                 resp_tx: Mutex::new(Some(tx)),
                 resp_rx: AsyncMutex::new(rx),
                 pending: AsyncMutex::new(Vec::new()),
-                head: AsyncMutex::new(None),
+                head: AsyncMutex::new(EgressHead::default()),
             });
             self.conns.lock().expect("poisoned").insert(id, inner);
             Ok(Conn::new(Arc::new(HttpConnHandle {
@@ -503,7 +504,7 @@ impl Transport for HttpTransport {
                         // The operator's cap, applied to the accumulator itself: an unsent message
                         // that outgrows what this gateway accepts is refused here rather than held.
                         buffered.clear();
-                        *cached = None;
+                        *cached = EgressHead::default();
                         return Err(TransportError::Framing);
                     }
                     let Some(raw) = complete_message(&buffered, &mut cached, self.max_body_bytes)?
@@ -745,26 +746,27 @@ impl Drop for ExchangeGuard<'_> {
 /// than a framing of it.
 fn complete_message(
     buffered: &[u8],
-    cache: &mut Option<CachedHead>,
+    cache: &mut EgressHead,
     max_body_bytes: usize,
 ) -> Result<Option<raw::RawMessage>, TransportError> {
-    if cache.is_none() {
+    if cache.head.is_none() {
         let Some(header_end) = find_header_end(buffered) else {
             return Ok(None);
         };
         let message = raw::parse_message(&buffered[..header_end]).ok_or(TransportError::Framing)?;
+        cache.parses += 1;
         if raw::has_transfer_encoding(&message.headers) && !raw::is_chunked(&message.headers) {
             // A declared coding this transport cannot frame. Falling through to `Content-Length`
             // would be answering a question the sender did not ask.
             return Err(TransportError::Framing);
         }
-        *cache = Some(CachedHead {
+        cache.head = Some(CachedHead {
             end: header_end,
             start: message.start,
             headers: message.headers,
         });
     }
-    let head = cache.as_ref().expect("set just above");
+    let head = cache.head.as_ref().expect("set just above");
     let rest = &buffered[head.end..];
 
     let (body, trailers) = if raw::is_chunked(&head.headers) {
@@ -787,7 +789,7 @@ fn complete_message(
     };
 
     // Whole: the head is spent with the message it belonged to, so the next one parses its own.
-    let mut head = cache.take().expect("set just above");
+    let mut head = cache.head.take().expect("set just above");
     // A trailer is a header that arrived late; it goes where every other header went, so
     // nothing downstream has to know which side of the body it was written on.
     head.headers.extend(trailers);
@@ -808,6 +810,16 @@ struct CachedHead {
     end: usize,
     start: raw::RawStartLine,
     headers: Vec<(String, String)>,
+}
+
+/// [`CachedHead`], plus this connection's own count of how many times it has parsed one — the cell
+/// that pins the egress side to one parse per message rather than one per `write` call. Per
+/// instance rather than a crate-global counter, so a test reading it back sees only its own
+/// connection's work, never a sibling test's sharing the same binary.
+#[derive(Default)]
+struct EgressHead {
+    head: Option<CachedHead>,
+    parses: usize,
 }
 
 /// Read one HTTP/1.1 request off an ingress connection.
@@ -965,48 +977,52 @@ fn body_frame(bytes: Vec<u8>) -> (StreamId, Frame) {
     )
 }
 
-/// Bytes this crate's header scan has looked at, for the cell that pins its complexity class.
-#[cfg(test)]
-static SCANNED_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// The offset just past the blank line that ends a header block, searching from `start`.
+/// The offset just past the blank line that ends a header block, searching from `start`, alongside
+/// how many bytes of `buf` this call examined — the pair a caller uses to pin the scan's own
+/// complexity class without a process-global counter racing every other test in the binary.
 ///
 /// The search JUMPS between line feeds rather than stepping a four-byte window over every position;
 /// the terminator's last byte is one, so no candidate is skipped. `start` may sit anywhere in the
 /// buffer: the match looks BACKWARD from the line feed it found, so a caller resuming a scan never
 /// has to have kept the three bytes before it in view.
-fn find_header_end_from(buf: &[u8], start: usize) -> Option<usize> {
+fn find_header_end_from(buf: &[u8], start: usize) -> (Option<usize>, usize) {
     let mut i = start.min(buf.len());
-    #[cfg(test)]
-    SCANNED_BYTES.fetch_add(buf.len() - i, std::sync::atomic::Ordering::Relaxed);
-    while let Some(rel) = memchr::memchr(b'\n', &buf[i..]) {
+    let scanned = buf.len() - i;
+    let found = loop {
+        let Some(rel) = memchr::memchr(b'\n', &buf[i..]) else {
+            break None;
+        };
         let at = i + rel;
         if at >= 3 && &buf[at - 3..=at] == b"\r\n\r\n" {
-            return Some(at + 1);
+            break Some(at + 1);
         }
         i = at + 1;
-    }
-    None
+    };
+    (found, scanned)
 }
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {
-    find_header_end_from(buf, 0)
+    find_header_end_from(buf, 0).0
 }
 
 /// What the header scan remembers between reads: how much of the buffer has already been proven
-/// not to hold the terminator.
+/// not to hold the terminator, and how many bytes it has examined in total.
 ///
-/// Without this the reader rescans the whole growing buffer on every read, which for a header
+/// Without the cursor the reader rescans the whole growing buffer on every read, which for a header
 /// dribbled a byte at a time is quadratic in the header size. The cursor is rewound by three
 /// bytes, because that is the most of a four-byte terminator a previous read can have left behind.
+/// `scanned` is this instance's own tally, not a crate-global one, so a test reading it back sees
+/// only the work its own scan did — never a sibling test's, running in the same binary.
 #[derive(Default)]
 struct HeaderScan {
     proven: usize,
+    scanned: usize,
 }
 
 impl HeaderScan {
     fn find(&mut self, buf: &[u8]) -> Option<usize> {
-        let found = find_header_end_from(buf, self.proven);
+        let (found, scanned) = find_header_end_from(buf, self.proven);
+        self.scanned += scanned;
         if found.is_none() {
             self.proven = buf.len().saturating_sub(3);
         }

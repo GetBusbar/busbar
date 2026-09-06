@@ -183,7 +183,7 @@ impl Transport for SseTransport {
                             continue;
                         }
                         st.buf.extend_from_slice(http_frame.bytes.as_slice());
-                        while let Some((offset, term_len)) =
+                        while let (Some((offset, term_len)), _) =
                             proto::find_frame_terminator_from(&st.buf, st.scanned.saturating_sub(3))
                         {
                             let end = offset + term_len;
