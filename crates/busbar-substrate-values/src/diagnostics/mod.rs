@@ -2868,8 +2868,15 @@ pub const PLANE_TASK_ABANDON_UNRECORDED: Diagnostic = Diagnostic {
 };
 
 /// A relayed SSE event was not valid UTF-8, so the frame was dropped rather than corrupted.
+///
+/// The number is 7104 and not the 7100 that follows this half's own last code, because the plane
+/// halves and this one draw from ONE code space and 7100–7103 were already the A2A plane's. Two
+/// entries under one number is the one thing a code cannot survive: `by_code` answers with whichever
+/// half it reaches first, so an operator who greps a number off a line gets the other half's summary
+/// and the other half's remediation. The uniqueness test each half runs walks only its own slice, so
+/// nothing said a word.
 pub const PLANE_SSE_FRAME_NOT_UTF8: Diagnostic = Diagnostic {
-    code: 7100,
+    code: 7104,
     class: Class::Plane,
     slug: "plane-sse-frame-not-utf8",
     title: "A relayed SSE frame was not valid UTF-8 and was dropped",
