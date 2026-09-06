@@ -604,12 +604,12 @@
     "crates/busbar-transport-sse/src"
    ],
    "tree_hash": "4dfff42f96a95069a657b0b9cdee84b21a5161b20ff82f4500bee59c23173f54",
-   "audited_at": "6bb07275cc1e01ab81991315a9bbbab4a9f32a3d",
-   "round": 6,
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 7,
    "result": "zero",
    "counts": {},
-   "report": "pass 2 fresh eyes: zero; all files read fully",
-   "auditor": "opus-pass2",
+   "report": "pass 3 fresh eyes: zero (two nits); all files read fully",
+   "auditor": "opus-pass3",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-sse/src/tests"
@@ -622,12 +622,15 @@
     "crates/busbar-transport-stdio/src"
    ],
    "tree_hash": "e3dc7383b3c9d22359657014256c76889159f50a0956c42b165a484336dd5cf5",
-   "audited_at": "6bb07275cc1e01ab81991315a9bbbab4a9f32a3d",
-   "round": 6,
-   "result": "zero",
-   "counts": {},
-   "report": "pass 2 fresh eyes: zero; all files read fully",
-   "auditor": "opus-pass2",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 7,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "NIT": 2
+   },
+   "report": "pass 3 fresh eyes: write never refused a payload spelling the frame delimiter (fixed fe75ded8); all files read fully",
+   "auditor": "opus-pass3",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-stdio/src/tests"
@@ -717,12 +720,15 @@
     "crates/busbar-unit-audit/src"
    ],
    "tree_hash": "26343255f8865554112494380c77058905872e5c89c8a5fc882d5675ed2d6031",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 6,
-   "result": "zero",
-   "counts": {},
-   "report": "pass 2 fresh eyes: no defect; frozen digests intact; legacy_chain/legacy_ring tests unread",
-   "auditor": "opus-pass2",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 7,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "NIT": 1
+   },
+   "report": "pass 3 fresh eyes: legacy pipe-joined digest precondition unenforced at AuditEntry (byte-frozen; owner decision); all files read fully",
+   "auditor": "opus-pass3",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-audit/src/tests"
@@ -863,12 +869,12 @@
     "crates/busbar-unit-transport-key/src"
    ],
    "tree_hash": "5a44a932d4b525fef9d58f2619a3b6d95595a12e358d01aa060b6ec4727b8538",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 6,
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 7,
    "result": "zero",
    "counts": {},
-   "report": "pass 2 fresh eyes: zero; all files read fully",
-   "auditor": "opus-pass2",
+   "report": "pass 3 fresh eyes: zero confirmed; all files read fully",
+   "auditor": "opus-pass3",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-transport-key/src/tests"
@@ -2294,13 +2300,13 @@
    "paths": [
     "testing/fleet-fixtures"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "1d4ac2eabc2db2f1f640fdc4b7c940978d3598631ad7636f1e9d80d48cf35f00",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 1,
+   "result": "in_progress",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "lib.sh and verdict.sh read in the oracle pass; probes, stub-idp, sidecars unread",
+   "auditor": "opus-pass1",
    "fixed_at": null
   },
   {
@@ -2343,13 +2349,17 @@
    "paths": [
     "testing/shadow-oracle"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "67724ba70bfb0daee9a9826ac6cfe7e8608a7d233679954fdd04651244512ff8",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 5,
+    "MEDIUM": 5,
+    "LOW": 3
+   },
+   "report": "pass 1: script cell effects compared by no class (fixed 49db991d), empty after-scrape negated absolute (fixed e5ebd9fc), first-vs-last ledger row (fixed 89490ea1); M-3 billing waiver too wide, compare blanket unpoliced, harness-rev omits lib.sh, replay skips digest check without meta field, transform guard, oracle-config set --, rigs zero-row leg reported; 20 cell drivers and fleet fixtures unread",
+   "auditor": "opus-pass1",
    "fixed_at": null
   },
   {
