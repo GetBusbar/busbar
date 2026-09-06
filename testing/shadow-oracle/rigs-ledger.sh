@@ -410,6 +410,49 @@ PY
       fi
     fi
 
+    # RED 5: a DECLARED voice leg that reports no row must be named as a FAIL. Drives the REAL
+    # fold_declared_leg_floor above against a fixture legs dir, so the guard is proven to bite rather
+    # than asserted to exist.
+    local legsdir="$tmp/legs"; mkdir -p "$legsdir"
+    : >"$legsdir/alpha.sh"; : >"$legsdir/beta.sh"; : >"$legsdir/gamma.sh"
+    local missed; missed="$(fold_declared_leg_floor "$legsdir" " alpha gamma")"
+    if [ "$missed" = "beta" ]; then
+      say "  ok: a declared leg that reported no row is named (beta), not silently dropped"
+    else
+      say "  MISS: expected the unreported leg 'beta' to be named, got: ${missed:-<nothing>}"
+      failures=$((failures+1))
+    fi
+    if [ -z "$(fold_declared_leg_floor "$legsdir" " alpha beta gamma")" ]; then
+      say "  ok: a run that reported every declared leg owes no floor row"
+    else
+      say "  MISS: a fully-reported battery still produced a missing-leg row"
+      failures=$((failures+1))
+    fi
+
+    # RED 6: the SHIPPED baseline must carry a row for every SHIPPED voice leg. A leg absent from the
+    # baseline is unprotected in the other direction: `fold_baseline_regressions` has nothing to miss,
+    # so the leg can stop running forever without a single red anywhere ("new coverage" is printed,
+    # never gated -- see the BASELINE section above). This is a static check on real, shipped files.
+    if [ -s "$BASELINE" ]; then
+      local uncovered
+      uncovered="$(python3 - "$BASELINE" "${repo}/testing/voice-conformance/legs" <<'PY'
+import glob, json, os, sys
+baseline_path, legs_dir = sys.argv[1], sys.argv[2]
+with open(baseline_path, encoding="utf-8") as f:
+    rows = (json.load(f) or {}).get("rows") or {}
+legs = sorted(os.path.basename(p)[:-3] for p in glob.glob(os.path.join(legs_dir, "*.sh")))
+print(" ".join(l for l in legs if f"voice.rig|{l}" not in rows))
+PY
+)"
+      if [ -z "$uncovered" ]; then
+        say "  ok: the baseline carries a row for every declared voice leg"
+      else
+        say "  MISS: voice leg(s) declared in the tree but absent from $(basename "$BASELINE"): $uncovered"
+        say "        (they can stop running forever without going red -- rebaseline, or explain the gap)"
+        failures=$((failures+1))
+      fi
+    fi
+
     rm -rf "$tmp"
     [ "$failures" -eq 0 ] || die "$failures self-test expectation(s) did not hold. No verdict from \
 this script means anything until they do."
