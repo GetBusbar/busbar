@@ -246,16 +246,17 @@
     "crates/busbar-core/src"
    ],
    "tree_hash": "0a1eef10e66a725f644483e54a281e4a74a2aa26c9770516151131f75d8ddc9b",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 1,
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 4,
-    "MEDIUM": 3,
-    "LOW": 1
+    "HIGH": 3,
+    "MEDIUM": 10,
+    "LOW": 6,
+    "NIT": 3
    },
-   "report": "pass 1 (partial read): rotate_key unbounded id (fixed abf9e1fe), login authorize url panic (fixed 3407bf7c); config/validate endpoint rejects plane config and reads caller paths unbounded, admin-tokens terminal reject, limits_guard commit before persist, shutdown flush_budgets gate reported; migrate.rs 1100-1740, store tests, auth chain tests unread",
-   "auditor": "opus-pass1",
+   "report": "pass 2 of the remainder (migrate, config_validate, overlay, preflight, governance, store, oauth_as, metrics, hooks read): rotate_key unbounded id (fixed 9171b866), auth.mode replaced the chain (fixed a123ac33), malformed pools/export replaced with empty (fixed d3ef203a, 133d31ad), consent decoder panic (fixed b2e21a7a); validate cannot see boot-only checks, inferred pool knobs discarded, oauth_as task leak per apply, overlay no interpolation reported",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core/src/tests"
@@ -350,13 +351,17 @@
    "paths": [
     "crates/busbar-mcp/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "f8c881fa8bfd1d941c8ed6cfc79d23438279dd4fbd323b14d414abb6b81dd9b4",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 11,
+    "LOW": 12
+   },
+   "report": "pass 1 of the legacy plane excluding method/tasks/config/peer/stdio_serve/callerask (all other files read): bare-host format carried a url past the ssrf guard (fixed c255df20), handshake id collided with round 0 (fixed 2b0b91a6), call-log dispatched for calls that never left (fixed 1294ed4b), token endpoint body unbounded (fixed e549bfdd), secret sources leaked to callers (fixed b45c979f); notify not cancel-safe, supervisor reset never fires, listen ungated, sampling input unbounded, demotion row skipped silently reported",
+   "auditor": "opus-pass1",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-mcp/src/tests"
@@ -387,14 +392,16 @@
     "crates/busbar-plane-a2a/src"
    ],
    "tree_hash": "6e4248149e6ae8af8c4a6a179ba702b39841ef75bbc19d5144af5bc0e0494760",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 6,
+   "audited_at": "54f963a4c13620f668502d0b3a73f8f63cd6cc9e",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "HIGH": 1
+    "MEDIUM": 1,
+    "LOW": 1,
+    "NIT": 1
    },
-   "report": "pass 2 fresh eyes: public agent card refused at authenticate (fixed 2f16ec85); lib/facts/meta/records and tests unread",
-   "auditor": "opus-pass2",
+   "report": "pass 3 fresh eyes (all src and tests read): push-config create decoded before its body arrived (fixed 01bfd6bb); DELETE /a2a/tasks/{id} decodes as a read",
+   "auditor": "opus-pass3",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-a2a/src/tests"
@@ -451,14 +458,17 @@
     "crates/busbar-plane-mcp/src"
    ],
    "tree_hash": "6cebc296f647d07fb7ff5737035c29b561d638216be1b83dd2cdeea59f7b7c56",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 6,
+   "audited_at": "54f963a4c13620f668502d0b3a73f8f63cd6cc9e",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "HIGH": 2
+    "HIGH": 2,
+    "MEDIUM": 1,
+    "LOW": 1,
+    "NIT": 2
    },
-   "report": "pass 2 fresh eyes: decode_response had no sender guard (fixed 16055210), claimed metadata route waited forever (fixed 87e49035); records.rs and tests unread; server notices discarded and non-object success discriminator noted",
-   "auditor": "opus-pass2",
+   "report": "pass 3 fresh eyes (all src and tests read): caller could send server notices into the catalogue write (fixed cc3fa3ed), server notices never reached their route (fixed e701cab6), non-object result lost the discriminator (fixed ce52e15d)",
+   "auditor": "opus-pass3",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-mcp/src/tests"
@@ -554,13 +564,15 @@
    "paths": [
     "crates/busbar-timing/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "38540ba8e3c850c8aff62e29a2d5e1d3a0a7686edea7ccfd79a627c7290a7ab1",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "pass 2: atexit catch site named; read fully",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-timing/src/tests"
@@ -1109,13 +1121,16 @@
    "paths": [
     "crates/plugin-loader/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "9e546c3a6f86423d5914b6fc030e74d08621813fd0b343a457e9a73199979933",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 6,
+    "LOW": 5
+   },
+   "report": "pass 2 (loader, sdk, timing, api read): read_buf no isize bound, publish_handle drop after catch_unwind, replay cache on wall clock, shim cannot say in-flight (ABI), key_bucket_plan double-count, staging dir via symlink reported; hold-escapes fixed (4e4c5cdd); stale waivers red (2c43e1f4)",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-loader/src/tests"
@@ -2259,13 +2274,13 @@
    "paths": [
     "testing/a2a-governance"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "f9f3d8b1f1fcb871d7d7d7e1d07314272df48803568d7379041f8218617069f8",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 1,
+   "result": "zero",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "pass 1: zero; all files read",
+   "auditor": "opus-pass1",
    "fixed_at": null
   },
   {
@@ -2275,13 +2290,15 @@
     "testing/a2a-harness"
    ],
    "tree_hash": "331a3a30c029e373108c7f18502cfb71c0eba1d433a7ea3f5dc2bc52a92e6bd4",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 1,
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 1
+    "MEDIUM": 1,
+    "LOW": 2,
+    "NIT": 1
    },
-   "report": "pass 1: a2a-subject boot has no execution floor (all-SKIPPED run is green); reported to the pass-2 auditor",
+   "report": "pass 1 (all files read): unrun deviation record printed red but exited 0 (fixed b7af0f50); _last_peer_requests always 0",
    "auditor": "opus-pass1",
    "fixed_at": null
   },
@@ -2292,13 +2309,15 @@
     "testing/a2a-supplement"
    ],
    "tree_hash": "9b209bd8eaa7ce35e64fc7dab654b43900bb5012fe20527f5448a7d9e4723d4d",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 1,
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 1
+    "MEDIUM": 1,
+    "LOW": 1,
+    "NIT": 1
    },
-   "report": "pass 1: runner exits 0 on 0 of 21 MUSTs demonstrated; reported to the pass-2 auditor",
+   "report": "pass 1 (all files read): zero demonstrated exited 0 and plan drifted from the registry (fixed 46930729)",
    "auditor": "opus-pass1",
    "fixed_at": null
   },
@@ -2308,13 +2327,15 @@
    "paths": [
     "testing/a2a-tck"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "ac50d746d5a76e6e56ffa1db1eeb26fe95568af15043fb4e5375d77dead7b13f",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1
+   },
+   "report": "pass 1 (all files read): subject gate had no execution floor (fixed e47b802e)",
+   "auditor": "opus-pass1",
    "fixed_at": null
   },
   {
@@ -2324,11 +2345,13 @@
     "testing/fleet-fixtures"
    ],
    "tree_hash": "1d4ac2eabc2db2f1f640fdc4b7c940978d3598631ad7636f1e9d80d48cf35f00",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "audited_at": "5af776448e064288eb5926e514f3b2c5b66a80e7",
    "round": 1,
-   "result": "in_progress",
-   "counts": {},
-   "report": "lib.sh and verdict.sh read in the oracle pass; probes, stub-idp, sidecars unread",
+   "result": "findings",
+   "counts": {
+    "HIGH": 4
+   },
+   "report": "pass 1 (all 12 files read): stub-idp mints to any unauthenticated GET, vault fixture ignores the path, export sink counts any POST, valkey namespaces never flushed; fix agent to dispatch",
    "auditor": "opus-pass1",
    "fixed_at": null
   },
@@ -2375,16 +2398,16 @@
     "testing/shadow-oracle"
    ],
    "tree_hash": "67724ba70bfb0daee9a9826ac6cfe7e8608a7d233679954fdd04651244512ff8",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 1,
+   "audited_at": "5af776448e064288eb5926e514f3b2c5b66a80e7",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 5,
-    "MEDIUM": 5,
-    "LOW": 3
+    "HIGH": 1,
+    "MEDIUM": 2,
+    "LOW": 4
    },
-   "report": "pass 1: script cell effects compared by no class (fixed 49db991d), empty after-scrape negated absolute (fixed e5ebd9fc), first-vs-last ledger row (fixed 89490ea1); M-3 billing waiver too wide, compare blanket unpoliced, harness-rev omits lib.sh, replay skips digest check without meta field, transform guard, oracle-config set --, rigs zero-row leg reported; 20 cell drivers and fleet fixtures unread",
-   "auditor": "opus-pass1",
+   "report": "pass 2 of the 23 drivers and fixtures (all read): hazard driver recorded a harness failure as a pass (fixed 55dd518e), wall clocks in effects (fixed ddcc6324), golden pass outside the owed ratchet (fixed 7c65e247); teller failover evidence non-discriminating; plugin-list ports hardcoded",
+   "auditor": "opus-pass2",
    "fixed_at": null
   },
   {
