@@ -9856,6 +9856,9 @@
         "listener": "admin"
       },
       "why": "If-Match malformed: [400]",
+      "inventory": [
+        "CFG-220"
+      ],
       "config_variant": "hooks",
       "bindings": [
         "PB-100"
@@ -9879,6 +9882,9 @@
         "listener": "admin"
       },
       "why": "If-Match stale: [409]",
+      "inventory": [
+        "CFG-220"
+      ],
       "config_variant": "hooks",
       "bindings": [
         "PB-100"
@@ -9928,6 +9934,9 @@
         ]
       },
       "why": "ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (per the config inventory's hook-module row); the compi",
+      "inventory": [
+        "CFG-220"
+      ],
       "config_variant": "hooks"
     },
     {
@@ -18390,7 +18399,10 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "405 protocol-native (the protocol-native-status-code rule)"
+      "why": "405 protocol-native (the protocol-native-status-code rule)",
+      "inventory": [
+        "RT-014"
+      ]
     },
     {
       "id": "http.crosscut|x-api-key-only|bad",
@@ -30488,7 +30500,10 @@
         "auth": "none",
         "listener": "admin"
       },
-      "why": "same on the admin listener (the admin-listener parity rule)"
+      "why": "same on the admin listener (the admin-listener parity rule)",
+      "inventory": [
+        "RT-003"
+      ]
     },
     {
       "id": "ops.scrape|healthz|data",

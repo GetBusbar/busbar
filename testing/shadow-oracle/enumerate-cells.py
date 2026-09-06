@@ -254,7 +254,7 @@ def scrape_cells() -> list[dict]:
         http("ops.scrape|/stats|key", F, "GET", "/stats", why="20 per-lane fields, 'unbounded', variant names", bindings=["PB-43"]),
         http("ops.scrape|/stats|none", F, "GET", "/stats", auth="none", why="auth chain applies"),
         http("ops.scrape|/healthz|data", F, "GET", "/healthz", auth="none", why="unconditional bypass; 200 ok"),
-        http("ops.scrape|/healthz|admin", F, "GET", "/healthz", auth="none", listener="admin", why="same on the admin listener (the admin-listener parity rule)"),
+        http("ops.scrape|/healthz|admin", F, "GET", "/healthz", auth="none", listener="admin", why="same on the admin listener (the admin-listener parity rule)", inventory=["RT-003"]),
         http("ops.scrape|/v1/models|openai-fp", F, "GET", "/v1/models", why="openai envelope by fingerprint (no x-api-key rung)", bindings=["PB-100"]),
         http("ops.scrape|/v1/models|anthropic-fp", F, "GET", "/v1/models", headers={"anthropic-version": "2023-06-01"}, why="anthropic envelope"),
         http("ops.scrape|/v1/models|x-api-key", F, "GET", "/v1/models", headers={"x-api-key": "irrelevant"}, why="x-api-key is NOT a rung for /v1/models"),
@@ -280,7 +280,7 @@ def crosscut_cells() -> list[dict]:
         http("http.crosscut|admin-unknown|admin", F, "GET", "/api/v1/admin/nope", auth="admin", listener="admin", why="nested not_found envelope", bindings=["PB-76"]),
         http("http.crosscut|admin-outside-prefix|admin", F, "GET", "/nope", auth="admin", listener="admin", why="outer admin router: empty-bodied 404", bindings=["PB-76"]),
         http("http.crosscut|admin-wrong-method|admin", F, "DELETE", "/api/v1/admin/info", auth="admin", listener="admin", why="method_not_allowed envelope"),
-        http("http.crosscut|wrong-method|GET-messages", F, "GET", "/v1/messages", why="405 protocol-native (the protocol-native-status-code rule)"),
+        http("http.crosscut|wrong-method|GET-messages", F, "GET", "/v1/messages", why="405 protocol-native (the protocol-native-status-code rule)", inventory=["RT-014"]),
         http("http.crosscut|OPTIONS|chat", F, "OPTIONS", "/v1/chat/completions", auth="none", why="no CORS layer ever; OPTIONS => None", bindings=["PB-100"]),
         http("http.crosscut|HEAD|healthz", F, "HEAD", "/healthz", auth="none", why="HEAD on a GET route"),
         http("http.crosscut|413|openai", F, "POST", "/v1/chat/completions", body=BIG_BODY, why="oversize after auth, dialect-shaped", bindings=["PB-60"]),
@@ -393,6 +393,10 @@ def admin_cells() -> list[dict]:
     for opid, op in sorted(ops.items()):
         base_path = op["path"]
         why = op.get("notes", "")[:160]
+        # The inventory rows this operation is pinned against, as data. Same reason `bindings` is a
+        # field: inventory-coverage.py asks "does any cell cite this row id?", so a row id belongs
+        # where a program can see it rather than inside a truncated note.
+        inv = {"inventory": op["inventory"]} if op.get("inventory") else {}
         if op.get("restart"):
             # PostRestart ends the process; recorded as its own cell (fresh boot, expect 202 then exit)
             pass
@@ -400,7 +404,8 @@ def admin_cells() -> list[dict]:
         if op.get("ok"):
             c = http(f"admin.ops|{opid}|ok", F, op["method"], _path_of(op, op["ok"]),
                      auth="admin", listener="admin", headers=op["ok"].get("headers") or {},
-                     body=_req_of(op, op["ok"])["body"], why=why, **({"config_variant": variant} if variant else {}))
+                     body=_req_of(op, op["ok"])["body"], why=why, **inv,
+                     **({"config_variant": variant} if variant else {}))
             if opid == "GetAudit":
                 # A deterministic 4-action chain on a FRESH boot, so the audit content comparison pins
                 # the four action literals AND the chain's link integrity (each entry's hash seals the
