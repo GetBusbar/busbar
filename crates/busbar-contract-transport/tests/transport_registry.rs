@@ -26,21 +26,23 @@ fn declared(
     }
 }
 
+/// A layered stack passes, whatever the layers are called.
+///
+/// This crate sits BELOW every transport, so it cannot name one: the seven real transports' rows
+/// are unreachable from here, and the table that used to stand in for them was typed by hand. It
+/// drifted, silently, in both columns — `ws` gained a layer and `grpc` changed the one it is built
+/// over, and neither edit touched this file. The real table is read off the live transports in
+/// `busbar`'s own `transport_composed_over_consistency` witness, where they are reachable and where
+/// nothing has to be retyped. What is left here is what belongs here: the checker's own shape, over
+/// names that are deliberately not the node's, so no reader mistakes them for a description of it.
 #[test]
-fn the_real_stack_boots() {
-    // `tcp → tls → http → { sse, ws, grpc }`, with `stdio` standing on its own — the seven
-    // transports' actual `TransportMeta::COMPOSES_OVER` declarations and `Transport::composed_over`
-    // answers, side by side. `tcp`, `tls` and `http` each open their own socket and answer `None`
-    // regardless of what they declare; `sse`, `ws` and `grpc` are only ever built by holding (or
-    // being handed) another instance, so they name it; `stdio` composes over nothing at all.
+fn a_layered_stack_passes() {
     let registry = [
-        declared("tcp", &[], None),
-        declared("tls", &["tcp"], None),
-        declared("http", &["tcp", "tls"], None),
-        declared("sse", &["http"], Some("http")),
-        declared("ws", &["http", "tcp"], Some("http")),
-        declared("grpc", &["http", "tcp"], Some("tcp")),
-        declared("stdio", &[], None),
+        declared("base", &[], None),
+        declared("middle", &["base"], None),
+        declared("upper", &["base", "middle"], None),
+        declared("leaf", &["upper"], Some("upper")),
+        declared("alone", &[], None),
     ];
     assert_eq!(check_composition(&registry), Ok(()));
 }
