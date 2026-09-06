@@ -370,6 +370,7 @@ fn what_a_submit_costs_on_a_ten_thousand_handle_working_set() {
             Ok(RehydrateOutcome::Active {
                 id: row.id.clone(),
                 pos: ChainPosition::genesis(),
+                row_record: row.record(),
                 row: row.arc(),
                 meta,
                 event_unreadable: 0,
@@ -832,6 +833,7 @@ fn a_boot_rehydrate_counts_active_terminal_and_unreadable() {
             Ok(RehydrateOutcome::Active {
                 id: row.id.clone(),
                 pos: ChainPosition::genesis(),
+                row_record: row.record(),
                 row: row.arc(),
                 meta,
                 event_unreadable: 0,
@@ -1200,6 +1202,7 @@ fn a_submit_whose_genesis_append_fails_leaves_no_durable_row() {
             Ok(RehydrateOutcome::Active {
                 id: row.id.clone(),
                 pos: ChainPosition::genesis(),
+                row_record: row.record(),
                 row: row.arc(),
                 meta,
                 event_unreadable: 0,
@@ -1207,4 +1210,252 @@ fn a_submit_whose_genesis_append_fails_leaves_no_durable_row() {
         })
         .expect("rehydrate");
     assert_eq!(counts.active, 0, "a boot resumes no orphan");
+}
+
+/// An abandon that also opens a CHAIN LINK as it settles — the two-write shape (row upsert, then
+/// event append) whose second half is the one that can fail.
+fn demo_abandon_with_event(
+    id: &str,
+    row: &(dyn std::any::Any + Send + Sync),
+    _pos: &ChainPosition,
+    now: u64,
+) -> Option<Mutation> {
+    let row = row.downcast_ref::<DemoRow>()?;
+    let mut next = row.clone();
+    next.terminal = true;
+    next.updated_at = now;
+    let record = next.record();
+    let meta = next.meta();
+    Some(Mutation {
+        row: Some(next.arc()),
+        meta: Some(meta),
+        row_record: Some(record.clone()),
+        event: Some(SealedEvent {
+            record,
+            tail_hash: format!("h-abandon-{id}"),
+        }),
+    })
+}
+
+/// A submit that opens NO chain — the trigger a test needs when the store's appends are failing and
+/// the point of the exercise is the SWEEP the submit runs, not the submit's own genesis.
+fn submit_chainless<A>(
+    engine: &DurableHandleEngine,
+    row: DemoRow,
+    now: u64,
+    abandon: A,
+) -> Result<(), HandleEngineError>
+where
+    A: Fn(&str, &(dyn std::any::Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
+{
+    engine
+        .submit(
+            now,
+            bounds(),
+            |_pos| {
+                let record = row.record();
+                let meta = row.meta();
+                Ok(SubmitRecord {
+                    id: row.id.clone(),
+                    row: row.clone().arc(),
+                    meta,
+                    row_record: record,
+                    event: None,
+                })
+            },
+            abandon,
+            no_report,
+        )
+        .map(|_| ())
+}
+
+/// The mutation every arm of the divergence test applies: settle the handle AND append the link that
+/// records the settlement.
+fn settle_with_event(
+    row: &(dyn std::any::Any + Send + Sync),
+    now: u64,
+) -> Result<Option<Mutation>, MutateError> {
+    let cur = row.downcast_ref::<DemoRow>().expect("demo row");
+    let mut next = cur.clone();
+    next.terminal = true;
+    next.updated_at = now;
+    let record = next.record();
+    let meta = next.meta();
+    Ok(Some(Mutation {
+        row: Some(next.arc()),
+        meta: Some(meta),
+        row_record: Some(record.clone()),
+        event: Some(SealedEvent {
+            record,
+            tail_hash: "h-settle".to_string(),
+        }),
+    }))
+}
+
+/// The durable `demo` row for `id`, decoded — what a restart would read back.
+fn durable_row(store: &MemStore, id: &str) -> Option<DemoRow> {
+    store
+        .rows
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|r| r.id == id)
+        .and_then(|r| DemoRow::from_body(&r.body))
+}
+
+/// A MUTATION WHOSE EVENT APPEND FAILS TAKES ITS ROW WRITE BACK — ON EVERY ARM.
+///
+/// The row upsert and the event append are two writes, not one transaction, and the mutation applies
+/// NOTHING to memory when the second fails. What must not survive is the row alone: a durable row
+/// that says TERMINAL while the live handle says ACTIVE is a divergence the next boot resolves the
+/// wrong way — `rehydrate` counts the handle terminal, with no event linking it to the transition
+/// that supposedly settled it. So the last-persisted row goes back down before the failure returns,
+/// on the sweep's abandon arm and on the scoped-mutate arm alike.
+#[test]
+fn a_mutation_whose_event_append_fails_leaves_no_durable_divergence() {
+    // ARM ONE: the SWEEP's abandon.
+    let store = Arc::new(MemStore::default());
+    let engine = DurableHandleEngine::new();
+    engine.set_sink(store.clone() as Arc<dyn PlaneStore>);
+    submit_demo_bounded(
+        &engine,
+        DemoRow {
+            id: "idle".into(),
+            owner: "alice".into(),
+            updated_at: 0,
+            terminal: false,
+            cursor: 0,
+        },
+        0,
+        bounds(),
+        demo_abandon_with_event,
+    );
+    store
+        .append_fails
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    // A chainless submit past the abandon ceiling runs the sweep without needing an append of its own.
+    submit_chainless(
+        &engine,
+        DemoRow {
+            id: "fresh".into(),
+            owner: "alice".into(),
+            updated_at: 1000,
+            terminal: false,
+            cursor: 0,
+        },
+        1000,
+        demo_abandon_with_event,
+    )
+    .expect("the chainless submit lands");
+    assert!(
+        !engine.meta("idle").unwrap().terminal,
+        "a failed abandon leaves the handle ACTIVE in memory"
+    );
+    assert_eq!(
+        durable_row(&store, "idle").expect("the row is still there"),
+        DemoRow {
+            id: "idle".into(),
+            owner: "alice".into(),
+            updated_at: 0,
+            terminal: false,
+            cursor: 0,
+        },
+        "the durable row still says exactly what memory says"
+    );
+
+    // ARM TWO: the owner's own `scoped_mutate`.
+    let store = Arc::new(MemStore::default());
+    let engine = DurableHandleEngine::new();
+    engine.set_sink(store.clone() as Arc<dyn PlaneStore>);
+    submit_demo(
+        &engine,
+        DemoRow {
+            id: "a".into(),
+            owner: "alice".into(),
+            updated_at: 1,
+            terminal: false,
+            cursor: 0,
+        },
+        1,
+    );
+    store
+        .append_fails
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let outcome = engine.scoped_mutate("alice", "a", |row, _pos| settle_with_event(row, 2));
+    assert!(
+        matches!(outcome, Err(ScopedMutateError::Store(_))),
+        "the caller is told the mutation did not land"
+    );
+    assert!(
+        !engine.meta("a").unwrap().terminal,
+        "a failed mutation leaves the handle ACTIVE in memory"
+    );
+    assert_eq!(
+        durable_row(&store, "a").expect("the row is still there"),
+        DemoRow {
+            id: "a".into(),
+            owner: "alice".into(),
+            updated_at: 1,
+            terminal: false,
+            cursor: 0,
+        },
+        "the durable row still says exactly what memory says"
+    );
+}
+
+/// THE ROLLBACK TARGET SURVIVES A RESTART.
+///
+/// A handle brought back by `rehydrate` has never been through `submit` in THIS process, so the
+/// last-persisted row it would roll back to is one the boot has to install. Without it the very
+/// first post-boot mutation is the one case with nothing to restore — which is the case a restart
+/// makes ordinary, not exotic.
+#[test]
+fn a_rehydrated_handle_rolls_its_row_back_when_the_first_append_fails() {
+    let store = Arc::new(MemStore::default());
+    let seeded = DemoRow {
+        id: "resumed".into(),
+        owner: "alice".into(),
+        updated_at: 5,
+        terminal: false,
+        cursor: 3,
+    };
+    store.upsert_plane_record(&seeded.record()).unwrap();
+
+    let engine = DurableHandleEngine::new();
+    let counts = engine
+        .rehydrate(store.as_ref(), "demo", |_store, body| {
+            let Some(row) = DemoRow::from_body(body) else {
+                return Ok(RehydrateOutcome::Unreadable);
+            };
+            let meta = row.meta();
+            Ok(RehydrateOutcome::Active {
+                id: row.id.clone(),
+                pos: ChainPosition::genesis(),
+                row_record: row.record(),
+                row: row.arc(),
+                meta,
+                event_unreadable: 0,
+            })
+        })
+        .expect("rehydrate");
+    assert_eq!(counts.active, 1);
+
+    engine.set_sink(store.clone() as Arc<dyn PlaneStore>);
+    store
+        .append_fails
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let outcome = engine.mutate("resumed", |row, _pos| settle_with_event(row, 9));
+    assert!(
+        matches!(outcome, Err(HandleEngineError::Store(_))),
+        "the caller is told the mutation did not land"
+    );
+    assert!(
+        !engine.meta("resumed").unwrap().terminal,
+        "the resumed handle is still ACTIVE in memory"
+    );
+    assert_eq!(
+        durable_row(&store, "resumed").expect("the row is still there"),
+        seeded,
+        "the row a restart would read back is the one memory still agrees with"
+    );
 }
