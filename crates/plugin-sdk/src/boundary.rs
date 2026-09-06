@@ -23,7 +23,8 @@
 //! the boundary helpers thread the guards. There is no seam on which an author can get a facet wrong.
 
 use busbar_plugin::cold::{
-    STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL, STATUS_UNSUPPORTED,
+    MAX_PLUGIN_RESPONSE_LEN, STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL,
+    STATUS_UNSUPPORTED,
 };
 use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -62,18 +63,43 @@ impl OutBuf {
     /// write path and is handed to the non-null slot in the same breath, so there is no ordering a
     /// caller can pick that leaks. This is the null-out-guard-before-alloc invariant, made structural.
     ///
+    /// Enforces [`MAX_PLUGIN_RESPONSE_LEN`], whose own documentation says it is "checked BEFORE
+    /// allocation on both sides" — the loader held up its half and this side did not, so an oversize
+    /// reply was published as a perfectly well-formed `STATUS_OK` and only refused a call later, at
+    /// the loader, as a protocol violation by a plugin that had done nothing wrong except be too
+    /// verbose. Refusing it HERE turns it into what it actually is: a defined backend error, named,
+    /// on the plugin's own side of the seam, with the cap in the message so the author can see the
+    /// number they exceeded. Returns the status the export must report, which is `status` unchanged
+    /// unless the cap tripped.
+    ///
     /// # Safety
     /// `out`/`out_len`, when non-null, are writable per the ABI.
-    pub(crate) unsafe fn commit(self, out: *mut *mut u8, out_len: *mut usize) {
+    pub(crate) unsafe fn commit(self, status: i32, out: *mut *mut u8, out_len: *mut usize) -> i32 {
+        let (status, bytes) = if self.0.len() > MAX_PLUGIN_RESPONSE_LEN {
+            let over = self.0.len();
+            // Drop the oversize payload BEFORE building the replacement: never hold both.
+            drop(self.0);
+            (
+                STATUS_ERR,
+                format!(
+                    "plugin response of {over} bytes exceeds the \
+                     {MAX_PLUGIN_RESPONSE_LEN}-byte MAX_PLUGIN_RESPONSE_LEN cap"
+                )
+                .into_bytes(),
+            )
+        } else {
+            (status, self.0)
+        };
         if out.is_null() || out_len.is_null() {
             // Null path: the `Vec` drops normally; no `Box::into_raw` ever happened, so no orphan.
-            return;
+            return status;
         }
-        let boxed = self.0.into_boxed_slice();
+        let boxed = bytes.into_boxed_slice();
         let len = boxed.len();
         let ptr = Box::into_raw(boxed) as *mut u8;
         *out = ptr;
         *out_len = len;
+        status
     }
 }
 
@@ -152,8 +178,7 @@ pub unsafe fn call_boundary(
         Err(()) => return STATUS_PROTOCOL,
     };
     let (status, payload) = run_boundary(|| dispatch(handle, bytes));
-    OutBuf::new(payload).commit(out, out_len);
-    status
+    OutBuf::new(payload).commit(status, out, out_len)
 }
 
 /// `busbar_open` body for ANY kind. `ctor_run` decodes the `&str` config and runs the constructor,
@@ -191,24 +216,28 @@ pub unsafe fn open_boundary<T: 'static>(
         Ok(Ok(instance)) => match publish_handle(instance, out_handle) {
             Ok(()) => STATUS_OK,
             Err(()) => {
-                OutBuf::new(b"null out_handle pointer".to_vec()).commit(out_err, out_err_len);
+                OutBuf::new(b"null out_handle pointer".to_vec()).commit(
+                    STATUS_ERR,
+                    out_err,
+                    out_err_len,
+                );
                 STATUS_PROTOCOL
             }
         },
         Ok(Err(CtorFail::Protocol(m))) => {
-            OutBuf::new(m.into_bytes()).commit(out_err, out_err_len);
+            OutBuf::new(m.into_bytes()).commit(STATUS_ERR, out_err, out_err_len);
             STATUS_PROTOCOL
         }
         Ok(Err(CtorFail::Error(m))) => {
-            OutBuf::new(m.into_bytes()).commit(out_err, out_err_len);
+            OutBuf::new(m.into_bytes()).commit(STATUS_ERR, out_err, out_err_len);
             STATUS_ERR
         }
         Ok(Err(CtorFail::Unsupported(m))) => {
-            OutBuf::new(m.into_bytes()).commit(out_err, out_err_len);
+            OutBuf::new(m.into_bytes()).commit(STATUS_ERR, out_err, out_err_len);
             STATUS_UNSUPPORTED
         }
         Err(_) => {
-            OutBuf::new(PANIC_MSG.to_vec()).commit(out_err, out_err_len);
+            OutBuf::new(PANIC_MSG.to_vec()).commit(STATUS_ERR, out_err, out_err_len);
             STATUS_PANIC
         }
     }

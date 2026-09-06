@@ -21,7 +21,8 @@
 //! point makes all three unrepresentable, and these assertions pin that.
 
 use busbar_plugin::cold::{
-    STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL, STATUS_UNSUPPORTED,
+    MAX_PLUGIN_RESPONSE_LEN, STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL,
+    STATUS_UNSUPPORTED,
 };
 use busbar_plugin_sdk::boundary::{
     call_boundary, close_boundary, free_boundary, open_boundary, BoundaryOutcome,
@@ -133,6 +134,8 @@ fn dispatch(_handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcome {
         b"panic" => panic!("dispatch panic injection"),
         b"unsupported" => BoundaryOutcome::Unsupported("cannot decode this variant".to_string()),
         b"err" => BoundaryOutcome::Error("backend failed on purpose".to_string()),
+        // One byte past the shared cap — the smallest payload that must be refused.
+        b"oversize" => BoundaryOutcome::Ok(vec![b'x'; MAX_PLUGIN_RESPONSE_LEN + 1]),
         other => BoundaryOutcome::Ok([b"ok:", other].concat()),
     }
 }
@@ -338,5 +341,37 @@ fn happy_path_roundtrips_and_is_leak_free() {
             delta, 0,
             "the full open→call→free→close cycle must leak nothing"
         );
+    }
+}
+
+/// `MAX_PLUGIN_RESPONSE_LEN` documents itself as "checked BEFORE allocation on both sides". The
+/// loader checked its half; this side did not, so a plugin returning one byte past the cap published
+/// a well-formed `STATUS_OK` and the refusal happened a call later, at the loader, phrased as a
+/// protocol violation. The cap is now enforced where the payload is built, as a defined error that
+/// NAMES the number that was exceeded.
+#[test]
+fn oversize_response_is_refused_at_the_boundary_naming_the_cap() {
+    unsafe {
+        let handle = open(b"plain");
+        let mut out: *mut u8 = ptr::null_mut();
+        let mut out_len: usize = 0;
+        let st = call(handle, b"oversize", &mut out, &mut out_len);
+
+        assert_eq!(
+            st, STATUS_ERR,
+            "a response past MAX_PLUGIN_RESPONSE_LEN must be a defined error, not STATUS_OK"
+        );
+        let msg = String::from_utf8_lossy(std::slice::from_raw_parts(out, out_len)).into_owned();
+        assert!(
+            msg.contains(&MAX_PLUGIN_RESPONSE_LEN.to_string()),
+            "the refusal must name the cap it exceeded; got {msg:?}"
+        );
+        assert!(
+            out_len <= MAX_PLUGIN_RESPONSE_LEN,
+            "the replacement message must itself be within the cap"
+        );
+
+        free_boundary(out, out_len);
+        close_boundary::<TestHandle>(handle);
     }
 }
