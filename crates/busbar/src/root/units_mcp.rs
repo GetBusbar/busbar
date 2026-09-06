@@ -725,22 +725,31 @@ pub fn provider_origin() -> OriginKind {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// One thing the caller is asking to act on.
+///
+/// The name is borrowed rather than `'static` because the fine-grained one is not a registration: a
+/// tool name arrives in the caller's own frame and is read out of it, so it lives as long as the
+/// decoded unit does and no longer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Resource {
+pub struct Resource<'n> {
     /// The kind, in this plane's vocabulary.
     pub kind: &'static str,
-    /// The registration the request is about.
-    pub name: &'static str,
+    /// The registration or the tool the request is about.
+    pub name: &'n str,
 }
 
 /// The resources one operation class names.
 ///
-/// A call names two: the server it is on and the tool namespace within it. Everything else names the
-/// server alone. The coarse grant never stands in for the fine one — that is the reason there are
-/// two kinds rather than one — and a deployment with nothing registered names nothing at all, which
-/// the scope unit reads as a refusal rather than as a pass.
+/// A call names two: the server it is on and the TOOL it invokes — the tool, by its own name, and
+/// not the server's name a second time. Naming the server twice would collapse every tool on one
+/// registration into a single scope, so a grant for the harmless tool would carry the destructive
+/// one; that is exactly the substitution the two kinds exist to prevent. The subject the ingress
+/// read off the call is what supplies it.
+///
+/// Everything else names the server alone. A deployment with nothing registered names nothing at
+/// all, and so does a call that names no tool — both are read by the scope unit as a refusal rather
+/// than as a pass.
 #[must_use]
-pub fn resources(plane: &McpPlane, op: OpClassId) -> Vec<Resource> {
+pub fn resources<'n>(plane: &McpPlane, op: OpClassId, tool: Option<&'n str>) -> Vec<Resource<'n>> {
     let Some(server) = plane.servers().first() else {
         return Vec::new();
     };
@@ -749,9 +758,12 @@ pub fn resources(plane: &McpPlane, op: OpClassId) -> Vec<Resource> {
         name: server.id,
     }];
     if op == ops::OP_TOOL_CALL {
+        let Some(tool) = tool.filter(|t| !t.is_empty()) else {
+            return Vec::new();
+        };
         out.push(Resource {
             kind: SCOPE_KIND_TOOL,
-            name: server.id,
+            name: tool,
         });
     }
     out
@@ -765,8 +777,8 @@ pub enum ApproveRefusal {
     NoPolicyEntry,
     /// The policy named a scope, and the caller does not hold it.
     Insufficient(Refused),
-    /// The plane named no resource, because the deployment registered no server. There is nothing
-    /// here to be authorized to reach.
+    /// The plane named no resource: the deployment registered no server, or the call named no tool.
+    /// There is nothing here to be authorized to reach.
     NoResource,
 }
 
@@ -779,13 +791,14 @@ pub enum ApproveRefusal {
 ///
 /// The hook seats are not here. `approve` runs first and a veto after it wins regardless, which is a
 /// composition the root makes around this call rather than something the scope unit can express.
-pub fn approve(
+pub fn approve<'n>(
     plane: &McpPlane,
     op: OpClassId,
+    tool: Option<&'n str>,
     held: Grants,
     policy: &dyn PolicyView,
-) -> Result<Vec<Resource>, ApproveRefusal> {
-    let resources = resources(plane, op);
+) -> Result<Vec<Resource<'n>>, ApproveRefusal> {
+    let resources = resources(plane, op, tool);
     if resources.is_empty() {
         return Err(ApproveRefusal::NoResource);
     }
@@ -1331,7 +1344,7 @@ pub struct Ended<'a> {
     /// Who was calling, where the loop resolved them.
     pub principal: Option<&'a PrincipalId>,
     /// What the record names as the thing acted on.
-    pub resource: Option<Resource>,
+    pub resource: Option<Resource<'a>>,
 }
 
 /// The evidence one ended unit settles against.
@@ -2452,7 +2465,9 @@ mod tests {
 
     /// A call names both resource kinds; everything else names only the server.
     ///
-    /// The coarse grant never stands in for the fine one, which is the whole reason there are two.
+    /// The coarse grant never stands in for the fine one, which is the whole reason there are two —
+    /// and the fine one is only fine if it carries the TOOL's name. Two tools on one registration
+    /// have to reach two different scopes, or a grant for the reader is a grant for the deleter.
     #[test]
     fn a_call_names_the_tool_as_well_as_the_server() {
         static SERVERS: &[Server] = &[Server {
@@ -2463,12 +2478,23 @@ mod tests {
         }];
         let plane = McpPlane::new(SERVERS);
 
-        let call = resources(&plane, ops::OP_TOOL_CALL);
+        let call = resources(&plane, ops::OP_TOOL_CALL, Some("read_file"));
         assert_eq!(call.len(), 2);
         assert_eq!(call[0].kind, SCOPE_KIND_SERVER);
+        assert_eq!(call[0].name, "fs");
         assert_eq!(call[1].kind, SCOPE_KIND_TOOL);
+        assert_eq!(call[1].name, "read_file");
 
-        let listing = resources(&plane, ops::OP_TOOLS_LIST);
+        // The two tools of one registration do not collapse onto one scope.
+        let destructive = resources(&plane, ops::OP_TOOL_CALL, Some("delete_file"));
+        assert_eq!(destructive[1].name, "delete_file");
+        assert_ne!(call[1], destructive[1]);
+
+        // A call that named no tool names no resource at all, which is a refusal rather than a pass.
+        assert!(resources(&plane, ops::OP_TOOL_CALL, None).is_empty());
+        assert!(resources(&plane, ops::OP_TOOL_CALL, Some("")).is_empty());
+
+        let listing = resources(&plane, ops::OP_TOOLS_LIST, None);
         assert_eq!(listing.len(), 1);
         assert_eq!(listing[0].kind, SCOPE_KIND_SERVER);
     }
@@ -2484,6 +2510,7 @@ mod tests {
         let refusal = approve(
             &McpPlane::EMPTY,
             ops::OP_TOOL_CALL,
+            Some("read_file"),
             Grants::of(Scope::Full),
             &policy,
         )
@@ -2505,8 +2532,14 @@ mod tests {
         }];
         let plane = McpPlane::new(SERVERS);
         let silent = crate::root::policy::ScopePolicy::new();
-        let refusal = approve(&plane, ops::OP_TOOL_CALL, Grants::of(Scope::Full), &silent)
-            .expect_err("an unwritten policy entry authorizes nothing");
+        let refusal = approve(
+            &plane,
+            ops::OP_TOOL_CALL,
+            Some("read_file"),
+            Grants::of(Scope::Full),
+            &silent,
+        )
+        .expect_err("an unwritten policy entry authorizes nothing");
         assert_eq!(refusal, ApproveRefusal::NoPolicyEntry);
     }
 
@@ -2528,6 +2561,7 @@ mod tests {
         assert!(approve(
             &plane,
             ops::OP_TOOLS_LIST,
+            None,
             Grants::of(Scope::ReadOnly),
             &policy
         )
@@ -2536,6 +2570,7 @@ mod tests {
         let refusal = approve(
             &plane,
             ops::OP_TOOL_CALL,
+            Some("read_file"),
             Grants::of(Scope::ReadOnly),
             &policy,
         )
