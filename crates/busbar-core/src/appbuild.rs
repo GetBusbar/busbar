@@ -1537,25 +1537,18 @@ pub fn build_app_from_config(
     // its `aud`, which any resource server verifying against our JWKS would then honour — so the
     // list is derived here, from the planes this deployment actually serves, rather than configured
     // separately where it could disagree with them.
+    //
+    // AND CARRIED ACROSS AN APPLY THAT DOES NOT CHANGE IT. Rebuilding this plane is not a cheap
+    // no-op with a fresh object at the end of it: the store is `MemoryStorage`, so a rebuild
+    // INVALIDATES every outstanding token and every dynamically registered client, and with no
+    // `signing_key:` configured it also mints a brand-new ephemeral key, so even a client holding a
+    // token cannot have it verified. The documented contract is that those things are lost "on
+    // restart" — an operator editing an unrelated pool must not be silently logging every agent out.
+    // So the plane (and its sweeper, and therefore its store and key) is CARRIED whenever the
+    // generation would build the same one, and rebuilt only when an input actually moved.
     let oauth_as_plane = match cfg.oauth_as.as_ref() {
         None => None,
         Some(identity) => {
-            let key_material = match identity.signing_key() {
-                None => {
-                    diag_warn!(
-                        OAUTH_AS_EPHEMERAL_SIGNING_KEY,
-                        "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
-                         generated. Every token this deployment issues stops verifying when the \
-                         process restarts. Set `oauth_as.signing_key` for anything but a trial."
-                    );
-                    None
-                }
-                Some(reference) => Some(
-                    secret_resolver
-                        .resolve_string(reference)
-                        .map_err(|e| format!("oauth_as.signing_key: {e}"))?,
-                ),
-            };
             // busbar's OWN protected resource is its MCP endpoint's canonical URI, read back through
             // the mcp plane's `admission` seam — a `PlaneAdmission::audience` IS that canonical URI —
             // so appbuild names no `crate::mcp` resource type. Empty when `mcp:` is absent or the MCP
@@ -1573,21 +1566,62 @@ pub fn build_app_from_config(
                 .map(|adm| adm.audience)
                 .into_iter()
                 .collect();
-            let plane = crate::oauth_as::plane::AsPlane::build(
-                identity.clone(),
-                key_material.as_deref(),
-                protected_resources,
-            )
-            .map_err(|e| e.to_string())?;
-            let plane = Arc::new(plane);
-            // `Storage::sweep_expired` is the only thing that reclaims anything in `oauth-as`, and
-            // it runs when it is called and never otherwise. Spawned here, once per generation.
-            crate::oauth_as::plane::spawn_sweeper(
-                Arc::clone(plane.server()),
-                std::time::Duration::from_secs(60),
-            );
-            Some(plane)
+            // THE CARRY. Every input `build` reads is compared against the running plane's; equal
+            // means a rebuild would produce the same server over an EMPTY store, so the running one
+            // is kept — tokens, registered clients, ephemeral key and its already-running sweeper
+            // all intact. The sweeper rides along, so a carried generation spawns none.
+            match prior.and_then(|p| {
+                let plane = p.oauth_as.as_ref()?;
+                plane
+                    .would_rebuild_identically(identity, &protected_resources)
+                    .then(|| (Arc::clone(plane), p.oauth_as_sweeper.clone()))
+            }) {
+                Some(carried) => Some(carried),
+                None => {
+                    // A REBUILD, so the key is resolved (or an ephemeral one warned about) HERE and
+                    // not on the carry path — a carried generation must not re-warn about an
+                    // ephemeral key it did not generate, nor re-read the operator's secret.
+                    let key_material = match identity.signing_key() {
+                        None => {
+                            diag_warn!(
+                                OAUTH_AS_EPHEMERAL_SIGNING_KEY,
+                                "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
+                                 generated. Every token this deployment issues stops verifying when \
+                                 the process restarts. Set `oauth_as.signing_key` for anything but \
+                                 a trial."
+                            );
+                            None
+                        }
+                        Some(reference) => Some(
+                            secret_resolver
+                                .resolve_string(reference)
+                                .map_err(|e| format!("oauth_as.signing_key: {e}"))?,
+                        ),
+                    };
+                    let plane = Arc::new(
+                        crate::oauth_as::plane::AsPlane::build(
+                            identity.clone(),
+                            key_material.as_deref(),
+                            protected_resources,
+                        )
+                        .map_err(|e| e.to_string())?,
+                    );
+                    // `Storage::sweep_expired` is the only thing that reclaims anything in
+                    // `oauth-as`, and it runs when it is called and never otherwise. Spawned once
+                    // per BUILT plane — and its handle is held on the generation, so the loop (and
+                    // the store it pins) dies with the generation instead of ticking forever.
+                    let sweeper = crate::oauth_as::plane::spawn_sweeper(
+                        Arc::clone(plane.server()),
+                        std::time::Duration::from_secs(60),
+                    );
+                    Some((plane, Some(Arc::new(sweeper))))
+                }
+            }
         }
+    };
+    let (oauth_as_plane, oauth_as_sweeper) = match oauth_as_plane {
+        Some((plane, sweeper)) => (Some(plane), sweeper),
+        None => (None, None),
     };
 
     // The generation's hook CONTENT ceiling, installed once here and read on the hook seam with a
@@ -1808,6 +1842,7 @@ pub fn build_app_from_config(
         // `crate::mcp::runtime`, which downcasts that slot inside the plane.
         plane_slots,
         oauth_as: oauth_as_plane.clone(),
+        oauth_as_sweeper,
         // CARRIED ACROSS THE APPLY for the same reason, and it is the same class of mistake: an
         // approval already spent is evidence, not intent, and a config apply that forgot it would
         // hand every outstanding confirmation back to whoever still holds it.

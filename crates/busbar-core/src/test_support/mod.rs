@@ -1796,6 +1796,9 @@ impl TestApp {
             // the production default and is what keeps every existing test's route table unchanged
             // by this plane's arrival.
             oauth_as: self.oauth_as.clone(),
+            // No sweeper: this builder installs a plane object directly and never spawns the
+            // reclaim loop (there is no runtime to spawn it on in a plain `#[test]`).
+            oauth_as_sweeper: None,
             // The type-erased `agents:` handle: the A2A test-kit erases its own `AgentsCfg` and hands
             // it via `set_plane_defs_any` KEYED by its plane; `build()` reads it under the decl key of
             // the plane that owns the `agents:` section (resolved from the registry, never a literal),
