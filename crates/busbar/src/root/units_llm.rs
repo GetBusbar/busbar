@@ -380,6 +380,7 @@ impl LlmNode {
         &self,
         principal: &PrincipalId,
         arrived: Arrived,
+        rate_card_version: u64,
         ended: busbar_kernel::teller::Ended,
     ) {
         let Some(book) = self.book.get() else {
@@ -396,6 +397,7 @@ impl LlmNode {
             &mut durability,
             principal,
             arrived,
+            rate_card_version,
             &self.durability_token,
             posted,
         );
@@ -539,7 +541,11 @@ impl LlmNode {
                 // which has moved no balance and left no record until something settles it — and
                 // until this line nothing did, so a unit ran, ended, posted, and posted into a value
                 // that was dropped on the floor.
-                self.settle_end(&principal, arrived, ended);
+                // The version this unit was ADMITTED under travels with the settlement, exactly as
+                // the two clock readings beside it do: an apply landing mid-body replaces what the
+                // NEXT unit pins and cannot restamp this one.
+                let rate_card_version = card.as_ref().map_or(0, |in_force| in_force.generation);
+                self.settle_end(&principal, arrived, rate_card_version, ended);
                 // The loop ran; the answer is whatever the terminal posted. There is no unit that
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
@@ -574,7 +580,7 @@ impl LlmNode {
         walk: Walk,
         principal: &PrincipalId,
         arrived: Arrived,
-        card: Option<Arc<busbar_unit_cost::RateCard>>,
+        card: Option<Arc<crate::root::kernel::InForce>>,
     ) -> Response {
         let Some(book) = self.book.get() else {
             return response;
@@ -717,8 +723,9 @@ fn priced_amount(
 struct LateAccrual {
     book: Arc<Mutex<crate::root::durability::Durability>>,
     /// The card the report is priced against — the deployment's configured rates and its flat
-    /// per-request fee, in the cost unit's own terms.
-    card: Arc<busbar_unit_cost::RateCard>,
+    /// per-request fee, in the cost unit's own terms — with the version that identifies it, so the
+    /// figure and the record of which rates produced it come off one pinned value.
+    card: Arc<crate::root::kernel::InForce>,
     durability_token: busbar_caps::DurabilityToken,
     ledger_token: busbar_caps::LedgerToken,
     usage_token: busbar_caps::UsageToken,
@@ -755,6 +762,23 @@ impl LateAccrual {
         // expression the live metering step is answered through, because one report priced two ways
         // is two answers to what one request cost.
         //
+        // The FEE comes with it, and it comes for free. The cost unit's pricing puts the flat
+        // per-request charge on the posting as a line of its own, at the card's configured fee times
+        // the count the plane reported, and sums it in with the token lines before the single tier
+        // divide. So one call produces token lines AND a fee line, and there is no arm anywhere that
+        // could post the tokens and forget the fee.
+        //
+        // That is what makes the identity exact rather than approximate. The previous release's
+        // projection reprices a row's token counts and adds the same configured fee at read time; a
+        // node that posted only the tokens was out by the fee on every billable request, and the
+        // identity had to name the difference as its own term instead of checking it.
+        let posting = busbar_unit_cost::price(
+            &card.card.pin(),
+            &report.lane,
+            &usage_record(&usage_token, &report.usage),
+            u64::from(report.fee_count),
+            busbar_unit_cost::STANDARD_TIER_BP,
+        );
         // THE ROW THIS LANDS ON. `report` names the serving lane and its provider — the two names the
         // legacy row is keyed by — and the balance below is keyed by principal and window. Those are
         // the same row: the node's books retain no lane and no provider, so both the ledger's side and
@@ -770,18 +794,29 @@ impl LateAccrual {
         // A figure too large for the record settles at the ceiling rather than wrapping, exactly as
         // the terminal's own settlement narrows it: there is no amount above the ceiling to post, and
         // a wrap would post nearly nothing for the most expensive unit the node has ever run.
-        let amount = priced_amount(&card, &usage_token, &report);
+        let amount = u64::try_from(posting.priced_amount()).unwrap_or(u64::MAX);
         if amount == 0 {
             return;
         }
         let accrual =
             busbar_caps::HoldAccrual::after_terminal(principal.clone(), amount, &ledger_token);
         let posted = busbar_caps::Posted::settle_late(accrual, &ledger_token);
+        // THE VERSION THE POSTING ITSELF NAMES, not a second reading of the holder: the cost unit
+        // stamps its own posting with the pinned card's version, and the journal record is stamped
+        // with the generation that version is named after. One pinned card, one answer to "which
+        // rates priced this", on both sides of the settlement.
+        debug_assert_eq!(
+            posting.rate_card_version().as_str(),
+            format!("root-llm@{}", card.generation),
+            "the card's name and the record's version are two spellings of one apply"
+        );
+        let rate_card_version = card.generation;
         let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
         let _settled = settle(
             &mut durability,
             &principal,
             arrived,
+            rate_card_version,
             &durability_token,
             posted,
         );
@@ -945,7 +980,11 @@ pub struct LlmUnit<'n> {
     /// THE CARD THIS UNIT WAS ADMITTED UNDER, pinned at the door with `charged_at`: the metering
     /// step prices what the unit consumed against it, and the late accrual prices against the same
     /// one, so a live apply mid-flight cannot price one unit two ways.
-    card: Option<Arc<busbar_unit_cost::RateCard>>,
+    /// Carried as the holder's own `InForce` rather than as the bare card, because "which rates
+    /// priced this" is a fact the posting records: the generation beside the card is what the
+    /// journal's version column carries, and reading it off a second pin later would be a second
+    /// answer.
+    card: Option<Arc<crate::root::kernel::InForce>>,
     /// The handler-lookup refusal the arrival arm performed and the decode arm raises. See this
     /// module's header for why the two are apart.
     deferred: Mutex<Option<decode::DecodeRefusal>>,
@@ -1299,7 +1338,7 @@ impl Units for LlmUnit<'_> {
         self.walk.meter(token, usage, &|report| {
             self.card
                 .as_deref()
-                .map(|card| priced_amount(card, usage, report))
+                .map(|in_force| priced_amount(&in_force.card, usage, report))
                 .unwrap_or(0)
         })
     }
@@ -1476,6 +1515,7 @@ pub fn settle(
     durability: &mut crate::root::durability::Durability,
     principal: &PrincipalId,
     arrived: Arrived,
+    rate_card_version: u64,
     token: &busbar_caps::DurabilityToken,
     posted: busbar_caps::Posted,
 ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
@@ -1490,12 +1530,18 @@ pub fn settle(
         // The loop has no exit step of its own; the figure this posting is OF is the metering step's,
         // and that is the step a durability loss here is attributed to.
         step: busbar_caps::StepName::Meter,
-        // The posting's two clocks, and they are two READINGS of the one arrival: the wall epoch
-        // DATES the posting, the monotonic reading ORDERS it. Stamped from the wall clock twice, the
-        // second field is a copy — and two postings of one second become unorderable, which is
-        // exactly what the field exists to prevent.
+        // THE CARD THIS UNIT WAS ADMITTED UNDER, carried in rather than written as a zero. The
+        // holder is swappable, so "which rates priced this" is a real question with a different
+        // answer either side of a reload, and a record that answered it with `0` said only that a
+        // figure had been posted. A settlement that no card priced — the terminal's own, on a plane
+        // whose money arrives after it — still stamps `0`, and there it is the true answer.
+        //
+        // The two clocks beside it are two READINGS of the one arrival: the wall epoch DATES the
+        // posting, the monotonic reading ORDERS it. Stamped from the wall clock twice, the second
+        // field is a copy — and two postings of one second become unorderable, which is exactly
+        // what the field exists to prevent.
         stamp: crate::root::durability::PostingStamp {
-            rate_card_version: 0,
+            rate_card_version,
             wall: arrived.secs(),
             mono: arrived.mono(),
         },
