@@ -203,11 +203,16 @@ impl TcpTransport {
     /// "at most one upgrade in flight" rule; a caller that violates that ordering sees `None`
     /// rather than a torn stream).
     pub fn take_stream(&self, conn: &Conn) -> Option<(TcpStream, SocketAddr)> {
-        let inner = self
-            .conns
-            .lock()
-            .expect("conn registry poisoned")
-            .remove(&conn.id())?;
+        // Checked BEFORE the removal, under the same lock. Removing first and then discovering a
+        // live reader still holds a clone loses the connection either way: the stream cannot be
+        // handed up, and the registry entry that would have let the caller go on using it is gone.
+        // Answering `None` has to mean "not yours to take", not "taken and dropped".
+        let mut registry = self.conns.lock().expect("conn registry poisoned");
+        if Arc::strong_count(registry.get(&conn.id())?) != 1 {
+            return None;
+        }
+        let inner = registry.remove(&conn.id())?;
+        drop(registry);
         let inner = Arc::try_unwrap(inner).ok()?;
         let read = inner.read.into_inner().half;
         let write = inner.write.into_inner();

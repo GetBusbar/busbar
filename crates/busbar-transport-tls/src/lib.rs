@@ -688,7 +688,14 @@ impl Transport for TlsTransport {
     }
 
     fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
-        let inner = self.conns.lock().expect("poisoned").remove(&conn.id())?;
+        // Checked BEFORE the removal, under the same lock: see the sibling `tcp` note. Removing
+        // first and then failing to unwrap loses the connection — no stream up, no entry left.
+        let mut registry = self.conns.lock().expect("poisoned");
+        if Arc::strong_count(registry.get(&conn.id())?) != 1 {
+            return None;
+        }
+        let inner = registry.remove(&conn.id())?;
+        drop(registry);
         let peer = conn.peer();
         let inner = Arc::try_unwrap(inner).ok()?;
         let stream: BoxedIo = match (inner.read.into_inner().half, inner.write.into_inner()) {
