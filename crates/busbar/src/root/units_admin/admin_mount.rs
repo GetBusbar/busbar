@@ -539,6 +539,23 @@ pub(crate) fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, Stri
         .collect()
 }
 
+/// The epoch one arriving administrative request is stamped with, off THE NODE'S ONE CLOCK.
+///
+/// A function rather than an inline read, and the seam rather than `SystemTime`, because this node
+/// already has a clock: the in-flight table's arrival is stamped from `busbar_substrate::store`, and
+/// so is every epoch the LLM leg pins. A second reading of the operating system beside it is a
+/// second clock — it cannot be moved, wrapped or instrumented with the first, and the two answers
+/// for one request would drift apart the day anything at all is done to either. One name, one
+/// reading, and this is where a test can ask what the wrap read.
+///
+/// Seconds, because that is the width [`AdminRequest::at`] carries; the table's own stamp is the
+/// same clock in milliseconds.
+#[cfg(feature = "root-admin")]
+#[must_use]
+pub(crate) fn request_epoch() -> u64 {
+    busbar_substrate::store::now()
+}
+
 /// One answer as the response this listener writes.
 ///
 /// Written once because two paths reach it: the request that ran and the one this wrap refused
@@ -654,9 +671,7 @@ pub fn mount(
                     credential: presented_credential(&parts.headers),
                     headers: header_pairs(&parts.headers),
                     body: bytes.to_vec(),
-                    at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_secs()),
+                    at: request_epoch(),
                     unit,
                 };
                 // AND THE EXIT PATH RUNS EVEN WHERE THERE IS NO EXIT. A client that hangs up while
