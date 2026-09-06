@@ -2138,13 +2138,16 @@
    "paths": [
     "qa"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "3ea20a17768e9f8565161e87f8bbf9a360e6cb0f31f523a697a29a0be7bf4444",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 11,
+    "NIT": 1
+   },
+   "report": "pass 1: voice legs ungated (fixed 838cb7f1), spec pins unverified after first run (fixed 21db45ef), dangling CFG-220 (fixed a0a43711); construction-gate --summary exit 0, stale segment waiver, silent known_sites waivers, ws production waiver, PB-37/93 golden citations reported",
+   "auditor": "opus-pass1",
    "fixed_at": null
   },
   {
@@ -2183,13 +2186,15 @@
    "paths": [
     "testing/a2a-harness"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "331a3a30c029e373108c7f18502cfb71c0eba1d433a7ea3f5dc2bc52a92e6bd4",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1
+   },
+   "report": "pass 1: a2a-subject boot has no execution floor (all-SKIPPED run is green); reported to the pass-2 auditor",
+   "auditor": "opus-pass1",
    "fixed_at": null
   },
   {
@@ -2198,13 +2203,15 @@
    "paths": [
     "testing/a2a-supplement"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "9b209bd8eaa7ce35e64fc7dab654b43900bb5012fe20527f5448a7d9e4723d4d",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1
+   },
+   "report": "pass 1: runner exits 0 on 0 of 21 MUSTs demonstrated; reported to the pass-2 auditor",
+   "auditor": "opus-pass1",
    "fixed_at": null
   },
   {
@@ -2243,13 +2250,15 @@
    "paths": [
     "testing/llm-conformance"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "489f53c7085544a3051e37534446d7f1e2b933099a6594903641d76610f47686",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1
+   },
+   "report": "pass 1: pinned spec digests not verified on any run after the first (fixed 21db45ef)",
+   "auditor": "opus-pass1",
    "fixed_at": null
   },
   {
@@ -2258,13 +2267,15 @@
    "paths": [
     "testing/mcp-conformance"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "ecf0bb5c075634b7842846916b8090bf0810fac6c13992a1718aa057e2a7a4b8",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1
+   },
+   "report": "pass 1: mcp-battery has no registry floor; reported to the pass-2 auditor",
+   "auditor": "opus-pass1",
    "fixed_at": null
   },
   {
@@ -2288,13 +2299,15 @@
    "paths": [
     "testing/voice-conformance"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "ba336f403a545c7ad4bcfcb9a428ae6f7025ba4797d65d504906e521b3f55c1e",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2
+   },
+   "report": "pass 1: cross oo/gg print PASS before opening fixtures; || true masks a panic after PASS lines; reported to the pass-2 auditor",
+   "auditor": "opus-pass1",
    "fixed_at": null
   },
   {
