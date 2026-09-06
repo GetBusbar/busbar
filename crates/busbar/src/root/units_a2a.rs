@@ -516,6 +516,12 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub chain: Option<&'r busbar_unit_admission::BucketChain>,
     /// What the door prices a unit against.
     pub pricer: &'r Pricer,
+    /// Which version of the deployment's rate card this unit was priced under.
+    ///
+    /// Read once by the root, where the card is resolved, and carried here so that the posting's
+    /// stamp and the audit row's amount name the same version. A figure this file derived would be
+    /// a second opinion about which card was in force.
+    pub rate_card_version: u64,
     /// What the deployment's card charges for a byte of the priced document, in nano-units.
     ///
     /// The highest such price over the destinations this unit may reach, read out of the card once
@@ -583,8 +589,6 @@ struct Progress {
     disputed: bool,
     /// The hash the audit chain sealed this unit under.
     audit_hash: Option<String>,
-    /// The bytes the encode step reported.
-    encoded: u64,
 }
 
 /// One unit of the A2A plane, driven through the kernel's ten steps and its one exit.
@@ -667,7 +671,10 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             // step's, and that is the step a durability loss here is attributed to.
             step: busbar_caps::StepName::Meter,
             stamp: crate::root::durability::PostingStamp {
-                rate_card_version: 0,
+                // The card this unit was priced under, as the root resolved it. The posting and the
+                // audit row read the same one, so a reprice mid-day is legible on both sides rather
+                // than being a version of zero on every row this plane ever wrote.
+                rate_card_version: self.bindings.rate_card_version,
                 wall: self.bindings.now,
                 mono: self.bindings.now,
             },
@@ -826,10 +833,14 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     /// One decision, read by the door that reserves it and by the settlement that posts it. WHETHER
     /// it applies is [`fee_evidence`]'s answer and not this function's: this is only what one fee is
     /// worth, and a fee nobody drew is multiplied by a count of zero.
+    ///
+    /// The scale is the admission unit's own constant. A second spelling of it here was a second
+    /// place for the node's idea of a cent to drift from the one every hold is sized in.
     fn fee_nanos(&self) -> u64 {
         let cents =
             u128::try_from(self.bindings.pricer.price_per_request_cents().max(0)).unwrap_or(0);
-        u64::try_from(cents.saturating_mul(u128::from(NANOS_PER_CENT))).unwrap_or(u64::MAX)
+        u64::try_from(cents.saturating_mul(busbar_unit_admission::price::NANOS_PER_CENT))
+            .unwrap_or(u64::MAX)
     }
 
     /// The audit record one ending seals.
@@ -854,7 +865,9 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 None => busbar_unit_audit::Subject::Arrival,
             },
             what: busbar_unit_audit::What {
-                unit_key: busbar_contract::ids::UnitKey::new(0),
+                // The unit's own key, which is what makes one row findable among a day of them. A
+                // constant zero is every unit on this plane recorded under one name.
+                unit_key: ctx.key,
                 // The action, not the operation class. The rig reads this word, and the plane's own
                 // class is carried beside it on the facts the step returns.
                 op_class: busbar_unit_audit::OpClassId::new(AUDIT_ACTION),
@@ -884,7 +897,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 tier_bp: 0,
                 fee_count,
                 currency: String::new(),
-                rate_card_version: 0,
+                rate_card_version: self.bindings.rate_card_version,
                 bucket_chain_ref: String::new(),
             },
             controls: busbar_unit_audit::Controls::default(),
@@ -954,9 +967,6 @@ fn spent_token(legs: &[Leg], results: &[LegResult]) -> bool {
 /// Carried as one static because the trust unit takes it as one: the text names what was asked for
 /// and nothing about the money behind it.
 const UNPRICED_MESSAGE: &str = "no agent is configured under that name";
-
-/// How many nano-units one cent is.
-const NANOS_PER_CENT: u64 = 10_000_000;
 
 /// The audit unit's spelling of a finish class.
 ///
@@ -1312,31 +1322,51 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // One class, one line, and the quantity is one the plane already had in front of it: the
         // size of the document it read. There is no pointer to walk, so the locator carried the
         // value and this step folds it.
-        let retained = RetainedLocatorValues::new(vec![LocatedValue {
-            class: CLASS_BYTES,
-            quantity: self.draft.response_bytes,
-            source: busbar_caps::QuantitySource::Locator {
-                direction: busbar_contract::ids::ClassDirection::Input,
-                // The quantity was not at a pointer: it is the size of the document the plane just
-                // read, which the locator carried by value precisely for this case.
-                ptr: busbar_caps::LocatorPtr::new(""),
+        // The lane the trust unit sealed, which is the one leg of the cross-check this plane
+        // produces. Read off what the verify step recorded rather than declared and left empty: a
+        // leg a plane declares and does not supply is a dispute on every single unit, and a dispute
+        // on every unit is a dispute report nobody can read anything out of.
+        let verified = read_through_poison(&self.progress)
+            .lanes
+            .first()
+            .map(|lane| lane.as_str().to_string());
+        let retained = RetainedLocatorValues::with_lane_legs(
+            vec![LocatedValue {
+                class: CLASS_BYTES,
+                quantity: self.draft.response_bytes,
+                source: busbar_caps::QuantitySource::Locator {
+                    // The side the PLANE declared this class is sized from: the answer. A locator
+                    // that called the answer's own length an input would be reporting the request's
+                    // family for the response's figure.
+                    direction: busbar_contract::ids::ClassDirection::Response,
+                    // The quantity was not at a pointer: it is the size of the document the plane
+                    // just read, which the locator carried by value precisely for this case.
+                    ptr: busbar_caps::LocatorPtr::new(""),
+                },
+            }],
+            busbar_unit_usage::LaneLegs {
+                verified: verified.clone(),
+                ..busbar_unit_usage::LaneLegs::default()
             },
-        }]);
-        // The kernel's own floor for this unit is what it moved on the way in. It is the tripwire
-        // beside the located figure, never the charge.
-        let kernel = KernelCounts::new(vec![busbar_unit_usage::KernelLine {
-            class: CLASS_BYTES,
-            quantity: self.draft.request_bytes,
-            // A byte is a byte: the class's own quantity is the quantity, so the floor divides by
-            // one. The plane declared that divisor and this is the declaration read back.
-            source: busbar_caps::QuantitySource::KernelBytes { divisor: 1 },
-        }]);
+        );
+        // The request document, offered as a PROXY and not as a companion. The class this plane
+        // declares is sized from the answer, and the kernel's own count is of the request: two
+        // sides of one exchange, which the floor band would compare as though they were two
+        // readings of one figure. An ordinary hundred-kilobyte send answered in two kilobytes is
+        // eight times below that band, and every one of them was disputed for it.
+        let kernel = KernelCounts::with_proxies(
+            Vec::new(),
+            std::collections::BTreeMap::from([(
+                CLASS_BYTES.as_str().to_string(),
+                self.draft.request_bytes,
+            )]),
+        );
         // This protocol's answers name no lane — the lane is the agent's and the trust unit sealed
         // it — so only the legs that exist are declared. A declared leg absent at runtime is a
         // dispute; a leg absent by declaration is skipped, and that is the difference this says.
         let declared = LegDeclaration {
             admit_locator: false,
-            verified: true,
+            verified: verified.is_some(),
             response: false,
         };
         match busbar_unit_usage::meter(
@@ -1414,7 +1444,12 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // nor the plane's draft, so the bytes are written where the borrow lives and this step
         // reports what left. That is a statement about the seam, not a shortcut: a root that
         // allocated a second buffer here would be writing the wire format twice.
-        let bytes = read_through_poison(&self.progress).encoded;
+        //
+        // What left is the answer document, whose length the plane already measured and put on the
+        // draft — the same figure the metering step folds. It used to be read out of a field of the
+        // progress record that no step ever wrote, so every frame this leg reported was zero bytes
+        // long however much the plane had rendered.
+        let bytes = self.draft.response_bytes;
         Decision::proceed(
             token,
             busbar_contract::wire::Frame {
@@ -1454,7 +1489,14 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             recovered: false,
             dispatched: !progress.legs.is_empty(),
             checkpointed: 0,
-            variance: None,
+            // A DISPUTE THE STEP RAISED IS A DISPUTE THE POSTING CARRIES. The metering step decided
+            // whether its own reading stands beside the kernel's; recorded and then dropped, that
+            // decision changed nothing and no report could show it. Handed over as the two figures
+            // it is between, the settlement posts the lower of them and marks the posting, which is
+            // the same rule every other row of the table follows.
+            variance: progress
+                .disputed
+                .then(|| (progress.metered.unwrap_or(0), progress.accrued)),
             lane_mismatch: None,
             settle_record_lost: false,
             class: Some(CLASS_BYTES),
@@ -1592,14 +1634,14 @@ mod tests {
             scope
                 .spawn(|| {
                     let mut held = progress.lock().expect("the lock is not yet poisoned");
-                    held.encoded = 7;
+                    held.accrued = 7;
                     panic!("a step panicked after writing");
                 })
                 .join()
         });
         assert!(poisoning.is_err());
         assert_eq!(
-            read_through_poison(&progress).encoded,
+            read_through_poison(&progress).accrued,
             7,
             "what the step wrote before it panicked is still what the exit reads"
         );
@@ -2383,6 +2425,72 @@ mod tests {
         );
     }
 
+    /// **The everyday send is not an exception.** A hundred kilobytes in and two kilobytes back is
+    /// the ordinary shape of an agent call, and it used to be disputed twice over: once because the
+    /// answer's own length was compared against the request's as though the two were readings of
+    /// one figure, and once because the cross-check was told to expect a lane leg that was never
+    /// supplied. Both disputes were then dropped on the floor, so nothing settled differently and
+    /// no report could show them.
+    ///
+    /// The row it seals is checked in the same cell, because the same step assembles it: the unit's
+    /// own key rather than a constant zero, and the card version the deployment priced it under.
+    /// And the frame this leg reports is the length of what the plane rendered.
+    #[test]
+    fn an_ordinary_send_is_not_disputed_and_its_record_names_its_own_unit() {
+        let mut deployment = deployment(one_call_at_a_time("a2a-team"));
+        deployment.rate_card_version = 7;
+        let mut sending = draft(ops::OP_MESSAGE_SEND);
+        sending.destination = upstream("https://agent.example/");
+        sending.request_bytes = 100_000;
+        sending.response_bytes = 2_048;
+        let unit = deployment.driving(None, sending);
+
+        let ctx = a2a_ctx();
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        Units::verify(
+            &unit,
+            &UnitToken::mint(&seal),
+            &deployment.trust,
+            &ctx,
+            &PrincipalId::new("vk_agent"),
+        )
+        .into_result(&seal)
+        .expect("the pinned agent verifies");
+        Units::meter(
+            &unit,
+            &UnitToken::mint(&seal),
+            &UsageToken::mint(&seal),
+            &ctx,
+            &Outcome::Completed,
+        )
+        .into_result(&seal)
+        .expect("the metering step folds");
+
+        assert!(
+            !read_through_poison(&unit.progress).disputed,
+            "an answer smaller than the question it answers is not a discrepancy"
+        );
+        assert!(
+            unit.evidence(&ctx).variance.is_none(),
+            "so nothing is carried to the settlement as one"
+        );
+
+        let record = unit.audit_inputs(&ctx, Outcome::Completed, None);
+        assert_eq!(
+            record.what.unit_key, ctx.key,
+            "the row names the unit it is about"
+        );
+        assert_eq!(record.amount.rate_card_version, 7);
+
+        let frame = Units::encode(&unit, &UnitToken::mint(&seal), &ctx, &Outcome::Completed)
+            .into_result(&seal)
+            .expect("the encode step reports");
+        assert_eq!(
+            frame.meta.bytes, 2_048,
+            "what left is what the plane rendered"
+        );
+    }
+
     /// The four endings map one for one onto the audit unit's own four.
     #[test]
     fn every_ending_has_an_audited_spelling() {
@@ -3089,9 +3197,13 @@ mod tests {
         door: Door<busbar_unit_admission::InMemoryCells>,
         groups: busbar_unit_admission::GroupTable,
         pricer: Pricer,
+        /// The card version the postings and the records are stamped with.
+        rate_card_version: u64,
         /// What the deployment's card charges for one byte of the priced document. Zero is the
         /// unpriced deployment every cell that is not about money runs under.
         bytes_nanos: u64,
+        /// The agents an operator approved. The fixture's one agent is the one the drafts dial.
+        pinned: Vec<&'static str>,
         records: RecordLegs,
         meter_policy: crate::root::policy::MeterPolicyHandle,
         scope: crate::root::policy::ScopePolicy,
@@ -3112,12 +3224,14 @@ mod tests {
             trust: busbar_caps::TrustToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel()),
             pools: UnrestrictedKey,
             kinds: EveryKindPasses,
-            resolver: FixedResolver(vec!["203.0.113.7".parse().expect("a public address")]),
+            resolver: FixedResolver(vec!["93.184.216.34".parse().expect("a public address")]),
             denylist: busbar_unit_trust::Denylist::default(),
             door: Door::new(busbar_unit_admission::InMemoryCells::new()),
             groups,
             pricer: Pricer::flat(0),
+            rate_card_version: 0,
             bytes_nanos: 0,
+            pinned: vec!["probe"],
             records: RecordLegs::new(Arc::new(RecordingStore::default())),
             meter_policy: crate::root::policy::build(
                 &crate::root::policy::MeterPolicyConfig::default(),
@@ -3164,10 +3278,11 @@ mod tests {
                     resolver: &self.resolver,
                     guard: GuardPolicy::default(),
                     denylist: &self.denylist,
-                    pinned: &[],
+                    pinned: &self.pinned,
                     door: &self.door,
                     chain,
                     pricer: &self.pricer,
+                    rate_card_version: self.rate_card_version,
                     bytes_nanos: self.bytes_nanos,
                     records: &self.records,
                     meter_policy: &self.meter_policy,
