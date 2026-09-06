@@ -5563,6 +5563,20 @@ fn test_gemini_usage_counts_thinking_tokens_as_output() {
     assert_eq!(u.output_tokens, 523);
 }
 
+/// Helper: an `IrUsage` with the tool-use prompt sub-bucket set.
+fn u_of(input: u64, output: u64, tool_use: Option<u64>) -> crate::ir::IrUsage {
+    crate::ir::IrUsage {
+        input_tokens: input,
+        output_tokens: output,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail {
+            tool_use_prompt_tokens: tool_use,
+            ..Default::default()
+        },
+    }
+}
+
 /// The Gemini stream WRITE path must emit a streamed reasoning part for a `ThinkingDelta`
 /// (`{text, thought:true}`) and carry the signature for a `SignatureDelta`
 /// (`{thought:true, thoughtSignature}`), mirroring the non-stream `write_response` thinking shape.
