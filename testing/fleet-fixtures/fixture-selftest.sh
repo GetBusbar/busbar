@@ -35,6 +35,7 @@ export GATE_NAME="fleet fixture selftest"
 
 IDP_PORT="${SELFTEST_IDP_PORT:-50843}"
 VAULT_PORT="${SELFTEST_VAULT_PORT:-50844}"
+SINK_PORT="${SELFTEST_SINK_PORT:-50845}"
 
 OWED=""
 owe() { OWED="${OWED} $1"; }
@@ -173,7 +174,74 @@ vault_case() {
   fi
 }
 
+# ── export-sink.py: a POST is a DELIVERY only if it is a request-log record ──────────────────────
+# The sink counted every POST without reading the body, so probe-export.sh's claim was "something
+# POSTed to this port", not "the exporter shipped a request log". The shape is the flat object
+# build_request_log emits (crates/busbar-core/src/export/mod.rs; docs/configuration.md's
+# request-log-webhook row): {ts, ingress_protocol, pool, outcome, latency_ms}.
+export_case() {
+  owe "fixture|export-shape-validated"
+  if ! assert_port_free "$SINK_PORT"; then
+    record "fixture|export-shape-validated" FAIL "port ${SINK_PORT} is already in use" \
+      "refusing to bind a port something else holds"
+    return
+  fi
+  python3 export-sink.py "$SINK_PORT" >/dev/null 2>&1 &
+  track_pid $!
+  wait_for_http "http://127.0.0.1:${SINK_PORT}/received" 10 \
+    || { record "fixture|export-shape-validated" FAIL "the export sink did not come up" "port ${SINK_PORT}"; return; }
+
+  post() { curl -sS -m 10 -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${SINK_PORT}/" \
+             -H 'Content-Type: application/json' --data-binary "$1" 2>/dev/null || echo 000; }
+  recv() { curl -fsS -m 10 "http://127.0.0.1:${SINK_PORT}/received" 2>/dev/null | jq -r "$1" 2>/dev/null; }
+
+  # THE REAL RECORD. Exactly the object crates/busbar-core/src/export/tests/webhook_tests.rs pins.
+  local good='{"ts":1700000000,"ingress_protocol":"anthropic","pool":"prod","outcome":"ok","latency_ms":42}'
+  local bad="" code
+  code="$(post "$good")"
+  [ "$code" = "200" ] || bad="${bad}a REAL request-log record was answered HTTP ${code}, not 200; "
+  [ "$(recv '.count // 0')" = "1" ] || bad="${bad}a real request-log record was not counted (count=$(recv '.count // 0')); "
+
+  # Every way a body can be a POST and not a request log. Each must be refused AND uncounted; a sink
+  # that counts these cannot distinguish delivery from noise.
+  local n=0 label body
+  while IFS='|' read -r label body; do
+    [ -n "$label" ] || continue
+    n=$((n + 1))
+    code="$(post "$body")"
+    [ "$code" = "400" ] || bad="${bad}${label} was answered HTTP ${code}, not 400; "
+  done <<'CASES'
+an empty body|
+an empty object|{}
+a non-JSON body|not json at all
+an ARRAY of records|[{"ts":1,"ingress_protocol":"anthropic","pool":"p","outcome":"ok","latency_ms":1}]
+a record missing latency_ms|{"ts":1,"ingress_protocol":"anthropic","pool":"p","outcome":"ok"}
+a record with a string ts|{"ts":"soon","ingress_protocol":"anthropic","pool":"p","outcome":"ok","latency_ms":1}
+a record with a boolean latency_ms|{"ts":1,"ingress_protocol":"anthropic","pool":"p","outcome":"ok","latency_ms":true}
+an outcome outside the vocabulary|{"ts":1,"ingress_protocol":"anthropic","pool":"p","outcome":"probably_fine","latency_ms":1}
+a record with an unexpected extra field|{"ts":1,"ingress_protocol":"anthropic","pool":"p","outcome":"ok","latency_ms":1,"prompt":"leaked"}
+somebody else's telemetry|{"resourceSpans":[]}
+CASES
+
+  # THE COUNTER IS THE CONTRACT: after all of that it must still read exactly the one real delivery.
+  local count rejected
+  count="$(recv '.count // 0')"; rejected="$(recv '.rejected // 0')"
+  [ "$count" = "1" ] || bad="${bad}the counter reads ${count} after 1 valid and ${n} malformed bodies (it must read 1); "
+  [ "$rejected" = "$n" ] || bad="${bad}the sink accounts for ${rejected} rejections of ${n} malformed bodies; "
+
+  if [ -z "$bad" ]; then
+    record "fixture|export-shape-validated" PASS \
+      "the export sink counts a request-log record and refuses ${n} bodies that are not one" \
+      "empty / {} / non-JSON / array / missing field / wrong types / unknown outcome / extra field / OTLP-shaped; counter reads 1"
+  else
+    record "fixture|export-shape-validated" FAIL \
+      "the export sink counts POSTs it never validated, so probe-export.sh cannot say the exporter delivered a request log" \
+      "${bad}a sink that counts any POST proves only that something reached the port."
+  fi
+}
+
 idp_case
 vault_case
+export_case
 
 GATE_NAME="fleet fixture selftest" EXPECTED_IDS="$OWED" LEDGER="$LEDGER" bash "${here}/verdict.sh"

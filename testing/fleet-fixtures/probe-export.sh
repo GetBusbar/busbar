@@ -44,6 +44,32 @@ python3 export-sink.py "$SINK_PORT" >/dev/null 2>&1 &
 track_pid $!
 wait_for_http "http://127.0.0.1:${SINK_PORT}/received" 5 || fail_here "the export sink fixture did not come up" "port ${SINK_PORT}."
 
+# ── THE SINK IS PROVEN SHARP BEFORE THE EXPORTER IS JUDGED BY IT. ────────────────────────────────
+# The sink counted any POST with no look at the body, so "the exporter delivered" meant no more than
+# "something POSTed to this port" — an exporter shipping `{}`, an empty body, or another process's
+# telemetry all read as delivery. These calls happen BEFORE busbar exists, so the counter is known to
+# be 0 and every increment below is attributable.
+sink_json() { curl -fsS -m 10 "http://127.0.0.1:${SINK_PORT}/received" 2>/dev/null; }
+sink_post() { curl -sS -m 10 -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${SINK_PORT}/" \
+                -H 'Content-Type: application/json' --data-binary "$1" 2>/dev/null || echo 000; }
+# One malformed body per way a body can be wrong and still be a POST.
+for _bad in '' '{}' 'not json at all' '[{"ts":1,"ingress_protocol":"anthropic","pool":"p","outcome":"ok","latency_ms":1}]' \
+            '{"ts":1,"ingress_protocol":"anthropic","pool":"p","outcome":"ok"}' \
+            '{"ts":"soon","ingress_protocol":"anthropic","pool":"p","outcome":"ok","latency_ms":1}' \
+            '{"ts":1,"ingress_protocol":"anthropic","pool":"p","outcome":"probably_fine","latency_ms":1}'; do
+  sink_post "$_bad" >/dev/null
+done
+BLUNT="$(sink_json | jq -r '.count // 0' 2>/dev/null)"
+BLUNT_REJ="$(sink_json | jq -r '.rejected // 0' 2>/dev/null)"
+if [ "${BLUNT:-0}" -ne 0 ]; then
+  fail_here "the export sink counts bodies that are not request-log records, so this probe cannot prove the exporter delivered anything" \
+    "7 deliberately malformed bodies (empty, {}, non-JSON, an array, a missing field, a wrong type, an outcome outside the vocabulary) produced ${BLUNT} counted delivery(s). A sink that counts any POST turns 'the exporter shipped a request log' into 'something reached this port'."
+fi
+if [ "${BLUNT_REJ:-0}" -lt 7 ]; then
+  fail_here "the export sink did not account for the malformed bodies it was sent" \
+    "sent 7, rejected ${BLUNT_REJ}. The sink cannot say what it received, so a later count cannot be attributed."
+fi
+
 cat >"${WORK}/providers.yaml" <<EOF
 mock:
   protocol: anthropic
@@ -108,8 +134,17 @@ for _ in $(seq 1 15); do
   sleep 2
 done
 if [ "${RECV:-0}" -lt 1 ]; then
+  REJ="$(sink_json | jq -r '.rejected // 0' 2>/dev/null)"
+  LAST="$(sink_json | jq -r '.last_reject // empty' 2>/dev/null)"
+  if [ "${REJ:-0}" -gt "${BLUNT_REJ:-0}" ]; then
+    # The two failures are NOT the same and must not read the same. Something DID arrive; it was not
+    # a request-log record, and the sink can say why.
+    fail_here "the ${ALIAS} exporter delivered, but not a request-log record" \
+      "$(( REJ - BLUNT_REJ )) body(ies) reached the sink and none validated; the last was rejected because: ${LAST}. Expected one flat object {ts, ingress_protocol, pool, outcome, latency_ms} per completed request."
+  fi
   fail_here "the exporter did not deliver: the sink received nothing" \
     "busbar booted with the ${ALIAS} exporter and served a request, but no export reached the sink. The exporter is configured but inert."
 fi
 
-record "$ID" PASS "export ${ALIAS}: a driven request was delivered to the sink fixture (${RECV} received)" ""
+record "$ID" PASS "export ${ALIAS}: a driven request was delivered to the sink fixture as a valid request-log record (${RECV} received)" \
+  "the sink validates the shape busbar's build_request_log emits and refused 7 malformed bodies before busbar started."
