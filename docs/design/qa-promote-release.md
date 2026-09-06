@@ -126,6 +126,7 @@ contract visible at push time instead of at workflow time; recommended, but it i
 {
   "version":     "1.6.0",
   "tag":         "v1.6.0",
+  "rc_tag":      "v1.6.0-rc.1",
   "qa_sha":      "<full sha>",
   "staging_tag": "staging-<sha12>",
   "digest":      "sha256:…",
@@ -164,6 +165,82 @@ Both options were weighed:
 The tie-breaker is the repository's own precedent: receipts over claims (`verify-artifact`'s
 receipt artifacts, `verify-set-equality` reading receipts rather than job conclusions). The
 artifact **is** a receipt; a committed file is a claim.
+
+## Release candidates: one record, two names
+
+The first 1.6.0 ships as `v1.6.0-rc.1`, soaks, and then ships as `v1.6.0` — **the same bytes both
+times.** That is a naming decision, so it lives entirely on the naming side of the split; nothing
+about the build, the verification or the record's provenance changes.
+
+### Where the rc name comes from
+
+**From `crates/busbar/Cargo.toml`'s version plus an rc counter, supplied as a `release_tag` input
+on the staging dispatch.** Both halves matter:
+
+* The **version** is still Cargo.toml's, and only Cargo.toml's. `plan` refuses any `release_tag`
+  that is not exactly `v<that version>-rc.<N>`. There is no second place a version can come from,
+  which is why a free-text `RELEASE_TAG` was rejected: it would let a dispatch stage bytes under a
+  name that the OCI version label, the CHANGELOG section and the committed OpenAPI document on that
+  sha all contradict — and every downstream check reads those, not the input.
+* The **counter** is typed by a human, once, and recorded — it is not derived from "how many rc
+  tags exist" at run time. The record is read up to 90 days later by a different workflow, so a
+  name computed from the tag namespace at staging time would be a claim about a different instant
+  than the one it is used in. `prepare-release.yml` already models the version as an explicit
+  dispatch input for exactly this reason: naming a release is a decision, recorded, not recomputed.
+
+An ordinary push to `qa` supplies no input, so `rc_tag` is `""` and the staging path is
+bit-for-bit what it has always been.
+
+### How one record names both tags
+
+`staged.json` carries two name fields, and says which is which:
+
+| field | value | what minting it does |
+| --- | --- | --- |
+| `tag` | `v1.6.0` — always present | the RELEASE. Publishes the draft, moves `latest` and `armv8.0`, pushes the git tag, fans out, announces, runs the public consumer sweep. |
+| `rc_tag` | `v1.6.0-rc.1`, or `""` | the CANDIDATE. Pushes the git tag and the immutable image pins `1.6.0-rc.1` / `1.6.0-rc.1-armv8.0` — and nothing else. The draft stays a draft, `latest` does not move, no repo is told, nothing is announced. |
+
+They describe the **same** `digest`, `compat_digest` and `assets`, because there is only one build.
+The record is keyed by `qa_sha`, and a sha may wear more than one name over its life; what the
+record adds is that the set of names it may ever wear is **closed at two, and written down on qa**.
+`resolve-staged` refuses any `release_tag` that is not one of those two strings, so "two tags, one
+record" can never widen into "any tag, one record".
+
+### Who mints which, and when
+
+* **Push to `main`** — mints `rc_tag` if the record offers one and that rc tag does not exist yet;
+  otherwise mints `tag`. For a record with no rc this is exactly the pre-existing behaviour.
+* **`workflow_dispatch` of `Release` with `release_tag: v1.6.0`** — the second promotion of the
+  same record, after the soak. No rebuild, same digest, same draft.
+* **`workflow_dispatch` with `release_tag: v1.6.0-rc.2`** — only if the record names it.
+
+The irreversible name is therefore never a side effect of a push while a candidate is pending: a
+Docker Hub `1.6.0` cannot be un-published, so it is minted by an explicit human act once the soak
+has said something. The candidate, which moves no floating pointer and publishes nothing, is what
+the push mints.
+
+`docker.yml`'s promote gains one input for this, `promote_latest` (default `true`): a candidate
+mints the immutable pins and leaves the floating pointers alone, and the job's landing assertion
+asserts exactly the names it was asked to move — asserting `latest == 1.6.0-rc.1` would be
+asserting a falsehood about a correct run, and asserting nothing would drop the 1.5.3 guard.
+
+## The marketing site is observed, never depended on
+
+The site deploy is **not** part of the release path (owner, 2026-09-06). `GetBusbar/marketing` was
+on `.github/release-notify-targets.txt`, so every release dispatched `upstream-release` to it —
+which is what triggers its deploy, and `notify-downstream` fails outright if any single dispatch
+fails, with `consumer-verification` hanging off it. A marketing-side token, rename or outage could
+therefore turn an already-published, perfectly good busbar release red. It has been removed from
+that list. The site keeps its own trigger (its push-to-main deploy plus its daily poll of busbar's
+`/releases/latest`), which is what makes it self-healing without being wired into this path.
+Nothing in this repository triggers, `needs:` or waits on the site deploy, and nothing under the
+site's content directory (which lives in that other repo) is touched.
+
+The site's state is still **observed**: verify-deploy's checks (g)/P6/(k)/(n) read `getbusbar.com`
+after publication, from `consumer-verification`, which by construction runs only once the release
+is already public. They can report; they cannot gate. (They are also skipped entirely after a
+candidate promote, where nothing public moved and a "the site does not advertise 1.6.0-rc.1" red
+would be a fabrication.)
 
 ## Benchmarking prices the QA binary — literally
 
