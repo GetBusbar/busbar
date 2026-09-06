@@ -133,9 +133,21 @@ die() { printf 'full-gate: %s\n' "$*" >&2; exit 2; }
 # a `#` comment that MENTIONS a script by name (e.g. "scripts/plane-delete-test.sh PHYSICALLY REMOVES
 # ...") is documentation, not an invocation, and running that bare mention as if it were a gate prints
 # a usage line and a false red. Only real `run:` lines survive.
+#
+# THE EXTENSION SET IS NOT `sh|py`, and it was, which is how a gate went unrun AND unlisted. `ci.yml`
+# runs `node scripts/check-proof-manifest-public.mjs` — the fail-closed public-safety guard on the
+# proof manifest, the one thing standing between the private source tree and a manifest the
+# marketing site renders publicly. Discovery could not see a `.mjs` file or a `node ` prefix, so it
+# appeared in neither list: not run here, and not named as CI-only either. That is worse than a
+# skip. The whole classification below fails CLOSED on a gate it can SEE; a gate it cannot see is
+# not classified at all, and the "N gates, M skipped with reason" line at the end counts confidently
+# past it. The extension set and the interpreter prefixes are therefore both widened beyond what the
+# tree happens to contain today, because the next gate written in a new language should break this
+# script rather than disappear from it.
+GATE_EXT='(sh|py|mjs|js|ts|rb)'
 mapfile -t DISCOVERED < <(
   sed -e 's/^[[:space:]]*#.*$//' -e 's/^[[:space:]]*-\{0,1\}[[:space:]]*name:.*$//' "$CI_YML" \
-    | grep -oE "(python3 |bash )?scripts/[a-z0-9-]+\.(sh|py)( --[a-z-]+( [^ \"'|]+)?)*" \
+    | grep -oE "(python3 |bash |node |npx )?scripts/[a-z0-9-]+\.${GATE_EXT}( --[a-z-]+( [^ \"'|]+)?)*" \
     | sed 's/^ *//' | sort -u
 )
 
@@ -181,7 +193,7 @@ skip_reason_for() {
 
 RUN=(); SKIP=()
 for inv in "${DISCOVERED[@]}"; do
-  script="$(printf '%s' "$inv" | grep -oE 'scripts/[a-z0-9-]+\.(sh|py)')"
+  script="$(printf '%s' "$inv" | grep -oE "scripts/[a-z0-9-]+\.${GATE_EXT}")"
   # A `--selftest` ALWAYS runs, whatever its script's classification. A self-test plants its own
   # fixtures by definition -- that is what makes it a self-test rather than a run -- so it needs no
   # release artifact, no fleet and no network. Skipping one because its sibling REAL run needs a
@@ -204,7 +216,7 @@ if [ "${1:-}" = "--list" ]; then
   printf '  %s\n' "${RUN[@]}"
   printf '\n== SKIPPED, WITH REASON (%d) ==\n' "${#SKIP[@]}"
   for inv in "${SKIP[@]}"; do
-    s="$(printf '%s' "$inv" | grep -oE 'scripts/[a-z0-9-]+\.(sh|py)')"
+    s="$(printf '%s' "$inv" | grep -oE "scripts/[a-z0-9-]+\.${GATE_EXT}")"
     printf '  %-44s %s\n' "$inv" "$(skip_reason_for "$s")"
   done
   exit 0
@@ -219,7 +231,12 @@ if [ "${1:-}" = "--selftest" ]; then
   [ "$n" -ge "$MIN_GATES" ] && printf '  [ok]     discovery found %d invocations (floor %d)\n' "$n" "$MIN_GATES" \
     || { printf '  [FAILED] discovery found only %d\n' "$n"; bad=1; }
 
-  for must in scripts/structure-lint.sh scripts/public-hygiene-lint.py scripts/workspace-deps-lint.py; do
+  # The last of these is a `.mjs` run through `node`, and it is in this list BECAUSE it was the one
+  # discovery silently dropped: a gate in a language the parser did not know about is not skipped
+  # with a reason, it is absent from both lists and from the counts. Keeping a non-shell,
+  # non-python gate named here is what stops the extension set narrowing back.
+  for must in scripts/structure-lint.sh scripts/public-hygiene-lint.py scripts/workspace-deps-lint.py \
+              scripts/check-proof-manifest-public.mjs; do
     if printf '%s\n' "${DISCOVERED[@]}" | grep -q "$must"; then
       printf '  [ok]     %s is discovered\n' "$must"
     else
