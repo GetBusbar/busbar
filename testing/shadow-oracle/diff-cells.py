@@ -117,6 +117,15 @@ def safe_name(cell_id: str) -> str:
 
 
 def load_ledger(d: str) -> dict:
+    """id -> (status, detail), THE LAST ROW WINNING — the same rule fleet-fixtures/verdict.sh uses on
+    the very same file.
+
+    `record` APPENDS, so an id can legitimately carry more than one row: a driver that retried, a
+    later step that revised its own verdict. This read used to keep the FIRST row, so the two halves
+    of one gate disagreed about what the golden said. The dangerous direction is not the loud one: a
+    golden whose first row is SKIP and whose corrected row is PASS drops out of the OWED set
+    entirely, so its cell is never compared, never reaches diverging.txt, and a divergence on it
+    cannot be seen anywhere. Last-row-wins keeps the correction, exactly as the verdict does."""
     out = {}
     p = os.path.join(d, "ledger.tsv")
     if not os.path.exists(p):
@@ -124,7 +133,7 @@ def load_ledger(d: str) -> dict:
     with open(p, encoding="utf-8", errors="replace") as f:
         for ln in f:
             parts = ln.rstrip("\n").split("\t")
-            if len(parts) >= 2 and parts[0] not in out:
+            if len(parts) >= 2:
                 out[parts[0]] = (parts[1], parts[3] if len(parts) > 3 else "")
     return out
 

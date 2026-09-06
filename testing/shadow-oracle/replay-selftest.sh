@@ -266,6 +266,29 @@ one_class_case ste    effects.store_errors 'd["effects"]["store_errors"]=2'
 # row printed `PASS ... identical`. Every effects key is compared now; this case is red without that.
 one_class_case scr    effects.script 'd["effects"]["survived"]="no"'
 
+# (u) A LEDGER ID THAT APPEARS TWICE RESOLVES TO ITS LAST ROW, exactly as verdict.sh resolves one.
+# `record` APPENDS, so an id can legitimately carry more than one row — a driver that retried, a
+# later step that revised its own verdict. The differ read the FIRST row per id while verdict.sh
+# (which adjudicates the very same file) reads the LAST, so the two halves of one gate disagreed
+# about what the golden said. The dangerous direction is a golden whose first row is SKIP and whose
+# corrected row is PASS: the cell then falls out of the OWED set entirely, is never compared, never
+# appears in diverging.txt, and a divergence on it can never be seen at all. Here the corrected row
+# says PASS for a cell whose candidate is mutated, so a first-row read leaves 0 FAILs (green) and a
+# last-row read leaves exactly the one.
+cp -R "$FIX" "$W/dup-golden"
+printf 'self|a|ok\tSKIP\tUNSUPPORTED: a stale first attempt\tsuperseded below\n' >"$W/dup-golden/ledger.tsv.new"
+cat "$FIX/ledger.tsv" >>"$W/dup-golden/ledger.tsv.new"
+mv "$W/dup-golden/ledger.tsv.new" "$W/dup-golden/ledger.tsv"
+cp -R "$FIX" "$W/dup-cand"
+python3 -c 'import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d["status"]=418
+json.dump(d,open(p,"w"),separators=(",",":"),sort_keys=True)' "$W/dup-cand/cells/self__a__ok.json"
+rc="$(run "$W/dup-golden" "$W/dup-cand" "$W/out-u")"
+n="$(fails_in "$W/out-u")"; cls="$(classes_of 'self|a|ok' "$W/out-u")"
+[ "$rc" != 0 ] && [ "$n" = 1 ] && [ "$cls" = "status" ] \
+  && say PASS "a golden id with a superseded first row -> the LAST row decides (owed, and red)" \
+  || say FAIL "duplicate golden ledger row rc=$rc fails=$n classes=$cls (a first-row read makes this cell unowed and invisible)"
+
 # (p) missing.golden: the golden's OWN ledger says PASS but its cell file is not there. That is a
 # recorder bug, and it must be red rather than quietly dropping the cell out of the comparison.
 cp -R "$FIX" "$W/mg-golden"; cp -R "$FIX" "$W/mg-cand"
