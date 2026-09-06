@@ -381,10 +381,12 @@ async fn transport_meta_matches_the_architecture_row() {
         <WsTransport as TransportMeta>::UNIT0_TRIGGER,
         Some(Unit0Trigger::Upgrade)
     );
-    // The layers this one is actually built over, which the Cargo edges must agree with.
+    // The layers this one is actually built over: an inbound upgrade on `http`, an outbound dial
+    // on `tcp` for a plaintext target and on `tls` for a secure one, which is the only lower layer
+    // under which a `wss://` dial is honest.
     assert_eq!(
         <WsTransport as TransportMeta>::COMPOSES_OVER,
-        &["http", "tcp"]
+        &["http", "tcp", "tls"]
     );
     assert!(<WsTransport as TransportMeta>::UPGRADES_TO.is_empty());
     assert_eq!(<WsTransport as TransportMeta>::STATUS_CLASS, None);
@@ -492,4 +494,49 @@ fn a_redial_reuses_the_interned_address_rather_than_leaking_a_new_one() {
     let other = crate::transport::intern("elsewhere.invalid:8443");
     assert!(!std::ptr::eq(first, other));
     assert_eq!(other, "elsewhere.invalid:8443");
+}
+
+/// A `wss://` target is a statement that the bytes are encrypted before they leave, and this
+/// transport encrypts nothing: it upgrades whatever stream the layer below gives it. Over a
+/// cleartext lower layer the handshake would therefore go out as a plain HTTP GET, with no
+/// certificate ever validated, while the destination said `wss`. The dial is refused instead, and
+/// nothing reaches the wire.
+#[tokio::test]
+async fn a_secure_target_over_a_cleartext_lower_layer_is_refused_before_any_byte_is_written() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = tokio::spawn(async move {
+        // A refused dial connects to nothing, so the accept is bounded: no connection at all is
+        // the passing shape, and waiting on one forever would hang rather than report.
+        let Ok(Ok((mut sock, _))) =
+            tokio::time::timeout(Duration::from_millis(500), listener.accept()).await
+        else {
+            return Vec::new();
+        };
+        let mut buf = vec![0u8; 1024];
+        match tokio::time::timeout(
+            Duration::from_millis(500),
+            tokio::io::AsyncReadExt::read(&mut sock, &mut buf),
+        )
+        .await
+        {
+            Ok(Ok(n)) => buf[..n].to_vec(),
+            _ => Vec::new(),
+        }
+    });
+
+    let client_t = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
+    let url: &'static str = Box::leak(format!("wss://{addr}/duplex").into_boxed_str());
+    let err = client_t
+        .dial(&verified_upstream(url), &test_key_handle())
+        .await
+        .expect_err("a wss target dialled over a cleartext lower layer must be refused");
+    assert_eq!(err, TransportError::AddressRefused);
+
+    let first_bytes = seen.await.unwrap();
+    assert!(
+        !first_bytes.starts_with(b"GET "),
+        "a wss dial must never put a cleartext HTTP upgrade on the wire: {:?}",
+        String::from_utf8_lossy(&first_bytes)
+    );
 }

@@ -257,10 +257,12 @@ impl TransportMeta for WsTransport {
         SelectorForm::Port,
     ];
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = &[];
-    // The layers this one is actually built over, and the Cargo edges say the same: an inbound
-    // upgrade arrives on `http`, an outbound one is dialled through `tcp`. `tls` sits under those
-    // two rather than under this one, which is why it is not named here.
-    const COMPOSES_OVER: &'static [&'static str] = &["http", "tcp"];
+    // The layers this one is actually built over: an inbound upgrade arrives on `http`, an
+    // outbound one is dialled through `tcp` for a `ws://` target and through `tls` for a `wss://`
+    // one. `tls` is named because a secure target is dialled ON it directly — this transport adds
+    // no encryption of its own, so that is the only composition under which `wss` is honest, and
+    // `dial` refuses a secure target over any other lower layer.
+    const COMPOSES_OVER: &'static [&'static str] = &["http", "tcp", "tls"];
     const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
     const FRAMING: busbar_contract_transport::wire::Framing =
         busbar_contract_transport::wire::Framing::Stream;
@@ -330,6 +332,19 @@ impl Transport for WsTransport {
             // the dial instead of inside it. Re-addressing narrows the sealed destination to what
             // that layer reads; it does not re-seal it, and it cannot widen where the unit may go.
             let lower = self.lower()?;
+            // A `wss://` target says the bytes are encrypted before they leave this process, and
+            // this transport encrypts nothing of its own: it upgrades whatever stream the layer
+            // below gives up. So the secure claim is the lower layer's to keep, and over a
+            // cleartext one the handshake would go out as a plain GET with no certificate ever
+            // validated — a downgrade the destination never asked for. The dial is refused before
+            // a socket is opened, which is the only answer that does not put cleartext on a wire
+            // the caller was told was secure. Wrapping the stream here instead was the alternative
+            // and is the wrong seam: the trust roots a node accepts upstream are the deployment's
+            // statement, held by the `tls` layer's client config, not a root store this crate
+            // would invent per dial.
+            if secure && lower.key() != "tls" {
+                return Err(TransportError::AddressRefused);
+            }
             let beneath = dest
                 .beneath(
                     lower.key(),
