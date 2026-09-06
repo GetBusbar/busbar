@@ -237,13 +237,43 @@ mod tests {
         }
     }
 
-    /// The declarations are the same every time they are read.
+    /// Every declared list is a SET: nothing declared twice, nothing declared empty.
+    ///
+    /// This used to compare each list to itself, which is true of any two reads of anything and so
+    /// could not fail. What is worth asserting is what the registry needs to be true of a list it
+    /// seals at boot: a repeated key would be one declaration silently standing for two, and an
+    /// empty key would be a class, schema or fact nothing can name.
     #[test]
-    fn the_declarations_do_not_vary() {
-        assert_eq!(McpPlane::CLAIMS, McpPlane::CLAIMS);
-        assert_eq!(McpPlane::OP_CLASSES, McpPlane::OP_CLASSES);
-        assert_eq!(McpPlane::RECORD_SCHEMAS, McpPlane::RECORD_SCHEMAS);
-        assert_eq!(McpPlane::SESSION_FACTS, McpPlane::SESSION_FACTS);
-        assert_eq!(McpPlane::CONTENT_FACTS, McpPlane::CONTENT_FACTS);
+    fn every_declared_list_is_a_set() {
+        fn no_repeats<T: PartialEq + core::fmt::Debug>(what: &str, items: &[T]) {
+            for (i, item) in items.iter().enumerate() {
+                assert!(!items[..i].contains(item), "{what} declares {item:?} twice");
+            }
+        }
+        no_repeats("the class list", McpPlane::OP_CLASSES);
+        no_repeats("the record list", McpPlane::RECORD_SCHEMAS);
+        no_repeats("the session-fact list", McpPlane::SESSION_FACTS);
+        no_repeats("the content-fact list", McpPlane::CONTENT_FACTS);
+        no_repeats("the verb list", McpPlane::INTROSPECTION_VERBS);
+        no_repeats(
+            "the meter-class list",
+            &METER_CLASSES.iter().map(|c| c.key).collect::<Vec<_>>(),
+        );
+        for key in McpPlane::SESSION_FACTS
+            .iter()
+            .chain(McpPlane::CONTENT_FACTS)
+        {
+            assert!(!key.is_empty(), "a fact key is declared as the empty name");
+        }
+        for op in McpPlane::OP_CLASSES {
+            assert!(
+                !op.as_str().is_empty(),
+                "a class is declared as the empty name"
+            );
+        }
+        assert!(
+            !McpPlane::CLAIMS.is_empty(),
+            "a plane that claims nothing takes no bytes"
+        );
     }
 }

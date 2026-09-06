@@ -204,13 +204,43 @@ mod tests {
         }
     }
 
-    /// The declarations are the same every time they are read.
+    /// Every declared list is a SET: nothing declared twice, nothing declared empty.
+    ///
+    /// This used to compare each list to itself, which is true of any two reads of anything and so
+    /// could not fail. What is worth asserting is what the registry needs to be true of a list it
+    /// seals at boot: a repeated key would be one declaration silently standing for two, and an
+    /// empty key would be a class, schema or fact nothing can name.
     #[test]
-    fn the_declarations_do_not_vary() {
-        assert_eq!(A2aPlane::CLAIMS.len(), A2aPlane::CLAIMS.len());
-        assert_eq!(A2aPlane::OP_CLASSES, A2aPlane::OP_CLASSES);
-        assert_eq!(A2aPlane::RECORD_SCHEMAS, A2aPlane::RECORD_SCHEMAS);
-        assert_eq!(A2aPlane::SESSION_FACTS, A2aPlane::SESSION_FACTS);
-        assert_eq!(A2aPlane::CONTENT_FACTS, A2aPlane::CONTENT_FACTS);
+    fn every_declared_list_is_a_set() {
+        fn no_repeats<T: PartialEq + core::fmt::Debug>(what: &str, items: &[T]) {
+            for (i, item) in items.iter().enumerate() {
+                assert!(!items[..i].contains(item), "{what} declares {item:?} twice");
+            }
+        }
+        no_repeats("the class list", A2aPlane::OP_CLASSES);
+        no_repeats("the record list", A2aPlane::RECORD_SCHEMAS);
+        no_repeats("the session-fact list", A2aPlane::SESSION_FACTS);
+        no_repeats("the content-fact list", A2aPlane::CONTENT_FACTS);
+        no_repeats("the verb list", A2aPlane::INTROSPECTION_VERBS);
+        no_repeats(
+            "the meter-class list",
+            &METER_CLASSES.iter().map(|c| c.key).collect::<Vec<_>>(),
+        );
+        for key in A2aPlane::SESSION_FACTS
+            .iter()
+            .chain(A2aPlane::CONTENT_FACTS)
+        {
+            assert!(!key.is_empty(), "a fact key is declared as the empty name");
+        }
+        for op in A2aPlane::OP_CLASSES {
+            assert!(
+                !op.as_str().is_empty(),
+                "a class is declared as the empty name"
+            );
+        }
+        assert!(
+            !A2aPlane::CLAIMS.is_empty(),
+            "a plane that claims nothing takes no bytes"
+        );
     }
 }
