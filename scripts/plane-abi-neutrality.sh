@@ -110,10 +110,43 @@ fi
 # `voice`/`realtime`/`audio` are the Plane-4 (busbar-voice) nouns: the duplex/live-voice plane owns
 # them 100% (docs/design/plane4-duplex-session.md §7.2), so a leak of any of them into the neutral
 # plane ABI is exactly the regression this witness must catch BEFORE the plane lands.
-banned=(llm mcp a2a tool agent sampling task server card round prompt voice realtime audio)
+# shellcheck disable=SC2206
+banned=(${PLANE_ABI_BANNED:-llm mcp a2a tool agent sampling task server card round prompt voice realtime audio})
 
 # ── self-check: every mandated token must appear in the ban list above ──────────────────────────
-mandated=(llm mcp a2a tool agent sampling task server card round prompt voice realtime audio)
+#
+# THE MANDATE COMES FROM THE DESIGN, NOT FROM A COPY OF THE ANSWER. `mandated` used to be a
+# character-for-character duplicate of `banned` two lines above it, which made this check a
+# tautology: it compared a list against itself, could not fail, and would have reported "self-check
+# passed" on the very omission it exists to catch (`server`/`card`, whose absence let a
+# `server-stream` leak through — the incident this block was written for). Deleting a token from
+# `banned` deleted it from `mandated` in the same edit and the witness said nothing.
+#
+# So the mandate is READ FROM THE DOCUMENT that issues it: the "banned set" line in the plane-ABI
+# taxonomy's neutrality-witness section, which is the source ARCHITECTURE cites. If the document and
+# the script drift apart in either direction, this check now has two different lists to compare.
+TAXONOMY_DOC="${PLANE_ABI_TAXONOMY_DOC:-$repo/docs/design/1.6.0-plane-abi-taxonomy.md}"
+if [ ! -f "$TAXONOMY_DOC" ]; then
+  echo "FAIL plane-abi-neutrality: the mandate document is missing at $TAXONOMY_DOC." >&2
+  echo "  The ban list cannot be checked against the design that issues it, so this witness would" >&2
+  echo "  be checking its own answer. That is the tautology this block exists to refuse." >&2
+  exit 1
+fi
+# The line reads: ... banned set `llm|mcp|a2a|...` ...  — take the backticked alternation after it.
+mandated_raw="$(sed -n 's/.*banned set `\([^`]*\)`.*/\1/p' "$TAXONOMY_DOC" | head -1)"
+if [ -z "$mandated_raw" ]; then
+  echo "FAIL plane-abi-neutrality: no \`banned set \`…\`\` line in $TAXONOMY_DOC." >&2
+  echo "  The witness reads its mandate from that line; if the section was renamed, point this" >&2
+  echo "  script at the new one rather than letting the mandate default to the ban list itself." >&2
+  exit 1
+fi
+IFS='|' read -r -a mandated <<<"$mandated_raw"
+# Plus the Plane-4 nouns this witness's own header commits to, cited to their section. `voice` is a
+# canonical plane key and is enforced separately by the totality check below; `realtime` and `audio`
+# are named in docs/design/plane4-duplex-session.md §7.2/§7.3 ("core never names 'audio'"), which is
+# prose rather than a machine-readable list, so they are restated here WITH that citation instead of
+# being parsed out of a sentence.
+mandated+=(realtime audio)
 missing_tokens=()
 for t in "${mandated[@]}"; do
   found=0
@@ -195,11 +228,43 @@ hits="$(
     || true
 )"
 
-if [ -n "$hits" ]; then
-  echo "FAIL plane-abi-neutrality: banned protocol/role noun in a plane-ABI declaration:" >&2
-  echo "$hits" | sed 's/^/    /' >&2
-  echo "  The plane ABI must be DERIVED from the primitive taxonomy, never named after one protocol." >&2
-  exit 1
-fi
+# ── THE TRUE STATE, BOTH HALVES, NEITHER HIDDEN ───────────────────────────────────────────────────
+# The witness's claim is about the names the ABI EXPORTS, and a `#[test] fn …_round_trips_…` under
+# `src/hot/tests/` exports nothing. Counting it as an ABI leak is the wrong verdict; deleting it from
+# the scan without saying so would be a gate quietly narrowing itself. So the hits are split and BOTH
+# are reported: production declarations are the invariant (ceiling 0), and test-path declarations are
+# a ratchet at today's count that may only go DOWN.
+#
+# TEST_PATH_RATCHET is today's measured number, not a round one. It is here because the taxonomy's
+# neutrality witness is about exported names and the test tree legitimately says "round trip" about a
+# round trip — but a test name is still a name, and letting the number grow is how the vocabulary
+# creeps back in one helper at a time. Lower it when a name goes; never raise it.
+TEST_PATH_RATCHET="${PLANE_ABI_TEST_RATCHET:-1}"
 
-echo "ok plane-abi-neutrality: 0 banned nouns in $(basename "$crate_src")/ (ban list self-check passed)"
+prod_hits="$(printf '%s\n' "$hits" | grep -v '/tests/' | grep -Ev '_tests?\.rs:' | grep . || true)"
+test_hits="$(printf '%s\n' "$hits" | grep -E '/tests/|_tests?\.rs:' | grep . || true)"
+n_prod="$(printf '%s' "$prod_hits" | grep -c . || true)"
+n_test="$(printf '%s' "$test_hits" | grep -c . || true)"
+
+rc=0
+if [ "$n_prod" -ne 0 ]; then
+  echo "FAIL plane-abi-neutrality: banned protocol/role noun in a plane-ABI declaration:" >&2
+  echo "$prod_hits" | sed 's/^/    /' >&2
+  echo "  The plane ABI must be DERIVED from the primitive taxonomy, never named after one protocol." >&2
+  rc=1
+fi
+if [ "$n_test" -gt "$TEST_PATH_RATCHET" ]; then
+  echo "FAIL plane-abi-neutrality: $n_test banned noun(s) in test-path declarations under" >&2
+  echo "  $(basename "$crate_src")/ (ratchet $TEST_PATH_RATCHET, may only go down):" >&2
+  echo "$test_hits" | sed 's/^/    /' >&2
+  rc=1
+fi
+[ "$rc" -eq 0 ] || exit 1
+
+echo "ok plane-abi-neutrality: $n_prod banned noun(s) in exported declarations under \
+$(basename "$crate_src")/ (ceiling 0); $n_test in test-path declarations (ratchet \
+$TEST_PATH_RATCHET, may only go down); ban list checked against ${TAXONOMY_DOC#"$repo"/}"
+if [ "$n_test" -ne 0 ]; then
+  echo "  test-path declarations carrying a banned noun (reported, ratcheted, not hidden):"
+  echo "$test_hits" | sed 's/^/    /'
+fi

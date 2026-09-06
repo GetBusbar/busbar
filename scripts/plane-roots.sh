@@ -85,7 +85,14 @@ plane_roots_resolve() {   # $1.. = plane keys. Sets PLANE_ROOT_<key> per plane; 
     owned=""
     while IFS= read -r d; do
       [ -z "$d" ] && continue
-      if find "$d" -maxdepth 1 -name '*.rs' -exec grep -l -- "$grammar" {} + >/dev/null 2>&1; then
+      # THE ANSWER IS THE MATCHED FILE, NOT find's EXIT STATUS. `-exec … +` runs the command once
+      # per batch of matched files, and a directory holding NO `.rs` file produces no batch at all:
+      # `grep` never runs, find has nothing to complain about, and find exits 0. Read as a status,
+      # that 0 says "this directory declares the plane's grammar" about a directory with no Rust in
+      # it — a plane root resolved to somewhere that cannot possibly own the plane, which then
+      # becomes the scan root every rule that names the plane uses. So the ownership claim is the
+      # grep's OUTPUT (the file that carries the declaration), and an empty output owns nothing.
+      if [ -n "$(find "$d" -maxdepth 1 -name '*.rs' -exec grep -l -- "$grammar" {} + 2>/dev/null)" ]; then
         owned="${owned}${d}
 "
       fi
