@@ -119,5 +119,8 @@ host_triple() {  # the running machine's target triple, as busbar release assets
 # Run directly (not sourced): print the harness revision, e.g. for ci.yml's cache key or a human
 # checking whether their tree still matches a cached golden.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-  echo "harness_rev $(harness_rev)"
+  # `--files`: the repo-relative file list, one per line. land.sh asks for it to decide whether a set
+  # of picked commits touched the harness at all — one definition of "the harness", shared with the
+  # hash above, so the two cannot answer differently.
+  if [ "${1:-}" = "--files" ]; then harness_rev_files; else echo "harness_rev $(harness_rev)"; fi
 fi
