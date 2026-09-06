@@ -301,6 +301,7 @@ impl std::fmt::Debug for Hold {
 pub struct HoldAccrual {
     principal: PrincipalId,
     amount: u64,
+    overdraft: u64,
 }
 
 impl HoldAccrual {
@@ -312,6 +313,15 @@ impl HoldAccrual {
     /// How much.
     pub fn amount(&self) -> u64 {
         self.amount
+    }
+
+    /// How much of that amount ran past the parent's reservation and nothing could back.
+    ///
+    /// The cell holds no slice of the principal's window, so it can top the parent's reservation up
+    /// by nothing; whatever a child spends past the end is carried, and this is the child's half of
+    /// that figure — what it drew against nothing, as against [`HoldAccrual::amount`], what it drew.
+    pub fn overdraft(&self) -> u64 {
+        self.overdraft
     }
 }
 
@@ -483,11 +493,21 @@ impl HoldCell {
                 if parent.principal() != principal {
                     return Err(AccrualRefused::PrincipalMismatch);
                 }
-                parent.accrue(amount);
+                // The verdict has to land on the parent's hold, inside this same guard. Accruing
+                // and throwing the answer away leaves a child that spent past the end of every
+                // reservation posting clean: the parent settles with no flag and no figure, and
+                // the child's own posting says it drew against something.
+                //
+                // The cell holds no slice of the principal's window and can draw none from here,
+                // so the headroom is zero and the whole shortfall is carried. `Hold::spend` is
+                // what subtracts the overdraft the hold already carries, which is what keeps two
+                // children past the same end from recording the first one's shortfall twice.
+                let spend = parent.spend(amount, 0);
                 self.accruals.fetch_add(1, Ordering::Relaxed);
                 Ok(HoldAccrual {
                     principal: principal.clone(),
-                    amount,
+                    amount: spend.accrued,
+                    overdraft: spend.overdraft,
                 })
             }
             Slot::Arrival(_) => Err(AccrualRefused::ParentNotAdmitted),
@@ -516,8 +536,12 @@ impl HoldCell {
                 principal: accrual.principal,
                 reserved: 0,
                 settled: accrual.amount,
-                overdraft: 0,
-                flags: PostingFlags::NONE,
+                overdraft: accrual.overdraft,
+                flags: if accrual.overdraft > 0 {
+                    PostingFlags::OVERDRAFT
+                } else {
+                    PostingFlags::NONE
+                },
             }),
             Slot::Arrival(_) | Slot::Taken => Err(accrual),
         }
@@ -623,10 +647,15 @@ impl Posted {
     /// Post a child's spend that landed inside its parent's admission.
     ///
     /// The parent's hold already carries the amount — the accrual added it at the door — so what
-    /// this writes is the child's OWN posting: it reserved nothing, it settled what it spent, and
-    /// it has no overdraft, because the reservation behind it is the parent's. That is what lets a
-    /// child end like every other unit, with one posting and one sealed end, instead of ending in
-    /// a shape the record has no room for.
+    /// this writes is the child's OWN posting: it reserved nothing, and it settled what it spent,
+    /// because the reservation behind it is the parent's. That is what lets a child end like every
+    /// other unit, with one posting and one sealed end, instead of ending in a shape the record has
+    /// no room for.
+    ///
+    /// A child that ran past the end of that reservation carries the part nothing backed, and the
+    /// flag that says so. Zero for every child that fitted, which is nearly all of them; the parent
+    /// carries the same figure on its own settlement, so the two agree rather than one of them
+    /// reporting a clean spend the other calls an overdraft.
     ///
     /// A parent that exited between the door and here hands the accrual back, and the caller posts
     /// it late against a synchronous draw.

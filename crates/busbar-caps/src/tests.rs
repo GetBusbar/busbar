@@ -800,6 +800,75 @@ fn a_child_posts_inside_its_parent_while_the_parent_is_open() {
 }
 
 #[test]
+fn a_childs_spend_past_the_parents_reservation_lands_on_the_parents_hold() {
+    // A child spends five times what the parent reserved. The parent's hold is the reservation
+    // behind the child, so the part nothing could back has to reach the parent's posting; a spend
+    // that ran past every reservation must never post clean.
+    let k = Kernel::new();
+    let admit = k.admit_token();
+    let parent = HoldCell::new(Hold::open(&admit, who("acct-1"), 0));
+    let arrival = parent
+        .admit(Hold::open(&admit, who("acct-1"), 1_000), &admit)
+        .expect("the parent passes the door");
+    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+
+    let accrual = parent
+        .accrue_child(&who("acct-1"), 5_000, &admit)
+        .expect("an open parent takes the child's spend");
+    assert_eq!(accrual.amount(), 5_000, "a spend is never trimmed");
+    assert_eq!(
+        accrual.overdraft(),
+        4_000,
+        "what the child drew against nothing"
+    );
+
+    let child =
+        Posted::into_parent(accrual, &parent, &k.ledger_token()).expect("the parent is still open");
+    assert_eq!(child.settled(), 5_000);
+    assert_eq!(child.overdraft(), 4_000);
+    assert!(child.flags().contains(PostingFlags::OVERDRAFT));
+
+    let taken = parent.take(&k.exit_token()).expect("the parent's own exit");
+    let settled = Posted::settle(taken, &usage_of(&k, 5_000), &k.ledger_token());
+    assert_eq!(settled.settled(), 5_000, "the settled figure is untouched");
+    assert_eq!(settled.overdraft(), 4_000);
+    assert!(settled.flags().contains(PostingFlags::OVERDRAFT));
+}
+
+#[test]
+fn two_children_that_together_run_past_the_reservation_overdraw_once() {
+    // 800 and 800 against a reservation of 1,000. The first fits; the second carries the 600 that
+    // is left over, and the parent carries 600 in total rather than 600 twice.
+    let k = Kernel::new();
+    let admit = k.admit_token();
+    let parent = HoldCell::new(Hold::open(&admit, who("acct-1"), 0));
+    let arrival = parent
+        .admit(Hold::open(&admit, who("acct-1"), 1_000), &admit)
+        .expect("the parent passes the door");
+    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+
+    let first = parent
+        .accrue_child(&who("acct-1"), 800, &admit)
+        .expect("inside the reservation");
+    assert_eq!(first.overdraft(), 0);
+    let second = parent
+        .accrue_child(&who("acct-1"), 800, &admit)
+        .expect("past the end of it");
+    assert_eq!(second.overdraft(), 600);
+
+    let first = Posted::into_parent(first, &parent, &k.ledger_token()).expect("open");
+    assert!(first.flags().is_clean());
+    let second = Posted::into_parent(second, &parent, &k.ledger_token()).expect("open");
+    assert!(second.flags().contains(PostingFlags::OVERDRAFT));
+
+    let taken = parent.take(&k.exit_token()).expect("the parent's own exit");
+    let settled = Posted::settle(taken, &usage_of(&k, 1_600), &k.ledger_token());
+    assert_eq!(settled.settled(), 1_600);
+    assert_eq!(settled.overdraft(), 600, "carried once, not twice");
+    assert!(settled.flags().contains(PostingFlags::OVERDRAFT));
+}
+
+#[test]
 fn a_child_whose_parent_exited_gets_its_accrual_back_and_posts_late() {
     let k = Kernel::new();
     let admit = k.admit_token();
