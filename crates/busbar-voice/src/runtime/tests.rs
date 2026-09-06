@@ -563,3 +563,188 @@ impl SessionScopeRawProbe {
         busbar_substrate::plane_host::SessionScope::new(Arc::clone(engine), "mallory", "s").get()
     }
 }
+
+// ── the governed wait: a client-served tool call ────────────────────────────────────────────────
+//
+// The other half of the tool moat. A call for a tool this node does NOT serve cannot be answered
+// in-process — the answer is the client's — so the runtime opens no execution for it and routes the
+// client's reply to the node's own table instead. Three facts, and each of them failed before this:
+// the reply woke the wait, a reply naming a call nobody is waiting on is refused rather than carried
+// upstream, and a call nobody answered is swept by the tick.
+
+/// A tool executor that serves exactly one tool and leaves the rest to the client.
+#[derive(Debug)]
+struct ServesOnly(&'static str);
+
+#[async_trait::async_trait]
+impl crate::runtime::ToolExecutor for ServesOnly {
+    fn serves(&self, name: &str) -> bool {
+        name == self.0
+    }
+    async fn execute(&self, name: &str, _arguments: &[u8]) -> Vec<u8> {
+        format!(r#"{{"served":"{name}"}}"#).into_bytes()
+    }
+}
+
+/// The node's table, as the runtime is allowed to see it: which identifiers are open, and a sweep.
+#[derive(Debug, Default)]
+struct TableFake {
+    sessions: std::sync::Mutex<std::collections::BTreeMap<u64, Vec<String>>>,
+}
+
+impl crate::runtime::GovernedCalls for TableFake {
+    fn replied(&self, session: u64, call_id: &str) -> Result<(), crate::runtime::ReplyRefusal> {
+        let mut s = self.sessions.lock().unwrap();
+        let open = s
+            .get_mut(&session)
+            .ok_or(crate::runtime::ReplyRefusal::NoSuchSession)?;
+        let i = open
+            .iter()
+            .position(|c| c == call_id)
+            .ok_or(crate::runtime::ReplyRefusal::UnknownCall)?;
+        open.remove(i);
+        Ok(())
+    }
+
+    fn expired(&self, _now_ms: u64) -> usize {
+        let mut s = self.sessions.lock().unwrap();
+        let n: usize = s.values().map(Vec::len).sum();
+        s.clear();
+        n
+    }
+}
+
+/// A core bound to `table` as session 7, serving only the tool `local`.
+fn governed_core(table: Arc<TableFake>) -> Arc<SessionCore<OpenAiRealtimeCodec>> {
+    let (dtx, _drx) = unbounded::<Vec<u8>>();
+    let host = Arc::new(MockMeteringHost::default()) as Arc<dyn MeteringHost>;
+    let lease = HostMeteringPort::new(host)
+        .reserve(1_000, 0, None)
+        .expect("lease opens");
+    Arc::new(
+        SessionCore::new(
+            OpenAiRealtimeCodec,
+            lease,
+            None,
+            Arc::new(ServesOnly("local")),
+            Carrier::with_downlink(dtx),
+            None,
+        )
+        .with_governed(crate::runtime::GovernedSession {
+            session: 7,
+            calls: table as Arc<dyn crate::runtime::GovernedCalls>,
+        }),
+    )
+}
+
+/// The three server→client frames that announce, stream and close one call for `tool`.
+fn call_frames(call_id: &str, tool: &str) -> [WireEvent; 3] {
+    [
+        wire(serde_json::json!({"type":"response.output_item.added",
+            "item":{"type":"function_call","call_id":call_id,"name":tool}})),
+        wire(serde_json::json!({"type":"response.function_call_arguments.delta",
+            "call_id":call_id,"delta":"{}"})),
+        wire(serde_json::json!({"type":"response.function_call_arguments.done","call_id":call_id})),
+    ]
+}
+
+/// The client's own `function_call_output` for `call_id`.
+fn client_reply(call_id: &str) -> WireEvent {
+    wire(serde_json::json!({"type":"conversation.item.create",
+        "item":{"type":"function_call_output","call_id":call_id,"output":"42"}}))
+}
+
+#[tokio::test]
+async fn a_client_served_call_waits_and_its_reply_wakes_the_unit() {
+    let table = Arc::new(TableFake::default());
+    let core = governed_core(Arc::clone(&table));
+
+    // The node serves `local` and does not serve `remote`. Both calls close in the same turn.
+    let mut upstream = Vec::new();
+    for f in call_frames("cl", "local")
+        .into_iter()
+        .chain(call_frames("cr", "remote"))
+    {
+        upstream.extend(core.on_server_frame(f).await.upstream);
+    }
+    let joined: String = upstream
+        .iter()
+        .map(|w| String::from_utf8_lossy(&w.0).to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        joined.contains("\"call_id\":\"cl\""),
+        "the tool the node serves is still executed in-process: {joined}"
+    );
+    assert!(
+        !joined.contains("\"call_id\":\"cr\""),
+        "the node never authors an answer for a call it does not serve: {joined}"
+    );
+
+    // The root entered the wait where it planned the leg. The runtime is what tells it the answer
+    // arrived — and the reply goes on upstream only because the wait was woken.
+    table.sessions.lock().unwrap().insert(7, vec!["cr".to_string()]);
+    let plan = core.on_client_frame(client_reply("cr"));
+    assert!(
+        !plan.refused_reply,
+        "the wait was open, so nothing is refused"
+    );
+    let up: String = plan
+        .upstream
+        .iter()
+        .map(|w| String::from_utf8_lossy(&w.0).to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        up.contains("function_call_output") && up.contains("response.create"),
+        "the woken reply reaches the model and asks it to continue: {up}"
+    );
+    assert!(
+        table.sessions.lock().unwrap()[&7].is_empty(),
+        "the table no longer holds the call"
+    );
+}
+
+#[tokio::test]
+async fn a_reply_naming_no_open_call_is_refused_rather_than_carried_upstream() {
+    let table = Arc::new(TableFake::default());
+    let core = governed_core(Arc::clone(&table));
+    for f in call_frames("cr", "remote") {
+        core.on_server_frame(f).await;
+    }
+    // The session's table holds `cr`; the client answers `cz`.
+    table.sessions.lock().unwrap().insert(7, vec!["cr".to_string()]);
+    let plan = core.on_client_frame(client_reply("cz"));
+    assert!(plan.refused_reply, "a reply matching nothing is refused");
+    assert!(
+        plan.upstream.is_empty(),
+        "and a refused reply reaches the model on no wire at all"
+    );
+    assert_eq!(
+        table.sessions.lock().unwrap()[&7],
+        vec!["cr".to_string()],
+        "the call it did not answer is still waiting"
+    );
+}
+
+#[tokio::test]
+async fn an_unanswered_client_served_call_is_swept_by_the_tick() {
+    let table = Arc::new(TableFake::default());
+    let core = governed_core(Arc::clone(&table));
+    for f in call_frames("cr", "remote") {
+        core.on_server_frame(f).await;
+    }
+    table.sessions.lock().unwrap().insert(7, vec!["cr".to_string()]);
+
+    // The tick is what runs beside the pump; without it the wait is never ended and the call's hold
+    // is held open by a client that simply never replied.
+    assert_eq!(
+        core.sweep_expired(1_000),
+        1,
+        "the tick swept the one open call"
+    );
+    // And a reply that turns up after the sweep is refused, not paid out against a settled call.
+    let plan = core.on_client_frame(client_reply("cr"));
+    assert!(plan.refused_reply, "a late reply answers nothing");
+    assert!(plan.upstream.is_empty());
+}
