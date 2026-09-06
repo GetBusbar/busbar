@@ -204,19 +204,18 @@ impl Wal {
 
     /// Build a log over any factory and shipper. The seam the batteries drive: a factory that fails
     /// its sync on demand is how the poison rule is checked.
+    ///
+    /// Opening is also RECOVERING: the factory is asked which segment the writes reached, that
+    /// segment's tail is scanned, and the idempotence marks are seeded from it. See [`open_tail`]
+    /// for which segment that is and what the seeding does and does not cover.
     pub fn with_parts(
         mut factory: Box<dyn SegmentFactory>,
         shipper: Box<dyn Shipper>,
         mode: Mode,
         ceiling: u64,
     ) -> Result<Self, OpenError> {
-        let backend = factory.open(0)?;
-        let mut segment = Segment::open_at(backend, 0, 0, ceiling)?;
-        // The scan decides where the writes really end, and the cut makes the backing agree with
-        // that. Appending then resumes at the boundary rather than at whatever length the crash
-        // happened to leave behind.
-        let recovered = recover_and_truncate(&mut segment)?;
-        segment.truncate_to(recovered.durable_end)?;
+        let (segment, recovered) = open_tail(factory.as_mut(), ceiling)?;
+        let segments_used = segment.index() + 1;
         let mut wal = Wal {
             factory,
             shipper,
@@ -230,7 +229,7 @@ impl Wal {
             owed_to_store: Vec::new(),
             store_debt_dropped: 0,
             recovered: Vec::new(),
-            segments_used: 1,
+            segments_used,
         };
         for record in &recovered.records {
             wal.mark_written(record.node, record.node_seq);
@@ -245,6 +244,11 @@ impl Wal {
     }
 
     /// The records that were on the tail when the log was opened, in order.
+    ///
+    /// The tail of the LAST segment that held any — which after a roll is not segment zero. This is
+    /// the end of the log, so a caller that resumes a chain from it resumes from the newest record
+    /// rather than from one somewhere in the middle. It is not the whole log: everything in the
+    /// segments before it is still on the medium and is simply not what a resume needs.
     pub fn recovered(&self) -> &[Record] {
         &self.recovered
     }
@@ -502,5 +506,60 @@ impl Wal {
         self.segment = segment;
         self.segments_used += 1;
         Ok(())
+    }
+}
+
+/// Open the segment a restart has to resume in, and hand back the records on its tail.
+///
+/// ## Which segment that is
+///
+/// The highest one the factory has a backing for — a directory listing on disk, the resident slots
+/// in memory — and NOT index zero. A log that has rolled has its newest records in its newest
+/// segment, so seeding from index zero would resume from the middle of the log: the head and the
+/// sequence number would come from records that were superseded long ago, and every number the node
+/// then took would be one a writer had already used. Two records under one identity is exactly what
+/// a store that deduplicates on `(node, node_seq)` drops on the floor.
+///
+/// A roll opens the next segment before anything is written to it, so a crash in that window leaves
+/// a real but empty highest segment. Resuming there would find no tail and reset the chain, so the
+/// walk steps back over segments that hold no complete record until it finds the one the writes
+/// actually end in, or reaches the first. In practice that is one step at most; it is a loop because
+/// nothing forbids a run of them.
+///
+/// ## Why the seeding does not scan the earlier segments
+///
+/// Recovery is O(the last segment), and it is meant to stay that way: a node that has been up for a
+/// year has a log measured in segments, and a restart that read all of them would turn a boot into a
+/// full history replay for an answer that is already complete for every writer still writing.
+///
+/// The alternative that would also be O(the last segment) is a persisted mark — a side file naming
+/// each node's highest number. It is not used, for the same reason the journal takes its head off
+/// the log's tail rather than out of a file beside it: a mark written separately from the records it
+/// describes can disagree with them after a crash between the two writes, and a disagreeing mark is
+/// worse than no mark, because it is believed.
+///
+/// So the marks are seeded from the last segment's tail, and what that leaves is bounded and worth
+/// saying plainly: a node that wrote records in an earlier segment and nothing at all in the last
+/// one has no mark here, so a re-offer of one of ITS old records would be appended a second time
+/// rather than passed over. It costs a duplicate in the log, never a fork in the chain — the head
+/// and the next sequence number come off the newest record that exists, which is the thing this
+/// function is for.
+fn open_tail(
+    factory: &mut dyn SegmentFactory,
+    ceiling: u64,
+) -> Result<(Segment, Recovered), OpenError> {
+    let mut index = factory.highest_index()?.unwrap_or(0);
+    loop {
+        let backend = factory.open(index)?;
+        let mut segment = Segment::open_at(backend, index, 0, ceiling)?;
+        // The scan decides where the writes really end, and the cut makes the backing agree with
+        // that. Appending then resumes at the boundary rather than at whatever length the crash
+        // happened to leave behind.
+        let recovered = recover_and_truncate(&mut segment)?;
+        segment.truncate_to(recovered.durable_end)?;
+        if !recovered.records.is_empty() || index == 0 {
+            return Ok((segment, recovered));
+        }
+        index -= 1;
     }
 }

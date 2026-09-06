@@ -760,6 +760,10 @@ impl Journal {
     /// This is the seam a battery drives, and it is also how the on-disk case resumes: the log's
     /// recovered tail IS the chain, so the head and the next sequence number come off it rather than
     /// being carried in a side file that could disagree with it.
+    ///
+    /// That tail is the end of the log wherever the log has got to — the last segment that holds a
+    /// record, not the first segment ever written. A journal resumed from anything else would number
+    /// its next record with a number it has already used.
     #[must_use]
     pub fn over(log: Wal, node: u64) -> Self {
         let mut journal = Journal {

@@ -57,6 +57,15 @@ pub trait SegmentFactory: Send {
     /// Open, or create, the backing for segment `index`.
     fn open(&mut self, index: u64) -> io::Result<Box<dyn SegmentBackend>>;
 
+    /// The highest index this factory already has a backing for, or `None` when it has none.
+    ///
+    /// This is what a restart asks first, and it has no default on purpose. A log that resumed at
+    /// index zero after the writes had rolled past it would seed itself from the tail of a segment
+    /// that is no longer the end of the log, and everything it appended afterwards would carry
+    /// numbers a writer had already used. A factory that cannot answer this question honestly
+    /// cannot be recovered from, so it has to say so in code rather than inherit a wrong answer.
+    fn highest_index(&self) -> io::Result<Option<u64>>;
+
     /// Whether this factory can put anything on a disk. A memory factory says no, and the log
     /// reports it so an operator can see which mode a node is in without inspecting a directory.
     fn is_durable(&self) -> bool;
@@ -225,6 +234,21 @@ impl SegmentFactory for MemoryFactory {
         Ok(Box::new(MemorySegment::over(self.segment_bytes(index))))
     }
 
+    /// The highest index whose bytes are still resident. A slot whose only references are gone is
+    /// not an answer: those bytes no longer exist, so nothing could be recovered from that index
+    /// even if the table still remembered the number.
+    fn highest_index(&self) -> io::Result<Option<u64>> {
+        Ok(self
+            .segments
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .slots
+            .iter()
+            .filter(|(_, slot)| slot.strong_count() > 0)
+            .map(|(index, _)| *index)
+            .max())
+    }
+
     fn is_durable(&self) -> bool {
         false
     }
@@ -345,11 +369,39 @@ impl DirectoryFactory {
     pub fn segment_path(&self, index: u64) -> PathBuf {
         self.dir.join(format!("{index:016}.wal"))
     }
+
+    /// The index a file name in the directory stands for, or `None` if this crate did not name it.
+    ///
+    /// Strict about the shape it accepts — the fixed width and the extension both — because the
+    /// answer decides where a restart resumes, and a stray file somebody dropped in the data
+    /// directory must not be able to move the log's idea of where its writes ended.
+    fn index_of(name: &str) -> Option<u64> {
+        let digits = name.strip_suffix(".wal")?;
+        if digits.len() != 16 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        digits.parse().ok()
+    }
 }
 
 impl SegmentFactory for DirectoryFactory {
     fn open(&mut self, index: u64) -> io::Result<Box<dyn SegmentBackend>> {
         Ok(Box::new(FileSegment::open(&self.segment_path(index))?))
+    }
+
+    /// The highest-numbered `<index>.wal` in the directory. A listing, not a side file: the
+    /// directory entries ARE the record of which segments exist, and a mark kept anywhere else
+    /// could disagree with them after a crash between writing the mark and rolling the segment.
+    fn highest_index(&self) -> io::Result<Option<u64>> {
+        let mut highest: Option<u64> = None;
+        for entry in std::fs::read_dir(&self.dir)? {
+            let name = entry?.file_name();
+            let Some(index) = name.to_str().and_then(DirectoryFactory::index_of) else {
+                continue;
+            };
+            highest = Some(highest.map_or(index, |h: u64| h.max(index)));
+        }
+        Ok(highest)
     }
 
     fn is_durable(&self) -> bool {
