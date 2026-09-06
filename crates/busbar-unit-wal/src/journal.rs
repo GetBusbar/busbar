@@ -776,15 +776,24 @@ impl Journal {
             overflows_seen: 0,
             dropped_total: 0,
         };
-        // A tail that does not decode leaves the chain at genesis rather than resuming from bytes
-        // this build cannot read. The records are still on the medium; nothing is destroyed by
-        // declining to chain onto them.
+        // A tail that does not decode leaves the chain's HEAD at genesis rather than resuming from
+        // bytes this build cannot read. The records are still on the medium; nothing on it is
+        // destroyed by declining to chain onto them.
         if let Ok(records) = decode_run(journal.log.recovered()) {
             if let Some((head, next_seq)) = tail_of(&records, node) {
                 journal.head = head;
                 journal.next_seq = next_seq;
             }
         }
+        // The NUMBERING is a separate question, and it is not one the head can be allowed to answer
+        // on its own. The log seeds its idempotence marks from the same tail whether or not this
+        // build could read it, so a chain that started numbering from one over a tail it declined to
+        // decode would seal records under identities the log already holds — and the log passes
+        // those over as duplicates and answers `Ok`. The record would be on no medium, the append
+        // would report success, and the loss would be silent, which is the one outcome a journal may
+        // not produce. Taking the log's own floor costs a visible link break at the resumption point
+        // and never a lost record.
+        journal.floor_seq_to_the_log();
         journal
     }
 
@@ -798,6 +807,12 @@ impl Journal {
         let mut journal = Journal::over(log, node);
         journal.head = head;
         journal.next_seq = next_seq.max(1);
+        // The caller's number is where the STORE got to, and on the node this constructor is for the
+        // log holds nothing, so the two agree. Where they do not — a store that acknowledged less
+        // than the local log took — the caller's number would re-use identities the log already
+        // carries, and the log answers a duplicate identity by passing over the record and reporting
+        // success. The floor is what keeps that from being a settlement lost behind an `Ok`.
+        journal.floor_seq_to_the_log();
         journal
     }
 
@@ -930,6 +945,16 @@ impl Journal {
     pub fn replay(&self) -> std::io::Result<Result<Vec<JournalRecord>, JournalBreak>> {
         let back = self.log.read_back()?;
         Ok(decode_run(&back.records).and_then(|records| verify(&records).map(|()| records)))
+    }
+
+    /// Raise the next number to one the log does not already hold for this node.
+    ///
+    /// Only ever raises. Every path that positions a chain goes through here, because the number is
+    /// the one thing a journal cannot get wrong quietly: the log deduplicates on `(node, node_seq)`
+    /// and cannot tell a fresh record offered under a used number from an honest re-offer of the
+    /// record already there, so it passes the fresh one over and answers `Ok`.
+    fn floor_seq_to_the_log(&mut self) {
+        self.next_seq = u64::max(self.next_seq, self.log.next_free_seq(self.node));
     }
 
     /// Chain one entry and advance the head.
