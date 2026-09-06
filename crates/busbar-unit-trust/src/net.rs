@@ -56,6 +56,7 @@
 //! isolation; the guard above them takes its ONE resolution through a [`Resolver`] seam for the same
 //! reason, and because a unit that opened a socket would not be a unit.
 
+use std::borrow::Cow;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 /// Well-known cloud-metadata / internal DNS names that resolve, at connect time, to the IMDS family
@@ -840,7 +841,14 @@ fn strip_scheme(url: &str) -> Option<&str> {
 /// and be allowed, but it can never be SMUGGLED PAST a check by hiding a blocked literal behind an
 /// escape). Only ASCII results are surfaced as decoded bytes; non-UTF-8 decoded output falls back to
 /// the original so we never fabricate a misleading host. No new dependency — a small manual scan.
-fn percent_decode_host(host: &str) -> String {
+///
+/// A host carrying no `%` at all decodes to itself, and is handed back borrowed: the overwhelmingly
+/// common host is an ordinary name, and a guard on the request path should not build a copy of it to
+/// discover it had nothing to decode.
+fn percent_decode_host(host: &str) -> Cow<'_, str> {
+    if !host.contains('%') {
+        return Cow::Borrowed(host);
+    }
     let bytes = host.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -858,9 +866,21 @@ fn percent_decode_host(host: &str) -> String {
         i += 1;
     }
     match String::from_utf8(out) {
-        Ok(s) => s,
+        Ok(s) => Cow::Owned(s),
         // Decoded bytes are not valid UTF-8: keep the original literal rather than a lossy host.
-        Err(_) => host.to_string(),
+        Err(_) => Cow::Borrowed(host),
+    }
+}
+
+/// Strip every ASCII tab, LF and CR, borrowing when there are none to strip.
+///
+/// The WHATWG removal is unconditional in meaning but almost never has anything to do: an ordinary
+/// configured URL carries none of the three, and that case should cost a scan and no allocation.
+fn strip_whatwg_removed(s: &str) -> Cow<'_, str> {
+    if s.contains(['\t', '\n', '\r']) {
+        Cow::Owned(s.replace(['\t', '\n', '\r'], ""))
+    } else {
+        Cow::Borrowed(s)
     }
 }
 
@@ -882,8 +902,8 @@ pub fn extract_normalized_host(url: &str) -> Option<String> {
     // connects to `169.254.169.254` — the real IMDS address. Doing this before the backslash→`/`
     // fold matters too: a stripped tab could otherwise sit between characters that only become a
     // delimiter after this removal (WHATWG strips tab/newline before it looks for `\`/`/` at all).
-    let url = url.replace(['\t', '\n', '\r'], "");
-    let url = url.as_str();
+    let url = strip_whatwg_removed(url);
+    let url = url.as_ref();
     // Strip the scheme (case-insensitively — see `scheme_is`). The host extraction is
     // scheme-agnostic; accept either prefix so an `http://` upstream is still metadata-checked.
     let rest = strip_scheme(url)?;
@@ -897,7 +917,7 @@ pub fn extract_normalized_host(url: &str) -> Option<String> {
 /// alike. Anything carrying a `://` is left to [`extract_normalized_host`], so a scheme this guard
 /// does not speak still extracts no host here rather than having its scheme read as a hostname.
 pub fn extract_normalized_authority_host(authority: &str) -> Option<String> {
-    let authority = authority.replace(['\t', '\n', '\r'], "");
+    let authority = strip_whatwg_removed(authority);
     if authority.contains("://") {
         return None;
     }
@@ -915,9 +935,15 @@ fn normalize_authority(rest: &str) -> Option<String> {
     // whole `10.0.0.1\x.allowed.com` as the host — an SSRF credential-relay bypass. Mirroring
     // reqwest's `\`→`/` rewrite here makes the guard see the SAME authority boundary the connecting
     // stack will, closing the bypass.
-    let rest = rest.replace('\\', "/");
+    // Borrowed when there is no backslash to fold, which is every well-formed URL: the fold exists
+    // for the hostile spelling, and paying for it on every dial would be paying for the rare case.
+    let rest: Cow<'_, str> = if rest.contains('\\') {
+        Cow::Owned(rest.replace('\\', "/"))
+    } else {
+        Cow::Borrowed(rest)
+    };
     // Authority is everything before the first path/query/fragment delimiter.
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest.as_str());
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest.as_ref());
     // Drop any "userinfo@" prefix.
     let host_port = authority.rsplit('@').next().unwrap_or(authority);
 
@@ -949,14 +975,13 @@ fn normalize_authority(rest: &str) -> Option<String> {
     // `IpAddr`, and the `%` defeats `is_alternate_ipv4_encoding`) yet resolve to the IMDS target
     // downstream. Decoding here makes the safety property independent of URL-library details.
     let host_decoded = percent_decode_host(host);
+    let host_decoded = host_decoded.as_ref();
 
     // Normalize a single trailing FQDN-root dot. glibc getaddrinfo treats a trailing dot as a rooted
     // FQDN and still resolves the literal it precedes — so `169.254.169.254.` connects to exactly the
     // IMDS target the bare form does. Without stripping, an IP-literal+dot does NOT parse as
     // `IpAddr`, defeating every range check.
-    let host = host_decoded
-        .strip_suffix('.')
-        .unwrap_or(host_decoded.as_str());
+    let host = host_decoded.strip_suffix('.').unwrap_or(host_decoded);
 
     Some(host.to_string())
 }
@@ -1273,8 +1298,7 @@ fn judge_against_lists(
     // this guard and the resolved-name guard cannot know different names. The IPv4 / IPv6 metadata
     // literals are caught in the IP arms below; these are the DNS names a connecting stack would
     // resolve.
-    let host_lc = host.to_ascii_lowercase();
-    if METADATA_HOSTS.contains(&host_lc.as_str()) {
+    if METADATA_HOSTS.iter().any(|m| m.eq_ignore_ascii_case(host)) {
         return Some(host.to_string());
     }
 
