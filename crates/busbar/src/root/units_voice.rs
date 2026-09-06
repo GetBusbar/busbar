@@ -741,6 +741,15 @@ pub struct VoiceNode {
     /// exhaustion decides is every frame after it. Audio already streamed cannot be refunded, so
     /// the next door is the only enforcement point there is.
     exhausted: Mutex<std::collections::BTreeSet<u64>>,
+    /// The sessions whose opening reservation is STANDING host-side.
+    ///
+    /// A reservation is a real hold against the principal's grant ceiling, and the seam's own
+    /// contract says it is closed once, on the exit path, whatever the end. Nothing was calling
+    /// that: a session refused at its own dial ended with the reservation open, and a caller whose
+    /// upstream is down could walk a grant ceiling to zero one failed dial at a time without ever
+    /// having a conversation. Membership here is what makes the close happen exactly once — the
+    /// first ending to take a session out of this set is the one that closes its lease.
+    leased: Mutex<std::collections::BTreeSet<u64>>,
 }
 
 impl std::fmt::Debug for VoiceNode {
@@ -800,6 +809,7 @@ impl VoiceNode {
             origin: parts.origin,
             mono: AtomicU64::new(0),
             exhausted: Mutex::new(std::collections::BTreeSet::new()),
+            leased: Mutex::new(std::collections::BTreeSet::new()),
         }
     }
 
@@ -848,6 +858,43 @@ impl VoiceNode {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains(&session)
+    }
+
+    /// Record that a session's opening reservation was taken and is standing.
+    fn leased(&self, session: u64) {
+        self.leased
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session);
+    }
+
+    /// **END ONE SESSION**, whatever ended it: close the reservation if it is still standing, forget
+    /// the calls the conversation had open, and drop its exhaustion mark.
+    ///
+    /// Idempotent, and the idempotence is what makes it callable from every ending rather than from
+    /// the one nobody forgets: the first ending that finds the reservation standing closes it, and
+    /// every later one is a no-op. A second `close` against the same session would be a second
+    /// release of a hold that was already given back, which is the mirror of the leak.
+    ///
+    /// The calls go with it because a conversation that is over cannot answer anything: leaving the
+    /// waits in the table would leave them to be swept at a deadline nobody is left to satisfy, and
+    /// the units behind them are already finished.
+    ///
+    /// The exhaustion mark is NOT dropped here, and that is deliberate: it is what refuses the next
+    /// frame of a session that ran dry, so clearing it on the way out would readmit the very frames
+    /// this ending exists to turn away. It is dropped by [`VoiceNode::reopened`], on the handshake
+    /// of whatever conversation next carries the identifier — which is the only moment at which the
+    /// mark is genuinely a previous session's.
+    fn end_session(&self, session: u64) {
+        let standing = self
+            .leased
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session);
+        if standing {
+            self.io.lease.close(session);
+        }
+        self.tool_calls.closed(session);
     }
 }
 
@@ -1553,6 +1600,10 @@ impl Units for VoiceUnit<'_> {
         // under the door's own money reason, which is what the kernel reads when it decides a
         // refusal closes the session rather than merely ending the unit.
         if !self.shape.is_handshake() && self.node.is_exhausted(self.session) {
+            // A session that cannot pay for this frame will not pay for a later one either: the
+            // carrier hard-closes on the settlement that emptied the lease, so this refusal is the
+            // conversation's end and the reservation goes back here rather than outliving it.
+            self.node.end_session(self.session);
             return Decision::refuse(token, Refusal::new(ReasonCode::OverBudget));
         }
 
@@ -1580,6 +1631,10 @@ impl Units for VoiceUnit<'_> {
                 // node's own unavailability.
                 return Decision::refuse(token, Refusal::new(reason));
             }
+            // The reservation is standing from here, and the node is what remembers that — so every
+            // ending of this session has something to close, including the ones that happen after
+            // this unit's own frame is gone.
+            self.node.leased(self.session);
             return Decision::proceed(token, Admission::ZeroHold);
         }
 
@@ -1873,6 +1928,20 @@ impl VoiceUnit<'_> {
         // Written before the record is, so the settlement that follows reads the ending this record
         // carries rather than deciding the same question a second time.
         *self.sealed_finish.lock().unwrap_or_else(|e| e.into_inner()) = Some(finish);
+        // **A HANDSHAKE THAT ENDED IN ERROR IS A SESSION THAT NEVER OPENED**, and its reservation
+        // goes back here. This is the ending the leak lived in: unit zero takes the session's
+        // reservation at the door and the dial happens two steps later, so a refused dial left a
+        // hold standing against a principal's grant ceiling for a conversation that never existed.
+        // N of them — one per retry against an upstream that is down — walk a grant ceiling to zero
+        // without a single turn ever having been spoken.
+        //
+        // Here rather than in either audit arm, because the two arms are two ENDINGS and this has to
+        // be all of them: a refusal at the door reaches `audit_refused`, a refused dial reaches
+        // `audit` as a failure, and both funnel through this one function with the finish they ended
+        // under. The close itself is idempotent, so being reached twice is not a second release.
+        if self.shape.is_handshake() && matches!(finish, busbar_contract::FinishClass::Error) {
+            self.node.end_session(self.session);
+        }
         let inputs = self.audit_inputs(ctx, outcome, finish);
         let mut durability = self
             .node
