@@ -511,6 +511,89 @@ fn overflow_history_is_a_window_while_the_dropped_total_keeps_rising() {
     );
 }
 
+/// A TAIL THIS BUILD CANNOT READ MUST NOT MAKE THE NEXT RECORD VANISH.
+///
+/// The log seeds its idempotence marks from the tail it recovered whether or not the journal could
+/// decode those bytes — a segment written by a layout version this build does not read, or by a
+/// record class it does not know, both of which is what a rollback looks like from underneath. A
+/// chain that then numbered from one would seal records under identities the log already holds, and
+/// the log answers a held identity by passing the record over and reporting success. The settlement
+/// would be on no medium and the append would say `Ok`.
+#[test]
+fn a_tail_this_build_cannot_read_does_not_make_the_next_record_vanish() {
+    use crate::backend::MemoryFactory;
+    use crate::record::{Record, FRAME_BYTES};
+
+    const NODE: u64 = 6;
+    const CEILING: u64 = 64 * FRAME_BYTES as u64;
+    let token = durability_token();
+    let factory = MemoryFactory::retaining();
+    let open = |factory: &MemoryFactory| {
+        Wal::with_parts(
+            Box::new(factory.clone()),
+            Box::new(NullShipper::new()),
+            Mode::OnDisk,
+            CEILING,
+        )
+        .expect("a memory segment cannot fail to open")
+    };
+
+    // A tail the log took and the journal cannot read back as its own records.
+    {
+        let mut log = open(&factory);
+        log.append_batch(
+            &token,
+            StepName::Meter,
+            &[
+                Record::new(
+                    NODE,
+                    1,
+                    b"a record of a layout this build does not read".to_vec(),
+                ),
+                Record::new(NODE, 2, b"and the one after it".to_vec()),
+            ],
+        )
+        .expect("the medium is healthy");
+    }
+
+    let log = open(&factory);
+    assert_eq!(
+        log.recovered().len(),
+        2,
+        "the fixture is only interesting if the log recovered a tail it seeded its marks from"
+    );
+    let mut journal = Journal::over(log, NODE);
+
+    let ack = journal
+        .append(
+            &token,
+            StepName::Meter,
+            &[Entry::new(
+                RecordClass::Transaction,
+                b"a settlement".to_vec(),
+            )],
+        )
+        .expect("a healthy medium takes the append");
+    assert_eq!(
+        ack.batch.appended, 1,
+        "the journal reported a sealed record the log never wrote"
+    );
+
+    let sealed = &ack.sealed[0];
+    let on_the_medium = journal
+        .log()
+        .read_back()
+        .expect("the segment reads back")
+        .records;
+    assert!(
+        on_the_medium
+            .iter()
+            .any(|r| r.identity() == sealed.identity() && r.body == sealed.encode()),
+        "the record the journal sealed is not on the medium: identity {:?} collided with the tail",
+        sealed.identity()
+    );
+}
+
 /// The bound is pinned, and it is the one an operator cannot raise. Stated as a test because a
 /// number that quietly grew would turn a store outage into an out-of-memory kill.
 #[test]
