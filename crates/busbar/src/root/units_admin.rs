@@ -2998,6 +2998,7 @@ mod tests {
                     PrincipalId::new(bucket),
                     nanos,
                 ),
+                u128::from(nanos),
                 &usage,
                 &LedgerToken::mint(&seal),
             )
