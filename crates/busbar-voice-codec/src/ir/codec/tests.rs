@@ -762,6 +762,66 @@ fn the_held_tool_argument_table_is_capped_and_evicts_the_oldest() {
     );
 }
 
+/// A NESTED OBJECT IS NOT THE DIALECT RESTATING THE ARGUMENTS.
+///
+/// A whole-object fragment REPLACES what is held, because a dialect that hands the arguments over
+/// complete is not adding to a prefix. But a call whose arguments CONTAIN an object streams a
+/// fragment that is itself a whole object the moment a chunk boundary lands on the inner brace —
+/// `{"where":` then `{"city":"NY"}` then `}` — and treating that as a restatement throws the outer
+/// object away, leaves `{"city":"NY"}}`, and frames NOTHING. The tool call is lost silently, which is
+/// the one outcome this seam exists to prevent.
+///
+/// What tells the two apart is whether what is held is a PREFIX of the fragment: a restatement is the
+/// same arguments said again, so everything streamed so far begins it; a nested object is a different
+/// run of bytes that continues the prefix rather than repeating it.
+#[test]
+fn a_whole_object_fragment_continues_a_partial_buffer_rather_than_replacing_it() {
+    let mut st = DecodeState::default();
+    let call = st.ref_for_call_id("call-nested");
+    st.push_call_args(call, br#"{"where":"#);
+    st.push_call_args(call, br#"{"city":"NY"}"#);
+    st.push_call_args(call, br#"}"#);
+    assert_eq!(
+        st.take_call_args(call),
+        Some(serde_json::json!({ "where": { "city": "NY" } })),
+        "the nested object is part of the arguments, not a restatement of them"
+    );
+}
+
+#[test]
+fn a_whole_object_fragment_replaces_the_prefix_it_restates() {
+    // The case the replacement exists for, kept red-proof beside the one above: this dialect repeats
+    // the COMPLETE argument string on its `…done` event, so the close restates a prefix the deltas had
+    // only partly spelled. Appending would splice the arguments onto their own beginning and leave
+    // nothing readable — and a mid-stream close, where the held prefix is a TRUNCATED one, is the shape
+    // the conformance fixtures actually carry.
+    let mut st = DecodeState::default();
+    let call = st.ref_for_call_id("call-restated");
+    st.push_call_args(call, br#"{"city":"Pa"#);
+    st.push_call_args(call, br#"{"city":"Paris"}"#);
+    assert_eq!(
+        st.take_call_args(call),
+        Some(serde_json::json!({ "city": "Paris" })),
+        "the close restates the truncated prefix rather than continuing it"
+    );
+    let call = st.ref_for_call_id("call-restated-whole");
+    st.push_call_args(call, br#"{"city":"#);
+    st.push_call_args(call, br#""NY"}"#);
+    st.push_call_args(call, br#"{"city":"NY"}"#);
+    assert_eq!(
+        st.take_call_args(call),
+        Some(serde_json::json!({ "city": "NY" })),
+        "a restatement of arguments that are already whole replaces them"
+    );
+    // And the atomic case: the first thing seen is the whole object.
+    let atomic = st.ref_for_call_id("call-atomic");
+    st.push_call_args(atomic, br#"{"city":"NY"}"#);
+    assert_eq!(
+        st.take_call_args(atomic),
+        Some(serde_json::json!({ "city": "NY" }))
+    );
+}
+
 // ── tools: correlation across the call loop ──────────────────────────────────────────────────────
 
 #[test]
