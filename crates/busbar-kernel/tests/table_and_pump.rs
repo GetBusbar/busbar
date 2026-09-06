@@ -598,6 +598,35 @@ fn pacing_pushes_back_on_a_stream_and_drops_on_a_datagram() {
     );
 }
 
+/// A queue that fills has to empty again, and the thing that empties it is a frame leaving.
+///
+/// The clock depth was only ever pushed UP by a test: `emitted` was declared and never called, so
+/// nothing proved that a connection draining its queue takes the backpressure off. A queue that
+/// only fills is a connection throttled for the rest of its life.
+#[test]
+fn a_queue_that_drains_takes_the_backpressure_off() {
+    let mut clock = EmissionClock::new(1_000, 2, TransportKind::Stream);
+    assert_eq!(clock.offer(0), Emission::Send);
+    assert_eq!(clock.depth(), 0, "the first frame went straight out");
+
+    assert!(matches!(clock.offer(0), Emission::Backpressure { .. }));
+    assert!(matches!(clock.offer(0), Emission::Backpressure { .. }));
+    assert_eq!(clock.depth(), 2, "both are queued behind the pace");
+
+    // The connection takes them.
+    clock.emitted();
+    clock.emitted();
+    assert_eq!(clock.depth(), 0);
+
+    // And the next frame, offered past the pace the queued ones bought, goes out unpaced.
+    assert_eq!(clock.offer(3_000), Emission::Send);
+    assert_eq!(clock.depth(), 0);
+
+    // A frame that never queued cannot be emitted into a negative depth.
+    clock.emitted();
+    assert_eq!(clock.depth(), 0);
+}
+
 #[test]
 fn a_body_opens_its_unit_only_once_the_deepest_pointer_has_resolved() {
     let budget = SpillBudget::new(1 << 20);

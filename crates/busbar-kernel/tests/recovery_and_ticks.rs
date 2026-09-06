@@ -284,6 +284,73 @@ fn a_slow_unit_is_not_a_lost_one() {
     .is_none());
 }
 
+/// A stalled unit ends where it stopped: the floor is posted, the lease goes back, and it is one
+/// settlement.
+///
+/// The verdict had been decided and never carried through the settling path. `TaskLost` was, and
+/// the two are not the same end — a stall is a unit that is still there and has stopped moving, so
+/// it is the SWEEP and not the unit's own task that takes the hold, and everything the unit was
+/// holding has to come back on that side.
+#[test]
+fn a_stalled_unit_posts_its_floor_and_gives_its_lease_back() {
+    let kernel = Kernel::new();
+    let canary = Canary::new();
+    let cell = HoldCell::new(arrival_hold(&kernel, &TestDoor, principal()));
+    let evidence = Evidence {
+        accrued_floor: 1_750,
+        ..Evidence::default()
+    };
+
+    let gauge = ConcurrencyGauge::new();
+    let bucket = bucket_all("team");
+    gauge.acquire(&bucket, 4).expect("room in the gauge");
+    let mut leases = LeaseSet::new();
+    leases.take(bucket);
+
+    let verdict = Sweep::Stalled {
+        at: StepName::Route,
+    };
+    let end = sweep_settle(
+        &kernel,
+        &cell,
+        verdict,
+        &evidence,
+        &canary,
+        &mut leases,
+        &gauge,
+    )
+    .expect("a stall is an end, and an end settles");
+    assert_eq!(
+        end.outcome(),
+        busbar_caps::Outcome::Failed(StepName::Route, ReasonCode::Stalled)
+    );
+    assert_eq!(
+        end.posted().map(|p| p.settled()),
+        Ok(1_750),
+        "a unit that stopped is billed the floor the kernel counted"
+    );
+    assert!(end
+        .posted()
+        .map(|p| p.flags().contains(PostingFlags::ESTIMATED))
+        .unwrap_or(false));
+    assert_eq!(gauge.count(&bucket), 0, "the stalled unit kept its lease");
+    assert!(leases.is_empty());
+    assert_eq!(canary.counts().settlements, 1);
+
+    // And the second key to the cell finds it empty.
+    assert!(sweep_settle(
+        &kernel,
+        &cell,
+        verdict,
+        &evidence,
+        &canary,
+        &mut leases,
+        &gauge
+    )
+    .is_none());
+    assert_eq!(canary.counts().settlements, 1);
+}
+
 #[test]
 fn the_session_tick_prices_time_it_could_not_price_last_time() {
     // Nothing priced, nothing changed: nothing to do.
