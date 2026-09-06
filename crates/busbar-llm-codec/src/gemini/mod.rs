@@ -1708,15 +1708,7 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
         // before), which is the number clients reconcile against a bill. Same-protocol Gemini
         // traffic passes through byte-for-byte and never reaches the writer, so no native client
         // sees a reshaped `usageMetadata`.
-        output_tokens: u
-            .and_then(|u| u.get(FIELD_CANDIDATES_TOKEN_COUNT))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0)
-            .saturating_add(
-                u.and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0),
-            ),
+        output_tokens: candidates.saturating_add(thoughts),
         cache_creation_input_tokens: None,
         cache_read_input_tokens: cached,
         // The thinking tokens are ALSO recorded as the reasoning sub-bucket. They are already folded
