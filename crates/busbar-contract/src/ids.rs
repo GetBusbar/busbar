@@ -318,6 +318,28 @@ pub struct Estimate {
     pub per_class: crate::bounded::BoundedVec<ClassEstimate, { crate::bounded::MAX_USAGE_LINES }>,
 }
 
+/// How many distinct keys one image may ever intern.
+///
+/// The freeze below is what a composition root does. This is what holds where there is no
+/// composition root to do it: a test binary, a bench, a fuzz target, or a dynamically loaded plugin
+/// linked against its own copy of this crate, which gets its own statics and therefore its own
+/// vocabulary. In each of those the freeze never happens, and this ceiling is the whole bound.
+///
+/// Sized for configuration, not for traffic: it is lanes plus pools plus models plus hosts plus
+/// dialects plus agents plus tool servers plus plugin keys, for a deployment far larger than any
+/// that has been configured. A node that reaches it has a defect, not a big configuration.
+pub const MAX_VOCABULARY: usize = 4096;
+
+/// The image's one vocabulary, and whether it is still open.
+///
+/// A `static` rather than state on the registration value because the LEAKED STRINGS are the
+/// resource and the resource is process-wide. Ownership of a registration value bounds nothing:
+/// the value is constructible by anyone, so a bound that lives inside one instance is a bound per
+/// instance, which is no bound at all against a caller that makes a fresh instance per request.
+static VOCABULARY: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<&'static str>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+static FROZEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The one place a configured string becomes a declared key.
 ///
 /// Every identifier on this surface is a borrowed static string, because the declarations that
@@ -333,6 +355,25 @@ pub struct Estimate {
 /// it is leaked ONCE because interning is idempotent; and its size is a fixed term of the node's
 /// resident memory rather than a term that grows with traffic. Nothing outside registration may
 /// intern: a key minted per unit would be exactly the leak this replaces.
+///
+/// ## How "nothing outside registration" is held
+///
+/// Not by who owns this value. This value is constructible by anyone, and it has to be: a plane, a
+/// transport and a unit crate all build one in their own tests, and the contract is the plugin-
+/// visible ABI, so any seal on the constructor is a seal a plugin can name. What holds instead is
+/// that the resource being spent — leaked `&'static str` — is process-wide, so the bound is
+/// process-wide too. Every registration in one image reads and writes ONE vocabulary. The
+/// composition root fills it at boot and calls [`freeze`](Self::freeze); after that, [`key`] is a
+/// LOOKUP: a name the root registered still resolves, from anywhere, and a name it did not is
+/// refused. A plane that holds a registration of its own and asks for a name it took off a request
+/// gets `None`, having allocated nothing, no matter how many registrations it makes.
+///
+/// The refusal is returned as a value and never raised as a panic, because the name that reaches it
+/// is client-supplied: a panic there is a way for a request to stop the node, which is a worse
+/// failure than the leak being closed. And [`MAX_VOCABULARY`] bounds an image whose freeze never
+/// happens at all, which is every image that has no composition root in it.
+///
+/// [`key`]: Self::key
 #[derive(Debug, Default)]
 pub struct Registration {
     interned: std::collections::HashSet<&'static str>,
@@ -345,16 +386,30 @@ impl Registration {
         Self::default()
     }
 
-    /// The static name for one configured key, interned if it is new and reused if it is not.
+    /// The static name for one configured key: interned if the vocabulary is open, resolved if it
+    /// is already there, and refused otherwise.
     ///
-    /// Idempotent: interning the same value twice yields the same name and leaks once.
-    pub fn key(&mut self, value: &str) -> &'static str {
-        if let Some(existing) = self.interned.get(value) {
-            return existing;
-        }
-        let leaked: &'static str = Box::leak(value.to_owned().into_boxed_str());
-        self.interned.insert(leaked);
-        leaked
+    /// Idempotent: asking twice yields the same name and leaks once. `None` says the key is not in
+    /// this image's vocabulary and cannot be added to it — because boot is over, or because the
+    /// ceiling is reached — which is a refusal to route on that name, not an error to recover from.
+    pub fn key(&mut self, value: &str) -> Option<&'static str> {
+        let mut vocabulary = VOCABULARY
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let found = if let Some(existing) = vocabulary.get(value) {
+            *existing
+        } else if FROZEN.load(std::sync::atomic::Ordering::Acquire)
+            || vocabulary.len() >= MAX_VOCABULARY
+        {
+            return None;
+        } else {
+            let leaked: &'static str = Box::leak(value.to_owned().into_boxed_str());
+            vocabulary.insert(leaked);
+            leaked
+        };
+        drop(vocabulary);
+        self.interned.insert(found);
+        Some(found)
     }
 
     /// The [`LaneId`] for one configured lane name.
@@ -364,20 +419,48 @@ impl Registration {
     /// type that owns its string. An owned lane id would double the type every rate-card key, every
     /// verified destination and every locator comparison is written in, for one configured value;
     /// interning keeps the axis one `Copy` name and pays a fixed registration-time allocation for
-    /// it. Idempotent for the same reason [`key`](Self::key) is.
-    pub fn lane(&mut self, name: &str) -> LaneId {
-        LaneId::new(self.key(name))
+    /// it. Refuses for the same reasons [`key`](Self::key) does: a lane nobody registered is not a
+    /// lane this node routes to.
+    pub fn lane(&mut self, name: &str) -> Option<LaneId> {
+        self.key(name).map(LaneId::new)
     }
 
-    /// How many distinct keys this registration has interned.
+    /// Close the image's vocabulary. The composition root's last registration-time act.
     ///
-    /// The fixed resident-memory term is counted from here, so it is readable rather than inferred.
+    /// Idempotent, and one-way: there is no thaw, because a vocabulary that can be reopened is a
+    /// vocabulary a request path can reopen. Calling it before the root has finished registering
+    /// costs the node its own configured names and fails the boot loudly — which is the right shape
+    /// for a first-party ordering mistake, and is not something a request can cause.
+    pub fn freeze() {
+        FROZEN.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the vocabulary has been closed.
+    #[must_use]
+    pub fn is_frozen() -> bool {
+        FROZEN.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// How many distinct keys this IMAGE has interned.
+    ///
+    /// The fixed resident-memory term is counted from here, so it is readable rather than inferred,
+    /// and it is the process's count rather than one registration's because the leak is the
+    /// process's.
+    #[must_use]
+    pub fn interned() -> usize {
+        VOCABULARY
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// How many distinct keys this registration has resolved.
     #[must_use]
     pub fn len(&self) -> usize {
         self.interned.len()
     }
 
-    /// Whether nothing has been interned.
+    /// Whether this registration has resolved nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.interned.is_empty()
