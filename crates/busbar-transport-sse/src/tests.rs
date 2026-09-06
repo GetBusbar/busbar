@@ -655,3 +655,55 @@ async fn no_frame_is_emitted_after_the_terminal_framing_error() {
     }
     assert!(saw_error, "the unterminated tail is answered with an error");
 }
+
+/// An upstream that ends its chunked event stream with a TRAILER section. `http` now hands that
+/// section up as one final frame, and this layer must not read it as event-stream bytes: the events
+/// are the events, and the stream ends cleanly behind them.
+#[tokio::test]
+async fn a_trailer_frame_from_the_layer_below_is_not_read_as_an_event() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0_u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+        let mut out: Vec<u8> = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nTrailer: X-Tokens\r\n\r\n".to_vec();
+        for frame in FIXTURE_FRAMES {
+            out.extend_from_slice(format!("{:x}\r\n", frame.len()).as_bytes());
+            out.extend_from_slice(frame);
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(b"0\r\nX-Tokens: 42\r\n\r\n");
+        let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, &out).await;
+    });
+    let uri = format!("http://{addr}/");
+
+    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let sse = SseTransport::new(http);
+    let conn = sse
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    sse.write(
+        &conn,
+        StreamId(0),
+        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+    )
+    .await
+    .unwrap();
+
+    let mut frames = sse.frames(conn);
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    while let Some(item) = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the stream answers")
+    {
+        let (_s, frame) = item.expect("a trailer section is not a framing failure");
+        seen.push(frame.bytes.as_slice().to_vec());
+    }
+    assert_eq!(
+        seen,
+        FIXTURE_FRAMES.map(<[u8]>::to_vec).to_vec(),
+        "the events are the events; the trailer section is not one of them"
+    );
+}

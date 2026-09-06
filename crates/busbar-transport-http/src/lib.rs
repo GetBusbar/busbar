@@ -1078,17 +1078,36 @@ async fn read_or_closed(
 /// streamed body declares none, and it is a response, so there is no accumulator one layer up
 /// holding it — the served door's request-body limit does not reach what an upstream answers with.
 /// Nothing past the cap is emitted; the stream ends with `Framing` instead.
+///
+/// The upstream's TRAILERS — whatever it chose to say only once it knew the body: a checksum, a
+/// token count, a `grpc-status` — go up as ONE FINAL FRAME after the last body chunk, in the same
+/// wire form the ingress reader hands a request's trailers up in. That is where they were on the
+/// wire, and a byte-blind transport has no business deciding that a header which arrived late is
+/// the one header not worth carrying.
 async fn pump_response_body(mut body: hyper::body::Incoming, tx: RespSender, max_bytes: usize) {
     let mut carried = 0_usize;
+    let mut trailers: Vec<u8> = Vec::new();
     while let Some(next) = body.frame().await {
         let Ok(frame) = next else {
             let _ = tx.send(Err(TransportError::Reset));
             return;
         };
-        // A trailer frame carries no body bytes; this transport's response shape is HEAD plus body
-        // chunks, so there is nothing here to hand up for one.
-        let Ok(data) = frame.into_data() else {
-            continue;
+        let data = match frame.into_data() {
+            Ok(data) => data,
+            // Not a data frame: the only other thing hyper yields here is the trailer section.
+            // Rendered as it arrives and emitted after the loop, so it lands where it belongs —
+            // behind every body chunk rather than in front of the ones still to come.
+            Err(other) => {
+                if let Ok(fields) = other.into_trailers() {
+                    for (name, value) in &fields {
+                        trailers.extend_from_slice(name.as_str().as_bytes());
+                        trailers.extend_from_slice(b": ");
+                        trailers.extend_from_slice(value.as_bytes());
+                        trailers.extend_from_slice(b"\r\n");
+                    }
+                }
+                continue;
+            }
         };
         if data.is_empty() {
             continue;
@@ -1118,6 +1137,24 @@ async fn pump_response_body(mut body: hyper::body::Incoming, tx: RespSender, max
         if tx.send(Ok((StreamId(0), body_frame))).is_err() {
             return;
         }
+    }
+    if !trailers.is_empty() {
+        let len = trailers.len() as u64;
+        let trailer_frame = Frame {
+            direction: Direction::Inbound,
+            stream: StreamId(0),
+            bytes: SlabBytes::new(Arc::from(trailers.into_boxed_slice())),
+            meta: FrameMeta {
+                bytes: len,
+                transport_units: None,
+                // Not the head, so no status leg — the same reading every body frame above gets,
+                // and what a composed layer tells the head from the rest by.
+                status: None,
+                status_code: None,
+                retry_after_secs: None,
+            },
+        };
+        let _ = tx.send(Ok((StreamId(0), trailer_frame)));
     }
 }
 
