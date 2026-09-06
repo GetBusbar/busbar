@@ -121,7 +121,13 @@ pub use imp::{dump, dump_scoped, enabled, record, reset, scope, timer, Timer};
 #[cfg(feature = "timing")]
 mod imp {
     use std::collections::HashMap;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    // `AssertUnwindSafe` is spelled at its ONE use site rather than imported here. The
+    // construction gate's hold-escape scan is a literal-substring read over production source, so
+    // an `use` line naming the symbol is a second hit that points at no code — it made the scan
+    // report two escapes where the crate has one reviewed site, and a reviewed-site entry is
+    // keyed by enclosing function, which a top-level `use` does not have. One spelling, in the
+    // one function that needs it, is what lets the ratchet name it precisely.
+    use std::panic::catch_unwind;
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::{Arc, Mutex, OnceLock, Weak};
     use std::time::Instant;
@@ -334,7 +340,7 @@ mod imp {
     /// dump path would do it too). Catching here keeps a failed diagnostic print at process exit a
     /// failed diagnostic print, rather than an abort in the last moments of an otherwise clean run.
     extern "C" fn timing_atexit() {
-        let _ = catch_unwind(AssertUnwindSafe(dump));
+        let _ = catch_unwind(std::panic::AssertUnwindSafe(dump));
     }
 
     /// Record `nanos` against `name`. No-op unless [`enabled`]. The recording cost is: a relaxed

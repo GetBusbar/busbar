@@ -599,8 +599,16 @@ max_sites = 0
 #   either side of those calls. busbar-core is the crate being emptied; its sites move or go with it.
 #
 #   The two remaining leaks are boot-time interners of the same shape as ids.rs.
+#
+#   busbar-timing `timing_atexit` is the debug-only method timer's `atexit(3)` handler. `atexit`
+#   takes a bare `extern "C"` fn pointer, so an unwind out of that frame crosses into C; the body
+#   reaches `eprintln!`, which can panic on a closed stderr during shutdown. Nothing in the crate
+#   ever holds a hold — it accumulates integer counters keyed by method name and prints them — so
+#   the catch is a C-boundary guard on a diagnostic, not a hold crossing a catch_unwind. Named by
+#   FUNCTION, so the rest of the crate is still held to the rule.
 known_sites = [
   "crates/busbar-contract/src/ids.rs::key",
+  "crates/busbar-timing/src/lib.rs::timing_atexit",
   "crates/busbar-core/src/plane_host/",
   "crates/busbar-core/src/plane/registry.rs",
   "crates/busbar-core/src/router.rs",
