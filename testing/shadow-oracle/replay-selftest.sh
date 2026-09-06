@@ -256,6 +256,15 @@ one_class_case rbk    effects.readback 'd["effects"]["readback"]=[{"path":"/api/
 one_class_case fls    effects.files  'd["effects"]["files"]=["busbar.wal"]'
 one_class_case uar    effects.usage_after_restart 'd["effects"]["usage_after_restart"]={"spend_micros":18,"requests":1}'
 one_class_case ste    effects.store_errors 'd["effects"]["store_errors"]=2'
+# A SCRIPT CELL'S EVIDENCE IS NOT IN THE NAMED CLASSES, AND IT USED TO BE COMPARED BY NOBODY. The
+# script driver writes whatever keys its cell is about straight into `effects` — `survived`,
+# `key_after_restart`, `validate_exit`, `hazard_lines`, `usage_before`/`usage_after` — and the differ
+# only ever looked at nine hard-coded ones. 14 golden cells carry such a key that no other class
+# mirrors (plugins.store-persist|store-sqlite's `survived`/`key_after_restart`, hazard|no-data-dir's
+# `hazard_lines`, teller|admit-refusal's `usage_before`/`usage_after`), so a build that lost the
+# store across a restart, or leaked a hazard line, diverged on nothing the differ computed and the
+# row printed `PASS ... identical`. Every effects key is compared now; this case is red without that.
+one_class_case scr    effects.script 'd["effects"]["survived"]="no"'
 
 # (p) missing.golden: the golden's OWN ledger says PASS but its cell file is not there. That is a
 # recorder bug, and it must be red rather than quietly dropping the cell out of the comparison.
@@ -272,7 +281,7 @@ n="$(fails_in "$W/out-p")"; cls="$(classes_of 'self|a|ok' "$W/out-p")"
 # is ever dropped from diff-cells.py's MONEY_CLASSES, its case here stops refusing and goes red.
 cp -R "$FIX" "$W/money-same"
 for mc in status effects.usage effects.usage_after_restart effects.store_errors missing.candidate \
-          effects.egress effects.readback effects.files; do
+          effects.egress effects.readback effects.files effects.script; do
   python3 -c 'import json,sys
 json.dump({"accepted":[{"id":"bad money accept","kind":"improvement","by":"selftest",
   "cells":"^self\\|a\\|ok$","classes":[sys.argv[2]],"rationale":"should be refused"}]},
