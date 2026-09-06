@@ -282,14 +282,6 @@ pub struct Metered {
     /// response consumed and it is reported on both sides of the branch, because sealing is not a
     /// reason to report nothing.
     pub posted: bool,
-    /// WHAT THE RESPONSE PRICED AT, in the nano-units a reservation is in, against the card the
-    /// unit's sink pinned at the door.
-    ///
-    /// The same figure this step spends the hold against, reported rather than kept: a driver that
-    /// settles the unit on a second book has to post THIS amount, and deriving it again on the far
-    /// side would price the same usage against whatever card the deployment holds by then. Zero for
-    /// a unit that reached no serving lane and for one that billed none.
-    pub priced_nanos: u128,
 }
 
 impl Metered {
@@ -435,7 +427,6 @@ pub fn meter(
         // is owed against the fee base alone.
         refund: ctx.charged && !delivered,
         posted,
-        priced_nanos,
     }
 }
 
