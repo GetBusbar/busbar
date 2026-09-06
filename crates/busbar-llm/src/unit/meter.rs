@@ -1005,6 +1005,79 @@ mod tests {
         );
     }
 
+    /// A SPEND THAT RUNS PAST THE RESERVATION IS AN OVERDRAFT, and the hold has to carry it out.
+    ///
+    /// The reservation is the size of a guess made at the door, before a single upstream token
+    /// existed. A guess being too small is not a reason to take back an admission — the value was
+    /// delivered — so the spend lands in full and whatever nothing could back is carried into the
+    /// next window's admissible budget. That carry is the ONLY record that the deployment was owed
+    /// more than it reserved; the exit settles the hold, and a hold whose overdraft is zero settles
+    /// as a request that fitted.
+    ///
+    /// This step cannot draw a top-up. Drawing from the principal's slice is the admission unit's
+    /// act and this step holds no slice, so the headroom it spends against is zero and the whole
+    /// shortfall is carried. What it must not do is look away.
+    ///
+    /// The literals: a reservation of 100_000 nano-units against 500_000 of delivered value, priced
+    /// by the same card as the accrual test above. 400_000 of it is unbacked.
+    #[test]
+    fn a_spend_past_the_reservation_is_carried_out_as_an_overdraft() {
+        use busbar_caps::{step::Admit as AdmitStep, AdmitToken, KernelSeal, PrincipalId};
+
+        let (app, key) = priced_rig();
+        let (host, rt) = crate::engine::test_host_rt(&app);
+        let reported = busbar_substrate::billing::TokenUsage {
+            input: PRICED_INPUT,
+            output: PRICED_OUTPUT,
+            ..Default::default()
+        };
+        let sink = sink(&host, &key, busbar_substrate::store::now());
+        let tables = crate::engine::EngineTables::new(&rt);
+        let ctx = MeterCtx::new(
+            &host,
+            Some(&sink),
+            Some(&tables.lanes()[0]),
+            Some(&reported),
+            200,
+            true,
+            true,
+            false,
+        );
+
+        let seal = KernelSeal::acquire_for_kernel();
+        // A reservation deliberately too small for what the response turned out to be worth.
+        const RESERVED: u64 = 100_000;
+        let hold = busbar_caps::Hold::open(
+            &AdmitToken::<AdmitStep>::mint(&seal),
+            PrincipalId::new(&key.id),
+            RESERVED,
+        );
+        let metered = meter(
+            &UnitToken::<Meter>::mint(&seal),
+            &UsageToken::mint(&seal),
+            &ctx,
+            Some(hold),
+            &Outcome::Completed,
+        );
+
+        let hold = metered.hold.expect("the hold rides back out to the exit");
+        assert_eq!(
+            hold.accrued(),
+            PRICED_NANOS,
+            "the spend lands in full: the value was delivered"
+        );
+        assert_eq!(
+            hold.overdraft(),
+            PRICED_NANOS - RESERVED,
+            "and what nothing backed is carried out on the hold, not discarded"
+        );
+        assert_eq!(
+            hold.remaining(),
+            0,
+            "a reservation spent past its end has nothing left to release"
+        );
+    }
+
     /// SEALING IS NOT POSTING, and the step has to say which it did.
     ///
     /// A unit reaches this step in one of two states. Either the walk was handed the admission's
