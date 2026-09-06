@@ -324,6 +324,32 @@ def print_human(rep, stream=sys.stdout, verbose=False):
     return bad
 
 
+def exit_code(rep, allow_red=False):
+    """The run's verdict, from the report alone. ONE place, so nothing decides it twice.
+
+    `print_human` returns the number of BAD_OUTCOMES it printed, and for a long time that was the
+    whole verdict. It misses one thing, and the miss is silent: a deviation recorded for a test that
+    DID NOT RUN produces no result row at all, so it contributes to no outcome count.
+    `deviations.print_summary` prints it under a heading that reads `DEVIATION RECORD PROBLEMS
+    (these are RED)` -- and then the run exited 0 anyway. That is the shape of a record going stale
+    while the gate that is supposed to notice keeps ticking: drop a test from the registry, or
+    narrow the selection past it, and its deviation record stops being checked with nothing
+    anywhere going red.
+    """
+    counts = rep.get("counts") or {}
+    bad = sum(counts.get(o, 0) for o in BAD_OUTCOMES)
+    bad += unrun_deviations(rep)
+    if allow_red:
+        return 0
+    return 1 if bad else 0
+
+
+def unrun_deviations(rep):
+    """How many recorded deviations name a test this run never executed."""
+    problems = ((rep.get("known_deviations") or {}).get("problems")) or []
+    return sum(1 for p in problems if p.get("kind") == "DEVIATION_NOT_RUN")
+
+
 def _short(value):
     text = json.dumps(value, default=str)
     return text if len(text) <= 100 else text[:97] + "..."
