@@ -9,6 +9,8 @@
 //! the certificate name a socket family offers, the argument vector a process family spawns under,
 //! the method a call-per-path family needs — and none of those are questions a plane answers.
 
+use core::fmt;
+
 /// Where a dial lands, as the transport family that dials it spells it.
 ///
 /// One opaque `host` string was read three incompatible ways by three transports: as a socket
@@ -16,7 +18,12 @@
 /// argument vector and no environment, and as an address a method name had nowhere to sit beside.
 /// The families are genuinely different objects, so they are different arms, and every arm carries
 /// exactly what its family needs to dial without guessing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+///
+/// The `Program` arm's environment is the one secret-carrying field on this type, so neither the
+/// `Debug` nor the serialization is derived: both say which names are set and how long each value
+/// was, and neither says a value. A transport author's log line and a configuration dump are the
+/// two places an upstream address is formatted, and both are outside this tree's reading.
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum UpstreamAddress {
     /// A socket the byte-stream families connect to: `tcp`, `tls`, `http`, `ws`.
     ///
@@ -41,6 +48,7 @@ pub enum UpstreamAddress {
         /// The argument vector, not counting the program name itself.
         args: &'static [&'static str],
         /// The environment the child is spawned under, as name/value pairs.
+        #[serde(serialize_with = "env_names_only")]
         env: &'static [(&'static str, &'static str)],
     },
     /// A gRPC method on a socket: the family whose wire names every call by a path.
@@ -52,6 +60,70 @@ pub enum UpstreamAddress {
         /// The fully qualified method, `/package.Service/Method`.
         method: &'static str,
     },
+}
+
+/// Serialize an environment as the names it sets and nothing else.
+///
+/// A journal entry that recorded the values would be a credential at rest in a file nothing
+/// rotates. The names are what a reader needs to see that the child was spawned with the variables
+/// it was configured with.
+fn env_names_only<S: serde::Serializer>(
+    env: &&'static [(&'static str, &'static str)],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(env.iter().map(|(name, _)| *name))
+}
+
+/// One environment entry as `Debug` may say it: the name, and how many bytes the value was.
+struct EnvEntry(&'static str, usize);
+
+impl fmt::Debug for EnvEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} = <{} bytes>", self.0, self.1)
+    }
+}
+
+/// An environment as `Debug` may say it: every name, with the length of the value beside it.
+struct EnvNames<'a>(&'a [(&'static str, &'static str)]);
+
+impl fmt::Debug for EnvNames<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list()
+            .entries(
+                self.0
+                    .iter()
+                    .map(|(name, value)| EnvEntry(name, value.len())),
+            )
+            .finish()
+    }
+}
+
+impl fmt::Debug for UpstreamAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Socket { authority, sni } => f
+                .debug_struct("Socket")
+                .field("authority", authority)
+                .field("sni", sni)
+                .finish(),
+            Self::Program { path, args, env } => f
+                .debug_struct("Program")
+                .field("path", path)
+                .field("args", args)
+                .field("env", &EnvNames(env))
+                .finish(),
+            Self::Grpc {
+                authority,
+                sni,
+                method,
+            } => f
+                .debug_struct("Grpc")
+                .field("authority", authority)
+                .field("sni", sni)
+                .field("method", method)
+                .finish(),
+        }
+    }
 }
 
 impl UpstreamAddress {

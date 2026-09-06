@@ -492,6 +492,7 @@ dependencies = [
  "busbar-grammar",
  "futures",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

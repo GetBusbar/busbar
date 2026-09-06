@@ -28,3 +28,8 @@ busbar-contract-transport = { path = "../busbar-contract-transport" }
 busbar-grammar = { path = "../busbar-grammar" }
 serde = { workspace = true }
 futures = { workspace = true }
+
+# Tests only. The ABI types that seal into the policy journal are serialised by something, and a
+# test that asserts what a serialisation does NOT contain has to run a real serializer over it.
+[dev-dependencies]
+serde_json = { workspace = true }
