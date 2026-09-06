@@ -123,3 +123,68 @@ fn a_terminal_task_is_purged_over_the_abi() {
         "the interrupted task must survive; only the terminal one goes"
     );
 }
+
+/// THE ADDITIVITY CLAIM, in the direction the version rule rests on: the enriched request the engine
+/// now sends still decodes in a plugin built BEFORE the sidecar existed — which is why the store
+/// payload schema version does not move and every published store keeps loading. Pinned
+/// structurally: the mirror below is the pre-sidecar shape of the two write variants, and the
+/// CURRENT request's bytes have to land in it. A future rename or retype of one of the old fields
+/// stops passing here, which is the difference between an addition and a break the version does not
+/// announce. (The reverse direction — an older engine's sidecar-less request decoding in a current
+/// plugin — is pinned in plugin-sdk.)
+#[test]
+fn an_enriched_request_still_decodes_in_a_pre_sidecar_plugin() {
+    #[derive(serde::Deserialize)]
+    enum LegacyStoreRequest {
+        UpsertPlaneRecord {
+            kind: String,
+            id: String,
+            body: Vec<u8>,
+        },
+        AppendPlaneRecord {
+            kind: String,
+            parent: String,
+            seq: u64,
+            body: Vec<u8>,
+        },
+    }
+
+    let bytes = serde_json::to_vec(&StoreRequest::UpsertPlaneRecord {
+        kind: "task".into(),
+        id: "task-abc".into(),
+        ts: 2_000,
+        disposition: PlaneDisposition::Terminal,
+        body: vec![1],
+    })
+    .unwrap();
+    match serde_json::from_slice(&bytes).expect("an older plugin still decodes the upsert") {
+        LegacyStoreRequest::UpsertPlaneRecord { kind, id, body } => assert_eq!(
+            (kind.as_str(), id.as_str(), body),
+            ("task", "task-abc", vec![1])
+        ),
+        _ => panic!("wrong variant"),
+    }
+
+    let bytes = serde_json::to_vec(&StoreRequest::AppendPlaneRecord {
+        kind: "call".into(),
+        id: "vk".into(),
+        parent: "vk".into(),
+        seq: 3,
+        ts: 1_600,
+        disposition: PlaneDisposition::Active,
+        body: vec![2],
+    })
+    .unwrap();
+    match serde_json::from_slice(&bytes).expect("an older plugin still decodes the append") {
+        LegacyStoreRequest::AppendPlaneRecord {
+            kind,
+            parent,
+            seq,
+            body,
+        } => assert_eq!(
+            (kind.as_str(), parent.as_str(), seq, body),
+            ("call", "vk", 3, vec![2])
+        ),
+        _ => panic!("wrong variant"),
+    }
+}
