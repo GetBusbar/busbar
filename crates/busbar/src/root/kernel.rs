@@ -472,7 +472,7 @@ impl Units for ProductionUnits {
                 outcome,
             );
         }
-        Decision::proceed(token, crate::root::units_admin::unresolved_facts(outcome))
+        Decision::proceed(token, unclaimed_facts(outcome))
     }
 
     fn audit_refused(
@@ -496,7 +496,7 @@ impl Units for ProductionUnits {
             // The step is the decision's stamp. A refusal that reaches the refused-audit door
             // without one never came from a decision; the door itself is the latest step it could
             // have been raised at, which is a truer answer than a fixed sentinel.
-            crate::root::units_admin::unresolved_facts(&Outcome::Refused(
+            unclaimed_facts(&Outcome::Refused(
                 refusal.step().unwrap_or(busbar_caps::StepName::Admit),
                 refusal.reason(),
             )),
@@ -525,9 +525,92 @@ impl Units for ProductionUnits {
     }
 }
 
+/// The operation class a unit no plane claimed is sealed under.
+///
+/// Its own word, and not a borrowed one. What happened is that the unit reached the root's audit
+/// door without any plane on this node having composed it, which is neither a read nor a write of
+/// anything an operator administers.
+const OP_UNCLAIMED: &str = "unclaimed";
+
+/// What the record says about a unit this root did not compose.
+///
+/// The admin plane's "the verb did not resolve" facts used to answer here, and they name an
+/// administrative READ — so every unit of every other plane that reached this door was sealed as
+/// one. A voice turn or a chat completion refused at the root is not an operator reading a
+/// configuration page, and a record that says it was is wrong about the one thing an audit record
+/// exists to state. Nothing here is derived from the admin plane, because nothing about this unit
+/// is administrative.
+fn unclaimed_facts(outcome: &Outcome) -> busbar_contract::AuditFacts {
+    busbar_contract::AuditFacts {
+        op_class: busbar_contract::OpClassId::new(OP_UNCLAIMED),
+        finish: if outcome.is_completed() {
+            busbar_contract::FinishClass::Complete
+        } else {
+            busbar_contract::FinishClass::Error
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A unit no plane on this node composed is not sealed as an administrative read.
+    ///
+    /// Both audit doors are asked, because both used to answer with the admin plane's word for a
+    /// verb that did not resolve: a plane unit refused at the root came out of the record as an
+    /// operator reading a page. The assertion is written as an inequality against that word as well
+    /// as an equality on the right one, because what matters is not which class replaced it but
+    /// that no unit of another plane wears the admin plane's.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
+        let units = ProductionUnits::admin_only(std::sync::Arc::new(
+            crate::root::units_admin::RefusingDispatch,
+        ));
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let ctx = UnitCtx {
+            key: busbar_contract::ids::UnitKey::new(9),
+            origin: busbar_caps::OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        assert!(
+            !units.is_admin(&ctx),
+            "the fixture must be a unit the admin plane never claimed"
+        );
+        let admin_read = busbar_contract::ids::OpClassId::new("admin_read");
+
+        let token: UnitToken<Audit> = UnitToken::mint(&seal);
+        let refused = units
+            .audit_refused(
+                &token,
+                &ctx,
+                &Refusal::new(busbar_caps::ReasonCode::NoDestination),
+            )
+            .into_result(&seal)
+            .expect("the door seals a record for a unit it did not compose");
+        assert_ne!(refused.op_class, admin_read);
+        assert_eq!(
+            refused.op_class,
+            busbar_contract::ids::OpClassId::new(OP_UNCLAIMED)
+        );
+        assert_eq!(refused.finish, busbar_contract::FinishClass::Error);
+
+        let token: UnitToken<Audit> = UnitToken::mint(&seal);
+        let ended = units
+            .audit(&token, &ctx, &Outcome::Completed)
+            .into_result(&seal)
+            .expect("the other door seals one too");
+        assert_ne!(ended.op_class, admin_read);
+        assert_eq!(
+            ended.op_class,
+            busbar_contract::ids::OpClassId::new(OP_UNCLAIMED)
+        );
+        assert_eq!(ended.finish, busbar_contract::FinishClass::Complete);
+    }
 
     /// The point of the skeleton: the shape compiles against the real trait, and the real trait is
     /// the kernel's. A `ProductionUnits` that did not satisfy `Units` would be a plan, not a root.
