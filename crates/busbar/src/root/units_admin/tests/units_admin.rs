@@ -201,7 +201,6 @@ fn a_refused_units_status_is_the_one_its_ending_earned() {
     assert_eq!(status(ReasonCode::OverBudget).status, 429);
     assert_eq!(status(ReasonCode::DurabilityUnavailable).status, 503);
     assert_eq!(status(ReasonCode::ScopeDenied).status, 403);
-    assert_eq!(status(ReasonCode::Unauthenticated).status, 403);
     assert_eq!(
         status(ReasonCode::PlanePanic).status,
         403,
@@ -226,6 +225,42 @@ fn a_refused_units_status_is_the_one_its_ending_earned() {
     assert_eq!(
         status(ReasonCode::NoDestination).headers,
         vec![("content-type".to_string(), "application/json".to_string())]
+    );
+}
+
+/// A caller who never authenticated is told so, not told they are under-scoped.
+///
+/// The pinned document answers a missing or invalid admin credential with `401`/`unauthorized`
+/// on every one of its 66 operations, and the plane's own ratified table renders the same four
+/// authentication endings under `unauthorized`. Rendering them as `403`/`forbidden` told a
+/// client holding an expired token that its scope was wrong — so the one branch every admin
+/// client has (re-authenticate on 401, give up on 403) took the wrong arm.
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_unauthenticated_caller_is_told_unauthorized_not_forbidden() {
+    let status = |reason| {
+        answer_for(Outcome::Refused(
+            busbar_caps::StepName::Authenticate,
+            reason,
+        ))
+    };
+    for reason in [
+        ReasonCode::Unauthenticated,
+        ReasonCode::SchemeNotDeclared,
+        ReasonCode::SessionUnbound,
+        ReasonCode::ChallengeExhausted,
+    ] {
+        assert_eq!(
+            status(reason),
+            error_answer(401, "unauthorized"),
+            "{reason:?} is an authentication ending, not an authorization one"
+        );
+    }
+    // and an ending that IS about authority keeps the answer the surface pinned for it
+    assert_eq!(status(ReasonCode::Revoked), error_answer(403, "forbidden"));
+    assert_eq!(
+        status(ReasonCode::ScopeDenied),
+        error_answer(403, "forbidden")
     );
 }
 
