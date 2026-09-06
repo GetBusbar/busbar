@@ -85,3 +85,6 @@ crates/*/proptest-regressions/
 # `scripts/a2a-subject/boot.sh` and a committed one is a report a later run could be read as having
 # produced.
 /.a2a-conformance/
+
+# Agent scratch for a single change; never committed.
+.fix/
