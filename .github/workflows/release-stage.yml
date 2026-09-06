@@ -1083,13 +1083,22 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # THROUGH `env:`, NOT SPLICED INTO THE SCRIPT. An org VARIABLE is not a secret: it is not
+          # masked in logs and it is writable by anyone with org-admin, so its value is attacker-
+          # controlled from this workflow's point of view. Interpolation happens BEFORE the shell
+          # parses the line, so a value containing a quote and a `;` would have executed as shell
+          # in a job that holds contents:write and a GITHUB_TOKEN -- on the release path. As an env
+          # var it is inert data the shell only ever expands, which is the same rule
+          # prepare-release.yml states for its version input and the rest of this file follows for
+          # every value that is not a fixed literal.
+          RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
         run: |
           set -euo pipefail
           python3 scripts/verify-artifact.py \
             --archive "busbar-${{ matrix.target }}.${{ matrix.archive }}" \
             --target "${{ matrix.target }}" \
             --version "${{ needs.plan.outputs.version }}" \
-            --pubkey "${{ vars.BUSBAR_RELEASE_PUBKEY }}" \
+            --pubkey "$RELEASE_PUBKEY" \
             --plugin "plugin-probe/${{ matrix.plugin_asset }}" \
             --evidence build-evidence \
             --repo "$GITHUB_REPOSITORY" \
