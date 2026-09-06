@@ -885,6 +885,71 @@ async fn served_paths_stays_bounded_across_many_calls() {
     );
 }
 
+/// A call `tonic` answers on its own, WITHOUT ever entering this crate's per-RPC handler, must
+/// leave nothing behind on the connection.
+///
+/// `grpc-encoding: gzip` against a server with no compression enabled is exactly that: the answer
+/// (UNIMPLEMENTED) is decided while the request headers are being read, so the handler whose drop
+/// is what prunes the connection's outbound map never runs. An entry registered before that point
+/// is one nothing will ever drain and nothing will ever remove — and a connection-wide refusal
+/// walks that map, so it would report a Reset for a call that never existed.
+#[tokio::test]
+async fn a_call_answered_before_the_handler_runs_leaves_no_entry_behind() {
+    use http_body_util::BodyExt;
+
+    let server_t = std::sync::Arc::new(server_transport());
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+
+    let sock = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let (mut send, driver) =
+        hyper::client::conn::http2::handshake::<_, _, http_body_util::Full<bytes::Bytes>>(
+            hyper_util::rt::TokioExecutor::new(),
+            hyper_util::rt::TokioIo::new(sock),
+        )
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = driver.await;
+    });
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    const CALLS: usize = 20;
+    for _ in 0..CALLS {
+        let req = http::Request::builder()
+            .method(http::Method::POST)
+            .uri(format!("http://{addr}{}", crate::server::RPC_PATH))
+            .header(http::header::CONTENT_TYPE, "application/grpc")
+            .header("te", "trailers")
+            // The compression this server never enabled.
+            .header("grpc-encoding", "gzip")
+            .body(http_body_util::Full::new(bytes::Bytes::from_static(&[
+                0, 0, 0, 0, 1, 7,
+            ])))
+            .unwrap();
+        let response = send.send_request(req).await.unwrap();
+        assert_ne!(
+            response.headers().get("grpc-status").map(|v| v.as_bytes()),
+            Some(b"0".as_slice()),
+            "the fixture's whole point is a call tonic refuses outright"
+        );
+        let _ = response.into_body().collect().await;
+    }
+
+    let state = server_t.state_of(server_conn.id()).unwrap();
+    let held = state.outbound.lock().unwrap().len();
+    assert_eq!(
+        held, 0,
+        "{CALLS} calls refused before the handler must hold no outbound entries, held {held}"
+    );
+}
+
 /// The accept side's half of the same rule, at the seam it actually happens on: an RPC's outbound
 /// stream being dropped — which is what hyper does when the peer resets the call — is what makes
 /// the call over, and the map entry must go with it.

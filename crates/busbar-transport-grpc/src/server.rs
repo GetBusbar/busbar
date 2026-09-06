@@ -84,15 +84,16 @@ async fn handle_one_rpc(
     state.record_served_path(req.uri().path().to_string());
     let local = state.next_local_stream.fetch_add(1, Ordering::Relaxed);
     let stream_id = StreamId(local);
-    let (out_tx, out_rx) = crate::conn::outbound_channel();
-    let serial = state.register(local, crate::conn::opened(out_tx));
-
     let mut grpc = tonic::server::Grpc::new(RawCodec);
+    // The call is registered by the handler, not here. `Grpc::streaming` can answer entirely on
+    // its own — a request naming a `grpc-encoding` this server has not enabled is refused while
+    // its headers are still being read — and then the handler below, whose response stream being
+    // dropped is the ONLY thing that prunes the map, never runs at all. An entry made before this
+    // await is one nothing drains and nothing removes, and a connection-wide refusal walks that
+    // map, so it would report a failure for a call that never opened.
     let handler = RpcHandler {
         state: state.clone(),
         stream_id,
-        serial,
-        out_rx: Some(out_rx),
     };
     grpc.streaming(handler, req).await
 }
@@ -103,9 +104,6 @@ async fn handle_one_rpc(
 struct RpcHandler {
     state: Arc<ConnState>,
     stream_id: StreamId,
-    /// Which call this is, told apart from the next one to carry the same `StreamId`.
-    serial: u64,
-    out_rx: Option<crate::conn::OutboundRx>,
 }
 
 impl tower::Service<Request<tonic::Streaming<bytes::Bytes>>> for RpcHandler {
@@ -120,9 +118,12 @@ impl tower::Service<Request<tonic::Streaming<bytes::Bytes>>> for RpcHandler {
     fn call(&mut self, request: Request<tonic::Streaming<bytes::Bytes>>) -> Self::Future {
         let state = self.state.clone();
         let stream_id = self.stream_id;
-        let serial = self.serial;
-        let out_rx = self.out_rx.take().expect("called at most once per RPC");
         Box::pin(async move {
+            // The call becomes real HERE, at the first moment anything can be written to it: the
+            // response stream below is what drains this channel, and dropping that stream is what
+            // removes the entry again. See `handle_one_rpc` on why registering any earlier leaks.
+            let (out_tx, out_rx) = crate::conn::outbound_channel();
+            let serial = state.register(stream_id.0, crate::conn::opened(out_tx));
             // `is_response = false`: this is the REQUEST body, which carries no `grpc-status`
             // trailer — only a gRPC response does. See `forward_inbound`'s own note.
             tokio::spawn(forward_inbound(
