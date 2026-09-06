@@ -335,7 +335,12 @@ impl GroupTable {
                 // is a cycle. Cycles are a validation error; clamp here defensively, never loop.
                 break;
             }
-            let g = &self.groups[i];
+            // Checked, for the same reason the clamp above exists: this walk does not get to
+            // assume the table is well-formed, and a parent index past the end must end the walk
+            // rather than the process.
+            let Some(g) = self.groups.get(i) else {
+                break;
+            };
             walked += 1;
             groups.push(ChainGroup {
                 name: g.name.clone(),
@@ -378,8 +383,12 @@ impl GroupTable {
                 if walked >= self.groups.len() {
                     break;
                 }
+                // Checked, as in `chain_for`: a dangling parent index ends this walk, and the boot
+                // check reports on what it could read rather than aborting the boot with a panic.
+                let Some(cur) = self.groups.get(j) else {
+                    break;
+                };
                 walked += 1;
-                let cur = &self.groups[j];
                 if cur.tier_bp != expected {
                     return Err(ChainError::TierMismatch {
                         expected,

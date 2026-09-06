@@ -732,3 +732,45 @@ fn a_unit_the_cascade_narrowed_is_posted_as_downgraded() {
     );
     assert!(plain.posting_flags().is_clean());
 }
+
+/// A PARENT INDEX THAT IS NOT IN THE TABLE STOPS THE WALK; it does not stop the process.
+///
+/// Both walks already clamp on cycles two lines above, which says the table is not trusted to be
+/// well-formed — and then both indexed it directly, so a parent index past the end panicked. The
+/// table is assembled from resolved config, but "resolved" is a claim about another code path, and
+/// a request-time panic is the one outcome a door may never produce.
+#[test]
+fn a_parent_index_outside_the_table_ends_the_walk_rather_than_panicking() {
+    let mut only = GroupRuntime::new("solo");
+    only.parent = Some(7); // one group in the table, so index 7 does not exist
+    let table = GroupTable::new(vec![only]);
+
+    let resolved = table
+        .chain_for("acct-1", Some("solo"))
+        .expect("the group itself is present");
+    assert_eq!(
+        resolved.groups().len(),
+        1,
+        "the walk contributes the group it could read and stops at the one it could not"
+    );
+
+    // The boot check reports rather than panicking: there is nothing to mismatch against, so the
+    // one readable group's tier stands.
+    assert_eq!(table.validate_tiers(), Ok(()));
+
+    // And the same dangling parent on a two-group table still stops at the readable ones.
+    let mut child = GroupRuntime::new("child");
+    child.parent = Some(1);
+    let mut parent = GroupRuntime::new("parent");
+    parent.parent = Some(9);
+    let deeper = GroupTable::new(vec![child, parent]);
+    assert_eq!(
+        deeper
+            .chain_for("acct-1", Some("child"))
+            .expect("present")
+            .groups()
+            .len(),
+        2
+    );
+    assert_eq!(deeper.validate_tiers(), Ok(()));
+}
