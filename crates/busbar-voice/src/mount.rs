@@ -192,7 +192,7 @@ pub fn composed_provider_base_url() -> Option<&'static str> {
     COMPOSED_PROVIDER.get().map(|p| p.base_url.as_str())
 }
 
-// ── THE SECOND DIALECT'S PROVIDER ENDPOINT (K4) ─────────────────────────────────────────────────────
+// ── THE SECOND DIALECT'S PROVIDER ENDPOINT (the second-dialect route) ─────────────────────────────────────────────────────
 //
 // The K1 provider seam above is single-endpoint and OpenAI-shaped: one `OnceLock`, one credential, one
 // `Authorization: Bearer` scheme. Gemini Live's provider hop authenticates with a DIFFERENT native
@@ -275,7 +275,7 @@ pub const SIDEBAND_PATH: &str = "/v1/realtime/sideband/{call_id}";
 /// end-to-end. The socket upgrade + provider WSS dial is the credential-gated tail.
 pub const TELEPHONY_PATH: &str = "/v1/realtime/telephony/{call_id}";
 
-/// THE GEMINI LIVE WS ACCEPT — the plane's SECOND dialect route (K4): a THIN DUPLEX PROXY between the
+/// THE GEMINI LIVE WS ACCEPT — the plane's SECOND dialect route (the second-dialect route): a THIN DUPLEX PROXY between the
 /// caller's WS and the Gemini `BidiGenerateContent` upstream, the same shape as the telephony leg
 /// (client WS <-> busbar <-> provider WS) rather than the OpenAI browser-sideband's mint+SDP dance —
 /// Gemini Live has no ephemeral-token-mint or SDP-broker concept; it is a native full-duplex socket on
@@ -455,7 +455,7 @@ fn dispatch_runtime() -> VoiceRuntime {
 #[must_use]
 pub fn voice_claims(slot: &dyn Any) -> Vec<(String, &'static str)> {
     match slot.downcast_ref::<VoiceMount>() {
-        // TWO claims, one PER ROUTE DIALECT (K4): the OpenAI base (mint/SDP/sideband/telephony) and the
+        // TWO claims, one PER ROUTE DIALECT (the second-dialect route): the OpenAI base (mint/SDP/sideband/telephony) and the
         // Gemini Live base (the thin duplex proxy) — the A2A precedent of naming more than one
         // `(path, wire)` pair so each dialect's own `ingress_protocol` is the one its own path answers
         // in, not a plane-wide constant that would mislabel the second dialect's traffic as the first.
@@ -536,7 +536,7 @@ pub fn voice_ws_arrivals() -> Vec<WsArrivalSpec> {
                 Box::pin(ws_accept(a, Ingress::Telephony, OpenAiRealtimeCodec))
             }),
         },
-        // THE GEMINI LIVE THIN-DUPLEX ACCEPT (K4) — same admission bar (RouteAuth::Key under the
+        // THE GEMINI LIVE THIN-DUPLEX ACCEPT (the second-dialect route) — same admission bar (RouteAuth::Key under the
         // plane's one audience), the SAME `ws_accept` choke point, generic over the Gemini codec
         // instead of the OpenAI one.
         WsArrivalSpec {
@@ -563,7 +563,7 @@ pub(crate) enum Ingress {
     Sideband,
     /// The telephony media leg — `g711_ulaw` end-to-end through the thin proxy.
     Telephony,
-    /// THE GEMINI LIVE THIN-DUPLEX LEG (K4) — a native full-duplex socket both sides, proxied through
+    /// THE GEMINI LIVE THIN-DUPLEX LEG (the second-dialect route) — a native full-duplex socket both sides, proxied through
     /// the SAME [`crate::topology::telephony::TelephonyProxy`] shape the telephony leg uses (client WS
     /// <-> busbar <-> provider WS), just without the g711 lock and under the Gemini codec + the
     /// Gemini-keyed composed provider.
@@ -1119,7 +1119,7 @@ fn provider_ws_url(base_url: &str, dialect: &str, api_key: &str) -> String {
 
 /// THE INBOUND WS-ACCEPT FN for the browser-sideband / telephony / Gemini-Live media legs — what
 /// replaces the `501` stub, moving the WS legs onto the neutral inbound WS-accept seam. Generic over
-/// the dialect `codec` (K4): [`voice_ws_arrivals`] instantiates it once per dialect
+/// the dialect `codec` (the second-dialect route): [`voice_ws_arrivals`] instantiates it once per dialect
 /// ([`OpenAiRealtimeCodec`] for the sideband/telephony legs, [`GeminiLiveCodec`] for the Gemini leg) so
 /// every leg runs the SAME choke point rather than a per-dialect copy. It builds the `GauntletRequest`
 /// and [`SessionGauntlet`] EXACTLY as [`begin_session`] does (gov threaded from the audience-checked
@@ -1137,7 +1137,7 @@ fn provider_ws_url(base_url: &str, dialect: &str, api_key: &str) -> String {
 /// commits no durable row and simply closes the just-upgraded socket. So no refused-or-aborted accept
 /// ever leaves a live session row.
 ///
-/// THE PROVIDER DIAL (K5): for `Telephony` and `Gemini`, when the ingress's dialect has a COMPOSED
+/// THE PROVIDER DIAL (the provider-dial leg): for `Telephony` and `Gemini`, when the ingress's dialect has a COMPOSED
 /// provider, the leg opens a [`crate::topology::telephony::TelephonyProxy`] (the same thin-duplex
 /// shape for both) and dials the provider through [`dial_provider`] — the net-guarded, breaker-admitted
 /// path — before pumping either socket. A dial failure drops the just-admitted session (the proxy's
@@ -1265,7 +1265,7 @@ where
         move |stream, sink| async move {
             match ingress {
                 // TELEPHONY / GEMINI: a thin duplex proxy. With a composed provider, dial it and pump
-                // both sockets through `TelephonyProxy::run` (K5); with none, fall back to serving the
+                // both sockets through `TelephonyProxy::run` (the provider-dial leg); with none, fall back to serving the
                 // client socket only (the documented "governed but not dialing" posture).
                 Ingress::Telephony | Ingress::Gemini => match provider {
                     Some(p) => match open_admitted_telephony(

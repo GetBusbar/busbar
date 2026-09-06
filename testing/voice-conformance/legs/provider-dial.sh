@@ -4,7 +4,7 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
-# LEG: provider-dial (K5) — a session actually DIALS the composed provider; the WS legs' upstream dial
+# LEG: provider-dial (the provider-dial leg) — a session actually DIALS the composed provider; the WS legs' upstream dial
 # is no longer uncomposed.
 #
 # `topology::dial_provider` has existed since K1: breaker-admitted, net-guarded, counted on the shared

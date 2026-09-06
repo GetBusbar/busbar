@@ -1361,7 +1361,7 @@ fn probe_session_scope() -> (&'static str, String) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════════════════════════
-// LEG 8 (K4) — gemini-live-route: the Gemini Live dialect has a MOUNTED route, not just a codec the
+// LEG 8 (the second-dialect route) — gemini-live-route: the Gemini Live dialect has a MOUNTED route, not just a codec the
 // spec/cross-parity legs exercise off to the side. Proves, on the plane's own PUBLIC functions (the
 // same ones the composition root calls, and the same `WsArrivalSpec` a real deployment mounts):
 //
@@ -1406,7 +1406,7 @@ fn probe_gemini_live_route() -> (&'static str, String) {
     let Some(admission) = busbar_voice::mount::voice_admission(slot.as_ref()) else {
         return (
             "FAIL",
-            "a plane that claims paths must admit (R2): admission is None".into(),
+            "a plane that claims paths must admit (the claim-admits ratchet): admission is None".into(),
         );
     };
     if !admission.audience.ends_with("/v1/realtime") {
@@ -1489,7 +1489,7 @@ fn probe_gemini_live_route() -> (&'static str, String) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════════════════════════
-// LEG 9 (K5) — provider-dial: `topology::dial_provider` is a library function nothing calls in
+// LEG 9 (the provider-dial leg) — provider-dial: `topology::dial_provider` is a library function nothing calls in
 // production without a composed provider; this leg proves a session actually dials one end to end.
 // A loopback WS "provider" stands in for a real realtime upstream (no network, no vendor credential
 // needed): the harness binds it on an ephemeral port, `dial_provider` dials it through the SAME

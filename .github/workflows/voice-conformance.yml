@@ -22,9 +22,9 @@ name: Voice conformance
 #   cross-parity       the 4 ordered OpenAI<->Gemini pairs, judged against the cross-dialect map.
 #   composition        the seams a MOUNTED door needs to actually serve on a real deployment: the
 #                      provider credential the mint / SDP passes dial under, the host-backed per-key
-#                      metering lease a session reserves on, the session-scope grant, and (K4) the
+#                      metering lease a session reserves on, the session-scope grant, and (the second-dialect route) the
 #                      Gemini Live route's own mount shape.
-#   provider-dial      (K5) a session actually dials the composed provider through a loopback socket,
+#   provider-dial      (the provider-dial leg) a session actually dials the composed provider through a loopback socket,
 #                      and its D2 metering lease settles the usage that arrived over it. Its own job
 #                      (not folded into `composition`) because it is the one leg that opens a socket.
 #   governance-probe   the 5 vision checkpoints (incl. D2 hard-close-on-exhaustion). NOT A
@@ -179,7 +179,7 @@ jobs:
           if-no-files-found: warn
 
   provider-dial:
-    name: "provider-dial · a session dials the composed provider (K5)"
+    name: "provider-dial · a session dials the composed provider (the provider-dial leg)"
     needs: gate-selftest
     runs-on: ubuntu-latest
     env:

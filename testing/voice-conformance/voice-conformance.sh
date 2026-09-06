@@ -45,10 +45,10 @@
 #   metering-lease     a session's money hop is the HOST's reserve-then-settle lease, capped by the
 #                      presenting principal's own remaining budget.
 #   session-scope      the plane's declared `session` scope kind, enforced at session open.
-#   gemini-live-route  (K4) the Gemini Live dialect has a MOUNTED WS-accept route (claim, admission,
+#   gemini-live-route  (the second-dialect route) the Gemini Live dialect has a MOUNTED WS-accept route (claim, admission,
 #                      arrival, and the wire handshake itself), not just a codec the spec/cross-parity
 #                      legs exercise off to the side.
-#   provider-dial      (K5) a session actually DIALS the composed provider through a real (loopback)
+#   provider-dial      (the provider-dial leg) a session actually DIALS the composed provider through a real (loopback)
 #                      socket via `topology::dial_provider`, and its D2 metering lease settles the
 #                      usage that arrived over it — the WS legs' upstream dial is no longer uncomposed.
 #   admit-refusal      a key whose budget is already spent is refused AT THE DOOR
