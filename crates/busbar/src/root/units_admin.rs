@@ -3174,6 +3174,87 @@ mod tests {
         (binding, ctx, seal)
     }
 
+    /// The administrative listener answers on a table with no room in it at all, and the data
+    /// listener does not.
+    ///
+    /// THE arrival STEP, over the loop. §2.2 gives this plane's Arrival one decision of its own and
+    /// this is it: units on the administrative listener are EXEMPT from `in_flight_cap`, for the
+    /// reason the exemption exists — the surface an operator reaches to find out why the node is
+    /// shedding has to answer while it is shedding. This node's table makes that the only thing
+    /// keeping it alive: its cap is ZERO, so every unit under the cap is refused and every unit that
+    /// answers did so because the exemption carried it.
+    ///
+    /// Three answers, over one table at one moment:
+    ///
+    /// - a unit that did NOT arrive on the administrative listener is refused, `InFlightCap`,
+    ///   stamped at `Arrival` because the origin is a client, with its arrival hold handed back
+    ///   reserving nothing — the shedding the operator came to ask about;
+    /// - a real admin request, through the whole loop on that same table, comes back with the
+    ///   operation's own 200 rather than the node's `unavailable`. Not a smaller claim than the
+    ///   refusal above: it is the exemption, on the path the listener actually takes;
+    /// - the step itself proceeds, and the record it carries names the administrative transport. The
+    ///   admin plane synthesizes its arrival rather than copying a data-listener one, and the chain
+    ///   is where that shows.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
+        use busbar_caps::{OriginKind, StepName};
+        use busbar_kernel::inflight::{arrival_hold, cap_refusal_step, Enter};
+
+        let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+        let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+        assert_eq!(
+            node.inflight.cap(),
+            0,
+            "the exemption is the only reason anything answers on this table"
+        );
+
+        // REFUSED: the same table, asked for a unit that is under the cap.
+        let entering = Enter {
+            key: UnitKey::new(9_000),
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: arrival_hold(
+                &node.kernel,
+                &node.units.arrival_door,
+                PrincipalId::new("caller"),
+            ),
+        };
+        let Err(refused) = node.inflight.insert(entering) else {
+            panic!("a table with no room admits nothing that is under the cap");
+        };
+        assert_eq!(refused.reason, ReasonCode::InFlightCap);
+        assert_eq!(refused.step, StepName::Arrival);
+        assert_eq!(refused.step, cap_refusal_step(OriginKind::Client));
+        let handed_back = refused.hold;
+        assert_eq!(
+            handed_back.reserved(),
+            0,
+            "a unit refused at the gate has spent nothing"
+        );
+
+        // ADMITTED: an ordinary administrative request, through the whole loop, on that table.
+        let answer = node.answer(a_request());
+        assert_eq!(
+            answer.status, 200,
+            "the admin listener answers while shedding"
+        );
+        assert_ne!(answer, unavailable_answer());
+        assert_ne!(answer, refused_answer());
+        assert_eq!(node.inflight.len(), 0, "the unit gave its slot back");
+
+        // The step's own answer, for the unit that got through.
+        let (binding, ctx, seal) = a_bound_unit(a_request());
+        assert!(ctx.admin_listener, "the fixture is on the admin listener");
+        let record = arrival(&binding, &UnitToken::mint(&seal), &ctx)
+            .into_result(&seal)
+            .expect("an admin unit is never refused at the gate");
+        assert_eq!(record.transport_chain, vec![ADMIN_TRANSPORT]);
+    }
+
     /// Where an admin unit may go, and what that costs it.
     ///
     /// THE verify STEP, over the loop. The gating contract is that a destination the caller cannot
