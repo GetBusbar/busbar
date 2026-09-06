@@ -2470,8 +2470,19 @@ mod tests {
         let seal = busbar_caps::KernelSeal::acquire_for_kernel();
         let binding = AdminBinding::new(Arc::new(RefusingDispatch));
 
+        // The legacy ring binds no clock of its own; a pinned one keeps the two rows comparable.
+        #[derive(Debug)]
+        struct PinnedClock;
+        impl busbar_unit_audit::Clock for PinnedClock {
+            fn now(&self) -> u64 {
+                1_700_000_000
+            }
+        }
         let rows = |completed: bool| -> Vec<busbar_unit_audit::legacy::AuditEntry> {
-            let log = busbar_unit_audit::AuditLog::new();
+            let log = busbar_unit_audit::AuditLog::with(
+                Box::new(PinnedClock),
+                Box::new(busbar_unit_audit::NoSeam),
+            );
             let key = UnitKey::new(1);
             let mut request = a_request();
             request.method = "PUT".to_string();

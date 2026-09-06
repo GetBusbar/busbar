@@ -1096,7 +1096,10 @@ impl Units for VoiceUnit<'_> {
         // The second door: a unit that never passed the door and was charged nothing. It still gets
         // a record, because a refusal is an event — and the record says which step said no and why,
         // because a refusal nobody can name is an event with no information in it.
-        let outcome = Outcome::Refused(refusal.step(), refusal.reason());
+        let outcome = Outcome::Refused(
+            refusal.step().unwrap_or(busbar_caps::StepName::Admit),
+            refusal.reason(),
+        );
         self.seal(token, ctx, outcome, busbar_contract::FinishClass::Error)
     }
 
@@ -1778,6 +1781,7 @@ mod tests {
                 busbar_caps::StepName::Admit,
                 ReasonCode::OverBudget,
                 busbar_contract::Framing::Stream,
+                busbar_kernel::inflight::Binding::Bound,
             ),
             Some(busbar_kernel::inflight::HardClose::ProviderRefusedForMoney),
             "and that refusal is the one that closes the session"
