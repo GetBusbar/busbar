@@ -55,13 +55,16 @@ fn describe_renders_env_file_and_module_forms() {
 }
 
 /// The `Visitor::expecting` error message actually names the accepted shapes — asserted via a
-/// real deserialize failure on a shape with NO `visit_*` override (a bare integer, unlike a
-/// string, has no custom handler here so serde falls back to its default invalid-type error,
-/// which is built from `expecting()`), so this also proves serde actually wires it into the
-/// real error path, not just that the method compiles.
+/// real deserialize failure on a shape with NO `visit_*` override, so serde falls back to its
+/// default invalid-type error, which is built from `expecting()`. This proves serde actually wires
+/// it into the real error path, not just that the method compiles.
 #[test]
 fn deserialize_error_message_names_the_accepted_shapes() {
-    let err = serde_yaml::from_str::<SecretRef>("42").unwrap_err();
+    // A SEQUENCE, not a scalar: every scalar spelling now takes the explicit non-echoing refusal
+    // (a bare number is a pasted secret far more often than it is a typo'd shape), so the input
+    // that still exercises serde's own `expecting()`-built message is one this visitor does not
+    // handle at all.
+    let err = serde_yaml::from_str::<SecretRef>("[1, 2]").unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("a secret reference map"),
@@ -112,5 +115,96 @@ fn oneof_schema_accepts_exactly_what_secretref_accepts() {
     ];
     for v in &reject {
         assert!(!validator.is_valid(v), "should reject {v}");
+    }
+}
+
+/// The derived fragment is written out by hand next to the deserializer, not generated from it, so
+/// what actually keeps the two in step is this: ONE table of shapes, each put to BOTH the schema and
+/// `SecretRef::deserialize`, with the two verdicts asserted EQUAL. Either side changing alone shows
+/// up here.
+///
+/// The whitespace-only rows are the drift this found: the schema said `minLength: 1`, the visitor
+/// says `trim().is_empty()`, and a three-space value satisfies the first while failing the second —
+/// a reference busbar-ui would have rendered as valid and the engine would have refused at boot.
+#[test]
+fn the_schema_and_the_deserializer_agree_shape_for_shape() {
+    let mut full = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    for (k, v) in oneof_schema().as_object().unwrap() {
+        full.insert(k.clone(), v.clone());
+    }
+    let validator = jsonschema::validator_for(&serde_json::Value::Object(full))
+        .expect("the derived fragment is a valid 2020-12 schema");
+
+    let cases = [
+        // (shape, is it a legal secret reference)
+        (serde_json::json!({"module": "vault"}), true),
+        (
+            serde_json::json!({"module": "vault", "settings": {"key": "x"}}),
+            true,
+        ),
+        (serde_json::json!({"env": "MY_VAR"}), true),
+        (serde_json::json!({"file": "/run/secrets/x"}), true),
+        // Blank-but-present values: the reason this test exists.
+        (serde_json::json!({"env": "   "}), false),
+        (serde_json::json!({"file": "\t"}), false),
+        (serde_json::json!({"module": " "}), false),
+        (serde_json::json!({"env": ""}), false),
+        (serde_json::json!({"module": ""}), false),
+        // Structural refusals.
+        (serde_json::json!({}), false),
+        (serde_json::json!({"env": "A", "file": "B"}), false),
+        (serde_json::json!({"module": "vault", "env": "A"}), false),
+        (serde_json::json!({"env": "A", "settings": {}}), false),
+        (serde_json::json!({"literal": "s3cret"}), false),
+        (serde_json::json!({"unknown": "x"}), false),
+        (serde_json::json!("s3cret"), false),
+        (serde_json::json!(483_920_175_534u64), false),
+        (serde_json::json!(true), false),
+    ];
+
+    for (shape, expected) in &cases {
+        let by_schema = validator.is_valid(shape);
+        let by_serde = serde_json::from_value::<SecretRef>(shape.clone()).is_ok();
+        assert_eq!(
+            by_schema, by_serde,
+            "the schema and the deserializer disagree about {shape}: schema says {by_schema}, \
+             serde says {by_serde}"
+        );
+        assert_eq!(
+            by_serde, *expected,
+            "and the agreed verdict for {shape} must be {expected}"
+        );
+    }
+}
+
+/// A secret is not always quoted. `api_key: 483920175534` and `api_key: true` are ordinary YAML, and
+/// each one used to miss the non-echoing refusal entirely and land on serde's default `invalid type`
+/// error — which prints the value it was handed. The value it was handed is the secret, and the boot
+/// log is exactly the place this type exists to keep it out of.
+#[test]
+fn an_unquoted_inline_secret_is_refused_without_echoing_it() {
+    for (yaml, value) in [
+        ("483920175534", "483920175534"),
+        ("-42", "42"),
+        ("true", "true"),
+        ("1.5", "1.5"),
+    ] {
+        let err = serde_yaml::from_str::<SecretRef>(yaml)
+            .expect_err("an inline literal is never a secret reference")
+            .to_string();
+        assert!(
+            !err.contains(value),
+            "the refusal echoed the value into the error text: {err}"
+        );
+        assert!(
+            err.contains("never an inline literal"),
+            "and it must be the same non-echoing refusal a quoted literal gets: {err}"
+        );
     }
 }
