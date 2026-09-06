@@ -249,8 +249,19 @@ impl From<SignError> for MigrationError {
 pub struct Opening {
     /// The opening checkpoint. Its totals ARE the legacy figures.
     pub checkpoint: Checkpoint,
-    /// The marker that was written, so the caller need not read the records back to report it.
+    /// The marker for this opening, so the caller need not read the records back to report it.
+    /// Written to the records only when [`Opening::marker_written`] is true.
     pub marker: MigrationMarker,
+    /// Whether the marker was actually committed to the records.
+    ///
+    /// False exactly when the read was degraded — see [`Opening::unreadable`]. The marker is a
+    /// run-once record, so committing it over a short read would make the short read permanent:
+    /// every later boot would return [`Outcome::AlreadySealed`] and the buckets the store could not
+    /// answer for would be missing from the opening forever, leaving the reconciliation identity
+    /// quietly short by their whole history. Leaving it unwritten costs a re-read on the next boot
+    /// and nothing else, because the seal is a pure function of what was read: once the store
+    /// answers for everything, the same rows seal the same checkpoint and the marker goes down then.
+    pub marker_written: bool,
     /// The opening entry per bucket, at the named card version.
     pub balances: Vec<OpeningBalance>,
     /// The rows that could not be read, named. Empty on a store that answered for everything.
@@ -272,7 +283,9 @@ impl Outcome {
         matches!(self, Outcome::Sealed(_))
     }
 
-    /// The marker, whichever boot wrote it.
+    /// The marker for what this boot found or sealed. On [`Outcome::Sealed`] it describes the
+    /// opening whether or not it was committed — [`Opening::marker_written`] is the field that says
+    /// which, because a degraded read seals an opening and deliberately leaves no record behind.
     pub fn marker(&self) -> &MigrationMarker {
         match self {
             Outcome::Sealed(opening) => &opening.marker,
@@ -334,13 +347,21 @@ fn opening_heads(head: &LegacyHead, node: u64) -> Vec<ChainHead> {
     }]
 }
 
-/// Run the migration: read what the previous release holds, seal it as the opening, mark it done.
+/// Run the migration: read what the previous release holds, seal it as the opening, and mark it
+/// done IF the read was complete.
 ///
 /// Idempotent by the marker AND by the figures. The marker is what makes a second boot cost
 /// nothing; but a deployment whose records do not survive a restart re-reads the same read-only rows
 /// and seals a checkpoint with the same body hash, so even there running again is indistinguishable
 /// from not having run. That is the property to lean on, because it does not depend on where the
 /// marker was kept.
+///
+/// It is also what makes withholding the marker after a degraded read safe, and withholding it
+/// necessary: the marker is run-once, so writing it over a read that could not answer for some
+/// buckets would seal those buckets out of the opening forever and leave the reconciliation
+/// identity short by their whole history, with every later boot short-circuiting on the marker
+/// before it could notice. So a degraded read seals the opening the node needs to boot and leaves
+/// the marker for a boot that can read everything ([`Opening::marker_written`] says which happened).
 ///
 /// # Errors
 ///
@@ -388,11 +409,21 @@ pub fn migrate(
         cells_read: head.cells_read,
         rate_card_version,
     };
-    records.write_marker(&marker)?;
+    // The marker goes down only over a COMPLETE read. It is the run-once record: written over a
+    // degraded read it makes the degradation permanent, because every later boot then returns
+    // `AlreadySealed` and never looks at the rows the store could not answer for. Withholding it
+    // costs the next boot a re-read and nothing else — the seal is a pure function of what was read,
+    // so a clean re-read seals the identical checkpoint and writes the marker then. The opening is
+    // still returned either way: a node must boot over what could be read.
+    let marker_written = read.unreadable.is_empty();
+    if marker_written {
+        records.write_marker(&marker)?;
+    }
 
     Ok(Outcome::Sealed(Box::new(Opening {
         checkpoint,
         marker,
+        marker_written,
         balances,
         unreadable: read.unreadable,
     })))

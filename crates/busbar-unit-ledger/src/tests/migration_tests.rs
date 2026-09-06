@@ -409,6 +409,77 @@ fn a_row_that_could_not_be_read_is_named_and_does_not_refuse() {
     assert_eq!(opening.unreadable, vec!["team-c".to_string()]);
 }
 
+/// A degraded read seals an opening but leaves NO marker, so the next boot re-reads.
+///
+/// The marker is the run-once record. Written over a read that could not answer for a bucket, it
+/// makes the short read permanent: every later boot short-circuits on it and the missing bucket's
+/// whole history is silently absent from the opening, leaving the reconciliation identity short by
+/// exactly that. Withholding it costs one re-read, because the seal is a pure function of what was
+/// read — so the clean re-read below seals the SAME checkpoint and only then records that it did.
+#[test]
+fn a_degraded_read_seals_the_opening_but_leaves_the_marker_for_a_clean_boot() {
+    let degraded = SeededRows {
+        unreadable: vec!["team-c".to_string()],
+        ..Default::default()
+    };
+    let mut records = NodeLocalRecords::new();
+    let Outcome::Sealed(first) = sealed(&degraded, &mut records).expect("boots anyway") else {
+        panic!("seals anyway");
+    };
+    assert!(
+        !first.marker_written,
+        "a short read must not be recorded as the deployment's one migration"
+    );
+    assert!(
+        !records.is_sealed(),
+        "and the records must show no marker, so the next boot looks again"
+    );
+
+    // The next boot, with the store answering for everything: it re-reads rather than reporting
+    // `AlreadySealed`, and seals the identical checkpoint.
+    let clean = SeededRows {
+        unreadable: Vec::new(),
+        ..Default::default()
+    };
+    let Outcome::Sealed(second) = sealed(&clean, &mut records).expect("migrates") else {
+        panic!("a boot with no marker re-reads and seals rather than short-circuiting");
+    };
+    assert_eq!(
+        second.checkpoint.body_hash, first.checkpoint.body_hash,
+        "the seal is a pure function of what was read"
+    );
+    assert!(second.marker_written, "a complete read records that it ran");
+    assert!(records.is_sealed());
+
+    // And now the marker does its job: a third boot reads nothing.
+    let third = SeededRows {
+        unreadable: Vec::new(),
+        ..Default::default()
+    };
+    assert!(matches!(
+        sealed(&third, &mut records).expect("marker found"),
+        Outcome::AlreadySealed(_)
+    ));
+    assert_eq!(
+        third.reads(),
+        0,
+        "the marker is what makes a later boot cost nothing"
+    );
+}
+
+/// A complete read writes the marker exactly once.
+#[test]
+fn a_clean_read_writes_the_marker_once() {
+    let source = a_serving_deployment();
+    let mut records = NodeLocalRecords::new();
+    let Outcome::Sealed(opening) = sealed(&source, &mut records).expect("migrates") else {
+        panic!("seals");
+    };
+    assert!(opening.marker_written);
+    assert!(records.is_sealed());
+    assert_eq!(opening.unreadable, Vec::<String>::new());
+}
+
 /// An unsigned opening is an error and NO marker is written: a deployment that could not sign must
 /// try again next boot rather than record that it migrated when it did not.
 #[test]
