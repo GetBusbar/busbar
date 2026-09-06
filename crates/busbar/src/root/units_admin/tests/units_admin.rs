@@ -264,6 +264,25 @@ fn an_unauthenticated_caller_is_told_unauthorized_not_forbidden() {
     );
 }
 
+/// The wrap's arrival epoch is READ FROM THE NODE'S CLOCK, which is the same seam the in-flight
+/// table's stamp is read from — not a second `SystemTime` call beside it.
+///
+/// Bracketed by the table's own reading rather than compared to one taken separately: what is
+/// being asserted is that the two are ONE clock, so the check is that the wrap's answer falls
+/// inside a window the other seam defines. A reading from anywhere else would only be inside it
+/// by luck.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_wrap_stamps_an_arrival_off_the_same_clock_the_table_does() {
+    let before = busbar_substrate::store::now_ms() / 1_000;
+    let at = request_epoch();
+    let after = busbar_substrate::store::now_ms() / 1_000;
+    assert!(
+        (before..=after).contains(&at),
+        "the wrap stamped {at}, outside the [{before}, {after}] the node's own clock read"
+    );
+}
+
 /// The only producer of the framing is the packer. Anything else is this file being wrong, and
 /// a lenient parse would turn that into a silently wrong answer.
 #[test]
