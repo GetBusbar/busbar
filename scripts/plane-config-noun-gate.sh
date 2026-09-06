@@ -108,6 +108,30 @@ core_files() {
     | grep -vE '/tests/|_tests?\.rs$|/test_support/|/config/migrate' | sort
 }
 
+# ── THE ROOT GUARD and THE ZERO-FILE GUARD ────────────────────────────────────────────────────────
+# Copied, deliberately, from scripts/plane-grep-gate.sh. `find "$CORE_ROOT" … 2>/dev/null` swallows
+# the diagnostic for a root that was renamed, split or drained, and the pipe loses find's status: the
+# code stream comes back empty, every noun counts 0, and the report prints "four-noun config-parse
+# debt: 0" about a crate this gate never opened. Renaming crates/busbar-core printed that PASS. The
+# two guards are separate because they are two different failures with the same number — the root is
+# not there at all, versus the root is there and holds no production .rs. Both exit the PROCESS, so
+# they are called from run_report directly, never inside a `$(…)`.
+require_root() {
+  [ -d "$CORE_ROOT" ] && return 0
+  red "plane-config-noun gate: FAIL — scan root \`$CORE_ROOT\` is not a directory on disk."
+  note "A listed root that does not exist is scanned as ZERO files, and zero files parse no noun."
+  note "If the crate moved, point CORE_ROOT at its new home in a reviewed diff that says so."
+  exit 1
+}
+
+require_files() {
+  local n="$1"
+  [ "$n" -gt 0 ] && return 0
+  red "plane-config-noun gate: FAIL — \`$CORE_ROOT\` holds $n production .rs file(s); zero is RED."
+  note "A scan of zero files reports zero parse targets, which is indistinguishable from zero debt."
+  exit 1
+}
+
 # THE COMMENT-STRIPPED CODE STREAM ("file:line:content"), so a noun in doc-comment prose is not a
 # parse target. Same stripping shape as scripts/plane-noun-gate.sh's build_code_stream.
 build_code_stream() {   # writes to $1
@@ -154,6 +178,9 @@ run_report() {
   hdr "four-noun config-parse debt in busbar-core (report-only)"
   note "section nouns (from each PlaneDecl.config_section): $nouns"
   note "scanned root: $CORE_ROOT  (non-test, comment-stripped, frozen migrator excluded)"
+
+  require_root
+  require_files "$(core_files | grep -c . || true)"
 
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   build_code_stream "$tmp/code"
@@ -215,6 +242,27 @@ FIX
   local nouns; nouns="$(section_nouns)"
   local ncount; ncount="$(printf '%s' "$nouns" | wc -w | tr -d ' ')"
   if [ "$ncount" -ge 4 ]; then note "resolved $ncount section nouns from the plane decls: $nouns"; else fail=1; note "FAILED: only resolved $ncount section nouns ($nouns)"; fi
+
+  # ── The INSTRUMENT, not the meter: the two ways this gate scans nothing and prints zero debt. ──
+  # `CORE_ROOT` is a bare relative path, and a rename made `find … 2>/dev/null` go quiet, the code
+  # stream come back empty, all four nouns count 0, and the report say "debt: 0" about a crate it
+  # never opened. Both guards are exercised on real directories, not mocked.
+  if ( CORE_ROOT="$tmp/no-such-root" require_root ) >/dev/null 2>&1; then
+    fail=1; note "FAILED: a scan root that is not on disk was accepted"
+  else
+    note "RED root-guard: a scan root that is not on disk is refused, not scanned as zero files"
+  fi
+  mkdir -p "$tmp/empty-root"
+  if ( CORE_ROOT="$tmp/empty-root" require_files "$(CORE_ROOT="$tmp/empty-root" core_files | grep -c . || true)" ) >/dev/null 2>&1; then
+    fail=1; note "FAILED: a root holding no production .rs was accepted"
+  else
+    note "RED zero-file: a root that exists but holds no production .rs is refused"
+  fi
+  if ( require_root && require_files "$(core_files | grep -c . || true)" ) >/dev/null 2>&1; then
+    note "GREEN instrument: \`$CORE_ROOT\` exists and carries $(core_files | grep -c . || true) production .rs file(s)"
+  else
+    fail=1; note "FAILED: the guards refuse this tree's own scan root"
+  fi
 
   if [ "$fail" -ne 0 ]; then red "plane-config-noun-gate SELF-TEST FAILED"; return 1; fi
   grn "plane-config-noun-gate self-test: ALL GREEN (counts parse targets, ignores homonyms/seam)"
