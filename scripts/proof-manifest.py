@@ -44,6 +44,7 @@ import json
 import os
 import re
 import subprocess
+import shutil
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -94,8 +95,28 @@ def scrape_total(text):
 
 # ── VERDICT: byte-identity ────────────────────────────────────────────────────────────────────────
 
+# THE GOLDEN CORPUS AND THE TESTS THAT ASSERT OVER IT, AS ONE CONSTANT.
+#
+# Both used to say `busbar-llm`. The proto module — the corpus, `translate_parity_*_tests.rs`, all
+# of it — now lives in `busbar-llm-codec`, and neither reference moved with it. Two failures came
+# out of that, in the same direction:
+#
+#   * `crates/busbar-llm/src/tests/proto/golden` does not exist, so `golden_dir.is_dir()` was False,
+#     the enumeration loop never ran, and `total` stayed 0 — published as `evidence_count: 0`.
+#   * `cargo test -p busbar-llm --lib translate_parity` selects a filter that matches ZERO tests in
+#     that crate. cargo EXITS 0 when a filter matches nothing — running no tests is not an error to
+#     cargo — so `code == 0` and the manifest published `"status": "pass"`.
+#
+# The published claim was therefore "the byte-identity corpus: 0 cases, pass". Zero cases passing is
+# not evidence of anything, and it is the shape a reader is least likely to question, because the
+# word next to it is `pass`. GOLDEN_MIN below is the floor that makes it impossible to say again.
+GOLDEN_DIR = "crates/busbar-llm-codec/src/tests/proto/golden"
+GOLDEN_CRATE = "busbar-llm-codec"
+GOLDEN_MIN = 40  # the corpus holds >100 pairs; the floor is a collapse tripwire, not a second count
+
+
 def verdict_byte_identity(root, run_cargo):
-    golden_dir = root / "crates/busbar-llm/src/tests/proto/golden"
+    golden_dir = root / GOLDEN_DIR
     lanes = {}
     total = 0
     if golden_dir.is_dir():
@@ -112,15 +133,43 @@ def verdict_byte_identity(root, run_cargo):
     ]
     # The golden corpus is pinned on-disk; enumeration is a filesystem fact. Whether the byte-identity
     # ASSERT passed requires running the parity tests -- honest `unknown` unless --run-cargo.
+    golden_note = None
     if run_cargo:
-        code, _ = run(
-            ["cargo", "test", "-p", "busbar-llm", "--lib", "translate_parity"],
+        code, out = run(
+            ["cargo", "test", "-p", GOLDEN_CRATE, "--lib", "translate_parity"],
             cwd=root,
             timeout=3600,
         )
-        golden_status = "pass" if code == 0 else "fail"
+        # A FILTER THAT MATCHES NOTHING EXITS 0. cargo prints `running 0 tests` and reports success,
+        # so `code == 0` alone cannot distinguish "every parity test passed" from "the filter, or
+        # the crate name, no longer selects any test". Require that it says it ran some.
+        ran = 0
+        for m in re.finditer(r"^running (\d+) tests?$", out, re.MULTILINE):
+            ran += int(m.group(1))
+        if code != 0:
+            golden_status = "fail"
+        elif ran == 0:
+            golden_status = "fail"
+            golden_note = (f"`cargo test -p {GOLDEN_CRATE} --lib translate_parity` exited 0 having "
+                           f"run ZERO tests. cargo treats a filter that matches nothing as success, "
+                           f"so this is a filter/crate-name drift, not a green corpus.")
+        else:
+            golden_status = "pass"
+            golden_note = f"{ran} parity test(s) executed"
     else:
         golden_status = "unknown"
+
+    # ── THE EVIDENCE FLOOR ──────────────────────────────────────────────────────────────────────
+    # A verdict is `pass` only if something was actually compared. `total` is a filesystem fact, so
+    # an empty or missing corpus directory is indistinguishable from a corpus that moved — and both
+    # mean this class has no evidence behind it, whatever the test runner said.
+    if total < GOLDEN_MIN:
+        golden_status = "fail"
+        golden_note = (f"the golden corpus at {GOLDEN_DIR} yielded {total} byte-pair(s); the floor "
+                       f"is {GOLDEN_MIN}. A byte-identity verdict over zero pairs compares nothing, "
+                       f"and publishing it as a pass is the failure this floor exists to stop. Fix: "
+                       f"the corpus moved once already (busbar-llm -> busbar-llm-codec); check "
+                       f"GOLDEN_DIR in this file against where it lives now.")
 
     sources = [
         {
@@ -130,20 +179,41 @@ def verdict_byte_identity(root, run_cargo):
             "count": total,
             "total": total,
             "lane_count": len(lane_matrix),
+            # The evidence this source stands on, named. `mark_sources()` refuses to stamp a pass
+            # onto a source whose own evidence is not there.
+            "evidence": GOLDEN_DIR,
+            "evidence_present": total >= GOLDEN_MIN,
+            "note": golden_note,
             "drilldown": {
                 "type": "lane-matrix",
-                "path": "crates/busbar-llm/src/tests/proto/golden/",
+                "path": GOLDEN_DIR + "/",
                 "lanes": lane_matrix,
             },
         }
     ]
-    # The five money-path oracle tests (byte-identity of the delivery/billing/egress path).
+    # ── The five money-path oracle tests, EACH WITH ITS OWN EVIDENCE ────────────────────────────
+    #
+    # ci.yml stamps all five of these — and translate-parity-cross-pairs above, six in total — from
+    # ONE value, `${CHECK_RESULT}`, the result of the single `check` job. That is defensible as far
+    # as it goes: the job that runs them either passed or did not. What is not defensible is what
+    # the manifest then says, which is six independent verdicts of `pass`, one per named oracle, as
+    # though six things had been established. And two of the six named a test file THAT DOES NOT
+    # EXIST — `crossproto_delivery_billing_tests.rs` moved from `engine/tests/` to
+    # `engine/engine_tests/`, and `usage-decode-tap` pointed at
+    # `crates/busbar-core/src/ingress/tests/tests.rs`, a path with no file in it — so a green `check`
+    # job published `"status": "pass"` for two oracles with nothing behind them at all. The old code
+    # even computed `present` and put the answer in a human-readable `note`, where nothing consumed
+    # it; the mark overwrote the status regardless.
+    #
+    # So every source now carries its OWN evidence path and whether that path is there, and
+    # `mark_sources()` refuses to stamp a pass onto a source whose evidence is absent — it marks it
+    # `unknown` with the reason instead. A claim maps to its own evidence, or it is not a claim.
     oracles = [
         ("egress-differential", "crates/busbar-llm/src/engine/tests/egress_differential_tests.rs"),
-        ("crossproto-billing", "crates/busbar-llm/src/engine/tests/crossproto_delivery_billing_tests.rs"),
+        ("crossproto-billing", "crates/busbar-llm/src/engine/engine_tests/crossproto_delivery_billing_tests.rs"),
         ("on-exhausted", "crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs"),
         ("pool-upstream-creds", "crates/busbar-llm/src/engine/tests/pool_upstream_creds_tests.rs"),
-        ("usage-decode-tap", "crates/busbar-core/src/ingress/tests/tests.rs"),
+        ("usage-decode-tap", "crates/busbar-llm-codec/src/tests/proto/tests.rs"),
     ]
     for oid, opath in oracles:
         present = (root / opath).exists()
@@ -151,7 +221,9 @@ def verdict_byte_identity(root, run_cargo):
             "id": oid,
             "kind": "oracle",
             "status": "unknown",  # cargo-backed; not executed in scrape mode
-            "note": "present" if present else "test file not found",
+            "evidence": opath,
+            "evidence_present": present,
+            "note": "present" if present else "test file not found at " + opath,
             "drilldown": {"type": "test", "path": opath},
         })
     return {
@@ -434,6 +506,73 @@ def verdict_conformance(root, reports_dir):
     }
 
 
+# ── CROSS-JOB CAPTURE, AND THE TWO THINGS IT MUST NOT DO ────────────────────────────────────────────
+
+def mark_sources(verdicts, specs):
+    """Stamp sources from sibling CI job results, without manufacturing claims.
+
+    A GitHub job result of `success` means the job passed. The manifest is a public claim about
+    WHAT that proves, and the old implementation over-claimed in two distinct ways:
+
+      1. IT PROMOTED SOURCES WITH NO EVIDENCE. ci.yml passes one `${CHECK_RESULT}` to six `--mark`
+         flags. Two of the six named a test file that does not exist (the crossproto oracle had
+         moved directory; the usage-decode oracle pointed at a path with no file in it). A green
+         `check` job therefore published `"status": "pass"` for two oracles standing on nothing.
+         The old code even computed `present` — and wrote the answer into a `note` nobody read,
+         then overwrote the status anyway. Now: no evidence, no pass. The source is left `unknown`
+         and says why, which is the honest verdict for a claim whose subject is missing.
+
+      2. IT FANNED ONE RESULT OUT OVER A SUB-MAP. `s["dialects"] = {k: st for k in s["dialects"]}`
+         turned one job result into six per-dialect verdicts (anthropic, openai, gemini, responses,
+         bedrock, cohere); the same line turned one result into seven per-leg a2a verdicts and
+         three per-plane verdicts. Those sub-maps exist to say which INDIVIDUAL legs were proven —
+         that is their entire purpose, it is what a reader drills into — and filling them from a
+         single aggregate makes them say something nobody measured. Now they are left as their
+         producer computed them (`unknown` where nothing reported), and the fan-out is gone.
+
+    `shared_with` records when the same result marked several sources, so the manifest does not
+    read as several independent measurements.
+    """
+    marks = {}
+    for spec in specs:
+        if "=" not in spec:
+            continue
+        sid, res = spec.split("=", 1)
+        res = res.strip().lower()
+        if res == "":
+            continue
+        marks[sid.strip()] = "pass" if res in ("success", "pass") else "fail"
+    if not marks:
+        return
+    # Which ids were given the same verdict value? Only meaningful as "these came from one place".
+    by_value = {}
+    for sid, st in marks.items():
+        by_value.setdefault(st, []).append(sid)
+    for v in verdicts:
+        for s in v.get("sources", []):
+            sid = s.get("id")
+            if sid not in marks:
+                continue
+            st = marks[sid]
+            if s.get("evidence") is not None and not s.get("evidence_present"):
+                s["status"] = "unknown"
+                s["note"] = (
+                    "NOT captured: the sibling ci.yml job reported %r, but this source's own "
+                    "evidence (%s) is not present in the tree, so that result says nothing about "
+                    "it. A job result is evidence for what the job ran; it cannot stand in for a "
+                    "test file that does not exist." % (st, s.get("evidence"))
+                )
+                continue
+            s["status"] = st
+            s["note"] = "captured from the sibling ci.yml job result"
+            siblings = [o for o in by_value.get(st, []) if o != sid]
+            if siblings:
+                # Named so the manifest cannot be read as N independent measurements.
+                s["shared_with"] = sorted(siblings)
+            # Sub-maps are DELIBERATELY not touched. See (2) in the docstring.
+        v["status"] = class_status(v.get("sources", []))
+
+
 # ── class-status reducer (the honesty rule) ─────────────────────────────────────────────────────────
 
 def class_status(sources):
@@ -454,8 +593,98 @@ def class_status(sources):
 
 # ── main ────────────────────────────────────────────────────────────────────────────────────────────
 
+def selftest(root):
+    """Prove the manifest cannot publish a claim with nothing behind it.
+
+    Every case here is one the collator got WRONG in the green direction before the case existed:
+    a corpus path that had moved (published `total: 0, status: pass`), a cargo filter that selected
+    nothing (cargo exits 0 on that), two oracle paths with no file at them (published `pass` from a
+    sibling job's result), and a single job result fanned out over a six-entry dialect map.
+    """
+    bad = 0
+
+    def ok(cond, label, detail=""):
+        nonlocal bad
+        if cond:
+            print("  [ok]     %s" % label)
+        else:
+            print("  [FAILED] %s%s" % (label, (" — " + detail) if detail else ""))
+            bad = 1
+
+    print("proof-manifest selftest")
+
+    # 1. The corpus is where this file says it is, and it is not empty.
+    v = verdict_byte_identity(root, False)
+    src = v["sources"][0]
+    ok((root / GOLDEN_DIR).is_dir(), "the golden corpus path resolves to a real directory (%s)" % GOLDEN_DIR)
+    ok(src["total"] >= GOLDEN_MIN,
+       "the corpus yields %d byte-pairs, at or above the floor of %d" % (src["total"], GOLDEN_MIN),
+       "a moved corpus used to publish total=0 alongside status=pass")
+
+    # 2. A corpus that yields nothing is a FAIL, never a pass. Driven through the real function
+    #    against a root with no corpus in it, which is exactly the state the stale path produced.
+    empty_root = Path(tempfile.mkdtemp(prefix="proof-selftest-"))
+    try:
+        v0 = verdict_byte_identity(empty_root, False)
+        s0 = v0["sources"][0]
+        ok(s0["total"] == 0 and s0["status"] == "fail",
+           "a corpus of zero byte-pairs is FAIL, not pass/unknown",
+           "got total=%r status=%r" % (s0["total"], s0["status"]))
+        ok("floor" in (s0.get("note") or ""), "and it says why, naming the floor")
+    finally:
+        shutil.rmtree(empty_root, ignore_errors=True)
+
+    # 3. Every oracle names a file that is actually there.
+    missing = [s["id"] + " -> " + s["evidence"]
+               for s in v["sources"] if s.get("evidence") and not s.get("evidence_present")]
+    ok(not missing, "every money-path oracle names a test file that exists",
+       "missing: %s" % ", ".join(missing))
+
+    # 4. A sibling job's result cannot promote a source whose evidence is absent.
+    fake = [{"class": "c", "sources": [
+        {"id": "ghost", "status": "unknown", "evidence": "crates/nope/tests/nope.rs",
+         "evidence_present": False},
+        {"id": "real", "status": "unknown", "evidence": GOLDEN_DIR, "evidence_present": True},
+    ]}]
+    mark_sources(fake, ["ghost=success", "real=success"])
+    g, r = fake[0]["sources"]
+    ok(g["status"] == "unknown" and "NOT captured" in g["note"],
+       "a job result does NOT promote an oracle whose test file is missing",
+       "got %r" % g["status"])
+    ok(r["status"] == "pass", "and it DOES promote one whose evidence is present",
+       "got %r" % r["status"])
+    ok(g.get("shared_with") == ["real"] or r.get("shared_with") == ["ghost"],
+       "sources stamped from the same result say so, so the manifest is not read as N measurements")
+
+    # 5. One job result is not six dialect verdicts.
+    fan = [{"class": "c", "sources": [
+        {"id": "llm-dialects", "status": "unknown",
+         "dialects": {d: "unknown" for d in
+                      ["anthropic", "openai", "gemini", "responses", "bedrock", "cohere"]}},
+    ]}]
+    mark_sources(fan, ["llm-dialects=success"])
+    dl = fan[0]["sources"][0]["dialects"]
+    ok(all(x == "unknown" for x in dl.values()),
+       "one job result is not fanned out into six per-dialect verdicts",
+       "got %r" % dl)
+    ok(fan[0]["sources"][0]["status"] == "pass",
+       "while the source's own aggregate status is still captured")
+
+    print()
+    if bad:
+        print("proof-manifest selftest: FAILED")
+        return 1
+    print("proof-manifest selftest: every published claim maps to evidence that exists")
+    return 0
+
+
 def main():
+    if "--selftest" in sys.argv[1:]:
+        root = Path(__file__).resolve().parent.parent
+        return selftest(root)
     ap = argparse.ArgumentParser(description="Collate the Build Proof Dashboard manifest.")
+    ap.add_argument("--selftest", action="store_true",
+                    help="prove the collator refuses to publish a claim with no evidence")
     ap.add_argument("--version", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--repo-root", default=None)
@@ -523,28 +752,7 @@ def main():
         verdict_conformance(root, reports_dir),
     ]
 
-    # Honest cross-job capture: stamp a source's verdict from the sibling CI job that actually ran it.
-    # A GitHub job result of "success" -> pass; anything else -> fail; empty/skip -> left unknown.
-    marks = {}
-    for spec in args.mark:
-        if "=" not in spec:
-            continue
-        sid, res = spec.split("=", 1)
-        res = res.strip().lower()
-        if res == "":
-            continue
-        marks[sid.strip()] = "pass" if res == "success" else ("pass" if res == "pass" else "fail")
-    if marks:
-        for v in verdicts:
-            for s in v.get("sources", []):
-                if s.get("id") in marks:
-                    st = marks[s["id"]]
-                    s["status"] = st
-                    s["note"] = "captured from the sibling ci.yml job result"
-                    for mapkey in ("planes", "legs", "dialects"):
-                        if isinstance(s.get(mapkey), dict):
-                            s[mapkey] = {k: st for k in s[mapkey]}
-            v["status"] = class_status(v.get("sources", []))
+    mark_sources(verdicts, args.mark)
 
     manifest = {
         "schema_version": "1",
@@ -605,4 +813,4 @@ def write_index(proof_dir):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
