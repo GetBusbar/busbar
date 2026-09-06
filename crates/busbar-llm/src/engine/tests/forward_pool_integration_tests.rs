@@ -1807,7 +1807,6 @@ async fn test_governance_admin_api() {
     );
 
     let app = TestApp::new().keys_chain().governance(gov).build();
-    let (host, rt) = crate::engine::test_host_rt(&app);
 
     let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
