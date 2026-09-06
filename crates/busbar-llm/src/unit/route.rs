@@ -168,10 +168,27 @@ pub(crate) fn candidates<'a>(
 /// The plan a resolved destination names: one leg per candidate lane, in the order the walk takes
 /// them.
 ///
-/// A candidate the tables no longer hold is skipped rather than guessed at, and the leg count is
-/// bounded by the contract (`MAX_LEGS`) because a unit is one authorization — a pool wider than the
-/// bound plans the legs it is allowed to plan and the walk still walks every candidate it was
-/// handed, because the walk is driven by the candidate list and not by this value.
+/// A candidate the tables no longer hold is skipped rather than guessed at.
+///
+/// # A pool wider than the plan
+///
+/// The leg count is bounded by the contract (`MAX_LEGS`), and a configured pool is not: the contract
+/// bounds a plan because a unit is one authorization, and it deliberately leaves candidate sets
+/// unbounded because bounding them would refuse a configuration the previous release accepted. Those
+/// two facts do not meet in the middle, so a pool with more members than the bound produces a plan
+/// that does not name every lane the walk may serve from.
+///
+/// REFUSING at the seal is the answer this cannot give. A ninth member is a configuration the shipped
+/// release serves, and turning it away here would be this plane refusing a deployment on the strength
+/// of a record-keeping limit — the caller's request would fail for a reason the caller cannot see,
+/// act on, or be at fault for. Sizing the plan from the pool is not available either: the plan's width
+/// is the contract's and the contract is what the kernel reads it through.
+///
+/// What is left is to make the overflow LOUD. The walk still walks every candidate it was handed —
+/// it is driven by the candidate list and not by this value, which is why the truncation costs a
+/// caller nothing — but the plan an operator reads is then not the whole of what could be dialled,
+/// and an operator who is never told cannot know that. So the shortfall is named once, at the seal,
+/// with the numbers that explain it.
 ///
 /// The two names a leg is written in are READ, not derived: the lane row carries its dial target and
 /// its lane name already seated as the node's interned statics, put there when the generation's
@@ -182,10 +199,13 @@ fn plan_over(rt: &Arc<NativeRuntime>, cands: &[WeightedLane]) -> RoutePlan {
     let tables = EngineTables::new(rt);
     let all = tables.lanes();
     let mut plan = RoutePlan::default();
+    let mut planned = 0usize;
+    let mut resolved = 0usize;
     for c in cands {
         let Some(lane) = all.get(c.idx) else {
             continue;
         };
+        resolved += 1;
         let facts = DestinationFacts::Upstream {
             // The family that dials an LLM lane. A lane's `protocol` is its DIALECT, which is a
             // different question from which transport carries it.
@@ -196,9 +216,21 @@ fn plan_over(rt: &Arc<NativeRuntime>, cands: &[WeightedLane]) -> RoutePlan {
             },
             lane: LaneId::new(lane.lane_id),
         };
-        if plan.legs.push(Leg { destination: facts }).is_err() {
-            break;
+        // NOT a break. Counting the rest is what turns "the plan is short" into "the plan is short by
+        // this many", and the loop's remaining work is a table lookup per candidate over a set the
+        // deployment's own configuration bounds.
+        if plan.legs.push(Leg { destination: facts }).is_ok() {
+            planned += 1;
         }
+    }
+    if resolved > planned {
+        tracing::warn!(
+            resolved,
+            planned,
+            bound = busbar_contract::MAX_LEGS,
+            "route plan is narrower than the pool: the walk may serve from a lane the plan does not \
+             name"
+        );
     }
     plan
 }
@@ -1307,6 +1339,72 @@ mod tests {
         assert_eq!(
             allocs, 1,
             "naming the legs of a planned walk allocates the plan's own leg buffer and nothing else"
+        );
+    }
+
+    /// A POOL WIDER THAN THE PLAN. Nine members, a plan that holds eight, and the ninth lane still
+    /// reachable by the walk.
+    ///
+    /// The contract bounds a plan and deliberately does not bound a candidate set — bounding one
+    /// would refuse a configuration the shipped release accepts — so the two do not meet, and a nine
+    /// member pool is a deployment this plane has to serve rather than one it may turn away. This
+    /// pins what that costs and what it does not: the plan is short by exactly one, the candidate set
+    /// the walk is driven by is all nine, and the ninth lane is a lane the walk can serve from and the
+    /// plan does not name. That last fact is the reason the seal says so out loud instead of
+    /// truncating in silence.
+    #[test]
+    fn a_pool_wider_than_the_plan_still_offers_every_member_to_the_walk() {
+        crate::testkit::install_test_seams();
+        let proto = crate::proto_codec::PROTO_OPENAI;
+        let members = busbar_contract::MAX_LEGS + 1;
+
+        let mut builder = TestApp::new();
+        for i in 0..members {
+            builder = builder.lane(
+                LaneSpec::new(&format!("wide-m{i}"), proto, "http://127.0.0.1:9").provider("test"),
+            );
+        }
+        let weights: Vec<(usize, u32)> = (0..members).map(|i| (i, 1)).collect();
+        let app = builder.pool("wide-p", &weights).build();
+        let (_host, rt) = crate::engine::test_host_rt(&app);
+
+        let (cands, cell) = candidates(&rt, "wide-p").expect("the wide pool resolves");
+        assert_eq!(cell, "wide-p");
+        assert_eq!(
+            cands.len(),
+            members,
+            "the walk is handed every configured member; the plan's bound is not a pool's bound"
+        );
+
+        let plan = plan_over(&rt, &cands);
+        assert_eq!(
+            plan.legs.len(),
+            busbar_contract::MAX_LEGS,
+            "the plan holds what the contract lets it hold, and no more"
+        );
+
+        // The ninth member is a lane the walk can serve from. The plan names eight lanes; this one
+        // is not among them, and it is not among them because the plan ran out of room rather than
+        // because anything decided it should not be dialled.
+        let tables = EngineTables::new(&rt);
+        let ninth = tables
+            .lanes()
+            .get(cands[members - 1].idx)
+            .expect("the ninth candidate is a configured lane")
+            .lane_id;
+        let named: Vec<&str> = plan
+            .legs
+            .as_slice()
+            .iter()
+            .map(|leg| match leg.destination {
+                DestinationFacts::Upstream { lane, .. } => lane.as_str(),
+                _ => unreachable!("this plane plans upstream legs and no other kind"),
+            })
+            .collect();
+        assert_eq!(named.len(), busbar_contract::MAX_LEGS);
+        assert!(
+            !named.contains(&ninth),
+            "the member the plan had no room for is the one the record cannot account for"
         );
     }
 }
