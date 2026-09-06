@@ -1013,58 +1013,89 @@ pub fn host_is_private_or_loopback(host: &str) -> bool {
     }
 }
 
-/// True when the already-normalized `host` (as produced by [`extract_normalized_host`]) matches any
-/// entry in `entries`, using the EXACT canonicalization the denylist block check uses for operator-
-/// supplied `blocked_metadata_hosts`. This is shared by the allow-override path so an allow entry
-/// unblocks every spelling of an IP the same way a block entry blocks every spelling:
-/// * a hostname entry matches case-insensitively, trailing dot stripped;
-/// * an IP-literal entry matches the parsed connect-host AND its IPv4-mapped/compatible-IPv6 and
-///   alternate-encoding (decimal-int / hex / octal / short-dotted) spellings.
+/// An operator's allow or block list, canonicalized once instead of once per dial.
 ///
-/// Empty / whitespace-only entries never match.
-fn host_matches_any(host: &str, entries: &[String]) -> bool {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+/// The entries an operator writes are strings, and judging a host against them means trimming each
+/// entry, dropping its trailing FQDN dot, and parsing the ones that are IP literals. None of that
+/// depends on the host being judged, so none of it belongs on the request path: a deployment with a
+/// denylist of any size re-did the whole parse for every candidate of every dial. It is done here,
+/// where the list is stated, and a judgement is then a scan over values already in their final form.
+#[derive(Debug, Default, Clone)]
+struct HostSet {
+    /// Hostname (and verbatim) entries, trimmed, trailing dots dropped, lowercased. Empty and
+    /// whitespace-only entries are not kept, so they can never match.
+    names: Vec<String>,
+    /// The entries that are IPv4 literals, parsed.
+    v4: Vec<std::net::Ipv4Addr>,
+    /// The entries that are IPv6 literals, parsed.
+    v6: Vec<std::net::Ipv6Addr>,
+}
 
-    if entries.is_empty() {
-        return false;
+impl HostSet {
+    /// Canonicalize a list of operator-written entries.
+    fn parse(entries: &[String]) -> Self {
+        let mut set = HostSet::default();
+        for entry in entries {
+            let norm = entry.trim().trim_end_matches('.');
+            if norm.is_empty() {
+                continue;
+            }
+            if let Ok(v4) = norm.parse::<std::net::Ipv4Addr>() {
+                set.v4.push(v4);
+            } else if let Ok(v6) = norm.parse::<std::net::Ipv6Addr>() {
+                set.v6.push(v6);
+            }
+            set.names.push(norm.to_ascii_lowercase());
+        }
+        set
     }
 
-    // Hostname / verbatim match (case-insensitive, trailing dot stripped on the entry).
-    for entry in entries {
-        let entry_norm = entry.trim().trim_end_matches('.');
-        if !entry_norm.is_empty() && entry_norm.eq_ignore_ascii_case(host) {
+    /// True when the list names nothing at all — the common case, and the one a dial should spend
+    /// no work on.
+    fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+
+    /// True when the already-normalized `host` (as produced by [`extract_normalized_host`]) matches
+    /// any entry, using the EXACT canonicalization the denylist block check uses for operator-
+    /// supplied `blocked_metadata_hosts`. This is shared by the allow-override path so an allow
+    /// entry unblocks every spelling of an IP the same way a block entry blocks every spelling:
+    /// * a hostname entry matches case-insensitively, trailing dot stripped;
+    /// * an IP-literal entry matches the parsed connect-host AND its IPv4-mapped/compatible-IPv6 and
+    ///   alternate-encoding (decimal-int / hex / octal / short-dotted) spellings.
+    fn matches(&self, host: &str) -> bool {
+        use std::net::IpAddr;
+
+        if self.is_empty() {
+            return false;
+        }
+
+        // Hostname / verbatim match (case-insensitive).
+        if self.names.iter().any(|n| n.eq_ignore_ascii_case(host)) {
             return true;
         }
-    }
 
-    // IP-literal entries: parse each once so an entry like `169.254.169.254` also matches this host's
-    // mapped-IPv6 and alternate-encoding spellings, mirroring the block path's `extra_v4`/`extra_v6`.
-    let entry_v4: Vec<Ipv4Addr> = entries
-        .iter()
-        .filter_map(|e| e.trim().trim_end_matches('.').parse::<Ipv4Addr>().ok())
-        .collect();
-    let entry_v6: Vec<Ipv6Addr> = entries
-        .iter()
-        .filter_map(|e| e.trim().trim_end_matches('.').parse::<Ipv6Addr>().ok())
-        .collect();
-    if entry_v4.is_empty() && entry_v6.is_empty() {
-        return false;
-    }
-
-    // Alternate / obfuscated encodings of THIS host expand to a canonical v4 and re-check.
-    if let Some(expanded) = expand_alternate_ipv4(host) {
-        if entry_v4.contains(&expanded) {
-            return true;
+        // An IP-literal entry also matches this host's mapped-IPv6 and alternate-encoding
+        // spellings, mirroring the block path's `extra_v4`/`extra_v6`.
+        if self.v4.is_empty() && self.v6.is_empty() {
+            return false;
         }
-    }
 
-    match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(v4)) => entry_v4.contains(&v4),
-        Ok(IpAddr::V6(v6)) => {
-            let embedded = v6.to_ipv4();
-            entry_v6.contains(&v6) || embedded.is_some_and(|m| entry_v4.contains(&m))
+        // Alternate / obfuscated encodings of THIS host expand to a canonical v4 and re-check.
+        if let Some(expanded) = expand_alternate_ipv4(host) {
+            if self.v4.contains(&expanded) {
+                return true;
+            }
         }
-        Err(_) => false,
+
+        match host.parse::<IpAddr>() {
+            Ok(IpAddr::V4(v4)) => self.v4.contains(&v4),
+            Ok(IpAddr::V6(v6)) => {
+                let embedded = v6.to_ipv4();
+                self.v6.contains(&v6) || embedded.is_some_and(|m| self.v4.contains(&m))
+            }
+            Err(_) => false,
+        }
     }
 }
 
@@ -1205,12 +1236,25 @@ pub fn ssrf_blocked_host(
     allow_all: bool,
     extra_blocked: &[String],
 ) -> Option<String> {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
-    // Nuclear override: the metadata guard is disabled wholesale.
+    // The one-shot spelling: a caller holding raw entries pays the canonicalization here. A caller
+    // that dials repeatedly states its lists once, as a [`Denylist`], and pays it never again.
     if allow_all {
         return None;
     }
+    judge_against_lists(
+        url,
+        &HostSet::parse(allow_overrides),
+        &HostSet::parse(extra_blocked),
+    )
+}
+
+/// The denylist judgement over lists already canonicalized, which is what every arm of it wanted.
+fn judge_against_lists(
+    url: &str,
+    allow_overrides: &HostSet,
+    extra_blocked: &HostSet,
+) -> Option<String> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     // A destination may be spelled as a URL or as a bare `host:port`, and the destination check
     // supports both. Judging only the first spelling meant the operator's denylist never fired for
@@ -1221,7 +1265,7 @@ pub fn ssrf_blocked_host(
     // Surgical allow-override: if THIS host matches any allow entry (with the same canonicalization
     // the block check uses), it is permitted regardless of the denylist. Computed up front so allow
     // unconditionally wins over every block arm below.
-    if host_matches_any(host, allow_overrides) {
+    if allow_overrides.matches(host) {
         return None;
     }
 
@@ -1238,8 +1282,8 @@ pub fn ssrf_blocked_host(
     // the SAME canonicalization the allow-override path uses (hostname case-insensitive; IP literal
     // matched against the parsed connect-host and its mapped-IPv6 / alternate-encoding spellings), so
     // an operator who writes `10.99.99.99` also blocks `[::ffff:10.99.99.99]` and the decimal-int
-    // form. `host_matches_any` is the single shared canonicalizer for both allow and block.
-    if host_matches_any(host, extra_blocked) {
+    // form. [`HostSet`] is the single shared canonicalizer for both allow and block.
+    if extra_blocked.matches(host) {
         return Some(host.to_string());
     }
 
@@ -1299,15 +1343,42 @@ pub fn ssrf_blocked_host(
 /// hardcoded set union `blocked`) AND NOT in `allowed`. Allow always wins over block, and
 /// `allow_all` wins over both — an operator who has disabled the guard has disabled it, and a guard
 /// that half-applied would be worse than either answer.
+///
+/// The two lists are held canonicalized rather than as the strings an operator wrote, and that is
+/// why they are stated once through [`Denylist::new`] rather than assigned field by field: trimming
+/// an entry, dropping its trailing FQDN dot and parsing the IP literals among them does not depend
+/// on the host being judged, so a dial that re-did it was paying for a deployment's configuration
+/// on the request path. A field a caller could edit afterwards would be a second, stale answer.
 #[derive(Debug, Default, Clone)]
 pub struct Denylist {
     /// Operator additions to the denylist: the answer to an unknown cloud's metadata address.
-    pub blocked: Vec<String>,
+    blocked: HostSet,
     /// Surgical carve-outs. An IP entry unblocks every spelling of that address, the same way a
     /// block entry blocks every spelling of one.
-    pub allowed: Vec<String>,
+    allowed: HostSet,
     /// The nuclear override. When set, the metadata guard is off wholesale.
-    pub allow_all: bool,
+    allow_all: bool,
+}
+
+impl Denylist {
+    /// State a deployment's additions, carve-outs and override, canonicalizing both lists once.
+    ///
+    /// `blocked` is `security.blocked_metadata_hosts`, `allowed` is the union of the provider's
+    /// `allow_metadata_hosts` and the global one, and `allow_all` is `security.allow_all_metadata`.
+    #[must_use]
+    pub fn new(blocked: &[String], allowed: &[String], allow_all: bool) -> Self {
+        Denylist {
+            blocked: HostSet::parse(blocked),
+            allowed: HostSet::parse(allowed),
+            allow_all,
+        }
+    }
+
+    /// Whether the guard is off wholesale, for a caller reporting what it is running under.
+    #[must_use]
+    pub fn allows_all(&self) -> bool {
+        self.allow_all
+    }
 }
 
 /// Why the trust unit would not let a destination be dialled.
@@ -1407,16 +1478,15 @@ pub fn check_destination_facts(
     };
 
     // The denylist, over the base and over every path it is joined with.
-    for candidate in
-        std::iter::once(authority.to_string()).chain(paths.iter().map(|p| join_path(authority, p)))
-    {
-        if let Some(host) = ssrf_blocked_host(
-            &candidate,
-            &denylist.allowed,
-            denylist.allow_all,
-            &denylist.blocked,
-        ) {
-            return Err(NetworkRefusal::MetadataDenied(host));
+    if !denylist.allow_all {
+        for candidate in std::iter::once(authority.to_string())
+            .chain(paths.iter().map(|p| join_path(authority, p)))
+        {
+            if let Some(host) =
+                judge_against_lists(&candidate, &denylist.allowed, &denylist.blocked)
+            {
+                return Err(NetworkRefusal::MetadataDenied(host));
+            }
         }
     }
 

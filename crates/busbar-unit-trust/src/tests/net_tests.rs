@@ -768,14 +768,8 @@ fn the_denylist_precedence_is_allow_all_then_allow_override_then_block() {
     // host to me", and it still cannot say "hand out cloud credentials". Neither knob is a way to
     // reach `169.254.169.254`, and there is deliberately no knob that is.
     for past_the_denylist in [
-        Denylist {
-            allowed: vec!["169.254.169.254".to_string()],
-            ..Denylist::default()
-        },
-        Denylist {
-            allow_all: true,
-            ..Denylist::default()
-        },
+        Denylist::new(&[], &["169.254.169.254".to_string()], false),
+        Denylist::new(&[], &[], true),
     ] {
         assert!(
             matches!(
@@ -795,14 +789,8 @@ fn the_denylist_precedence_is_allow_all_then_allow_override_then_block() {
     }
 
     // The same two knobs DO carry a host that is merely internal, which is what they are for.
-    let allowed = Denylist {
-        allowed: vec!["10.0.0.7".to_string()],
-        ..Denylist::default()
-    };
-    let blocked_then_allowed = Denylist {
-        blocked: vec!["10.0.0.7".to_string()],
-        ..allowed.clone()
-    };
+    let blocked_then_allowed =
+        Denylist::new(&["10.0.0.7".to_string()], &["10.0.0.7".to_string()], false);
     assert!(
         matches!(
             check_destination(
@@ -818,10 +806,7 @@ fn the_denylist_precedence_is_allow_all_then_allow_override_then_block() {
     );
 
     // An operator addition blocks a host the hardcoded list never named.
-    let extra = Denylist {
-        blocked: vec!["10.99.99.99".to_string()],
-        ..Denylist::default()
-    };
+    let extra = Denylist::new(&["10.99.99.99".to_string()], &[], false);
     assert_eq!(
         check_destination(
             &dest("https://10.99.99.99/"),
@@ -837,10 +822,7 @@ fn the_denylist_precedence_is_allow_all_then_allow_override_then_block() {
 /// An operator's IP entry blocks every spelling of that address, not just the one they typed.
 #[test]
 fn an_operator_block_entry_covers_the_obfuscated_spellings_too() {
-    let extra = Denylist {
-        blocked: vec!["10.99.99.99".to_string()],
-        ..Denylist::default()
-    };
+    let extra = Denylist::new(&["10.99.99.99".to_string()], &[], false);
     for spelling in [
         "https://[::ffff:10.99.99.99]/",
         "https://174285667/",
@@ -854,6 +836,79 @@ fn an_operator_block_entry_covers_the_obfuscated_spellings_too() {
             "{spelling} spells the same address the operator blocked"
         );
     }
+}
+
+/// An operator's entries are canonicalized the same way whenever that canonicalization happens.
+///
+/// Surrounding whitespace, a trailing FQDN dot and letter case are all noise in a written entry, and
+/// an entry that is nothing but whitespace names no host at all — an empty entry that matched would
+/// block or unblock every destination a deployment has.
+#[test]
+fn an_entry_is_canonicalized_the_same_way_however_it_was_written() {
+    for written in [
+        "Metadata.Example",
+        "  metadata.example  ",
+        "metadata.example.",
+        " METADATA.EXAMPLE. ",
+    ] {
+        let blocked = Denylist::new(&[written.to_string()], &[], false);
+        assert_eq!(
+            check_destination(
+                &dest("https://METADATA.example./"),
+                &[],
+                &NeverAsked,
+                strict(),
+                &blocked
+            ),
+            Err(NetworkRefusal::MetadataDenied(
+                "METADATA.example".to_string()
+            )),
+            "`{written}` names the same host however it was written"
+        );
+    }
+
+    // An IP entry, likewise — and it still covers every spelling of that address.
+    let spaced = Denylist::new(&[" 10.99.99.99. ".to_string()], &[], false);
+    assert!(matches!(
+        check_destination(
+            &dest("https://[::ffff:10.99.99.99]/"),
+            &[],
+            &NeverAsked,
+            private_ok(),
+            &spaced
+        ),
+        Err(NetworkRefusal::MetadataDenied(_))
+    ));
+
+    // An empty or whitespace-only entry names nothing and matches nothing, on either list.
+    let blank = Denylist::new(&[String::new(), "   ".to_string()], &[], false);
+    assert!(
+        matches!(
+            check_destination(
+                &dest("https://example.com/"),
+                &[],
+                &ScriptedResolver::new(vec![Ok(vec![ip(PUBLIC)])]),
+                strict(),
+                &blank
+            ),
+            Ok(Some(_))
+        ),
+        "a blank block entry must not block every host"
+    );
+    let blank_allow = Denylist::new(&[], &[String::new(), "  ".to_string()], false);
+    assert_eq!(
+        check_destination(
+            &dest("https://169.254.169.254/"),
+            &[],
+            &NeverAsked,
+            strict(),
+            &blank_allow
+        ),
+        Err(NetworkRefusal::MetadataDenied(
+            "169.254.169.254".to_string()
+        )),
+        "a blank allow entry must not unblock every host"
+    );
 }
 
 /// The base and the path are re-checked TOGETHER, because a path can move the host boundary.
@@ -922,10 +977,7 @@ fn a_bare_authority_is_judged_as_a_secure_one() {
 /// never fired for it.
 #[test]
 fn an_operator_block_entry_covers_the_bare_authority_spelling() {
-    let extra = Denylist {
-        blocked: vec!["203.0.113.7".to_string()],
-        ..Denylist::default()
-    };
+    let extra = Denylist::new(&["203.0.113.7".to_string()], &[], false);
 
     assert_eq!(
         check_destination(
