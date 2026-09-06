@@ -725,7 +725,7 @@ fn size_signal_and_projection_agree_on_tool_role_content() {
 
 // THE EXHAUSTIVENESS GUARD (every registered protocol has a reader that produces a readable IR, so
 // a seventh protocol is covered by REGISTERING rather than by an arm added anywhere) —
-// `every_known_protocol_has_a_declared_reasoning_wire_shape` RELOCATED to `busbar-llm`
+// `every_known_protocol_reads_an_empty_conversation_to_an_empty_ir` RELOCATED to `busbar-llm`
 // (`src/tests/proto/phase1_5_relocated_tests.rs`): it drove the
 // witnessed codec (`protocol_for(...).reader()`) and named the concrete IR (`ir.shape()`,
 // `ir::project`), so it now lives beside the codec/IR it exercises.
