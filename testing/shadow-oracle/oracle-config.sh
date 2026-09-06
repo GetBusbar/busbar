@@ -56,6 +56,13 @@ oracle_write_config() {  # <work> <listen_port> <admin_port> <mock_port>
   # arm instead (paired with the mock's `slow` control on that lane so the permit never frees in
   # time). `inbound_concurrent` stays empty (key omitted -> the real 8192 default) unless the
   # `inbound-concurrency-2` variant asks for the tiny cap the inbound-shed cell needs.
+  # A variant this case does not recognize writes the BASELINE config, byte for byte. That is a
+  # contract, not an accident: `rate-card-epoch` (billing|rate-card|epoch-mid-window) declares a
+  # variant purely to force this function to RUN — the `rm -f busbar-overlay.json` above is the only
+  # thing that clears a runtime overlay, and boot_busbar calls oracle_write_config only when the
+  # variant CHANGES. A cell whose `PUT /config/settings` writes an overlay the next cell must not
+  # inherit therefore names a variant of its own, so the config is rewritten (overlay gone) both
+  # when that cell starts and when the next baseline cell does. It gets the same config as baseline.
   local queue_max_ms=4000 inbound_concurrent=""
   case "${ORACLE_VARIANT:-}" in
     queue-timeout) queue_max_ms=50 ;;
