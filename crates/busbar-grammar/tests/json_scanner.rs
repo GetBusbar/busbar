@@ -131,6 +131,24 @@ fn a_pointer_token_that_cannot_be_decoded_never_matches_the_key_that_prefixes_it
 }
 
 #[test]
+fn a_duplicated_key_answers_the_last_one_the_way_every_parser_downstream_does() {
+    // serde_json — which 1.5.5 read every body with — and the providers' own parsers all take the
+    // LAST occurrence of a repeated member. Answering the first one prices and permits one model
+    // while the provider serves another, which is a choice the body's author gets to make.
+    let body = br#"{"model":"cheap-mini","messages":[],"model":"expensive-max"}"#;
+    assert_eq!(found(body, "/model"), br#""expensive-max""#);
+    // Nested, so it is the object being walked that decides and not the top level.
+    let body = br#"{"usage":{"total_tokens":1,"total_tokens":999},"model":"m"}"#;
+    assert_eq!(found(body, "/usage/total_tokens"), b"999");
+    // Three of them, and the middle one is not the answer either.
+    let body = br#"{"a":1,"a":2,"a":3}"#;
+    assert_eq!(found(body, "/a"), b"3");
+    // A duplicate of a key that is not the one asked for changes nothing.
+    let body = br#"{"a":1,"b":2,"b":3}"#;
+    assert_eq!(found(body, "/a"), b"1");
+}
+
+#[test]
 fn a_brace_inside_a_string_does_not_confuse_the_scan() {
     let body = br#"{"decoy": "}{[]\"", "lane": "gold"}"#;
     assert_eq!(found(body, "/lane"), br#""gold""#);

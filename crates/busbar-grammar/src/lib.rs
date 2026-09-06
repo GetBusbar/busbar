@@ -156,11 +156,22 @@ fn descend(b: &[u8], at: usize, tokens: &str, depth: usize) -> Result<Option<Spa
 }
 
 /// Find `key` in the object that starts at `at`.
+///
+/// A member spelled twice answers the LAST one. JSON says nothing about repeated names, so what
+/// counts is what reads the body after this does: serde_json takes the last, and so do the
+/// providers' own parsers. Answering the first would let a body price and permit one model while
+/// the upstream serves another — the divergence is the author of the body's to choose, not the
+/// operator's — so the walk keeps the latest match rather than returning on the first.
+///
+/// The object is still walked exactly once, so the budget is the budget it always was; the answer
+/// simply is not final until the closing brace, which is also why a truncated object asks for more
+/// instead of handing back a match a later duplicate could still replace.
 fn member(b: &[u8], at: usize, key: &str, depth: usize) -> Result<Option<Span>, ScanErr> {
     let mut i = skip_ws(b, at + 1);
     if b.get(i) == Some(&b'}') {
         return Ok(None);
     }
+    let mut latest: Option<Span> = None;
     loop {
         if b.get(i) != Some(&b'"') {
             return Err(if i >= b.len() {
@@ -186,17 +197,13 @@ fn member(b: &[u8], at: usize, key: &str, depth: usize) -> Result<Option<Span>, 
         let value_end = skip_value(b, value_start, depth + 1)?;
         i = skip_ws(b, value_end);
         if matched {
-            // What follows the value has to be this object's own punctuation. Ending the walk on the
-            // match without that look would hand back a span out of a document closed by the wrong
-            // bracket. Running out of bytes stays an answer, as it is everywhere else here.
-            return match b.get(i) {
-                Some(b',') | Some(b'}') | None => Ok(Some(Span::new(value_start, value_end))),
-                Some(_) => Err(ScanErr::Malformed),
-            };
+            latest = Some(Span::new(value_start, value_end));
         }
+        // What follows the value has to be this object's own punctuation. Walking on without that
+        // look would hand back a span out of a document closed by the wrong bracket.
         match b.get(i) {
             Some(b',') => i = skip_ws(b, i + 1),
-            Some(b'}') => return Ok(None),
+            Some(b'}') => return Ok(latest),
             None => return Err(ScanErr::NeedMore),
             Some(_) => return Err(ScanErr::Malformed),
         }
