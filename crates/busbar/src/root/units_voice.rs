@@ -116,7 +116,7 @@ use busbar_plane_voice::claims::Dialect;
 use busbar_plane_voice::{meta, Upstream, VoicePlane};
 use busbar_unit_admission::{Admission as _, Door, Estimate, InMemoryCells, Pricer};
 use busbar_unit_auth::{Auth, AuthRequest};
-use busbar_unit_scope::{Scope, TRANSPORT_HANDSHAKE};
+use busbar_unit_scope::{Grants, Scope, TRANSPORT_HANDSHAKE};
 use busbar_unit_trust::net::GuardPolicy;
 
 /// Every meter class this plane declares fits in one usage report, with room to spare.
@@ -677,6 +677,13 @@ pub struct VoiceUnit<'n> {
     pub arrival: ArrivalRecord,
     /// The credential the carriers presented, where one was.
     pub credential: Option<String>,
+    /// What the caller's credential is entitled to, as the auth chain resolved it.
+    ///
+    /// Held on the unit rather than looked up at the step that checks it, for the reason every other
+    /// plane holds it the same way: the grants are the CALLER's and are decided once, and a step that
+    /// went looking for them a second time would be a second place for a principal's entitlement to
+    /// be decided.
+    pub grants: Grants,
     /// Whether the credential rides the session rather than being presented per unit.
     pub from_session: bool,
     /// The dialect the decode step named.
@@ -723,6 +730,11 @@ impl<'n> VoiceUnit<'n> {
                 transport_chain: vec!["http", "ws"],
             },
             credential: None,
+            // The full grant until a caller says otherwise through `holding`. This is the seam's
+            // default and not a policy: no transport composes a voice unit yet, so there is no
+            // credential for a narrower value to have come from, and a default that refused would
+            // refuse a caller nobody has authenticated rather than one who was found wanting.
+            grants: Grants::of(Scope::Full),
             from_session: shape != UnitShape::SessionOpen,
             dialect: Dialect::OpenaiRealtime,
             usage: TurnUsage::default(),
@@ -736,6 +748,13 @@ impl<'n> VoiceUnit<'n> {
     #[must_use]
     pub fn with_credential(mut self, credential: impl Into<String>) -> Self {
         self.credential = Some(credential.into());
+        self
+    }
+
+    /// What this unit's caller is entitled to.
+    #[must_use]
+    pub fn holding(mut self, grants: Grants) -> Self {
+        self.grants = grants;
         self
     }
 
@@ -953,9 +972,18 @@ impl Units for VoiceUnit<'_> {
         // for a pair it was told nothing about, and reading `None` as a pass would be authorization
         // by omission — every operation class a deployment forgot to name would be open.
         let claim = ClaimKey::new(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY);
-        match busbar_unit_scope::required_scope(claim, self.shape.op_class(), &self.node.scope) {
-            Some(_) => Decision::proceed(token, ScopeFacts::default()),
-            None => Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied)),
+        let Some(needed) =
+            busbar_unit_scope::required_scope(claim, self.shape.op_class(), &self.node.scope)
+        else {
+            return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+        };
+        // And having found what the operation requires, the caller's grant is compared against it —
+        // which is the half that was missing. Finding the requirement and not checking it is a
+        // lookup, not an authorization: it refuses a class the deployment forgot to name and admits
+        // every principal for every class it did, including the read-only one opening a session.
+        match busbar_unit_scope::approve(self.grants, needed) {
+            Ok(()) => Decision::proceed(token, ScopeFacts::default()),
+            Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied)),
         }
     }
 
@@ -1464,6 +1492,49 @@ mod tests {
         let ended = run(&kernel, &unit);
         assert!(matches!(ended, Ended::Settled { .. }));
         assert_eq!(unit.dial_outcome(), Some(Ok(())));
+    }
+
+    /// The grant a caller holds is compared against what the class requires, and a caller who holds
+    /// less is refused.
+    ///
+    /// The step used to stop one line short: it found the required scope and then proceeded on
+    /// having FOUND it, which authorizes every principal for every class a deployment did name and
+    /// refuses only the classes it forgot. On this plane every governed class requires the full
+    /// grant, so a read-only credential reached a turn — the priced operation — on the strength of a
+    /// lookup that never compared anything.
+    ///
+    /// The handshake arm is asserted beside it because it is the one thing that must NOT change: a
+    /// kernel-granted operation is answered before the policy is asked, which is what lets a node
+    /// hand shake before it has authenticated anybody.
+    #[test]
+    fn a_caller_who_holds_less_than_the_class_requires_is_refused() {
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let node = node(serviceable());
+
+        let decide = |shape: UnitShape, held: Grants| -> bool {
+            let unit = VoiceUnit::new(&node, shape, 7, 1_700_000_000).holding(held);
+            let token: UnitToken<busbar_caps::step::Approve> = UnitToken::mint(&seal);
+            unit.approve(&token, &ctx(1), &PrincipalId::new("acct:voice"), &[])
+                .into_result(&seal)
+                .is_ok()
+        };
+
+        assert!(
+            !decide(UnitShape::Turn, Grants::of(Scope::ReadOnly)),
+            "a read-only credential reached a turn, which the plane declares as full"
+        );
+        assert!(
+            !decide(UnitShape::ToolCall, Grants::of(Scope::ReadOnly)),
+            "a read-only credential reached a tool call"
+        );
+        assert!(
+            decide(UnitShape::Turn, Grants::of(Scope::Full)),
+            "a full credential was refused the operation it holds the grant for"
+        );
+        assert!(
+            decide(UnitShape::SessionOpen, Grants::of(Scope::ReadOnly)),
+            "the handshake stopped being kernel-granted"
+        );
     }
 
     /// No money moves in a handshake. It is admitted, it is audited, and it draws no request slot —
