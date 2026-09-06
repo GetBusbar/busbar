@@ -216,6 +216,104 @@ fn two_threads_racing_the_take_produce_exactly_one_hold() {
     assert_eq!(winners.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
+/// The child's posting and the sweep's take are two keys on one slot.
+///
+/// Reading the cell's state and then building the posting outside the lock leaves a gap between
+/// the two, and the sweep is the second holder of the take key, so the gap is one a real thread
+/// can land in. Taking the slot once and answering under that guard closes it: the state that
+/// decided the posting and the posting itself come out of the same critical section, so a clean
+/// in-parent posting is never written against a slot somebody had already emptied.
+///
+/// Whichever way the race falls, the child's SETTLED AMOUNT is the same figure. Only the flags
+/// and the overdraft column move, which is what makes this a discipline fix rather than a money
+/// fix, and why the amount is asserted on every iteration rather than the outcome.
+#[test]
+fn a_child_posting_racing_the_sweep_answers_under_one_guard() {
+    use std::sync::atomic::{AtomicBool, Ordering as Order};
+
+    // The two threads are released together and then each spins a different, iteration-dependent
+    // number of times, so the slot is genuinely contended and both arms of the answer are reached
+    // rather than one thread always arriving first.
+    fn jitter(n: usize) {
+        for _ in 0..n {
+            std::hint::spin_loop();
+        }
+    }
+
+    let mut clean = 0usize;
+    let mut late = 0usize;
+    for round in 0..10_000usize {
+        let k = Kernel::new();
+        let admit = k.admit_token();
+        let cell = std::sync::Arc::new(HoldCell::new(Hold::open(&admit, who("acct-1"), 0)));
+        let arrival = cell
+            .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
+            .expect("the parent passes the door");
+        let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+        let accrual = cell
+            .accrue_child(&who("acct-1"), 250, &admit)
+            .expect("an open parent takes the child's spend");
+
+        // The sweep publishes its win only after the slot is empty, so a poster that sees the
+        // flag already set knows the parent has gone and must be handed its accrual back.
+        let swept = std::sync::Arc::new(AtomicBool::new(false));
+        let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let sweep_cell = std::sync::Arc::clone(&cell);
+        let sweep_flag = std::sync::Arc::clone(&swept);
+        let sweep_start = std::sync::Arc::clone(&start);
+        let sweep = std::thread::spawn(move || {
+            let seal = KernelSeal::acquire_for_kernel();
+            let exit = ExitToken::mint(&seal);
+            sweep_start.wait();
+            jitter((round % 64) * 64);
+            let taken = sweep_cell.take(&exit);
+            sweep_flag.store(true, Order::SeqCst);
+            if let Some(hold) = taken {
+                let usage =
+                    Usage::report(&UsageToken::mint(&seal), Vec::new()).expect("empty is fine");
+                let _ = Posted::settle(hold, &usage, &LedgerToken::mint(&seal));
+            }
+        });
+
+        let ledger = k.ledger_token();
+        start.wait();
+        jitter((63 - round % 64) * 64);
+        let parent_already_gone = swept.load(Order::SeqCst);
+        let posted = match cell.post_child(accrual, &ledger) {
+            Ok(posted) => posted,
+            Err(missed) => Posted::settle_late(missed, &ledger),
+        };
+        sweep.join().expect("no thread panics");
+
+        assert_eq!(
+            posted.settled(),
+            250,
+            "the child's settled amount is the same figure whichever way the race fell"
+        );
+        if posted.flags().is_clean() {
+            assert!(
+                !parent_already_gone,
+                "a clean in-parent posting against a slot the sweep had already emptied"
+            );
+            assert_eq!(posted.overdraft(), 0);
+            clean += 1;
+        } else {
+            assert_eq!(
+                posted.flags(),
+                PostingFlags::LATE_ACCRUAL.with(PostingFlags::OVERDRAFT),
+                "the only other answer is the late one"
+            );
+            assert_eq!(posted.overdraft(), 250);
+            late += 1;
+        }
+    }
+    assert_eq!(clean + late, 10_000, "every iteration posts exactly once");
+    assert!(
+        clean > 0 && late > 0,
+        "the slot was never actually contended: {clean} clean, {late} late"
+    );
+}
+
 #[test]
 fn a_hold_accrues_until_the_reservation_runs_out_then_tops_up() {
     let k = Kernel::new();

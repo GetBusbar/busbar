@@ -494,6 +494,34 @@ impl HoldCell {
         }
     }
 
+    /// Write a child's posting into this cell's admission, under one guard.
+    ///
+    /// The state that decides the answer and the answer itself come out of the same critical
+    /// section. Asking the cell what state it is in and then building the posting from what the
+    /// answer used to be leaves a gap, and the take key is held by two callers — the exit path and
+    /// the node's sweep — so the gap is one a real thread lands in: a clean in-parent posting
+    /// written against a slot that had already been emptied. Here there is no gap to land in.
+    ///
+    /// The refusal hands the accrual back rather than consuming it, because a child that missed
+    /// its parent still has to post; it posts late, on its own, against a synchronous draw.
+    pub fn post_child(
+        &self,
+        accrual: HoldAccrual,
+        _token: &LedgerToken,
+    ) -> Result<Posted, HoldAccrual> {
+        let slot = self.slot();
+        match &*slot {
+            Slot::Admitted(_) => Ok(Posted {
+                principal: accrual.principal,
+                reserved: 0,
+                settled: accrual.amount,
+                overdraft: 0,
+                flags: PostingFlags::NONE,
+            }),
+            Slot::Arrival(_) | Slot::Taken => Err(accrual),
+        }
+    }
+
     /// How many accruals this cell has taken — one of the numbers the canary balances.
     pub fn accruals(&self) -> u64 {
         self.accruals.load(Ordering::Relaxed)
@@ -601,21 +629,15 @@ impl Posted {
     ///
     /// A parent that exited between the door and here hands the accrual back, and the caller posts
     /// it late against a synchronous draw.
+    ///
+    /// The work is the cell's own [`HoldCell::post_child`], because the state and the posting have
+    /// to come out of one guard; this is the caller-facing spelling of it.
     pub fn into_parent(
         accrual: HoldAccrual,
         parent: &HoldCell,
-        _token: &LedgerToken,
+        token: &LedgerToken,
     ) -> Result<Self, HoldAccrual> {
-        if parent.state() != HoldCellState::Admitted {
-            return Err(accrual);
-        }
-        Ok(Posted {
-            principal: accrual.principal,
-            reserved: 0,
-            settled: accrual.amount,
-            overdraft: 0,
-            flags: PostingFlags::NONE,
-        })
+        parent.post_child(accrual, token)
     }
 
     /// Post a child's spend that missed its parent: always posted, wholly overdrawn, flagged late.
