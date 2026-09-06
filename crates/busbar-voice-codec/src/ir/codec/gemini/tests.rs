@@ -709,6 +709,52 @@ fn usage_metadata_extracts_split_token_classes() {
     assert_eq!(back, src);
 }
 
+#[test]
+fn cached_content_tokens_are_not_billed_twice() {
+    // Gemini reports `cachedContentTokenCount` as a SUBSET of `promptTokenCount` (cached content IS
+    // part of the prompt), and `promptTokensDetails` is that same prompt broken out by modality. So
+    // the billing fold must bill the UNCACHED remainder as `input` and the cached portion as
+    // `cache_read` — the same netting the OpenAI dialect needs, not a per-dialect divergence.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "usageMetadata": {
+            "promptTokenCount": 1000,
+            "responseTokenCount": 0,
+            "totalTokenCount": 1000,
+            "cachedContentTokenCount": 800,
+            "promptTokensDetails": [
+                { "modality": "AUDIO", "tokenCount": 1000 },
+                { "modality": "TEXT", "tokenCount": 0 }
+            ],
+            "responseTokensDetails": []
+        }
+    });
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    let IrServerEvent::Usage(u) = &ir[0] else {
+        panic!("expected Usage");
+    };
+    // Extraction stays wire-faithful.
+    assert_eq!(u.audio_in, 1000);
+    assert_eq!(u.cached, 800);
+    let billed = u.to_billing_usage();
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        Some(200),
+        "input bills the UNCACHED remainder of the prompt (1000 - 800)"
+    );
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_CACHE_READ).copied(),
+        Some(800),
+        "the cached subset bills once, on the cache-read lane"
+    );
+    assert_eq!(
+        billed.usage_units.values().sum::<u64>(),
+        1000,
+        "the billed lanes sum to the turn's prompt, never to 1800"
+    );
+}
+
 // ── audio-format mime probe ──────────────────────────────────────────────────────────────────────
 
 #[test]

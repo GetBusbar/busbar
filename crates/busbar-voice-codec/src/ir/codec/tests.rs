@@ -575,6 +575,53 @@ fn response_done_usage_extracts_split_token_classes() {
     assert_eq!(u.text_out, 10);
 }
 
+#[test]
+fn cached_input_tokens_are_not_billed_twice() {
+    // OpenAI Realtime reports `input_token_details.cached_tokens` as a SUBSET of the input classes it
+    // sits beside (`audio_tokens` + `text_tokens`), exactly as Chat Completions reports
+    // `prompt_tokens_details.cached_tokens` inside `prompt_tokens`. So the billing fold must bill the
+    // UNCACHED remainder as `input` and the cached portion as `cache_read` — never the full input
+    // figure alongside the cache figure, which would charge the cached tokens on both lanes.
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "type": "response.done",
+        "response": {
+            "usage": {
+                "total_tokens": 1000,
+                "input_tokens": 1000,
+                "output_tokens": 0,
+                "input_token_details": { "audio_tokens": 1000, "text_tokens": 0, "cached_tokens": 800 },
+                "output_token_details": { "audio_tokens": 0, "text_tokens": 0 }
+            }
+        }
+    });
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    let IrServerEvent::Usage(u) = &ir[0] else {
+        panic!("expected Usage")
+    };
+    // The IR carrier stays wire-faithful: extraction only, the raw provider figures.
+    assert_eq!(u.audio_in, 1000);
+    assert_eq!(u.cached, 800);
+    // The BILLING fold is where the subset is netted out.
+    let billed = u.to_billing_usage();
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        Some(200),
+        "input bills the UNCACHED remainder (1000 - 800), not the full input figure"
+    );
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_CACHE_READ).copied(),
+        Some(800),
+        "the cached subset bills once, on the cache-read lane"
+    );
+    assert_eq!(
+        billed.usage_units.values().sum::<u64>(),
+        1000,
+        "the billed lanes sum to the turn's input, never to 1800"
+    );
+}
+
 // ── barge-in signals & session lifecycle ─────────────────────────────────────────────────────────
 
 #[test]
