@@ -131,6 +131,24 @@ jobs:
           ls -l busbar-staged
           file busbar-staged
 
+      # WHY THIS IS download-artifact@v8 WHILE THE UPLOAD BELOW IS upload-artifact@v7, AND WHY
+      # THAT IS NOT A DRIFT TO RECONCILE. The two steps are not a matched pair: this one reaches
+      # OUT of the current run, across `run-id`, into an artifact some OTHER run produced; the
+      # upload below writes THIS run's own output for whatever consumes it next. There is no
+      # single producer workflow in this repository to unify against -- the header above spells
+      # out why: the recording host has no way to create a GitHub artifact directly (perf runs on
+      # the EC2 benchmark host, off GitHub's infrastructure entirely), so "the producer" is
+      # whatever ad hoc run a human points `fdata_run_id`/`fdata_artifact` at, and its own
+      # actions/upload-artifact pin is outside this file's control.
+      #
+      # The version that has to agree is not upload-artifact's here vs. download-artifact's here --
+      # it is download-artifact's MAJOR here vs. whichever upload-artifact MAJOR the producer run
+      # used, because the artifact storage backend changed incompatibly at the v3/v4 boundary
+      # (upstream advisory: a v4-backend artifact cannot be read by a v3-line download, and vice
+      # versa). v8 here download-reads the v4-and-later backend, so whoever hands off `fdata_run_id`
+      # must have produced it with an upload-artifact on that same side of the boundary. That is a
+      # documented operational requirement on the hand-off, not something a version bump in this
+      # file can satisfy on its own.
       - name: Download the .fdata profile artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -157,6 +175,12 @@ jobs:
 
       # THE SEAM (see the header): the BOLTed binary is preserved as this run's artifact and
       # nothing consumes it yet. A future release-stage integration would take it from here.
+      #
+      # Pinned to v7 on its own merits (this repo's standard upload-artifact major elsewhere), not
+      # to match the download-artifact@v8 above -- see that step's comment for why the two need not
+      # agree: it reads a DIFFERENT, externally-produced artifact, and this one writes THIS run's
+      # own output for a not-yet-built consumer to read later with whatever download-artifact major
+      # is current then.
       - name: Upload the BOLTed binary
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
