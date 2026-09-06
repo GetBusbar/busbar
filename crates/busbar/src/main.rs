@@ -1478,12 +1478,34 @@ async fn run(data_workers: usize) {
         // body before that router's own limit can.
         req_body_max,
         |dispatch| {
-            root::kernel::ProductionUnits::admin_only_sharing(
+            let units = root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
                 std::sync::Arc::clone(&book.durability),
                 std::sync::Arc::clone(&book.rows)
                     as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
-            )
+            );
+            // THE DEPLOYMENT'S OWN DOOR, in front of the authenticate step. Without these two lines
+            // the assembly's open posture shipped: the step admitted every caller anonymously and
+            // the only thing deciding was the surface mounted underneath — so a credential this node
+            // had REVOKED was admitted at Authenticate, and the revocation the governance state
+            // holds was consulted by nothing on the request path. The chain is the operator's admin
+            // token and the bindings are the same governance state's directory, which is what makes
+            // the revocation set the one this node actually keeps.
+            match app_handle.load().governance.clone() {
+                Some(gov) => units
+                    .with_auth_chain(root::kernel::auth_bindings::admin_chain(
+                        std::sync::Arc::clone(&gov),
+                    ))
+                    .with_auth_bindings(root::kernel::auth_bindings::AuthBindings::new(
+                        std::sync::Arc::new(root::kernel::auth_bindings::GovernanceDirectory::new(
+                            gov,
+                        )),
+                    )),
+                // No governance state is no directory and no configured token, which is the open
+                // administrative posture the previous release also has. Left as the assembly built
+                // it rather than wired to an authority that does not exist.
+                None => units,
+            }
         },
     );
 

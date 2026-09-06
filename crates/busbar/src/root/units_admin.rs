@@ -1423,12 +1423,18 @@ pub(crate) fn verify(
 /// a scope refusal at this step rather than a surprise inside the operation.
 pub(crate) fn approve(
     binding: &AdminBinding,
-    granted: VerbScope,
+    granted: Option<VerbScope>,
     token: &UnitToken<Approve>,
     ctx: &UnitCtx,
     _principal: &PrincipalId,
     _destinations: &[VerifiedDestination],
 ) -> Decision<Approve> {
+    // A caller holding no grant at all is refused here, before the operation is reached. An absent
+    // grant is not a narrow one: there is no scope to compare the matrix against, so there is
+    // nothing this step could admit.
+    let Some(granted) = granted else {
+        return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+    };
     let Some(request) = binding.units.request(ctx.key) else {
         return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
     };
@@ -2164,6 +2170,50 @@ impl AdminNode {
         }
     }
 
+    /// What a unit refused before Route answers with.
+    ///
+    /// THE LOOP DECIDES THE PATH; THE SURFACE STILL WRITES THE BYTES. A unit refused at Authenticate
+    /// never reaches the operation, which is the whole point of refusing there — but the caller must
+    /// not be able to tell that the path changed. The previous release answers an unauthenticated
+    /// administrative request out of the gate mounted in front of its handlers, and that gate is
+    /// still mounted here, underneath this loop. So the bytes are ASKED FOR rather than composed: the
+    /// same method and path go back down to the surface with the administrative carriers taken off,
+    /// and whatever the gate writes is what the caller gets.
+    ///
+    /// Stripping the carriers is not cosmetic and not a courtesy to the gate. It is what makes this
+    /// safe for the ending the surface would DISAGREE about: a revoked credential is one this loop
+    /// refuses and that gate, which has never heard of the revocation, would admit — and admitting it
+    /// means running the operation. With no credential on it, the request cannot get past the gate,
+    /// so no operation can run on a refusal path whatever the two of them think of the credential.
+    ///
+    /// Anything the surface answers that is not itself a refusal is not used. That case cannot arise
+    /// on a node that configured an admin credential, and a composition where it did arise would be
+    /// one whose gate is open — which is a node this arm must not answer for.
+    #[allow(clippy::unused_self)]
+    fn refusal_answer(&self, key: UnitKey, ended: &busbar_kernel::teller::Ended) -> AdminAnswer {
+        if credential_refusal(ended) {
+            if let Some(request) = self.units.admin.units.request(key) {
+                if let Some(verb) = self
+                    .units
+                    .admin
+                    .units
+                    .verb(key)
+                    .and_then(|r| kernel_verb(&r))
+                {
+                    let answer = self
+                        .units
+                        .admin
+                        .dispatch
+                        .execute(verb, &without_admin_carriers(&request));
+                    if answer.status >= 400 {
+                        return answer;
+                    }
+                }
+            }
+        }
+        refused_answer(ended)
+    }
+
     /// Draw the key of the next unit this node will walk.
     ///
     /// Drawn by the caller rather than inside the walk because the key is what names this unit on
@@ -2255,7 +2305,7 @@ impl AdminNode {
                     .admin
                     .units
                     .answer(key)
-                    .unwrap_or_else(|| refused_answer(&ended))
+                    .unwrap_or_else(|| self.refusal_answer(key, &ended))
             }
         };
 
@@ -2313,6 +2363,38 @@ impl Drop for Occupied<'_> {
         self.inflight.remove(self.key);
         let _ = self.units.close(self.key);
     }
+}
+
+/// Whether this ending is one about WHO is calling.
+///
+/// The two the authenticate step can reach: a credential the chain would not identify, and one it
+/// identified and the revocation set had taken away. Both are the same thing to the caller — the
+/// door — and both are answered by the door the surface already mounts.
+#[cfg(feature = "root-admin")]
+fn credential_refusal(ended: &busbar_kernel::teller::Ended) -> bool {
+    let busbar_kernel::teller::Ended::Settled { end, .. } = ended else {
+        return false;
+    };
+    matches!(
+        end.outcome(),
+        Outcome::Refused(_, ReasonCode::Unauthenticated | ReasonCode::Revoked)
+            | Outcome::Failed(_, ReasonCode::Unauthenticated | ReasonCode::Revoked)
+    )
+}
+
+/// The same request with every administrative carrier taken off it.
+///
+/// Both carriers, and the resolved credential beside them, because leaving any one of the three
+/// would be leaving a way for the request to get past the gate it is being sent to be refused by.
+#[cfg(feature = "root-admin")]
+fn without_admin_carriers(request: &AdminRequest) -> AdminRequest {
+    let mut stripped = request.clone();
+    stripped.credential = None;
+    stripped.headers.retain(|(name, _)| {
+        !name.eq_ignore_ascii_case(axum::http::header::AUTHORIZATION.as_str())
+            && !name.eq_ignore_ascii_case(ADMIN_TOKEN_HEADER)
+    });
+    stripped
 }
 
 /// What a unit that never reached Route answers with.
@@ -5032,7 +5114,7 @@ mod tests {
             let token: UnitToken<Approve> = UnitToken::mint(&seal);
             let decision = approve(
                 &binding,
-                granted,
+                Some(granted),
                 &token,
                 &ctx,
                 &PrincipalId::new("admin"),

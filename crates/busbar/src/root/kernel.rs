@@ -412,14 +412,53 @@ impl ProductionUnits {
         self
     }
 
-    /// The scope an admin credential carries.
+    /// Put the deployment's real chain in front of the authenticate step.
     ///
-    /// A deployment that mounts the administrative listener behind its own credential grants the
-    /// full tier: 1.5.5's admin token is not scoped below it, and narrowing it here would refuse
-    /// operations the previous release admitted. The scope unit's matrix is still what decides what
-    /// that grant reaches — the grant is the ceiling, the matrix is the door.
-    fn admin_grant(&self) -> busbar_unit_verbs::VerbScope {
-        busbar_unit_verbs::VerbScope::Full
+    /// Separate from the constructors for the same reason the bindings are: the chain a node runs is
+    /// resolved from live governance state, which does not exist when the units are assembled. What
+    /// it replaces is the OPEN door the assembly starts from — and that door is why this exists.
+    /// With it, the authenticate step admitted every caller anonymously and the only thing deciding
+    /// was the surface mounted underneath, so a credential the node had revoked was admitted at
+    /// Authenticate and refused, if at all, several steps later by something that had never heard of
+    /// the revocation.
+    #[must_use]
+    pub fn with_auth_chain(mut self, chain: AuthChain) -> Self {
+        self.auth = Auth::new(chain);
+        self
+    }
+
+    /// Whether this node's front door is open — no module and no keys arm.
+    ///
+    /// Read by the grant, because "no principal was resolved" and "the door is open" are the same
+    /// fact stated from two sides, and the grant has to know which posture it is granting under.
+    fn front_door_is_open(&self) -> bool {
+        self.auth.chain().is_open()
+    }
+
+    /// The scope THIS caller's admin credential carries, or nothing at all.
+    ///
+    /// The previous release's rule, in its three arms and no more:
+    ///
+    /// 1. **No principal.** The explicit open administrative posture — a deployment that configured
+    ///    no admin credential. Full, and dev-only, exactly as it has always been.
+    /// 2. **The operator credential.** A roleless principal carrying the reserved id, which on this
+    ///    node only the admin-token module mints. Full by definition: it IS the root credential.
+    /// 3. **Anyone else roleless.** No grant. Not a narrower one — none — because a roleless
+    ///    principal has nothing bound to read a scope out of, and inventing one would be this root
+    ///    granting authority the deployment never wrote down.
+    ///
+    /// It returns an absence rather than a floor for the third arm because a floor is still a grant:
+    /// `ReadOnly` would hand an unbound principal every read the surface has. The scope unit's matrix
+    /// still decides what a grant reaches — the grant is the ceiling, the matrix is the door — and a
+    /// caller holding no ceiling never reaches the door at all.
+    fn admin_grant(&self, principal: &PrincipalId) -> Option<busbar_unit_verbs::VerbScope> {
+        if self.front_door_is_open() {
+            return Some(busbar_unit_verbs::VerbScope::Full);
+        }
+        if principal.as_str() == crate::root::auth_bindings::ADMIN_PRINCIPAL_ID {
+            return Some(busbar_unit_verbs::VerbScope::Full);
+        }
+        None
     }
 }
 
@@ -508,7 +547,7 @@ impl Units for ProductionUnits {
         if self.is_admin(ctx) {
             return crate::root::units_admin::approve(
                 &self.admin,
-                self.admin_grant(),
+                self.admin_grant(principal),
                 token,
                 ctx,
                 principal,
@@ -674,6 +713,67 @@ fn unclaimed_facts(outcome: &Outcome) -> busbar_contract::AuditFacts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A chain with one module in it, so the front door is CLOSED without needing a governance state
+    /// to close it. What the grant reads is the posture, not the module, so a module that answers
+    /// nothing is enough to state the posture with.
+    struct NeverIdentifies;
+
+    impl busbar_unit_auth::module::AuthModule for NeverIdentifies {
+        fn name(&self) -> &'static str {
+            "never"
+        }
+        fn authenticate(&self, _candidate: Option<&str>) -> busbar_unit_auth::module::AuthOutcome {
+            busbar_unit_auth::module::AuthOutcome::Pass
+        }
+    }
+
+    fn a_closed_door() -> AuthChain {
+        AuthChain::new(
+            vec![busbar_unit_auth::chain::ChainEntry {
+                provider: "never".to_string(),
+                module: Box::new(NeverIdentifies),
+            }],
+            false,
+        )
+    }
+
+    /// THE GRANT'S THREE ARMS, which used to be one.
+    ///
+    /// `Full` was returned to every caller without reading who it was, which is right for exactly
+    /// one of the three postures below and wrong for the other two. The third arm is the one that
+    /// matters: a principal some other module identified, carrying no roles and therefore nothing
+    /// bound to read a scope out of, used to be handed the operator's own ceiling.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn the_admin_grant_is_the_previous_releases_three_arms() {
+        let open = ProductionUnits::admin_only(std::sync::Arc::new(
+            crate::root::units_admin::RefusingDispatch,
+        ));
+        assert_eq!(
+            open.admin_grant(&PrincipalId::new("anonymous")),
+            Some(busbar_unit_verbs::VerbScope::Full),
+            "the explicit open posture — no credential configured — is full, as it has always been"
+        );
+
+        let closed = ProductionUnits::admin_only(std::sync::Arc::new(
+            crate::root::units_admin::RefusingDispatch,
+        ))
+        .with_auth_chain(a_closed_door());
+        assert_eq!(
+            closed.admin_grant(&PrincipalId::new(
+                crate::root::auth_bindings::ADMIN_PRINCIPAL_ID
+            )),
+            Some(busbar_unit_verbs::VerbScope::Full),
+            "the operator credential is the root credential, and carries the full tier by definition"
+        );
+        assert_eq!(
+            closed.admin_grant(&PrincipalId::new("somebody-else")),
+            None,
+            "a roleless principal that is not the operator holds NO grant — not a narrower one, \
+             which would still be authority this deployment never wrote down"
+        );
+    }
 
     /// A unit no plane on this node composed is not sealed as an administrative read.
     ///
