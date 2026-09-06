@@ -474,6 +474,36 @@ fn the_metadata_names_are_refused_under_every_policy_and_localhost_only_by_defau
     assert!(judge_host_name("a2a.vendor", strict()).is_ok());
 }
 
+/// THERE IS ONE METADATA-NAME LIST, and both name guards read it.
+///
+/// The module-level list and the one the config-side SSRF check kept privately had drifted to two
+/// and six entries: a name an operator could not reach through config validation was reachable
+/// through the resolved-name guard, purely because the second list was declared inside a function.
+/// Every name on the list must be refused by BOTH arms, under every policy — `allow_private` speaks
+/// for the `localhost` family and never for metadata.
+#[test]
+fn every_metadata_name_is_refused_by_both_the_name_guard_and_the_config_guard() {
+    assert_eq!(
+        METADATA_HOSTS.len(),
+        6,
+        "the metadata-name list must not shrink"
+    );
+    for name in METADATA_HOSTS {
+        for policy in [strict(), private_ok()] {
+            assert_eq!(
+                judge_host_name(name, policy),
+                Err(AddressRefusal::MetadataName((*name).to_string())),
+                "`{name}` is a cloud-metadata name and `allow_private` may not reach it"
+            );
+        }
+        assert_eq!(
+            ssrf_blocked_host(&format!("https://{name}/"), &[], false, &[]),
+            Some((*name).to_string()),
+            "`{name}` must still be blocked by the config-side guard"
+        );
+    }
+}
+
 #[test]
 fn alternate_ipv4_encodings_are_refused_before_the_resolver_sees_them() {
     for host in ["2130706433", "0x7f000001", "017700000001", "127.1"] {

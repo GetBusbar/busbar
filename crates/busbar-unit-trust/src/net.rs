@@ -62,11 +62,23 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 /// even though they are not IP literals. Blocked case-insensitively by [`dns_name_is_internal`].
 ///
 /// The `localhost` family is deliberately NOT here: it is a SEPARATE arm in
-/// [`dns_name_is_internal`], because `config_validate::ssrf_blocked_host` allows `localhost` (a
-/// legitimate local-model upstream) while the webhook, OTLP and A2A-card guards block it. Keeping
-/// the two lists apart is what lets one guard opt out of the localhost arm without also opting out
-/// of the metadata one.
-pub const METADATA_HOSTS: &[&str] = &["metadata.google.internal", "metadata.internal"];
+/// [`dns_name_is_internal`], because [`ssrf_blocked_host`] allows `localhost` (a legitimate
+/// local-model upstream) while the webhook, OTLP and A2A-card guards block it. Keeping the two
+/// lists apart is what lets one guard opt out of the localhost arm without also opting out of the
+/// metadata one.
+///
+/// This is the ONLY metadata-name list. [`ssrf_blocked_host`] once kept a second, longer copy
+/// declared inside its own body; the two drifted, and a name the config guard blocked was one the
+/// resolved-name guard had never heard of. A private list inside a function is a list nothing else
+/// can read, which is the mechanism of the drift rather than an accident of it.
+pub const METADATA_HOSTS: &[&str] = &[
+    "metadata.google.internal",
+    "metadata.internal",
+    "metadata.tencentyun.com",
+    "metadata.platformequinix.com",
+    "instance-data",
+    "instance-data.ec2.internal",
+];
 
 /// TRUE for an IPv4 literal no busbar guard may connect to: loopback, link-local (which is where the
 /// `169.254.169.254` IMDS endpoint lives), RFC1918 private, RFC6598 CGNAT, unspecified, broadcast,
@@ -1190,16 +1202,10 @@ pub fn ssrf_blocked_host(
         return None;
     }
 
-    // Cloud-metadata / IMDS hostnames (case-insensitive). The IPv4 / IPv6 metadata literals are
-    // caught in the IP arms below; these are the DNS names a connecting stack would resolve.
-    const METADATA_HOSTS: &[&str] = &[
-        "metadata.google.internal",
-        "metadata.internal",
-        "metadata.tencentyun.com",
-        "metadata.platformequinix.com",
-        "instance-data",
-        "instance-data.ec2.internal",
-    ];
+    // Cloud-metadata / IMDS hostnames (case-insensitive), read from the ONE module-level list so
+    // this guard and the resolved-name guard cannot know different names. The IPv4 / IPv6 metadata
+    // literals are caught in the IP arms below; these are the DNS names a connecting stack would
+    // resolve.
     let host_lc = host.to_ascii_lowercase();
     if METADATA_HOSTS.contains(&host_lc.as_str()) {
         return Some(host.to_string());
