@@ -277,15 +277,24 @@ boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three key
   oracle_mint_keys "$ADMIN_PORT" || return 2
   # PRIME the BROKE key: its group admits exactly one request per day, so one un-recorded request
   # now makes every over_budget cell a real 429 at Admit (the first request would be admitted).
-  curl -sS -m 20 -o /dev/null -X POST "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
-    -H "Authorization: Bearer ${ORACLE_TOKEN_BROKE}" -H "Content-Type: application/json" \
-    -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"prime"}]}' || true
   # PRIME the QUOTA key too: group `broke-quota` carries only a budget cap (no requests cap), so one
   # un-recorded request exhausts that TOTAL and every over_budget_total cell is a real 429 at Admit
   # with metric: budget, not metric: requests.
-  curl -sS -m 20 -o /dev/null -X POST "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
-    -H "Authorization: Bearer ${ORACLE_TOKEN_QUOTA}" -H "Content-Type: application/json" \
-    -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"prime"}]}' || true
+  #
+  # THE PRIMING IS THE CELL'S PRECONDITION, SO IT IS ASSERTED. `|| true` made the ONE request that
+  # exhausts each cap optional: if it never landed (a connection reset in the boot window, a mock
+  # blip, a 500) the cap was still intact and every `over_budget` / `over_budget_total` cell that
+  # followed recorded a cheerful 200 instead of the 429 it exists to pin — a whole refusal family
+  # silently re-recorded as the success path, on both binaries, agreeing with each other. An
+  # admitted request is a 2xx; anything else (including curl's own 000) means the cap was not
+  # exhausted and this boot cannot serve those cells.
+  local pk pcode
+  for pk in "$ORACLE_TOKEN_BROKE" "$ORACLE_TOKEN_QUOTA"; do
+    pcode="$(curl -sS -m 20 -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
+      -H "Authorization: Bearer ${pk}" -H "Content-Type: application/json" \
+      -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"prime"}]}' 2>/dev/null || echo 000)"
+    case "$pcode" in 2??) ;; *) PRIME_CODE="$pcode"; return 5 ;; esac
+  done
 }
 stop_busbar() {  # stop the current busbar and wait until BOTH its ports are free again
   [ -n "$BUSBAR_PID" ] || return 0
@@ -318,6 +327,8 @@ case "$rc" in
   1) fail_setup "busbar (${VER}) did not come up" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 500)" ;;
   4) fail_setup "the listeners on ${LISTEN_PORT}/${ADMIN_PORT} are not the busbar this run spawned" \
        "pid ${BUSBAR_PID:-?} vs port owners '$(port_owner_pid "$LISTEN_PORT")'/'$(port_owner_pid "$ADMIN_PORT")'; refusing to record a foreign process as ${BIN}" ;;
+  5) fail_setup "the over-budget priming request was not admitted (HTTP ${PRIME_CODE:-?})" \
+       "the broke/broke-quota caps are therefore intact, and every over_budget cell would record a 200 where the refusal belongs" ;;
   *) fail_setup "could not mint the three oracle keys" "admin API on ${ADMIN_PORT}; see $WORK/busbar.log" ;;
 esac
 
