@@ -252,10 +252,20 @@ run_selftest() {
     CONSTRUCTION_TOML="$scratch/calibrated.toml" CONSTRUCTION_OUT="$out" bash "$gate" --check >/dev/null 2>&1
     local failed_ids
     failed_ids="$(awk -F'\t' '$2=="FAIL"{print $1}' "$out/ledger.tsv" | tr '\n' ' ' | sed 's/ $//')"
-    if [ "$failed_ids" = "$rule" ]; then
-      note "RED $rule: planted violation produced exactly one FAIL row, naming it"
+    # A planted violation lights exactly the rows named here — normally just the rule itself. The
+    # one pair that legitimately co-fires is the seal: `token-sealed:kernel-seal` is the scoped
+    # read of `KernelSeal::acquire_for_kernel` and `seal-sites` is the flat workspace scan of the
+    # same symbol, so one production call site IS both findings and a planter cannot separate them
+    # (seal-sites scans every crate's src). This expectation is written out EXACTLY, as the full
+    # sorted set — not as "a superset containing the rule" — so a third row joining the set is
+    # still a self-test failure. It reads as a co-fire only because the stale seal-sites waiver that
+    # used to swallow the second row is gone; the pair was always there, unmeasured.
+    local expected="$rule"
+    [ "$rule" != "token-sealed:kernel-seal" ] || expected="token-sealed:kernel-seal seal-sites"
+    if [ "$failed_ids" = "$expected" ]; then
+      note "RED $rule: planted violation produced exactly the expected FAIL row(s) [$expected]"
     else
-      fail=1; note "RED $rule FAILED: expected exactly one FAIL row [$rule], got [${failed_ids:-none}]"
+      fail=1; note "RED $rule FAILED: expected FAIL rows [$expected], got [${failed_ids:-none}]"
       awk -F'\t' '$2=="FAIL"{print "    " $1 ": " $4}' "$out/ledger.tsv"
     fi
   done

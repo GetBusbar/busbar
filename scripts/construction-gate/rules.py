@@ -1534,17 +1534,19 @@ def _symbol_table_scan(tree, c, rid, title, noun):
     known = list(c.get("known_sites", []))
 
     def reviewed(rel, fname):
+        """The known_sites entry that excuses this hit, or None. Returns the ENTRY, not a bool, so
+        the caller can tell which entries are doing work and which have gone stale."""
         for entry in known:
             if entry.endswith("/"):
                 if rel.startswith(entry):
-                    return True
+                    return entry
             elif "::" in entry:
                 path, _, want = entry.partition("::")
                 if rel == path and fname == want:
-                    return True
+                    return entry
             elif rel == entry:
-                return True
-        return False
+                return entry
+        return None
 
     def confined_here(spec, rel):
         """Is `rel` one of the files this symbol is confined to?
@@ -1561,6 +1563,7 @@ def _symbol_table_scan(tree, c, rid, title, noun):
                 return True
         return False
 
+    used = set()
     offenders, tracked = [], []
     for spec in c["symbols"].values():
         symbol = spec["symbol"]
@@ -1569,7 +1572,12 @@ def _symbol_table_scan(tree, c, rid, title, noun):
                 continue
             f = tree.enclosing_fn(rel, l.no)
             where = f"`{symbol}` at {rel}:{l.no} ({spec['because']})"
-            (tracked if reviewed(rel, f.name if f else "") else offenders).append(where)
+            hit = reviewed(rel, f.name if f else "")
+            if hit:
+                used.add(hit)
+                tracked.append(where)
+            else:
+                offenders.append(where)
     current = len(offenders)
     parts = []
     if offenders:
@@ -1578,8 +1586,22 @@ def _symbol_table_scan(tree, c, rid, title, noun):
         parts.append("reviewed escapes (qa/construction.toml known_sites): " + "; ".join(tracked))
     detail = (f"{current} {noun} in production source (ceiling {c['max_sites']}): "
               + ("; ".join(parts) if parts else "none"))
-    return [row(rid, current <= c["max_sites"], title,
+    rows = [row(rid, current <= c["max_sites"], title,
                 detail, current, c["max_sites"], c["why"], offenders)]
+    # A waiver that excuses nothing is not a waiver, it is a claim about the tree that has stopped
+    # being true. Left silent it reads as "this rule has N reviewed exceptions" when it has fewer,
+    # and — worse — it stands ready to excuse a FUTURE site at that path without anyone reviewing
+    # it: the entry was written about code that is gone, so whatever lands there next inherits an
+    # argument nobody made about it. The ceiling is a hard zero and is never calibrated upward;
+    # `--calibrate` prunes the dead entries instead, so the only way to a green row is to delete
+    # the entry or to re-review the site that came back.
+    stale = [e for e in known if e not in used]
+    stale_detail = (f"{len(stale)} known_sites entr(y/ies) matching nothing in the tree "
+                    f"(ceiling 0): " + ("; ".join(stale) if stale else "none"))
+    rows.append(row(f"{rid}:stale-waiver", not stale,
+                    "every reviewed-site entry still excuses a real site",
+                    stale_detail, len(stale), 0, c["why"], stale))
+    return rows
 
 
 def rule_secret_carrier_debug(tree, cfg):
@@ -2088,6 +2110,13 @@ def calibrate(rows, cfg, path):
     rules["sealed-unit-traits"]["max_unsealed"] = by_id["sealed-unit-traits"]["current"]
     rules["hold-escapes"]["max_sites"] = by_id["hold-escapes"]["current"]
     rules["seal-sites"]["max_sites"] = by_id["seal-sites"]["current"]
+    # A calibrated copy is "green as measured today", so a reviewed-site entry that excuses nothing
+    # today is DROPPED rather than ratcheted: there is no ceiling to raise for a waiver, and keeping
+    # it would carry a dead argument into the baseline the self-test plants against. The stale row's
+    # offenders ARE the entries, so the prune is a set difference.
+    for rid in ("hold-escapes", "seal-sites"):
+        dead = set(by_id[f"{rid}:stale-waiver"]["offenders"])
+        rules[rid]["known_sites"] = [e for e in rules[rid]["known_sites"] if e not in dead]
     rules["unit-no-finding-ids"]["max_hits"] = by_id["unit-no-finding-ids"]["current"]
     rules["plane-no-money"]["max_hits"] = by_id["plane-no-money"]["current"]
     rules["one-pricing-site"]["max_extra_sites"] = by_id["one-pricing-site"]["current"]

@@ -717,17 +717,15 @@ max_sites = 0
 #   the seal so a reader can see what the sealed constructors are for. Declaring a capability is
 #   not minting one; what the rule is about is who may CALL these outside their one home.
 #
-#   The composition root (crates/busbar/src/root/) is where the process assembles its one kernel,
-#   so it is the second place that legitimately holds a seal: durability, the ledger identity, the
-#   migration and the per-dialect unit wirings are all root-side construction, not unit code.
-#
-#   busbar-llm's unit modules and busbar-unit-breaker's port carry the same seal spelling in
-#   fixtures that build a sealed token to show a step's shape.
+#   The composition root, busbar-llm's unit modules and busbar-unit-breaker's port were listed here
+#   too, and each has been DROPPED: this scan reads production source only, and every seal spelling
+#   at those three paths is inside a test module (`fn kernel_seal()` in busbar-llm's rehearsal
+#   harness is the shape of all of them). An entry that excuses nothing is not a narrower rule, it
+#   is standing permission for whatever lands at that path next — so the `:stale-waiver` row holds
+#   this list to a hard zero of dead entries. If the root ever acquires a seal in PRODUCTION code,
+#   the rule goes red and that site gets reviewed on its own merits, which is the intent.
 known_sites = [
   "crates/busbar-caps/src/",
-  "crates/busbar/src/root/",
-  "crates/busbar-llm/src/unit/",
-  "crates/busbar-unit-breaker/src/port.rs",
 ]
 
 # The seal-site list, mirroring crates/busbar-caps/fixtures/lint_rules.rs SEAL_SITES. A test in that
