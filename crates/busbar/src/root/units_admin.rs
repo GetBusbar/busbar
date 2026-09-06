@@ -2388,6 +2388,15 @@ pub fn mount(
 mod tests {
     use super::*;
 
+    /// The legacy ring binds no clock of its own; a pinned one keeps records comparable.
+    #[derive(Debug)]
+    struct PinnedClock;
+    impl busbar_unit_audit::Clock for PinnedClock {
+        fn now(&self) -> u64 {
+            1_700_000_000
+        }
+    }
+
     fn a_request() -> AdminRequest {
         AdminRequest {
             method: "GET".to_string(),
@@ -2558,14 +2567,6 @@ mod tests {
         let seal = busbar_caps::KernelSeal::acquire_for_kernel();
         let binding = AdminBinding::new(Arc::new(RefusingDispatch));
 
-        // The legacy ring binds no clock of its own; a pinned one keeps the two rows comparable.
-        #[derive(Debug)]
-        struct PinnedClock;
-        impl busbar_unit_audit::Clock for PinnedClock {
-            fn now(&self) -> u64 {
-                1_700_000_000
-            }
-        }
         let rows = |completed: bool| -> Vec<busbar_unit_audit::legacy::AuditEntry> {
             let log = busbar_unit_audit::AuditLog::with(
                 Box::new(PinnedClock),
@@ -3224,7 +3225,10 @@ mod tests {
     #[cfg(feature = "root-admin")]
     #[test]
     fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
-        let legacy = busbar_unit_audit::AuditLog::new();
+        let legacy = busbar_unit_audit::AuditLog::with(
+            Box::new(PinnedClock),
+            Box::new(busbar_unit_audit::NoSeam),
+        );
 
         // A mutation: an operator-key write, on the mutating side of the closed split.
         let mut mutating = a_request();
@@ -3249,7 +3253,10 @@ mod tests {
         let entry = legacy.list(1).pop().expect("the entry just sealed");
         assert_eq!(entry.action, resolved.verb);
         assert_eq!(entry.outcome, busbar_unit_audit::OUTCOME_APPLIED);
-        assert_eq!(entry.principal, "admin-token");
+        // The fixture never ran Verify, so the record names the unresolved actor -- never the
+        // credential the request presented, which is a secret and stays out of the chain.
+        assert_eq!(entry.principal, UNRESOLVED_ACTOR);
+        assert!(!entry.principal.contains("admin-token"));
         assert!(legacy.verify(), "the chain is linked");
 
         // A read changes nothing and records nothing.

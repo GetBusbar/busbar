@@ -698,6 +698,13 @@ pub struct VoiceUnit<'n> {
     accrued: AtomicU64,
     /// Whether the dial opened.
     dialed: Mutex<Option<Result<(), DialRefusal>>>,
+    /// How the audit step classified this unit's ending, once it sealed one.
+    ///
+    /// The record is sealed before the exit path settles, and the ending it sealed is one of the
+    /// facts the fee is decided from. Carrying it here is what lets the settlement read the plane's
+    /// verdict rather than a second guess at it: a record that says the turn errored and a posting
+    /// that charged for it would be two answers to one question.
+    sealed_finish: Mutex<Option<busbar_contract::FinishClass>>,
 }
 
 impl std::fmt::Debug for VoiceUnit<'_> {
@@ -741,6 +748,7 @@ impl<'n> VoiceUnit<'n> {
             epoch,
             accrued: AtomicU64::new(0),
             dialed: Mutex::new(None),
+            sealed_finish: Mutex::new(None),
         }
     }
 
@@ -770,6 +778,17 @@ impl<'n> VoiceUnit<'n> {
     pub fn reporting(mut self, usage: TurnUsage) -> Self {
         self.usage = usage;
         self
+    }
+
+    /// Whether anything the upstream produced reached the caller.
+    ///
+    /// On a duplex plane there is no headers frame to count: the first thing a caller sees of an
+    /// answer is the first token of it, so what the upstream reported having emitted is the record
+    /// of a frame having been relayed. Input the turn consumed is not an answer — a turn that was
+    /// heard and never replied to relayed nothing.
+    #[must_use]
+    fn answered(&self) -> bool {
+        self.usage.audio_tokens_out > 0 || self.usage.text_tokens_out > 0
     }
 
     /// Whether the dial was attempted and what it answered.
@@ -1151,7 +1170,7 @@ impl Units for VoiceUnit<'_> {
         )
     }
 
-    fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
+    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
         Evidence {
             // What the upstream reported, where it reported anything.
             located: self
@@ -1173,7 +1192,12 @@ impl Units for VoiceUnit<'_> {
             // A handshake reaches no upstream candidate, which is what makes it draw no request
             // slot. Every other shape of unit on this plane does.
             upstream_candidate: !self.shape.is_handshake(),
-            fee: FeeEvidence::default(),
+            fee: fee_evidence(
+                self.shape,
+                ctx.origin,
+                self.answered(),
+                *self.sealed_finish.lock().unwrap_or_else(|e| e.into_inner()),
+            ),
         }
     }
 }
@@ -1257,6 +1281,9 @@ impl VoiceUnit<'_> {
             op_class: self.shape.op_class(),
             finish,
         };
+        // Written before the record is, so the settlement that follows reads the ending this record
+        // carries rather than deciding the same question a second time.
+        *self.sealed_finish.lock().unwrap_or_else(|e| e.into_inner()) = Some(finish);
         let inputs = self.audit_inputs(ctx, outcome, finish);
         let mut durability = self
             .node
@@ -1277,6 +1304,14 @@ impl VoiceUnit<'_> {
         outcome: Outcome,
         finish: busbar_contract::FinishClass,
     ) -> busbar_unit_audit::record::AuditInputs {
+        // The record does not decide the fee a second time: it reads the same evidence the exit
+        // path settles from, through the same function.
+        let (fee_count, _) = busbar_kernel::teller::fee_count(&fee_evidence(
+            self.shape,
+            ctx.origin,
+            self.answered(),
+            Some(finish),
+        ));
         busbar_unit_audit::record::AuditInputs {
             subject: busbar_unit_audit::record::Subject::Arrival,
             what: busbar_unit_audit::record::What {
@@ -1306,7 +1341,7 @@ impl VoiceUnit<'_> {
                 pre_tier: 0,
                 priced: 0,
                 tier_bp: busbar_unit_admission::STANDARD_TIER_BP,
-                fee_count: 0,
+                fee_count,
                 currency: String::new(),
                 rate_card_version: 0,
                 bucket_chain_ref: String::new(),
@@ -1316,6 +1351,35 @@ impl VoiceUnit<'_> {
             // is what the chain hashes, and nothing a reader could resolve back to a conversation.
             correlation_label: None,
         }
+    }
+}
+
+/// The facts this plane's flat per-request fee is decided from.
+///
+/// One function, read by the record and by the settlement, because they are two readers of ONE
+/// decision — a row that says a fee was charged over a posting that charged none is a discrepancy
+/// nothing downstream can settle.
+///
+/// A turn is the caller's own transaction and the only shape that pays: the handshake opens the
+/// session and moves no money, and a tool call is the provider pushing through the session's own
+/// upstream, which is not a caller's request. The leg is the session's upstream, which every shape
+/// but the handshake relays onto. This dialect writes no status frame of its own — the answer's
+/// first token is the first thing the caller sees — so the plane's sealed ending is the single
+/// source, and an ending it called an error posts nothing.
+fn fee_evidence(
+    shape: UnitShape,
+    origin: busbar_caps::OriginKind,
+    relayed_first_response_frame: bool,
+    finish: Option<busbar_contract::FinishClass>,
+) -> FeeEvidence {
+    FeeEvidence {
+        client_open_or_one_shot: origin == busbar_caps::OriginKind::Client
+            && matches!(shape, UnitShape::Turn),
+        selected_upstream: !shape.is_handshake(),
+        relayed_first_response_frame,
+        status_at: None,
+        status: None,
+        finish,
     }
 }
 
@@ -1999,6 +2063,69 @@ mod tests {
             vec![opening],
             "the lease was taken for the session's opening reservation, once"
         );
+    }
+
+    /// The flat fee is a turn's, and only a turn that answered.
+    ///
+    /// The handshake moves no money, the provider's tool call is not a caller's request, a turn
+    /// nobody was answered on relayed nothing, and an ending the plane called an error pays nothing.
+    #[test]
+    fn the_flat_fee_is_a_turn_that_answered_and_nothing_else() {
+        use busbar_caps::OriginKind;
+        use busbar_contract::FinishClass;
+        use busbar_kernel::teller::fee_count;
+
+        let turn = |finish| fee_evidence(UnitShape::Turn, OriginKind::Client, true, Some(finish));
+        assert_eq!(fee_count(&turn(FinishClass::TurnComplete)).0, 1);
+        assert_eq!(fee_count(&turn(FinishClass::Error)).0, 0);
+        assert_eq!(
+            fee_count(&fee_evidence(
+                UnitShape::Turn,
+                OriginKind::Client,
+                false,
+                Some(FinishClass::TurnComplete),
+            ))
+            .0,
+            0
+        );
+        assert_eq!(
+            fee_count(&fee_evidence(
+                UnitShape::SessionOpen,
+                OriginKind::Handshake,
+                true,
+                Some(FinishClass::Complete),
+            ))
+            .0,
+            0
+        );
+        assert_eq!(
+            fee_count(&fee_evidence(
+                UnitShape::ToolCall,
+                OriginKind::Provider,
+                true,
+                Some(FinishClass::TurnComplete),
+            ))
+            .0,
+            0
+        );
+    }
+
+    /// A turn that reported no output relayed no answer; one that emitted tokens did.
+    #[test]
+    fn an_answered_turn_is_one_that_emitted_something() {
+        let node = priced_node(serviceable());
+        let silent =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
+                audio_tokens_in: 90,
+                ..TurnUsage::default()
+            });
+        assert!(!silent.answered());
+        let spoken =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
+                audio_tokens_out: 3,
+                ..TurnUsage::default()
+            });
+        assert!(spoken.answered());
     }
 
     /// A turn's reservation is the coarse opening magnitude at the dearest price the dialect's

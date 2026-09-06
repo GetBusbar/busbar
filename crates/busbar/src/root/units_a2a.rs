@@ -736,8 +736,21 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     }
 
     /// The audit record one ending seals.
-    fn audit_inputs(&self, outcome: Outcome, principal: Option<&PrincipalId>) -> AuditInputs {
+    fn audit_inputs(
+        &self,
+        ctx: &UnitCtx,
+        outcome: Outcome,
+        principal: Option<&PrincipalId>,
+    ) -> AuditInputs {
         let progress = read_through_poison(&self.progress);
+        // The record does not decide the fee a second time. It reads the same evidence the exit
+        // path settles from, through the same function, so a row that says one and a posting that
+        // says none cannot both be true of one unit.
+        let (fee_count, _) = busbar_kernel::teller::fee_count(&fee_evidence(
+            &self.draft,
+            ctx.origin,
+            progress.metered.is_some(),
+        ));
         AuditInputs {
             subject: match principal.or(progress.principal.as_ref()) {
                 Some(p) => busbar_unit_audit::Subject::PrincipalId(p.as_str().to_string()),
@@ -772,7 +785,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 pre_tier: 0,
                 priced: 0,
                 tier_bp: 0,
-                fee_count: u32::from(self.draft.has_upstream()),
+                fee_count,
                 currency: String::new(),
                 rate_card_version: 0,
                 bucket_chain_ref: String::new(),
@@ -1101,13 +1114,8 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         }
     }
 
-    fn audit(
-        &self,
-        token: &UnitToken<Audit>,
-        _ctx: &UnitCtx,
-        outcome: &Outcome,
-    ) -> Decision<Audit> {
-        let inputs = self.audit_inputs(*outcome, None);
+    fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+        let inputs = self.audit_inputs(ctx, *outcome, None);
         let record = {
             let mut durability = read_through_poison(self.bindings.durability);
             durability.record.seal(inputs, token)
@@ -1127,7 +1135,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn audit_refused(
         &self,
         token: &UnitToken<Audit>,
-        _ctx: &UnitCtx,
+        ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> Decision<Audit> {
         // The second door: a unit that never passed the first one, and was charged nothing. It is
@@ -1136,7 +1144,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             refusal.step().unwrap_or(busbar_caps::StepName::Admit),
             refusal.reason(),
         );
-        let inputs = self.audit_inputs(outcome, None);
+        let inputs = self.audit_inputs(ctx, outcome, None);
         let record = {
             let mut durability = read_through_poison(self.bindings.durability);
             durability.record.seal(inputs, token)
@@ -1177,7 +1185,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         )
     }
 
-    fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
+    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
         let progress = read_through_poison(&self.progress);
         Evidence {
             located: progress.metered,
@@ -1196,8 +1204,36 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             // The fee's origin rule and the request slot's are the same rule: a client unit whose
             // verified set contains an agent draws one, and a push the agent sent draws none.
             upstream_candidate: self.draft.has_upstream(),
-            fee: busbar_kernel::teller::FeeEvidence::default(),
+            fee: fee_evidence(&self.draft, ctx.origin, progress.metered.is_some()),
         }
+    }
+}
+
+/// The facts this plane's flat per-request fee is decided from.
+///
+/// Written once, as a function over the draft rather than as a table each caller fills in, because
+/// the exit path and the audit record are two readers of ONE decision: a settlement that posted a
+/// fee against a record that says none is a discrepancy nothing downstream can resolve, and the
+/// only way to make that unrepresentable is to have one place decide it.
+///
+/// The origin is the client rule the request slot is drawn under — a push the agent sent is not a
+/// caller's request and pays nothing. The upstream is the KIND of leg the plane verified, not its
+/// price: with no rate card the fee still posts. The relayed frame is the metering step's own
+/// locator, which is set when the plane read an answer to hand back; a unit that never got that far
+/// relayed nothing. This transport carries no status leg of its own — the answer document IS the
+/// response — so the plane's finish is the single source, and an error ending posts nothing.
+fn fee_evidence(
+    draft: &A2aDraft,
+    origin: busbar_caps::OriginKind,
+    relayed_first_response_frame: bool,
+) -> busbar_kernel::teller::FeeEvidence {
+    busbar_kernel::teller::FeeEvidence {
+        client_open_or_one_shot: origin == busbar_caps::OriginKind::Client,
+        selected_upstream: draft.has_upstream(),
+        relayed_first_response_frame,
+        status_at: None,
+        status: None,
+        finish: Some(draft.finish),
     }
 }
 
@@ -1687,6 +1723,51 @@ mod tests {
             lane: LaneId::new("probe"),
         };
         assert!(sending.has_upstream());
+    }
+
+    /// The flat fee is decided from the caller, the leg and the answer that reached the caller.
+    ///
+    /// Four ways for a unit to reach an agent and post nothing anyway: the push the agent sent, the
+    /// request that never got an answer to relay, the plan that only touched this node's records,
+    /// and the ending the plane itself called an error. Only the fifth shape pays, and it pays once.
+    #[test]
+    fn the_flat_fee_is_decided_from_caller_leg_and_relayed_answer() {
+        use busbar_caps::OriginKind;
+        use busbar_kernel::teller::fee_count;
+
+        let served = draft(ops::OP_MESSAGE_SEND);
+        assert!(served.has_upstream());
+        assert_eq!(
+            fee_count(&fee_evidence(&served, OriginKind::Client, true)).0,
+            1
+        );
+        assert_eq!(
+            fee_count(&fee_evidence(&served, OriginKind::Provider, true)).0,
+            0
+        );
+        assert_eq!(
+            fee_count(&fee_evidence(&served, OriginKind::Client, false)).0,
+            0
+        );
+
+        let mut failed = served.clone();
+        failed.finish = FinishClass::Error;
+        assert_eq!(
+            fee_count(&fee_evidence(&failed, OriginKind::Client, true)).0,
+            0
+        );
+
+        let mut records_only = served.clone();
+        records_only.destination = DestinationFacts::PlaneRecord {
+            schema: records::SCHEMA_TASK,
+            op: records::OP_SCAN,
+        };
+        records_only.legs = vec![leg_record(records::SCHEMA_TASK, records::OP_SCAN)];
+        assert!(!records_only.has_upstream());
+        assert_eq!(
+            fee_count(&fee_evidence(&records_only, OriginKind::Client, true)).0,
+            0
+        );
     }
 
     /// The four endings map one for one onto the audit unit's own four.
