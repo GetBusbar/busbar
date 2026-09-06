@@ -72,6 +72,32 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 - **Responses API streams carry the lifecycle frames the spec declares:**
   `response.content_part.added`, `response.output_text.done` and `response.content_part.done`, with
   a contiguous `sequence_number`. 1.5.5 omitted them. See [Spec fidelity](#spec-fidelity).
+- **A chat completion's `logprobs` object carries `refusal`.** The published Chat Completions
+  schema requires both `content` and `refusal` on a choice's `logprobs`; 1.5.5 emitted `content`
+  alone, so a response carrying logprobs failed strict validation and the official Python SDK's
+  model. 1.6.0 emits `"refusal": null` beside the carried tokens, buffered and streamed alike —
+  what OpenAI returns when the model did not refuse. See [Spec fidelity](#spec-fidelity).
+- **A buffered chat completion's `finish_reason` is always a real token.** The buffered choice
+  schema declares a non-nullable enum (only a stream chunk's choice may be null). Where a backend
+  reported no stop reason at all — a cross-protocol response whose upstream carried none — 1.5.5's
+  successor emitted JSON `null`; 1.6.0 emits `stop`, the spec's natural-stop token. Streamed chunks
+  keep their `null` unchanged. See [Spec fidelity](#spec-fidelity).
+- **An Anthropic-dialect stream never opens an `image` content block.** The published
+  `content_block_start` union has no `image` member — an assistant block on that wire is never an
+  image — so busbar now emits no frame for one, and suppresses its matching `content_block_stop`
+  with it rather than orphaning a close a client never saw opened. Every other dialect already did.
+  See [Spec fidelity](#spec-fidelity).
+- **An Anthropic-dialect error names an Anthropic error type.** Busbar's quota and
+  context-overflow refusals reached an Anthropic client as `insufficient_quota` and
+  `context_length_exceeded` — OpenAI's vocabulary, and outside the nine types the published error
+  envelope declares, so the official SDK raised a generic `APIError`. They are now `billing_error`
+  and `invalid_request_error`. The status, message and every other error type are unchanged.
+  See [Spec fidelity](#spec-fidelity).
+- **A Responses tool call opens with `arguments`.** `response.output_item.added` for a
+  `function_call` now carries `"arguments": ""`, a required member of the published item, filled by
+  the `response.function_call_arguments.delta` events that follow — as real OpenAI does. 1.5.5
+  omitted it, so the opening item failed the item schema and an SDK seeding its accumulator from it
+  concatenated onto `undefined`. See [Spec fidelity](#spec-fidelity).
 - **A degraded hop is accounted like a primary hop.** On a fallback, least-bad or queue hop: a
   non-2xx records the breaker outcome by status class, honouring the upstream `Retry-After` as the
   cooldown floor, and emits the upstream-failure series; a client-fault 4xx bumps the lane's
@@ -161,7 +187,8 @@ The LLM plane is now validated against the providers' published, machine-readabl
 specifications — OpenAI (Chat Completions and Responses), Anthropic, Google Gemini, AWS Bedrock
 and Cohere, each pinned by URL and digest — for every request the oracle sends and every buffered,
 streamed and error response Busbar returns. Where 1.5.5's bytes and the spec disagreed, the spec
-won; that is the origin of the two stream-shape improvements above. One documented disagreement
+won; that is the origin of the stream-shape, required-member, error-vocabulary and `finish_reason`
+improvements above. One documented disagreement
 runs the other way: Anthropic's published stream-event union has no `ping` member although the
 docs say `ping` events occur and real Anthropic streams carry them. Busbar keeps emitting
 `event: ping` in cross-protocol Anthropic streams — a client that cannot take it is not an
