@@ -687,12 +687,49 @@ mod tests {
         }
 
         fn entries(&self) -> Vec<String> {
-            let mut names: Vec<String> = std::fs::read_dir(&self.path)
-                .expect("scratch directory is readable")
-                .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
-                .collect();
-            names.sort();
-            names
+            entries_of(&self.path)
+        }
+    }
+
+    /// What is in one directory now, by name and in order.
+    fn entries_of(path: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(path)
+            .expect("the directory is readable")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// The directory the process was started in, watched for anything that appears in it.
+    ///
+    /// This is the directory the "no file was created" claim has to be made about. A scratch
+    /// directory the builder was never told the name of is not somewhere a stray journal could
+    /// land: a journal opened at a RELATIVE path follows the PROCESS, and the process is here. The
+    /// scratch directory beside it says only that the fixture tidied up after itself, which is a
+    /// claim about the test rather than about the node.
+    ///
+    /// Nothing is changed about the process — no directory is entered and none is created — because
+    /// a test binary runs its cases on one process's threads and moving that process out from under
+    /// the others is a fixture that breaks its neighbours.
+    struct WorkingDir {
+        path: PathBuf,
+        before: Vec<String>,
+    }
+
+    impl WorkingDir {
+        fn watch() -> Self {
+            let path = std::env::current_dir().expect("the process has a working directory");
+            let before = entries_of(&path);
+            WorkingDir { path, before }
+        }
+
+        /// What is in it now that was not in it when the watch started.
+        fn appeared(&self) -> Vec<String> {
+            entries_of(&self.path)
+                .into_iter()
+                .filter(|name| !self.before.contains(name))
+                .collect()
         }
     }
 
@@ -727,6 +764,7 @@ mod tests {
     #[test]
     fn no_data_dir_creates_no_file() {
         let scratch = ScratchDir::new("unset");
+        let cwd = WorkingDir::watch();
         assert!(scratch.entries().is_empty(), "the fixture starts empty");
 
         let cfg = DurabilityConfig { data_dir: None };
@@ -740,6 +778,12 @@ mod tests {
             Vec::<String>::new(),
             "a node with no configured data directory wrote a file"
         );
+        assert_eq!(
+            cwd.appeared(),
+            Vec::<String>::new(),
+            "a node with no configured data directory wrote a file into the directory it was \
+             started in"
+        );
         assert!(
             writable_paths(&cfg).is_empty(),
             "no data directory means no writable path at all"
@@ -752,6 +796,7 @@ mod tests {
     #[test]
     fn no_data_dir_creates_no_file_even_once_every_unit_has_written() {
         let scratch = ScratchDir::new("unset-in-use");
+        let cwd = WorkingDir::watch();
         let mut durability = build(
             &DurabilityConfig { data_dir: None },
             Box::new(NullShipper::new()),
@@ -772,6 +817,11 @@ mod tests {
             scratch.entries(),
             Vec::<String>::new(),
             "writing to the journal created a file on a node with no data directory"
+        );
+        assert_eq!(
+            cwd.appeared(),
+            Vec::<String>::new(),
+            "writing to the journal created a file in the directory the node was started in"
         );
         assert!(!durability.on_disk());
     }
