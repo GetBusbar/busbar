@@ -564,6 +564,33 @@ fn server_content_audio_then_turn_complete_is_multi_event() {
     assert!(matches!(&ir[2], IrServerEvent::AudioDone { .. }));
 }
 
+#[test]
+fn the_gemini_turn_boundary_resets_the_playback_position() {
+    // `turnComplete` IS Gemini's item boundary; the next turn's barge-in must truncate at the audio of
+    // THAT turn, not at the session's running total.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    st.set_output_format(AudioFormat::Pcm16); // 48 bytes/ms
+    let turn = |ms: usize| {
+        json!({
+            "serverContent": {
+                "modelTurn": { "parts": [ { "inlineData": {
+                    "mimeType": "audio/pcm;rate=24000", "data": b64(&vec![0u8; 48 * ms])
+                } } ] }
+            }
+        })
+        .to_string()
+    };
+    let _ = codec.read_down(wire(&turn(1000)), &mut st);
+    let _ = codec.read_down(
+        wire(&json!({ "serverContent": { "turnComplete": true } }).to_string()),
+        &mut st,
+    );
+    assert_eq!(st.played_ms(), 0, "turnComplete zeroes the played position");
+    let _ = codec.read_down(wire(&turn(240)), &mut st);
+    assert_eq!(st.flush_playback(), 240, "this turn's audio only");
+}
+
 // ── setupComplete ↔ SessionCreated ────────────────────────────────────────────────────────────────
 
 #[test]

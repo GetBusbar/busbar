@@ -84,6 +84,12 @@ pub struct WireEvent(pub bytes::Bytes);
 /// no longer held.
 pub const MAX_TRACKED_CALL_IDS: usize = 1024;
 
+/// THE CEILING ON THE DROPPED-FIELD DIAGNOSTIC LIST. The list is a diagnostic tap, not a ledger: a
+/// peer that patches the session with unmodelled fields every frame must not be able to grow it
+/// without limit. Past the ceiling the OLDEST note goes — the most recent drops are the ones an
+/// operator is looking at.
+pub const MAX_TRACKED_DROPPED_FIELDS: usize = 64;
+
 #[derive(Debug)]
 pub struct DecodeState {
     up_seq: u64,
@@ -93,7 +99,16 @@ pub struct DecodeState {
     /// Insertion order of `call_ids`, oldest first — what makes "evict the oldest" answerable
     /// without asking the map, which has no order.
     call_id_order: VecDeque<String>,
-    /// Downlink audio bytes played out for the CURRENT item — reset on flush / new item.
+    /// The tool NAME the model announced for a `call_id` — the slot Gemini's `functionResponse`
+    /// requires and OpenAI's `function_call_output` does not carry, remembered from the originating
+    /// call so a cross-dialect result can still name its tool.
+    call_names: HashMap<String, String>,
+    /// Wire fields the decode could not model and therefore DROPPED, newest last. This crate links no
+    /// logging surface, so the plane's "warn" is realized as a recorded, readable drop rather than a
+    /// silent one.
+    dropped_fields: VecDeque<String>,
+    /// Downlink audio bytes played out for the CURRENT item — reset when the item ends (its audio is
+    /// done, a new audio-bearing item begins) and on a barge-in flush.
     played_bytes: u64,
     /// Negotiated OUTPUT format the truncate math measures against.
     output_fmt: AudioFormat,
@@ -107,6 +122,8 @@ impl Default for DecodeState {
             next_call_ref: 0,
             call_ids: HashMap::new(),
             call_id_order: VecDeque::new(),
+            call_names: HashMap::new(),
+            dropped_fields: VecDeque::new(),
             played_bytes: 0,
             output_fmt: AudioFormat::Pcm16,
         }
@@ -143,9 +160,43 @@ impl DecodeState {
         while self.call_id_order.len() > MAX_TRACKED_CALL_IDS {
             if let Some(oldest) = self.call_id_order.pop_front() {
                 self.call_ids.remove(&oldest);
+                self.call_names.remove(&oldest);
             }
         }
         r
+    }
+
+    /// REMEMBER the tool name the model announced for a `call_id`. OpenAI's `function_call_output`
+    /// carries no name; Gemini's `functionResponse` REQUIRES one, so the name is kept from the
+    /// originating call and handed back on the result. An empty name records nothing.
+    pub fn remember_call_name(&mut self, call_id: &str, name: &str) {
+        if name.is_empty() || call_id.is_empty() {
+            return;
+        }
+        self.call_names
+            .insert(call_id.to_string(), name.to_string());
+    }
+
+    /// The tool name remembered for a `call_id` (empty when the call was never announced on this
+    /// session — a result for an id we never saw open cannot invent a name).
+    #[must_use]
+    pub fn call_name(&self, call_id: &str) -> &str {
+        self.call_names.get(call_id).map_or("", String::as_str)
+    }
+
+    /// RECORD a wire field the decode could not model and dropped — the plane's "warn" made readable.
+    /// Bounded by [`MAX_TRACKED_DROPPED_FIELDS`].
+    pub fn record_dropped_field(&mut self, field: &str) {
+        self.dropped_fields.push_back(field.to_string());
+        while self.dropped_fields.len() > MAX_TRACKED_DROPPED_FIELDS {
+            self.dropped_fields.pop_front();
+        }
+    }
+
+    /// The wire fields dropped as unmodelled so far this session, newest last.
+    #[must_use]
+    pub fn dropped_fields(&self) -> Vec<&str> {
+        self.dropped_fields.iter().map(String::as_str).collect()
     }
 
     /// The negotiated output format (defaults to `pcm16` until a `session.update` sets it).
@@ -179,6 +230,14 @@ impl DecodeState {
         let ms = self.played_ms();
         self.played_bytes = 0;
         ms
+    }
+
+    /// THE ITEM BOUNDARY — the played-out position belongs to ONE item, so it starts over when that
+    /// item's audio ends (or the next audio-bearing item begins). Without this the barge-in truncate
+    /// point would be the running total since the session opened, and turn two would be truncated at
+    /// turn one plus turn two.
+    pub fn reset_playback(&mut self) {
+        self.played_bytes = 0;
     }
 }
 
@@ -216,6 +275,47 @@ fn decode_audio(b64: &str) -> Option<Bytes> {
 /// base64-encode opaque media bytes back to a wire audio string.
 fn encode_audio(media: &Bytes) -> String {
     busbar_substrate_values::media::base64_encode(media)
+}
+
+/// DECODE A `session` OBJECT LENIENTLY — the drop-and-warn discipline the cross-dialect map states
+/// for values this plane does not model (`voice-cross-dialect-map.json`: an unmodelled telephony
+/// codec, an eagerness with no twin, a noise-reduction knob are each recorded as a DROPPED FIELD, not
+/// a refused session).
+///
+/// The whole-object parse is tried first (the ordinary path, no allocation beyond serde's). Only when
+/// it fails is the patch salvaged FIELD BY FIELD: a key that cannot stand alone is the key the plane
+/// cannot model, so that key alone is dropped — noted in [`DecodeState::dropped_fields`] — and the
+/// rest of the client's patch survives. Defaulting the whole object instead would silently replace the
+/// client's instructions, tools, voice and turn detection with an EMPTY session, which is the one
+/// answer a session patch must never give.
+///
+/// Unknown KEYS are not drops: `SessionConfig` ignores them by design (a partial GA patch names only
+/// what it changes), so they never reach this path.
+fn session_config_lenient(session: &Value, st: &mut DecodeState) -> SessionConfig {
+    use serde::Deserialize as _;
+    if let Ok(cfg) = SessionConfig::deserialize(session) {
+        return cfg;
+    }
+    let Some(obj) = session.as_object() else {
+        // Not an object at all — there is no field to salvage.
+        st.record_dropped_field("session");
+        return SessionConfig::default();
+    };
+    let mut kept = serde_json::Map::new();
+    for (k, val) in obj {
+        let probe = Value::Object(std::iter::once((k.clone(), val.clone())).collect());
+        if SessionConfig::deserialize(&probe).is_ok() {
+            kept.insert(k.clone(), val.clone());
+        } else {
+            st.record_dropped_field(k);
+        }
+    }
+    let kept = Value::Object(kept);
+    SessionConfig::deserialize(&kept).unwrap_or_else(|_| {
+        // Every field stood alone yet the set does not parse — nothing left to salvage honestly.
+        st.record_dropped_field("session");
+        SessionConfig::default()
+    })
 }
 
 // ── reader ──────────────────────────────────────────────────────────────────────────────────────
@@ -256,9 +356,9 @@ impl DuplexReader for OpenAiRealtimeCodec {
         let ty = str_at(&v, "type");
         match ty {
             wire::SESSION_UPDATE => {
-                let cfg: SessionConfig = v
+                let cfg = v
                     .get("session")
-                    .and_then(|s| serde_json::from_value(s.clone()).ok())
+                    .map(|s| session_config_lenient(s, st))
                     .unwrap_or_default();
                 if let Some(fmt) = cfg.output_audio_format {
                     st.set_output_format(fmt);
@@ -363,6 +463,9 @@ impl DuplexReader for OpenAiRealtimeCodec {
                 })]
             }
             wire::OUTPUT_AUDIO_DONE | wire::OUTPUT_AUDIO_DONE_LEGACY => {
+                // THE ITEM BOUNDARY: this item's audio is complete, so the played-out position starts
+                // over. Carrying it forward would truncate the NEXT turn at the running session total.
+                st.reset_playback();
                 vec![IrServerEvent::AudioDone {
                     item_id: str_at(&v, "item_id").to_string(),
                 }]
@@ -372,12 +475,21 @@ impl DuplexReader for OpenAiRealtimeCodec {
                 if str_at(&item, "type") == wire::ITEM_FN_CALL {
                     let call_id = str_at(&item, "call_id");
                     let call_ref = st.ref_for_call_id(call_id);
+                    let name = str_at(&item, "name").to_string();
+                    // Remember the name for the RESULT leg: OpenAI's `function_call_output` carries
+                    // none, and a Gemini `functionResponse` requires one.
+                    st.remember_call_name(call_id, &name);
+                    // A tool-call item is NOT the playing audio item's boundary — it can be added
+                    // while that item is still playing — so the playback position stands.
                     vec![IrServerEvent::Tool(IrDuplexTool::CallOpen {
                         call_ref,
                         call_id: call_id.to_string(),
-                        name: str_at(&item, "name").to_string(),
+                        name,
                     })]
                 } else {
+                    // A new AUDIO-BEARING output item begins: its playback starts at zero, even if the
+                    // previous item's `…audio.done` never arrived.
+                    st.reset_playback();
                     Vec::new()
                 }
             }

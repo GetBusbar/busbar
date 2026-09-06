@@ -135,6 +135,95 @@ fn session_update_semantic_vad_roundtrips() {
     assert_eq!(config.max_output_tokens, Some(MaxOutputTokens::Inf));
 }
 
+// ── an unmodelled session field is DROPPED, never the whole patch ────────────────────────────────
+
+/// Decode one `session.update` and hand back the configured session plus the decode state, so a test
+/// can read both the surviving config and the dropped-field diagnostics.
+fn session_update_of(session: Value) -> (SessionConfig, DecodeState) {
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    let src = json!({ "type": "session.update", "session": session });
+    let ir = codec.read_up(wire(&src.to_string()), &mut st);
+    let IrClientEvent::Control(IrDuplexControl::SessionConfigure { config }) = &ir[0] else {
+        panic!("expected SessionConfigure");
+    };
+    (config.clone(), st)
+}
+
+#[test]
+fn an_unmodelled_audio_format_drops_that_field_and_keeps_the_patch() {
+    // `g711_alaw` is a REAL OpenAI value the plane does not model. Wiping the client's instructions,
+    // tools, voice and VAD because one field is unmodelled would re-frame the session as an empty one
+    // and say nothing about it.
+    let (config, st) = session_update_of(json!({
+        "instructions": "You are a helpful voice agent.",
+        "voice": "marin",
+        "tools": [{ "type": "function", "name": "get_weather" }],
+        "turn_detection": { "type": "server_vad" },
+        "output_audio_format": "g711_alaw",
+    }));
+    assert_ne!(
+        config,
+        SessionConfig::default(),
+        "an unmodelled field must not empty the whole patch"
+    );
+    assert_eq!(
+        config.instructions.as_deref(),
+        Some("You are a helpful voice agent.")
+    );
+    assert_eq!(config.voice.as_deref(), Some("marin"));
+    assert_eq!(config.tools.len(), 1);
+    assert!(config.turn_detection.is_some());
+    assert_eq!(
+        config.output_audio_format, None,
+        "the unmodelled format itself is the only casualty"
+    );
+    assert!(
+        st.dropped_fields().contains(&"output_audio_format"),
+        "the drop is reported, not silent: {:?}",
+        st.dropped_fields()
+    );
+}
+
+#[test]
+fn an_out_of_range_max_output_tokens_drops_that_field_only() {
+    let (config, st) = session_update_of(json!({
+        "instructions": "keep it short",
+        "max_output_tokens": 99_999_999_999_u64,
+    }));
+    assert_eq!(config.instructions.as_deref(), Some("keep it short"));
+    assert_eq!(config.max_output_tokens, None);
+    assert!(st.dropped_fields().contains(&"max_output_tokens"));
+}
+
+#[test]
+fn an_unknown_turn_detection_type_drops_that_field_only() {
+    let (config, st) = session_update_of(json!({
+        "instructions": "still mine",
+        "tools": [{ "type": "function", "name": "lookup" }],
+        "turn_detection": { "type": "clairvoyant_vad" },
+    }));
+    assert_eq!(config.instructions.as_deref(), Some("still mine"));
+    assert_eq!(config.tools.len(), 1);
+    assert_eq!(config.turn_detection, None);
+    assert!(st.dropped_fields().contains(&"turn_detection"));
+}
+
+#[test]
+fn an_unmodelled_output_format_leaves_the_negotiated_format_alone() {
+    // The truncate math measures against the LAST format the plane actually negotiated; an unmodelled
+    // one neither adopts nor silently resets it.
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    st.set_output_format(AudioFormat::G711Ulaw);
+    let src = json!({
+        "type": "session.update",
+        "session": { "output_audio_format": "g711_alaw" }
+    });
+    let _ = codec.read_up(wire(&src.to_string()), &mut st);
+    assert_eq!(st.output_format(), AudioFormat::G711Ulaw);
+}
+
 #[test]
 fn session_update_null_turn_detection_disables_vad() {
     let src = json!({
@@ -270,6 +359,76 @@ fn flush_playback_returns_heard_ms_and_resets() {
     let heard = st.flush_playback();
     assert_eq!(heard, 500);
     assert_eq!(st.played_ms(), 0, "flush zeroes the playback counter");
+}
+
+#[test]
+fn playback_position_resets_at_the_item_boundary_so_turns_do_not_accumulate() {
+    // Two model turns, the second barged into: the truncate point must be the position within the
+    // CURRENT item, not the running total since the session opened.
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    st.set_output_format(AudioFormat::Pcm16); // 48 bytes/ms
+    let delta = |ms: usize| {
+        json!({ "type": "response.output_audio.delta", "delta": b64(&vec![0u8; 48 * ms]) })
+            .to_string()
+    };
+
+    // Turn 1: a full second of audio, then the item ends.
+    let _ = codec.read_down(wire(&delta(1000)), &mut st);
+    let _ = codec.read_down(
+        wire(&json!({ "type": "response.output_audio.done", "item_id": "item_1" }).to_string()),
+        &mut st,
+    );
+    assert_eq!(
+        st.played_ms(),
+        0,
+        "the item boundary zeroes the playback position"
+    );
+
+    // Turn 2: a new item, barged into after 240 ms.
+    let _ = codec.read_down(
+        wire(
+            &json!({
+                "type": "response.output_item.added",
+                "item": { "type": "message", "id": "item_2", "role": "assistant" }
+            })
+            .to_string(),
+        ),
+        &mut st,
+    );
+    let _ = codec.read_down(wire(&delta(240)), &mut st);
+    assert_eq!(
+        st.flush_playback(),
+        240,
+        "the truncate point is this item's audio, not turn 1 plus turn 2"
+    );
+}
+
+#[test]
+fn a_new_function_call_item_does_not_zero_the_playing_item() {
+    // A `function_call` output item can be added WHILE an audio item is still playing; it is not the
+    // audio item's boundary, so it must not move the truncate point.
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    st.set_output_format(AudioFormat::Pcm16);
+    let _ = codec.read_down(
+        wire(
+            &json!({ "type": "response.output_audio.delta", "delta": b64(&vec![0u8; 48 * 120]) })
+                .to_string(),
+        ),
+        &mut st,
+    );
+    let _ = codec.read_down(
+        wire(
+            &json!({
+                "type": "response.output_item.added",
+                "item": { "type": "function_call", "call_id": "call_1", "name": "get_weather" }
+            })
+            .to_string(),
+        ),
+        &mut st,
+    );
+    assert_eq!(st.played_ms(), 120);
 }
 
 #[test]

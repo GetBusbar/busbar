@@ -457,6 +457,9 @@ impl DuplexReader for GeminiLiveCodec {
                 });
             }
             if sc.get("turnComplete").and_then(Value::as_bool) == Some(true) {
+                // THE GEMINI ITEM BOUNDARY: the turn's audio is complete, so the played-out position
+                // starts over — the next turn's barge-in truncates at ITS audio, not the running total.
+                st.reset_playback();
                 out.push(IrServerEvent::AudioDone {
                     item_id: String::new(),
                 });
