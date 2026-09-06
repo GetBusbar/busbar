@@ -94,6 +94,11 @@ pub(crate) struct ConnState {
     /// assumed, because "the method a destination named is the method dialled" is otherwise a
     /// claim nothing checks.
     pub(crate) served_paths: SyncMutex<VecDeque<String>>,
+    /// The way to stop the task driving this connection's HTTP/2 half. The accept side spawns that
+    /// task and keeps this seam rather than the join handle: firing it asks for a graceful
+    /// shutdown, so calls already in flight end with their own trailers instead of being cut. A
+    /// connection nothing can stop is one `close` only stops listing.
+    pub(crate) shutdown: SyncMutex<Option<tokio::sync::oneshot::Sender<()>>>,
     /// The composed stack this connection stands on, bottom layer first, ending in `grpc`. It is
     /// the layer below's chain plus this one, carried across the handoff — a connection that named
     /// only itself was one a location could not resolve against.
@@ -113,6 +118,7 @@ impl ConnState {
             dialer,
             next_local_stream: std::sync::atomic::AtomicU64::new(1),
             served_paths: SyncMutex::new(VecDeque::new()),
+            shutdown: SyncMutex::new(None),
             chain,
         })
     }
@@ -128,6 +134,18 @@ impl ConnState {
     /// and this connection carries every multiplexed call's inbound messages on this one channel.
     pub(crate) async fn send_inbound(&self, item: InboundItem) -> Result<(), ()> {
         self.inbound_tx.send(item).await.map_err(|_| ())
+    }
+
+    /// Remember how to stop the task driving this connection.
+    pub(crate) fn arm_shutdown(&self, stop: tokio::sync::oneshot::Sender<()>) {
+        *self.shutdown.lock().unwrap() = Some(stop);
+    }
+
+    /// Ask that task to shut down, once. A connection already stopped stays stopped.
+    pub(crate) fn stop(&self) {
+        if let Some(stop) = self.shutdown.lock().unwrap().take() {
+            let _ = stop.send(());
+        }
     }
 
     /// Record one more served `:path`, evicting the oldest once [`SERVED_PATHS_CAP`] is reached —

@@ -347,6 +347,10 @@ impl Transport for GrpcTransport {
             // `grpc-status` trailer) immediately, independent of what the other direction is
             // doing.
             state.outbound.lock().unwrap().clear();
+            // And stop the task driving the connection itself. Dropping this transport's entry
+            // never reached it: it holds the socket, so a connection closed here would otherwise go
+            // on serving the peer's next call on a connection the kernel believes is gone.
+            state.stop();
         }
     }
 

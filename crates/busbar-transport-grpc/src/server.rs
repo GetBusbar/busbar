@@ -40,17 +40,32 @@ use crate::conn::ConnState;
 /// method, the only one a byte-blind transport can name for itself. See the module header.
 pub(crate) const RPC_PATH: &str = "/busbar.raw/Frames";
 
-/// Serve one stream the layer below handed up as an HTTP/2 gRPC connection until it closes.
+/// Serve one stream the layer below handed up as an HTTP/2 gRPC connection until it closes — or
+/// until the connection is closed from this side.
+///
+/// The task is spawned, so the shutdown seam is armed on `state` BEFORE the spawn: a `close` racing
+/// the very first poll of the connection must still find something to fire. Firing it asks hyper
+/// for a graceful shutdown (a GOAWAY: no new calls, the ones in flight end with their own
+/// trailers), and the socket goes with the task.
 pub(crate) fn serve_connection(stream: crate::conn::LowerIo, state: Arc<ConnState>) {
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    state.arm_shutdown(stop_tx);
     tokio::spawn(async move {
         let io = TokioIo::new(stream);
         let svc = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
             let state = state.clone();
             async move { Ok::<_, std::convert::Infallible>(handle_one_rpc(state, req).await) }
         });
-        let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
-            .serve_connection(io, svc)
-            .await;
+        let conn = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+            .serve_connection(io, svc);
+        tokio::pin!(conn);
+        tokio::select! {
+            _ = conn.as_mut() => {}
+            _ = stop_rx => {
+                conn.as_mut().graceful_shutdown();
+                let _ = conn.await;
+            }
+        }
     });
 }
 

@@ -971,3 +971,67 @@ async fn an_empty_message_is_delivered_and_does_not_wedge_the_ones_behind_it() {
         "the empty message and every message behind it"
     );
 }
+
+/// Closing a connection stops the HTTP/2 server task that serves it.
+///
+/// `close` is the kernel's only way to be rid of a connection. When the accept side spawned the
+/// hyper connection task and dropped its handle, nothing held a way to stop it: a closed connection
+/// kept its socket and went on accepting fresh RPCs from the peer, so "closed" meant only that this
+/// transport had stopped listing it.
+#[tokio::test]
+async fn closing_a_connection_stops_serving_new_calls_on_it() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    // The connection is really serving: one call opens and arrives.
+    client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .await
+        .unwrap();
+    let mut server_frames = server_t.frames(server_conn.clone());
+    tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the first call arrives")
+        .unwrap()
+        .unwrap();
+
+    server_t.close(
+        server_conn,
+        busbar_contract_transport::wire::CloseReason::Normal,
+    );
+
+    // A closed connection serves nothing further: the peer's next RPC on it must fail rather than
+    // be answered by a task the transport can no longer reach. Opening a call is a round trip, so
+    // the peer may have one already in flight when the close lands — but only one: past that, every
+    // fresh call must be refused, and a connection still serving them never gets there.
+    let refused = tokio::time::timeout(Duration::from_secs(10), async {
+        for n in 2..u64::MAX {
+            if client_t
+                .write(&client_conn, StreamId(n), ArenaBytes::new(b"ping"))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(
+        refused.is_ok(),
+        "a closed connection went on serving fresh calls from the peer"
+    );
+}
