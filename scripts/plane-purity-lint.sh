@@ -204,6 +204,41 @@ count_files() { [ -n "$1" ] || { printf '0'; return 0; }; printf '%s\n' "$1" | w
 #   contains (PATH-INCLUDE restricted to test-scope hits too, so a testscope=0 + testscope=1 run never
 #   double-counts a hit). This is the one extension --strict needed — no second scanner, no duplicated
 #   comment/test stripper; the same `intest`/`frozen` bookkeeping just gets asked the opposite question.
+# scan_list <mode> <testscope> <newline-separated file list> — the ONE way the tree scans are driven.
+#
+# TWO FAULTS, ONE SHAPE: A SCAN THAT DID NOT HAPPEN LOOKS EXACTLY LIKE A CLEAN TREE.
+#
+#   * The call sites used to be `scan forward 0 $nf`, UNQUOTED, so the file list was split on IFS —
+#     spaces as well as newlines. A path with a space in it becomes two nonexistent paths, awk
+#     reports "can't open file", and those files are simply never scanned. Silently: the run's only
+#     output is a shorter hits file, which reads as fewer violations.
+#   * awk's EXIT STATUS was thrown away. `scan … >>"$tmp/hits"` under `set -uo pipefail` (no `-e`)
+#     ignores a non-zero return, so an awk FATAL — a syntax error introduced while editing the
+#     scanner, an unreadable file, a resource limit — truncates the hits file mid-run and the very
+#     next line reads the truncated file as the violation total. The gate then prints a clean report
+#     about a scan that aborted.
+#
+# So the list is split on NEWLINES ONLY (`find -print` emits one path per line), and awk's status is
+# the caller's status. Both failures are now loud.
+scan_list() {
+  local mode="$1" testscope="$2" list="$3" rc oldifs
+  [ -n "$list" ] || { red "plane-purity: scan_list called with an EMPTY $mode file list"; return 2; }
+  oldifs="$IFS"; IFS=$'\n'
+  set -f
+  # shellcheck disable=SC2206  # splitting on newlines is the point; globbing is off
+  local files=($list)
+  set +f
+  IFS="$oldifs"
+  scan "$mode" "$testscope" "${files[@]}"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    red "plane-purity: the $mode scan FAILED (awk exit $rc) after ${#files[@]} file(s)"
+    note "A scan that aborted produces a SHORT hits list, which reads as FEWER violations — i.e. as a"
+    note "cleaner tree. The verdict below would have been a report about a scan that did not finish."
+    return "$rc"
+  fi
+  return 0
+}
+
 scan() {
   local mode="$1" testscope="${2:-0}"; shift 2
   [ "$#" -gt 0 ] || return 0
@@ -581,6 +616,39 @@ PRT
     fail=1; note "hits artefact FAILED: no #SCAN provenance line in the emitted hit list"
   fi
 
+  # (4) A QUOTED CEILING. `qa/plane-purity-strict.toml` is hand-edited, TOML accepts `SYMBOL = "5"`,
+  #     and `[ "$n" -gt '"5"' ]` is a bash ERROR (exit 2) that an `if` reads as "not greater" — so
+  #     the row stops being enforced and says nothing. Driven through the REAL guard.
+  if require_integer_ceiling category SYMBOL '"5"' >/dev/null 2>&1; then
+    fail=1; note "CEILING FAILED: a QUOTED ceiling was accepted — the comparison errors and the row silently stops enforcing"
+  else
+    note "CEILING: a quoted ceiling ('\"5\"') is REFUSED, not compared (an errored comparison reads as 'under the ceiling')"
+  fi
+  if require_integer_ceiling category SYMBOL 'five' >/dev/null 2>&1; then
+    fail=1; note "CEILING FAILED: a non-numeric ceiling was accepted"
+  else
+    note "CEILING: a non-numeric ceiling is REFUSED"
+  fi
+  if [ "$(require_integer_ceiling category SYMBOL '5' 2>/dev/null)" = "5" ]; then
+    note "CEILING: a bare integer ceiling passes through unchanged"
+  else
+    fail=1; note "CEILING FAILED: a legitimate bare integer was refused"
+  fi
+
+  # (5) A SCAN THAT ABORTED. awk's exit status used to be discarded, so a fatal mid-scan truncated
+  #     the hits list and the truncated list was read as the violation total — a shorter list is a
+  #     cleaner tree. Hand scan_list a path that cannot be read and require a non-zero return.
+  if scan_list forward 0 "$tmp/no-such-file-for-selftest.rs" >/dev/null 2>&1; then
+    fail=1; note "SCAN-STATUS FAILED: a scan over an unreadable file returned 0 — an aborted scan would read as a clean tree"
+  else
+    note "SCAN-STATUS: a scan that could not read its input returns non-zero (a short hit list is not a clean tree)"
+  fi
+  if scan_list forward 0 "" >/dev/null 2>&1; then
+    fail=1; note "SCAN-STATUS FAILED: an EMPTY file list was accepted"
+  else
+    note "SCAN-STATUS: an empty file list is REFUSED (zero files is not zero violations)"
+  fi
+
   if [ "$fail" -ne 0 ]; then
     red "plane-purity-lint SELF-TEST FAILED — the scanner would let a side channel through"
     return 1
@@ -622,10 +690,8 @@ run_report() {
   fi
 
   : >"$tmp/hits"
-  # shellcheck disable=SC2086
-  scan forward 0 $nf >>"$tmp/hits"
-  # shellcheck disable=SC2086
-  scan reverse 0 $pf >>"$tmp/hits"
+  scan_list forward 0 "$nf" >>"$tmp/hits" || exit 2
+  scan_list reverse 0 "$pf" >>"$tmp/hits" || exit 2
 
   local total; total="$(wc -l <"$tmp/hits" | tr -d ' ')"
   REPORT_TOTAL="$total"
@@ -679,6 +745,16 @@ STRICT_TOML="qa/plane-purity-strict.toml"
 # ceiling_of NAME — look up NAME's ceiling in STRICT_TOML. Section headers ([categories]/[test-reach])
 # have no `=` so they never match; this is intentionally not a real TOML parser (no external deps
 # beyond bash + awk), just a `key = value` line reader that ignores comments and whitespace.
+# ceiling_of <key> → the ratchet ceiling for <key>, or empty. A value that is not a BARE INTEGER is
+# returned as-is on purpose, so strict_decide can refuse it by name.
+#
+# A QUOTED CEILING USED TO DISABLE THE ROW IT GOVERNS. `qa/plane-purity-strict.toml` is hand-edited
+# (it is a ratchet the owner lowers), and TOML is perfectly happy with `SYMBOL = "5"`. `[ "$n" -gt
+# '"5"' ]` is not a false comparison — it is a bash ERROR ("integer expression expected"), exit
+# status 2, which an `if` reads as "the condition did not hold" and takes the else branch. So the
+# row silently stops being enforced: no RED, no message, and the category it governs can grow
+# without limit while the gate reports every ceiling met. One stray pair of quotes, and the ratchet
+# for that category is gone.
 ceiling_of() {
   awk -F'=' -v k="$1" '
     { key = $1; gsub(/^[ \t]+|[ \t]+$/, "", key) }
@@ -713,13 +789,13 @@ run_strict_report() {
 
   : >"$tmp/prod_fwd"; : >"$tmp/test_fwd"; : >"$tmp/prod_rev"; : >"$tmp/test_rev"
   # shellcheck disable=SC2086
-  scan forward 0 $nf >"$tmp/prod_fwd"
+  scan_list forward 0 "$nf" >"$tmp/prod_fwd" || exit 2
   # shellcheck disable=SC2086
-  scan forward 1 $nf >"$tmp/test_fwd"
+  scan_list forward 1 "$nf" >"$tmp/test_fwd" || exit 2
   # shellcheck disable=SC2086
-  scan reverse 0 $pf >"$tmp/prod_rev"
+  scan_list reverse 0 "$pf" >"$tmp/prod_rev" || exit 2
   # shellcheck disable=SC2086
-  scan reverse 1 $pf >"$tmp/test_rev"
+  scan_list reverse 1 "$pf" >"$tmp/test_rev" || exit 2
 
   hdr "STRICT NEUTRAL-PURITY report — production + test scope combined"
   note "neutral roots: $NEUTRAL_ROOTS ($n_nf .rs file(s) across $n_nr root(s))"
@@ -762,6 +838,23 @@ run_strict_report() {
 # strict_decide — reads the two TSVs run_strict_report wrote and compares each row to its ceiling in
 # $STRICT_TOML. Sets $STRICT_FAIL to 1 if anything exceeds its ceiling, 0 otherwise. Never used by
 # `--strict --baseline` (informational, no ceiling applied); only by plain `--strict`.
+# require_integer_ceiling <kind> <name> <raw> → 0 and echo the integer, or 1 and explain.
+# The ONLY shape a ceiling may take is a bare non-negative integer. Anything else (a quoted number,
+# a trailing unit, an empty string where the key exists) is refused rather than compared, because
+# `[ N -gt <not-a-number> ]` is an ERROR that an `if` reads as "not greater" and silently passes.
+require_integer_ceiling() {
+  local kind="$1" name="$2" raw="$3"
+  case "$raw" in
+    ''|*[!0-9]*)
+      note "RED $kind $name: ceiling '$raw' in $STRICT_TOML is not a bare integer."
+      note "    A quoted or non-numeric ceiling makes the comparison an ERROR, and an errored"
+      note "    comparison is read as 'not over the ceiling' — the row stops being enforced in"
+      note "    silence. Write it as ${name} = <n>, unquoted."
+      return 1 ;;
+  esac
+  printf '%s' "$raw"
+}
+
 STRICT_FAIL=0
 strict_decide() {
   local cats="$1" crates="$2"
@@ -771,6 +864,7 @@ strict_decide() {
     [ -n "$name" ] || continue
     ceiling="$(ceiling_of "$name")"
     [ -n "$ceiling" ] || { ceiling=0; note "no ceiling for category $name in $STRICT_TOML — defaulting to 0"; }
+    if ! ceiling="$(require_integer_ceiling category "$name" "$ceiling")"; then STRICT_FAIL=1; continue; fi
     if [ "$n" -gt "$ceiling" ]; then
       STRICT_FAIL=1
       note "RED category $name: $n > ceiling $ceiling"
@@ -780,6 +874,7 @@ strict_decide() {
     [ -n "$name" ] || continue
     ceiling="$(ceiling_of "$name")"
     [ -n "$ceiling" ] || { ceiling=0; note "no ceiling for test-reach $name in $STRICT_TOML — defaulting to 0"; }
+    if ! ceiling="$(require_integer_ceiling test-reach "$name" "$ceiling")"; then STRICT_FAIL=1; continue; fi
     if [ "$n" -gt "$ceiling" ]; then
       STRICT_FAIL=1
       note "RED test-reach $name: $n > ceiling $ceiling"
