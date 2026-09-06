@@ -315,11 +315,15 @@ fn the_frozen_tags_match_the_text_the_chain_was_sealed_with() {
     }
 
     for abort in [
-        Abort::Client,
+        Abort::Kernel {
+            reason: ReasonCode::ClientGone,
+        },
         Abort::Kernel {
             reason: ReasonCode::OverBudget,
         },
-        Abort::Drain,
+        Abort::Kernel {
+            reason: ReasonCode::Drain,
+        },
         Abort::Superseded {
             by: UnitKey::new(77),
         },

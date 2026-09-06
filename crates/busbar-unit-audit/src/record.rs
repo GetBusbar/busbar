@@ -502,10 +502,10 @@ pub(crate) fn reason_tag(reason: ReasonCode) -> String {
 
 /// The frozen text for how a unit was cut short.
 pub(crate) fn abort_tag(abort: Abort) -> String {
+    // A client that went away and a node that is draining both arrive as a kernel abort with a
+    // named reason, so the tag carries the reason rather than a variant of its own.
     match abort {
-        Abort::Client => "Client".to_string(),
         Abort::Kernel { reason } => format!("Kernel {{ reason: {} }}", reason_tag(reason)),
-        Abort::Drain => "Drain".to_string(),
         Abort::Superseded { by } => format!("Superseded {{ by: UnitKey({}) }}", by.get()),
     }
 }
