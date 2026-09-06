@@ -739,6 +739,15 @@ impl Plane for McpPlane {
                 selector: "opener",
                 mode: busbar_contract::dest::ClientMode::Deliver,
             },
+            // A completion is answered out of the catalogue this node already holds. It is named
+            // here rather than left to fall through to the server, because the routing step gives it
+            // one leg and that leg is the catalogue: a unit VERIFIED for a server it is never routed
+            // to has an upstream sealed, and the admission that seals one is spent whether or not
+            // anything is ever dialled.
+            ops::OP_COMPLETION => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_CATALOGUE,
+                op: rec::OP_GET,
+            },
             // The task operations are answered out of this node's own task records.
             ops::OP_TASK_GET => DestinationFacts::PlaneRecord {
                 schema: rec::SCHEMA_TASK,
