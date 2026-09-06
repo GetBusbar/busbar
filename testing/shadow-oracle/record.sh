@@ -82,6 +82,55 @@ _oracle_cleanup() {
   [ "${ORACLE_KEEP_WORK:-0}" = 1 ] || rm -rf "$WORK"
 }
 trap _oracle_cleanup EXIT
+
+# ── A RECORDING MAY NOT DEPEND ON THE ORDER ITS CELLS RAN IN ────────────────────────────────────
+# busbar sweeps orphaned plugin staging directories at boot: `busbar_plugin_loader::sweep_dead_staging`
+# walks `std::env::temp_dir()` (i.e. `$TMPDIR`) for `busbar-plugins-<pid>-<random>` directories whose
+# owning pid is DEAD, removes them, and — only when it removed at least one — prints
+#
+#     [info] removed N orphaned plugin staging dir(s) left by a crashed prior run
+#
+# on stdout. That is correct behaviour for an operator and poison for a golden: THIS recorder kills
+# busbars on purpose (every `fresh` cell reboots, script cells stop the recording busbar,
+# store-persist kills its first busbar by design), so a plugin-loading boot that is killed leaves a
+# staging directory behind and WHICHEVER BOOT COMES NEXT prints the line — a different cell on every
+# run (documented|readme|tls-mtls, neutrality|boot-lines, documented|readme|docker-defaults,
+# documented|changelog|admin-restart have all been seen wearing it). One random boot-log cell per full
+# `--plane all` run carried an extra line that says nothing about the binary and everything about
+# which cell happened to run before it.
+#
+# BOTH HALVES, and each closes a different hole — this is deliberately not one-or-the-other:
+#
+#   (1) A PRIVATE PER-RUN TMPDIR. busbar is pointed at a temp base this run owns, so it can never see
+#       a staging directory left by a PARALLEL recording, by an earlier run of this script, by the
+#       test suite, or by any other busbar on the machine. Cross-RUN and cross-PROCESS contamination
+#       goes away by construction rather than by racing it. It is inside $WORK, so the existing
+#       cleanup already removes it and the existing `--strip-path "$WORK"` already scrubs any path
+#       that reaches a capture.
+#   (2) A DEAD-PID SWEEP BEFORE EVERY BOOT. (1) alone does NOT fix this: the directories that cause
+#       the line are made by THIS run's own busbars, inside this run's own TMPDIR. So the harness
+#       sweeps them itself, before each boot, and busbar's own sweep then always finds nothing and
+#       stays silent. The sweep lives HERE, in the harness, never in busbar: busbar's boot-time
+#       sweep is a documented behaviour the oracle exists to record, and a recorder that needed the
+#       binary changed to be recordable would be recording the harness.
+#
+# Dead pids only, exactly like busbar's own sweep: a live busbar's staging directory is in use (the
+# recording busbar is still up while an exec `boot` cell spawns a second one), and removing it would
+# manufacture a failure this cell is not about.
+export TMPDIR="$WORK/tmp"
+mkdir -p "$TMPDIR"
+sweep_orphan_staging() {  # remove busbar-plugins-<dead pid>-* under this run's private TMPDIR
+  local d pid
+  for d in "$TMPDIR"/busbar-plugins-*; do
+    # a glob that matched nothing expands to itself; a symlink is not a staging dir (never followed)
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    pid="${d##*/busbar-plugins-}"; pid="${pid%%-*}"
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    kill -0 "$pid" 2>/dev/null && continue
+    rm -rf "$d"
+  done
+}
+
 export BUSBAR_BIN="$BIN"
 declaw "$BIN"
 VER="$("$BIN" --version 2>/dev/null | head -1)"
@@ -194,6 +243,10 @@ boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three key
   # it is recorded against a process this script never started and cannot configure.
   assert_port_free "$LISTEN_PORT" || return 4
   assert_port_free "$ADMIN_PORT" || return 4
+  # BEFORE THE SPAWN, not after: what busbar prints at boot is decided by what it finds when it
+  # boots. A staging dir left by the busbar this cell's `stop_busbar` just killed would otherwise be
+  # swept BY BUSBAR, and this cell's boot log would carry an extra line the previous cell caused.
+  sweep_orphan_staging
   BUSBAR_PID="$(oracle_spawn "$WORK/busbar.log" "$BIN")"; track_pid "$BUSBAR_PID"
   # busbar boots in tens of ms; poll at 25 ms (the shared wait_for_http sleeps a whole second).
   # The bound is ORACLE_BOOT_BOUND_SECS (default 60), not 20: a hooks-variant boot loads the
@@ -367,6 +420,10 @@ PY
         || { record "$id" FAIL "boot-cell port ${BOOT_LISTEN_PORT} is already in use" \
                "owner pid '$(port_owner_pid "$BOOT_LISTEN_PORT")'; set ORACLE_BOOT_LISTEN_PORT/ORACLE_BOOT_ADMIN_PORT"; return; }
       envcmd+=(BUSBAR_CONFIG="$xwork/boot.yaml")
+      # A boot cell's contract IS its stdout (neutrality|boot-lines pins the exact ordered set of
+      # INFO-and-above lines), so it is the loudest victim of a staging dir some earlier cell's
+      # killed busbar left behind: sweep it before this boot, exactly as boot_busbar does.
+      sweep_orphan_staging
       "${envcmd[@]}" "$BIN" "${args[@]}" >"$raw/stdout" 2>"$raw/stderr" </dev/null &
       local bpid=$! i=0 healthy=0
       while [ $i -lt 100 ]; do
@@ -620,7 +677,17 @@ while IFS=$'\x1f' read -r id outcome driver keep_lines keep_spec needs_fixture p
     # the script reuses this recording's own (now free) listen/admin ports so two recordings never
     # collide; the recording's mock upstream is still up on MOCK_PORT, so the script's mock takes
     # the port after the admin one (inside this recording's own block)
-    BUSBAR_BIN="$BIN" RAW="$raw" WORK="$WORK" ORACLE_ADMIN_TOKEN="$ORACLE_ADMIN_TOKEN" \
+    # A script cell boots busbar ITSELF, several times in some cells (store-persist kills its first
+    # busbar by design, admin-restart restarts one), and the recorder cannot reach in to sweep
+    # between those boots. So each script cell gets its OWN empty temp base: the only staging dirs
+    # its busbars can ever see are the ones that cell made, which makes what it records a property
+    # of the cell instead of a property of which cell ran before it. (Two scripts —
+    # durable-governance-precondition, plugins-fetch-reload-miss — already did this for themselves;
+    # this makes it true for every script, including the ones that boot no plugins today and might
+    # tomorrow.) The sweep still runs first, for the recording busbar's dirs this cell inherits.
+    sweep_orphan_staging
+    local_tmp="$WORK/cell-tmp/$safe"; rm -rf "$local_tmp"; mkdir -p "$local_tmp"
+    BUSBAR_BIN="$BIN" RAW="$raw" WORK="$WORK" ORACLE_ADMIN_TOKEN="$ORACLE_ADMIN_TOKEN" TMPDIR="$local_tmp" \
       SCRIPT_LISTEN_PORT="$LISTEN_PORT" SCRIPT_ADMIN_PORT="$ADMIN_PORT" SCRIPT_MOCK_PORT="$((ADMIN_PORT+1))" \
       bash "${here}/scripts/${sname}" "${local_args[@]}" >"$raw/script.log" 2>&1
     [ -s "$raw/captured.json" ] || { record "$id" FAIL "script ${sname} produced no captured.json" "$(tail -c 300 "$raw/script.log")"; continue; }
