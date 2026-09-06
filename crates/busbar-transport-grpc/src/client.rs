@@ -52,8 +52,12 @@ impl tower::Service<http::Request<tonic::body::Body>> for Dialer {
 /// what the state is built from), so the completion is handed back for the caller to wire, and what
 /// it wires it to is the end of the inbound side: a reader whose upstream has gone must see
 /// end-of-stream, not a wait with no end.
+///
+/// The task below is not the whole of the connection: the HTTP/2 client spawns a driver of its own
+/// on the executor, and THAT is what holds the stream. It ends when the stream does — see
+/// [`crate::conn::Cut`], which is how a caller closing this connection reaches it.
 pub(crate) async fn handshake_h2(
-    stream: crate::conn::LowerIo,
+    stream: crate::conn::Cuttable,
     authority: &str,
 ) -> Result<(Dialer, http::Uri, tokio::sync::oneshot::Receiver<()>), TransportError> {
     let io = TokioIo::new(stream);

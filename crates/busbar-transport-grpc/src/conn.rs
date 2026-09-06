@@ -41,6 +41,121 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> Lower for T
 /// The boxed form, as it crosses the handoff.
 pub(crate) type LowerIo = Box<dyn Lower>;
 
+/// The seam that cuts one lower stream, wherever it has ended up.
+///
+/// The HTTP/2 client hands the stream to a task of its OWN — the executor it was built with spawns
+/// the driver that holds the socket — and that task ends only once every request sender on the
+/// connection has gone and every call on it has finished. Neither is something `close` can promise
+/// about a peer that has stopped answering, so a dialled connection closed from this side kept its
+/// descriptor and both tasks around it. Cutting the stream is the one thing that reaches into a
+/// task nothing here holds a handle to: the driver's next read fails, it finishes, and the socket
+/// goes back to the kernel with it.
+pub(crate) struct Cut {
+    cut: std::sync::atomic::AtomicBool,
+    waker: SyncMutex<Option<std::task::Waker>>,
+}
+
+impl Cut {
+    fn new() -> Self {
+        Self {
+            cut: std::sync::atomic::AtomicBool::new(false),
+            waker: SyncMutex::new(None),
+        }
+    }
+
+    /// Cut it. Whatever is parked on a read of this stream is woken to find it gone.
+    pub(crate) fn cut(&self) {
+        self.cut.store(true, std::sync::atomic::Ordering::Release);
+        let waker = self.waker.lock().unwrap().take();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    fn is_cut(&self) -> bool {
+        self.cut.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Remember who to wake, and say whether the stream is already cut. Checked AFTER the waker is
+    /// stored, so a cut landing between the two still wakes this poller.
+    fn park(&self, cx: &std::task::Context<'_>) -> bool {
+        *self.waker.lock().unwrap() = Some(cx.waker().clone());
+        self.is_cut()
+    }
+}
+
+/// A lower stream with a [`Cut`] on it. Reads end and writes fail once it is cut, which is what
+/// ends whatever is driving the stream — however deeply that driver has been handed the stream.
+pub(crate) struct Cuttable {
+    io: LowerIo,
+    cut: Arc<Cut>,
+}
+
+impl Cuttable {
+    /// Wrap a stream, handing back the seam that cuts it.
+    pub(crate) fn new(io: LowerIo) -> (Self, Arc<Cut>) {
+        let cut = Arc::new(Cut::new());
+        (
+            Self {
+                io,
+                cut: cut.clone(),
+            },
+            cut,
+        )
+    }
+}
+
+impl tokio::io::AsyncRead for Cuttable {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.cut.park(cx) {
+            // End of stream, which is what a socket the kernel has taken back reads as.
+            return std::task::Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut self.io).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for Cuttable {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        if self.cut.is_cut() {
+            return std::task::Poll::Ready(Err(std::io::Error::from(
+                std::io::ErrorKind::BrokenPipe,
+            )));
+        }
+        Pin::new(&mut self.io).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.cut.is_cut() {
+            return std::task::Poll::Ready(Err(std::io::Error::from(
+                std::io::ErrorKind::BrokenPipe,
+            )));
+        }
+        Pin::new(&mut self.io).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.cut.is_cut() {
+            return std::task::Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut self.io).poll_shutdown(cx)
+    }
+}
+
 /// How many inbound frames one connection may hold for a `frames()` consumer that is not keeping
 /// up — the per-unit frame buffer the architecture's backpressure rule names.
 pub(crate) const INBOUND_FRAME_BUFFER: usize = 64;
@@ -148,6 +263,10 @@ pub(crate) struct ConnState {
     /// shutdown, so calls already in flight end with their own trailers instead of being cut. A
     /// connection nothing can stop is one `close` only stops listing.
     pub(crate) shutdown: SyncMutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// The way to stop a DIALLED connection, where the accept side's graceful seam has no
+    /// counterpart: the HTTP/2 client's own driver holds the stream, so cutting the stream is what
+    /// ends it. See [`Cut`].
+    cut: SyncMutex<Option<Arc<Cut>>>,
     /// The composed stack this connection stands on, bottom layer first, ending in `grpc`. It is
     /// the layer below's chain plus this one, carried across the handoff — a connection that named
     /// only itself was one a location could not resolve against.
@@ -169,6 +288,7 @@ impl ConnState {
             next_local_stream: std::sync::atomic::AtomicU64::new(1),
             served_paths: SyncMutex::new(VecDeque::new()),
             shutdown: SyncMutex::new(None),
+            cut: SyncMutex::new(None),
             chain,
         })
     }
@@ -262,10 +382,25 @@ impl ConnState {
         *self.shutdown.lock().unwrap() = Some(stop);
     }
 
+    /// Remember how to cut the stream this connection runs on.
+    pub(crate) fn arm_cut(&self, cut: Arc<Cut>) {
+        *self.cut.lock().unwrap() = Some(cut);
+    }
+
     /// Ask that task to shut down, once. A connection already stopped stays stopped.
+    ///
+    /// Both seams fire: the accept side's graceful shutdown, where one was armed, and the cut on
+    /// the stream a dialled connection runs on. A dialled connection has no graceful seam to fire —
+    /// the driver holding its stream is one the HTTP/2 client spawned, and it ends only when every
+    /// request sender is gone AND every call on it has finished, neither of which a close can
+    /// promise about a peer that has stopped answering.
     pub(crate) fn stop(&self) {
         if let Some(stop) = self.shutdown.lock().unwrap().take() {
             let _ = stop.send(());
+        }
+        let cut = self.cut.lock().unwrap().take();
+        if let Some(cut) = cut {
+            cut.cut();
         }
     }
 

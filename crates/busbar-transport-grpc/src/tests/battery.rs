@@ -1254,3 +1254,58 @@ fn a_finished_call_cannot_end_the_one_that_reused_its_id() {
     assert!(state.end_call(7, second).is_some());
     assert!(state.call(7).is_none());
 }
+
+/// Closing a DIALLED connection lets its socket go.
+///
+/// The stop seam was armed only on the accept side, so `close` on a dialled connection fired
+/// nothing, and the task driving its HTTP/2 half could only finish once every request sender had
+/// dropped — while the connection state holding those senders was itself kept alive by that same
+/// task. The wait was circular: the socket, and the tasks on either end of it, outlived every
+/// caller that could have reached them. The peer sees it first — a connection whose dialler has
+/// closed must reach end-of-stream, not stay open on a descriptor nothing owns.
+#[tokio::test]
+async fn closing_a_dialled_connection_releases_its_socket() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    // The connection is really up: one call opens and arrives.
+    client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .await
+        .unwrap();
+    let mut server_frames = server_t.frames(server_conn.clone());
+    tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the call arrives")
+        .unwrap()
+        .unwrap();
+
+    // The dialling side is done with it.
+    client_t.close(
+        client_conn,
+        busbar_contract_transport::wire::CloseReason::Normal,
+    );
+
+    // The socket goes with it, which is what the accepting side sees: its own reader ends.
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while server_frames.next().await.is_some() {}
+    })
+    .await;
+    assert!(
+        ended.is_ok(),
+        "a closed dialled connection kept its socket open: the peer never saw end-of-stream"
+    );
+}

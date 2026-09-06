@@ -214,9 +214,14 @@ impl Transport for GrpcTransport {
                 .ok_or(TransportError::AddressRefused)?;
             let conn = lower.dial(&beneath, keys).await?;
             let (stream, chain) = self.take(lower, &conn)?;
+            // The stream goes to the HTTP/2 client wrapped in the seam that cuts it, and the seam
+            // is armed on the state below: a dialled connection nothing can stop is one `close`
+            // only stops listing, while the socket under it stays with a task no caller can reach.
+            let (stream, cut) = crate::conn::Cuttable::new(stream);
             let (dialer, origin, over) = client::handshake_h2(stream, authority).await?;
             let id = self.mint_id();
             let state = ConnState::new(Some((Arc::new(dialer), origin, method)), chain);
+            state.arm_cut(cut);
             self.conns.lock().unwrap().insert(id, state.clone());
             // When the HTTP/2 connection under this dial is over, so is anything that could arrive
             // on it: end the inbound side so a reader sees end-of-stream instead of waiting out its
