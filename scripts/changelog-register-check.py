@@ -60,8 +60,29 @@ def check(register_path: Path, changelog_path: Path):
     except OSError as exc:
         return [("<changelog>", "FAIL", f"could not read {changelog_path}: {exc}")], False
 
+    # THE OWED SET IS ONE JSON KEY, SO A MISSING KEY MUST BE RED, NOT EMPTY. `.get("accepted", [])`
+    # made "the register has nothing to name" and "this gate is no longer reading the register"
+    # indistinguishable: both produced zero rows, and main() calls zero rows a pass. The register is
+    # testing/shadow-oracle/accepted-differences.json — a file this gate does not own. Rename its
+    # `accepted` key in a differ refactor and this gate reports GREEN over every unnamed accepted
+    # difference in it, `kind: breaking` ones included. An `accepted` key holding an empty list is
+    # still an honest "nothing owed"; an ABSENT key is a gate that lost its input.
+    if not isinstance(register, dict) or "accepted" not in register:
+        keys = sorted(register) if isinstance(register, dict) else type(register).__name__
+        return [(
+            "<register>", "FAIL",
+            f"{register_path} has no `accepted` key (top level: {keys}) — this gate reads the "
+            f"register by that one key, so an absent key silently empties the owed set and would "
+            f"report GREEN over every accepted difference in the file",
+        )], False
+    entries = register["accepted"]
+    if not isinstance(entries, list):
+        return [(
+            "<register>", "FAIL",
+            f"{register_path}: `accepted` is {type(entries).__name__}, not a list — nothing can be "
+            f"enumerated from it",
+        )], False
     ok = True
-    entries = register.get("accepted", [])
     normalized_changelog = _normalize(changelog_text)
     for entry in entries:
         entry_id = entry.get("id", "<unnamed>")
@@ -266,6 +287,27 @@ def selftest() -> int:
         empty_register.write_text(json.dumps({"accepted": []}))
         rows, ok = check(empty_register, good_changelog)
         say(ok and rows == [], "no register entries -> zero rows, PASS")
+
+        # (d5) the OWED-SET KEY IS GONE -> FAIL, never "zero rows, nothing owed". (d4) above is the
+        # honest empty case; this is the one that used to look identical to it. The register belongs
+        # to the shadow-oracle differ, so its key can be renamed by someone who never reads this file.
+        renamed_register = tmp / "renamed.json"
+        renamed_register.write_text(
+            json.dumps(
+                {"differences": [{"id": "X-6", "kind": "breaking", "changelog": "nobody will ever check this"}]}
+            )
+        )
+        rows, ok = check(renamed_register, good_changelog)
+        say(
+            (not ok) and rows and rows[0][1] == "FAIL" and "no `accepted` key" in rows[0][2],
+            "register with the `accepted` key renamed -> FAIL, not a vacuous pass",
+        )
+
+        # (d6) `accepted` present but not a list -> FAIL rather than silently enumerating nothing
+        scalar_register = tmp / "scalar.json"
+        scalar_register.write_text(json.dumps({"accepted": {"X-7": {"kind": "breaking"}}}))
+        rows, ok = check(scalar_register, good_changelog)
+        say((not ok) and rows and rows[0][1] == "FAIL", "`accepted` that is not a list -> FAIL")
 
         # (e) missing register file -> FAIL, not a crash
         rows, ok = check(tmp / "does-not-exist.json", good_changelog)
