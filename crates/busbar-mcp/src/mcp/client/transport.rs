@@ -245,6 +245,9 @@ pub(crate) mod test_ca {
         /// under test cannot agree with a walk that read the wrong member.
         pub(crate) expected_pin: String,
         pub(crate) trust_anchor_ref: u64,
+        /// The GENERATION `trust_anchor_ref` was registered in, held for the life of this `LazyLock`
+        /// so the ref every test-build hop carries stays live. Never read; it is held for its `Drop`.
+        _anchors: busbar_substrate::plane_host::trust_anchor::TrustAnchorGeneration,
     }
 
     pub(crate) static TEST_CA: LazyLock<TestCa> = LazyLock::new(|| {
@@ -267,7 +270,8 @@ pub(crate) mod test_ca {
             .signed_by(&leaf_kp, &issuer)
             .expect("signed leaf");
 
-        let trust_anchor_ref = busbar_substrate::plane_host::trust_anchor::register(ca_der);
+        let anchors = busbar_substrate::plane_host::trust_anchor::TrustAnchorGeneration::install();
+        let trust_anchor_ref = anchors.register(ca_der);
         let expected_pin = format!(
             "sha256/{}",
             base64::engine::general_purpose::STANDARD
@@ -278,6 +282,7 @@ pub(crate) mod test_ca {
             leaf_key_pem: leaf_kp.serialize_pem(),
             expected_pin,
             trust_anchor_ref,
+            _anchors: anchors,
         }
     });
 }
