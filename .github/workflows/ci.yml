@@ -1353,8 +1353,15 @@ jobs:
         # fail this job and no coverage would ever upload. The report is still generated from every
         # test that ran. A real regression is caught by `check`, not here.
         run: cargo llvm-cov --workspace --locked --ignore-run-fail --lcov --output-path lcov.info
+      # PINNED BY COMMIT SHA, not by the mutable `v5` tag. This step is handed CODECOV_TOKEN, an
+      # org-level secret, and a third-party action referenced by a tag is whatever the tag points at
+      # on the morning it runs — the owner can move `v5` to any commit at any time, and the moved
+      # code executes here with that secret and the job's `GITHUB_TOKEN` in its environment. A sha is
+      # immutable, so the code that gets the token is the code that was reviewed. Bump deliberately:
+      # look up the tag's commit (`gh api repos/codecov/codecov-action/git/ref/tags/v5.x.y`) and
+      # replace both the sha and the version comment together.
       - name: Upload to Codecov (never fails the build)
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5.5.5
         with:
           # Codecov rejects tokenless uploads on protected branches (dev/qa/main) with
           # "Token required because branch is protected". This org-level secret authenticates
