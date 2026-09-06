@@ -531,5 +531,61 @@ else
   say FAIL "a shipped cell's 'compare' was refused: $(tail -3 "$W/out-x-ship.log")"
 fi
 
+# (y) THE HARNESS REVISION MUST COVER EVERY FILE THAT DECIDES A RECORDING OR A VERDICT. harness_rev
+# is the ONE fact that lets diff-cells refuse a golden and a candidate made under different rules,
+# and four files that decide exactly that were outside it: testing/fleet-fixtures/lib.sh (record.sh
+# and all 20 drivers source it — it supplies `record`, the writer of the ledger rows the differ reads
+# to decide what is OWED), renormalize.sh (rewrites an existing recording's cells in place),
+# accepted-differences.json and owed-baseline.txt (the register and the floor the replay is judged
+# against). Each could change while every recording on disk went on claiming the same revision.
+# Proven by MUTATION, over a copy of the real tree: change the file, the rev must move.
+hrtree="$W/hrtree/testing"
+mkdir -p "$hrtree"
+cp -R "${here}" "$hrtree/shadow-oracle"
+rm -rf "$hrtree/shadow-oracle/golden"
+mkdir -p "$hrtree/fleet-fixtures"
+cp "${here}/../fleet-fixtures/lib.sh" "$hrtree/fleet-fixtures/lib.sh"
+hr_of() { bash "$hrtree/shadow-oracle/harness-rev.sh" | awk '{print $2}'; }
+hr0="$(hr_of)"
+[ -n "$hr0" ] || say FAIL "harness-rev.sh printed no revision over the copied tree"
+for hf in shadow-oracle/renormalize.sh shadow-oracle/accepted-differences.json \
+          shadow-oracle/owed-baseline.txt fleet-fixtures/lib.sh; do
+  printf '\n# harness-rev selftest mutation\n' >>"$hrtree/$hf"
+  hrN="$(hr_of)"
+  if [ -n "$hrN" ] && [ "$hrN" != "$hr0" ]; then
+    say PASS "harness_rev moves when ${hf} changes"
+  else
+    say FAIL "harness_rev did NOT move when ${hf} changed — a recording made under a different ${hf} claims the same revision, and the skew guard has nothing to see"
+  fi
+  # put it back, so each file is proven on its own and the loop compares against the same hr0
+  cp "${here}/../${hf#shadow-oracle/}" "$hrtree/$hf" 2>/dev/null \
+    || cp "${here}/${hf#shadow-oracle/}" "$hrtree/$hf"
+  [ "$(hr_of)" = "$hr0" ] || say FAIL "restoring ${hf} did not restore the revision (the selftest's own fixture drifted)"
+done
+
+# (z) A RE-NORMALIZED RECORDING SAYS SO. renormalize.sh rewrites the normalized cells of a recording
+# that is already on disk, and it is itself in the harness-rev set — so after it runs, the recording
+# holds cells THIS harness wrote while meta.json still named the harness that recorded them. The skew
+# guard then compares two stale stamps, finds them equal, and permits a comparison across a
+# normalizer change. The rewrite has to move the stamp.
+rn="$W/renorm"; mkdir -p "$rn/cells" "$rn/raw/cli__--version"
+printf '%s\n' '{"status":0,"headers":{},"body":"busbar 1.5.5\\n","effects":{"stderr":""}}' >"$rn/raw/cli__--version/captured.json"
+printf '%s\n' '{"binary":"fixture","version":"busbar fixture","recorded":1,"harness_rev":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}' >"$rn/meta.json"
+if bash "${here}/renormalize.sh" "$rn" >"$W/renorm.log" 2>&1; then
+  now="$(bash "${here}/harness-rev.sh" | awk '{print $2}')"
+  got="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("harness_rev",""))' "$rn/meta.json")"
+  hist="$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("harness_rev_history",[])))' "$rn/meta.json")"
+  if [ "$got" = "$now" ]; then
+    say PASS "renormalize.sh re-stamps harness_rev after rewriting a recording's cells"
+  else
+    say FAIL "renormalize.sh rewrote cells but left harness_rev at '${got:0:12}' (this harness is ${now:0:12}) — the recording claims a harness that did not write its cells"
+  fi
+  case "$hist" in *deadbeefdeadbeef*) say PASS "the superseded harness_rev is kept in harness_rev_history" ;;
+    *) say FAIL "renormalize.sh dropped the superseded harness_rev instead of recording it (history: ${hist:-<empty>})" ;;
+  esac
+else
+  say FAIL "renormalize.sh failed on a minimal recording: $(tail -3 "$W/renorm.log")"
+fi
+
 echo
 [ "$fails" -eq 0 ] && echo "replay selftest: GREEN" || { echo "replay selftest: RED ($fails)"; exit 1; }
