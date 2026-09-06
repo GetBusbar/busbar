@@ -340,6 +340,36 @@ def check(root: str) -> Finding:
                 "build that ought to match it."
             )
 
+        # R13. NOTHING THE IMAGE SHIPS IS FETCHED FROM A MOVING REF.
+        #
+        # docker.yml checks out GetBusbar/headroom-hook at `HEADROOM_HOOK_REF`, builds its cdylib,
+        # SIGNS the tarball with cosign, and bundles it pre-installed into the shipped image. That
+        # ref was `dev` - a branch. A branch is not an input, it is a subscription: two builds of the
+        # same busbar release pick up different plugin bytes, the cosign signature attests to both
+        # with equal confidence, and nothing in the release record can say which one a user has. A
+        # signature over an unpinned input signs the pipeline, not the artifact - which is the whole
+        # property signing exists to provide. `latest`/`main`/`dev`/`HEAD` and a bare tag are all the
+        # same defect: a tag can be force-moved, so only a 40-hex commit sha is immutable.
+        #
+        # This also refuses the `TODO-PIN` placeholder, so a pin that could not be resolved at edit
+        # time blocks the release rather than shipping as a comment nobody reads.
+        m = re.search(r"^\s*HEADROOM_HOOK_REF:\s*([^\s#]+)", docker, re.M)
+        if m is None:
+            bad.append(
+                "R13 docker.yml no longer declares `HEADROOM_HOOK_REF`. The headroom-hook checkout "
+                "it pins is still built, signed and bundled into the shipped image, so removing the "
+                "variable removes the pin, not the dependency."
+            )
+        elif not re.fullmatch(r"[0-9a-f]{40}", m.group(1)):
+            bad.append(
+                "R13 docker.yml's `HEADROOM_HOOK_REF` is `%s`, which is not a 40-hex commit sha. "
+                "This workflow builds that source, SIGNS it, and ships it inside the released image; "
+                "a moving ref (a branch, `latest`, `HEAD`, a force-movable tag, or a `TODO-PIN` "
+                "placeholder) means the signed bytes are 'whatever was there at build time' and the "
+                "signature attests to nothing reproducible. Re-pin along dev with:\n"
+                "    gh api repos/GetBusbar/headroom-hook/commits/dev -q .sha" % m.group(1)
+            )
+
     # R9. NOTHING IS RELEASED FROM A RED COMMIT, AND THERE IS NO WAY AROUND IT.
     #
     # Owner, 2026-08-08: "nothing should ever be released red", "or ignored", and on the question of
@@ -761,6 +791,24 @@ MUTATIONS = [
         lambda t: t.replace('git -C "$pub" push origin "HEAD:refs/heads/proof-manifests"',
                             'git push origin main'),
         "R11",
+    ),
+    (
+        "R13 the bundled plugin goes back to a moving branch ref",
+        "docker.yml",
+        lambda t: re.sub(r"^  HEADROOM_HOOK_REF: .*$", "  HEADROOM_HOOK_REF: dev", t, flags=re.M),
+        "R13",
+    ),
+    (
+        "R13 the pin is left as an unresolved placeholder",
+        "docker.yml",
+        lambda t: re.sub(r"^  HEADROOM_HOOK_REF: .*$", "  HEADROOM_HOOK_REF: TODO-PIN", t, flags=re.M),
+        "R13",
+    ),
+    (
+        "R13 the pin is a force-movable tag rather than a sha",
+        "docker.yml",
+        lambda t: re.sub(r"^  HEADROOM_HOOK_REF: .*$", "  HEADROOM_HOOK_REF: v2.0.21", t, flags=re.M),
+        "R13",
     ),
     (
         "R8 verify-deploy drops the staging inputs",
