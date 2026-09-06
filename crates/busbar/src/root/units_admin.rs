@@ -1971,6 +1971,14 @@ impl AdminNode {
             self.next_key
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         );
+        // The arrival clock, read ONCE and read where the request arrived. Every step that asks what
+        // time it is for this unit — the auth unit's expiry and revocation window, the verbs unit's
+        // rate class, the nonce the one-time secrets bind to — is handed this same number, so a
+        // second reading here would put the in-flight table's idea of when the unit arrived after
+        // the one every other step works from. The gap is small and the disagreement is not: a
+        // credential can expire between two readings, and then the unit is authenticated against one
+        // clock and aged against another.
+        let arrived_at = request.at;
         self.units.admin.units.open(key, request);
         // From here the unit occupies two tables, and every way out of this function gives both
         // back — including the way a panicking step takes.
@@ -1993,7 +2001,7 @@ impl AdminNode {
             provider_of_open_session: false,
             zero_hold_tick: false,
             arrival,
-            now: busbar_substrate::store::now_ms(),
+            now: arrived_at,
         });
 
         let answer = match entered {
