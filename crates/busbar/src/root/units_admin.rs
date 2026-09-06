@@ -2439,6 +2439,54 @@ impl AdminDispatch for RouterDispatch {
     }
 }
 
+/// The name of the second carrier the administrative surface has always accepted.
+///
+/// Not a synonym this root invented: the pinned document advertises it as a security scheme of its
+/// own, and a deployment's tooling is free to have picked either. Spelt as a constant because it is
+/// a wire name, and a wire name written twice is a wire name that can be written two ways.
+#[cfg(feature = "root-admin")]
+const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
+
+/// The credential this request presents, whichever of the two carriers it came in.
+///
+/// TWO CARRIERS, NOT ONE. The previous release folds `Authorization: Bearer …` and `x-admin-token`
+/// together and accepts either; this used to read only the first, which was invisible for exactly as
+/// long as the loop admitted anonymously and the surface underneath did the deciding. The moment a
+/// closed chain runs here, every deployment whose tooling sends the second header would be refused
+/// by a node that had accepted it the day before — and the refusal would look like a revoked
+/// credential rather than like a carrier this root forgot to read.
+///
+/// The scheme prefix is stripped ONCE and case-insensitively. `Bearer` is a case-insensitive token
+/// on the wire, so `bearer <t>` is the same credential as `Bearer <t>`; and a token that itself
+/// began with the word would previously have had it stripped again, turning one caller's valid
+/// secret into a different string. Anything that is not the bearer scheme is handed on as presented,
+/// because deciding what an unrecognised scheme means is the chain's and not this reader's.
+#[cfg(feature = "root-admin")]
+fn presented_credential(headers: &axum::http::HeaderMap) -> Option<String> {
+    let bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            let trimmed = value.trim_start();
+            match trimmed.split_once(' ') {
+                Some((scheme, rest)) if scheme.eq_ignore_ascii_case("bearer") => {
+                    rest.trim_start().to_string()
+                }
+                _ => trimmed.to_string(),
+            }
+        })
+        .filter(|credential| !credential.is_empty());
+    // The order is the legacy fold's: both carriers are recognised and either identifies, so a
+    // request that sends only the second is a request that presented a credential.
+    bearer.or_else(|| {
+        headers
+            .get(ADMIN_TOKEN_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+            .filter(|credential| !credential.is_empty())
+    })
+}
+
 /// Header names and values as owned pairs, in emission order.
 ///
 /// A header value is bytes rather than text, and this is the one place that matters: rendering it
@@ -2567,11 +2615,7 @@ pub fn mount(
                         .uri
                         .path_and_query()
                         .map_or_else(|| parts.uri.path().to_string(), ToString::to_string),
-                    credential: parts
-                        .headers
-                        .get(axum::http::header::AUTHORIZATION)
-                        .and_then(|v| v.to_str().ok())
-                        .map(|v| v.trim_start_matches("Bearer ").to_string()),
+                    credential: presented_credential(&parts.headers),
                     headers: header_pairs(&parts.headers),
                     body: bytes.to_vec(),
                     at: std::time::SystemTime::now()
@@ -3864,6 +3908,68 @@ mod tests {
         }
         // And bytes that are not text at all.
         assert_eq!(backup_ref_of(&[0xff, 0xfe]), None);
+    }
+
+    /// Both carriers the administrative surface accepts reach the loop as one credential.
+    ///
+    /// The reader is what a closed chain here would judge, so every form a deployment's tooling
+    /// actually sends has to arrive as the secret itself and nothing else. Each row below is a
+    /// caller that works against the previous release today: the two carriers, the scheme spelt in
+    /// either case, and a token whose own first word is the scheme's — that last one is why the
+    /// strip is single, because stripping repeatedly hands the chain a different string from the one
+    /// the caller holds.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn either_carrier_reaches_the_loop_as_the_credential_itself() {
+        let presented = |name: &str, value: &str| -> Option<String> {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).expect("a header name"),
+                axum::http::HeaderValue::from_str(value).expect("a header value"),
+            );
+            presented_credential(&headers)
+        };
+        let secret = "shadow-oracle-admin";
+
+        for value in [
+            format!("Bearer {secret}"),
+            format!("bearer {secret}"),
+            format!("BEARER {secret}"),
+            format!("Bearer  {secret}"),
+            format!("  Bearer {secret}"),
+        ] {
+            assert_eq!(
+                presented("authorization", &value).as_deref(),
+                Some(secret),
+                "{value:?} did not arrive as the secret"
+            );
+        }
+        assert_eq!(
+            presented(ADMIN_TOKEN_HEADER, secret).as_deref(),
+            Some(secret),
+            "the second carrier is a carrier"
+        );
+
+        // A token whose own first word is the scheme. Stripped once it is itself; stripped
+        // repeatedly it becomes somebody else's string, and the chain judges the wrong secret.
+        assert_eq!(
+            presented("authorization", "Bearer Bearer token").as_deref(),
+            Some("Bearer token")
+        );
+        // A scheme this reader does not know is handed on as presented; what it means is the
+        // chain's to decide, not this reader's to guess.
+        assert_eq!(
+            presented("authorization", "Basic abc123").as_deref(),
+            Some("Basic abc123")
+        );
+        // And nothing presented is nothing presented -- an empty carrier is not a credential.
+        assert_eq!(presented("authorization", "Bearer ").as_deref(), None);
+        assert_eq!(presented(ADMIN_TOKEN_HEADER, "").as_deref(), None);
+        assert_eq!(
+            presented_credential(&axum::http::HeaderMap::new()),
+            None,
+            "a request with no carrier at all presents nothing"
+        );
     }
 
     /// These three verbs and no others land on the store.
