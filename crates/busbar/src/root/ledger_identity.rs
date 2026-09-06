@@ -452,6 +452,70 @@ mod tests {
         (ledger_snapshot, legacy_snapshot, rows.written())
     }
 
+    /// GREEN: every row the dual write produced carries the figures its posting moved.
+    ///
+    /// Counting the rows says only that something was written; it says nothing about what. A row
+    /// carrying zero, or carrying the reservation where the spend goes, would be a parity
+    /// obligation quietly unmet — and the previous release's readers, which are the whole reason
+    /// the dual write exists, would be reading a lie that reconciles. So every posting is checked
+    /// against the settlement it came from, field by field, and the reservations on each row are
+    /// checked against the same row's money on the ledger side.
+    #[test]
+    fn every_dual_written_row_carries_the_figures_its_posting_moved() {
+        let s = settlements();
+        let (ledger, _legacy, written) = drive(&s, None);
+        assert_eq!(
+            written.len(),
+            s.len(),
+            "the dual write must put every settlement onto the previous release's rows"
+        );
+
+        let card = card();
+        let pinned = card.pin();
+        let mut reserved_per_row: BTreeMap<RowKey, u128> = BTreeMap::new();
+        for (i, (posting, settlement)) in written.iter().zip(s.iter()).enumerate() {
+            let usage = Usage::report(&usage_token(), lines(settlement.input, settlement.output))
+                .expect("the usage report is within the line limit");
+            let priced = price(
+                &pinned,
+                settlement.lane,
+                &usage,
+                u64::from(settlement.billable),
+                STANDARD_TIER_BP,
+            );
+            let reserved = priced.priced_amount().min(u128::from(u64::MAX)) as u64;
+
+            assert_eq!(
+                posting.principal, settlement.bucket,
+                "posting {i}: principal"
+            );
+            assert_eq!(posting.bucket, settlement.bucket, "posting {i}: bucket");
+            assert_eq!(posting.window_start, DAY, "posting {i}: window");
+            assert_eq!(posting.reserved, reserved, "posting {i}: reservation");
+            assert_eq!(
+                posting.settled,
+                settlement.input + settlement.output,
+                "posting {i}: what the usage report said was used"
+            );
+            assert_ne!(
+                posting.settled, posting.reserved,
+                "posting {i}: the fixture must price a unit at something other than its own \
+                 quantity, or the two fields could be transposed and nothing would notice"
+            );
+            assert_eq!(posting.overdraft, 0, "posting {i}: overdraft");
+
+            let row = RowKey::new(settlement.bucket, DAY, settlement.lane, settlement.provider);
+            *reserved_per_row.entry(row).or_default() += u128::from(reserved);
+        }
+
+        for (row, reserved) in reserved_per_row {
+            assert_eq!(
+                ledger[&row].priced_nanos, reserved,
+                "the rows written for {row:?} do not add up to the money the ledger posted"
+            );
+        }
+    }
+
     /// GREEN: sixteen settlements through both paths, and every row reconciles exactly.
     #[test]
     fn the_two_paths_agree_on_every_row() {
