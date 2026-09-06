@@ -80,6 +80,8 @@
 //! crate with all five legs on and executes every named root cell, refusing a run in which a named
 //! cell did not execute. `scripts/verify-1.6.0-done.sh`'s EQUALITY group calls it.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -161,6 +163,158 @@ fn repo_root() -> PathBuf {
         .join("../..")
         .canonicalize()
         .expect("the repository root must exist")
+}
+
+// ---------------------------------------------------------------------------
+// WHAT COUNTS AS EVIDENCE.
+//
+// A `proven` cell names an instrument, and this is what "the instrument exists" is allowed to mean.
+// It used to mean `src.contains("fn NAME(")` — a substring. Under that rule a cell stays proven when
+// its named function is a plain helper, or a `fn` in a doc comment, or an empty body: the claim is
+// that something was WATCHED, and the evidence was that a name appears in a file. So the three
+// things a claim of proof actually asserts are each checked here:
+//
+//   1. the named fn is TEST CODE — inside a `#[cfg(test)]` module or a test file. The root column's
+//      evidence lives in `crates/busbar/src/root/units_*.rs`, which are production files carrying
+//      their own test modules, so file location alone cannot answer this and the classifier does;
+//   2. it is a TEST — carrying `#[test]`, `#[tokio::test]` or another test attribute. A helper the
+//      harness never runs is not an instrument that was watched;
+//   3. it ASSERTS something — directly, or through one hop into a helper in the same file (the
+//      `battery(binding, envelope()).await` shape this tree uses for a per-binding matrix). A test
+//      whose body asserts nothing passes unconditionally and proves exactly nothing.
+// ---------------------------------------------------------------------------
+
+/// What an assertion looks like. `expect`/`unwrap` are deliberately NOT here: they say a value was
+/// the shape the test assumed, which is a precondition, not the thing under test.
+const ASSERTION_TOKENS: &[&str] = &[
+    "assert!",
+    "assert_eq!",
+    "assert_ne!",
+    "assert_matches!",
+    "debug_assert!",
+    "debug_assert_eq!",
+    "debug_assert_ne!",
+    "expect_err(",
+    "unwrap_err(",
+];
+
+/// Whether an attribute line marks the item below it as a test the harness runs. `#[test]`,
+/// `#[tokio::test]`, `#[tokio::test(flavor = "…")]` and `#[rstest]` all satisfy it.
+fn is_test_attribute(code: &str) -> bool {
+    let t = code.trim();
+    t.starts_with("#[") && (t.contains("test]") || t.contains("test("))
+}
+
+/// Whether a body — a slice of classified lines — asserts anything itself.
+fn asserts_directly(body: &[&common::Line]) -> bool {
+    body.iter()
+        .any(|l| ASSERTION_TOKENS.iter().any(|tok| l.code.contains(tok)))
+}
+
+/// The bare identifiers a body CALLS, so one hop into a same-file helper can be followed. Crude on
+/// purpose: this is used only to widen what counts as asserting, never to narrow it.
+fn called_idents(body: &[&common::Line]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for line in body {
+        let chars: Vec<char> = line.code.chars().collect();
+        let mut i = 0usize;
+        while i < chars.len() {
+            if chars[i] == '(' {
+                let mut j = i;
+                while j > 0 && (chars[j - 1].is_ascii_alphanumeric() || chars[j - 1] == '_') {
+                    j -= 1;
+                }
+                if j < i && !chars[j].is_ascii_digit() {
+                    out.insert(chars[j..i].iter().collect::<String>());
+                }
+            }
+            i += 1;
+        }
+    }
+    out
+}
+
+/// THE EVIDENCE CHECK. `kind` names the column so the failure reads as the caller's own.
+fn named_test_is_real(root: &Path, id: &str, test: &str, kind: &str) -> Result<(), String> {
+    let (file, func) = test.split_once("::").ok_or_else(|| {
+        format!("{kind} `{id}`: `test` must be `<repo-relative file>::<test fn>`, got {test:?}")
+    })?;
+    let path = root.join(file);
+    let src = std::fs::read_to_string(&path).map_err(|e| {
+        format!(
+            "{kind} `{id}` is `proven` by {test}, but {file} cannot be read ({e}). A verdict whose \
+             evidence vanished has REGRESSED: restore the test or flip the cell, in the same \
+             commit, so the queue tells the truth."
+        )
+    })?;
+
+    let lines = common::classify(&src, common::is_test_path(Path::new(file)));
+    let sig = format!("fn {func}(");
+    let at = lines.iter().position(|l| l.code.contains(&sig)).ok_or_else(|| {
+        format!(
+            "{kind} `{id}` is `proven` by {test}, but no `fn {func}(` exists in {file}. The named \
+             instrument is gone or renamed; a claim that outlives its evidence is exactly the \
+             drift this gate exists to stop. Restore or rename the reference, or flip the cell."
+        )
+    })?;
+
+    // (1) It is test code. A production `fn` with the right name is not an instrument that ran.
+    if !lines[at].intest {
+        return Err(format!(
+            "{kind} `{id}` is `proven` by {test}, but `fn {func}(` in {file} is PRODUCTION code — \
+             it is not inside a `#[cfg(test)]` module and {file} is not a test file. Evidence must \
+             be a test that ran, not a pointer at the code the test would have exercised."
+        ));
+    }
+
+    // (2) It is a test the harness runs, not a helper that merely lives among tests.
+    let mut has_attr = false;
+    let mut i = at;
+    while i > 0 {
+        i -= 1;
+        let code = lines[i].code.trim();
+        if code.is_empty() {
+            continue;
+        }
+        if code.starts_with("#[") || code.starts_with("#!") {
+            if is_test_attribute(code) {
+                has_attr = true;
+                break;
+            }
+            continue;
+        }
+        // Anything else is the previous item; the attribute block is over.
+        break;
+    }
+    if !has_attr {
+        return Err(format!(
+            "{kind} `{id}` is `proven` by {test}, but `fn {func}(` in {file} carries no test \
+             attribute (`#[test]`, `#[tokio::test]`, …). It is a helper the harness never runs, so \
+             nothing was watched and the cell is a claim about a function that was merely compiled."
+        ));
+    }
+
+    // (3) It asserts something — directly, or one hop into a same-file helper.
+    let body = common::item_body(&lines, &sig).ok_or_else(|| {
+        format!("{kind} `{id}`: `fn {func}(` in {file} has no body this gate could read")
+    })?;
+    if asserts_directly(&body) {
+        return Ok(());
+    }
+    for callee in called_idents(&body) {
+        let csig = format!("fn {callee}(");
+        if let Some(hb) = common::item_body(&lines, &csig) {
+            if asserts_directly(&hb) {
+                return Ok(());
+            }
+        }
+    }
+    Err(format!(
+        "{kind} `{id}` is `proven` by {test}, but the body of `fn {func}(` in {file} asserts \
+         NOTHING — neither directly nor through a helper in the same file. A test with no assertion \
+         passes whatever the code does, including doing nothing at all, so it is evidence of \
+         compilation and not of behaviour. Assert what the cell claims, or flip the cell."
+    ))
 }
 
 /// What the verifier concluded. `missing` keeps the ids so the caller can print the queue.
@@ -277,24 +431,8 @@ fn verify(
                          `*_tests.rs`). Evidence must be a test, not a pointer at production code."
                     ));
                 }
-                let path = root.join(file);
-                let src = std::fs::read_to_string(&path).map_err(|e| {
-                    format!(
-                        "cell `{id}` is `proven` by {test}, but {file} cannot be read ({e}). \
-                         A proven cell whose evidence vanished has REGRESSED: either restore the \
-                         test or flip the cell to `missing` -- in the same commit, so the queue \
-                         tells the truth."
-                    )
-                })?;
-                let sig = format!("fn {func}(");
-                if !src.contains(&sig) {
-                    return Err(format!(
-                        "cell `{id}` is `proven` by {test}, but no `fn {func}(` exists in {file}. \
-                         The named instrument is gone or renamed; a claim that outlives its \
-                         evidence is exactly the drift this gate exists to stop. Restore or rename \
-                         the reference, or flip the cell to `missing`."
-                    ));
-                }
+                let _ = func;
+                named_test_is_real(root, &id, test, "cell")?;
                 out.proven += 1;
             }
             Some("missing") => {
@@ -366,24 +504,7 @@ fn sibling_tests_file(file: &str) -> String {
 }
 
 fn named_fn_exists(root: &Path, id: &str, test: &str) -> Result<(), String> {
-    let (file, func) = test.split_once("::").ok_or_else(|| {
-        format!("root cell `{id}`: `test` must be `<repo-relative file>::<test fn>`, got {test:?}")
-    })?;
-    let src = std::fs::read_to_string(root.join(file)).map_err(|e| {
-        format!(
-            "root cell `{id}` is `proven` by {test}, but {file} cannot be read ({e}). A root \
-             verdict whose evidence vanished has REGRESSED: restore the cell or flip the root \
-             verdict to `none` with the reason, in the same commit."
-        )
-    })?;
-    if !src.contains(&format!("fn {func}(")) {
-        return Err(format!(
-            "root cell `{id}` is `proven` by {test}, but no `fn {func}(` exists in {file}. The \
-             named loop cell is gone or renamed; a claim that outlives its evidence is the drift \
-             this gate exists to stop."
-        ));
-    }
-    Ok(())
+    named_test_is_real(root, id, test, "root cell")
 }
 
 /// THE ONE ROOT VERDICT, driven by the real gate and by the fixture self-tests alike.
@@ -896,16 +1017,23 @@ fn every_workspace_plane_crate_maps_to_at_least_one_ledger_column() {
 //    House rule: a gate that cannot fail is worse than none.
 // ---------------------------------------------------------------------------
 
+/// THE SHAPE REAL EVIDENCE HAS: a test attribute, a test location, and a body that asserts. The
+/// fixture used to plant `#[test] fn the_named_instrument() {}` — an EMPTY body — and the verifier
+/// accepted it, which meant the self-tests proved the gate accepted exactly what it must refuse.
+const GREEN_FIXTURE_TEST: &str = "\
+#[test]
+fn the_named_instrument() {
+    assert_eq!(2 + 2, 4);
+}
+";
+
 /// A small well-formed matrix (2 capabilities x 2 planes) whose one proven cell points at a fixture
 /// test file this helper plants on disk. Each red case below breaks exactly one thing.
 fn fixture(root: &Path) -> serde_json::Value {
     let tests_dir = root.join("crates/x/tests");
     std::fs::create_dir_all(&tests_dir).expect("fixture tests dir");
-    std::fs::write(
-        tests_dir.join("real_tests.rs"),
-        "#[test]\nfn the_named_instrument() {}\n",
-    )
-    .expect("fixture test file");
+    std::fs::write(tests_dir.join("real_tests.rs"), GREEN_FIXTURE_TEST)
+        .expect("fixture test file");
     serde_json::json!({
         "capabilities": {
             "cap-a": "a capability defined at argument length for the fixture",
@@ -992,6 +1120,114 @@ fn selftest_a_proven_cell_whose_named_test_vanished_is_red() {
     }
 }
 
+/// (a2) THE THREE WAYS A NAMED INSTRUMENT IS NOT ONE. `fn NAME(` appearing in a file was the whole
+/// evidence check; each case below plants a file in which that substring is present and the claim
+/// is still false. The EMPTY BODY is the one that mattered most — it is what the fixture itself
+/// used to plant, so the self-tests were proving the gate accepted what it exists to refuse.
+#[test]
+fn selftest_a2_an_instrument_that_asserts_nothing_or_never_runs_is_refused() {
+    // An empty body. The name is there, the attribute is there, and the test passes whatever the
+    // code does — including nothing at all.
+    let root = scratch("empty-body");
+    let doc = fixture(&root);
+    std::fs::write(
+        root.join("crates/x/tests/real_tests.rs"),
+        "#[test]\nfn the_named_instrument() {}\n",
+    )
+    .unwrap();
+    let err = verify(&doc, &root, &["p1", "p2"], 2)
+        .expect_err("a test whose body asserts nothing is not evidence");
+    assert!(
+        err.contains("asserts \nNOTHING") || err.contains("asserts NOTHING"),
+        "the error must say the body asserts nothing; got: {err}"
+    );
+
+    // A HELPER, not a test: the harness never runs it, so nothing was watched.
+    let root2 = scratch("no-attr");
+    let doc2 = fixture(&root2);
+    std::fs::write(
+        root2.join("crates/x/tests/real_tests.rs"),
+        "fn the_named_instrument() {\n    assert_eq!(1, 1);\n}\n",
+    )
+    .unwrap();
+    let err2 = verify(&doc2, &root2, &["p1", "p2"], 2)
+        .expect_err("a helper the harness never runs is not an instrument");
+    assert!(err2.contains("no test attribute"), "got: {err2}");
+
+    // PRODUCTION CODE inside a file the location rule allows: a `*_tests.rs` whose named fn sits
+    // outside every test module. The location check passes and the claim is still false.
+    let root3 = scratch("prod-in-test-file");
+    let mut doc3 = fixture(&root3);
+    std::fs::create_dir_all(root3.join("crates/x/src/tests")).unwrap();
+    std::fs::write(
+        root3.join("crates/x/src/tests/leg_tests.rs"),
+        "pub fn the_named_instrument() {\n    assert_eq!(1, 1);\n}\n",
+    )
+    .unwrap();
+    doc3["cells"][0]["test"] = "crates/x/src/tests/leg_tests.rs::the_named_instrument".into();
+    // A `*_tests.rs` IS a test file by the classifier's own rule, so this one is caught by the
+    // attribute check rather than the location check — which is the point: two independent
+    // conditions, and the substring satisfies neither.
+    let err3 = verify(&doc3, &root3, &["p1", "p2"], 2)
+        .expect_err("a bare fn in a tests file is not a test that ran");
+    assert!(err3.contains("no test attribute"), "got: {err3}");
+
+    for r in [root, root2, root3] {
+        let _ = std::fs::remove_dir_all(&r);
+    }
+}
+
+/// The ROOT column's evidence lives in production files, so its own three refusals are proven
+/// separately: the same substring, in a doc comment and in the production fn beside it, must not
+/// stand in for the loop cell.
+#[test]
+fn selftest_a3_root_evidence_that_is_production_or_asserts_nothing_is_refused() {
+    // The named fn is PRODUCTION code in the leg. `src.contains("fn NAME(")` said yes.
+    let root = scratch("root-prod-evidence");
+    let doc = root_fixture(&root);
+    std::fs::write(
+        root.join(ROOT_DIR).join("units_a.rs"),
+        "pub fn the_loop_cell() -> u32 {\n    7\n}\n",
+    )
+    .unwrap();
+    let err = verify_root(&doc, &root, &FIXTURE_LEGS, 1)
+        .expect_err("production code is not a loop cell that ran");
+    assert!(err.contains("PRODUCTION code"), "got: {err}");
+
+    // The loop cell exists, is a test, and asserts nothing.
+    let root2 = scratch("root-empty-body");
+    let doc2 = root_fixture(&root2);
+    std::fs::write(
+        root2.join(ROOT_DIR).join("units_a.rs"),
+        "#[cfg(test)]\nmod tests {\n    #[test]\n    fn the_loop_cell() {}\n}\n",
+    )
+    .unwrap();
+    let err2 = verify_root(&doc2, &root2, &FIXTURE_LEGS, 1)
+        .expect_err("a loop cell that asserts nothing is not evidence the loop did anything");
+    assert!(err2.contains("asserts"), "got: {err2}");
+
+    for r in [root, root2] {
+        let _ = std::fs::remove_dir_all(&r);
+    }
+}
+
+/// The widening is deliberate and bounded: a test whose assertion lives in a same-file helper it
+/// calls (the per-binding `battery(…)` shape this tree uses) is still evidence. One hop, same file.
+#[test]
+fn selftest_a4_an_assertion_one_hop_into_a_same_file_helper_still_counts() {
+    let root = scratch("one-hop");
+    let doc = fixture(&root);
+    std::fs::write(
+        root.join("crates/x/tests/real_tests.rs"),
+        "fn battery(binding: u32) {\n    assert_eq!(binding, 1);\n}\n\n\
+         #[tokio::test]\nasync fn the_named_instrument() {\n    battery(1);\n}\n",
+    )
+    .unwrap();
+    verify(&doc, &root, &["p1", "p2"], 2)
+        .expect("an assertion one hop into a same-file helper is still an assertion");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// (b) A pinned file that disagrees with the computed cross product -- a hole, a duplicate, or a
 /// cell naming an undeclared axis -- must be red. An absent cell and a considered cell look
 /// identical on the page; only the computation tells them apart.
@@ -1072,13 +1308,35 @@ const LONG_ARG: &str =
                         real claim about the plane rather than an omission, and therefore costs a \
                         longer sentence than an ordinary gap does";
 
+/// A planted root leg: production code, and a `#[cfg(test)]` module carrying the loop cell that
+/// proves it. The `fn the_loop_cell(` name also appears in a doc comment above the production fn,
+/// which is a substring match the old evidence check would have accepted on its own.
+const GREEN_ROOT_FIXTURE_LEG: &str = "\
+/// The production step. See `fn the_loop_cell(` below for the instrument.
+pub fn meter() -> u32 {
+    7
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_loop_cell() {
+        assert_eq!(meter(), 7);
+    }
+}
+";
+
 /// Two legs over two planes, one leg per plane, with a planted root file per leg. `leg-a` proves its
 /// one non-n/a cell; `leg-b` proves one and names one honest gap.
 fn root_fixture(root: &Path) -> serde_json::Value {
     let dir = root.join(ROOT_DIR);
     std::fs::create_dir_all(&dir).expect("fixture root dir");
+    // A ROOT LEG IS A PRODUCTION FILE that carries its own test module, which is exactly why the
+    // evidence check cannot answer "is this a test?" from the path. The fixture has that shape.
     for f in ["units_a.rs", "units_b.rs"] {
-        std::fs::write(dir.join(f), "#[test]\nfn the_loop_cell() {}\n").expect("fixture leg file");
+        std::fs::write(dir.join(f), GREEN_ROOT_FIXTURE_LEG).expect("fixture leg file");
     }
     serde_json::json!({
         "capabilities": { "cap-a": ARG, "cap-b": ARG },
