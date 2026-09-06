@@ -292,3 +292,60 @@ fn satisfaction_is_a_decided_table_not_a_declaration_order() {
         );
     }
 }
+
+/// The reserved-id rule is about MODULES, and applies only to them.
+///
+/// A virtual key's own id starts with `vk_` — that prefix is reserved precisely so that nothing
+/// BUT the key directory can mint an id in it. Applying the rule to the engine's own signed-key arm
+/// therefore refuses every real key: the arm does not synthesize an identity, it resolves the one
+/// the directory issued. A boxed module, which cannot resolve a key, is still refused.
+#[test]
+fn the_reserved_id_rule_binds_modules_and_not_the_engines_own_key_arm() {
+    struct Resolves;
+    impl crate::chain::KeyVerifier for Resolves {
+        fn verify_token(
+            &self,
+            _token: &str,
+            _now: u64,
+            _expected_aud: Option<&str>,
+        ) -> Option<crate::chain::ResolvedKey> {
+            Some(crate::chain::ResolvedKey {
+                id: "vk_live".to_string(),
+                name: "live".to_string(),
+            })
+        }
+    }
+
+    // The keys arm: a `vk_` id is the key's OWN id, and it is admitted.
+    let (seal, token) = seal_and_token();
+    let auth = Auth::new(AuthChain::new(Vec::new(), true));
+    let d = auth.resolve(&request(), None, Some(&Resolves), None, None, &token);
+    assert_eq!(
+        d.into_result(&seal)
+            .expect("a resolved key is an identity the directory issued")
+            .principal()
+            .expect("and it settles on that identity")
+            .as_str(),
+        "vk_live"
+    );
+
+    // A boxed module claiming the same id is still refused: it synthesized it.
+    let (seal, token) = seal_and_token();
+    let auth = Auth::new(AuthChain::new(
+        vec![entry(
+            "a",
+            Box::new(Canned::new(
+                "a",
+                AuthOutcome::Identify(Principal::from_id("vk_live")),
+            )),
+        )],
+        false,
+    ));
+    let d = auth.resolve(&request(), None, None, None, None, &token);
+    assert_eq!(
+        d.into_result(&seal)
+            .expect_err("a module may not name a key")
+            .reason(),
+        ReasonCode::Unauthenticated
+    );
+}

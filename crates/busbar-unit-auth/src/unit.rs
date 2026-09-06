@@ -103,13 +103,22 @@ impl Auth {
         }
 
         match verdict {
+            // A module may not SYNTHESIZE an identity in reserved space. The engine's own
+            // signed-key arm does not synthesize one: it resolves the key the directory issued, and
+            // that key's id is a `vk_` id by construction — the very space the rule reserves. So the
+            // check is applied to the arms that can invent an id, and those are exactly the arms
+            // that resolved no key: a boxed module's answer type cannot carry one, which is what
+            // makes `resolved` the discriminator rather than a provider name a configuration
+            // chooses.
+            ChainVerdict::Identified {
+                principal,
+                resolved: None,
+                ..
+            } if Principal::id_is_reserved(&principal.id) => {
+                Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
+            }
             ChainVerdict::Identified { principal, .. } => {
-                // A module may not synthesize an identity in reserved space.
-                if Principal::id_is_reserved(&principal.id) {
-                    Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
-                } else {
-                    Decision::proceed(token, Authenticated::Principal((&principal).into()))
-                }
+                Decision::proceed(token, Authenticated::Principal((&principal).into()))
             }
             // The open front door admits with the anonymous principal: no bucket, and an actor id
             // that reads as the plain word everywhere it is written.
