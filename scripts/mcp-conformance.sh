@@ -496,7 +496,16 @@ battery_subject() {
     # hands it `MCP_FAKE_MODE` / `MCP_FAKE_TRANSCRIPT` per test; `seam-arm.sh` writes those into the
     # control file the long-lived hostile peer reads, then execs the SAME bridge above so the front
     # door is the same busbar the rest of the battery has been driving all run.
-    MCP_SUBJECT_UPSTREAM_CONFIG_CMD="bash $(pwd)/scripts/mcp-subject/seam-arm.sh $seam_control $SUBJECT_URL"
+    #
+    # `:=`, NOT `=`. This block is entered whenever SERVER_CMD/CLIENT_CMD are both empty (the guard
+    # above), but MCP_SUBJECT_UPSTREAM_CONFIG_CMD is a SEPARATE variable that guard says nothing
+    # about -- an operator can set it directly (it is one of the repository variables
+    # .github/workflows/mcp-conformance.yml's `Judge busbar` step exports) while leaving
+    # SERVER_CMD/CLIENT_CMD unset. A plain `=` here clobbered that operator-supplied value with the
+    # auto-generated one every time, inverting the precedence this file documents everywhere else:
+    # an explicit repo var wins over the auto arm. `:=` only assigns when the variable is unset or
+    # empty, so an operator-supplied value survives untouched.
+    : "${MCP_SUBJECT_UPSTREAM_CONFIG_CMD:="bash $(pwd)/scripts/mcp-subject/seam-arm.sh $seam_control $SUBJECT_URL"}"
     export MCP_SUBJECT_UPSTREAM_CONFIG_CMD
 
     # ── THE CLIENT ROLE, ARMED ───────────────────────────────────────────────────────────────────
@@ -706,6 +715,29 @@ selftest() {
   fi
 
   # ---------------------------------------------------------------------------------------------
+  # THE SEAM LAUNCHER RESPECTS AN OPERATOR-SUPPLIED VALUE.
+  #
+  # `MCP_SUBJECT_UPSTREAM_CONFIG_CMD` is auto-generated inside `battery_subject`'s seam block with
+  # `: "${MCP_SUBJECT_UPSTREAM_CONFIG_CMD:=<auto launcher>}"` -- deliberately `:=`, not `=`. That
+  # variable sits OUTSIDE the SERVER_CMD/CLIENT_CMD guard the surrounding `if` tests, so an operator
+  # who exports it directly (it is one of the repository variables
+  # `.github/workflows/mcp-conformance.yml`'s `Judge busbar` step forwards) would have a plain `=`
+  # overwrite it unconditionally the moment the auto-arm block ran — inverting the precedence this
+  # file documents everywhere else: an explicit repo var wins over the auto arm. This fixture drives
+  # the exact idiom the real line uses, not a paraphrase of it, so reverting `:=` to `=` there fails
+  # this self-test.
+  if (
+    export MCP_SUBJECT_UPSTREAM_CONFIG_CMD="operator-supplied launcher"
+    : "${MCP_SUBJECT_UPSTREAM_CONFIG_CMD:="auto-generated launcher"}"
+    [ "$MCP_SUBJECT_UPSTREAM_CONFIG_CMD" = "operator-supplied launcher" ]
+  ); then
+    say "  ok: an operator-supplied MCP_SUBJECT_UPSTREAM_CONFIG_CMD survives the auto-arm block"
+  else
+    say "  MISS: the auto-arm block clobbered an operator-supplied MCP_SUBJECT_UPSTREAM_CONFIG_CMD"
+    failures=$((failures+1))
+  fi
+
+  # ---------------------------------------------------------------------------------------------
   # THE NON-WEAKENING DISPROOF MUST ITSELF BITE.
   #
   # The subject leg's whole claim to honesty is `prove_the_boundary_is_intact`: it presents four
@@ -769,7 +801,7 @@ selftest() {
   [ -d "$DEFAULT_BATTERY_DIR" ] && say "  ok: the in-house battery is in-repo at $DEFAULT_BATTERY_DIR"
 
   [ "$failures" -eq 0 ] || die "$failures self-test fixture(s) did not behave as declared"
-  say "  self-test: 14 fixture(s) passed"
+  say "  self-test: 15 fixture(s) passed"
 }
 
 case "${1:---help}" in
