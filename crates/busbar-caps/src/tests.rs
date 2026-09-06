@@ -562,6 +562,27 @@ fn a_sealed_destination_carries_the_lane_the_money_side_reads() {
     }
 }
 
+/// The handshake leg is not wired to a transport yet, so the only thing that can go wrong with it
+/// silently is its two bounds being built the wrong way round — a frame count into the byte bound
+/// and a byte bound into the frame count reads the same at every call site and means something
+/// entirely different at the one that enforces it. So the order is pinned here, before there is a
+/// caller that could inherit the mistake.
+#[test]
+fn a_handshake_decoration_carries_its_two_bounds_in_the_order_it_declares_them() {
+    let k = Kernel::new();
+    let token = EgressAuthToken::mint(&k.seal);
+    match AuthDecoration::handshake(&token, 7, 4096) {
+        AuthDecoration::Handshake {
+            max_frames,
+            max_bytes,
+        } => {
+            assert_eq!(max_frames, 7);
+            assert_eq!(max_bytes, 4096);
+        }
+        AuthDecoration::Decorate { .. } => panic!("asked for a handshake, got a decoration"),
+    }
+}
+
 #[test]
 fn the_canary_balances_a_clean_run_and_sees_a_missing_settlement() {
     let canary = Canary::new();
