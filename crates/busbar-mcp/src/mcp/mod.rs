@@ -1052,7 +1052,16 @@ impl McpResource {
         }
         let (origin, path) = split_absolute(uri)
             .ok_or_else(|| McpCfgError::CanonicalUriNotAbsolute(uri.to_string()))?;
-        if path.contains('?') || path.contains('#') || origin.contains('#') {
+        // BOTH DELIMITERS ON BOTH HALVES. The origin was checked for `#` and not for `?`, and the
+        // asymmetry was reachable rather than theoretical: `split_absolute` cuts the authority at
+        // the FIRST `/`, so `https://gw.example.com?x=1/mcp` splits into the origin
+        // `https://gw.example.com?x=1` and the path `/mcp`. The path is clean, the origin carries no
+        // `#`, and the URI was accepted — leaving a query string embedded in the canonical resource
+        // identifier this deployment publishes and binds tokens to. A `?` in an authority is not a
+        // query at all, it is a malformed authority, and it is refused for the same reason its
+        // sibling is.
+        if path.contains('?') || path.contains('#') || origin.contains('?') || origin.contains('#')
+        {
             return Err(McpCfgError::CanonicalUriHasQueryOrFragment(uri.to_string()));
         }
         let mount_path = normalise_path(path);
