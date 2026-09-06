@@ -2480,6 +2480,82 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
 // ~130 KiB of idle RSS). These pin the four arms of the apply-time decision in
 // `build_app_from_config` and the inert handle's fail-closed guards.
 
+/// AN APPLY THAT DOES NOT TOUCH `oauth_as:` MUST NOT REBUILD THE AUTHORIZATION SERVER.
+///
+/// Its store is in-memory, so a rebuild throws away every issued token and every dynamically
+/// registered client — and with no `signing_key:` configured it also mints a NEW ephemeral key, so
+/// even a client still holding a token cannot have it verified. The documented loss is "on restart";
+/// an operator editing an unrelated pool must not be logging every agent out. A rebuild also spawned
+/// a second forever-ticking sweeper holding the old store alive, so N applies leaked N of them.
+///
+/// So: two applies over the same `oauth_as:` section carry ONE plane object (and one sweeper), and a
+/// third whose section actually moved builds a new one.
+#[tokio::test]
+async fn an_apply_that_leaves_oauth_as_alone_carries_the_running_server() {
+    crate::metrics::init();
+    let with_issuer = |issuer: &str| {
+        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_OAUTH_AS",
+        ));
+        cfg.oauth_as = Some(
+            crate::oauth_as::config::AsIdentity::from_cfg(&crate::oauth_as::config::OauthAsCfg {
+                issuer: issuer.to_string(),
+                signing_key: None,
+                key_id: None,
+                default_grant: Vec::new(),
+                access_token_ttl_secs: None,
+            })
+            .expect("the test issuer is valid"),
+        );
+        cfg
+    };
+    let build = |cfg, prior: Option<&crate::state::App>| {
+        crate::build_app_from_config(
+            cfg,
+            crate::config::PluginsCfg::default(),
+            None,
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+            (None, None),
+            prior,
+        )
+        .expect("boot must succeed")
+        .0
+    };
+
+    let gen1 = build(with_issuer("https://as.example.com"), None);
+    let first = gen1.oauth_as.clone().expect("the plane is built at boot");
+    let sweeper1 = gen1
+        .oauth_as_sweeper
+        .clone()
+        .expect("a built plane owns its sweeper");
+
+    // Apply 2: the `oauth_as:` section is untouched.
+    let gen2 = build(with_issuer("https://as.example.com"), Some(&gen1));
+    let second = gen2.oauth_as.clone().expect("the plane survives the apply");
+    assert!(
+        std::sync::Arc::ptr_eq(&first, &second),
+        "an apply that leaves oauth_as alone must carry the running server — a new object here is \
+         every token, every registered client and the ephemeral key, silently discarded"
+    );
+    assert!(
+        std::sync::Arc::ptr_eq(
+            &sweeper1,
+            &gen2.oauth_as_sweeper.clone().expect("carried with it")
+        ),
+        "the carried generation must carry the sweeper too, not spawn a second one over the same \
+         store"
+    );
+
+    // Apply 3: the section MOVED, so the plane is rebuilt.
+    let gen3 = build(with_issuer("https://other.example.com"), Some(&gen2));
+    let third = gen3.oauth_as.clone().expect("the plane is rebuilt");
+    assert!(
+        !std::sync::Arc::ptr_eq(&second, &third),
+        "a changed oauth_as section must build a new server"
+    );
+}
+
 /// Boot with a planeless config yields the INERT handle; a second planeless apply REUSES it
 /// (same `Arc`); the first apply that carries plane content upgrades to a PROVISIONED handle at
 /// apply time; and a provisioned prior is reused even when the plane content disappears again

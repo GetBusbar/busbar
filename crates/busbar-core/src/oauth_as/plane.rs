@@ -50,6 +50,11 @@ pub(crate) struct AsPlane {
     /// screen are a busbar handler and an `oauth-as` callback, and they have to be looking at the
     /// same table.
     sessions: Arc<super::consent::Sessions>,
+    /// The protected-resource list this plane was BUILT from, kept so a later generation can ask
+    /// whether it would build the same plane. It is a build input exactly as `identity` is — the
+    /// RFC 8707 `allowed_resources` ceiling is derived from it — so a carry decision that compared
+    /// only the config section would carry a plane whose ceiling no longer matches the deployment.
+    protected_resources: Vec<String>,
 }
 
 /// Why the plane could not be built. Distinct from [`super::config::AsCfgError`] because these are
@@ -183,7 +188,22 @@ impl AsPlane {
             service,
             server,
             sessions,
+            protected_resources,
         })
+    }
+
+    /// Whether a generation built from these inputs would be THIS plane — the carry test on a config
+    /// apply. Every input `build` reads is compared: the validated identity (which carries the
+    /// `signing_key` reference) and the protected-resource list. Equal ⇒ rebuilding would produce a
+    /// server indistinguishable from this one except for the state it would THROW AWAY: every issued
+    /// token, every dynamically registered client, and — with no `signing_key` configured — the
+    /// ephemeral key those tokens verify against.
+    pub(crate) fn would_rebuild_identically(
+        &self,
+        identity: &AsIdentity,
+        protected_resources: &[String],
+    ) -> bool {
+        &self.identity == identity && self.protected_resources == protected_resources
     }
 
     pub(crate) fn identity(&self) -> &AsIdentity {
@@ -210,8 +230,16 @@ impl AsPlane {
 /// security hole — it is a memory one, and the endpoints that fill it take no credential, so an
 /// unauthenticated caller sets the rate. A failure is logged and the loop continues: a sweeper that
 /// exits on the first transient error is a sweeper that is not running by the time anyone looks.
-pub(crate) fn spawn_sweeper(server: Arc<AsServer>, every: std::time::Duration) {
-    tokio::spawn(async move {
+///
+/// Returns a HANDLE that aborts the loop when it is dropped. A sweeper outlives nothing: it is one
+/// generation's, it holds that generation's `Arc<AsServer>` (and therefore its whole store) alive,
+/// and it ticks forever. Discarding the handle made every config apply that rebuilt this plane leak
+/// a live ticker plus the storage it pins — N applies, N sweepers, N stores, none of them reachable
+/// and none of them collected. Tying the loop's lifetime to the handle means the sweeper dies with
+/// the generation that owns it, whenever the last snapshot referencing it is finally dropped.
+#[must_use = "dropping the handle aborts the sweeper; the generation must hold it"]
+pub(crate) fn spawn_sweeper(server: Arc<AsServer>, every: std::time::Duration) -> SweeperHandle {
+    SweeperHandle(tokio::spawn(async move {
         let mut ticker = tokio::time::interval(every);
         // The first tick fires immediately, which would sweep an empty store at boot for nothing.
         ticker.tick().await;
@@ -254,5 +282,14 @@ pub(crate) fn spawn_sweeper(server: Arc<AsServer>, every: std::time::Duration) {
                 }
             }
         }
-    });
+    }))
+}
+
+/// One generation's sweeper task, aborted on drop. See [`spawn_sweeper`].
+pub(crate) struct SweeperHandle(tokio::task::JoinHandle<()>);
+
+impl Drop for SweeperHandle {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
