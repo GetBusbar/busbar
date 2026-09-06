@@ -707,7 +707,7 @@ fn register_planes() {
     installed.push(&busbar_voice::PLANE_DECL);
     busbar_core::plane::registry::install_planes(installed.leak());
 
-    // THE MCP PLANE'S KERNEL BINDINGS, SEALED. Behind `root-mcp`, which is default-OFF: the bindings
+    // THE MCP PLANE'S KERNEL BINDINGS, SEALED. Behind `root-mcp`, which is default-ON: the bindings
     // are built and checked against the real unit traits before any byte is served through them, so
     // this reads the plane's own declarations and compares them against each other and against
     // nothing else. It binds no listener, opens no store, reads no configuration and writes no line —

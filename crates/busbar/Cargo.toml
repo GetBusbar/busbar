@@ -132,9 +132,9 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 [features]
 # Pure forwards: every `#[cfg(feature = ...)]` site lives in busbar-core, so the binary's features
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
-# SAME default set the monolithic crate had; `root-admin` is the one addition, and it is a path
-# rather than a surface — the operations, their bytes and their features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin"]
+# SAME default set the monolithic crate had; `root-admin` and `root-mcp` are the additions, and both
+# are paths rather than surfaces — the operations, their bytes and their features are unchanged.
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin", "root-mcp"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -183,12 +183,15 @@ root-llm = ["proto-llm", "busbar-llm/teller-waist"]
 # battery, the TCK and the neutrality cells read identically with the feature on and with it off.
 # It carries no config key, no environment variable and no boot line, for the same reason.
 root-a2a = []
-# THE MCP PLANE'S KERNEL BINDINGS, default OFF. Not a second MCP switch: `plane-mcp` above still
+# THE MCP PLANE'S KERNEL BINDINGS, DEFAULT ON. Not a second MCP switch: `plane-mcp` above still
 # decides whether this binary speaks the protocol at all. This one decides whether the MCP plane's
 # bindings to the fourteen units are compiled and sealed at boot, which is the step BEFORE any byte
-# is served through them. Default-off is the whole point of the ordering — the bindings are built and
-# checked against the real unit traits while the serving path is untouched — so a build with it on
-# and a build with it off answer identically on the wire, and the rigs prove that both ways.
+# is served through them. Default-off was the ordering, not the destination: the bindings were built
+# and checked against the real unit traits while the serving path stayed untouched, the rigs answered
+# identically both ways, and the whole 890-cell owed golden came back at 0 diverging with it on. So
+# it ships on, and a plane whose own declarations disagree now refuses to boot instead of being found
+# out by a customer. The leg stays switchable — off, it costs one unbuilt module and nothing else,
+# because `main.rs` names the seal inside a `cfg` and the serving path is not the thing it touches.
 root-mcp = []
 # THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON: it was held
 # off until the oracle's admin family was green on it, and it is. The switch is what makes an admin
