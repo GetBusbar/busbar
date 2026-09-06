@@ -215,7 +215,7 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly five entries of kind `breaking`:
+The accepted-differences register for this release has exactly six entries of kind `breaking`:
 two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
 both), one confined to Cohere backends that report `usage.billed_units`, one field removed from
 the hook view, and one confined to a pool whose kind infers to a 1.6.0 plane — a shape 1.5.5
@@ -270,6 +270,18 @@ migrates identically, and every 1.5.5 key and minted secret carries over.
   a 1.6.0 tool/agent pool it was doing nothing: delete it, or move the members to an LLM pool. The
   neutral routing knobs (`weights:`, `tier:`, `attempt_timeout_ms:`) are unaffected. See
   [the 1.6.0 migration guide](docs/migration-1.6.md).
+- 1.6.0 Changed: an unknown key in the reasoning-effort budget table or in the persisted overlay
+  fails the load instead of being discarded. These were the last two config shapes without
+  `deny_unknown_fields`, and both hide a typo perfectly: every rung of
+  `limits.reasoning_effort_budgets` has a default, so `meduim: 2048` left that rung at the shipped
+  value and threw the operator's cost decision away; every section of the overlay has a default, so
+  a mis-spelled section name loaded a document with that section simply absent — hooks, gates and
+  groups the operator believes are persisted, gone, with no signal. Both now refuse, naming the
+  offending key and listing the accepted ones; the overlay refusal is additionally logged as
+  `BUSBAR-3023` with the key and the file, because the read itself only reports "unreadable".
+  **Migration:** if a config or overlay is refused after the upgrade, the message names the exact
+  key — it was doing nothing before, so fix the spelling or delete the line. No shipped config, and
+  no config in the migration corpus, carries such a key.
 
 Four retired 1.5.x spellings that were never the documented form are rewritten for you rather
 than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap

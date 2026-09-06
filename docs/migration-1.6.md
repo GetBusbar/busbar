@@ -119,6 +119,13 @@ LLM plane, where all six knobs are read exactly as before. If you wrote one of t
 agent pool it was doing nothing: delete it, or move those members to an LLM pool. The neutral
 routing knobs `weights:`, `tier:` and `attempt_timeout_ms:` are unaffected.
 
+Two more shapes stopped discarding typos: `limits.reasoning_effort_budgets` and the persisted
+overlay document. Both had a default for every field, so a mis-spelled key parsed cleanly and was
+dropped — a reasoning rung silently left at the shipped value, an overlay section silently absent
+along with the hooks, gates and groups in it. Both now refuse, naming the key; the overlay refusal
+also logs `BUSBAR-3023` with the key and the file path. If an upgrade refuses a config or overlay on
+this, the named key was doing nothing before: fix the spelling or delete the line.
+
 Validation messages know the new keys: an `expected one of` list now includes `mcp`, `oauth_as`,
 `tools`, `agents` and `streams`, and the group-limit `metric` list includes the four token
 sub-metrics `tokens_input`, `tokens_output`, `tokens_cache_read` and `tokens_cache_write` (see

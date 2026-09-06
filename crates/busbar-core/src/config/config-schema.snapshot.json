@@ -1198,7 +1198,7 @@
       ]
     },
     "OverlayDoc": {
-      "deny_unknown_fields": false,
+      "deny_unknown_fields": true,
       "fields": {
         "deleted": {
           "optional": true,
@@ -1725,7 +1725,7 @@
       "transparent": false
     },
     "ReasoningEffortBudgets": {
-      "deny_unknown_fields": false,
+      "deny_unknown_fields": true,
       "fields": {
         "high": {
           "optional": true,

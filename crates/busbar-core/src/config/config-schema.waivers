@@ -22,3 +22,12 @@
 # line here, the change needs a human decision, not a config edit.
 #
 # EMPTY BY DEFAULT. It should stay that way.
+
+# 1.6.0 — the two config shapes that still discarded a typo, both registered `breaking` in
+# testing/shadow-oracle/accepted-differences.json as `P-2` with a CHANGELOG line and a migration note.
+# The additive path the grammar freeze normally offers does not exist here: "reject an unknown key"
+# cannot be expressed as a new optional key, and the alternative is to keep silently discarding the
+# operator's writing. Both are NARROWINGS of what parses, and neither narrows anything a shipped or
+# corpus config uses (the migration corpus and the busbar-core config corpus both stay green).
+ReasoningEffortBudgets[deny_unknown_fields] = a mis-spelled rung (`meduim: 2048`) parsed and was DROPPED, leaving that rung at its shipped value and discarding the operator's explicit cost decision; every field defaults, so nothing else could ever notice. Registered breaking as P-2.
+OverlayDoc[deny_unknown_fields] = a mis-spelled overlay section (`gruops:`) parsed and was DROPPED, running the node without hooks, gates and groups the operator believes are persisted — the exact silent drop the `version` field exists to prevent, reached without moving the version. Registered breaking as P-2.
