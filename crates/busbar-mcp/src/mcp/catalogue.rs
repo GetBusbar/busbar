@@ -476,7 +476,17 @@ impl Catalogue {
         let mut resources = BTreeMap::new();
         let mut resource_templates = BTreeMap::new();
         for (id, def) in &cfg.servers {
-            servers.insert(id.clone(), server_entry(id, def));
+            // THE CREDENTIAL MODE IS COMBINED HERE, THROUGH THE ONE COMBINE, and that is the whole
+            // point of passing it in rather than reading `def` again below. `server_entry` used to
+            // read `def.upstream_credentials` on its own, so a section-level
+            // `tools.upstream_credentials: passthrough` parsed, validated and then reached no
+            // dispatch at all: every server without its own line got the `Own` default, and an
+            // operator who had written "the caller supplies the credential" for the whole section
+            // was silently having busbar spend its own.
+            servers.insert(
+                id.clone(),
+                server_entry(id, def, cfg.effective_upstream_credentials(id)),
+            );
             for (tool, allow) in &def.tools_allow {
                 // THE PUBLISHED NAME: the operator's `publish_as:` where they wrote one, the
                 // `{server}_{tool}` default where they did not — which is every config that
@@ -1069,7 +1079,15 @@ fn as_dispatch_refusal(
     }
 }
 
-fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
+/// `credentials` is the COMBINED mode — the server's own line where it wrote one, the section
+/// default where it did not — resolved by the caller through `ToolsCfg::effective_upstream_credentials`
+/// so the combine has exactly one implementation. Passed in rather than read off `def` because `def`
+/// cannot see the section it sits in.
+fn server_entry(
+    id: &str,
+    def: &McpServerDefCfg,
+    credentials: Option<busbar_api::UpstreamCreds>,
+) -> ServerEntry {
     // The registration read as the operator's standing INTENT: the identity they pinned out of
     // band, and the digest they approved for each capability. A capability they allowed without
     // approving a digest is absent from the map, which is `pending` — allowed is not approved.
@@ -1136,7 +1154,7 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
         ),
         upstream: UpstreamPosture {
             allow_private: def.allow_private,
-            credentials: def.upstream_credentials,
+            credentials,
             token_exchange: def.token_exchange.clone(),
             aud: def.aud.clone(),
             // `validate_server` already refused a malformed or zero value at BOOT, so a parse
