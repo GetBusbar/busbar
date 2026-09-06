@@ -393,6 +393,56 @@ run_selftest() {
   fi
   rm -rf "$ctree"
 
+  # 6b. THE DELEGATED HALF. `source-denylist` folds `cargo xtask denylist`'s transitive closure into
+  # its own rows, and that xtask says "RED — the scan could not be trusted" by exiting NON-ZERO with
+  # its reasons on STDERR and nothing on stdout. Exit 1 is also how it says "hits found", so the two
+  # are the same code and only the rows tell them apart. Driven here against the real function with
+  # the subprocess stubbed, because the self-test's stripped tree carries no cargo workspace and the
+  # real xtask would answer honestly rather than in the shapes that need proving.
+  local xt_out
+  if xt_out="$(python3 - "$tree" <<'PYEOF'
+import os, subprocess, sys, types
+root = sys.argv[1]
+sys.path.insert(0, os.path.join(root, "scripts", "construction-gate"))
+import rules
+
+def stub(rc, out, err=""):
+    def run(*a, **k):
+        return types.SimpleNamespace(returncode=rc, stdout=out, stderr=err)
+    return run
+
+real_isfile, real_isdir = os.path.isfile, os.path.isdir
+os.path.isfile = lambda p: True if p.endswith("Cargo.toml") else real_isfile(p)
+os.path.isdir = lambda p: True if p.endswith("xtask") else real_isdir(p)
+
+cases = [
+    ("refusal (exit 1, no rows, reasons on stderr)", 1, "", "cannot read the registry cache", None),
+    ("hits found (exit 1, one row)", 1, "busbar-plane-llm\tlibc\tvia foo\n", "", "hits"),
+    ("clean (exit 0, no rows)", 0, "", "", "empty"),
+    ("garbled (exit 0, unparsable row)", 0, "not-a-tsv-row\n", "", None),
+]
+bad = []
+for name, rc, out, err, want in cases:
+    subprocess.run = stub(rc, out, err)
+    got = rules._xtask_denylist_hits(root)
+    if want is None:
+        ok = got is None
+    elif want == "empty":
+        ok = got == {}
+    else:
+        ok = bool(got)
+    if not ok:
+        bad.append(f"{name}: got {got!r}, wanted {want!r}")
+if bad:
+    print("; ".join(bad))
+    sys.exit(1)
+PYEOF
+  )"; then
+    note "DELEGATED: an xtask that exits non-zero naming no hit is UNPROVEN, not a clean closure"
+  else
+    fail=1; note "DELEGATED FAILED: ${xt_out:-the stubbed xtask cases did not behave as declared}"
+  fi
+
   # 7. THE SUBJECT. Four rules are scoped by a path glob or a symbol name, and each of them used to
   # answer "zero" when its subject was renamed out from under it — a live FAIL turning into the
   # cleanest possible PASS. Rename the subject; the row must be RED (UNPROVEN), not 0/PASS. Each

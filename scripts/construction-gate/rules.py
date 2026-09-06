@@ -1216,12 +1216,30 @@ def _xtask_denylist_hits(root):
               + (" / ".join(why[-3:]) if why else "no output"), file=sys.stderr)
         return None
     hits = {}
+    malformed = 0
     for line in proc.stdout.splitlines():
         parts = line.split("\t")
         if len(parts) != 3:
+            malformed += 1
             continue
         crate, offender, via = parts
         hits.setdefault(crate, []).append(f"`{offender}` via {via} (cargo xtask denylist)")
+    # AN EMPTY RED ANSWER IS NOT A CLEAN ONE. Exit 1 is inside the accepted range because it is how
+    # the xtask says "hits found" — but it is ALSO how it says "the scan could not be trusted, so it
+    # reports no result rather than a pass" (denylist.rs::print_report_tsv writes those defects to
+    # STDERR and the non-zero exit is the whole of the refusal). Parsed from stdout alone, that
+    # refusal is indistinguishable from a clean closure, and every source-denylist row went green on
+    # a scan that had proved nothing. A non-zero exit that named no hit is UNPROVEN.
+    if proc.returncode != 0 and not hits:
+        why = (proc.stderr or "").strip().splitlines()
+        print(f"source-denylist: `cargo xtask denylist` exited {proc.returncode} and named no hit "
+              "on stdout, so its refusal carried no rows: "
+              + (" / ".join(why[-3:]) if why else "no output"), file=sys.stderr)
+        return None
+    if malformed:
+        print(f"source-denylist: `cargo xtask denylist` wrote {malformed} line(s) that are not "
+              "`<crate>\\t<offender>\\t<via>`, so its answer was not read whole", file=sys.stderr)
+        return None
     return hits
 
 
