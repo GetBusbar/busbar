@@ -887,6 +887,26 @@ pub fn extract_normalized_host(url: &str) -> Option<String> {
     // Strip the scheme (case-insensitively — see `scheme_is`). The host extraction is
     // scheme-agnostic; accept either prefix so an `http://` upstream is still metadata-checked.
     let rest = strip_scheme(url)?;
+    normalize_authority(rest)
+}
+
+/// The same host extraction over an authority that names no scheme at all.
+///
+/// A destination may be spelled as a URL or as a bare `host:port`, and which one a lane's
+/// configuration used is not a security question — the scheme and address checks already judge both
+/// alike. Anything carrying a `://` is left to [`extract_normalized_host`], so a scheme this guard
+/// does not speak still extracts no host here rather than having its scheme read as a hostname.
+pub fn extract_normalized_authority_host(authority: &str) -> Option<String> {
+    let authority = authority.replace(['\t', '\n', '\r'], "");
+    if authority.contains("://") {
+        return None;
+    }
+    normalize_authority(&authority)
+}
+
+/// Everything the extraction does once the scheme is out of the way, shared by both spellings so
+/// neither can drift into reading a different host than the other.
+fn normalize_authority(rest: &str) -> Option<String> {
     // Normalize backslashes to forward slashes BEFORE splitting the authority. `https` is a WHATWG
     // "special" scheme, so reqwest's `url` crate converts every `\` to `/` while parsing — meaning a
     // `base_url` like `https://10.0.0.1\x.allowed.com` is parsed by reqwest with authority `10.0.0.1`
@@ -1192,7 +1212,10 @@ pub fn ssrf_blocked_host(
         return None;
     }
 
-    let host = extract_normalized_host(url)?;
+    // A destination may be spelled as a URL or as a bare `host:port`, and the destination check
+    // supports both. Judging only the first spelling meant the operator's denylist never fired for
+    // the second — the extraction wanted a `://` and returned nothing without it.
+    let host = extract_normalized_host(url).or_else(|| extract_normalized_authority_host(url))?;
     let host = host.as_str();
 
     // Surgical allow-override: if THIS host matches any allow entry (with the same canonicalization
