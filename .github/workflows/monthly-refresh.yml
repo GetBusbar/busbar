@@ -1,9 +1,18 @@
 name: Monthly dependency refresh
 
-# The routine "we are updated" release. On the 1st of each month (and on demand),
+# The routine "we are updated" release prep. On the 1st of each month (and on demand),
 # run a semver-compatible `cargo update` sweep, prove it green, bump the patch
-# version, and open a PR. Merging that PR is the monthly release action — push the
-# resulting tag and the Release workflow ships binaries + SBOM + provenance.
+# version, and open a PR AGAINST `dev`.
+#
+# WHERE THIS SITS IN THE BRANCH MODEL (this workflow predates the qa/main split and used to get
+# this wrong twice over). This job is the automated equivalent of prepare-release.yml: it prepares
+# a commit on `dev`, and it neither tags nor ships. There is no tag trigger anywhere in this repo
+# any more — scripts/release-order-lint.py refuses one — so "merge and push the tag" is not a
+# thing a human can do. Releasing is: merge this PR into `dev` → promote dev→qa, where ci.yml,
+# qa-gate.yml and release-stage.yml build and prove every byte → fast-forward qa→main, where
+# release.yml PROMOTES the already-verified record. The PR therefore targets `dev`, never `main`:
+# `main` is promote-only, and a dependency sweep landing there directly would ship bytes qa never
+# saw, which is the exact defect the split exists to remove.
 #
 # SCOPE: `cargo update` only takes semver-COMPATIBLE upgrades (patch/minor within
 # the manifest's caret ranges). MAJOR bumps (e.g. axum 0.7->0.8, getrandom 0.3->0.4)
@@ -22,7 +31,13 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     steps:
+      # `ref: dev` EXPLICITLY. A `schedule:` run checks out the DEFAULT branch, which is `main`, and
+      # the PR below is based on `dev`. Sweeping main's lockfile onto a dev-based PR would put every
+      # commit dev is ahead by into the diff — the refresh would be unreviewable and would look like
+      # it was reverting unreleased work. Prep happens on dev, so branch from dev.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: dev
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: rustfmt, clippy
@@ -43,21 +58,83 @@ jobs:
 
       - name: Gate (fmt · clippy · test)
         if: steps.diff.outputs.changed == 'true'
+        env:
+          # THE COLLECTED-TEST FLOOR, same guard every sibling `cargo test --workspace` carries (see
+          # ci.yml's UNIX_MIN_TESTS / UNIX_EXPECTED_TESTS). A workspace whose suites compiled to
+          # nothing still prints `test result: ok` and EXITS 0, so a green `cargo test` proves only
+          # that nothing which ran failed — not that anything ran. That matters more here than
+          # anywhere: this job's whole purpose is to move dependency versions, and a bumped dep that
+          # breaks a cfg gate or a feature resolution is exactly what silently erases a suite. Green
+          # on zero tests would then open a PR asserting the sweep is proven.
+          # Keep in sync with ci.yml; if a drop is intended, LOWER these deliberately.
+          UNIX_MIN_TESTS: "5650"
+          UNIX_EXPECTED_TESTS: "5723"
         run: |
+          set -uo pipefail
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets -- -D warnings
-          cargo test --workspace
+
+          rc=0
+          cargo test --workspace 2>&1 | tee "$RUNNER_TEMP/refresh-test.log" || rc=$?
+          rc=${PIPESTATUS[0]:-$rc}
+
+          # SUM across every test binary — `test result: ok. N passed` prints once per binary, so a
+          # single-line grep would floor one binary and miss a whole suite compiling to nothing.
+          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/refresh-test.log" \
+                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "refresh: ${total} tests passed across the workspace (floor: ${UNIX_MIN_TESTS}, expected: ${UNIX_EXPECTED_TESTS})"
+
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::cargo test --workspace FAILED after the dependency sweep (exit ${rc})."
+            exit "$rc"
+          fi
+          if [ "$total" -lt "$UNIX_EXPECTED_TESTS" ]; then
+            echo "::warning::refresh ran ${total} tests, ${UNIX_EXPECTED_TESTS} were expected."
+            echo "::warning::If tests were legitimately removed or merged, LOWER UNIX_EXPECTED_TESTS here and in ci.yml."
+            echo "::warning::If not, a bumped dependency stopped a suite being collected — a cfg gate, a feature resolution, a dropped target."
+          elif [ "$total" -gt "$UNIX_EXPECTED_TESTS" ]; then
+            echo "::notice::refresh ran ${total} tests, above the recorded ${UNIX_EXPECTED_TESTS}. Raise UNIX_EXPECTED_TESTS."
+          fi
+          if [ "$total" -lt "$UNIX_MIN_TESTS" ]; then
+            echo "::error::the workspace suite ran ${total} tests, below its floor of ${UNIX_MIN_TESTS}."
+            echo "::error::A workspace whose suites compiled to nothing still prints 'test result: ok' and exits 0."
+            echo "::error::This is NOT a pass, and this job would have opened a refresh PR claiming it was."
+            echo "::error::If the drop is intended, LOWER the UNIX_MIN_TESTS floor here and in ci.yml deliberately."
+            exit 1
+          fi
 
       - name: Bump patch version
         if: steps.diff.outputs.changed == 'true'
         id: bump
+        # THE VERSION LIVES IN crates/busbar/Cargo.toml, NOT THE ROOT MANIFEST. The root Cargo.toml
+        # is a VIRTUAL workspace — `[workspace]`, a members list, no `[package]` and therefore no
+        # `version = ` line at all. The old `grep -m1 '^version = ' Cargo.toml` matched nothing, so
+        # `cur` was empty, the split produced empty components, `new` came out as "..1", and the
+        # `sed` edited nothing: this step reported a bump every month and changed no version. Every
+        # path that decides what a release IS — release.yml:150, release-stage.yml:159,
+        # prepare-release.yml, verify-deploy's (c2) binary-identity check — reads
+        # crates/busbar/Cargo.toml's `[package] version`, so that is the only file a bump may touch.
+        #
+        # The read is tomllib (the same one-liner release.yml uses) rather than a regex, and the
+        # write is .github/scripts/bump_cargo.py — the same script prepare-release.yml calls, so the
+        # automated monthly bump and the human release-prep bump are ONE mechanism, not two that can
+        # drift. `cargo update -p busbar --precise` then syncs Cargo.lock's own entry, which is what
+        # the old `cargo build --quiet` was doing by side effect.
         run: |
-          cur=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "([^"]+)"/\1/')
+          set -euo pipefail
+          cur="$(python3 -c "import tomllib; print(tomllib.load(open('crates/busbar/Cargo.toml','rb'))['package']['version'])")"
+          echo "$cur" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "::error::crates/busbar/Cargo.toml version '$cur' is not X.Y.Z; refusing to guess the next one."; exit 1; }
           IFS=. read -r MA MI PA <<< "$cur"
           new="$MA.$MI.$((PA + 1))"
-          sed -i "0,/^version = \"$cur\"/s//version = \"$new\"/" Cargo.toml
-          # Sync busbar's own entry in Cargo.lock (an incremental build rewrites it).
-          cargo build --quiet
+          python3 .github/scripts/bump_cargo.py "$new" crates/busbar/Cargo.toml
+          cargo update -p busbar --precise "$new"
+          # PROVE THE EDIT LANDED. A bump that silently no-ops is what this step used to do, and the
+          # PR it opened looked identical either way.
+          got="$(python3 -c "import tomllib; print(tomllib.load(open('crates/busbar/Cargo.toml','rb'))['package']['version'])")"
+          [ "$got" = "$new" ] \
+            || { echo "::error::asked for $new, crates/busbar/Cargo.toml still says $got. The bump did not land."; exit 1; }
           echo "version=$new" >> "$GITHUB_OUTPUT"
           echo "Bumped $cur -> $new"
 
@@ -73,7 +150,30 @@ jobs:
           git switch -c "$branch"
           git commit -am "chore: monthly dependency refresh -> v$new"
           git push -u origin "$branch"
+          # `--base dev`, NOT `main`. `main` is promote-only: release.yml re-verifies a record qa
+          # already built and proved, and it builds nothing. A dependency sweep merged straight to
+          # main would ship bytes no gate ever saw.
           gh pr create \
-            --base main --head "$branch" \
+            --base dev --head "$branch" \
             --title "Monthly dependency refresh -> v$new" \
-            --body "Automated semver-compatible \`cargo update\` sweep for this month. Gates ran green in this workflow; CI + Security re-run on the PR. **Merge, then push tag \`v$new\`** to cut the release (binaries + SBOM + provenance). Major-version bumps are handled separately via individual Dependabot PRs."
+            --body "$(cat <<EOF
+          Automated semver-compatible \`cargo update\` sweep for this month, with the patch version bumped in
+          \`crates/busbar/Cargo.toml\` (the file every release path reads).
+
+          fmt, clippy and \`cargo test --workspace\` ran green in this workflow, above the collected-test
+          floor; CI and Security re-run on the PR.
+
+          **Merging this does not release anything.** There is no tag trigger in this repo. To ship this
+          sweep as $new, take it through the normal path once merged:
+
+          1. merge into \`dev\`;
+          2. promote \`dev\` -> \`qa\` — ci.yml (full tier), qa-gate.yml and release-stage.yml build all five
+             binaries onto a draft release, stage the PGO image under a throwaway tag, run every verifier and
+             record the staged digest;
+          3. fast-forward \`qa\` -> \`main\` — release.yml re-proves that record, then tags \`v$new\`,
+             publishes the qa-built draft and retags the staged image. No rebuild: main ships the exact bytes
+             qa verified.
+
+          Major-version bumps are handled separately via individual Dependabot PRs.
+          EOF
+          )"
