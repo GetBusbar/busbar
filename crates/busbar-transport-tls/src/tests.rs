@@ -269,6 +269,51 @@ async fn close_ends_a_live_frame_stream() {
     );
 }
 
+/// The close above is seen because a byte arrives after it and the pump wakes to re-check the flag.
+/// A pump parked on a silent peer never wakes at all: the flag is set, the registry entry is gone,
+/// and the read stays outstanding for as long as the peer stays quiet. The rustls session and its
+/// socket stay alive with it. So the close is a wakeup, not just a flag.
+#[tokio::test]
+async fn close_ends_a_read_parked_on_a_silent_peer() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let mut frames = server.frames(server_conn.clone());
+    // Park the pump: the handshake is done, but no application byte has been written.
+    let parked = tokio::spawn(async move { frames.next().await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    server.close(server_conn, CloseReason::Normal);
+    let ended = tokio::time::timeout(Duration::from_secs(3), parked)
+        .await
+        .expect("a closed session's parked read answers the close, it does not wait for a byte")
+        .unwrap();
+    assert!(
+        ended.is_none(),
+        "the stream ends at the close rather than yielding a frame"
+    );
+
+    // The last clone of the state is gone with the stream, so the session really did end: the
+    // client's own frame stream stops rather than staying parked on a live socket.
+    let mut client_frames = client.frames(client_conn);
+    let seen = tokio::time::timeout(Duration::from_secs(3), client_frames.next())
+        .await
+        .expect("the peer sees the session end rather than waiting on a socket nothing holds");
+    assert!(
+        seen.is_none() || seen.is_some_and(|r| r.is_err()),
+        "the peer's stream ends; it does not go on yielding frames"
+    );
+}
+
 #[tokio::test]
 async fn handshake_failure_maps_to_its_own_error() {
     // The server expects a TLS handshake; a plain-TCP dial into it fails the handshake, not the

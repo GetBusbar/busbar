@@ -220,6 +220,50 @@ async fn close_ends_a_live_frame_stream() {
     );
 }
 
+/// The close above is seen because a byte arrives after it and the pump wakes to re-check the flag.
+/// A pump parked on a silent peer never wakes at all: the flag is set, the registry entry is gone,
+/// and the read stays outstanding for as long as the peer stays quiet — which is forever, for a
+/// peer that opened a connection and walked away. The socket stays open with it. So the close is a
+/// wakeup, not just a flag, and the parked read answers to it.
+#[tokio::test]
+async fn close_ends_a_read_parked_on_a_silent_peer() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let mut raw = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let server_conn = accept_fut.await.unwrap();
+    let _ = client;
+
+    let mut frames = server.frames(server_conn.clone());
+    // Park the pump: nothing has been written, so the read is outstanding with no byte to end it.
+    let parked = tokio::spawn(async move { frames.next().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    server.close(server_conn, CloseReason::Normal);
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(3), parked)
+        .await
+        .expect("a closed connection's parked read answers the close, it does not wait for a byte")
+        .unwrap();
+    assert!(
+        ended.is_none(),
+        "the stream ends at the close rather than yielding a frame"
+    );
+
+    // The last clone of the state is gone with the stream, so the socket really did close.
+    let mut sink = [0_u8; 8];
+    let n = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::io::AsyncReadExt::read(&mut raw, &mut sink),
+    )
+    .await
+    .expect("the peer sees the close rather than waiting on a socket nothing holds")
+    .unwrap();
+    assert_eq!(n, 0, "the peer reads end-of-stream");
+}
+
 #[tokio::test]
 async fn every_transport_error_is_mapped() {
     // Refused: nothing listens on this port.

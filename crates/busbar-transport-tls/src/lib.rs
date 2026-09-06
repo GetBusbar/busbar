@@ -98,6 +98,25 @@ struct Inner {
     /// this state before the close, so the registry removal alone would not reach it; this is the
     /// flag that stream checks so it ends at the next poll and the TLS stream actually drops.
     closed: AtomicBool,
+    /// The wakeup that goes with the flag.
+    ///
+    /// A pump parked in `read` has no next poll to check the flag at: on a peer that completed the
+    /// handshake and then said nothing, the read is outstanding until a record arrives, and none
+    /// ever does. The flag alone would leave that pump — and the rustls session and socket it holds
+    /// the last clone of — alive for the life of the process. The close notifies this, the read is
+    /// raced against it, and the stream ends where it was parked.
+    closing: tokio::sync::Notify,
+}
+
+impl Inner {
+    /// Mark this connection finalised and wake whatever is parked on it.
+    ///
+    /// The order matters: the flag is stored FIRST, so a pump that arms its wait and then re-reads
+    /// the flag can never miss both the store and the notification.
+    fn finalise(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.closing.notify_waiters();
+    }
 }
 
 enum InnerRead {
@@ -251,6 +270,7 @@ impl TlsTransport {
             }),
             write: AsyncMutex::new(InnerWrite::Server(write)),
             closed: AtomicBool::new(false),
+            closing: tokio::sync::Notify::new(),
         });
         self.conns.lock().expect("poisoned").insert(id, inner);
         Conn::new(Arc::new(TlsConnHandle {
@@ -294,6 +314,7 @@ impl TlsTransport {
             }),
             write: AsyncMutex::new(InnerWrite::Client(write)),
             closed: AtomicBool::new(false),
+            closing: tokio::sync::Notify::new(),
         });
         self.conns.lock().expect("poisoned").insert(id, inner);
         Conn::new(Arc::new(TlsConnHandle {
@@ -519,10 +540,24 @@ impl Transport for TlsTransport {
             }
             let mut guard = inner.read.lock().await;
             let side = &mut *guard;
-            let result = match &mut side.half {
-                InnerRead::Server(r) => r.read(&mut side.scratch).await,
-                InnerRead::Client(r) => r.read(&mut side.scratch).await,
+            // Arm the wait BEFORE re-reading the flag: a close that lands between the two is seen
+            // as the flag, and one that lands after it is seen as the notification. Neither order
+            // leaves this parked.
+            let mut closing = Box::pin(inner.closing.notified());
+            closing.as_mut().enable();
+            if inner.closed.load(Ordering::Acquire) {
+                return None;
+            }
+            let result = tokio::select! {
+                () = &mut closing => return None,
+                r = async {
+                    match &mut side.half {
+                        InnerRead::Server(r) => r.read(&mut side.scratch).await,
+                        InnerRead::Client(r) => r.read(&mut side.scratch).await,
+                    }
+                } => r,
             };
+            drop(closing);
             match result {
                 Ok(0) => None,
                 Ok(n) => {
@@ -667,7 +702,7 @@ impl Transport for TlsTransport {
         // which the last clone goes and the socket really does close.
         let inner = self.conns.lock().expect("poisoned").remove(&conn.id());
         if let Some(inner) = inner {
-            inner.closed.store(true, Ordering::Release);
+            inner.finalise();
         }
     }
 
@@ -695,7 +730,7 @@ impl Transport for TlsTransport {
             // clone goes and the session and its socket really close.
             let removed = self.conns.lock().expect("poisoned").remove(&conn.id());
             if let Some(removed) = removed {
-                removed.closed.store(true, Ordering::Release);
+                removed.finalise();
             }
             Ok(())
         })
