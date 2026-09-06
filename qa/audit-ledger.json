@@ -90,14 +90,18 @@
    "paths": [
     "crates/busbar/src/root"
    ],
-   "tree_hash": "6dbfb1435ea9a62fc0da368a830679009b53c4404374f1f0b5d5051337cbaecb",
-   "audited_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d",
-   "round": 4,
+   "tree_hash": "cb32af3d897621d61265e6e9cc3679fd55e19bfcba5e1e4cde7debf34892f9e7",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 6,
    "result": "findings",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J-series round 4 (fix commits on the tip; per-finding counts not carried in the tree)",
-   "auditor": "round-4 finder fleet",
-   "fixed_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d"
+   "counts": {
+    "HIGH": 7,
+    "MEDIUM": 9,
+    "LOW": 5
+   },
+   "report": "pass 2 fresh eyes, report-only: root llm card pinned at boot across live reloads; voice and a2a evidence carries raw quantities not nanos; a2a bills refusals, replayable push tokens, empty record identity; admin RefusingStore makes three DR verbs 503; mcp scope names the server, wrong breaker lane, pool read as unpriced; voice lease never closed, verify wait leaks, double unit per tool call; fix agents dispatched; adapters/auth_bindings/durability/kernel/ledger_identity/migration/policy/transports/vocabulary unread",
+   "auditor": "opus-pass2",
+   "fixed_at": null
   },
   {
    "id": "crates/busbar/src/main.rs",
@@ -105,13 +109,17 @@
    "paths": [
     "crates/busbar/src/main.rs"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "2b1f52df8d29cc3c5c3fbc00db9aebc1c559ee625bb3876af3e3584388432315",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "pass 2 fresh eyes, report-only: shipped voice stub table refuses every client tool reply (critical, fix dispatched); mount_root_voice discards the seal; three load-bearing doc comments false; read fully",
+   "auditor": "opus-pass2",
    "fixed_at": null
   },
   {
@@ -251,13 +259,17 @@
    "paths": [
     "crates/busbar-grammar/src"
    ],
-   "tree_hash": "c3ab5d71b260e8ba3cc59b4090a0ce8f05fe2ba22d0359afc287e0396af988be",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "06ad1f4a9ba3733455b7ac4f679b19c27389590baf88a694913ece948a3a7eff",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1,
+    "NIT": 2
+   },
+   "report": "pass 2 fresh eyes: span not readable back from the journal (fixed 4750d7ef); skip_container punctuation; read fully",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-grammar/src/tests"
@@ -510,13 +522,17 @@
    "paths": [
     "crates/busbar-substrate-values/src"
    ],
-   "tree_hash": "9715e3ddbfe163465ec6aa46e89521810ae4174fdf6b7d8a65a08f0d58a61ac5",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "0449b35a8bbdceb6edf23b05514d4dae78e28f6bd2ecccf12f83058d91d03fc5",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1,
+    "NIT": 5
+   },
+   "report": "pass 2 fresh eyes: interned-name pointer match without length (fixed 1f857ff8); base64 trailing bits; all production files read, diagnostics catalogue checked mechanically, unit tests unread",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-substrate-values/src/tests"
