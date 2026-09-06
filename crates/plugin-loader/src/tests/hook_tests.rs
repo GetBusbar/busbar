@@ -19,7 +19,7 @@ use busbar_api::{RoutingDecision, TransformOutcome};
 /// local `cargo test`), every gated test here would quietly "pass" via its own early return
 /// with zero real coverage locally. Mirrors this crate's
 /// `store_fixture_plugin_path`/`secret_example_plugin_path`.
-fn hook_plugin_path() -> Option<std::path::PathBuf> {
+pub(crate) fn hook_plugin_path() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;

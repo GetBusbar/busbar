@@ -72,7 +72,10 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
             busbar_plugin::cold::hook::HOOK_ABI_VERSION,
         ],
         // A `kind: export` plugin is a telemetry sink the engine's observability seam feeds
-        // (`open_export`). Payload schema v1 (`streams`/`deliver`).
+        // (`open_export`). Payload schema v2 (`streams`/`deliver`): 1.5.3 expanded the stream
+        // vocabulary and REMOVED `audit` — an auditor is a projection made of other streams, not a
+        // data type of its own — so a v1 sink that declared `audit` no longer has a stream to
+        // declare, and v1 is not accepted here.
         "export" => &[
             busbar_plugin::cold::export::EXPORT_ABI_VERSION,
             busbar_plugin::cold::export::EXPORT_ABI_VERSION,

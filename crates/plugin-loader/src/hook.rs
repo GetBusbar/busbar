@@ -311,5 +311,9 @@ pub fn load_hook_from_bytes(
 }
 
 #[cfg(test)]
+#[path = "tests/hook_panic_status_tests.rs"]
+mod hook_panic_status_tests;
+
+#[cfg(test)]
 #[path = "tests/hook_tests.rs"]
 mod tests;

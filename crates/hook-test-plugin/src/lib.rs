@@ -61,9 +61,12 @@ struct HookConfig {
     /// version) — lets a test prove a NACK'd configure does not commit (Err over the seam).
     #[serde(default)]
     nack_configure: bool,
-    /// PANIC inside `decide` — proves a plugin panic is caught (SDK catch_unwind → STATUS_PROTOCOL,
+    /// PANIC inside `decide` — proves a plugin panic is caught (SDK catch_unwind → STATUS_PANIC,
     /// and the engine's own catch_unwind as defense in depth) and surfaces as a fail-closed `Err`,
-    /// never a torn-down runtime or a crossed unwind.
+    /// never a torn-down runtime or a crossed unwind. The status is the DISTINCT panic code, NOT
+    /// STATUS_PROTOCOL: that distinction is the whole point of the code existing, since the loader
+    /// keys its safe-default fallback on the unsupported/protocol shapes and a panic must never be
+    /// able to reach it.
     #[serde(default)]
     panic_decide: bool,
     /// Report from `decide` that the hook COULD NOT ANSWER (`HookReply::Failed`) — the shape a gate
