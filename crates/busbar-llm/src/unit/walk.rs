@@ -280,6 +280,17 @@ impl Walk {
         &*self.rt
     }
 
+    /// THE DEPLOYMENT, as the Admit step's accrual scope reads one.
+    ///
+    /// The same runtime behind the same neutral-projection rule as [`Walk::tables`]: the root names
+    /// the trait and never the handle. The door needs it because the destination the charge lands on
+    /// is not always the one the caller named, and what that destination RESOLVES to decides which
+    /// cell the accrual scopes to.
+    #[must_use]
+    pub fn cells(&self) -> &dyn crate::unit::admit::DestinationCells {
+        &*self.rt
+    }
+
     /// The lane names this destination resolves to, in the order the walk would take them.
     ///
     /// Read through the Route step's own candidate resolution rather than through a second reading

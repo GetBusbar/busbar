@@ -816,6 +816,7 @@ async fn drive(
         &AdmitToken::mint(seal),
         &admit::AdmitCtx {
             host,
+            cells: &**rt,
             gov,
             proto: PROTO,
             destination: &model,
@@ -1458,6 +1459,7 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
         &AdmitToken::mint(&seal),
         &admit::AdmitCtx {
             host: &host,
+            cells: &*rt,
             gov: &gov,
             proto: PROTO,
             destination: &model,

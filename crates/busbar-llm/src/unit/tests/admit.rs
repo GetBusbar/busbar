@@ -11,6 +11,17 @@ use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+/// A deployment that resolves every name the same way. One answer is all any case here needs:
+/// what the step does with the answer is the whole question, and the resolution itself is the
+/// Route step's and is proven there.
+struct Cells(Resolved);
+
+impl DestinationCells for Cells {
+    fn resolve(&self, _name: &str) -> Resolved {
+        self.0
+    }
+}
+
 /// The three ledger figures every identity here is pinned on.
 ///
 /// `requests` is the admission count — drawn at the door and never released, which is the rule
@@ -164,6 +175,7 @@ async fn the_step_charges_the_same_slot_fee_base_and_cent_as_the_live_door() {
     let (seal, unit_token, admit_token) = tokens();
     let ctx = AdmitCtx {
         host: &host,
+        cells: &Cells(Resolved::Pool { has_lane: true }),
         gov: &gov,
         proto: crate::proto_codec::PROTO_OPENAI,
         destination: "p",
@@ -313,6 +325,7 @@ async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
     let (seal, unit_token, admit_token) = tokens();
     let ctx = AdmitCtx {
         host: &host,
+        cells: &Cells(Resolved::Pool { has_lane: true }),
         gov: &gov,
         proto: crate::proto_codec::PROTO_OPENAI,
         destination: "p",
