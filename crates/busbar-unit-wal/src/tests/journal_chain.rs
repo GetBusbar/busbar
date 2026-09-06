@@ -220,9 +220,7 @@ fn chain_verification_catches_a_removed_record() {
 fn without_a_data_dir_the_journal_creates_no_file() {
     let dir = TempDir::new("journal-no-disk");
     assert!(dir.walk().is_empty());
-    let cwd_before = std::fs::read_dir(".")
-        .map(|e| e.flatten().count())
-        .unwrap_or(0);
+    let cwd_before = super::fixtures::cwd_segment_names();
 
     let shipper = BufferShipper::new();
     let mut journal = Journal::memory_buffered_to(3, Box::new(shipper.clone()));
@@ -243,12 +241,13 @@ fn without_a_data_dir_the_journal_creates_no_file() {
         "a journal with no data directory put something on a disk: {:?}",
         dir.walk()
     );
+    // A NAME SET, not a count: the cwd is shared with every other test in this binary, so a count
+    // moves for reasons that have nothing to do with the journal, and a count that happens to hold
+    // still hides one file replacing another. The TempDir walk above is the primary evidence.
     assert_eq!(
         cwd_before,
-        std::fs::read_dir(".")
-            .map(|e| e.flatten().count())
-            .unwrap_or(0),
-        "something appeared in the working directory"
+        super::fixtures::cwd_segment_names(),
+        "a log segment appeared in the working directory"
     );
     assert_eq!(shipper.records().len(), 24);
 }
