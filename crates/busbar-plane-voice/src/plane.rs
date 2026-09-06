@@ -372,14 +372,33 @@ impl Plane for VoicePlane {
 
     fn encode_end<'u>(
         &self,
-        _u: &Unit<'u>,
+        u: &Unit<'u>,
         _end: &UnitEnd,
-        _st: Option<&mut PlaneSessionState>,
+        st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
     ) -> Result<Option<ArenaBytes<'u>>, Encode> {
         // A turn's own ending is always rendered as a `Progress::Terminal` `Response` through
         // `encode_response` (the upstream's `response.done`/error IS the ending); there is no further
         // trailer this dialect writes at the unit's own close.
+        //
+        // What DOES happen here is the turn's own bookkeeping. A session holds one codec state per
+        // connection, and the two ends of a turn's life land on different ones: the client's frames
+        // open it (`decode_ingress`), and the upstream's usage report — the thing that ends it —
+        // arrives on the upstream's (`decode_response`). Closing it only there set a flag on a half
+        // that had never opened a turn, and left the client's half believing its first turn was
+        // still running for the rest of the call: every later frame relayed under a correlation
+        // whose unit had already been metered and sealed, so a caller's second question was never
+        // admitted, never priced and never routed. This is the one step the loop runs against a
+        // unit's ending on whichever half is holding it, so this is where the turn closes.
+        //
+        // Only a turn's own unit closes a turn. A `tool_call` this plane mints mid-turn is a unit of
+        // its own that ends while the turn is still speaking, and ending the turn on its close would
+        // cut the conversation off at the first tool the model reached for.
+        if u.op() == meta::OP_DUPLEX_TURN {
+            if let Some(state) = st.and_then(PlaneSessionState::get_mut::<VoiceSessionState>) {
+                let _ = state.close_turn();
+            }
+        }
         Ok(None)
     }
 
@@ -993,7 +1012,7 @@ fn open_or_relay<'u>(
         let _ = facts.set(meta::FACT_DIALECT, FactValue::Str(dialect.name()));
         let ir = view(relay.as_slice(), ctx)?;
         Ok(Ingress::Open(Box::new(UnitDraft {
-            op: OpClassId::new("duplex_turn"),
+            op: meta::OP_DUPLEX_TURN,
             body_ir: ir,
             correlates: None,
             correlation_out: Some(correlation),
