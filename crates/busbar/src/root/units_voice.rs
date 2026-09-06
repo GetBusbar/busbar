@@ -3282,8 +3282,9 @@ mod tests {
             );
         }
 
-        // A tool result on the same session. It is a client event like any other, and it relays
-        // onto the open turn under that turn's correlation rather than opening a second unit.
+        // A tool result on the same session. It is a client event that relays rather than opening
+        // a second unit, and it names the CALL it answers, not the turn it rode in on: two calls
+        // open on one session at one moment are told apart by that identifier alone.
         let frames = one_frame(
             r#"{"type":"conversation.item.create","item":{"type":"function_call_output","call_id":"c-1","output":"42"}}"#,
         );
@@ -3295,7 +3296,14 @@ mod tests {
         let Ingress::Frame { for_, .. } = ingress else {
             panic!("a later client event relays, got {ingress:?}");
         };
-        assert_eq!(for_, Some(correlation));
+        assert_eq!(
+            for_,
+            Some(CorrelationRef {
+                fact_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+                value: CorrelationValue::Str("c-1"),
+            })
+        );
+        let _ = correlation;
 
         // A session bound to the telephony carrier, handed bytes that are not that carrier's shape.
         // The refusal is raised at the step that read them, and no unit exists to have been given a
@@ -3399,14 +3407,13 @@ mod tests {
                 .err()
                 .unwrap_or_else(|| panic!("{absent:?} must not open a session"));
             assert_eq!(refusal.reason(), ReasonCode::Unauthenticated);
-            assert_eq!(refusal.step(), busbar_caps::StepName::Authenticate);
+            assert_eq!(refusal.step(), Some(busbar_caps::StepName::Authenticate));
         }
 
         // The one that matters: a real key, for the wrong plane. Refused here rather than carried
         // to an upstream that would have honoured it.
-        let refusal = answer(Some("mcp-tok"))
-            .err()
-            .expect("another plane's audience does not open this one");
+        let refusal =
+            answer(Some("mcp-tok")).expect_err("another plane's audience does not open this one");
         assert_eq!(refusal.reason(), ReasonCode::Unauthenticated);
     }
 }

@@ -1686,7 +1686,7 @@ mod tests {
         .into_result(&seal)
         .expect_err("this plane claims no socket surface");
         assert_eq!(refusal.reason(), ReasonCode::HandoffMismatch);
-        assert_eq!(refusal.step(), busbar_caps::StepName::Arrival);
+        assert_eq!(refusal.step(), Some(busbar_caps::StepName::Arrival));
 
         // Claimed, but not the layer this connection ended on: an sse stack matched as a document
         // request. Nothing is wrong with the bytes and nothing is wrong with the claim — the two
@@ -1889,7 +1889,7 @@ mod tests {
                 .into_result(&seal)
                 .expect_err("a body this plane cannot read is refused");
             assert_eq!(refusal.reason(), ReasonCode::DecodeFailed);
-            assert_eq!(refusal.step(), busbar_caps::StepName::Decode);
+            assert_eq!(refusal.step(), Some(busbar_caps::StepName::Decode));
         }
 
         // A notice nobody recognises is DROPPED, never refused: a refusal is an answer, and this

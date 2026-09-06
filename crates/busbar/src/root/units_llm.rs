@@ -2636,7 +2636,6 @@ mod tests {
             caller_token: None,
             headers: json_headers(),
             body: Fixture::BufferedOk.body(),
-            lanes: node.lanes(),
             path: None,
         };
         let resp = node.answer(arrival, None).await;
@@ -2835,7 +2834,6 @@ mod tests {
             caller_token: None,
             headers: json_headers(),
             body: Fixture::BufferedOk.body(),
-            lanes: node.lanes(),
             path: None,
         };
         let resp = node.answer_with(arrival, None, seats).await;
