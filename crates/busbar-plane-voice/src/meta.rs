@@ -61,7 +61,7 @@ const METER_CLASSES: &[MeterClassDecl] = &[
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("audio_tokens_out"),
+        key: CLASS_AUDIO_TOKENS_OUT,
         family: TOKEN_FAMILY,
         direction: ClassDirection::Response,
         default_divisor: BYTES_PER_TOKEN,
@@ -97,6 +97,16 @@ const METER_CLASSES: &[MeterClassDecl] = &[
         default_divisor: CALLS_PER_UNIT,
     },
 ];
+
+/// The class key the audio a turn EMITTED is counted under.
+///
+/// Exported because the class label is what selects a unit price, and the composition root names
+/// this one three times: the estimate a turn is admitted against, the class its evidence reports,
+/// and the class the settled line prices under. Three spellings of one wire string is three chances
+/// for a turn to be admitted against one class and priced under another, which a rate card with two
+/// different rates settles as money. The declaration above is the one spelling; this is how the
+/// root reads it.
+pub const CLASS_AUDIO_TOKENS_OUT: MeterClassId = MeterClassId::new("audio_tokens_out");
 
 /// The name a session's opening unit is audited and priced under.
 ///

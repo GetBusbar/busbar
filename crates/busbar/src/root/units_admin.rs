@@ -4224,7 +4224,7 @@ mod tests {
             );
         }
         // And from the other side: the served 1.5.5 document has no ledger path at all, which is
-        // what PB-75 means by leaving its bytes alone.
+        // what leaving the released document's bytes alone means.
         assert!(
             !pinned_paths
                 .keys()

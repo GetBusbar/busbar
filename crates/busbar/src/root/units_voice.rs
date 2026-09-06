@@ -594,7 +594,7 @@ impl TurnUsage {
                 QuantitySource::Count,
             ),
             (
-                "audio_tokens_out",
+                meta::CLASS_AUDIO_TOKENS_OUT.as_str(),
                 self.audio_tokens_out,
                 QuantitySource::Count,
             ),
@@ -848,7 +848,7 @@ impl<'n> VoiceUnit<'n> {
             .max(rate.cache_write);
         Estimate {
             per_class: vec![busbar_unit_admission::ClassEstimate {
-                class: "audio_tokens_out".to_string(),
+                class: meta::CLASS_AUDIO_TOKENS_OUT.as_str().to_string(),
                 quantity: TURN_OPENING_TOKENS,
                 max_unit_price_nanos: dearest,
             }],
@@ -1188,7 +1188,7 @@ impl Units for VoiceUnit<'_> {
             variance: None,
             lane_mismatch: None,
             settle_record_lost: false,
-            class: Some(MeterClassId::new("audio_tokens_out")),
+            class: Some(meta::CLASS_AUDIO_TOKENS_OUT),
             // A handshake reaches no upstream candidate, which is what makes it draw no request
             // slot. Every other shape of unit on this plane does.
             upstream_candidate: !self.shape.is_handshake(),
@@ -1455,6 +1455,37 @@ mod tests {
             dialect: Dialect::GeminiLive,
         },
     ];
+
+    /// THE CLASS THE ROOT NAMES IS THE CLASS THE PLANE DECLARES, at every site that names it.
+    ///
+    /// The label selects the unit price, so a turn admitted against one spelling and settled under
+    /// another is money on a rate card where the two rates differ — and a wire string re-spelled in
+    /// the root is a rename in the plane that leaves the root pricing under a class nobody declares.
+    /// The plane's declaration is the one source, and every reading below comes from it.
+    #[test]
+    fn the_emitted_audio_class_is_the_one_the_plane_declares() {
+        let declared = <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
+            .iter()
+            .any(|class| class.key == meta::CLASS_AUDIO_TOKENS_OUT);
+        assert!(
+            declared,
+            "the plane declares the class the root prices under"
+        );
+
+        let usage = TurnUsage {
+            audio_tokens_out: 3,
+            ..TurnUsage::default()
+        };
+        let line = usage
+            .lines()
+            .into_iter()
+            .find(|line| line.quantity == 3)
+            .expect("the emitted audio is reported");
+        assert_eq!(line.class, meta::CLASS_AUDIO_TOKENS_OUT);
+        // And the one spelling is still the released one: a shared constant makes a rename cheap,
+        // which is exactly why the wire string it carries is pinned here.
+        assert_eq!(line.class.as_str(), "audio_tokens_out");
+    }
 
     /// A dial that opens, so a cell can reach the stations past route without an I/O half.
     struct OpenDial;
