@@ -624,7 +624,7 @@ fn the_forged_pair_collides_under_the_legacy_framing_and_cannot_under_scheme_two
 /// evidence property the whole change exists to restore.
 #[test]
 fn a_chain_spanning_the_framing_upgrade_verifies_and_still_catches_an_edit() {
-    let mut mk = |seq: u64, scheme: u8, prev: String, outcome: &str| {
+    let mk = |seq: u64, scheme: u8, prev: String, outcome: &str| {
         let mut e = AuditEntry {
             seq,
             ts: 1_700_000_000 + seq,
