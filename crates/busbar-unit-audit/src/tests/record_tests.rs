@@ -87,9 +87,17 @@ fn inputs(unit: u64) -> AuditInputs {
 /// from a failing run. The inputs deliberately use the enum arms that carry payloads, because those
 /// are the ones whose encoding is easiest to move by accident.
 ///
-/// Moved exactly once, before any release wrote a chain: the record's position entered the digest,
-/// so a chain cut at its tail reports the cut instead of linking perfectly. That is the only
-/// change this value has ever absorbed, and the next one needs a migration, not a re-capture.
+/// Moved exactly TWICE, both times before any release wrote a chain:
+///
+/// 1. The record's position entered the digest, so a chain cut at its tail reports the cut instead
+///    of linking perfectly.
+/// 2. Every optional field gained a PRESENCE MARKER. Absent and empty had been folded together —
+///    `None` and `Some("")` on the destination and the hook heads, `None` and `Some(UnitKey(0))` on
+///    the parent, the same on all four control references — so a record that named a hold and one
+///    that named none digested identically. See
+///    `an_absent_optional_and_an_empty_one_are_different_records`.
+///
+/// The next change needs a migration, not a re-capture.
 #[test]
 fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
     let mut chain = AuditChain::new();
@@ -99,9 +107,82 @@ fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
     with_payloads.outcome.finish = FinishClass::Error;
     let record = chain.seal(with_payloads, &token());
     assert_eq!(
-        record.hash, "0161f86736b3ed067dcdbaa80259c52ceb25946076879a8968e3f84570626358",
+        record.hash, "61342c9bdf455efdf93736e92857fe21517b8d301d42ade319a9fdab0cbcef54",
         "the sealed digest moved: every persisted chain would now report itself tampered"
     );
+}
+
+/// AN ABSENT OPTIONAL IS NOT AN EMPTY ONE, and the digest has to say so.
+///
+/// Each pair below is two records that differ in exactly one fact — whether a field was there at all
+/// — and nothing else. Folding the absent case onto the empty or zero one made the two hash the
+/// same, which means a stored record could be rewritten from "no hold was taken" to "a hold with an
+/// empty reference was taken", or from "no parent" to "parent zero", and the chain would still
+/// verify. Every one of these fields is a claim about what a unit did, so every one of them has to
+/// survive being recomputed.
+#[test]
+fn an_absent_optional_and_an_empty_one_are_different_records() {
+    /// One field, and the two shapes the digest is being asked to tell apart: the absent one, and
+    /// the empty or zero one it used to be folded onto.
+    type AbsentVersusEmpty = (&'static str, fn(&mut AuditInputs), fn(&mut AuditInputs));
+
+    let cases: [AbsentVersusEmpty; 8] = [
+        (
+            "destination",
+            |i| i.what.destination = None,
+            |i| i.what.destination = Some(String::new()),
+        ),
+        (
+            "parent",
+            |i| i.what.parent = None,
+            |i| i.what.parent = Some(UnitKey::new(0)),
+        ),
+        (
+            "pre_hook_head",
+            |i| i.what.pre_hook_head = None,
+            |i| i.what.pre_hook_head = Some(String::new()),
+        ),
+        (
+            "post_hook_head",
+            |i| i.what.post_hook_head = None,
+            |i| i.what.post_hook_head = Some(String::new()),
+        ),
+        (
+            "hold_ref",
+            |i| i.controls.hold_ref = None,
+            |i| i.controls.hold_ref = Some(String::new()),
+        ),
+        (
+            "settle_ref",
+            |i| i.controls.settle_ref = None,
+            |i| i.controls.settle_ref = Some(String::new()),
+        ),
+        (
+            "slice_ref",
+            |i| i.controls.slice_ref = None,
+            |i| i.controls.slice_ref = Some(String::new()),
+        ),
+        (
+            "lease_ref",
+            |i| i.controls.lease_ref = None,
+            |i| i.controls.lease_ref = Some(String::new()),
+        ),
+    ];
+    for (field, absent, empty) in cases {
+        // A fresh chain per side, so both records sit at the same position with the same previous
+        // hash and the ONLY difference between them is the field under test.
+        let mut left_inputs = inputs(1);
+        absent(&mut left_inputs);
+        let mut right_inputs = inputs(1);
+        empty(&mut right_inputs);
+        let left = AuditChain::new().seal(left_inputs, &token());
+        let right = AuditChain::new().seal(right_inputs, &token());
+        assert_ne!(
+            left.hash, right.hash,
+            "an absent `{field}` and an empty one digest the same — the record cannot say which \
+             happened"
+        );
+    }
 }
 
 #[test]

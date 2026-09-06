@@ -316,29 +316,58 @@ fn a_restored_entry_is_not_marked_as_recorded_here() {
     );
 }
 
+/// The eight fields the wire has always had, by name, so a silent rename is red.
+const WIRE_FIELDS: [&str; 8] = [
+    "seq",
+    "ts",
+    "action",
+    "resource",
+    "outcome",
+    "principal",
+    "prev_hash",
+    "hash",
+];
+
 #[test]
-fn the_provenance_flag_is_not_on_the_wire_and_there_are_eight_fields() {
+fn the_provenance_flag_is_not_on_the_wire_and_a_new_entry_names_its_digest_scheme() {
     let log = ring();
     log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
     let entry = &log.export()[0];
-    // Serialised as a map, the flag is absent and the eight wire fields are present. Checked by
-    // name so that a field renamed silently is red.
     let json = serde_json::to_value(entry).unwrap();
     let map = json.as_object().unwrap();
-    assert_eq!(map.len(), 8, "the wire shape is eight fields");
-    for field in [
-        "seq",
-        "ts",
-        "action",
-        "resource",
-        "outcome",
-        "principal",
-        "prev_hash",
-        "hash",
-    ] {
+    for field in WIRE_FIELDS {
         assert!(map.contains_key(field), "the wire lost `{field}`");
     }
+    // The NINTH field, and the only one this release adds: which framing the digest was taken under.
+    // Without it a reader could not tell a record sealed under the injective framing from one sealed
+    // under the pipe join, and would have to guess — which is the whole of what it is for.
+    assert_eq!(
+        map.len(),
+        9,
+        "the eight wire fields, plus the digest scheme"
+    );
+    assert_eq!(map["digest_scheme"], serde_json::json!(2));
     assert!(!map.contains_key("recorded_here"));
+}
+
+#[test]
+fn a_record_from_before_the_scheme_existed_re_encodes_to_the_same_eight_fields() {
+    // A store holds these bytes. Reading them and writing them back must not add a field that says
+    // something about them they do not say: they were sealed under the pipe join, the scheme field
+    // is absent there, and the absence IS the statement.
+    let entry: AuditEntry = serde_json::from_slice(AD_1).unwrap();
+    let json = serde_json::to_value(&entry).unwrap();
+    let map = json.as_object().unwrap();
+    assert_eq!(map.len(), 8, "a legacy record re-encodes to eight fields");
+    for field in WIRE_FIELDS {
+        assert!(map.contains_key(field), "the wire lost `{field}`");
+    }
+    assert!(
+        !map.contains_key("digest_scheme"),
+        "a legacy record must not grow a field on a read-write round trip"
+    );
+    // And byte for byte, not merely field for field.
+    assert_eq!(serde_json::to_vec(&entry).unwrap(), AD_1);
 }
 
 #[test]

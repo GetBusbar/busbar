@@ -22,6 +22,7 @@ use crate::legacy::chain::{
     digest, seal, sha256_hex, verify_chain, verify_window, Chain, ChainBreakKind, ChainLabels,
     ChainedRecord, Digest, Framing,
 };
+use crate::legacy::entry::{DIGEST_SCHEME_LEGACY_PIPE, DIGEST_SCHEME_LEN_PREFIXED};
 use crate::legacy::{AuditEntry, AuditInput, OUTCOME_APPLIED};
 
 // ── THE FOURTH STREAM ────────────────────────────────────────────────────────────────────────────
@@ -259,21 +260,268 @@ fn a_chain_resumed_from_a_broken_tail_reports_the_break_rather_than_laundering_i
     assert_eq!(next.seq, 4);
 }
 
+/// An entry under a NAMED scheme, built field by field and sealed with its own digest.
+///
+/// Deliberately not `seal`: `seal` writes the current scheme and only the current scheme, which is
+/// the property that stops the ambiguous framing being reintroduced. A test that needs a record as a
+/// store already holds one has to say so explicitly, here.
+fn entry_under(scheme: u8, prev_hash: &str, seq: u64, input: AuditInput) -> AuditEntry {
+    let mut entry = AuditEntry {
+        seq,
+        ts: input.ts,
+        action: input.action,
+        resource: input.resource,
+        outcome: input.outcome,
+        principal: input.principal,
+        prev_hash: prev_hash.to_string(),
+        hash: String::new(),
+        digest_scheme: scheme,
+        recorded_here: false,
+    };
+    entry.hash = digest(&entry);
+    entry
+}
+
+/// The caller-supplied half of one admin entry.
+fn an_input(ts: u64, action: &str, resource: &str, outcome: &str, principal: &str) -> AuditInput {
+    AuditInput {
+        ts,
+        action: action.to_string(),
+        resource: resource.to_string(),
+        outcome: outcome.to_string(),
+        principal: principal.to_string(),
+    }
+}
+
 #[test]
-fn the_admin_audit_digest_is_unchanged() {
-    // THE GOLDEN VECTOR. The formula is recomputed here the old way — a single formatted string,
-    // joined by vertical bars — and the mechanism has to agree byte for byte.
-    let entry: AuditEntry = seal(
+fn the_legacy_pipe_join_lets_a_moved_bar_forge_an_outcome_and_an_attribution() {
+    // THE DEFECT, PINNED. `resource` and `principal` are unvalidated caller strings, so moving one
+    // bar rewrites WHAT HAPPENED and WHO DID IT while the joined bytes stay identical.
+    //
+    // What really happened: a mutation on `hook:x` was REJECTED, attempted by a principal whose name
+    // contains a bar.
+    let truth = entry_under(
+        DIGEST_SCHEME_LEGACY_PIPE,
+        "",
+        1,
+        an_input(
+            1_700_000_000,
+            "hook.register",
+            "hook:x",
+            "rejected",
+            "applied|mallory",
+        ),
+    );
+    // What an attacker who can choose those bytes can write instead: the same mutation APPLIED, and
+    // attributed to mallory alone.
+    let forged = entry_under(
+        DIGEST_SCHEME_LEGACY_PIPE,
+        "",
+        1,
+        an_input(
+            1_700_000_000,
+            "hook.register",
+            "hook:x|rejected",
+            "applied",
+            "mallory",
+        ),
+    );
+    assert_eq!(
+        truth.hash, forged.hash,
+        "the two must collide — that IS the defect this scheme is retained in spite of"
+    );
+    assert_ne!(truth.outcome, forged.outcome);
+    assert_ne!(truth.principal, forged.principal);
+    // And the verifier passes the rewritten record, because the digest really is the digest of those
+    // bytes. This is why the framing had to change rather than the verifier being tightened.
+    assert!(
+        verify_chain(std::slice::from_ref(&forged)).is_ok(),
+        "the legacy framing cannot tell the forgery from the truth"
+    );
+}
+
+#[test]
+fn the_injective_framing_tells_that_forged_pair_apart() {
+    let truth = entry_under(
+        DIGEST_SCHEME_LEN_PREFIXED,
+        "",
+        1,
+        an_input(
+            1_700_000_000,
+            "hook.register",
+            "hook:x",
+            "rejected",
+            "applied|mallory",
+        ),
+    );
+    let forged = entry_under(
+        DIGEST_SCHEME_LEN_PREFIXED,
+        "",
+        1,
+        an_input(
+            1_700_000_000,
+            "hook.register",
+            "hook:x|rejected",
+            "applied",
+            "mallory",
+        ),
+    );
+    assert_ne!(
+        truth.hash, forged.hash,
+        "length prefixes make the field split unforgeable, so the pair must separate"
+    );
+    // Now the rewrite is caught: swapping the fields onto the record the truth sealed no longer
+    // recomputes to its stored digest.
+    let mut rewritten = truth.clone();
+    rewritten.resource = forged.resource.clone();
+    rewritten.outcome = forged.outcome.clone();
+    rewritten.principal = forged.principal.clone();
+    match verify_chain(std::slice::from_ref(&rewritten)) {
+        Err(brk) => assert!(matches!(brk.kind, ChainBreakKind::DigestMismatch { .. })),
+        Ok(()) => panic!("a rewritten outcome must be reported as an EDITED record"),
+    }
+}
+
+#[test]
+fn a_chain_mixed_across_the_framing_change_verifies() {
+    // A real deployment's chain at the upgrade boundary: entries a previous build sealed under the
+    // pipe join, then entries this build seals under the injective framing, one sequence, linked.
+    let old_1 = entry_under(
+        DIGEST_SCHEME_LEGACY_PIPE,
+        "",
+        1,
+        an_input(
+            1_700_000_000,
+            "hook.register",
+            "hook:a",
+            OUTCOME_APPLIED,
+            "admin",
+        ),
+    );
+    let old_2 = entry_under(
+        DIGEST_SCHEME_LEGACY_PIPE,
+        &old_1.hash,
+        2,
+        an_input(
+            1_700_000_060,
+            "hook.delete",
+            "hook:a",
+            OUTCOME_APPLIED,
+            "admin",
+        ),
+    );
+    let new_3: AuditEntry = seal(
+        "admin",
+        3,
+        old_2.hash.clone(),
+        AuditInput {
+            ts: 1_700_000_120,
+            action: "hook.register".into(),
+            resource: "hook:b".into(),
+            outcome: OUTCOME_APPLIED.into(),
+            principal: "admin".into(),
+        },
+    );
+    let new_4: AuditEntry = seal(
         "admin",
         4,
-        "deadbeef".to_string(),
+        new_3.hash.clone(),
+        AuditInput {
+            ts: 1_700_000_180,
+            action: "hook.delete".into(),
+            resource: "hook:b".into(),
+            outcome: OUTCOME_APPLIED.into(),
+            principal: "admin".into(),
+        },
+    );
+    assert_eq!(new_3.digest_scheme, DIGEST_SCHEME_LEN_PREFIXED);
+    let mixed = vec![old_1, old_2, new_3, new_4];
+    assert!(
+        verify_chain(&mixed).is_ok(),
+        "a chain that spans the framing change must verify — every entry under its OWN scheme"
+    );
+    // And a tamper anywhere in it is still caught, on either side of the boundary.
+    for i in 0..mixed.len() {
+        let mut tampered = mixed.clone();
+        tampered[i].outcome = "rejected".into();
+        assert!(
+            verify_chain(&tampered).is_err(),
+            "editing entry {i} of a mixed chain must be reported"
+        );
+    }
+}
+
+#[test]
+fn a_new_entry_with_a_bar_in_every_field_round_trips() {
+    let entry: AuditEntry = seal(
+        "admin",
+        7,
+        "|dead|beef|".to_string(),
         AuditInput {
             ts: 1_700_000_000,
-            action: "hook.register".to_string(),
-            resource: "hook:compress".to_string(),
-            outcome: OUTCOME_APPLIED.to_string(),
-            principal: "admin".to_string(),
+            action: "hook|register".into(),
+            resource: "hook:|x|".into(),
+            outcome: "app|lied".into(),
+            principal: "|mal|lory|".into(),
         },
+    );
+    assert_eq!(
+        entry.hash,
+        digest(&entry),
+        "it recomputes to its own digest"
+    );
+    assert!(verify_window(std::slice::from_ref(&entry)).is_ok());
+    // Through the wire and back, bars and scheme intact.
+    let json = serde_json::to_string(&entry).unwrap();
+    let back: AuditEntry = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.digest_scheme, DIGEST_SCHEME_LEN_PREFIXED);
+    assert_eq!(back.resource, "hook:|x|");
+    assert_eq!(back.principal, "|mal|lory|");
+    assert_eq!(back.hash, entry.hash);
+    assert!(verify_window(std::slice::from_ref(&back)).is_ok());
+}
+
+#[test]
+fn an_entry_relabelled_from_one_scheme_to_the_other_stops_verifying() {
+    // The scheme is INSIDE the preimage, not merely beside it, so it cannot be edited on the wire to
+    // reinterpret a record under the framing that suits an attacker.
+    let legacy = entry_under(
+        DIGEST_SCHEME_LEGACY_PIPE,
+        "",
+        1,
+        an_input(
+            1_700_000_000,
+            "hook.register",
+            "hook:a",
+            OUTCOME_APPLIED,
+            "admin",
+        ),
+    );
+    let mut relabelled = legacy.clone();
+    relabelled.digest_scheme = DIGEST_SCHEME_LEN_PREFIXED;
+    assert!(verify_chain(std::slice::from_ref(&legacy)).is_ok());
+    assert!(
+        verify_chain(std::slice::from_ref(&relabelled)).is_err(),
+        "relabelling the scheme must break the digest, or the version is not signed"
+    );
+}
+
+#[test]
+fn the_admin_audit_digest_is_unchanged() {
+    // THE GOLDEN VECTOR, for the scheme the records on disk were sealed under. The formula is
+    // recomputed here the old way — a single formatted string, joined by vertical bars — and the
+    // mechanism has to agree byte for byte for a chain written before this release.
+    let entry = entry_under(
+        DIGEST_SCHEME_LEGACY_PIPE,
+        "deadbeef",
+        4,
+        an_input(
+            1_700_000_000,
+            "hook.register",
+            "hook:compress",
+            OUTCOME_APPLIED,
+            "admin",
+        ),
     );
     let canonical = format!(
         "{}|{}|{}|{}|{}|{}|{}",
