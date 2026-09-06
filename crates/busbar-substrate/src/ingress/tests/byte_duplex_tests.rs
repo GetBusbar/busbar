@@ -123,6 +123,60 @@ async fn mint_is_monotonic_and_never_none() {
     assert!(CallRef::NONE.is_none());
 }
 
+/// A plane whose handler finishes the instant it is polled — the ordinary shape of a frame answered
+/// from memory, and the one that races the dispatcher's own bookkeeping.
+struct InstantPlane;
+
+#[async_trait::async_trait]
+impl DuplexPlane for InstantPlane {
+    fn classify(&self, _frame: &[u8]) -> Option<CallRef> {
+        None
+    }
+    async fn handle(self: Arc<Self>, _frame: Vec<u8>, _out: DuplexHandle) {}
+}
+
+/// The in-flight registry must be EMPTY once the handlers are done, however fast they were. The
+/// dispatcher runs on the reader's thread while the handler runs on the runtime's, so a handler that
+/// finishes first clears a key the dispatcher has not written yet — and the dispatcher then writes it
+/// anyway. Nothing ever removes such an entry: it blocks the whole EOF drain and grows for the life
+/// of the session. Dispatched here from a thread OUTSIDE the runtime driving the handlers, which is
+/// exactly the arrangement that produces the overlap.
+#[test]
+fn a_finished_handler_leaves_the_inflight_registry_empty() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("a current-thread runtime for the handlers");
+    let handlers = rt.handle().clone();
+    // Driven on its OWN thread, so the handlers make progress concurrently with the dispatch below.
+    let driver = std::thread::spawn(move || rt.block_on(std::future::pending::<()>()));
+
+    let (_near, far) = tokio::io::duplex(64);
+    let (_r, w) = tokio::io::split(far);
+    let shared = new_shared(Box::new(NewlineSink { writer: w }));
+    let handle = DuplexHandle {
+        shared: shared.clone(),
+    };
+    let plane = Arc::new(InstantPlane);
+
+    let _in_runtime = handlers.enter();
+    for _ in 0..20_000 {
+        dispatch_frame(&shared, &handle, &plane, b"frame".to_vec());
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !shared.inflight.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let stranded = shared.inflight.lock().unwrap().len();
+    drop(_in_runtime);
+    drop(driver);
+    assert_eq!(
+        stranded, 0,
+        "every finished handler cleared its own in-flight slot"
+    );
+}
+
 /// An `issue` that is ABANDONED — cancelled at its await, as any caller wrapping it in a
 /// `tokio::time::timeout` does — must leave the correlation table exactly as it found it. Its
 /// registration goes in before the frame is written, so nothing but the dropped future itself can

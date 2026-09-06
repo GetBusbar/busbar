@@ -172,8 +172,12 @@ struct Shared {
     /// The monotonic mint; starts at 1 so [`CallRef::NONE`] (`0`) is never handed out.
     next_ref: AtomicU64,
     /// In-flight per-frame handlers, keyed on a private sequence so each removes itself on
-    /// completion (bounded memory) and the loop can abort the remainder at EOF.
-    inflight: Mutex<HashMap<u64, tokio::task::AbortHandle>>,
+    /// completion (bounded memory) and the loop can abort the remainder at EOF. The slot is RESERVED
+    /// under the lock before the handler is spawned and only then filled in with its abort handle —
+    /// `None` is a handler already running whose handle has not landed yet. Reserving first is what
+    /// makes a handler's self-removal authoritative: it can only ever remove a key that exists, so
+    /// the dispatcher never writes an entry back in behind it.
+    inflight: Mutex<HashMap<u64, Option<tokio::task::AbortHandle>>>,
     /// The private sequence behind the `inflight` keys.
     next_inflight: AtomicU64,
 }
@@ -259,6 +263,11 @@ fn dispatch_frame<P: DuplexPlane>(
         return;
     }
     let key = shared.next_inflight.fetch_add(1, Ordering::Relaxed);
+    // RESERVE the slot before the handler exists. The dispatcher runs on the reader's thread and the
+    // handler on the runtime's, so a handler that finishes first would otherwise clear a key not yet
+    // written — and the write would then land on a slot nobody will ever remove again, holding the
+    // EOF drain open for its full bound and growing the registry for the life of the session.
+    shared.inflight.lock().unwrap().insert(key, None);
     let plane = plane.clone();
     let handle = handle.clone();
     let for_cleanup = shared.clone();
@@ -266,11 +275,11 @@ fn dispatch_frame<P: DuplexPlane>(
         plane.handle(frame, handle).await;
         for_cleanup.inflight.lock().unwrap().remove(&key);
     });
-    shared
-        .inflight
-        .lock()
-        .unwrap()
-        .insert(key, running.abort_handle());
+    // Fill the reservation in ONLY while it is still there: a handler that already finished has taken
+    // the slot with it, and its abort handle is of no use to anyone.
+    if let Some(slot) = shared.inflight.lock().unwrap().get_mut(&key) {
+        *slot = Some(running.abort_handle());
+    }
 }
 
 /// END OF SESSION: DRAIN the in-flight handlers under a bound, then abort the remainder and flush. A
@@ -283,7 +292,11 @@ async fn drain_and_flush(shared: &Arc<Shared>) {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     for (_, h) in shared.inflight.lock().unwrap().drain() {
-        h.abort();
+        // A reservation with no handle yet is a handler spawned moments ago; the runtime drops it
+        // with the session, and there is nothing here to abort it with.
+        if let Some(h) = h {
+            h.abort();
+        }
     }
     shared.sink.lock().await.flush().await;
 }
