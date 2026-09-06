@@ -762,7 +762,7 @@ fn register_ws_arrivals() {
 }
 
 /// SEAL THE COMPOSITION ROOT AND MOUNT THE VOICE PLANE ONTO IT — the switch-over, behind
-/// `root-voice`, which is off by default.
+/// `root-voice`, which the shipped binary carries.
 ///
 /// The root is built before any plane is switched onto it, and this is where one is. Sealing is the
 /// whole mount: seven transports composed bottom-up, five planes registered over them, every claim
@@ -1274,8 +1274,8 @@ async fn run(data_workers: usize) {
     // for another few hundred lines. The transports it composes are built from THESE limits — the
     // same `request_body_max_bytes` the line above hands the served door — so a switched-over plane's
     // transport and the door in front of it cannot disagree about which bodies exist. Behind
-    // `root-voice`, off by default: with it off the line is not compiled and the binary is what it
-    // was, which is what the neutrality cells read.
+    // `root-voice`, which the shipped binary carries; the leg stays switchable, and with it off the
+    // line is not compiled and the binary is what it was, which is what the neutrality cells read.
     #[cfg(feature = "root-voice")]
     mount_root_voice(&cfg.limits);
     // THE VOICE PLANE'S EGRESS CREDENTIAL, read off the deployment's ORDINARY provider catalog.

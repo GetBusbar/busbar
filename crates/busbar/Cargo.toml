@@ -136,10 +136,10 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 [features]
 # Pure forwards: every `#[cfg(feature = ...)]` site lives in busbar-core, so the binary's features
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
-# SAME default set the monolithic crate had; `root-admin`, `root-mcp` and `root-a2a` are the
-# additions, and all three are paths rather than surfaces — the operations, their bytes and their
-# features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin", "root-mcp", "root-a2a"]
+# SAME default set the monolithic crate had; `root-admin`, `root-mcp`, `root-a2a` and `root-voice`
+# are the additions, and all four are paths rather than surfaces — the operations, their bytes and
+# their features are unchanged.
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin", "root-mcp", "root-a2a", "root-voice"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -167,15 +167,27 @@ plane-a2a = ["dep:busbar-a2a", "busbar-core/plane-a2a"]
 # runtime here gives the `build_runtime` body; the skeleton build leaves `build_runtime: None`.
 plane-voice = ["dep:busbar-voice", "dep:busbar-transport-ws", "busbar-voice?/runtime", "busbar-core/plane-voice"]
 # THE VOICE PLANE, SERVED THROUGH THE COMPOSITION ROOT rather than through the previous release's
-# path. OFF by default and deliberately so: the root is BUILT before any plane is SWITCHED onto it,
-# and this is the switch. Off, the binary is byte-for-byte what it was — the module still compiles
-# and its cells still run, because the root is proved against the real traits whether or not
-# anything routes through it. On, `main()` mounts the voice plane's units.
+# path, DEFAULT ON. `main()` seals the composition and mounts the voice plane's units at boot.
+# Default-off was the ordering, not the destination — the root is BUILT before any plane is SWITCHED
+# onto it — and the ordering is done.
+#
+# Voice is the one plane with no 1.5.5 golden to come back at 0 diverging, because there was no voice
+# in 1.5.5. Its proof is the other shape of the same question: a pure 1.5.5 config must see NOTHING
+# new — no boot line, no metrics series, the same route set — which is what the neutrality families
+# measure, and the plane's own conformance battery answers with the same thirteen ready legs on the
+# flip as before it.
+#
+# One thing had to land BEFORE the flip and did: the authenticate step is a GATING step, and a
+# default leg is the shipped path for its plane, so a credential refusal nobody drove over the loop
+# would have been a half-answer shipping as a default. The rig's provider-credential leg proves the
+# credential the node dials OUT under; what was missing was the loop refusing the one a caller
+# presents IN.
 #
 # It carries no config key, no environment variable and no boot line. A deployment cannot turn it on
 # by editing a config file and cannot tell from the logs which way it was built, which is what keeps
 # the neutrality cells answering the same on both legs. It forwards to `plane-voice` because the
-# thing it mounts needs the plane's own crate edge to exist.
+# thing it mounts needs the plane's own crate edge to exist — and `plane-voice` is what carries the
+# WS transport edge, so `--no-default-features` still drops plane and transport together.
 root-voice = ["plane-voice"]
 # THE LLM PLANE THROUGH THE COMPOSITION ROOT, default OFF: the loop over the nine step files instead
 # of the shell over the engine. Same six dialects under the same six names. No config key, no
