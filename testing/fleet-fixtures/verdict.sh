@@ -21,6 +21,14 @@ cd "$(dirname "$0")" || exit 1
 
 LEDGER="${LEDGER:?LEDGER must point at the probe ledger tsv}"
 EXPECTED_IDS="${EXPECTED_IDS:-}"
+# NAMED CONFORMANCE GAPS — ids the caller classified against a register of owner-named gaps (today
+# testing/llm-conformance/named-gaps.json). They are NOT owed, so they are not in EXPECTED_IDS and
+# they can never be counted as a pass; they are printed HERE, in their own column, with the count in
+# the verdict line, so a gate that carries gaps says so out loud every run. Each one must really
+# carry a GAP row in the ledger: a gap list that names an id the ledger does not is a caller
+# inventing forgiveness, and is RED. The register's own health (stale pin, entry that never fired)
+# is an ordinary owed row and is judged like any other probe.
+GAP_IDS="${GAP_IDS:-}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 # The gate this verdict speaks for. The plugin functional gate is the default; the shadow oracle
 # (testing/shadow-oracle/replay.sh) reuses this file unchanged by setting GATE_NAME.
@@ -137,16 +145,29 @@ while IFS=$'\t' read -r id status detail; do
   esac
 done < "$resolved"
 
+gap_n=0 bad_gap_ids=""
+for gid in $GAP_IDS; do
+  [ -n "$gid" ] || continue
+  gst="$(awk -F'\t' -v i="$gid" '$1==i{s=$2; d=$4} END{print s}' "$LEDGER")"
+  if [ "$gst" = "GAP" ]; then
+    gap_n=$((gap_n + 1))
+    printf '%-12s %-40s %s\n' "GAP" "$gid" "$(awk -F'\t' -v i="$gid" '$1==i{d=$4} END{print d}' "$LEDGER")" >> "$report"
+  else
+    bad_gap_ids="${bad_gap_ids}${gid} "
+  fi
+done
+
 cat "$report"
 echo
 # `owed` is counted BY THE LOOP, not re-derived with `wc -w`: a word count of the same string is the
 # very miscount the loop was fixed for, and the two disagreeing is how the wrong number stayed
 # plausible.
-printf 'owed: %s   pass: %s   fail: %s   skip: %s   did not run: %s\n' \
+printf 'owed: %s   pass: %s   fail: %s   skip: %s   did not run: %s   named conformance gaps: %s\n' \
   "$owed_n" "$pass_n" \
   "$(printf '%s' "$fail_ids"    | wc -w | tr -d ' ')" \
   "$(printf '%s' "$skip_ids"    | wc -w | tr -d ' ')" \
-  "$(printf '%s' "$missing_ids" | wc -w | tr -d ' ')"
+  "$(printf '%s' "$missing_ids" | wc -w | tr -d ' ')" \
+  "$gap_n"
 
 {
   echo "## ${GATE_NAME}"
@@ -171,11 +192,18 @@ if [ -n "$skip_ids" ]; then
   echo "::error title=${GATE_NAME}::RED — these probes SKIPPED: ${skip_ids}. A skip is never a pass; the plugin was not exercised. If a probe genuinely cannot apply, it must not be in EXPECTED_IDS."
   rc=1
 fi
+# A gap the ledger does not actually carry is forgiveness with nothing behind it.
+if [ -n "$bad_gap_ids" ]; then
+  echo "::error title=${GATE_NAME}::RED — these ids were declared NAMED CONFORMANCE GAPS but carry no GAP row in the ledger: ${bad_gap_ids}. A gap is a row that ran, failed against the pinned spec, and matched a registered entry; anything else is a pass being invented."
+  rc=1
+fi
 
 if [ "$rc" -ne 0 ]; then
   echo; echo "${GATE_UPPER}: RED."
   { echo; echo "### RED — the plugin was not proven functional."; } >> "$SUMMARY"
   exit 1
 fi
-echo; echo "${GATE_UPPER}: GREEN. All ${pass_n} owed probes ran and passed."
-{ echo; echo "### GREEN — all ${pass_n} owed probes passed."; } >> "$SUMMARY"
+gap_note=""
+[ "$gap_n" -gt 0 ] && gap_note=" ${gap_n} row(s) are NAMED CONFORMANCE GAPS: judged, failed against the pinned spec, forgiven by name only — not passes, and not counted as any."
+echo; echo "${GATE_UPPER}: GREEN. All ${pass_n} owed probes ran and passed.${gap_note}"
+{ echo; echo "### GREEN — all ${pass_n} owed probes passed.${gap_note}"; } >> "$SUMMARY"
