@@ -15,7 +15,7 @@ use busbar_kernel::slice::{bucket_all, ConcurrencyGauge, Epoch, LeaseSet};
 use busbar_kernel::teller::{Evidence, Kernel};
 use busbar_kernel::tick::{
     drain_outcome, drain_verdict, fleet_action, session_tick, sweep, sweep_settle, DrainVerdict,
-    FleetAction, SessionTick, Sweep, SESSION_IDLE_MAX_MS,
+    FleetAction, SessionTick, Sweep, MIN_QUORUM_PEERS, SESSION_IDLE_MAX_MS,
 };
 
 use common::{principal, TestDoor};
@@ -513,5 +513,32 @@ fn a_node_that_is_the_odd_one_out_serves_only_for_a_short_grace() {
     assert_eq!(
         fleet_action(1, 1, 1, 30_000, 30_000, 630_000),
         FleetAction::Drain
+    );
+}
+
+/// A two-node fleet takes the odd-one-out answer, whatever its one peer is doing.
+///
+/// Neither node can tell which side of a partition holds the majority — each sees exactly one peer
+/// it cannot reach — so "my only peer is stale too" is not the fleet agreeing, and reading it that
+/// way would have both nodes serving on slices the other believes it still holds. The bound that
+/// says so is named, and this is the case it is named for.
+#[test]
+fn a_two_node_fleet_has_no_quorum_to_appeal_to() {
+    assert_eq!(MIN_QUORUM_PEERS, 2);
+    // One peer, stale, and a quorum a single peer would meet: still the short grace, not the long
+    // stale-serve bound the quorum branch buys.
+    assert_eq!(
+        fleet_action(1, 1, 1, 10_000, 30_000, 630_000),
+        FleetAction::ServeStale { until: 30_000 },
+        "one peer agreeing is not the fleet agreeing"
+    );
+    assert_eq!(
+        fleet_action(1, 1, 1, 30_000, 30_000, 630_000),
+        FleetAction::Drain
+    );
+    // With one more peer the same quorum IS a quorum, and availability is bought to the bound.
+    assert_eq!(
+        fleet_action(2, 1, 1, 10_000, 30_000, 630_000),
+        FleetAction::ServeStale { until: 630_000 }
     );
 }

@@ -223,6 +223,17 @@ pub enum FleetAction {
     Drain,
 }
 
+/// How many peers it takes before "enough peers agree" is a fleet's verdict rather than one other
+/// node's opinion.
+///
+/// A two-node fleet — this node and one peer — cannot decide which side of a partition is the
+/// majority: each node sees exactly one peer it cannot reach, and both would read the other's
+/// silence as the fleet agreeing with it, so both would keep serving on slices the other believes
+/// it still holds. Below this bound the quorum branch does not apply and the node takes the
+/// odd-one-out answer, which serves for a short grace and then drains. That is the answer that
+/// cannot spend one slice on two sides.
+pub const MIN_QUORUM_PEERS: usize = 2;
+
 /// The fleet rule.
 ///
 /// Three branches, and the first one matters more than the other two put together: a node with NO
@@ -230,7 +241,9 @@ pub enum FleetAction {
 /// there has ever been, and for it "the store is slow" has never meant "stop serving". It keeps
 /// admitting against what it last knew, journals locally, and reconciles when the store returns.
 ///
-/// With peers, the question is whether this node is the odd one out. If enough peers are also stale
+/// With peers, the question is whether this node is the odd one out. Asking it needs a fleet big
+/// enough to have a majority at all — see [`MIN_QUORUM_PEERS`] for why a single peer agreeing with
+/// this node is not a quorum. If enough peers are also stale
 /// or draining, the partition is the fleet's, not this node's, and the availability answer is to
 /// keep serving on slices already drawn until a bound that is long enough for every admitted unit
 /// to settle before the store would release its slice — so no slice is ever spent on two sides of a
@@ -246,7 +259,7 @@ pub fn fleet_action(
 ) -> FleetAction {
     if peers_configured == 0 {
         FleetAction::Serve
-    } else if peers_configured >= 2 && stale_or_draining_peers >= drain_quorum {
+    } else if peers_configured >= MIN_QUORUM_PEERS && stale_or_draining_peers >= drain_quorum {
         if stale_for < stale_serve_max {
             FleetAction::ServeStale {
                 until: stale_serve_max,
