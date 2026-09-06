@@ -26,6 +26,9 @@ source "${repo}/testing/fleet-fixtures/lib.sh"
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
 LP="${RESTART_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48931}}" AP="${RESTART_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48932}}"
 W="$RAW/restart-work"; mkdir -p "$W"
+# Same knob as record.sh's boot_busbar / scripts/store-persist.sh: this cell boots busbar TWICE, so
+# a bound sized for an idle laptop reads a saturated host's second boot as "never restarted".
+BOOT_BOUND="${ORACLE_BOOT_BOUND_SECS:-60}"
 
 for p in "$LP" "$AP"; do
   assert_port_free "$p" || { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"port $p busy\"}}" >"$RAW/captured.json"; exit 0; }
@@ -74,7 +77,7 @@ boot() {  # <stdout-file> <stderr-file>
 }
 
 pid="$(boot "$W/boot1.stdout" "$W/boot1.stderr")"; track_pid "$pid"
-wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 1 "$(tail -c 800 "$W/boot1.stdout")$(tail -c 800 "$W/boot1.stderr")"
+wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" || fail 1 "$(tail -c 800 "$W/boot1.stdout")$(tail -c 800 "$W/boot1.stderr")"
 step booted "true"
 
 # advanced.response_headers.server_timing (PB-73): RESTART-scoped, default false — the config
@@ -99,7 +102,7 @@ step process_exited "$(assert_port_free "$LP" && echo true || echo false)"
 # survived the restart it required, without any shell access to the box in between.
 pid2="$(boot "$W/boot2.stdout" "$W/boot2.stderr")"; track_pid "$pid2"
 relaunch_ok="false"
-wait_for_http "http://127.0.0.1:${LP}/healthz" 30 && relaunch_ok="true"
+wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" && relaunch_ok="true"
 step relaunch_after_restart_healthy "$relaunch_ok"
 if [ "$relaunch_ok" = "true" ]; then
   hdrs="$(curl -sS -m 5 -D - -o /dev/null "http://127.0.0.1:${LP}/healthz")"

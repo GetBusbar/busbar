@@ -48,6 +48,9 @@ source "${repo}/testing/fleet-fixtures/lib.sh"
 MODE="${1:?mode: governance-init|budget-hydration|dangling-group|inert-keys}"
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
 LP="${GOV_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-49751}}" AP="${GOV_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-49752}}"
+# Same knob as record.sh's boot_busbar / scripts/store-persist.sh: this cell boots busbar TWICE, so
+# a bound sized for an idle laptop reads a saturated host's second boot as "never came up".
+BOOT_BOUND="${ORACLE_BOOT_BOUND_SECS:-60}"
 fail() { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"$1\"}}" >"$RAW/captured.json"; exit 0; }
 
 W="$RAW/gov-work"
@@ -115,7 +118,7 @@ spawn_() { local log="$1" cfg="$2"; ( exec env BUSBAR_CONFIG="$cfg" BUSBAR_PROVI
 
 # ---- boot 1: create the durable store + mint one key under group `oracle` -------------------------
 pid="$(spawn_ "$W/busbar1.log" "$W/boot1.yaml")"; track_pid "$pid"
-wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail "busbar1 did not come up: $(tail -c 400 "$W/busbar1.log")"
+wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" || fail "busbar1 did not come up: $(tail -c 400 "$W/busbar1.log")"
 mint="$(curl -sS -m 10 -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"gov-oracle","group":"oracle"}')"
 kid="$(jq -r '.id // empty' <<<"$mint")"
 [ -n "$kid" ] || fail "mint failed: $mint"
@@ -159,7 +162,7 @@ if [ "$expect_boot" = refuse ]; then
   rc=$?
 else
   pid2="$(spawn_ "$W/busbar2.log" "$W/boot2.yaml")"; track_pid "$pid2"
-  if wait_for_http "http://127.0.0.1:${LP}/healthz" 30; then
+  if wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND"; then
     kill "$pid2" 2>/dev/null; wait "$pid2" 2>/dev/null; rc=0
   elif kill -0 "$pid2" 2>/dev/null; then
     kill -9 "$pid2" 2>/dev/null; wait "$pid2" 2>/dev/null; rc=124
