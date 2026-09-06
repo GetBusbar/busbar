@@ -923,6 +923,18 @@ fn run_admin_chain(
     // OIDC module does a JWKS HTTPS round-trip with a 10s timeout), so the flush-then-reinsert
     // window here is seconds wide.
     let cache_gen = app.credential_cache.generation();
+    // `Pass` puts are BUFFERED, not admitted, until the chain identifies — the fix the DATA plane
+    // already carries (`run_chain_cached`), ported here because both loops write the SAME
+    // 4096-entry `CredentialCache`. An all-`Pass` admin chain ends `Denied` below, so admitting the
+    // `Pass`es eagerly let an unauthenticated caller on the admin port fill the shared cache with
+    // rows that then evict real `Identify` entries under the oldest-inserted rule
+    // (`auth_cache::put`) — including the data plane's. It buys nothing back either: the module
+    // that produced the `Pass` never runs again for that credential, because the request is already
+    // denied. Committing only on the `Identified` return means unauthenticated traffic causes no
+    // admissions at all, while an authenticated chain still caches every module's answer and still
+    // skips their round-trips next time. A cache HIT is never re-`put`: that would refresh its TTL
+    // and quietly extend the revocation window.
+    let mut pending_pass: Vec<&str> = Vec::new();
     for name in &app.admin_chain {
         // The built-in admin-tokens module is in-process and NEVER cached (caching a microsecond
         // compare only widens the rotation window); external admin modules are the cache's case.
@@ -987,12 +999,33 @@ fn run_admin_chain(
                 }
             },
         };
-        if let Some(cred) = composite.as_deref().filter(|_| cacheable) {
-            app.credential_cache
-                .put(name, cred, &outcome, now, cache_gen);
+        // A `Pass` is only BUFFERED here; `Reject` is never cached at all (`auth_cache::put` drops
+        // it) and short-circuits below, so the only outcome that commits anything is `Identify`.
+        if cacheable && composite.is_some() && matches!(outcome, AuthOutcome::Pass) {
+            pending_pass.push(name.as_str());
         }
         match outcome {
             AuthOutcome::Identify(principal) => {
+                if let Some(cred) = composite.as_deref() {
+                    for buffered in &pending_pass {
+                        app.credential_cache.put(
+                            buffered,
+                            cred,
+                            &AuthOutcome::Pass,
+                            now,
+                            cache_gen,
+                        );
+                    }
+                    if cacheable {
+                        app.credential_cache.put(
+                            name,
+                            cred,
+                            &AuthOutcome::Identify(principal.clone()),
+                            now,
+                            cache_gen,
+                        );
+                    }
+                }
                 // Carry the identifying MODULE out (role_bindings are nested by module) plus the
                 // module's admin-scope ceiling for the authorization step. There is no per-module
                 // role filter: the nested bindings table IS the allowlist.
