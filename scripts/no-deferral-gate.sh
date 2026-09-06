@@ -67,6 +67,8 @@ note() { printf '  %s\n' "$*"; }
 hdr()  { printf '\n== %s ==\n' "$*"; }
 
 WAIVERS_FILE="${NO_DEFERRAL_WAIVERS:-$(dirname "$0")/no-deferral.waivers}"
+# Where a waiver's `[retires: <ID>]` is looked up. An expiry that names nothing is not an expiry.
+TRACKER_DOC="${NO_DEFERRAL_TRACKER:-$(dirname "$0")/../docs/design/1.6.0-TRACKER.md}"
 
 # Every workspace member's shipped source. A crate that appears/disappears is picked up automatically
 # (find over crates/*/src), so a plane this gate never lists is never a plane it scans zero files of.
@@ -162,6 +164,29 @@ load_waivers() {
     rest="${rest#"${rest%%[![:space:]]*}"}"     # ltrim the reason
     if [ -z "$rest" ]; then
       red "no-deferral gate: waiver row has no reason: '$line'"; return 1
+    fi
+    # ── EVERY WAIVER CARRIES AN EXPIRY, AND THE EXPIRY MUST EXIST ─────────────────────────────────
+    # A reason says why a marker is exempt today; it says nothing about when it stops being exempt.
+    # One un-expiring glob covered all 52 markers of a whole directory and would have covered any
+    # number more, forever, because nothing in the file could go out of date. So each row names the
+    # tracker row that retires it, and that row is looked up: a `[retires: X]` pointing at nothing is
+    # a promise nobody made.
+    local tid
+    tid="$(printf '%s' "$rest" | sed -n 's/.*\[retires:[[:space:]]*\([A-Za-z0-9._-]\{1,\}\)\].*/\1/p')"
+    if [ -z "$tid" ]; then
+      red "no-deferral gate: waiver row carries no expiry: '$line'"
+      note "Every row must end in \`[retires: <TRACKER-ID>]\` naming the $TRACKER_DOC row that"
+      note "retires it. A waiver that cannot expire is a permanent unreviewed exemption."
+      return 1
+    fi
+    if [ ! -f "$TRACKER_DOC" ]; then
+      red "no-deferral gate: the tracker $TRACKER_DOC is missing, so no waiver's expiry can be checked"
+      return 1
+    fi
+    if ! grep -qE "^- \[[ x]\] ${tid}[[:space:]]" "$TRACKER_DOC"; then
+      red "no-deferral gate: waiver names expiry \`${tid}\`, which is not a row in $TRACKER_DOC: '$line'"
+      note "The waiver outlived the work that was supposed to retire it, or the id is a typo."
+      return 1
     fi
     WV_MATCH+=("$m"); WV_REASON+=("$rest")
     case "$m" in */hot/*) WV_ISHOT+=(1);; *) WV_ISHOT+=(0);; esac
@@ -260,6 +285,40 @@ GREEN
     note "discovery: $realn shipped source files found on the real tree (floor 50)"
   else
     fail=1; note "discovery FAILED: only $realn source files found — the scan would pass vacuously"
+  fi
+
+  # ── THE EXPIRY. A waiver that cannot expire is a permanent unreviewed exemption, and one glob
+  # with no expiry covered a whole directory's 52 markers. Each case drives the REAL `load_waivers`.
+  printf 'crates/x/src/a.rs:1\ta reason with no expiry at all\n' >"$tmp/no-expiry.waivers"
+  if ( WAIVERS_FILE="$tmp/no-expiry.waivers" load_waivers ) >/dev/null 2>&1; then
+    fail=1; note "EXPIRY FAILED: a waiver row carrying no [retires: …] was accepted"
+  else
+    note "EXPIRY: a waiver row that names no expiry is refused"
+  fi
+  printf 'crates/x/src/a.rs:1\ta reason [retires: ZZ999]\n' >"$tmp/bad-expiry.waivers"
+  if ( WAIVERS_FILE="$tmp/bad-expiry.waivers" load_waivers ) >/dev/null 2>&1; then
+    fail=1; note "EXPIRY FAILED: an expiry naming a tracker row that does not exist was accepted"
+  else
+    note "EXPIRY: an expiry naming a tracker row that does not exist is refused"
+  fi
+  printf 'crates/x/src/a.rs:1\ta reason [retires: H5]\n' >"$tmp/good-expiry.waivers"
+  if ( WAIVERS_FILE="$tmp/good-expiry.waivers" load_waivers ) >/dev/null 2>&1; then
+    note "EXPIRY: an expiry naming a real tracker row is accepted (the rule is not 'refuse everything')"
+  else
+    fail=1; note "EXPIRY FAILED: a waiver naming a real tracker row was refused"
+  fi
+  # And the committed file itself: every row carries an expiry that resolves, and no row is a glob.
+  local globrows
+  globrows="$(grep -vE '^[[:space:]]*(#|$)' "$WAIVERS_FILE" | grep -cvE '^[^[:space:]]+:[0-9]+[[:space:]]' || true)"
+  if [ "$globrows" -eq 0 ]; then
+    note "EXPIRY: every committed waiver row is an exact file:line, not a directory glob"
+  else
+    fail=1; note "EXPIRY FAILED: $globrows committed waiver row(s) are globs — a glob absorbs new markers in silence"
+  fi
+  if ( load_waivers ) >/dev/null 2>&1; then
+    note "EXPIRY: every committed waiver row's expiry resolves to a tracker row"
+  else
+    fail=1; note "EXPIRY FAILED: the committed waivers file does not load (a row's expiry does not resolve)"
   fi
 
   if [ "$fail" -ne 0 ]; then
