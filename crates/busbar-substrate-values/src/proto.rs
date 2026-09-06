@@ -1430,10 +1430,14 @@ impl Registry {
         // Interned-name fast path: hot callers hold the registry's own `&'static` name, so pointer
         // identity settles the row without a byte compare; a foreign string falls through to the
         // equality arm of the same pass. Same result either way.
-        self.decls
-            .iter()
-            .copied()
-            .find(|d| d.name.as_ptr() == name.as_ptr() || d.name == name)
+        //
+        // A `&str` is a POINTER AND A LENGTH, and the fast path has to compare both. A SUBSLICE of
+        // an interned name starts at the same address and is a different name, so a data-pointer
+        // match alone answered `"root"` with the declaration filed under `"rooted"` — a protocol
+        // name nothing declared, resolved to another protocol's codec, auth scheme and verbs.
+        self.decls.iter().copied().find(|d| {
+            (d.name.as_ptr() == name.as_ptr() && d.name.len() == name.len()) || d.name == name
+        })
     }
 
     /// Every declaration, in declaration order.
@@ -1849,6 +1853,26 @@ mod boot_fold_tests {
 
     static ROOTED: ProtocolDecl = named_decl("rooted");
     static TEST_ONLY: ProtocolDecl = named_decl("test-only");
+
+    /// The interned-name fast path compares the two `&str`s' DATA POINTERS. A pointer alone does
+    /// not identify a string: a SUBSLICE of an interned name starts at the same address and is a
+    /// different name, so `as_ptr()` equality without a LENGTH check resolves `"root"` to the
+    /// declaration filed under `"rooted"` — a protocol name nothing declared, answered with another
+    /// protocol's codec, auth scheme and verbs.
+    #[test]
+    fn a_prefix_of_an_interned_name_is_not_that_name() {
+        let reg = Registry::new([&ROOTED]);
+        let prefix = &ROOTED.name[..4];
+        assert_eq!(prefix, "root");
+        assert_eq!(prefix.as_ptr(), ROOTED.name.as_ptr());
+        assert!(
+            reg.decl(prefix).is_none(),
+            "a prefix of an interned protocol name resolved to the declaration it is a prefix of"
+        );
+        // The whole name still resolves, by pointer identity and by value alike.
+        assert!(reg.decl(ROOTED.name).is_some());
+        assert!(reg.decl(&String::from("rooted")).is_some());
+    }
 
     /// The one test in this binary that installs a root: `install_protocols` is once per process.
     /// A test-built binary with a real composition root must fold to the same declaration list
