@@ -71,6 +71,24 @@ mod wire {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireEvent(pub bytes::Bytes);
 
+/// THE SAME WIRE EVENT, BORROWED — the bytes of one dialect event where they already are.
+///
+/// A reader never keeps its input: it parses the bytes and hands back IR events that own everything
+/// they carry. So a caller who already holds the bytes — a transport holding the frame it just read
+/// off a socket — has no reason to buy them a second home first. A duplex session reads fifty
+/// frames a second in each direction, and each of those copies was one whole frame.
+///
+/// [`WireEvent`] remains what a WRITER produces, because a writer's output is bytes that did not
+/// exist until it made them and must outlive the call that made them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WireRef<'a>(pub &'a [u8]);
+
+impl<'a> From<&'a WireEvent> for WireRef<'a> {
+    fn from(evt: &'a WireEvent) -> Self {
+        Self(&evt.0)
+    }
+}
+
 /// PER-SESSION DECODE STATE threaded through the reader — the analog of the LLM reader's
 /// `StreamDecodeState`. Holds what is per-session, not per-frame: monotonic frame sequencing, the
 /// `CallRef ↔ call_id` correlation table (`plane4-duplex-session.md`), the negotiated output format, and the barge-in
@@ -339,8 +357,8 @@ impl DecodeState {
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────────────────
 
-fn parse(evt: &WireEvent) -> Option<Value> {
-    serde_json::from_slice::<Value>(&evt.0).ok()
+fn parse(wire: WireRef<'_>) -> Option<Value> {
+    serde_json::from_slice::<Value>(wire.0).ok()
 }
 
 fn wire_of(v: &Value) -> WireEvent {
@@ -443,12 +461,26 @@ fn session_config_lenient(session: &Value, st: &mut DecodeState) -> SessionConfi
 ///
 /// One wire event maps to 0..n IR events (the `read_response_events` shape). Both directions thread
 /// per-session [`DecodeState`] (seq, `CallRef`, playback position).
+/// A reader is written against BORROWED bytes and reached either way. The pair taking an owned
+/// [`WireEvent`] is what a caller who has one already uses; the pair taking a [`WireRef`] is what a
+/// caller who is holding the bytes uses, and it is the one the framing on a live session takes,
+/// because a copy per frame is fifty copies a second per direction for the length of a call.
 pub trait DuplexReader {
     /// Client→server events (the net-new vocabulary): audio uplink, config, tool results.
-    fn read_up(&self, evt: WireEvent, st: &mut DecodeState) -> Vec<IrClientEvent>;
+    fn read_up_ref(&self, wire: WireRef<'_>, st: &mut DecodeState) -> Vec<IrClientEvent>;
 
     /// Server→client events, threading per-session decode state (barge-in position, `CallRef` map).
-    fn read_down(&self, evt: WireEvent, st: &mut DecodeState) -> Vec<IrServerEvent>;
+    fn read_down_ref(&self, wire: WireRef<'_>, st: &mut DecodeState) -> Vec<IrServerEvent>;
+
+    /// The uplink read, over bytes the caller owns.
+    fn read_up(&self, evt: WireEvent, st: &mut DecodeState) -> Vec<IrClientEvent> {
+        self.read_up_ref(WireRef::from(&evt), st)
+    }
+
+    /// The downlink read, over bytes the caller owns.
+    fn read_down(&self, evt: WireEvent, st: &mut DecodeState) -> Vec<IrServerEvent> {
+        self.read_down_ref(WireRef::from(&evt), st)
+    }
 }
 
 /// IR → WIRE. Re-frames the plane's neutral IR back onto a dialect's wire, in both directions.
@@ -484,8 +516,8 @@ pub trait DuplexWriter {
 pub struct OpenAiRealtimeCodec;
 
 impl DuplexReader for OpenAiRealtimeCodec {
-    fn read_up(&self, evt: WireEvent, st: &mut DecodeState) -> Vec<IrClientEvent> {
-        let Some(v) = parse(&evt) else {
+    fn read_up_ref(&self, wire: WireRef<'_>, st: &mut DecodeState) -> Vec<IrClientEvent> {
+        let Some(v) = parse(wire) else {
             return Vec::new();
         };
         let ty = str_at(&v, "type");
@@ -568,8 +600,8 @@ impl DuplexReader for OpenAiRealtimeCodec {
         }
     }
 
-    fn read_down(&self, evt: WireEvent, st: &mut DecodeState) -> Vec<IrServerEvent> {
-        let Some(v) = parse(&evt) else {
+    fn read_down_ref(&self, wire: WireRef<'_>, st: &mut DecodeState) -> Vec<IrServerEvent> {
+        let Some(v) = parse(wire) else {
             return Vec::new();
         };
         let ty = str_at(&v, "type");

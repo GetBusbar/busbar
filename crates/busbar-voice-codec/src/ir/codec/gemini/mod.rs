@@ -38,7 +38,7 @@
 //! because a stand-in frame carrying none of the semantics reads upstream as the concept surviving.
 
 use super::{decode_audio, encode_audio, parse, str_at, wire_of, DecodeState};
-use super::{DuplexReader, DuplexWriter, WireEvent};
+use super::{DuplexReader, DuplexWriter, WireEvent, WireRef};
 use crate::ir::config::{MaxOutputTokens, SessionConfig};
 use crate::ir::control::{IrDuplexControl, IrVad};
 use crate::ir::event::{IrClientEvent, IrServerEvent};
@@ -365,8 +365,8 @@ fn usage_to_metadata(u: &IrDuplexUsage) -> Value {
 // ── reader ──────────────────────────────────────────────────────────────────────────────────────
 
 impl DuplexReader for GeminiLiveCodec {
-    fn read_up(&self, evt: WireEvent, st: &mut DecodeState) -> Vec<IrClientEvent> {
-        let Some(v) = parse(&evt) else {
+    fn read_up_ref(&self, wire: WireRef<'_>, st: &mut DecodeState) -> Vec<IrClientEvent> {
+        let Some(v) = parse(wire) else {
             return Vec::new();
         };
 
@@ -464,8 +464,8 @@ impl DuplexReader for GeminiLiveCodec {
         Vec::new()
     }
 
-    fn read_down(&self, evt: WireEvent, st: &mut DecodeState) -> Vec<IrServerEvent> {
-        let Some(v) = parse(&evt) else {
+    fn read_down_ref(&self, wire: WireRef<'_>, st: &mut DecodeState) -> Vec<IrServerEvent> {
+        let Some(v) = parse(wire) else {
             return Vec::new();
         };
 

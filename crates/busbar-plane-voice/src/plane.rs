@@ -81,7 +81,7 @@ use busbar_voice_codec::ir::event::{IrClientEvent, IrServerEvent};
 use busbar_voice_codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
 use busbar_voice_codec::ir::tool::IrDuplexTool;
 use busbar_voice_codec::ir::{
-    DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, OpenAiRealtimeCodec, WireEvent,
+    DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, OpenAiRealtimeCodec, WireRef,
 };
 
 use crate::claims::{self, Dialect};
@@ -253,9 +253,11 @@ impl Plane for VoicePlane {
         let client_dialect = client_dialect_from_session(ctx).unwrap_or(upstream_dialect);
 
         let frame = frames.next_frame().ok_or(Decode::Malformed)?;
-        let wire = WireEvent(bytes::Bytes::copy_from_slice(frame.bytes.as_slice()));
+        // The reader is handed the frame WHERE IT IS. It parses the bytes and keeps none of them, so
+        // buying them a second home first bought nothing — and a duplex session reads fifty frames a
+        // second in each direction for the length of a call.
         let reader = reader_for(upstream_dialect);
-        let events = reader.read_down(wire, &mut state.codec);
+        let events = reader.read_down_ref(WireRef(frame.bytes.as_slice()), &mut state.codec);
         let Some(event) = events.into_iter().next() else {
             return Ok(Progress::Discard {
                 reason: DiscardCode::Unsupported,
@@ -599,9 +601,9 @@ fn decode_ws_frame<'u>(
     ctx: &Ctx<'u>,
 ) -> Result<Ingress<'u>, Decode> {
     let frame = frames.next_frame().ok_or(Decode::Malformed)?;
-    let wire = WireEvent(bytes::Bytes::copy_from_slice(frame.bytes.as_slice()));
+    // Borrowed, not copied: see `decode_response`'s own note on the downlink side of this.
     let reader = reader_for(dialect);
-    let events = reader.read_up(wire, &mut state.codec);
+    let events = reader.read_up_ref(WireRef(frame.bytes.as_slice()), &mut state.codec);
     let Some(event) = events.into_iter().next() else {
         return Ok(Ingress::NeedMore);
     };
@@ -820,19 +822,24 @@ fn progress_from_server_event<'u>(
             // binding the `start` event made: it is the same string on every frame of the call, and
             // a call sends fifty frames a second, so cloning it per frame is fifty copies a second
             // of a string that never changes.
-            let rendered = match client_dialect {
+            //
+            // Both arms hand back the same kind of thing, so the writer's own buffer goes into the
+            // arena as it is. It used to be copied into a vector first, purely so the two arms had
+            // one type between them — a copy the arms' shapes asked for and nothing else did.
+            let rendered: bytes::Bytes = match client_dialect {
                 Dialect::TwilioMediaStreams => {
                     let mulaw = ulaw::encode_frame(&f.media);
                     let sid = state.twilio_stream_sid.as_deref().unwrap_or_default();
                     let mut out = Vec::new();
                     twilio::encode_media_into(&mut out, sid, &mulaw);
-                    out
+                    out.into()
                 }
-                _ => writer
-                    .write_down(IrServerEvent::AudioFrame(f), &mut state.codec)
-                    .ok_or(Decode::Malformed)?
-                    .0
-                    .to_vec(),
+                _ => {
+                    writer
+                        .write_down(IrServerEvent::AudioFrame(f), &mut state.codec)
+                        .ok_or(Decode::Malformed)?
+                        .0
+                }
             };
             let bytes = ctx
                 .arena()
