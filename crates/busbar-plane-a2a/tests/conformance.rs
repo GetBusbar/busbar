@@ -594,6 +594,47 @@ fn the_session_halves_open_fresh() {
     }
 }
 
+/// A request bigger than the per-unit arena is still relayed, byte for byte.
+///
+/// The bytes the hop carries are the bytes that arrived, and they already live for the unit that
+/// carries them. Copying them into the arena first spent the whole bounded budget on a second copy
+/// of what the unit was already holding, so a request larger than that budget could not be relayed
+/// at all — a size limit nobody configured, imposed by an allocation with no purpose.
+#[test]
+fn a_request_larger_than_the_arena_is_relayed() {
+    let plane = A2aPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let seal = common::TestSeal;
+    let text = "x".repeat(busbar_contract::bounded::ARENA_BYTES * 2);
+    let body = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"message/send","params":{{"message":{{"role":"user","text":"{text}"}}}}}}"#
+    );
+    let body = body.into_bytes();
+    assert!(body.len() > busbar_contract::bounded::ARENA_BYTES);
+    let unit = busbar_contract::unit::Unit::new(
+        &seal,
+        busbar_contract::UnitKey::new(1),
+        busbar_contract::unit::Origin::Client,
+        None,
+        None,
+        busbar_contract::wire::Direction::Inbound,
+        Some(common::principal()),
+        ops::OP_MESSAGE_SEND,
+        busbar_contract::bounded::Ir::new(&body, &[]),
+        busbar_contract::bounded::Facts::new(),
+        None,
+    );
+    let egress = plane
+        .encode_egress(&unit, &sealed_destination(), None, &ctx)
+        .expect("a request larger than the arena is still a request this plane can relay");
+    assert_eq!(
+        egress.body.as_slice(),
+        body.as_slice(),
+        "the agent is sent the caller's own bytes, whole"
+    );
+}
+
 /// A sealed destination, for the calls that take one.
 fn sealed_destination() -> busbar_contract::dest::VerifiedDestination {
     let seal = common::TestSeal;

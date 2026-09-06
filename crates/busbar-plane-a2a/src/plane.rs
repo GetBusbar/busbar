@@ -396,18 +396,18 @@ impl Plane for A2aPlane {
         // it performs it for one reason: the identifier this node minted is not the identifier the
         // agent minted, and relaying ours would name a task the agent has never heard of.
         //
-        // The unchanged case is the common one, and it owns nothing: the caller's bytes go into the
-        // arena straight from where they already are. Only the rewrite needs a buffer of its own,
-        // because only the rewrite produces bytes that did not arrive.
+        // The unchanged case is the common one, and it owns nothing: the caller's bytes are BORROWED
+        // where they already are, because they already live for the unit that is about to carry
+        // them. Copying them into the arena spent the unit's whole bounded budget on a second copy
+        // of what it was already holding, and a request larger than that budget could not be
+        // relayed at all. Only the rewrite needs a buffer of its own, because only the rewrite
+        // produces bytes that did not arrive.
         let body = match backend_task_id(u) {
             Some(backend) => ctx
                 .arena()
                 .alloc_bytes(&rewrite_task_id(body, backend)?)
                 .map_err(|_| Encode::ArenaExhausted)?,
-            None => ctx
-                .arena()
-                .alloc_bytes(body)
-                .map_err(|_| Encode::ArenaExhausted)?,
+            None => ArenaBytes::new(body),
         };
         let mut envelope = TransportEnvelope::default();
         let content_type = ctx
