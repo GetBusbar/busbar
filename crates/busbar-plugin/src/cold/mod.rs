@@ -43,8 +43,8 @@
 //! `Box<dyn AuthModule>`). From there kind is a Rust TYPE, not a wire tag.
 
 use busbar_api::{
-    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneSelector,
-    UsageDelta, UsageLedger, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
+    PlaneSelector, UsageDelta, UsageLedger, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
 use std::os::raw::c_void;
@@ -145,6 +145,15 @@ pub mod kind {
 /// types it linked against no longer live in `busbar-api`. That is a break on the SOURCE contract a
 /// plugin author compiles against, not on the bytes the engine exchanges with an already-built
 /// artifact.
+///
+/// v4 (no bump, plane-record sidecar on the wire): `UpsertPlaneRecord`/`AppendPlaneRecord` gained the
+/// `ts` and `disposition` sidecar columns (and append its child `id`), so a store behind this ABI can
+/// run the retention sweep the trait's contract promises instead of reconstituting every record at
+/// ts 0 / `Active`. This is the ADDITIVE case this constant's rule names, so the version does NOT
+/// move: the new fields are `#[serde(default)]`, so an older engine's request that omits them still
+/// decodes (at the same neutral values the receiver used to hard-code), and serde ignores unknown
+/// fields, so the enriched request still decodes in a plugin built before they existed. Nothing is
+/// refused in either direction, and the `supported_abi` range is unchanged.
 ///
 /// Because v3 and v4 never changed what a v2 artifact is asked or how it answers, the engine's
 /// `supported_abi` range for `store` is `[2, ABI_VERSION]` (see `plugin-loader`'s
@@ -287,6 +296,14 @@ pub const STATUS_PANIC: i32 = 3;
 /// benefit; the payload also crosses the plugin C ABI via serde, where `Box<VirtualKey>` and
 /// `VirtualKey` are wire-identical anyway. (The lint began firing when 1.6.0 added three trailing
 /// attribution `Option<String>` fields to `VirtualKey`, nudging the spread past the threshold.)
+/// The serde default for a plane-record write verb's `disposition` — the value a request from an
+/// engine that predates the sidecar decodes to. `Active` is the CONSERVATIVE choice and the same one
+/// the receiver used to hard-code: an `Active` row is never dropped by a terminal-only retention
+/// contract, so an absent field can only ever over-retain, never delete evidence.
+fn default_disposition() -> PlaneDisposition {
+    PlaneDisposition::Active
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum StoreRequest {
@@ -378,14 +395,35 @@ pub enum StoreRequest {
     // Every one maps to a DEFAULTED accept-and-keep-nothing trait method, so a backend that keeps no
     // durable rows behaves exactly as the shipped RAM default does.
     //
-    // The typed sidecar columns of the neutral record (`parent`/`seq`/`ts`/`disposition`) live on
-    // the trait's [`busbar_api::PlaneRecord`] envelope; this commit's WIRE carries only the subset
-    // each verb needs to route (`kind`/`id`/`body`, plus append's `parent`/`seq`). Relocating the
-    // full sidecar onto the wire is the later schema commit — see the 1.6.0 design's retention note.
+    // THE FULL TYPED SIDECAR RIDES THE WRITE VERBS. A store behind this ABI reconstitutes its
+    // [`busbar_api::PlaneRecord`] from the request JSON and NOTHING else, so any envelope column the
+    // wire omits is gone by the time that backend runs a retention sweep — and the two columns a
+    // sweep reads, `ts` and `disposition`, are exactly the ones it cannot recover from an opaque
+    // body. Omitting them does not lose a field, it INVERTS retention: every row reconstitutes at
+    // ts 0, so an age-based purge with any cutoff above zero takes the WHOLE log, and every row
+    // reconstitutes `Active`, so a terminal-only purge takes nothing, ever. So both write verbs carry
+    // the whole sidecar (`id`/`parent`/`seq`/`ts`/`disposition`), and the read/purge/delete verbs
+    // keep carrying only what they route on (`kind` plus a key/selector/cutoff) — a read has no
+    // envelope to reconstitute.
+    //
+    // ADDITIVE, so the payload schema version does NOT move (see [`ABI_VERSION`]'s rule): the added
+    // fields are `#[serde(default)]`, so a request from an OLDER engine that omits them still decodes
+    // — at the same neutral values the receiver used to hard-code — and serde ignores unknown fields
+    // by default, so a request carrying them still decodes in an OLDER plugin built before they
+    // existed. Neither side is refused, and the engine's `supported_abi` range is untouched: every
+    // published `abi_version: 2` store keeps loading and keeps behaving exactly as it did.
     /// UPSERT one plane record by `(kind, id)` — the neutral `PutTask`/`PutMcpDemotion`.
     UpsertPlaneRecord {
         kind: String,
         id: String,
+        /// The record's timestamp — see [`busbar_api::PlaneRecord::ts`]. Defaults to `0` for an
+        /// older engine that predates the sidecar.
+        #[serde(default)]
+        ts: u64,
+        /// Whether retention may drop the row — see [`busbar_api::PlaneRecord::disposition`].
+        /// Defaults to `Active` (never-purgeable under a terminal-only contract) for an older engine.
+        #[serde(default = "default_disposition")]
+        disposition: PlaneDisposition,
         body: Vec<u8>,
     },
     /// GET the opaque body for `(kind, id)`, or `None` — the neutral `GetTask`.
@@ -397,8 +435,22 @@ pub enum StoreRequest {
     /// `AppendTaskEvent`/`AppendMcpCall`.
     AppendPlaneRecord {
         kind: String,
+        /// The CHILD's own identity within its kind — see [`busbar_api::PlaneRecord::id`]. Distinct
+        /// from `parent` on the envelope even though every in-tree append kind currently sets the two
+        /// equal, and a backend is entitled to key on it (the in-tree fixture reads `parent` and
+        /// falls back to `id`). Defaults to empty for an older engine that predates it.
+        #[serde(default)]
+        id: String,
         parent: String,
         seq: u64,
+        /// The record's timestamp — see [`busbar_api::PlaneRecord::ts`]. THE axis an age-based purge
+        /// sweeps on; without it the whole append-only log reads as ts 0. Defaults to `0`.
+        #[serde(default)]
+        ts: u64,
+        /// Whether retention may drop the row — see [`busbar_api::PlaneRecord::disposition`].
+        /// Defaults to `Active`.
+        #[serde(default = "default_disposition")]
+        disposition: PlaneDisposition,
         body: Vec<u8>,
     },
     /// LIST a kind's records, narrowed by `selector` — the neutral `ListTasks`/`ListMcpDemotions`

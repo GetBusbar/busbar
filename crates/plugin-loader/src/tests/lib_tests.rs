@@ -1643,16 +1643,11 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
     );
 
     // ── retention over the plugin RPC: the ops route and their COUNT comes from the plugin, not a
-    // defaulted `Ok(0)` no-op. This exercises the AGE axis only — the `kind: call` "drop all older"
-    // contract — because the current store-plugin RPC wire deliberately carries only the subset each
-    // verb routes on (`kind`/`id`/`body`, plus append's `parent`/`seq`); the `ts`/`disposition`
-    // SIDECAR columns of [`PlaneRecord`] are NOT on this schema's wire (see
-    // `busbar_plugin::cold::StoreRequest` — relocating the full sidecar is the later schema commit).
-    // So the DISPOSITION axis — `kind: task` "drop only Terminal rows" — cannot be exercised through a
-    // dlopen'd plugin at this schema, and is proven where the full envelope is in hand instead: the
-    // store-example-plugin's own in-process `purge_plane_records_before_task_drops_only_terminal_rows`
-    // and busbar-a2a's `taskstore_tests`. This test's unique job is the DLOPEN-RESTART round trip of
-    // the durable body/identity, which the assertions above have already proven.
+    // defaulted `Ok(0)` no-op. This exercises the AGE axis — the `kind: call` "drop all older"
+    // contract — against a row whose `ts` reached the plugin over the wire. Both retention axes and
+    // the sidecar that carries them are pinned directly in `plane_sidecar_tests`; this test's unique
+    // job is the DLOPEN-RESTART round trip of the durable body/identity, which the assertions above
+    // have already proven.
     let call_purged = store
         .purge_plane_records_before("call", 2_000)
         .expect("purge_mcp_calls_before");

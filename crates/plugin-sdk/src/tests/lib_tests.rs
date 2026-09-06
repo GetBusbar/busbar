@@ -670,6 +670,8 @@ fn dispatch_handles_neutral_plane_variants() {
     match roundtrip(&StoreRequest::UpsertPlaneRecord {
         kind: rec.kind.clone(),
         id: rec.id.clone(),
+        ts: rec.ts,
+        disposition: rec.disposition,
         body: rec.body.clone(),
     }) {
         StoreResponse::Unit => {}
@@ -686,8 +688,11 @@ fn dispatch_handles_neutral_plane_variants() {
     }
     match roundtrip(&StoreRequest::AppendPlaneRecord {
         kind: "call".into(),
+        id: "p-1".into(),
         parent: "p-1".into(),
         seq: 7,
+        ts: 99,
+        disposition: PlaneDisposition::Active,
         body: vec![9],
     }) {
         StoreResponse::Unit => {}
@@ -944,7 +949,11 @@ impl busbar_api::Store for RecordingStore {
     fn delete_key(&self, _id: &str) -> Result<(), StoreError> {
         Ok(())
     }
-    fn get_usage(&self, _bucket: &str, _window: u64) -> Result<busbar_api::UsageLedger, StoreError> {
+    fn get_usage(
+        &self,
+        _bucket: &str,
+        _window: u64,
+    ) -> Result<busbar_api::UsageLedger, StoreError> {
         Ok(busbar_api::UsageLedger::default())
     }
     fn put_usage(
@@ -1004,7 +1013,10 @@ fn appended_plane_record_keeps_its_ts_across_the_wire() {
         }
     }));
     assert_eq!(rec.ts, 1_600, "the append wire must carry `ts`");
-    assert_eq!(rec.id, "vk_owner", "the append wire must carry the child id");
+    assert_eq!(
+        rec.id, "vk_owner",
+        "the append wire must carry the child id"
+    );
     assert_eq!(rec.parent.as_deref(), Some("vk_owner"));
     assert_eq!(rec.seq, 7);
 }

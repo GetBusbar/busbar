@@ -1065,15 +1065,18 @@ impl Store for DynStore {
     // default is what makes it behave exactly as it did under 1.5.5 — no durable plane, nothing
     // else changed.
     //
-    // This commit's wire carries only the fields each verb routes on; the typed sidecar columns of
-    // [`PlaneRecord`] it does not yet carry (`ts`/`disposition`, and `parent`/`seq` on upsert) are
-    // relocated onto the wire in a later schema commit.
+    // The two WRITE verbs send the whole typed sidecar of [`PlaneRecord`], because the plugin on the
+    // far side reconstitutes its envelope from the request and nothing else — anything left off here
+    // is unrecoverable there, and `ts`/`disposition` are precisely what a retention sweep reads. The
+    // read/purge/delete verbs send only what they route on; they reconstitute no envelope.
 
     fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
         self.call_with_legacy_default(
             StoreRequest::UpsertPlaneRecord {
                 kind: record.kind.clone(),
                 id: record.id.clone(),
+                ts: record.ts,
+                disposition: record.disposition,
                 body: record.body.clone(),
             },
             |r| match r {
@@ -1102,8 +1105,11 @@ impl Store for DynStore {
         self.call_with_legacy_default(
             StoreRequest::AppendPlaneRecord {
                 kind: record.kind.clone(),
+                id: record.id.clone(),
                 parent: record.parent.clone().unwrap_or_default(),
                 seq: record.seq,
+                ts: record.ts,
+                disposition: record.disposition,
                 body: record.body.clone(),
             },
             |r| match r {

@@ -154,18 +154,32 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
         //
         // Maps the eight kind-tagged wire variants onto the eight neutral trait methods — the ONLY
         // durable-plane surface now (the fourteen protocol-named arms are deleted, `ABI_VERSION` is
-        // 3). Upsert and append reconstitute a [`busbar_api::PlaneRecord`] from the fields this
-        // commit's wire carries; the typed sidecar columns the wire does not yet carry
-        // (`ts`/`disposition`, and `parent`/`seq` on upsert) default to their neutral values here —
-        // relocating the full sidecar onto the wire is the later schema commit.
-        Q::UpsertPlaneRecord { kind, id, body } => {
+        // 3). Upsert and append reconstitute a [`busbar_api::PlaneRecord`] from the request and
+        // NOTHING else, which is why the write verbs carry the whole typed sidecar: `ts` and
+        // `disposition` are the two columns a retention sweep reads and the two it cannot recover
+        // from an opaque body, so a wire that dropped them would hand every backend behind this ABI
+        // a log that reads as ts 0 and `Active` — an age-based purge then deletes everything and a
+        // terminal-only purge deletes nothing. A request from an engine that predates the sidecar
+        // omits those fields and serde-defaults them to exactly the neutral values this arm used to
+        // hard-code, so the older path is byte-for-byte what it was.
+        //
+        // `parent`/`seq` are still absent from `UpsertPlaneRecord` on purpose, not as a leftover:
+        // upsert kinds are top-level (`task`, `demotion`) and their envelope carries `parent: None`
+        // and `seq: 0` by definition, so there is nothing to lose.
+        Q::UpsertPlaneRecord {
+            kind,
+            id,
+            ts,
+            disposition,
+            body,
+        } => {
             store.upsert_plane_record(&busbar_api::PlaneRecord {
                 kind,
                 id,
                 parent: None,
                 seq: 0,
-                ts: 0,
-                disposition: busbar_api::PlaneDisposition::Active,
+                ts,
+                disposition,
                 body,
             })?;
             R::Unit
@@ -173,17 +187,20 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
         Q::GetPlaneRecord { kind, id } => R::PlaneRecord(store.get_plane_record(&kind, &id)?),
         Q::AppendPlaneRecord {
             kind,
+            id,
             parent,
             seq,
+            ts,
+            disposition,
             body,
         } => {
             store.append_plane_record(&busbar_api::PlaneRecord {
                 kind,
-                id: String::new(),
+                id,
                 parent: Some(parent),
                 seq,
-                ts: 0,
-                disposition: busbar_api::PlaneDisposition::Active,
+                ts,
+                disposition,
                 body,
             })?;
             R::Unit
