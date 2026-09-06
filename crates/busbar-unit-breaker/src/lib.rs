@@ -202,7 +202,14 @@ pub struct BreakerUnit<J: JournalSink = NoopJournal, D: Diagnostics = classify::
     /// Each destination's declared operator `error_map` override (see [`Self::set_error_map`]).
     /// Undeclared is an EMPTY map — HTTP-status classification alone still applies, matching
     /// 1.5.5's "empty error_map is valid".
-    error_maps: RwLock<HashMap<DestinationId, HashMap<String, String>>>,
+    ///
+    /// Behind an `Arc` so a classification takes a REFERENCE-COUNT bump out from under the lock
+    /// rather than a deep copy of every entry: the map is written once per config apply and read
+    /// once per upstream answer, and copying its keys and values on each of those reads meant an
+    /// allocation per entry on the response path. The `Arc` also keeps the lock held only for the
+    /// lookup, so a classifier's own diagnostics sink cannot run while this unit's `error_maps`
+    /// lock is held.
+    error_maps: RwLock<HashMap<DestinationId, Arc<HashMap<String, String>>>>,
     hard_down_cooldown_secs: u64,
     max_honored_retry_after_secs: u64,
     journal: J,
@@ -334,7 +341,7 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         self.error_maps
             .write()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(destination, error_map);
+            .insert(destination, Arc::new(error_map));
     }
 
     /// Turn one upstream answer into a [`port::Classified`] disposition/outcome/label, reading
@@ -349,14 +356,19 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         destination: DestinationId,
         status: port::UpstreamStatus,
     ) -> port::Classified {
+        // The shared map comes out from under the lock as a reference count, never a copy, and the
+        // lock is released before the pure classification runs. A destination that declared no
+        // map classifies against a borrowed empty one, which allocates nothing at all.
         let error_map = self
             .error_maps
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&destination)
-            .cloned()
-            .unwrap_or_default();
-        port::classify_upstream(&error_map, status, &self.diagnostics)
+            .map(Arc::clone);
+        match error_map {
+            Some(map) => port::classify_upstream(&map, status, &self.diagnostics),
+            None => port::classify_upstream(&HashMap::new(), status, &self.diagnostics),
+        }
     }
 
     fn cell(&self, pool: &str, destination: DestinationId) -> Arc<BreakerCell> {
