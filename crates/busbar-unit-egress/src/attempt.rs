@@ -363,14 +363,41 @@ fn assemble(hop: &Hop<'_>, unit: &Unit<'_>, ctx: &Ctx<'_>) -> Result<Wire, Shed>
 /// field the lane name is read out of — an egress-auth scheme that could set it could re-price the
 /// request. Second, where the envelope names a lane at all, the name must be the one the trust
 /// unit sealed on the destination.
+///
+/// The field is matched CASE-INSENSITIVELY, as the egress-auth unit's own cross-check matches it.
+/// Envelope field names are case-insensitive on the wire, so a decoration that wrote `Host` where
+/// the lane field is spelled `host` reached an upstream on a lane nobody checked — the exact bypass
+/// this check exists to close, available to anyone who could pick the capitalisation.
+///
+/// More than one entry carrying the field is a REFUSAL rather than a first-match. Two spellings of
+/// the same field name is not a request whose lane can be read: the check would be answering about
+/// one of them and the wire about whichever the transport encoded, and there is no reading of
+/// "which lane is this priced on" that a duplicate has an answer to.
+///
+/// Takes the three values it decides from rather than the whole hop, so the rule is exercised
+/// directly instead of through a dialled attempt.
 fn lane_cross_check(hop: &Hop<'_>, request: &OutboundRequest<'_>) -> Result<(), Shed> {
-    let Some(field) = hop.lane_field else {
+    lane_matches_seal(hop.lane_field, &request.fields, hop.dest.lane())
+}
+
+pub(crate) fn lane_matches_seal(
+    lane_field: Option<&str>,
+    fields: &[(String, Vec<u8>)],
+    sealed: Option<busbar_contract::LaneId>,
+) -> Result<(), Shed> {
+    let Some(field) = lane_field else {
         return Ok(());
     };
-    let Some((_, value)) = request.fields.iter().find(|(name, _)| name == field) else {
+    let mut carrying = fields
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case(field));
+    let Some((_, value)) = carrying.next() else {
         return Ok(());
     };
-    let Some(sealed) = hop.dest.lane() else {
+    if carrying.next().is_some() {
+        return Err(Shed::internal());
+    }
+    let Some(sealed) = sealed else {
         return Ok(());
     };
     if value.as_slice() == sealed.as_str().as_bytes() {
