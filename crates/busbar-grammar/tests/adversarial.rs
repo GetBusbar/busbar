@@ -397,3 +397,25 @@ fn a_span_never_slices_backwards_however_it_was_built() {
     assert_eq!(Span::new(2, 5).of(buf), b"234");
     assert_eq!(Span::new(0, 30).of(buf), buf);
 }
+
+#[test]
+fn the_frontier_is_an_index_and_never_a_verdict() {
+    // A complete value ends where it ends, whatever follows it. Bytes that ran out mid-value, and
+    // bytes that are not structure at all, both come back as the whole input — so the frontier
+    // alone cannot tell "whole" from "broken", which is the reading the documentation used to
+    // invite by naming a caller that does not exist.
+    assert_eq!(scan_frontier(br#"{"a":1}"#), 7);
+    assert_eq!(scan_frontier(br#"  {"a":1}  "#), 9);
+    assert_eq!(scan_frontier(br#"{"a":1} trailing"#), 7);
+    // Truncated, and structurally impossible: the same answer, and it is the length.
+    assert_eq!(scan_frontier(br#"{"a":1"#), 6);
+    assert_eq!(scan_frontier(br#"{"a":1]xxxx"#), 11);
+    assert_eq!(scan_frontier(b""), 0);
+    // The pointer answer is the one that distinguishes the three.
+    assert!(matches!(
+        resolve_pointer(br#"{"a":1} trailing"#, ""),
+        Resolved::Found(_)
+    ));
+    assert_eq!(resolve_pointer(br#"{"a":1"#, ""), Resolved::NeedMore);
+    assert_eq!(resolve_pointer(br#"{"a":1]xxxx"#, ""), Resolved::Malformed);
+}
