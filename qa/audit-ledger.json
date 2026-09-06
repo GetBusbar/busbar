@@ -657,13 +657,13 @@
    "paths": [
     "crates/busbar-unit-audit/src"
    ],
-   "tree_hash": "56898114b3898bdd4a617f6c0fe4c6a97dbf7fdf52d9ac21cdb5d3c78d424daa",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
+   "tree_hash": "26343255f8865554112494380c77058905872e5c89c8a5fc882d5675ed2d6031",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "zero",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "report": "pass 2 fresh eyes: no defect; frozen digests intact; legacy_chain/legacy_ring tests unread",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-audit/src/tests"
@@ -766,12 +766,14 @@
     "crates/busbar-unit-ledger/src"
    ],
    "tree_hash": "0f299a4a22bdd156b00a550c39179a3830a9b2bb7e2e61f02deff3778c92a99d",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "pass 2 fresh eyes: legacy figure key lane/provider separator fold reported",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-ledger/src/tests"
@@ -802,12 +804,12 @@
     "crates/busbar-unit-transport-key/src"
    ],
    "tree_hash": "5a44a932d4b525fef9d58f2619a3b6d95595a12e358d01aa060b6ec4727b8538",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "zero",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "report": "pass 2 fresh eyes: zero; all files read fully",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-transport-key/src/tests"
@@ -856,12 +858,16 @@
     "crates/busbar-unit-verbs/src"
    ],
    "tree_hash": "ca18cc5a88485ef196fdbfed5f753d370d6ab7b2098694e30f8a01f0df85d28b",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "LOW": 1,
+    "NIT": 2
+   },
+   "report": "pass 2 fresh eyes: verify/plane_facts executed as mutations (fixed e336307c); debug-only mint guard (fixed 72adc863)",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-verbs/src/tests"
@@ -873,13 +879,18 @@
    "paths": [
     "crates/busbar-unit-wal/src"
    ],
-   "tree_hash": "72d1220f81cba5c4dd951f45e84d5deab14866709b7b6882405cb01a859bb9d7",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "71b9271705405e0c00b42dc75e9ebdb2194786bda79bc847e3a6cbdef9896a7f",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 3,
+    "NIT": 1
+   },
+   "report": "pass 2 fresh eyes: journal resume could reissue a held seq (fixed 0d20f367); digest none-folding, legacy key separator, replayed_lost_batch dropped reported",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-wal/src/tests"
