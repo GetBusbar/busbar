@@ -386,6 +386,11 @@ pub struct App {
     /// allocated, no signing key exists, no sweeper runs and no route is mounted. See
     /// `crate::oauth_as`.
     pub(crate) oauth_as: Option<Arc<crate::oauth_as::plane::AsPlane>>,
+    /// The sweeper for the plane above, held so it lives exactly as long as the generation that owns
+    /// it. Dropping the last snapshot that references it aborts the loop; a generation that CARRIES
+    /// the plane across an apply carries this too, so no second sweeper is ever spawned over the
+    /// same store. `None` whenever `oauth_as` is.
+    pub(crate) oauth_as_sweeper: Option<Arc<crate::oauth_as::plane::SweeperHandle>>,
     // THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME (`crate::mcp::McpRuntime`, which now also
     // carries the verify-on-call coalescer that was the former flat `mcp_verify` field) is no longer a
     // flat `App` field: it lives in `plane_slots` under `runtime_slot_key(<mcp decl key>)`, reached by the plane
