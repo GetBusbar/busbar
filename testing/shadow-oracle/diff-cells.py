@@ -410,6 +410,20 @@ def main() -> int:
                 sys.exit(f"accepted-differences: entry {base['id']!r} accepts {sorted(money)} but is not kind=breaking with a changelog line")
             if "cells" not in e and not base["classes"] and "transform" not in e:
                 sys.exit(f"accepted-differences: entry {base['id']!r} has neither cells nor classes (a total blanket)")
+            # A TRANSFORM IS NOT EXEMPT FROM HAVING A SCOPE. `cells` defaulted to "." for every entry,
+            # and the two `transform` entries that carry no `cells` (D-1's diagnostic codes, D-2's
+            # jemalloc line) therefore ran their rewrites over all 2299 cells. That was defended as
+            # harmless because a transform is line-precise — it only fires where its regex matches —
+            # but the match itself is not the acceptance: what a fired transform does is hand the
+            # cell's WHOLE raw class list to the accepted column, and until the next guard below that
+            # list was never checked against the entry's `allowed` set. A cell where D-1's stderr
+            # rewrite happened to fire and whose STATUS had also moved reported
+            # `PASS ACCEPTED improvement (D-1 …): status` — a money class forgiven by an entry that
+            # is not `breaking` and names no changelog line for it, on a cell D-1 never claimed.
+            if "transform" in e and not e.get("cells"):
+                sys.exit(f"accepted-differences: transform entry {base['id']!r} declares no `cells`. A rewrite with no "
+                         f"scope runs over the whole corpus, and a cell it fires on has every one of its divergences "
+                         f"handed to this entry. Name the cells it is about.")
             # ── AN ENTRY DECLARES ITS OWN WIDTH, AND MAY NEVER EXCEED IT ─────────────────────────
             # A `cells` regex is prose that runs. `^llm\|[a-z_]+\|cohere\|request\|ok(_stream)?$` is
             # a scope an owner can read; the same string with `|^billing\|` glued on the end reads
@@ -426,10 +440,10 @@ def main() -> int:
             # Matching FEWER is not refused (a cell can be renamed away or not yet recorded) but is
             # reported, so a stale entry is visible rather than merely harmless.
             #
-            # `transform` entries are exempt HERE only because they still default `cells` to "." —
-            # the next commit gives them a required `cells` and folds them into this same guard.
+            # `transform` entries are in this guard too: they now carry a required `cells`, so their
+            # scope is a claim like any other and is held to the same number.
             n_match = sum(1 for cid in all_cell_ids if base["rx"].search(cid))
-            exp = e.get("expected_cells") if "transform" not in e else n_match
+            exp = e.get("expected_cells")
             if not isinstance(exp, int) or isinstance(exp, bool) or exp < 0:
                 sys.exit(f"accepted-differences: entry {base['id']!r} declares no `expected_cells` "
                          f"(a non-negative integer: how many cells in {os.path.basename(a.cells)} its `cells` regex "
@@ -519,11 +533,30 @@ def main() -> int:
                         # entry fail to match.
                         for side in (g, cc, cc_t):
                             side.get("headers", {}).pop("content-length", None)
-                    classes_raw, _ = compare(g, cc)
+                    classes_raw, detail_raw = compare(g, cc)
                     classes, detail = compare(g, cc_t)
+                    # THE FIRED ENTRIES' `allowed` SET DECIDES, NOT THE FACT THAT THEY FIRED. A
+                    # transform firing on a cell only means its regex matched some text there; it
+                    # says nothing about the OTHER classes that cell diverged in. This branch handed
+                    # `classes_raw` — every class the untransformed candidate differed in — straight
+                    # to the accepted column on the strength of that match, so a cell where D-1's
+                    # `[error] BUSBAR-1234: ` rewrite fired AND whose status had moved 200 -> 500
+                    # reported PASS/ACCEPTED naming `status`, a MONEY class, under an `improvement`
+                    # entry that could never have been allowed to name it in `classes`. Every other
+                    # path through this loop tests the divergence against `allowed`; this one did not.
+                    # Now it does, jointly across the entries that fired (same rule as the non-
+                    # transform matcher below): anything left over stays a divergence and is red.
                     if not classes and classes_raw:
-                        classes, detail = classes_raw, {"accepted.transform": [t["id"] for t in fired]}
-                        pre_acc = fired[0]
+                        cover_t = set().union(*(t["allowed"] for t in fired))
+                        unclaimed = [k for k in classes_raw if k not in cover_t]
+                        if not unclaimed:
+                            classes, detail = classes_raw, {"accepted.transform": [t["id"] for t in fired]}
+                            pre_acc = fired[0]
+                        else:
+                            # keep the REAL detail for the classes that are still divergent, so the
+                            # row reads as the divergence it is; the unclaimed list is named in the
+                            # message the caller sees on the ledger row.
+                            classes, detail = classes_raw, {k: v for k, v in detail_raw.items() if k in unclaimed}
                 else:
                     classes, detail = compare(g, cc)
             else:

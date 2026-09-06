@@ -14,10 +14,12 @@
   "accepted": [
     {
       "id": "D-1 diagnostic codes",
+      "cells": "^(auth\\.lifecycle|boot\\.refusal|boot\\.warning|cli|config\\.migrate|cooldown|documented|hazard|neutrality|plugins\\.load|plugins\\.store-persist|teller)\\|",
+      "expected_cells": 461,
       "kind": "improvement",
       "changelog": "Every error and warning line carries a diagnostic code.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "rationale": "1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5.",
+      "rationale": "SCOPE (added 2026-09-06, shadow-oracle round-5): this entry carried no `cells`, so it defaulted to `.` and ran over all 2299 cells -- and a fired transform used to hand the cell's whole raw class list to the accepted column, so any cell where this rewrite happened to fire could have a `status` forgiven by it. The lines it rewrites live in a process's stderr or its stdout, which only the exec- and script-driven cells have; the scope is those families and nothing else. ORIGINAL RATIONALE: 1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5.",
       "transform": {
         "candidate": [
           [
@@ -33,10 +35,12 @@
     },
     {
       "id": "D-2 jemalloc line is info",
+      "cells": "^(auth\\.lifecycle|boot\\.refusal|boot\\.warning|cli|config\\.migrate|cooldown|documented|hazard|neutrality|plugins\\.load|plugins\\.store-persist|teller)\\|",
+      "expected_cells": 461,
       "kind": "improvement",
       "changelog": "The jemalloc background-purge line is `[info]` on macOS",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "rationale": "On macOS the jemalloc background-thread line is [info] with an explanation instead of 1.5.5's [warn]; same fallback behaviour.",
+      "rationale": "SCOPE (added 2026-09-06, shadow-oracle round-5): same as D-1 -- no `cells` meant the whole corpus. The jemalloc line is a BOOT LOG line, so it can only appear on a cell that runs the binary: the exec- and script-driven families. ORIGINAL RATIONALE: On macOS the jemalloc background-thread line is [info] with an explanation instead of 1.5.5's [warn]; same fallback behaviour.",
       "transform": {
         "candidate": [
           [
@@ -52,6 +56,7 @@
       "changelog": "One new `/metrics` series on a 1.5.5 config:",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^ops\\.scrape\\|metrics\\||^neutrality\\|metrics-series$|^crosscut\\.traps\\|request-duration-quantiles$",
+      "expected_cells": 6,
       "rationale": "One additive /metrics series on a 1.5.5 config: busbar_metering_pending_coalesced_total (write-behind overflow sentinel). No 1.5.5 series changed.",
       "transform": {
         "candidate": [
