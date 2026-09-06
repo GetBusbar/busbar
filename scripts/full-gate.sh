@@ -101,6 +101,7 @@ declare -a CARGO_LOCAL=(
   "cargo build --locked --bin busbar"
   "cargo test -p busbar --test migration_corpus --locked -- --nocapture"
   "cargo test -p busbar-voice --features runtime,test-support -p busbar-voice-codec --features runtime --locked"
+  "cargo test -p busbar-llm --features teller-waist --locked --lib unit::"
 )
 
 declare -a CARGO_CI_ONLY=(

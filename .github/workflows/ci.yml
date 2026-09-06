@@ -558,6 +558,29 @@ jobs:
             exit 1
           fi
 
+      # THE LLM PLANE'S TELLER-STEP SUITE — the whole of `crates/busbar-llm/src/unit/` sits behind
+      # `#![cfg(feature = "teller-waist")]`, a flag no other step in this workflow turns on. So the
+      # workspace `cargo test` above compiles that directory to nothing and reports a green over a
+      # suite it never built: the step files, the walk carry and the flip's own rehearsal were all
+      # dark. This step is the one place the flag is up. It is exactly the voice step's situation one
+      # plane over, and it gets the same collected-count floor for the same reason — a suite that
+      # stops being collected still prints `test result: ok` and exits 0, so the count is what proves
+      # it ran rather than compiled away.
+      - name: LLM teller-step tests (the `teller-waist`-gated step suite `cargo test --workspace` never runs)
+        env:
+          LLM_UNIT_MIN_TESTS: "70"
+        run: |
+          cargo test -p busbar-llm --features teller-waist --locked --lib unit:: | tee "$RUNNER_TEMP/llm-unit-test.log"
+          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/llm-unit-test.log" \
+                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "llm teller steps: ${total} tests passed (floor: ${LLM_UNIT_MIN_TESTS})"
+          if [ "$total" -lt "$LLM_UNIT_MIN_TESTS" ]; then
+            echo "::error::the llm teller-step suite ran ${total} tests, below its floor of ${LLM_UNIT_MIN_TESTS}."
+            echo "::error::A directory-wide cfg gate can erase a whole suite without erasing its green."
+            exit 1
+          fi
+
       # A test that writes into the repo is a test that can leak. The docs example harness once
       # wrote its patched config and its secret stand-in next to the SHIPPED file it was validating,
       # which put four generated artifacts in the working tree, two of them carrying the absolute
