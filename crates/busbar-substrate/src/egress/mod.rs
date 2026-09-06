@@ -280,8 +280,16 @@ pub fn build_pinned_client(
 /// its meaning. Its production consumers are the MCP dispatch/token-exchange pool and the host
 /// egress chokepoint's per-registration pool.
 pub struct PinnedClientPool<K = (String, SocketAddr)> {
-    clients: Mutex<HashMap<K, engine::EngineClient>>,
+    clients: Mutex<Pooled<K>>,
     max: usize,
+}
+
+/// The pool's contents behind its one lock: each client with the use-count at which it was last
+/// handed out, and the counter those stamps come from. The stamp is what makes eviction a CHOICE —
+/// the least recently used entry goes — rather than whichever key the map happened to iterate first.
+struct Pooled<K> {
+    map: HashMap<K, (engine::EngineClient, u64)>,
+    uses: u64,
 }
 
 impl<K> std::fmt::Debug for PinnedClientPool<K> {
@@ -291,7 +299,7 @@ impl<K> std::fmt::Debug for PinnedClientPool<K> {
         f.debug_struct("PinnedClientPool")
             .field(
                 "pinned_clients",
-                &self.clients.lock().map(|m| m.len()).unwrap_or(0),
+                &self.clients.lock().map(|p| p.map.len()).unwrap_or(0),
             )
             .finish()
     }
@@ -315,7 +323,10 @@ impl<K> PinnedClientPool<K> {
     /// whole-entry: dropping the pool's clone of an engine client releases its idle sockets.
     pub fn with_capacity(max: usize) -> Self {
         Self {
-            clients: Mutex::new(HashMap::new()),
+            clients: Mutex::new(Pooled {
+                map: HashMap::new(),
+                uses: 0,
+            }),
             max,
         }
     }
@@ -325,35 +336,47 @@ impl<K> PinnedClientPool<K> {
     /// assertion about intent. A count read, never an emptiness check — no `is_empty` twin is owed.
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
-        self.clients.lock().map(|m| m.len()).unwrap_or(0)
+        self.clients.lock().map(|p| p.map.len()).unwrap_or(0)
     }
 }
 
 impl<K: Eq + std::hash::Hash + Clone> PinnedClientPool<K> {
     /// Return the client pooled under `key`, building one with `build` on a miss. The build runs
     /// only for a NEW key; a repeated one returns the cached clone.
+    ///
+    /// ONE BUILD PER KEY: the miss is resolved under the pool's own lock, so two callers arriving on
+    /// a cold key at the same moment share the client the first of them builds. Checking and then
+    /// building outside the lock let both build, and the loser's client — with its own TLS handshakes
+    /// and idle sockets — was dropped on the floor at exactly the moment a destination first went hot.
     pub fn client_for<E>(
         &self,
         key: K,
         build: impl FnOnce() -> Result<engine::EngineClient, E>,
     ) -> Result<engine::EngineClient, E> {
-        if let Ok(map) = self.clients.lock() {
-            if let Some(c) = map.get(&key) {
-                return Ok(c.clone());
-            }
+        // Recover a poisoned lock rather than fall back to an unpooled build: the guarded value is a
+        // plain map, and a pool that stops pooling would rebuild a client per request forever.
+        let mut pool = self.clients.lock().unwrap_or_else(|e| e.into_inner());
+        pool.uses += 1;
+        let now = pool.uses;
+        if let Some(entry) = pool.map.get_mut(&key) {
+            entry.1 = now;
+            return Ok(entry.0.clone());
         }
         let client = build()?;
-        if let Ok(mut map) = self.clients.lock() {
-            if map.len() >= self.max {
-                // Evict one arbitrary entry rather than growing without bound. Arbitrary is honest:
-                // an LRU would need a second structure and a lock held longer, to choose between
-                // clients that are interchangeable except for their destination.
-                if let Some(victim) = map.keys().next().cloned() {
-                    map.remove(&victim);
-                }
+        if pool.map.len() >= self.max {
+            // Evict the LEAST RECENTLY USED entry. Evicting an arbitrary one meant a working set just
+            // over the cap could evict the hot destination and rebuild it — TLS handshakes and a cold
+            // connection pool — on the very next request, over and over.
+            let victim = pool
+                .map
+                .iter()
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(k, _)| k.clone());
+            if let Some(victim) = victim {
+                pool.map.remove(&victim);
             }
-            map.insert(key, client.clone());
         }
+        pool.map.insert(key, (client.clone(), now));
         Ok(client)
     }
 }

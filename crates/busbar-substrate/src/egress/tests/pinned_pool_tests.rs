@@ -102,6 +102,73 @@ fn the_pool_is_bounded_and_evicts_over_capacity() {
     assert_eq!(pool.len(), 2, "the pool never exceeds its capacity");
 }
 
+/// A HOT DESTINATION SURVIVES A WORKING SET OVER THE CAP. Eviction that picks an arbitrary entry can
+/// pick the one destination every request is going to, so a fleet whose working set sits just over
+/// the cap rebuilds its busiest client — TLS handshakes and a cold connection pool — again and again.
+/// The entry that goes is the one nobody has asked for in the longest time.
+#[test]
+fn the_pool_evicts_the_coldest_entry_and_keeps_the_hot_one() {
+    let pool = PinnedClientPool::with_capacity(4);
+    let hot = ("hot.test".to_string(), addr(6000));
+    let _c = pool
+        .client_for(hot.clone(), || {
+            Ok::<_, String>(build("hot.test", addr(6000)))
+        })
+        .expect("build the hot client");
+
+    // A working set that turns over past the cap, with the hot destination used between each turn.
+    for port in 6001u16..6020 {
+        let cold = addr(port);
+        let _c = pool
+            .client_for(("cold.test".to_string(), cold), || {
+                Ok::<_, String>(build("cold.test", cold))
+            })
+            .expect("build a cold client");
+        let _hot = pool
+            .client_for(hot.clone(), || -> Result<EngineClient, String> {
+                panic!("the hot destination was evicted and had to be rebuilt")
+            })
+            .expect("the hot client is still pooled");
+    }
+    assert_eq!(pool.len(), 4, "the pool never exceeds its capacity");
+}
+
+/// CALLERS ARRIVING ON A COLD KEY TOGETHER BUILD ONE CLIENT. Checking the map and then building
+/// outside its lock let every one of them build; the losers' clients — their own TLS handshakes and
+/// idle sockets — were dropped on the floor at exactly the moment a destination first went hot.
+#[test]
+fn concurrent_first_uses_of_one_key_build_a_single_client() {
+    let pool = Arc::new(PinnedClientPool::with_capacity(64));
+    let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let together = Arc::new(std::sync::Barrier::new(8));
+
+    let callers: Vec<_> = (0..8)
+        .map(|_| {
+            let pool = pool.clone();
+            let builds = builds.clone();
+            let together = together.clone();
+            std::thread::spawn(move || {
+                together.wait();
+                pool.client_for(("race.test".to_string(), addr(5000)), || {
+                    builds.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                    Ok::<_, String>(build("race.test", addr(5000)))
+                })
+                .expect("every caller gets a client");
+            })
+        })
+        .collect();
+    for c in callers {
+        c.join().expect("no caller panicked");
+    }
+
+    assert_eq!(
+        builds.load(std::sync::atomic::Ordering::Acquire),
+        1,
+        "one cold key is one build, however many callers arrive on it at once"
+    );
+    assert_eq!(pool.len(), 1);
+}
+
 /// The refusing resolver is REACHABLE, not decoration: a client asked to resolve gets an error that
 /// names the invariant ("exactly once") and the name it was asked about. Proven by asking the
 /// resolver directly, because in production the pin means the fetch path never reaches it — an
