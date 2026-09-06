@@ -484,6 +484,97 @@ fn the_binding_scan_sees_a_citation_that_ends_a_line() {
     assert!(!cites_a_binding(concat!("P", "B- with no number")));
 }
 
+// ── the response pass-through does not go through the arena ────────────────────────────────────
+
+/// An arena the size the design pins production's at, and a bump cursor that refuses past it.
+/// `TestArena` above leaks and so has room for anything, which is what a test that needs a span
+/// table wants and exactly what a test about the arena's BUDGET must not have.
+struct TinyArena {
+    used: std::sync::atomic::AtomicUsize,
+}
+
+impl TinyArena {
+    fn used(&self) -> usize {
+        self.used.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Arena for TinyArena {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
+        let used = self.used() + src.len();
+        if used > busbar_contract::ARENA_BYTES {
+            return Err(ArenaBudget {
+                wanted: src.len(),
+                remaining: self.remaining(),
+            });
+        }
+        self.used.store(used, std::sync::atomic::Ordering::Relaxed);
+        Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
+    }
+
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
+        let used = self.used() + src.len();
+        if used > busbar_contract::ARENA_BYTES {
+            return Err(ArenaBudget {
+                wanted: src.len(),
+                remaining: self.remaining(),
+            });
+        }
+        self.used.store(used, std::sync::atomic::Ordering::Relaxed);
+        Ok(Box::leak(src.to_string().into_boxed_str()))
+    }
+
+    fn alloc_spans<'a>(
+        &'a self,
+        src: &[(&'a str, Span)],
+    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+        Ok(Box::leak(src.to_vec().into_boxed_slice()))
+    }
+
+    fn remaining(&self) -> usize {
+        busbar_contract::ARENA_BYTES - self.used()
+    }
+}
+
+/// A response bigger than the whole arena still encodes, byte for byte.
+///
+/// The admin surface's own `openapi.json` is over 350 KB and the arena is 4 KiB, so a codec that
+/// COPIED the response into the arena refused the single largest document the surface serves — and
+/// every other answer over 4 KiB with it (a key listing, a config dump, an audit page). The body
+/// already lives for the unit, so the encode borrows it and there is no budget left to exhaust.
+#[test]
+fn a_response_larger_than_the_arena_encodes_verbatim() {
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TinyArena {
+        used: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let clock = Clock {
+        unix_secs: 0,
+        monotonic_nanos: 0,
+    };
+    let session: Option<&dyn SessionView> = None;
+    let ctx = Ctx::new(clock, &config, session, &transport, &labels, &arena);
+
+    let big = vec![b'x'; busbar_contract::ARENA_BYTES * 4];
+    let response = busbar_contract::plane::Response {
+        ir: busbar_contract::bounded::Ir::new(&big, &[]),
+        finish: busbar_contract::unit::FinishClass::Complete,
+        facts: busbar_contract::bounded::Facts::new(),
+    };
+    let encoded = plane
+        .encode_response(&response, None, &ctx)
+        .expect("a body the unit already owns needs no room in the arena");
+    assert_eq!(encoded.as_slice(), big.as_slice());
+    assert_eq!(
+        arena.remaining(),
+        busbar_contract::ARENA_BYTES,
+        "the pass-through must not spend a byte of the arena"
+    );
+}
+
 fn walk(dir: &std::path::Path, f: &mut impl FnMut(&std::path::Path, &str)) {
     let entries = std::fs::read_dir(dir).expect("src dir is readable");
     for entry in entries.flatten() {

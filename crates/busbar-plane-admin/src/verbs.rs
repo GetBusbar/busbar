@@ -504,7 +504,10 @@ mod tests {
     }
 
     /// Follow a document-local `$ref` chain to the schema it names.
-    fn deref<'d>(doc: &'d serde_json::Value, mut node: &'d serde_json::Value) -> &'d serde_json::Value {
+    fn deref<'d>(
+        doc: &'d serde_json::Value,
+        mut node: &'d serde_json::Value,
+    ) -> &'d serde_json::Value {
         while let Some(pointer) = node.get("$ref").and_then(serde_json::Value::as_str) {
             node = doc
                 .pointer(pointer.trim_start_matches('#'))
@@ -529,9 +532,9 @@ mod tests {
                 let Some(field) = documented_body_field(&verb) else {
                     continue;
                 };
-                let body = op
-                    .get("requestBody")
-                    .unwrap_or_else(|| panic!("{verb}: a documented body field on an operation with no request body"));
+                let body = op.get("requestBody").unwrap_or_else(|| {
+                    panic!("{verb}: a documented body field on an operation with no request body")
+                });
                 let schema = deref(&doc, body)["content"]["application/json"]["schema"].clone();
                 let properties = deref(&doc, &schema)
                     .get("properties")
