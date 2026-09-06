@@ -32,6 +32,64 @@ cd "$(dirname "$0")/.."
 
 MODE="${1:-}"
 
+# ── --selftest ───────────────────────────────────────────────────────────────────────────────────
+# Drives check 5 (the reverse org sweep) against a STUBBED `gh`, because the case that matters is
+# the one where `gh` fails: an expired token used to make the sweep return None, `or []` turned that
+# into an empty list, the loop body never ran, and the gate printed green having swept nothing.
+# The sweep is the only check that can see a plugin-shaped repo nobody registered, so its silence
+# is the one silence with no second signal behind it.
+#
+# Each case asserts on the check-5 line specifically, not on the exit code: the stub cannot know
+# each plugin's version_line, so check 4 is noisy under it and is not what these cases are about.
+if [ "$MODE" = "--selftest" ]; then
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+  rc=0
+  mk_stub() {  # mk_stub <orgs-behaviour-script>
+    mkdir -p "$tmp/bin"
+    { printf '#!/usr/bin/env bash\ncase "$2" in\n  */releases/latest) echo %s ;;\n  orgs/*)\n' \
+        "'{\"tag_name\":\"v0.0.0\",\"assets\":[{\"name\":\"a\"}]}'"
+      printf '%s\n' "$1"
+      printf '    ;;\nesac\n'
+    } > "$tmp/bin/gh"
+    chmod +x "$tmp/bin/gh"
+  }
+  probe() {  # probe <label> <want-present|want-absent> <pattern>
+    local out; out="$(PATH="$tmp/bin:$PATH" "$0" 2>&1 || true)"
+    if [ "$2" = want-present ]; then
+      if printf '%s' "$out" | grep -qF "$3"; then printf '  [ok]     %s\n' "$1"
+      else printf '  [FAILED] %s (no line matching: %s)\n' "$1" "$3"; rc=1; fi
+    else
+      if printf '%s' "$out" | grep -qF "$3"; then printf '  [FAILED] %s (unexpected line: %s)\n' "$1" "$3"; rc=1
+      else printf '  [ok]     %s\n' "$1"; fi
+    fi
+  }
+  echo "plugin-registry-check selftest (check 5, the reverse org sweep)"
+
+  # CASE 1: gh cannot answer at all — an expired token, no read:org, a rate limit.
+  mk_stub '    echo "gh: Bad credentials (HTTP 401)" >&2; exit 1'
+  probe "an expired/failing gh token REDS the org sweep instead of sweeping nothing" \
+    want-present "the reverse org sweep (check 5) COULD NOT RUN"
+
+  # CASE 2: gh answers, with nothing. An empty answer from an API is not an empty org.
+  mk_stub '    echo "[]"'
+  probe "an empty org listing REDS the sweep rather than passing it vacuously" \
+    want-present "the reverse org sweep (check 5) saw only 0 org repo(s)"
+
+  # CASE 3: a real-shaped listing containing an unregistered plugin-shaped repo — the sweep's whole
+  # purpose. This is the half that proves the guards above did not just disable the check.
+  mk_stub '    python3 -c "import json;print(json.dumps([{\"name\":\"r\"+str(i)} for i in range(40)]+[{\"name\":\"store-bogus\"}]))"'
+  probe "a plausible listing still catches an unregistered plugin-shaped repo" \
+    want-present "org repo 'store-bogus' matches plugin naming"
+
+  # CASE 4: the same listing without the stray repo must not manufacture a finding.
+  mk_stub '    python3 -c "import json;print(json.dumps([{\"name\":\"r\"+str(i)} for i in range(40)]))"'
+  probe "a clean listing produces no sweep finding" want-absent "matches plugin naming but is not in plugins.yaml"
+
+  echo
+  [ "$rc" = 0 ] && { echo "plugin-registry-check selftest: the org sweep fails loud and still finds strays"; exit 0; }
+  echo "plugin-registry-check selftest: FAILED"; exit 1
+fi
+
 python3 - "$MODE" <<'PYEOF'
 import json, os, re, subprocess, sys
 
@@ -180,9 +238,33 @@ for p in plugins:
 
 # ── 4 + 5. Network checks via `gh` (GITHUB_TOKEN in CI).
 if not offline:
+    # WHY THIS RETURNS A REASON AND NOT `None`.
+    #
+    # It used to be `return json.loads(r.stdout) if r.returncode == 0 else None`, and the org sweep
+    # below was `repos = gh("orgs/GetBusbar/repos?per_page=100") or []`. Every way `gh` can fail —
+    # an expired GITHUB_TOKEN, a token without `read:org`, a secondary rate limit, gh not on PATH,
+    # DNS — produced None, `or []` turned that into an empty list, the `for r in repos:` body never
+    # ran, and check 5 printed GREEN having swept nothing. That is the whole failure this gate
+    # exists to prevent, in the gate itself: the reverse sweep is the ONLY check that can see a
+    # plugin-shaped repo nobody registered, and an unregistered repo is invisible by construction —
+    # there is no other signal that would have gone red. An empty answer from an API is never
+    # evidence of an empty org.
+    #
+    # So: the call reports WHY it failed, and both callers below treat "could not ask" as RED with
+    # that reason attached, distinct from "asked, and the answer was no".
     def gh(path):
-        r = subprocess.run(["gh", "api", path], capture_output=True, text=True)
-        return json.loads(r.stdout) if r.returncode == 0 else None
+        """-> (data, error). Exactly one is non-None."""
+        try:
+            r = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+        except FileNotFoundError:
+            return None, "the `gh` CLI is not on PATH"
+        if r.returncode != 0:
+            why = (r.stderr or r.stdout or "").strip().replace("\n", " ")[:300]
+            return None, f"`gh api {path}` exited {r.returncode}: {why or '<no output>'}"
+        try:
+            return json.loads(r.stdout), None
+        except json.JSONDecodeError as e:
+            return None, f"`gh api {path}` returned output that is not JSON ({e})"
 
     for p in plugins:
         # Pre-release entry (a new plugin whose FIRST release is cut together with the core version it
@@ -191,9 +273,15 @@ if not offline:
         # this published-release arm is deferred. Flip `released: true` (or drop the key) at the cut.
         if str(p.get("released", "true")).strip().lower() == "false":
             continue
-        rel = gh(f"repos/GetBusbar/{p['repo']}/releases/latest")
+        rel, err = gh(f"repos/GetBusbar/{p['repo']}/releases/latest")
         if rel is None:
-            fail.append(f"{p['repo']}: no published release at all")
+            # 404 really is "no published release at all"; anything else is "we could not ask",
+            # and the two need different fixes. Conflating them sent people looking for a missing
+            # release when the actual fault was a token.
+            if "HTTP 404" in (err or "") or "Not Found" in (err or ""):
+                fail.append(f"{p['repo']}: no published release at all")
+            else:
+                fail.append(f"{p['repo']}: could not determine whether a release exists — {err}")
             continue
         tag = str(rel.get("tag_name", ""))
         if not tag.lstrip("v").startswith(p["version_line"] + "."):
@@ -201,14 +289,34 @@ if not offline:
         if not rel.get("assets"):
             fail.append(f"{p['repo']}: release {tag} has ZERO assets — a phantom release, not a release")
 
-    repos = gh("orgs/GetBusbar/repos?per_page=100") or []
-    known = {p["repo"] for p in plugins} | excluded
-    pat = re.compile(r"^(store-.*|.*-hook|auth-.*|hashicorp-.*|secret-.*)$")
-    for r in repos:
-        name = r["name"]
-        if pat.match(name) and name not in known:
-            fail.append(f"org repo '{name}' matches plugin naming but is not in plugins.yaml "
-                        f"(register it or add to excluded_repos with a reason)")
+    # THE FLOOR IS DERIVED, NOT TYPED. Every repo in plugins.yaml — registered or explicitly
+    # excluded — is a repo this registry ASSERTS exists in GetBusbar. A sweep that comes back with
+    # fewer repos than that has not seen repos we already know are there, so it is answering for
+    # something narrower than the org and cannot rule out the unregistered repo it is looking for.
+    # Derived means it tracks the registry: adding a plugin raises the floor by one, automatically.
+    ORG_REPO_FLOOR = len(plugins) + len(excluded)
+
+    repos, err = gh("orgs/GetBusbar/repos?per_page=100")
+    if repos is None:
+        fail.append("the reverse org sweep (check 5) COULD NOT RUN — " + str(err) + ". This is RED, "
+                    "not a pass: the sweep is the only check that can see a plugin-shaped repo "
+                    "nobody registered, so a sweep that inspected zero repos has ruled nothing out. "
+                    "Fix: give this run a GITHUB_TOKEN with read:org, or run --offline, which skips "
+                    "checks 4 and 5 by NAME rather than by accident.")
+    elif not isinstance(repos, list) or len(repos) < ORG_REPO_FLOOR:
+        fail.append(f"the reverse org sweep (check 5) saw only {len(repos) if isinstance(repos, list) else 0} "
+                    f"org repo(s); the floor is {ORG_REPO_FLOOR}. GetBusbar has many more than that, so a "
+                    "list this short means the query answered for something other than the org (a token "
+                    "scoped to one repo, a paginated first page that came back empty). A sweep over an "
+                    "implausibly small set cannot rule out an unregistered plugin repo.")
+    else:
+        known = {p["repo"] for p in plugins} | excluded
+        pat = re.compile(r"^(store-.*|.*-hook|auth-.*|hashicorp-.*|secret-.*)$")
+        for r in repos:
+            name = r["name"]
+            if pat.match(name) and name not in known:
+                fail.append(f"org repo '{name}' matches plugin naming but is not in plugins.yaml "
+                            f"(register it or add to excluded_repos with a reason)")
 
 if fail:
     print("PLUGIN REGISTRY GATE: RED")
