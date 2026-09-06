@@ -449,22 +449,6 @@ fn pinned_missing_set_is_exact() {
     let claims = status();
     let computed: BTreeSet<String> = missing(&cells, &claims).into_iter().map(|c| c.id).collect();
 
-    if std::env::var("BUSBAR_PIN_MISSING_CELLS").is_ok_and(|v| v == "1") {
-        let header = read("qa/method-coverage.missing");
-        let header: String = header
-            .lines()
-            .take_while(|l| l.starts_with('#') || l.trim().is_empty())
-            .map(|l| format!("{l}\n"))
-            .collect();
-        let body: String = computed.iter().map(|c| format!("{c}\n")).collect();
-        std::fs::write(
-            repo_root().join("qa/method-coverage.missing"),
-            header + &body,
-        )
-        .expect("rewrite the pinned MISSING set");
-        return;
-    }
-
     let pinned = pinned_missing();
     let newly_missing: Vec<&String> = computed.difference(&pinned).collect();
     let newly_covered: Vec<&String> = pinned.difference(&computed).collect();
@@ -479,8 +463,68 @@ fn pinned_missing_set_is_exact() {
         newly_covered.is_empty(),
         "cells are now covered but still sit in the work queue:\n{newly_covered:#?}\n\
          Delete their lines from qa/method-coverage.missing in the SAME commit that covers them, \
-         so the queue shrinks visibly:\n  \
-         BUSBAR_PIN_MISSING_CELLS=1 cargo test -p busbar --test method_coverage"
+         so the queue shrinks visibly. To regenerate the file and READ THE DIFF, run the dev \
+         script, which lives outside the gate on purpose:\n  \
+         scripts/pin-missing-cells.py --write"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 2b. THE GATE HAS NO BYPASS.
+//
+// `pinned_missing_set_is_exact` used to rewrite `qa/method-coverage.missing` from the computed set
+// and return green whenever an environment variable was set. That is not a gate: anything that can
+// set a variable in the job that runs the gate can make the gate agree with the tree, and the
+// pinned work queue then records whatever the tree happens to be rather than what was owed. The
+// regeneration moved OUT of the test, into `scripts/pin-missing-cells.py`, which a human runs
+// deliberately and whose output is a diff they read.
+//
+// This test is what keeps it out. It reads THIS FILE'S OWN SOURCE and refuses:
+//   - any read of the process environment, which is the only way a caller can steer a verdict that
+//     is supposed to be a function of three files in the tree;
+//   - any write to the filesystem, because a gate that can edit its own evidence is not evidence.
+// ---------------------------------------------------------------------------
+
+/// The tokens by which a gate lets its caller, rather than the tree, decide the verdict.
+const NO_BYPASS_TOKENS: &[&str] = &[
+    "std::env::var",
+    "env::var_os",
+    "option_env!",
+    "std::fs::write",
+    "std::fs::remove_file",
+    "fs::OpenOptions",
+];
+
+#[test]
+fn this_gate_cannot_be_steered_or_rewrite_its_own_evidence() {
+    let src = include_str!("method_coverage.rs");
+    // Strip line comments so this test's own prose above — which necessarily names the tokens — is
+    // not what it catches. `NO_BYPASS_TOKENS` itself is a string literal per token, so the scan
+    // skips the const's own lines by line number rather than by content.
+    let mut offenders: Vec<String> = Vec::new();
+    for (n, raw) in src.lines().enumerate() {
+        let code = match raw.find("//") {
+            Some(i) => &raw[..i],
+            None => raw,
+        };
+        // The declaration list itself spells every token; it is data, not a call.
+        if code.trim_start().starts_with('"') && code.trim_end().ends_with("\",") {
+            continue;
+        }
+        for tok in NO_BYPASS_TOKENS {
+            if code.contains(tok) {
+                offenders.push(format!("line {}: `{tok}` in `{}`", n + 1, code.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the coverage gate reads the environment or writes to the tree:\n{}\n\
+         A release gate's verdict is a function of qa/method-inventory.json, \
+         qa/method-coverage.status and qa/WAIVERS.md and of nothing else. Regeneration of the \
+         pinned queue belongs to scripts/pin-missing-cells.py, which a human runs and whose diff a \
+         human reads.",
+        offenders.join("\n")
     );
 }
 
