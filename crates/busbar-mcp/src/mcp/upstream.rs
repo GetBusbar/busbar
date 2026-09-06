@@ -707,19 +707,44 @@ pub(super) async fn exchange(
         .await
         .map_err(|e| format!("the RFC 8693 exchange failed: {}", e.into_cause()))?;
     let status = response.status().as_u16();
+    // CAPPED, not merely deadlined. The authorization server is not fully trusted — it is reached
+    // over the network on busbar's own credential — and a deadline bounds how LONG a body may take
+    // to arrive, not how MUCH of it is held while it does. A collect-to-completion here buffered
+    // whatever the endpoint sent: a compromised or merely broken AS streaming a multi-GB body was
+    // read whole into memory, once per round, on every concurrent granted dispatch. Every sibling
+    // read of untrusted upstream bytes in this tree is capped by the same primitive — the MCP
+    // response body in `super::client::transport`, a child's line in `super::client::stdio` — and
+    // the substrate's own token-endpoint mints cap theirs for exactly this reason. A real OAuth
+    // token response is well under a kilobyte, so the cap cannot bite on legitimate traffic.
+    let cap = busbar_substrate::proxy::max_upstream_buffered_bytes();
     let body = {
         use http_body_util::BodyExt;
-        let collected = tokio::time::timeout_at(deadline, response.into_body().collect())
-            .await
-            .map_err(|_| {
-                format!(
-                    "the RFC 8693 exchange body could not be read: {}",
-                    busbar_substrate::egress::engine::HOP_DEADLINE_CAUSE
+        let read =
+            busbar_substrate::proxy::read_capped(response.into_body().into_data_stream(), cap);
+        let (raw, end) = tokio::time::timeout_at(deadline, read).await.map_err(|_| {
+            format!(
+                "the RFC 8693 exchange body could not be read: {}",
+                busbar_substrate::egress::engine::HOP_DEADLINE_CAUSE
+            )
+        })?;
+        match end {
+            busbar_substrate::proxy::ReadEnd::Complete => raw,
+            // TRUNCATED IS A REFUSAL, never a parse of what arrived. A partial token response that
+            // happened to contain an `access_token` field would otherwise be spent as a credential.
+            busbar_substrate::proxy::ReadEnd::Truncated => {
+                return Err(format!(
+                    "the RFC 8693 exchange body exceeded the {cap}-byte cap; the call is refused \
+                     rather than made against a truncated token response"
+                ))
+            }
+            busbar_substrate::proxy::ReadEnd::TransportError => {
+                return Err(
+                    "the RFC 8693 exchange body could not be read: the connection failed \
+                     mid-response"
+                        .to_string(),
                 )
-            })?;
-        collected
-            .map_err(|e| format!("the RFC 8693 exchange body could not be read: {e}"))?
-            .to_bytes()
+            }
+        }
     };
     if !(200..300).contains(&status) {
         // The BODY is deliberately not echoed: an authorization server's error body can carry the
