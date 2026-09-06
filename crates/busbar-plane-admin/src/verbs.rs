@@ -579,16 +579,19 @@ mod tests {
     /// resolves the right verb name and the right (`read_only`) scope. This is the boundary check
     /// that the closed table in this module (transcribed by hand from the same fixture) has not
     /// drifted from it.
+    ///
+    /// The scope comes off the fixture's own `x-busbar-required-scope` column, which is the pinned
+    /// tag's answer. It used to be RE-DERIVED here from the method plus two hand-listed path
+    /// exceptions — a rule that happens to agree with the column today and is not the column: a
+    /// seventh read-only `POST` added to the tag would have been checked against this file's
+    /// reading of 1.5.5 rather than against 1.5.5.
     #[test]
     fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
-        let fixture = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../testing/shadow-oracle/fixtures/openapi-1.5.5.json"
-        ));
-        let doc: serde_json::Value = serde_json::from_str(fixture).expect("fixture is valid JSON");
+        let doc = fixture();
         let paths = doc["paths"].as_object().expect("paths is an object");
 
         let mut checked = 0usize;
+        let mut read_only_rows = 0usize;
         for (path, methods) in paths {
             let methods = methods.as_object().expect("path item is an object");
             for (method, op) in methods {
@@ -597,10 +600,14 @@ mod tests {
                     .as_str()
                     .unwrap_or_else(|| panic!("{method} {path} has no operationId"));
                 let expected_verb = snake_case(operation_id);
-                let expected_read_only = method == "GET"
-                    || method == "HEAD"
-                    || path == "/api/v1/admin/config/validate"
-                    || path == "/api/v1/admin/plugins/inspect";
+                let expected_read_only = match op["x-busbar-required-scope"].as_str() {
+                    Some("read-only") => true,
+                    Some("full") => false,
+                    other => {
+                        panic!("{method} {path} declares no scope this plane knows: {other:?}")
+                    }
+                };
+                read_only_rows += usize::from(expected_read_only);
 
                 let (entry, _) = find_verb(&method, path).unwrap_or_else(|| {
                     panic!("no table row matches fixture operation {method} {path}")
@@ -611,7 +618,7 @@ mod tests {
                 );
                 assert_eq!(
                     entry.read_only, expected_read_only,
-                    "{method} {path}: table scope does not match required_scope(method, path)"
+                    "{method} {path}: table scope does not match the fixture's pinned x-busbar-required-scope"
                 );
                 checked += 1;
             }
@@ -619,6 +626,10 @@ mod tests {
         assert_eq!(
             checked, 66,
             "the pinned fixture must declare exactly 66 operations"
+        );
+        assert_eq!(
+            read_only_rows, 34,
+            "the pinned tag's own column splits the 66 as 34 read-only / 32 full"
         );
     }
 }
