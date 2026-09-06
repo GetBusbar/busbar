@@ -1205,6 +1205,14 @@ pub struct StreamDecodeState {
     /// re-claim an index the client already has content in, reintroducing a block-index collision
     /// on the post-terminal path. OpenAI Chat reader only; other readers leave it 0.
     pub next_ir_index: usize,
+    /// How many candidate-level citation sources this stream has already carried in a
+    /// `CitationsDelta`. Gemini restates the FULL `citationMetadata.citationSources[]` list on every
+    /// chunk that carries it — the list is cumulative, not incremental — so reading the whole list
+    /// per chunk re-emits every earlier source as a fresh delta and a client assembling the stream
+    /// ends up with the first citation repeated once per chunk. This watermark says where the last
+    /// delta stopped, so each chunk emits only the tail it ADDED. Gemini reader only; other readers
+    /// leave it 0.
+    pub citations_emitted: usize,
 }
 
 impl StreamDecodeState {

@@ -5776,6 +5776,63 @@ fn gemini_citation_offsets_correct_across_multiple_text_parts() {
     assert_eq!(&text_blocks[1].0[0..5], "Paris");
 }
 
+/// Gemini's candidate-level `citationSources[]` is CUMULATIVE: each chunk restates every source
+/// seen so far. Reading the whole list per chunk therefore re-emitted the earlier sources as fresh
+/// deltas, so a client assembling the stream saw the first citation N times. Only the sources this
+/// chunk ADDED belong in a delta.
+#[test]
+fn stream_gemini_cumulative_citation_sources_emit_only_the_new_ones() {
+    let source_a = serde_json::json!({
+        "startIndex": 0,
+        "endIndex": 5,
+        "uri": "https://example.com/a",
+        "title": "A"
+    });
+    let source_b = serde_json::json!({
+        "startIndex": 6,
+        "endIndex": 11,
+        "uri": "https://example.com/b",
+        "title": "B"
+    });
+    let events = collect_stream(&[
+        serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "alpha"}]},
+                "citationMetadata": {"citationSources": [source_a]}
+            }]
+        }),
+        // The SAME source restated, plus one new one.
+        serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": " beta"}]},
+                "citationMetadata": {"citationSources": [source_a, source_b]},
+                "finishReason": GEMINI_FINISH_STOP
+            }],
+            "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 4}
+        }),
+    ]);
+
+    let deltas: Vec<Vec<String>> = events
+        .iter()
+        .filter_map(|e| match e {
+            IrStreamEvent::BlockDelta {
+                delta: crate::ir::IrDelta::CitationsDelta(cs),
+                ..
+            } => Some(
+                cs.iter()
+                    .map(|c| c.title.clone().unwrap_or_default())
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        deltas,
+        vec![vec!["A".to_string()], vec!["B".to_string()]],
+        "each chunk must carry only the citations it ADDED, got {deltas:?}"
+    );
+}
+
 /// STREAMING citations, cross-protocol: a Gemini stream chunk carrying candidate-level
 /// `citationMetadata.citationSources[]` must read into an `IrDelta::CitationsDelta` on the answer
 /// text block, and a cross-protocol Anthropic egress must re-emit it as a native
