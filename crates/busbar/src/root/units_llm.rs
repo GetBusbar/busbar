@@ -303,6 +303,7 @@ impl LlmNode {
         &self,
         principal: &PrincipalId,
         charged_at: u64,
+        rate_card_version: u64,
         ended: busbar_kernel::teller::Ended,
     ) {
         let Some(book) = self.book.get() else {
@@ -319,6 +320,7 @@ impl LlmNode {
             &mut durability,
             principal,
             charged_at,
+            rate_card_version,
             &self.durability_token,
             posted,
         );
@@ -436,7 +438,11 @@ impl LlmNode {
                 // until this line nothing did, so a unit ran, ended, posted, and posted into a value
                 // that was dropped on the floor.
                 let charged_at = unit.charged_at;
-                self.settle_end(&principal, charged_at, ended);
+                // The version this unit was ADMITTED under travels with the settlement, exactly as
+                // the epoch beside it does: an apply landing mid-body replaces what the NEXT unit
+                // pins and cannot restamp this one.
+                let rate_card_version = card.as_ref().map_or(0, |in_force| in_force.generation);
+                self.settle_end(&principal, charged_at, rate_card_version, ended);
                 // The loop ran; the answer is whatever the terminal posted. There is no unit that
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
@@ -471,7 +477,7 @@ impl LlmNode {
         walk: Walk,
         principal: &PrincipalId,
         charged_at: u64,
-        card: Option<Arc<busbar_unit_cost::RateCard>>,
+        card: Option<Arc<crate::root::kernel::InForce>>,
     ) -> Response {
         let Some(book) = self.book.get() else {
             return response;
@@ -576,8 +582,9 @@ fn usage_record(
 struct LateAccrual {
     book: Arc<Mutex<crate::root::durability::Durability>>,
     /// The card the report is priced against — the deployment's configured rates and its flat
-    /// per-request fee, in the cost unit's own terms.
-    card: Arc<busbar_unit_cost::RateCard>,
+    /// per-request fee, in the cost unit's own terms — with the version that identifies it, so the
+    /// figure and the record of which rates produced it come off one pinned value.
+    card: Arc<crate::root::kernel::InForce>,
     durability_token: busbar_caps::DurabilityToken,
     ledger_token: busbar_caps::LedgerToken,
     usage_token: busbar_caps::UsageToken,
@@ -623,7 +630,7 @@ impl LateAccrual {
         // node that posted only the tokens was out by the fee on every billable request, and the
         // identity had to name the difference as its own term instead of checking it.
         let posting = busbar_unit_cost::price(
-            &card.pin(),
+            &card.card.pin(),
             &report.lane,
             &usage_record(&usage_token, &report.usage),
             u64::from(report.fee_count),
@@ -651,11 +658,22 @@ impl LateAccrual {
         let accrual =
             busbar_caps::HoldAccrual::after_terminal(principal.clone(), amount, &ledger_token);
         let posted = busbar_caps::Posted::settle_late(accrual, &ledger_token);
+        // THE VERSION THE POSTING ITSELF NAMES, not a second reading of the holder: the cost unit
+        // stamps its own posting with the pinned card's version, and the journal record is stamped
+        // with the generation that version is named after. One pinned card, one answer to "which
+        // rates priced this", on both sides of the settlement.
+        debug_assert_eq!(
+            posting.rate_card_version().as_str(),
+            format!("root-llm@{}", card.generation),
+            "the card's name and the record's version are two spellings of one apply"
+        );
+        let rate_card_version = card.generation;
         let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
         let _settled = settle(
             &mut durability,
             &principal,
             charged_at,
+            rate_card_version,
             &durability_token,
             posted,
         );
@@ -1327,6 +1345,7 @@ pub fn settle(
     durability: &mut crate::root::durability::Durability,
     principal: &PrincipalId,
     charged_at: u64,
+    rate_card_version: u64,
     token: &busbar_caps::DurabilityToken,
     posted: busbar_caps::Posted,
 ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
@@ -1341,8 +1360,13 @@ pub fn settle(
         // The loop has no exit step of its own; the figure this posting is OF is the metering step's,
         // and that is the step a durability loss here is attributed to.
         step: busbar_caps::StepName::Meter,
+        // THE CARD THIS UNIT WAS ADMITTED UNDER, carried in rather than written as a zero. The
+        // holder is swappable, so "which rates priced this" is a real question with a different
+        // answer either side of a reload, and a record that answered it with `0` said only that a
+        // figure had been posted. A settlement that no card priced — the terminal's own, on a plane
+        // whose money arrives after it — still stamps `0`, and there it is the true answer.
         stamp: crate::root::durability::PostingStamp {
-            rate_card_version: 0,
+            rate_card_version,
             wall: charged_at,
             mono: charged_at,
         },
@@ -1372,16 +1396,23 @@ pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
 
 /// The configured rates, in the cost unit's own card.
 ///
-/// The version is a constant name rather than a hash of the configuration, and that is a stated
-/// limit rather than an oversight: the postings this card prices are read back at the width the node
-/// keeps, which carries no card version, so nothing downstream can tell two versions apart yet. The
-/// day the books grow that column, this is the one line that fills it.
+/// The version is the holder's APPLY GENERATION — `root-llm@1` for the boot resolution, one more
+/// for each reload — rather than a constant name or a hash of the configuration. A constant told two
+/// cards apart by nothing, which mattered the moment the card became swappable: a posting priced
+/// before a rate change and one priced after it carried the same version, and the journal's own
+/// version column carried a zero beside them. A hash would be a better answer and is not this one:
+/// it would have to be stable across the neutral view the seam carries, and the number that says
+/// WHICH APPLY is the fact the record actually needs.
+///
+/// Named here and stamped on the posting in [`settle`], off the same pinned value, so the card's
+/// name and the record's number cannot disagree.
 pub(crate) fn card_from_config<'r>(
     rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
     fee_cents: i64,
     present: bool,
+    generation: u64,
 ) -> busbar_unit_cost::RateCard {
-    let version = busbar_unit_cost::RateCardVersion::new("root-llm");
+    let version = busbar_unit_cost::RateCardVersion::new(format!("root-llm@{generation}"));
     if !present {
         return busbar_unit_cost::RateCard::absent(version, fee_cents);
     }
@@ -2116,6 +2147,47 @@ mod tests {
 
     /// **THE EXIT ARM, END TO END.** The reservation the door opened reaches the journal.
     ///
+    /// THE VERSION THE CARD IS NAMED AFTER IS THE VERSION THE RECORD CARRIES.
+    ///
+    /// Two spellings of one apply — the cost unit stamps its posting with the card's own
+    /// `RateCardVersion`, the journal stamps the generation that version is named after — and the
+    /// whole point of asserting them together is that neither is derived from the other at settle
+    /// time. Before this, the record's version was the literal `0` on every settlement this plane
+    /// ever made, so a posting priced before a rate change and one priced after it were, in the one
+    /// column that exists to tell them apart, identical.
+    #[test]
+    fn a_priced_settlement_records_the_apply_that_priced_it() {
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let mut durability = crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open");
+
+        // The card the seventh apply would put in place, named the way the holder names it.
+        let card = card_from_config(std::iter::empty(), 3, false, 7);
+        assert_eq!(card.version().as_str(), "root-llm@7");
+
+        let ledger_token = busbar_caps::LedgerToken::mint(&seal);
+        let who = PrincipalId::new("acct:llm");
+        let accrual = busbar_caps::HoldAccrual::after_terminal(who.clone(), 42, &ledger_token);
+        let settled = settle(
+            &mut durability,
+            &who,
+            EPOCH,
+            7,
+            &busbar_caps::DurabilityToken::mint(&seal),
+            busbar_caps::Posted::settle_late(accrual, &ledger_token),
+        )
+        .expect("the memory-buffered journal takes it");
+
+        assert_eq!(
+            settled.posting.rate_card_version, 7,
+            "the record does not name the apply that priced the figure it carries"
+        );
+    }
+
     /// The loop's exit path is where a hold stops existing, and what it hands back is a POSTING that
     /// has moved no balance and left no record until something settles it. Before this arm was bound
     /// nothing on this plane did, so a unit ran, ended, posted — and posted into a value that was
@@ -2150,14 +2222,21 @@ mod tests {
         )
         .expect("a memory-buffered journal cannot fail to open");
         let who = PrincipalId::new("acct:llm");
+        // No card priced this one: the terminal's settlement on this plane is the record that a unit
+        // ran, and the money arrives later. Zero is the true version for it.
         let settled = settle(
             &mut durability,
             &who,
             EPOCH,
+            0,
             &busbar_caps::DurabilityToken::mint(&seal),
             posted,
         )
         .expect("the memory-buffered journal takes it");
+        assert_eq!(
+            settled.posting.rate_card_version, 0,
+            "a settlement no card priced names no card"
+        );
         assert!(settled.overdraft.is_none(), "nothing to carry out");
 
         let window =

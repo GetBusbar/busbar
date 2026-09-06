@@ -139,7 +139,28 @@ pub struct RootCard {
     /// `None` until the boot resolution raises the rate-apply seam. Absent, a report is not priced
     /// and nothing is posted — the honest answer for a build that has read no configuration yet,
     /// rather than a fallback card whose figures no operator wrote.
-    card: arc_swap::ArcSwapOption<busbar_unit_cost::RateCard>,
+    in_force: arc_swap::ArcSwapOption<InForce>,
+    /// How many applies this holder has taken. The next one's VERSION, and the reason a version is
+    /// a fact about this process rather than a constant: two cards built from two different
+    /// configurations used to be told apart by nothing at all.
+    applied: std::sync::atomic::AtomicU64,
+}
+
+/// A card and the version that identifies it, as one value a reader pins.
+///
+/// Together rather than beside each other, because a posting records BOTH — what it was priced at
+/// and which card said so — and two values pinned separately are two values that can be pinned at
+/// two different instants. There is one apply, so there is one pair.
+#[derive(Debug)]
+pub struct InForce {
+    /// Which apply put this card in place: `1` for the boot resolution, one more for each reload.
+    ///
+    /// The number the journal's posting record carries, and the number the card's own
+    /// [`busbar_unit_cost::RateCardVersion`] is named after — one fact spelled two ways rather than
+    /// two facts that can disagree. A record stamped `0` is one no card priced.
+    pub generation: u64,
+    /// The rates themselves.
+    pub card: Arc<busbar_unit_cost::RateCard>,
 }
 
 impl std::fmt::Debug for RootCard {
@@ -154,16 +175,30 @@ impl RootCard {
     /// The returned `Arc` is the reader's to keep: a swap after this call replaces what the NEXT
     /// caller sees and leaves this one holding the card it was admitted under.
     #[must_use]
-    pub fn pin(&self) -> Option<Arc<busbar_unit_cost::RateCard>> {
-        self.card.load_full()
+    pub fn pin(&self) -> Option<Arc<InForce>> {
+        self.in_force.load_full()
     }
 
-    /// Put `card` in place of whatever is there, atomically.
+    /// Put a card in place of whatever is there, atomically, and give it this process's next
+    /// version.
     ///
     /// Called on the boot resolution and again on every apply/reload, always with a card built from
-    /// the configuration the engine just resolved its own rates from.
-    pub fn apply(&self, card: Arc<busbar_unit_cost::RateCard>) {
-        self.card.store(Some(card));
+    /// the configuration the engine just resolved its own rates from. The version is drawn HERE and
+    /// handed to the builder rather than chosen by the caller, because a version is a statement
+    /// about how many times this holder has moved and the holder is the only thing that knows.
+    ///
+    /// The rate-apply seam is raised by the one place that resolves a configuration, so the applies
+    /// arrive in order and a version is monotonic; what this guarantees on its own is that no two
+    /// applies are given the same one.
+    pub fn apply(&self, build: impl FnOnce(u64) -> busbar_unit_cost::RateCard) {
+        let generation = self
+            .applied
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .saturating_add(1);
+        self.in_force.store(Some(Arc::new(InForce {
+            generation,
+            card: Arc::new(build(generation)),
+        })));
     }
 }
 
@@ -185,11 +220,14 @@ pub struct CardRepricer;
 
 impl busbar_substrate::rate_apply::RateApply for CardRepricer {
     fn rates_applied(&self, rates: &busbar_substrate::rate_apply::RawRates<'_>) {
-        ROOT_CARD.apply(Arc::new(crate::root::units_llm::card_from_config(
-            rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
-            rates.fee_cents,
-            rates.present,
-        )));
+        ROOT_CARD.apply(|generation| {
+            crate::root::units_llm::card_from_config(
+                rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
+                rates.fee_cents,
+                rates.present,
+                generation,
+            )
+        });
     }
 }
 
@@ -826,27 +864,42 @@ mod tests {
             "a holder that has heard no apply prices nothing"
         );
 
-        let version = busbar_unit_cost::RateCardVersion::new("root-llm");
-        holder.apply(Arc::new(busbar_unit_cost::RateCard::absent(version, 3)));
+        let absent = |fee| {
+            move |generation: u64| {
+                busbar_unit_cost::RateCard::absent(
+                    busbar_unit_cost::RateCardVersion::new(format!("root-llm@{generation}")),
+                    fee,
+                )
+            }
+        };
+
+        holder.apply(absent(3));
         let admitted = holder.pin().expect("the first apply put a card in place");
-        assert_eq!(admitted.fee_unit_price_nanos(), 30_000_000);
+        assert_eq!(admitted.card.fee_unit_price_nanos(), 30_000_000);
+        assert_eq!(admitted.generation, 1, "the boot resolution is the first");
 
         // The apply a request in flight must not feel.
-        let version = busbar_unit_cost::RateCardVersion::new("root-llm");
-        holder.apply(Arc::new(busbar_unit_cost::RateCard::absent(version, 11)));
+        holder.apply(absent(11));
         assert_eq!(
-            admitted.fee_unit_price_nanos(),
+            admitted.card.fee_unit_price_nanos(),
             30_000_000,
             "a reader that pinned before the apply was repriced by it"
         );
+        let next = holder.pin().expect("the second apply put a card in place");
         assert_eq!(
-            holder
-                .pin()
-                .expect("the second apply put a card in place")
-                .fee_unit_price_nanos(),
+            next.card.fee_unit_price_nanos(),
             110_000_000,
             "the apply did not reach the next admission's card"
         );
+
+        // AND THE TWO CARDS ARE TELLABLE APART, which is the whole of what a version is for: the
+        // journal stamps the number and the card is named after it, so a posting can be traced back
+        // to the configuration that priced it. Two applies used to produce one constant name and a
+        // stamp of zero, which said only that a card existed.
+        assert_eq!(next.generation, 2);
+        assert_ne!(admitted.generation, next.generation);
+        assert_eq!(admitted.card.version().as_str(), "root-llm@1");
+        assert_eq!(next.card.version().as_str(), "root-llm@2");
     }
 
     /// A unit no plane on this node composed is not sealed as an administrative read.
