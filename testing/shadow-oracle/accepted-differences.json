@@ -438,6 +438,17 @@
         "headers"
       ],
       "rationale": "Spec fidelity: published include_usage says the token counts ride an ADDITIONAL final chunk whose choices array is always EMPTY. The Chat writer cannot emit two frames for one IR MessageDelta, so it folds the counts onto the chunk it does write and a downstream seam un-folds them into that trailing chunk. The writer folds whenever the terminal counts are nonzero -- NOT only when the delta carries a stop reason -- but both un-fold seams additionally required a non-null finish_reason beside the folded object. A backend that ends a stream with no stop reason (an incomplete Responses stream whose incomplete_details.reason the published spec does not name) produces exactly the chunk neither seam looked at: a client that asked for usage never received it, and a client that opted OUT was sent usage it had not asked for. Both seams now key on the folded object itself, which is only ever present because the writer put it there. Cross-dialect stream bodies only; the same-dialect byte-exact passthrough never reaches these seams, and no usage or billing class is waived -- busbar's own metering reads the IR-side tap upstream of this seam and never moved. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "A-1 admin audit entries name the framing that sealed them",
+      "kind": "breaking",
+      "by": "owner (Matthew Jackson), 2026-09-06 audit-digest framing decision",
+      "cells": "^admin\\.ops\\|GetAudit\\|",
+      "classes": [
+        "body"
+      ],
+      "rationale": "The admin audit digest was the SHA-256 of prev_hash, seq, ts, action, resource, outcome and principal joined by vertical bars. `resource` and `principal` are free text a caller hands to the admin surface and neither is validated, so a bar inside one moved the field boundaries and two DIFFERENT mutations produced ONE digest: (resource `hook:x`, outcome `rejected`, principal `applied|mallory`) and (resource `hook:x|rejected`, outcome `applied`, principal `mallory`) hash identically, and the chain verifier passed a record whose outcome and whose attribution had both been rewritten. An audit log whose digest can be made to agree with a lie is not evidence, so the framing is replaced rather than narrowed: every caller-supplied field now carries its own big-endian eight-byte length ahead of its bytes, under a leading scheme tag that is itself digested. The BODY class moves on this cell for exactly one reason -- every entry a 1.6.0 node writes now carries an additive `digest_scheme: 2` field naming the framing it was sealed under, and the golden's entries do not. Nothing else on the response moves: the items, their order, their eight existing fields, the cursor envelope and the status are unchanged, and an entry sealed BEFORE the upgrade re-serialises without the field at all (serde skips it for the legacy scheme), so a persisted 1.5.5 chain reads back byte-identically and still verifies. A chain that spans the upgrade is legitimately MIXED and verifies as one chain, each entry checked under its own scheme. The `unauth` cell is covered by the same regex and is unaffected in practice (a 401 carries no items); scoping to the operation rather than to `ok` alone keeps a later change to either arm visible.",
+      "changelog": "1.6.0 Breaking: the admin audit chain's digest is length-framed, and each entry names the framing"
     }
   ]
 }
